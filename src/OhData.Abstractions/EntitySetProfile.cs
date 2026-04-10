@@ -1,9 +1,9 @@
-﻿using System.Linq.Expressions;
+using System.Linq.Expressions;
 using Microsoft.OData.ModelBuilder;
 
 namespace OhData.Abstractions;
 
-public abstract class EntitySetProfile<TKey, TModel> : IVisitModelBuilder
+public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisitModelBuilder, IEntitySetEndpointSource
     where TModel : class
 {
     private readonly Expression<Func<TModel, TKey>> _getKey;
@@ -21,16 +21,20 @@ public abstract class EntitySetProfile<TKey, TModel> : IVisitModelBuilder
     protected string[]? FilterProperties = null;
     protected string[]? OrderByProperties = null;
 
-    // TODO: how to do Get w/o ODataQueryOptions<T>?
-
-    protected Func<TKey, CancellationToken, Task<TModel>>? GetById = null;
+    protected Func<CancellationToken, Task<IEnumerable<TModel>>>? GetAll = null;
+    protected Func<CancellationToken, Task<IQueryable<TModel>>>? GetQueryable = null;
+    protected Func<TKey, CancellationToken, Task<TModel?>>? GetById = null;
 
     protected Func<TModel, CancellationToken, Task<TModel>>? Put = null;
     protected Func<TKey, TModel, CancellationToken, Task<TModel>>? PutById = null;
 
     protected Func<TModel, CancellationToken, Task<TModel>>? Post = null;
 
-    // TODO: is patch feasible w/o Delta<T>?
+    protected Func<TKey, TModel, CancellationToken, Task<TModel?>>? Patch = null;
+
+    protected Func<TKey, CancellationToken, Task<bool>>? Delete = null;
+
+    private AuthorizationConfig? _authorization;
 
     private readonly ICollection<Action<EntityTypeConfiguration<TModel>>> _configurators;
     private readonly ICollection<Delegate> _functions;
@@ -40,14 +44,14 @@ public abstract class EntitySetProfile<TKey, TModel> : IVisitModelBuilder
     {
         _getKey = getKey;
         EntitySetName = $"{typeof(TModel).Name}s";
-            
+
         _configurators = new List<Action<EntityTypeConfiguration<TModel>>>();
         _functions = new List<Delegate>();
         _actions = new List<Delegate>();
     }
 
     /// <summary>
-    /// Hands over full configuration control.  If this method is overridden, you are ejecting
+    /// Hands over full configuration control. If this method is overridden, you are ejecting
     /// from all other configuration behaviors of this class.
     /// </summary>
     protected virtual void AdvancedConfigure(EntitySetConfiguration<TModel> configuration) { }
@@ -58,16 +62,21 @@ public abstract class EntitySetProfile<TKey, TModel> : IVisitModelBuilder
         var entitySet = builder.EntitySet<TModel>(EntitySetName);
 
         AdvancedConfigure(entitySet);
-            
+
         // eject if AdvancedConfigure was overridden
         var advancedConfigureDeclaredInType = GetType()
-            .GetMethod(nameof(AdvancedConfigure), new[] {typeof(EntitySetConfiguration<TModel>)})
-            .DeclaringType;
+            .GetMethod(
+                nameof(AdvancedConfigure),
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public,
+                null,
+                new[] { typeof(EntitySetConfiguration<TModel>) },
+                null)
+            ?.DeclaringType;
         if (advancedConfigureDeclaredInType != typeof(EntitySetProfile<TKey, TModel>)) return;
-            
+
         // if AdvancedConfigure wasn't overridden, work your magic
         var entityType = entitySet.EntityType;
-            
+
         if (SelectEnabled ?? defaults.SelectEnabled) entityType.Select(SelectProperties);
         if (ExpandEnabled ?? defaults.ExpandEnabled) entityType.Expand(ExpandProperties);
         if (FilterEnabled ?? defaults.FilterEnabled) entityType.Filter(FilterProperties);
@@ -85,7 +94,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IVisitModelBuilder
 
             foreach (var param in method.GetParameters())
             {
-                var entityFunctionParam = entityFunction.Parameter(param.ParameterType, param.Name);
+                var entityFunctionParam = entityFunction.Parameter(param.ParameterType, param.Name!);
 
                 // TODO: this will probably need to be a tad more robust...
                 if (param.IsOptional) entityFunctionParam.Optional();
@@ -108,7 +117,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IVisitModelBuilder
 
             foreach (var param in method.GetParameters())
             {
-                var entityActionParam = entityAction.Parameter(param.ParameterType, param.Name);
+                var entityActionParam = entityAction.Parameter(param.ParameterType, param.Name!);
                 if (param.IsOptional) entityActionParam.Optional();
                 if (param.HasDefaultValue) entityActionParam.HasDefaultValue($"{param.DefaultValue}");
             }
@@ -140,4 +149,44 @@ public abstract class EntitySetProfile<TKey, TModel> : IVisitModelBuilder
 
     protected void BindFunction(Delegate handler) => _functions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
     protected void BindAction(Delegate handler) => _actions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
+
+    protected void RequireAuthorization() => _authorization = new AuthorizationConfig(required: true, policy: null, roles: null);
+    protected void RequireAuthorization(string policy) => _authorization = new AuthorizationConfig(required: true, policy: policy, roles: null);
+    protected void RequireRoles(params string[] roles) => _authorization = new AuthorizationConfig(required: true, policy: null, roles: roles);
+
+    // ── IEntitySetEndpointSource ─────────────────────────────────────────────
+
+    string IEntitySetEndpointSource.EntitySetName => EntitySetName;
+    Type IEntitySetEndpointSource.KeyType => typeof(TKey);
+    Type IEntitySetEndpointSource.ModelType => typeof(TModel);
+
+    bool IEntitySetEndpointSource.HasGetAll => GetAll is not null;
+    bool IEntitySetEndpointSource.HasGetQueryable => GetQueryable is not null;
+    bool IEntitySetEndpointSource.HasGetById => GetById is not null;
+    bool IEntitySetEndpointSource.HasPost => Post is not null;
+    bool IEntitySetEndpointSource.HasPutById => PutById is not null;
+    bool IEntitySetEndpointSource.HasPatch => Patch is not null;
+    bool IEntitySetEndpointSource.HasDelete => Delete is not null;
+    AuthorizationConfig? IEntitySetEndpointSource.Authorization => _authorization;
+
+    async Task<object?> IEntitySetEndpointSource.InvokeGetAllAsync(CancellationToken ct) =>
+        (object?)await GetAll!.Invoke(ct);
+
+    async Task<IQueryable<object>> IEntitySetEndpointSource.InvokeGetQueryableAsync(CancellationToken ct) =>
+        (await GetQueryable!.Invoke(ct)).Cast<object>();
+
+    async Task<object?> IEntitySetEndpointSource.InvokeGetByIdAsync(object key, CancellationToken ct) =>
+        (object?)await GetById!.Invoke((TKey)key, ct);
+
+    async Task<object?> IEntitySetEndpointSource.InvokePostAsync(object model, CancellationToken ct) =>
+        (object?)await Post!.Invoke((TModel)model, ct);
+
+    async Task<object?> IEntitySetEndpointSource.InvokePutByIdAsync(object key, object model, CancellationToken ct) =>
+        (object?)await PutById!.Invoke((TKey)key, (TModel)model, ct);
+
+    async Task<object?> IEntitySetEndpointSource.InvokePatchAsync(object key, object model, CancellationToken ct) =>
+        (object?)await Patch!.Invoke((TKey)key, (TModel)model, ct);
+
+    Task<bool> IEntitySetEndpointSource.InvokeDeleteAsync(object key, CancellationToken ct) =>
+        Delete!.Invoke((TKey)key, ct);
 }
