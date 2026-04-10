@@ -183,3 +183,45 @@ internal class ETagWidgetProfile : EntitySetProfile<int, Widget>
         GetETag = widget => $"v{widget.Name.Length}"; // simple deterministic ETag
     }
 }
+
+internal class BoundOpsProfile : EntitySetProfile<int, Widget>
+{
+    // Non-static: each DI container gets its own instance to isolate tests.
+    private readonly List<Widget> _store = new()
+    {
+        new() { Id = 1, Name = "Alpha" },
+        new() { Id = 2, Name = "Beta" },
+    };
+
+    public BoundOpsProfile() : base(x => x.Id)
+    {
+        EntitySetName = "BoundWidgets";
+        SelectEnabled = true;
+        FilterEnabled = true;
+
+        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store);
+
+        BindFunction(GetByName);
+        BindFunction(DoubleCount);
+        BindAction(ClearAll);
+        BindAction(AddSuffix);
+    }
+
+    // Function: GET /BoundWidgets/GetByName?name=Alpha
+    private Task<IEnumerable<Widget>> GetByName(string name) =>
+        Task.FromResult<IEnumerable<Widget>>(_store.Where(w =>
+            string.Equals(w.Name, name, StringComparison.OrdinalIgnoreCase)));
+
+    // Function: GET /BoundWidgets/DoubleCount?factor=2
+    private Task<int> DoubleCount(int factor) =>
+        Task.FromResult(_store.Count * factor);
+
+    // Action: POST /BoundWidgets/ClearAll  (no body params)
+    private void ClearAll() => _store.Clear();
+
+    // Action: POST /BoundWidgets/AddSuffix  { "suffix": "!" }
+    private void AddSuffix(string suffix)
+    {
+        foreach (var w in _store) w.Name += suffix;
+    }
+}
