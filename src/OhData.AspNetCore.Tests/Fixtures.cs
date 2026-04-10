@@ -279,6 +279,17 @@ internal class MaxTopProfile : EntitySetProfile<int, Widget>
     }
 }
 
+/// <summary>Profile for testing role-based authorization (M9 — IReadOnlyList Roles path).</summary>
+internal class RoleAuthProfile : EntitySetProfile<int, Widget>
+{
+    public RoleAuthProfile() : base(x => x.Id)
+    {
+        EntitySetName = "RoleWidgets";
+        RequireRoles("Admin");
+        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(Array.Empty<Widget>());
+    }
+}
+
 /// <summary>Profile for testing multi-registration in a single host (test gap).</summary>
 internal class SecondProfile : EntitySetProfile<int, Widget>
 {

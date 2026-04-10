@@ -682,6 +682,48 @@ public class EndpointMappingTests
         Assert.True(count <= 5, $"Expected at most 5 items (MaxTop=5) but got {count}");
     }
 
+    // ── M4: Navigation collection routes wrap in OData envelope ─────────────
+    [Fact]
+    public async Task Navigation_Collection_WrappedInOdataEnvelope()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ParentWithChildrenProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/Parents(1)/Children");
+        Assert.True(json.TryGetProperty("@odata.context", out _), "Expected @odata.context in navigation collection response");
+        Assert.True(json.TryGetProperty("value", out var value), "Expected value array in navigation collection response");
+        Assert.Equal(JsonValueKind.Array, value.ValueKind);
+    }
+
+    // ── M6: Weak ETag prefix W/"..." handled correctly ───────────────────────
+    [Fact]
+    public async Task ETag_WeakPrefix_IsStrippedBeforeComparison()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagWidgetProfile>());
+        // First GET to obtain the strong ETag value
+        var getResp = await fx.Client.GetAsync("/odata/ETagWidgets(1)");
+        var etag = getResp.Headers.ETag?.Tag?.Trim('"');
+        Assert.NotNull(etag);
+
+        // PUT with W/"<etag>" — should NOT return 412 (weak prefix must be stripped)
+        var req = new HttpRequestMessage(HttpMethod.Put, "/odata/ETagWidgets(1)")
+        {
+            Content = JsonContent.Create(new Widget { Id = 1, Name = "Sprocket" }),
+        };
+        req.Headers.TryAddWithoutValidation("If-Match", $"W/\"{etag}\"");
+        var putResp = await fx.Client.SendAsync(req);
+        Assert.Equal(HttpStatusCode.OK, putResp.StatusCode);
+    }
+
+    // ── M9: AuthorizationConfig.Roles is IReadOnlyList (immutable) ───────────
+    [Fact]
+    public async Task RoleAuth_RouteRequiresAuthorization()
+    {
+        // Smoke test: role-protected profile produces 401 on unauthenticated request.
+        // This verifies the IReadOnlyList<string> Roles path still wires auth correctly.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<RoleAuthProfile>(), addAuth: true);
+        var response = await fx.Client.GetAsync("/odata/RoleWidgets");
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
     // ── Test gap: multiple named registrations in a single host ──────────────
     [Fact]
     public async Task MultipleRegistrations_SingleHost_BothRoute()

@@ -181,7 +181,7 @@ internal static class OhDataEndpointFactory
             if (auth is null) return;
             if (auth.Policy is not null)
                 rb.RequireAuthorization(auth.Policy);
-            else if (auth.Roles is { Length: > 0 })
+            else if (auth.Roles is { Count: > 0 })
                 rb.RequireAuthorization(new AuthorizeAttribute { Roles = string.Join(",", auth.Roles) });
             else
                 rb.RequireAuthorization();
@@ -191,7 +191,7 @@ internal static class OhDataEndpointFactory
         {
             if (authConfig.Policy is not null)
                 entityGroup.RequireAuthorization(authConfig.Policy);
-            else if (authConfig.Roles is { Length: > 0 })
+            else if (authConfig.Roles is { Count: > 0 })
                 entityGroup.RequireAuthorization(new AuthorizeAttribute { Roles = string.Join(",", authConfig.Roles) });
             else
                 entityGroup.RequireAuthorization();
