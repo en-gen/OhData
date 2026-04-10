@@ -587,4 +587,123 @@ public class EndpointMappingTests
         Assert.All(names, n => Assert.EndsWith("!", n));
     }
 
+    // ── H4: POST Location header ──────────────────────────────────────────────
+    [Fact]
+    public async Task Post_ReturnsLocationHeaderWithKey()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var response = await fx.Client.PostAsJsonAsync("/odata/Widgets", new Widget { Name = "New" });
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var location = response.Headers.Location?.ToString();
+        Assert.NotNull(location);
+        // Location must contain the key in OData format: /odata/Widgets(N)
+        Assert.Matches(@"Widgets\(\d+\)$", location);
+    }
+
+    // ── M2: PUT null result returns 404 ──────────────────────────────────────
+    [Fact]
+    public async Task Put_NullResult_Returns404()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NullPutProfile>());
+        var response = await fx.Client.PutAsJsonAsync("/odata/NullPutWidgets(999)", new Widget { Id = 999, Name = "X" });
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    // ── H9: GetAll rejects unsupported query options ──────────────────────────
+    [Fact]
+    public async Task GetAll_WithFilter_Returns400()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var response = await fx.Client.GetAsync("/odata/Widgets?$filter=Name eq 'Sprocket'");
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("UnsupportedQueryOption", json.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task GetAll_WithTop_Returns400()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var response = await fx.Client.GetAsync("/odata/Widgets?$top=1");
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    // ── H3: $count on GetAll rejects $filter ─────────────────────────────────
+    [Fact]
+    public async Task Count_GetAllPath_WithFilter_Returns400()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var response = await fx.Client.GetAsync("/odata/Widgets/$count?$filter=Name eq 'Sprocket'");
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    // ── H5: Bound function with Guid parameter ────────────────────────────────
+    [Fact]
+    public async Task BoundFunction_GuidParam_Succeeds()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<GuidFunctionProfile>());
+        var id = Guid.NewGuid();
+        var response = await fx.Client.GetAsync($"/odata/GuidFnWidgets/EchoGuid?id={id}");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var returned = await response.Content.ReadFromJsonAsync<string>();
+        Assert.Equal(id.ToString(), returned);
+    }
+
+    // ── H2: void Task bound action returns 204 ────────────────────────────────
+    [Fact]
+    public async Task BoundAction_VoidReturn_Returns204()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<VoidActionProfile>());
+        var response = await fx.Client.PostAsync("/odata/VoidActionWidgets/DoNothing",
+            new StringContent("{}", System.Text.Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+    }
+
+    // ── H8: duplicate AddOhData name throws ──────────────────────────────────
+    [Fact]
+    public void AddOhData_DuplicateName_Throws()
+    {
+        var builder = Microsoft.AspNetCore.Builder.WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Services.AddOhData("v1", o => o.AddProfile<WidgetProfile>());
+        // Second registration with the same name must throw immediately at call time
+        Assert.Throws<InvalidOperationException>(() =>
+            builder.Services.AddOhData("v1", o => o.AddProfile<EmptyProfile>()));
+    }
+
+    // ── C3: MaxTop enforced on GetQueryable path ──────────────────────────────
+    [Fact]
+    public async Task GetQueryable_MaxTop_IsEnforced()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MaxTopProfile>());
+        // Store has 20 items; MaxTop = 5 on the profile
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/MaxTopWidgets");
+        var count = json.GetProperty("value").GetArrayLength();
+        Assert.True(count <= 5, $"Expected at most 5 items (MaxTop=5) but got {count}");
+    }
+
+    // ── Test gap: multiple named registrations in a single host ──────────────
+    [Fact]
+    public async Task MultipleRegistrations_SingleHost_BothRoute()
+    {
+        var builder = Microsoft.AspNetCore.Builder.WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Services.AddLogging();
+        builder.Services.AddOhData("v1", o => o.WithPrefix("/v1").AddProfile<WidgetProfile>());
+        builder.Services.AddOhData("v2", o => o.WithPrefix("/v2").AddProfile<SecondProfile>());
+        var app = builder.Build();
+        app.MapOhData("v1");
+        app.MapOhData("v2");
+        await app.StartAsync();
+        var client = ((Microsoft.Extensions.Hosting.IHost)app).GetTestClient();
+
+        var r1 = await client.GetAsync("/v1/Widgets");
+        var r2 = await client.GetAsync("/v2/SecondWidgets");
+        Assert.Equal(HttpStatusCode.OK, r1.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, r2.StatusCode);
+
+        client.Dispose();
+        await app.DisposeAsync();
+    }
+
 }

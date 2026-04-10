@@ -249,6 +249,8 @@ internal static class OhDataEndpointFactory
                         filtered = (IQueryable<TModel>)options.Skip.ApplyTo(filtered, settings);
                     if (options.Top is not null)
                         filtered = (IQueryable<TModel>)options.Top.ApplyTo(filtered, settings);
+                    else if (source.MaxTop.HasValue)
+                        filtered = filtered.Take(source.MaxTop.Value);
 
                     var items = (object)filtered.ToArray();
                     var finalItems = ApplySelectPostProcess(items, options);
