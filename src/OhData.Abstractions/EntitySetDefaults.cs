@@ -18,4 +18,11 @@ public class EntitySetDefaults
             _maxTop = value;
         }
     }
+
+    /// <summary>
+    /// When <c>true</c> (the default), a <c>DELETE</c> on a non-existent resource returns
+    /// <c>204 No Content</c> — idempotent per OData spec.
+    /// Set to <c>false</c> to return <c>404 Not Found</c> instead.
+    /// </summary>
+    public bool IdempotentDelete { get; set; } = true;
 }

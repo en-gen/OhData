@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop, 'release/**', 'hotfix/**']
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # GitVersion needs full history
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.x
+
+      - name: Restore
+        run: dotnet restore src/OhData.sln
+
+      - name: Build
+        run: dotnet build src/OhData.sln --no-restore -c Release
+
+      - name: Test
+        run: dotnet test src/OhData.AspNetCore.Tests/OhData.AspNetCore.Tests.csproj --no-build -c Release --logger "trx;LogFileName=test-results.trx"
+
+      - name: Publish test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Test Results
+          path: '**/test-results.trx'
+          reporter: dotnet-trx

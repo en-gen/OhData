@@ -11,7 +11,7 @@ namespace OhData.AspNetCore.Tests;
 
 public class EndpointMappingTests
 {
-    // â”€â”€ Collection GET â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ Collection GET â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
     [Fact]
     public async Task GetAll_Returns200()
@@ -102,7 +102,7 @@ public class EndpointMappingTests
         Assert.Equal("InvalidQueryOption", err.GetProperty("code").GetString());
     }
 
-    // â”€â”€ Single GET â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ Single GET â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
     [Fact]
     public async Task GetById_ExistingKey_Returns200()
@@ -120,7 +120,7 @@ public class EndpointMappingTests
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
-    // â”€â”€ POST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ POST â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
     [Fact]
     public async Task Post_ValidBody_Returns201()
@@ -141,7 +141,7 @@ public class EndpointMappingTests
         Assert.Equal("New", widget?.Name);
     }
 
-    // â”€â”€ PUT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ PUT â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
     [Fact]
     public async Task PutById_ExistingKey_Returns200()
@@ -151,7 +151,7 @@ public class EndpointMappingTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
-    // â”€â”€ Routes omitted when handler not configured â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ Routes omitted when handler not configured â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
     [Fact]
     public async Task EmptyProfile_GetAll_Returns404()
@@ -161,7 +161,7 @@ public class EndpointMappingTests
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
-    // â”€â”€ Service document â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ Service document â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
     [Fact]
     public async Task ServiceDocument_Returns200()
@@ -181,7 +181,7 @@ public class EndpointMappingTests
         Assert.Equal("Widgets", values[0].GetProperty("name").GetString());
     }
 
-    // â”€â”€ $metadata â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ $metadata â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
     [Fact]
     public async Task Metadata_Returns200WithXml()
@@ -200,7 +200,7 @@ public class EndpointMappingTests
         Assert.Contains("Widgets", xml);
     }
 
-    // â”€â”€ Custom prefix â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ Custom prefix â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
     [Fact]
     public async Task CustomPrefix_RoutesResolveUnderPrefix()
@@ -212,7 +212,7 @@ public class EndpointMappingTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
-    // â”€â”€ DELETE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ DELETE â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
     [Fact]
     public async Task Delete_ExistingKey_Returns204()
@@ -223,11 +223,12 @@ public class EndpointMappingTests
     }
 
     [Fact]
-    public async Task Delete_MissingKey_Returns404()
+    public async Task Delete_MissingKey_Idempotent_Returns204()
     {
+        // Default: IdempotentDelete = true — missing key returns 204 (no-op success)
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
         var response = await fx.Client.DeleteAsync("/odata/Widgets(9999)");
-        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
     }
 
     [Fact]
@@ -238,17 +239,14 @@ public class EndpointMappingTests
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
-    // â”€â”€ PATCH â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ PATCH â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
     [Fact]
     public async Task Patch_ExistingKey_Returns200()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
-        var request = new HttpRequestMessage(HttpMethod.Patch, "/odata/Widgets(1)")
-        {
-            Content = JsonContent.Create(new Widget { Name = "Changed" })
-        };
-        var response = await fx.Client.SendAsync(request);
+        var response = await fx.Client.PatchAsync("/odata/Widgets(1)",
+            new StringContent("{\"name\":\"Changed\"}", System.Text.Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
@@ -256,11 +254,8 @@ public class EndpointMappingTests
     public async Task Patch_MissingKey_Returns404()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
-        var request = new HttpRequestMessage(HttpMethod.Patch, "/odata/Widgets(999)")
-        {
-            Content = JsonContent.Create(new Widget { Name = "Changed" })
-        };
-        var response = await fx.Client.SendAsync(request);
+        var response = await fx.Client.PatchAsync("/odata/Widgets(999)",
+            new StringContent("{\"name\":\"Changed\"}", System.Text.Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
@@ -268,11 +263,8 @@ public class EndpointMappingTests
     public async Task Patch_UpdatesField()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
-        var request = new HttpRequestMessage(HttpMethod.Patch, "/odata/Widgets(1)")
-        {
-            Content = JsonContent.Create(new Widget { Name = "Changed" })
-        };
-        var response = await fx.Client.SendAsync(request);
+        var response = await fx.Client.PatchAsync("/odata/Widgets(1)",
+            new StringContent("{\"name\":\"Changed\"}", System.Text.Encoding.UTF8, "application/json"));
         var widget = await response.Content.ReadFromJsonAsync<Widget>();
         Assert.Equal("Changed", widget?.Name);
     }
@@ -289,7 +281,7 @@ public class EndpointMappingTests
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
-    // â”€â”€ $select response shaping â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ $select response shaping â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
     [Fact]
     public async Task Select_SingleProperty_OnlySelectedPropertyPresent()
@@ -346,7 +338,7 @@ public class EndpointMappingTests
         Assert.Contains("Cog", names);
     }
 
-    // $select on the IEnumerable (GetAll) path â€” ExpandoObject post-materialization
+    // $select on the IEnumerable (GetAll) path â€" ExpandoObject post-materialization
     [Fact]
     public async Task Select_GetAllPath_SingleProperty_OnlySelectedPropertyPresent()
     {
@@ -358,13 +350,12 @@ public class EndpointMappingTests
     }
 
     [Fact]
-    public async Task Select_GetAllPath_CaseInsensitivePropertyName()
+    public async Task Select_GetAllPath_LowercaseInput_NormalizedToEdmName()
     {
-        // $select=name (lowercase) should match the C# property "Name"
+        // The OData parser normalizes $select=name to EDM identifier "Name" — behaves like $select=Name.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/Widgets?$select=name");
         var firstItem = json.GetProperty("value")[0];
-        // ExpandoObject preserves the C# property name casing in the key
         Assert.True(firstItem.TryGetProperty("Name", out _));
     }
 
@@ -402,7 +393,7 @@ public class EndpointMappingTests
         Assert.True(first.TryGetProperty("Name", out _));   // PascalCase
         Assert.False(first.TryGetProperty("name", out _));  // NOT camelCase
     }
-    // â”€â”€ EF Core InMemory + ISelectExpandWrapper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ EF Core InMemory + ISelectExpandWrapper â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
     [Fact]
     public async Task Select_EfCoreInMemory_SingleProperty_OnlySelectedPropertyPresent()
@@ -431,7 +422,7 @@ public class EndpointMappingTests
 
 
 
-    // â”€â”€ Authorization â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ Authorization â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
     [Fact]
     public async Task Auth_UnauthenticatedRequest_Returns401()
@@ -453,7 +444,39 @@ public class EndpointMappingTests
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
-    // â”€â”€ Error format â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // -- C1: Auth consistency -- policy + roles applied to all route types ------
+
+    [Fact]
+    public async Task Auth_PolicyAndRoles_CollectionGet_Returns401()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddProfile<PolicyAndRolesWidgetProfile>(),
+            addAuth: true);
+        var response = await fx.Client.GetAsync("/odata/PolicyRoleWidgets");
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Auth_PolicyAndRoles_Post_Returns401()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddProfile<PolicyAndRolesWidgetProfile>(),
+            addAuth: true);
+        var response = await fx.Client.PostAsJsonAsync("/odata/PolicyRoleWidgets", new Widget { Name = "X" });
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Auth_PolicyAndRoles_GetById_Returns401()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddProfile<PolicyAndRolesWidgetProfile>(),
+            addAuth: true);
+        var response = await fx.Client.GetAsync("/odata/PolicyRoleWidgets(1)");
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    // â"€â"€ Error format â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
     [Fact]
     public async Task ErrorResponse_HasOdataErrorShape()
@@ -800,4 +823,202 @@ public class EndpointMappingTests
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
     }
 
+    // ── M1: $select — OData parser normalizes identifiers to EDM names ────────
+
+    [Fact]
+    public async Task Select_PascalCase_PropertyIncluded_OthersExcluded()
+    {
+        // $select=Name (EDM PascalCase) returns only the Name property
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets?$select=Name");
+        var items = json.GetProperty("value");
+        Assert.True(items.GetArrayLength() > 0);
+        var first = items[0];
+        Assert.True(first.TryGetProperty("Name", out _), "Expected 'Name' property to be present");
+        Assert.False(first.TryGetProperty("Id", out _), "Expected 'Id' to be excluded");
+    }
+
+    [Fact]
+    public async Task Select_LowercaseInput_NormalizedToEdmName_PropertyIncluded()
+    {
+        // The Microsoft.OData parser normalizes $select=name to EDM identifier "Name",
+        // so the result is the same as $select=Name.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets?$select=name");
+        var items = json.GetProperty("value");
+        Assert.True(items.GetArrayLength() > 0);
+        var first = items[0];
+        Assert.True(first.TryGetProperty("Name", out _), "Expected 'Name' present — OData parser normalizes to EDM name");
+    }
+
+    // ── M2: Authorization double-configure guards ─────────────────────────────
+
+    [Fact]
+    public void RequireAuthorization_CalledTwice_Throws()
+    {
+        Assert.Throws<InvalidOperationException>(() =>
+        {
+            _ = new DoubleAuthProfile();
+        });
+    }
+
+    [Fact]
+    public void RequireRoles_CalledTwice_Throws()
+    {
+        Assert.Throws<InvalidOperationException>(() =>
+        {
+            _ = new DoubleRolesProfile();
+        });
+    }
+
+    [Fact]
+    public void RequireAuthorization_Policy_ThenRoles_Combines()
+    {
+        // Should not throw — policy + roles is a valid combination
+        var profile = new PolicyAndRolesProfile();
+        var source = (OhData.Abstractions.IEntitySetEndpointSource)profile;
+        Assert.NotNull(source.Authorization);
+        Assert.Equal("MyPolicy", source.Authorization!.Policy);
+        Assert.Contains("Admin", source.Authorization.Roles!);
+    }
+
+    // ── M4: PUT/PATCH key mismatch returns 400 ────────────────────────────────
+
+    [Fact]
+    public async Task PutById_KeyMismatch_Returns400()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var response = await fx.Client.PutAsync("/odata/Widgets(1)",
+            new StringContent("{\"id\":2,\"name\":\"X\"}", System.Text.Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Patch_KeyMismatch_Returns400()
+    {
+        // PATCH with an explicit wrong key in the body is still rejected
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var response = await fx.Client.PatchAsync("/odata/Widgets(1)",
+            new StringContent("{\"id\":2,\"name\":\"X\"}", System.Text.Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Patch_OmittedKey_Succeeds()
+    {
+        // PATCH without a key property in the body is valid — URL key is authoritative
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var response = await fx.Client.PatchAsync("/odata/Widgets(1)",
+            new StringContent("{\"name\":\"NoKey\"}", System.Text.Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    // ── M5: WithPrefix normalization ──────────────────────────────────────────
+
+    [Fact]
+    public async Task WithPrefix_NoLeadingSlash_NormalizesPrefix()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.WithPrefix("api").AddProfile<WidgetProfile>());
+        var response = await fx.Client.GetAsync("/api/Widgets");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task WithPrefix_TrailingSlash_NormalizesPrefix()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.WithPrefix("/api/").AddProfile<WidgetProfile>());
+        var response = await fx.Client.GetAsync("/api/Widgets");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    // ── M6: WithDefaults ──────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task WithDefaults_MaxTop_AppliedToProfiles()
+    {
+        // Default MaxTop = 3 via builder; no per-profile override
+        await using var fx = await TestHostBuilder.BuildAsync(o =>
+            o.WithDefaults(d => d.MaxTop = 3)
+             .AddProfile<QueryableWidgetProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets");
+        Assert.Equal(2, json.GetProperty("value").GetArrayLength()); // only 2 items in store, both within cap
+    }
+
+    // ── H3 revisit: temporal key types ────────────────────────────────────────
+
+    [Fact]
+    public async Task KeyParser_DateTimeOffset_Succeeds()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DateTimeOffsetKeyProfile>());
+        var response = await fx.Client.GetAsync("/odata/DateTimeOffsetItems(2024-01-15T12:00:00%2B00:00)");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task KeyParser_DateTime_Succeeds()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DateTimeKeyProfile>());
+        var response = await fx.Client.GetAsync("/odata/DateTimeItems(2024-06-01T00:00:00Z)");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task KeyParser_DateOnly_Succeeds()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DateOnlyKeyProfile>());
+        var response = await fx.Client.GetAsync("/odata/DateOnlyItems(2024-03-20)");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    // ── DELETE idempotency ────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Delete_NotFound_Idempotent_Returns204()
+    {
+        // Default IdempotentDelete = true — deleting a non-existent key returns 204
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var response = await fx.Client.DeleteAsync("/odata/Widgets(999)");
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Delete_NotFound_NonIdempotent_Returns404()
+    {
+        // IdempotentDelete = false on profile — returns 404
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NonIdempotentDeleteProfile>());
+        var response = await fx.Client.DeleteAsync("/odata/NonIdempotentWidgets(999)");
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+}
+
+// ── Auth test helpers (not registered as profiles — instantiated directly) ───
+
+internal class DoubleAuthProfile : OhData.Abstractions.EntitySetProfile<int, Widget>
+{
+    public DoubleAuthProfile() : base(x => x.Id)
+    {
+        RequireAuthorization();
+        RequireAuthorization(); // should throw
+    }
+}
+
+internal class DoubleRolesProfile : OhData.Abstractions.EntitySetProfile<int, Widget>
+{
+    public DoubleRolesProfile() : base(x => x.Id)
+    {
+        RequireRoles("Admin");
+        RequireRoles("SuperAdmin"); // should throw
+    }
+}
+
+internal class PolicyAndRolesProfile : OhData.Abstractions.EntitySetProfile<int, Widget>
+{
+    public PolicyAndRolesProfile() : base(x => x.Id)
+    {
+        RequireAuthorization("MyPolicy");
+        RequireRoles("Admin"); // should combine, not throw
+    }
 }
