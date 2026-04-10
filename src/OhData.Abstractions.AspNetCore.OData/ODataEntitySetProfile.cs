@@ -6,14 +6,8 @@ namespace OhData.Abstractions.AspNetCore.OData;
 public abstract class ODataEntitySetProfile<TKey, TModel> : EntitySetProfile<TKey, TModel>, IODataEntitySetEndpointSource
     where TModel : class
 {
-    protected new Func<TKey, ODataQueryOptions<TModel>, CancellationToken, Task<TModel>>? GetById = null;
     protected new Func<ODataQueryOptions<TModel>, CancellationToken, Task<IQueryable<TModel>>>? GetQueryable = null;
     protected Func<ODataQueryOptions<TModel>, CancellationToken, Task<IEnumerable<TModel>>>? GetEnumerable = null;
-
-    protected new Func<TModel, ODataQueryOptions<TModel>, CancellationToken, Task<TModel>>? Put = null;
-    protected new Func<TKey, TModel, ODataQueryOptions<TModel>, CancellationToken, Task<TModel>>? PutById = null;
-
-    protected new Func<TModel, ODataQueryOptions<TModel>, CancellationToken, Task<TModel>>? Post = null;
 
     protected ODataEntitySetProfile(Expression<Func<TModel, TKey>> getKey) : base(getKey)
     {

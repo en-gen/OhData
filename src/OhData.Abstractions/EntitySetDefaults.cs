@@ -6,5 +6,6 @@ public class EntitySetDefaults
     public bool ExpandEnabled { get; set; }
     public bool FilterEnabled { get; set; }
     public bool OrderByEnabled { get; set; }
-    public bool CountEnabled { get; set; } 
+    public bool CountEnabled { get; set; }
+    public int? MaxTop { get; set; } = 1000;
 }
