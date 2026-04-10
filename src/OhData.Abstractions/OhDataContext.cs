@@ -2,10 +2,10 @@ namespace OhData.Abstractions;
 
 public sealed class OhDataContext
 {
-    internal OhDataContext(IReadOnlyList<Type> registeredModelTypes)
+    internal OhDataContext(IReadOnlyList<Type> registeredProfileTypes)
     {
-        RegisteredModelTypes = registeredModelTypes;
+        RegisteredProfileTypes = registeredProfileTypes;
     }
 
-    internal IReadOnlyList<Type> RegisteredModelTypes { get; }
+    internal IReadOnlyList<Type> RegisteredProfileTypes { get; }
 }
