@@ -1,15 +1,10 @@
 # API Versioning
 
-API versioning is not built into the core framework — it is a planned extension package (`OhData.AspNetCore.Versioning`).
+OhData supports multiple simultaneous registrations with different prefixes. Each registration has its own EDM model, route prefix, and set of profiles.
 
-## Intended design
-
-The preferred approach is path-segment versioning: `/v1/Entities`, `/v2/Entities`.
-
-Each API version is its own `AddOhData()` registration with a different prefix:
+## Named registrations
 
 ```csharp
-// Hypothetical future API — not yet implemented
 builder.Services.AddOhData("v1", ohdata =>
     ohdata
         .WithPrefix("/v1")
@@ -23,12 +18,49 @@ builder.Services.AddOhData("v2", ohdata =>
         .AddProfile<CustomerProfileV2>()   // new in v2
 );
 
-app.MapOhData("v1");
-app.MapOhData("v2");
+app.MapOhData("v1").WithOpenApi().WithGroupName("v1");
+app.MapOhData("v2").WithOpenApi().WithGroupName("v2");
 ```
 
-## What needs to change in the core framework first
+Each named registration is stored as `AddKeyedSingleton<OhDataRegistration>(name)`, so multiple calls don't overwrite each other.
 
-Currently `OhDataRegistration` is registered as an unnamed singleton — a second `AddOhData()` call would overwrite the first. The core framework needs **named options** support (`IOptionsSnapshot<OhDataRegistration>` keyed by version name) before multiple simultaneous registrations are possible.
+The unnamed overloads (`AddOhData(...)` / `MapOhData()`) use the default key `"__default__"` internally, so they coexist cleanly with named registrations.
 
-Until that prerequisite is in place, versioning can be approximated by running two separate ASP.NET Core applications, or by using different prefixes manually with a single `AddOhData()` call and multiple profiles that share entity set names.
+## `OhData.AspNetCore.Versioning` convenience package
+
+```csharp
+using OhData.AspNetCore.Versioning;
+
+// Combines name + prefix in one call
+builder.Services.AddOhDataVersion("v1", "/v1", o => o.AddProfile<ProductProfileV1>());
+builder.Services.AddOhDataVersion("v2", "/v2", o => o.AddProfile<ProductProfileV2>());
+
+app.MapOhDataVersion("v1");
+app.MapOhDataVersion("v2");
+```
+
+`AddOhDataVersion(name, prefix, configure)` is equivalent to:
+```csharp
+services.AddOhData(name, o => { o.WithPrefix(prefix); configure(o); });
+```
+
+## Swagger partitioning
+
+With Swashbuckle, add a `DocInclusionPredicate` to route each endpoint to the matching Swagger doc:
+
+```csharp
+builder.Services.AddSwaggerGen(c =>
+{
+    c.SwaggerDoc("v1", new() { Title = "My API v1", Version = "v1" });
+    c.SwaggerDoc("v2", new() { Title = "My API v2", Version = "v2" });
+    c.DocInclusionPredicate((docName, apiDesc) =>
+        apiDesc.GroupName is null || apiDesc.GroupName == docName);
+});
+
+app.MapOhData("v1").WithOpenApi().WithGroupName("v1");
+app.MapOhData("v2").WithOpenApi().WithGroupName("v2");
+```
+
+## Startup validation
+
+Each registration independently validates for duplicate entity set names within that registration. A registration with two profiles that have the same `EntitySetName` will throw `InvalidOperationException` at startup.
