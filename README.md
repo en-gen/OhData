@@ -34,7 +34,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
         Post = (product, ct) => Task.FromResult(/* create */);
         PutById = (id, product, ct) => Task.FromResult(/* replace */);
         Patch = (id, product, ct) => Task.FromResult(/* partial update, return null → 404 */);
-        Delete = (id, ct) => Task.FromResult(/* deleted: true/false → false returns 404 */);
+        Delete = (id, ct) => Task.FromResult(/* deleted: true/false — false → 204 No Content (idempotent, see below) */);
     }
 }
 
@@ -111,6 +111,58 @@ All collection responses follow the OData JSON format:
 { "error": { "code": "InvalidQueryOption", "message": "..." } }
 ```
 
+## Global defaults
+
+Configure defaults applied to all entity sets in a registration:
+
+```csharp
+builder.Services.AddOhData(ohdata =>
+    ohdata
+        .WithPrefix("/odata")
+        .WithDefaults(d =>
+        {
+            d.MaxTop = 500;          // cap $top at 500 (null = unlimited)
+            d.IdempotentDelete = true; // false returns 404 when not found; true (default) returns 204
+        })
+        .AddProfile<ProductProfile>()
+);
+```
+
+Per-profile settings override global defaults. `MaxTop` and `IdempotentDelete` can be set on the profile constructor:
+
+```csharp
+public class ProductProfile : EntitySetProfile<int, Product>
+{
+    public ProductProfile() : base(x => x.Id)
+    {
+        MaxTop = 100;              // overrides global MaxTop for this entity set only
+        IdempotentDelete = false;  // this entity set returns 404 when deleting a missing record
+        // ...
+    }
+}
+```
+
+`MaxTop` must be a positive integer (`> 0`); setting it to zero or a negative value throws `ArgumentOutOfRangeException` at configuration time.
+
+## DELETE idempotency
+
+By default, `Delete` returning `false` (record not found) produces `204 No Content`, which is consistent with the OData spec's requirement that DELETE be idempotent — deleting an already-deleted resource has the same outcome as deleting a present one.
+
+To opt out and return `404 Not Found` when the record is not found:
+
+```csharp
+public class ProductProfile : EntitySetProfile<int, Product>
+{
+    public ProductProfile() : base(x => x.Id)
+    {
+        IdempotentDelete = false;  // false → 404 when Delete returns false
+        Delete = (id, ct) => Task.FromResult(/* bool */);
+    }
+}
+```
+
+Or globally via `WithDefaults(d => d.IdempotentDelete = false)`.
+
 ## Authorization
 
 Declare auth requirements inside the profile constructor:
@@ -119,12 +171,18 @@ Declare auth requirements inside the profile constructor:
 // Any authenticated user
 RequireAuthorization();
 
-// Named ASP.NET Core policy
+// Named ASP.NET Core policy (register via services.AddAuthorization(o => o.AddPolicy(...)))
 RequireAuthorization("AdminPolicy");
 
-// Role-based
+// Role-based (user must have Admin OR SuperAdmin)
 RequireRoles("Admin", "SuperAdmin");
+
+// Policy AND roles may be combined — both must pass
+RequireAuthorization("AdminPolicy");
+RequireRoles("Admin");
 ```
+
+Calling the same auth method more than once (e.g. `RequireAuthorization()` twice, or `RequireRoles(...)` twice) throws `InvalidOperationException` at startup. `RequireAuthorization(policy)` and `RequireRoles(roles)` may each be called once and combine with AND semantics.
 
 Auth is applied to all routes for that entity set. Standard ASP.NET Core authentication middleware must be configured separately:
 
@@ -190,6 +248,16 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
 }
 ```
 
+## Supported key types
+
+OhData handles all standard CLR key types without additional configuration:
+
+- **Integer types:** `short`, `int`, `long`, `byte`, `sbyte`, `ushort`, `uint`, `ulong`
+- **Floating-point:** `float`, `double`, `decimal`
+- **Other primitives:** `bool`, `string`, `Guid`
+- **Date/time:** `DateTime`, `DateTimeOffset`, `DateOnly`, `TimeOnly`
+- **Enums** and any type with a registered `TypeConverter`
+
 ## Bound functions and actions
 
 Register OData bound operations with `BindFunction` / `BindAction`:
@@ -216,6 +284,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
 - **Functions** (`GET`): parameters are passed as query strings (`?paramName=value`)
 - **Actions** (`POST`): parameters are read from a JSON body (`{ "paramName": value }`)
 - Both are declared in the EDM model and visible in `$metadata`
+- `CancellationToken` parameters are detected and passed automatically
 
 ## ETags and optimistic concurrency
 
@@ -224,17 +293,22 @@ public class ProductProfile : EntitySetProfile<int, Product>
 {
     public ProductProfile() : base(x => x.Id)
     {
-        // Opt in by providing an ETag computation function
-        GetETag = product => Convert.ToBase64String(product.RowVersion);
+        // Opt in by providing one or more properties to hash into an ETag
+        UseETag(x => x.RowVersion);
 
         GetById  = ...;
-        PutById  = ...;  // will check If-Match before proceeding → 412 on mismatch
+        PutById  = ...;  // checks If-Match before proceeding → 412 on mismatch
+        Patch    = ...;  // same
         Delete   = ...;  // same
     }
 }
 ```
 
-The framework adds an `ETag` response header to GET/POST/PUT/PATCH responses. If a `PUT`/`PATCH`/`DELETE` request includes `If-Match`, it fetches the current state and returns 412 if the ETag doesn't match.
+The framework adds an `ETag` response header to GET/POST/PUT/PATCH responses. If a `PUT`/`PATCH`/`DELETE` request includes `If-Match`, the current state is fetched and 412 is returned if the ETag doesn't match.
+
+## PUT / PATCH key validation
+
+The key in the URL (`PUT /Products(1)`) must match the key in the request body (`{ "id": 1, ... }`). A mismatch returns `400 Bad Request`. This prevents accidentally updating the wrong record when URL and body keys diverge.
 
 ## API versioning
 
@@ -288,3 +362,4 @@ protected override void AdvancedConfigure(EntitySetConfiguration<Product> config
 | `OhData.Abstractions` | `EntitySetProfile<TKey,TModel>` and supporting types. No ASP.NET Core dependency. |
 | `OhData.AspNetCore` | DI registration, endpoint factory, key parsing. Targets net8.0. |
 | `OhData.AspNetCore.Versioning` | `AddOhDataVersion` / `MapOhDataVersion` convenience wrappers. |
+| `OhData.Abstractions.AspNetCore.OData` | `ODataEntitySetProfile<TKey,TModel>` — extends the base profile with `ODataQueryOptions<T>` handler signatures for cases where the application needs direct query option access. |

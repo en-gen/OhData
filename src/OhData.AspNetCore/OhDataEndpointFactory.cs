@@ -1,9 +1,9 @@
-﻿using System.Reflection;
+﻿using System.Globalization;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Xml;
-using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.OData.Query;
@@ -30,10 +30,16 @@ internal static class OhDataEndpointFactory
     {
         var sb = new StringBuilder();
         using var xmlWriter = XmlWriter.Create(sb, new XmlWriterSettings { Indent = true });
-        CsdlWriter.TryWriteCsdl(model, xmlWriter, CsdlTarget.OData, out _);
+        if (!CsdlWriter.TryWriteCsdl(model, xmlWriter, CsdlTarget.OData, out var errors))
+            throw new InvalidOperationException(
+                "Failed to generate OData CSDL metadata: " +
+                string.Join("; ", errors.Select(e => e.ToString())));
         xmlWriter.Flush();
         return sb.ToString();
     }
+
+    private static string BuildBaseUrl(HttpContext ctx, string prefix) =>
+        $"{ctx.Request.Scheme}://{ctx.Request.Host}{ctx.Request.PathBase}{prefix}";
 
     public static RouteGroupBuilder MapAll(IEndpointRouteBuilder routes, OhDataRegistration registration)
     {
@@ -49,7 +55,7 @@ internal static class OhDataEndpointFactory
         // Service document -- lists available entity sets
         group.MapGet("", (HttpContext ctx) =>
         {
-            var baseUrl = $"{ctx.Request.Scheme}://{ctx.Request.Host}{ctx.Request.PathBase}{prefix}";
+            var baseUrl = BuildBaseUrl(ctx, prefix);
             return Results.Ok(new Dictionary<string, object>
             {
                 ["@odata.context"] = $"{baseUrl}/$metadata",
@@ -114,8 +120,7 @@ internal static class OhDataEndpointFactory
             return ODataError(404, "NotFound", "Resource not found.");
         var currentETag = source.InvokeGetETag(current);
         if (currentETag != ifMatchValue)
-            return Results.Problem(statusCode: 412, title: "Precondition Failed",
-                detail: "The ETag does not match the current resource version.");
+            return ODataError(412, "PreconditionFailed", "The ETag does not match the current resource version.");
         return null; // OK to proceed
     }
 
@@ -145,6 +150,9 @@ internal static class OhDataEndpointFactory
     {
         if (clause.AllSelected) return null;
 
+        // The Microsoft.OData parser normalizes $select identifiers to the EDM property name
+        // (e.g. both "$select=name" and "$select=Name" resolve to identifier "Name").
+        // We use OrdinalIgnoreCase as a safety net for any serialization casing differences.
         var props = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in clause.SelectedItems)
         {
@@ -182,9 +190,9 @@ internal static class OhDataEndpointFactory
             if (auth is null) return;
             if (auth.Policy is not null)
                 rb.RequireAuthorization(auth.Policy);
-            else if (auth.Roles is { Count: > 0 })
-                rb.RequireAuthorization(new AuthorizeAttribute { Roles = string.Join(",", auth.Roles) });
-            else
+            if (auth.Roles is { Count: > 0 })
+                rb.RequireAuthorization(policy => policy.RequireRole(auth.Roles.ToArray()));
+            if (auth.Policy is null && auth.Roles is null or { Count: 0 })
                 rb.RequireAuthorization();
         }
 
@@ -192,9 +200,9 @@ internal static class OhDataEndpointFactory
         {
             if (authConfig.Policy is not null)
                 entityGroup.RequireAuthorization(authConfig.Policy);
-            else if (authConfig.Roles is { Count: > 0 })
-                entityGroup.RequireAuthorization(new AuthorizeAttribute { Roles = string.Join(",", authConfig.Roles) });
-            else
+            if (authConfig.Roles is { Count: > 0 })
+                entityGroup.RequireAuthorization(policy => policy.RequireRole(authConfig.Roles.ToArray()));
+            if (authConfig.Policy is null && authConfig.Roles is null or { Count: 0 })
                 entityGroup.RequireAuthorization();
         }
 
@@ -214,7 +222,7 @@ internal static class OhDataEndpointFactory
                         : queryable.Cast<object>().ToArray();
                     var finalItems = ApplySelectPostProcess(items, options);
 
-                    var baseUrl = $"{ctx.Request.Scheme}://{ctx.Request.Host}{ctx.Request.PathBase}{prefix}";
+                    var baseUrl = BuildBaseUrl(ctx, prefix);
                     return Results.Ok(new Dictionary<string, object?>
                     {
                         ["@odata.context"] = $"{baseUrl}/$metadata#{name}",
@@ -267,7 +275,7 @@ internal static class OhDataEndpointFactory
                     var items = (object)filtered.ToArray();
                     var finalItems = ApplySelectPostProcess(items, options);
 
-                    var baseUrl = $"{ctx.Request.Scheme}://{ctx.Request.Host}{ctx.Request.PathBase}{prefix}";
+                    var baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
                     envelope["@odata.context"] = $"{baseUrl}/$metadata#{name}";
                     if (odataCount.HasValue) envelope["@odata.count"] = odataCount;
@@ -302,7 +310,7 @@ internal static class OhDataEndpointFactory
                     var items = (object)enumerable.ToArray();
                     var finalItems = ApplySelectPostProcess(items, options);
 
-                    var baseUrl = $"{ctx.Request.Scheme}://{ctx.Request.Host}{ctx.Request.PathBase}{prefix}";
+                    var baseUrl = BuildBaseUrl(ctx, prefix);
                     return Results.Ok(new Dictionary<string, object?>
                     {
                         ["@odata.context"] = $"{baseUrl}/$metadata#{name}",
@@ -329,11 +337,9 @@ internal static class OhDataEndpointFactory
 
                     if (source is IODataEntitySetEndpointSource odataCountSrc && odataCountSrc.HasGetODataQueryable)
                     {
+                        // Priority 1 profiles apply query options themselves; don't re-apply $filter.
                         var queryable = (IQueryable<TModel>)(await odataCountSrc.InvokeGetODataQueryableAsync(options, ct)).Cast<TModel>();
-                        var filtered = options.Filter is not null
-                            ? (IQueryable<TModel>)options.Filter.ApplyTo(queryable, new ODataQuerySettings { PageSize = source.MaxTop })
-                            : queryable;
-                        return Results.Content(filtered.LongCount().ToString(), "text/plain");
+                        return Results.Content(queryable.LongCount().ToString(), "text/plain");
                     }
                     if (source.HasGetQueryable)
                     {
@@ -343,7 +349,7 @@ internal static class OhDataEndpointFactory
                             : q;
                         return Results.Content(filtered.LongCount().ToString(), "text/plain");
                     }
-                    var items = (IEnumerable<TModel>)(await source.InvokeGetAllAsync(ct))!;
+                    var items = await source.InvokeGetAllAsync(ct) as IEnumerable<TModel> ?? Enumerable.Empty<TModel>();
                     if (options.Filter is not null)
                         return ODataError(400, "UnsupportedQueryOption",
                             "$filter is not supported on this resource. Configure GetQueryable to enable server-side filtering.");
@@ -391,7 +397,8 @@ internal static class OhDataEndpointFactory
                 if (source.HasETag)
                     ctx.Response.Headers.ETag = $"\"{source.InvokeGetETag(result)}\"";
                 var keyStr = source.InvokeGetKeyString(result);
-                return Results.Created($"{prefix}/{name}({keyStr})", result);
+                var baseUrl = BuildBaseUrl(ctx, prefix);
+                return Results.Created($"{baseUrl}/{name}({keyStr})", result);
             });
             rb.Produces<TModel>(201).Produces(400);
         }
@@ -404,6 +411,10 @@ internal static class OhDataEndpointFactory
                 try
                 {
                     var parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
+                    var bodyKeyStr = source.InvokeGetKeyString(model);
+                    var parsedKeyStr = string.Format(CultureInfo.InvariantCulture, "{0}", parsedKey);
+                    if (!string.Equals(parsedKeyStr, bodyKeyStr, StringComparison.Ordinal))
+                        return ODataError(400, "BadRequest", "Key in URL does not match key in request body.");
                     var etagCheck = await CheckETagAsync(source, ctx, parsedKey, ct);
                     if (etagCheck is not null) return etagCheck;
                     var result = await source.InvokePutByIdAsync(parsedKey, model, ct);
@@ -422,17 +433,59 @@ internal static class OhDataEndpointFactory
             ApplyAuth(rb, authConfig);
         }
 
-        if (source.HasPatch)
+        var usePatchDelta = source is IODataEntitySetEndpointSource odataPatchSrc && odataPatchSrc.HasPatchDelta;
+        if (source.HasPatch || usePatchDelta)
         {
-            var rb = parentGroup.MapMethods($"/{name}({{key}})", new[] { "PATCH" }, async (string key, TModel model, HttpContext ctx, CancellationToken ct) =>
+            var rb = parentGroup.MapMethods($"/{name}({{key}})", new[] { "PATCH" }, async (string key, HttpContext ctx, CancellationToken ct) =>
             {
                 logger?.LogDebug("PATCH {Prefix}/{Name}({Key})", prefix, name, key);
                 try
                 {
                     var parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
+                    var jsonOptions = ctx.RequestServices
+                        .GetService<IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions>>()
+                        ?.Value?.SerializerOptions;
+                    var body = await JsonSerializer.DeserializeAsync<JsonElement>(
+                        ctx.Request.Body, jsonOptions, ct);
+
+                    // Only validate key mismatch if the key property was explicitly present in the body.
+                    // PATCH is a partial update — the key may be omitted. URL key is authoritative.
+                    if (TryGetJsonProperty(body, source.KeyPropertyName, out _))
+                    {
+                        var model = body.Deserialize<TModel>(jsonOptions)!;
+                        var bodyKeyStr = source.InvokeGetKeyString(model);
+                        var parsedKeyStr = string.Format(CultureInfo.InvariantCulture, "{0}", parsedKey);
+                        if (!string.Equals(parsedKeyStr, bodyKeyStr, StringComparison.Ordinal))
+                            return ODataError(400, "BadRequest", "Key in URL does not match key in request body.");
+                    }
+
                     var etagCheck = await CheckETagAsync(source, ctx, parsedKey, ct);
                     if (etagCheck is not null) return etagCheck;
-                    var result = await source.InvokePatchAsync(parsedKey, model, ct);
+
+                    object? result;
+                    if (usePatchDelta)
+                    {
+                        // Build Delta<TModel> from the JSON body — only properties present in the
+                        // request are set, giving the handler true partial-update semantics.
+                        var delta = new Microsoft.AspNetCore.OData.Deltas.Delta<TModel>();
+                        foreach (var prop in body.EnumerateObject())
+                        {
+                            var clrProp = typeof(TModel).GetProperty(prop.Name,
+                                BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance);
+                            if (clrProp is not null)
+                            {
+                                var value = prop.Value.Deserialize(clrProp.PropertyType, jsonOptions);
+                                delta.TrySetPropertyValue(clrProp.Name, value);
+                            }
+                        }
+                        result = await ((IODataEntitySetEndpointSource)source).InvokePatchDeltaAsync(parsedKey, delta, ct);
+                    }
+                    else
+                    {
+                        var model = body.Deserialize<TModel>(jsonOptions)!;
+                        result = await source.InvokePatchAsync(parsedKey, model, ct);
+                    }
+
                     if (result is not null && source.HasETag)
                         ctx.Response.Headers.ETag = $"\"{source.InvokeGetETag(result)}\"";
                     return result is not null ? Results.Ok(result) : ODataError(404, "NotFound", $"{name} with key '{key}' was not found.");
@@ -443,6 +496,7 @@ internal static class OhDataEndpointFactory
                     return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'");
                 }
             });
+            rb.Accepts<TModel>("application/json");
             rb.WithTags(name).Produces<TModel>(200).Produces(400).Produces(404);
             ApplyAuth(rb, authConfig);
         }
@@ -458,7 +512,9 @@ internal static class OhDataEndpointFactory
                     var etagCheck = await CheckETagAsync(source, ctx, parsedKey, ct);
                     if (etagCheck is not null) return etagCheck;
                     var deleted = await source.InvokeDeleteAsync(parsedKey, ct);
-                    return deleted ? Results.NoContent() : ODataError(404, "NotFound", $"{name} with key '{key}' was not found.");
+                    if (!deleted && !source.IdempotentDelete)
+                        return ODataError(404, "NotFound", $"{name} with key '{key}' was not found.");
+                    return Results.NoContent();
                 }
                 catch (FormatException ex)
                 {
@@ -485,10 +541,10 @@ internal static class OhDataEndpointFactory
                             return ODataError(404, "NotFound", $"{name}({key})/{navPropertyName} not found.");
                         if (nav.IsCollection)
                         {
-                            var baseUrl = $"{ctx.Request.Scheme}://{ctx.Request.Host}{ctx.Request.PathBase}{prefix}";
+                            var baseUrl = BuildBaseUrl(ctx, prefix);
                             return Results.Ok(new Dictionary<string, object?>
                             {
-                                ["@odata.context"] = $"{baseUrl}/$metadata#{name}/{navPropertyName}",
+                                ["@odata.context"] = $"{baseUrl}/$metadata#{name}({key})/{navPropertyName}",
                                 ["value"] = result
                             });
                         }
@@ -543,7 +599,6 @@ internal static class OhDataEndpointFactory
                 var result = await fnDef.Invoke(args, ct);
                 return result is not null ? Results.Ok(result) : Results.NoContent();
             }).WithTags(name).Produces(200).Produces(204).Produces(400);
-            ApplyAuth(rb, authConfig);
         }
 
         // Bound actions — POST /{EntitySet}/{ActionName} with JSON body params
@@ -584,7 +639,6 @@ internal static class OhDataEndpointFactory
                 var result = await actionDef.Invoke(args, ct);
                 return result is not null ? Results.Ok(result) : Results.NoContent();
             }).WithTags(name).Produces(200).Produces(204).Produces(400);
-            ApplyAuth(rb, authConfig);
         }
     }
 

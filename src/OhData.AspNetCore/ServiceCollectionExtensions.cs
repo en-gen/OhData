@@ -1,6 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using OhData.Abstractions;
 
 namespace OhData.AspNetCore;
 
@@ -12,9 +11,8 @@ public static class ServiceCollectionExtensions
     /// </summary>
     public static IServiceCollection AddOhData(
         this IServiceCollection services,
-        Action<OhDataBuilder> configure,
-        Action<OhDataOptions>? configureOptions = null)
-        => services.AddOhData(OhDataDefaults.DefaultRegistrationName, configure, configureOptions);
+        Action<OhDataBuilder> configure)
+        => services.AddOhData(OhDataDefaults.DefaultRegistrationName, configure);
 
     /// <summary>
     /// Registers a named OhData instance. Call <c>app.MapOhData(name)</c> to wire up its endpoints.
@@ -23,8 +21,7 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddOhData(
         this IServiceCollection services,
         string name,
-        Action<OhDataBuilder> configure,
-        Action<OhDataOptions>? configureOptions = null)
+        Action<OhDataBuilder> configure)
     {
         // Detect duplicate registration names eagerly (at AddOhData call time) rather than at
         // startup, because the DI container silently replaces keyed singletons with the same key.
@@ -37,10 +34,6 @@ public static class ServiceCollectionExtensions
                 "Call AddOhData with a different name, or remove the duplicate call.");
 
         services.TryAddSingleton<OhDataRegistrationCollection>();
-        services.AddOptions<OhDataOptions>();
-
-        if (configureOptions is not null)
-            services.Configure<OhDataOptions>(configureOptions);
 
         var builder = new OhDataBuilder(services, name);
         configure(builder);

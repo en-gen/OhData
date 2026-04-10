@@ -9,18 +9,16 @@ namespace OhData.AspNetCore;
 /// </summary>
 public sealed class OhDataRegistration
 {
-    internal OhDataRegistration(string prefix, IEdmModel edmModel, IReadOnlyList<IEntitySetEndpointSource> profiles, OhDataOptions options)
+    internal OhDataRegistration(string prefix, IEdmModel edmModel, IReadOnlyList<IEntitySetEndpointSource> profiles)
     {
         Prefix = prefix;
         EdmModel = edmModel;
         Profiles = profiles;
-        Options = options;
     }
 
     public string Prefix { get; }
     public IEdmModel EdmModel { get; }
     internal IReadOnlyList<IEntitySetEndpointSource> Profiles { get; }
-    public OhDataOptions Options { get; }
 
     public IEnumerable<string> EntitySetNames => Profiles.Select(p => p.EntitySetName);
 }

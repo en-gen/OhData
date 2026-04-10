@@ -1,6 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using Microsoft.OData.ModelBuilder;
 using OhData.Abstractions;
 
@@ -16,6 +15,7 @@ public sealed class OhDataBuilder
     private readonly List<Type> _profileTypes = new();
     private string _prefix = "/odata";
     private readonly string _name;
+    private readonly EntitySetDefaults _defaults = new();
 
     internal OhDataBuilder(IServiceCollection services, string name = OhDataDefaults.DefaultRegistrationName)
     {
@@ -30,7 +30,17 @@ public sealed class OhDataBuilder
     {
         if (string.IsNullOrWhiteSpace(prefix))
             throw new ArgumentException("Prefix must not be empty.", nameof(prefix));
-        _prefix = prefix.TrimEnd('/');
+        _prefix = '/' + prefix.Trim('/');
+        return this;
+    }
+
+    /// <summary>
+    /// Configures global defaults applied to all entity sets in this registration
+    /// (e.g. <c>MaxTop</c>, <c>IdempotentDelete</c>). Per-profile settings override these.
+    /// </summary>
+    public OhDataBuilder WithDefaults(Action<EntitySetDefaults> configure)
+    {
+        configure(_defaults);
         return this;
     }
 
@@ -40,6 +50,9 @@ public sealed class OhDataBuilder
     /// </summary>
     public OhDataBuilder AddProfile<TProfile>() where TProfile : class, IEntitySetProfile
     {
+        if (_profileTypes.Contains(typeof(TProfile)))
+            throw new InvalidOperationException(
+                $"OhData: profile type '{typeof(TProfile).Name}' is already registered. Remove the duplicate AddProfile call.");
         _services.AddSingleton<TProfile>();
         _profileTypes.Add(typeof(TProfile));
         return this;
@@ -50,13 +63,13 @@ public sealed class OhDataBuilder
         var capturedTypes = _profileTypes.ToList();
         var capturedPrefix = _prefix;
         var capturedName = _name;
+        var capturedDefaults = _defaults;
 
         _services.AddKeyedSingleton<OhDataRegistration>(capturedName, (sp, _) =>
         {
             var logger = sp.GetService<ILoggerFactory>()?.CreateLogger("OhData");
             var modelBuilder = new ODataConventionModelBuilder();
-            var context = new OhDataContext(capturedTypes);
-            var defaults = sp.GetService<EntitySetDefaults>() ?? new EntitySetDefaults();
+            var defaults = capturedDefaults;
             var profiles = new List<IEntitySetEndpointSource>();
 
             foreach (var type in capturedTypes)
@@ -66,7 +79,16 @@ public sealed class OhDataBuilder
                 if (instance is IVisitModelBuilder vmb)
                 {
                     logger?.LogDebug("OhData: building EDM for {Profile}", type.Name);
-                    vmb.VisitModelBuilder(modelBuilder, context, defaults);
+                    try
+                    {
+                        vmb.VisitModelBuilder(modelBuilder, defaults);
+                    }
+                    catch (Exception ex)
+                    {
+                        logger?.LogError(ex, "OhData: failed to build EDM for profile {Profile}", type.Name);
+                        throw new InvalidOperationException(
+                            $"OhData: failed to build EDM for profile '{type.Name}'. See inner exception for details.", ex);
+                    }
                 }
 
                 if (instance is IEntitySetEndpointSource source)
@@ -88,18 +110,13 @@ public sealed class OhDataBuilder
                     "Each entity set name must be unique within an OhData registration.");
 
             var edmModel = modelBuilder.GetEdmModel();
-            // Note: OhDataOptions is resolved from the default (unnamed) IOptions<OhDataOptions> instance.
-            // This means options are shared across all named registrations — do not use OhDataOptions
-            // for per-registration configuration. Use EntitySetDefaults for per-entity settings instead.
-            var options = sp.GetService<IOptions<OhDataOptions>>()?.Value ?? new OhDataOptions();
-
             logger?.LogInformation(
                 "OhData: initialized {Count} entity set(s) [{Names}] at prefix '{Prefix}'",
                 profiles.Count,
                 string.Join(", ", profiles.Select(p => p.EntitySetName)),
                 capturedPrefix);
 
-            var reg = new OhDataRegistration(capturedPrefix, edmModel, profiles, options);
+            var reg = new OhDataRegistration(capturedPrefix, edmModel, profiles);
             // Also register in the collection for named access
             sp.GetRequiredService<OhDataRegistrationCollection>().Add(capturedName, reg);
             return reg;

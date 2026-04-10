@@ -33,6 +33,8 @@ internal interface IEntitySetEndpointSource
     IReadOnlyList<BoundOperationDefinition> BoundActions { get; }
 
     int? MaxTop { get; }
+    bool IdempotentDelete { get; }
+    string KeyPropertyName { get; }
     string InvokeGetKeyString(object model);
 
     Task<object?> InvokeGetAllAsync(CancellationToken ct);

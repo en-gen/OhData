@@ -1,7 +1,9 @@
+using System.Globalization;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using Microsoft.OData.ModelBuilder;
 
 namespace OhData.Abstractions;
@@ -48,10 +50,18 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         }
     }
     private int? _resolvedMaxTop;
+
+    /// <summary>
+    /// When <c>true</c>, <c>DELETE</c> on a non-existent resource returns <c>204 No Content</c> (idempotent).
+    /// When <c>false</c>, returns <c>404 Not Found</c>.
+    /// Inherits from <see cref="EntitySetDefaults.IdempotentDelete"/> when <c>null</c>.
+    /// </summary>
+    protected bool? IdempotentDelete { get; init; }
+    private bool _resolvedIdempotentDelete;
     private IReadOnlyList<BoundOperationDefinition>? _resolvedBoundFunctions;
     private IReadOnlyList<BoundOperationDefinition>? _resolvedBoundActions;
 
-    protected Func<TModel, string>? GetETag = null;
+    private Func<TModel, string>? _getETag;
 
     /// <summary>
     /// Opts in to ETag generation. The framework hashes the values of the specified
@@ -64,10 +74,10 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected void UseETag(params Expression<Func<TModel, object?>>[] propertySelectors)
     {
         var getters = propertySelectors.Select(e => e.Compile()).ToArray();
-        GetETag = model =>
+        var sep = new byte[] { 0x00 };
+        _getETag = model =>
         {
             using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-            var sep = new byte[] { 0x00 };
             for (var i = 0; i < getters.Length; i++)
             {
                 if (i > 0) hasher.AppendData(sep);
@@ -81,7 +91,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         };
     }
 
-    private AuthorizationConfig? _authorization;
+    private bool _authRequired;
+    private string? _authPolicy;
+    private IReadOnlyList<string>? _authRoles;
 
     private readonly ICollection<Action<EntityTypeConfiguration<TModel>>> _configurators;
     private readonly ICollection<Delegate> _functions;
@@ -105,7 +117,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected virtual void AdvancedConfigure(EntitySetConfiguration<TModel> configuration) { }
 
     // explicit interface implementation to enforce internal
-    void IVisitModelBuilder.VisitModelBuilder(ODataModelBuilder builder, OhDataContext context, EntitySetDefaults defaults)
+    void IVisitModelBuilder.VisitModelBuilder(ODataModelBuilder builder, EntitySetDefaults defaults)
     {
         var entitySet = builder.EntitySet<TModel>(EntitySetName);
 
@@ -126,6 +138,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         var entityType = entitySet.EntityType;
 
         _resolvedMaxTop = MaxTop ?? defaults.MaxTop;
+        _resolvedIdempotentDelete = IdempotentDelete ?? defaults.IdempotentDelete;
 
         if (SelectEnabled ?? defaults.SelectEnabled) entityType.Select(SelectProperties);
         if (ExpandEnabled ?? defaults.ExpandEnabled) entityType.Expand(ExpandProperties);
@@ -185,6 +198,31 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
                 var entityActionParam = entityAction.Parameter(param.ParameterType, param.Name!);
                 if (param.IsOptional) entityActionParam.Optional();
                 if (param.HasDefaultValue) entityActionParam.HasDefaultValue($"{param.DefaultValue}");
+            }
+
+            // Resolve return type for $metadata, mirroring the function logic above.
+            var rawActionReturn = method.ReturnType;
+            var actionReturnType = rawActionReturn.IsGenericType && rawActionReturn.GetGenericTypeDefinition() == typeof(Task<>)
+                ? rawActionReturn.GetGenericArguments()[0]
+                : rawActionReturn == typeof(Task) || rawActionReturn == typeof(void) ? null : rawActionReturn;
+
+            if (actionReturnType is not null)
+            {
+                var collectionElement = GetCollectionElementType(actionReturnType);
+                if (collectionElement is not null)
+                {
+                    typeof(ActionConfiguration)
+                        .GetMethod(nameof(ActionConfiguration.ReturnsCollection), Array.Empty<Type>())!
+                        .MakeGenericMethod(collectionElement)
+                        .Invoke(entityAction, null);
+                }
+                else
+                {
+                    typeof(ActionConfiguration)
+                        .GetMethod(nameof(ActionConfiguration.Returns), Array.Empty<Type>())!
+                        .MakeGenericMethod(actionReturnType)
+                        .Invoke(entityAction, null);
+                }
             }
         }
 
@@ -284,9 +322,42 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         return null;
     }
 
-    protected void RequireAuthorization() => _authorization = new AuthorizationConfig(true, null, null);
-    protected void RequireAuthorization(string policy) => _authorization = new AuthorizationConfig(true, policy, null);
-    protected void RequireRoles(params string[] roles) => _authorization = new AuthorizationConfig(true, null, Array.AsReadOnly(roles));
+    /// <summary>Requires any authenticated user. May be combined with <see cref="RequireRoles"/>.</summary>
+    protected void RequireAuthorization()
+    {
+        if (_authRequired && _authPolicy is null && _authRoles is null)
+            throw new InvalidOperationException(
+                $"RequireAuthorization() has already been called on this profile. Call it only once.");
+        _authRequired = true;
+    }
+
+    /// <summary>
+    /// Requires a named ASP.NET Core authorization policy.
+    /// Register policies via <c>services.AddAuthorization(o => o.AddPolicy(...))</c>.
+    /// May be combined with <see cref="RequireRoles"/>.
+    /// </summary>
+    protected void RequireAuthorization(string policy)
+    {
+        if (_authPolicy is not null)
+            throw new InvalidOperationException(
+                $"A policy ('{_authPolicy}') has already been set on this profile. Call RequireAuthorization(policy) only once.");
+        _authPolicy = policy;
+        _authRequired = true;
+    }
+
+    /// <summary>
+    /// Requires the user to be in at least one of the specified roles (OR semantics).
+    /// May be combined with <see cref="RequireAuthorization(string)"/>.
+    /// For AND semantics, register a named policy via <c>services.AddAuthorizationBuilder().AddPolicy(...)</c>.
+    /// </summary>
+    protected void RequireRoles(params string[] roles)
+    {
+        if (_authRoles is not null)
+            throw new InvalidOperationException(
+                $"Roles have already been set on this profile. Call RequireRoles only once.");
+        _authRoles = Array.AsReadOnly(roles);
+        _authRequired = true;
+    }
 
     // ── IEntitySetEndpointSource ─────────────────────────────────────────────
 
@@ -301,24 +372,27 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     bool IEntitySetEndpointSource.HasPutById => PutById is not null;
     bool IEntitySetEndpointSource.HasPatch => Patch is not null;
     bool IEntitySetEndpointSource.HasDelete => Delete is not null;
-    bool IEntitySetEndpointSource.HasETag => GetETag is not null;
-    AuthorizationConfig? IEntitySetEndpointSource.Authorization => _authorization;
+    bool IEntitySetEndpointSource.HasETag => _getETag is not null;
+    AuthorizationConfig? IEntitySetEndpointSource.Authorization =>
+        _authRequired ? new AuthorizationConfig(true, _authPolicy, _authRoles) : null;
     IReadOnlyList<NavigationRouteDefinition> IEntitySetEndpointSource.NavigationRoutes => _navRoutes;
     IReadOnlyList<BoundOperationDefinition> IEntitySetEndpointSource.BoundFunctions =>
         _resolvedBoundFunctions ?? _functions.Select(d => BoundOperationDefinition.From(d, isAction: false)).ToList();
     IReadOnlyList<BoundOperationDefinition> IEntitySetEndpointSource.BoundActions =>
         _resolvedBoundActions ?? _actions.Select(d => BoundOperationDefinition.From(d, isAction: true)).ToList();
-    string IEntitySetEndpointSource.InvokeGetETag(object model) => GetETag!((TModel)model);
+    string IEntitySetEndpointSource.InvokeGetETag(object model) => _getETag!((TModel)model);
 
     private Func<TModel, string>? _keyToString;
     private Func<TModel, string> CompileKeyToString()
     {
         var compiled = _getKey.Compile();
-        return model => compiled(model)?.ToString() ?? "";
+        return model => string.Format(CultureInfo.InvariantCulture, "{0}", compiled(model)) ?? "";
     }
     string IEntitySetEndpointSource.InvokeGetKeyString(object model)
-        => (_keyToString ??= CompileKeyToString())((TModel)model);
+        => LazyInitializer.EnsureInitialized(ref _keyToString, CompileKeyToString)((TModel)model);
     int? IEntitySetEndpointSource.MaxTop => _resolvedMaxTop;
+    bool IEntitySetEndpointSource.IdempotentDelete => _resolvedIdempotentDelete;
+    string IEntitySetEndpointSource.KeyPropertyName => GetNavigationPropertyName(_getKey.Body);
 
     async Task<object?> IEntitySetEndpointSource.InvokeGetAllAsync(CancellationToken ct) =>
         (object?)await GetAll!.Invoke(ct);

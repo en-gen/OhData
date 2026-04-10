@@ -47,7 +47,10 @@ internal static class TestHostBuilder
             builder.Services
                 .AddAuthentication("Test")
                 .AddScheme<AuthenticationSchemeOptions, NoOpAuthHandler>("Test", _ => { });
-            builder.Services.AddAuthorization();
+            builder.Services.AddAuthorization(options =>
+            {
+                options.AddPolicy("TestPolicy", policy => policy.RequireAuthenticatedUser());
+            });
         }
 
         builder.Services.AddOhData(o =>
