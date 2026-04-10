@@ -88,6 +88,9 @@ public sealed class OhDataBuilder
                     "Each entity set name must be unique within an OhData registration.");
 
             var edmModel = modelBuilder.GetEdmModel();
+            // Note: OhDataOptions is resolved from the default (unnamed) IOptions<OhDataOptions> instance.
+            // This means options are shared across all named registrations — do not use OhDataOptions
+            // for per-registration configuration. Use EntitySetDefaults for per-entity settings instead.
             var options = sp.GetService<IOptions<OhDataOptions>>()?.Value ?? new OhDataOptions();
 
             logger?.LogInformation(

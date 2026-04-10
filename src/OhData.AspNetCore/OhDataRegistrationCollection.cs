@@ -1,12 +1,19 @@
+using System.Collections.Concurrent;
+
 namespace OhData.AspNetCore;
 
 /// <summary>Holds all named OhData registrations. Registered as a singleton.</summary>
 public sealed class OhDataRegistrationCollection
 {
-    private readonly Dictionary<string, OhDataRegistration> _registrations = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, OhDataRegistration> _registrations = new(StringComparer.OrdinalIgnoreCase);
 
-    internal void Add(string name, OhDataRegistration registration) =>
-        _registrations[name] = registration;
+    internal void Add(string name, OhDataRegistration registration)
+    {
+        if (!_registrations.TryAdd(name, registration))
+            throw new InvalidOperationException(
+                $"OhData: a registration named '{name}' is already registered. " +
+                "Call AddOhData with a different name, or remove the duplicate call.");
+    }
 
     public OhDataRegistration Get(string name)
     {
