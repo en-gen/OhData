@@ -80,6 +80,12 @@ internal static class OhDataEndpointFactory
         };
     }
 
+    /// <remarks>
+    /// This check is advisory, not atomic. Between the ETag read and the caller's write,
+    /// another request may modify the resource. For true atomic concurrency, use
+    /// data-store-level concurrency tokens (e.g., EF Core [Timestamp] / SQL WHERE RowVersion = @expected).
+    /// The HTTP ETag mechanism provides a best-effort conflict signal, not a transaction guarantee.
+    /// </remarks>
     private static async Task<IResult?> CheckETagAsync(
         IEntitySetEndpointSource source,
         HttpContext ctx,
@@ -226,14 +232,14 @@ internal static class OhDataEndpointFactory
                     if (options.Count?.Value == true)
                     {
                         var countQ = options.Filter is not null
-                            ? (IQueryable<TModel>)options.Filter.ApplyTo(queryable, new ODataQuerySettings())
+                            ? (IQueryable<TModel>)options.Filter.ApplyTo(queryable, new ODataQuerySettings { PageSize = source.MaxTop })
                             : queryable;
                         odataCount = countQ.LongCount();
                     }
 
                     // Apply filter/orderby/skip/top without $select so TModel shape is preserved.
                     // $select is handled via JsonNode post-processing to avoid ISelectExpandWrapper casing issues.
-                    var settings = new ODataQuerySettings();
+                    var settings = new ODataQuerySettings { PageSize = source.MaxTop };
                     IQueryable<TModel> filtered = queryable;
                     if (options.Filter is not null)
                         filtered = (IQueryable<TModel>)options.Filter.ApplyTo(filtered, settings);
@@ -272,6 +278,12 @@ internal static class OhDataEndpointFactory
                     var odataCtx = new ODataQueryContext(registration.EdmModel, typeof(TModel), null);
                     var options  = new ODataQueryOptions<TModel>(odataCtx, ctx.Request);
 
+                    if (options.Filter is not null || options.OrderBy is not null
+                        || options.Top is not null || options.Skip is not null)
+                        return ODataError(400, "UnsupportedQueryOption",
+                            "This resource does not support $filter, $orderby, $top, or $skip. " +
+                            "Configure GetQueryable to enable server-side query processing.");
+
                     var items = (object)((IEnumerable<TModel>)result!).ToArray();
                     var finalItems = ApplySelectPostProcess(items, options);
 
@@ -297,28 +309,30 @@ internal static class OhDataEndpointFactory
             {
                 try
                 {
+                    var odataCtxCount = new ODataQueryContext(registration.EdmModel, typeof(TModel), null);
+                    var options = new ODataQueryOptions<TModel>(odataCtxCount, ctx.Request);
+
                     if (source is IODataEntitySetEndpointSource odataCountSrc && odataCountSrc.HasGetODataQueryable)
                     {
-                        var odataCtx = new ODataQueryContext(registration.EdmModel, typeof(TModel), null);
-                        var options  = new ODataQueryOptions<TModel>(odataCtx, ctx.Request);
                         var queryable = (IQueryable<TModel>)(await odataCountSrc.InvokeGetODataQueryableAsync(options, ct)).Cast<TModel>();
                         var filtered = options.Filter is not null
-                            ? (IQueryable<TModel>)options.Filter.ApplyTo(queryable, new ODataQuerySettings())
+                            ? (IQueryable<TModel>)options.Filter.ApplyTo(queryable, new ODataQuerySettings { PageSize = source.MaxTop })
                             : queryable;
-                        return Results.Ok(filtered.LongCount());
+                        return Results.Content(filtered.LongCount().ToString(), "text/plain");
                     }
                     if (source.HasGetQueryable)
                     {
                         var q = (IQueryable<TModel>)(await source.InvokeGetQueryableAsync(ct)).Cast<TModel>();
-                        var odataCtx = new ODataQueryContext(registration.EdmModel, typeof(TModel), null);
-                        var options  = new ODataQueryOptions<TModel>(odataCtx, ctx.Request);
                         var filtered = options.Filter is not null
-                            ? (IQueryable<TModel>)options.Filter.ApplyTo(q, new ODataQuerySettings())
+                            ? (IQueryable<TModel>)options.Filter.ApplyTo(q, new ODataQuerySettings { PageSize = source.MaxTop })
                             : q;
-                        return Results.Ok(filtered.LongCount());
+                        return Results.Content(filtered.LongCount().ToString(), "text/plain");
                     }
                     var items = (IEnumerable<TModel>)(await source.InvokeGetAllAsync(ct))!;
-                    return Results.Ok(items.LongCount());
+                    if (options.Filter is not null)
+                        return ODataError(400, "UnsupportedQueryOption",
+                            "$filter is not supported on this resource. Configure GetQueryable to enable server-side filtering.");
+                    return Results.Content(items.LongCount().ToString(), "text/plain");
                 }
                 catch (Microsoft.OData.ODataException ex)
                 {
@@ -358,9 +372,11 @@ internal static class OhDataEndpointFactory
             {
                 logger?.LogDebug("POST {Prefix}/{Name}", prefix, name);
                 var result = await source.InvokePostAsync(model, ct);
-                if (result is not null && source.HasETag)
+                if (result is null) return ODataError(400, "BadRequest", "Post handler returned null.");
+                if (source.HasETag)
                     ctx.Response.Headers.ETag = $"\"{source.InvokeGetETag(result)}\"";
-                return Results.Created($"{prefix}/{name}", result);
+                var keyStr = source.InvokeGetKeyString(result);
+                return Results.Created($"{prefix}/{name}({keyStr})", result);
             });
             rb.Produces<TModel>(201).Produces(400);
         }
@@ -376,7 +392,8 @@ internal static class OhDataEndpointFactory
                     var etagCheck = await CheckETagAsync(source, ctx, parsedKey, ct);
                     if (etagCheck is not null) return etagCheck;
                     var result = await source.InvokePutByIdAsync(parsedKey, model, ct);
-                    if (result is not null && source.HasETag)
+                    if (result is null) return ODataError(404, "NotFound", $"{name} with key '{key}' was not found.");
+                    if (source.HasETag)
                         ctx.Response.Headers.ETag = $"\"{source.InvokeGetETag(result)}\"";
                     return Results.Ok(result);
                 }
@@ -479,7 +496,9 @@ internal static class OhDataEndpointFactory
                     {
                         try
                         {
-                            args[i] = Convert.ChangeType(val.ToString(), param.ParameterType);
+                            var targetType = Nullable.GetUnderlyingType(param.ParameterType) ?? param.ParameterType;
+                            var converter = System.ComponentModel.TypeDescriptor.GetConverter(targetType);
+                            args[i] = converter.ConvertFromInvariantString(val.ToString() ?? "");
                         }
                         catch
                         {
