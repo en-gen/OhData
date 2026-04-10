@@ -2,7 +2,7 @@ using System.Reflection;
 
 namespace OhData.Abstractions;
 
-internal sealed class BoundOperationDefinition
+internal sealed record BoundOperationDefinition
 {
     public required string Name { get; init; }
     public required bool IsAction { get; init; }

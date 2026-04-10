@@ -1,6 +1,6 @@
 namespace OhData.Abstractions;
 
-internal sealed class NavigationRouteDefinition
+internal sealed record NavigationRouteDefinition
 {
     public string PropertyName { get; init; } = "";
     public bool   IsCollection { get; init; }

@@ -269,9 +269,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         return null;
     }
 
-    protected void RequireAuthorization() => _authorization = new AuthorizationConfig(required: true, policy: null, roles: null);
-    protected void RequireAuthorization(string policy) => _authorization = new AuthorizationConfig(required: true, policy: policy, roles: null);
-    protected void RequireRoles(params string[] roles) => _authorization = new AuthorizationConfig(required: true, policy: null, roles: roles);
+    protected void RequireAuthorization() => _authorization = new AuthorizationConfig(true, null, null);
+    protected void RequireAuthorization(string policy) => _authorization = new AuthorizationConfig(true, policy, null);
+    protected void RequireRoles(params string[] roles) => _authorization = new AuthorizationConfig(true, null, Array.AsReadOnly(roles));
 
     // ── IEntitySetEndpointSource ─────────────────────────────────────────────
 
