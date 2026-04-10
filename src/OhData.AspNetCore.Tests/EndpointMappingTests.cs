@@ -530,4 +530,61 @@ public class EndpointMappingTests
         Assert.Equal(HttpStatusCode.OK, r2.StatusCode);
     }
 
+    // ── Bound functions & actions ──────────────────────────────────────────────
+
+    [Fact]
+    public async Task BoundFunction_WithStringParam_ReturnsFilteredResult()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>());
+        var response = await fx.Client.GetAsync("/odata/BoundWidgets/GetByName?name=Alpha");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var items = await response.Content.ReadFromJsonAsync<Widget[]>();
+        Assert.Single(items!);
+        Assert.Equal("Alpha", items![0].Name);
+    }
+
+    [Fact]
+    public async Task BoundFunction_WithIntParam_ReturnsScalar()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>());
+        var response = await fx.Client.GetAsync("/odata/BoundWidgets/DoubleCount?factor=3");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var count = await response.Content.ReadFromJsonAsync<int>();
+        Assert.Equal(6, count); // 2 items × factor 3
+    }
+
+    [Fact]
+    public async Task BoundFunction_MissingRequiredParam_Returns400()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>());
+        var response = await fx.Client.GetAsync("/odata/BoundWidgets/DoubleCount");
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("MissingParameter", json.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task BoundAction_NoParams_Returns204()
+    {
+        // ClearAll removes all widgets; subsequent GetAll should return empty
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>());
+        var clearResponse = await fx.Client.PostAsync("/odata/BoundWidgets/ClearAll",
+            new StringContent("", System.Text.Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.NoContent, clearResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task BoundAction_WithBodyParam_ExecutesSideEffect()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>());
+        // AddSuffix mutates the store; call then verify names changed
+        var addResp = await fx.Client.PostAsync("/odata/BoundWidgets/AddSuffix",
+            new StringContent("{\"suffix\":\"!\"}", System.Text.Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.NoContent, addResp.StatusCode);
+        var listResp = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/BoundWidgets");
+        var names = listResp.GetProperty("value").EnumerateArray()
+            .Select(x => x.GetProperty("name").GetString()).ToArray();
+        Assert.All(names, n => Assert.EndsWith("!", n));
+    }
+
 }

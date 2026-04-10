@@ -1,4 +1,5 @@
 using System.Linq.Expressions;
+using System.Reflection;
 using Microsoft.OData.ModelBuilder;
 
 namespace OhData.Abstractions;
@@ -95,37 +96,50 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         {
             var entityFunction = entityCollection.Function(method.Name);
 
-            foreach (var param in method.GetParameters())
+            foreach (var param in method.GetParameters().Where(p => p.ParameterType != typeof(CancellationToken)))
             {
                 var entityFunctionParam = entityFunction.Parameter(param.ParameterType, param.Name!);
-
-                // TODO: this will probably need to be a tad more robust...
                 if (param.IsOptional) entityFunctionParam.Optional();
                 if (param.HasDefaultValue) entityFunctionParam.HasDefaultValue($"{param.DefaultValue}");
             }
 
-            // TODO: what to do with return type
-            // TODO:    - basic return type is simple
-            // TODO:    - returns entityset is not simple
-            //entityFunction.Returns<>()
-            //entityFunction.ReturnsCollection<>()
-            //entityFunction.ReturnsFromEntitySet<>()
+            // Determine return type: unwrap Task<T> if needed
+            var rawReturn = method.ReturnType;
+            var returnType = rawReturn.IsGenericType && rawReturn.GetGenericTypeDefinition() == typeof(Task<>)
+                ? rawReturn.GetGenericArguments()[0]
+                : rawReturn == typeof(Task) || rawReturn == typeof(void) ? null : rawReturn;
 
-            // TODO: check context if EntitySetProfile or EntityProfile was defined for method return type
+            if (returnType is not null)
+            {
+                // FunctionConfiguration only exposes generic Returns<T>/ReturnsCollection<T>; call via reflection.
+                var collectionElement = GetCollectionElementType(returnType);
+                if (collectionElement is not null)
+                {
+                    typeof(FunctionConfiguration)
+                        .GetMethod(nameof(FunctionConfiguration.ReturnsCollection), Array.Empty<Type>())!
+                        .MakeGenericMethod(collectionElement)
+                        .Invoke(entityFunction, null);
+                }
+                else
+                {
+                    typeof(FunctionConfiguration)
+                        .GetMethod(nameof(FunctionConfiguration.Returns), Array.Empty<Type>())!
+                        .MakeGenericMethod(returnType)
+                        .Invoke(entityFunction, null);
+                }
+            }
         }
 
         foreach (var method in _actions.Select(x => x.Method))
         {
             var entityAction = entityCollection.Action(method.Name);
 
-            foreach (var param in method.GetParameters())
+            foreach (var param in method.GetParameters().Where(p => p.ParameterType != typeof(CancellationToken)))
             {
                 var entityActionParam = entityAction.Parameter(param.ParameterType, param.Name!);
                 if (param.IsOptional) entityActionParam.Optional();
                 if (param.HasDefaultValue) entityActionParam.HasDefaultValue($"{param.DefaultValue}");
             }
-
-            // TODO: concerns above re: functions are applicable here, too
         }
     }
 
@@ -201,6 +215,18 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected void BindFunction(Delegate handler) => _functions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
     protected void BindAction(Delegate handler) => _actions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
 
+    private static Type? GetCollectionElementType(Type type)
+    {
+        if (type == typeof(string)) return null; // string is IEnumerable<char> but not a "collection" here
+        if (type.IsArray) return type.GetElementType();
+        foreach (var iface in new[] { type }.Concat(type.GetInterfaces()))
+        {
+            if (iface.IsGenericType && iface.GetGenericTypeDefinition() == typeof(IEnumerable<>))
+                return iface.GetGenericArguments()[0];
+        }
+        return null;
+    }
+
     protected void RequireAuthorization() => _authorization = new AuthorizationConfig(required: true, policy: null, roles: null);
     protected void RequireAuthorization(string policy) => _authorization = new AuthorizationConfig(required: true, policy: policy, roles: null);
     protected void RequireRoles(params string[] roles) => _authorization = new AuthorizationConfig(required: true, policy: null, roles: roles);
@@ -221,6 +247,10 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     bool IEntitySetEndpointSource.HasETag => GetETag is not null;
     AuthorizationConfig? IEntitySetEndpointSource.Authorization => _authorization;
     IReadOnlyList<NavigationRouteDefinition> IEntitySetEndpointSource.NavigationRoutes => _navRoutes;
+    IReadOnlyList<BoundOperationDefinition> IEntitySetEndpointSource.BoundFunctions =>
+        _functions.Select(d => BoundOperationDefinition.From(d, isAction: false)).ToList();
+    IReadOnlyList<BoundOperationDefinition> IEntitySetEndpointSource.BoundActions =>
+        _actions.Select(d => BoundOperationDefinition.From(d, isAction: true)).ToList();
     string IEntitySetEndpointSource.InvokeGetETag(object model) => GetETag!((TModel)model);
 
     async Task<object?> IEntitySetEndpointSource.InvokeGetAllAsync(CancellationToken ct) =>
