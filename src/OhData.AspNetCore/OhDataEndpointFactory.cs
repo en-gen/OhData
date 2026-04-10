@@ -76,7 +76,7 @@ internal static class OhDataEndpointFactory
         {
             _mapEntitySetMethod
                 .MakeGenericMethod(profile.KeyType, profile.ModelType)
-                .Invoke(null, new object[] { group, profile, registration, loggerFactory! });
+                .Invoke(null, new object[] { group, profile, registration, loggerFactory });
         }
 
         return group;
@@ -571,13 +571,12 @@ internal static class OhDataEndpointFactory
         // Bound functions — GET /{EntitySet}/{FunctionName}?param=value
         foreach (var fn in source.BoundFunctions)
         {
-            var fnDef = fn;
-            var rb = entityGroup.MapGet($"/{fnDef.Name}", async (HttpContext ctx, CancellationToken ct) =>
+            var rb = entityGroup.MapGet($"/{fn.Name}", async (HttpContext ctx, CancellationToken ct) =>
             {
-                var args = new object?[fnDef.Parameters.Length];
-                for (int i = 0; i < fnDef.Parameters.Length; i++)
+                var args = new object?[fn.Parameters.Length];
+                for (int i = 0; i < fn.Parameters.Length; i++)
                 {
-                    var param = fnDef.Parameters[i];
+                    var param = fn.Parameters[i];
                     if (ctx.Request.Query.TryGetValue(param.Name!, out var val))
                     {
                         try
@@ -602,7 +601,7 @@ internal static class OhDataEndpointFactory
                             $"Required parameter '{param.Name}' is missing.");
                     }
                 }
-                var result = await fnDef.Invoke(args, ct);
+                var result = await fn.Invoke(args, ct);
                 return result is not null ? Results.Ok(result) : Results.NoContent();
             }).WithTags(name).Produces(200).Produces(204).Produces(400);
         }
@@ -612,11 +611,10 @@ internal static class OhDataEndpointFactory
         // matching the case-insensitive query string lookup used for bound functions.
         foreach (var action in source.BoundActions)
         {
-            var actionDef = action;
-            var rb = entityGroup.MapPost($"/{actionDef.Name}", async (HttpContext ctx, CancellationToken ct) =>
+            var rb = entityGroup.MapPost($"/{action.Name}", async (HttpContext ctx, CancellationToken ct) =>
             {
-                var args = new object?[actionDef.Parameters.Length];
-                if (actionDef.Parameters.Length > 0)
+                var args = new object?[action.Parameters.Length];
+                if (action.Parameters.Length > 0)
                 {
                     try
                     {
@@ -625,9 +623,9 @@ internal static class OhDataEndpointFactory
                         var jsonOptions = ctx.RequestServices
                             .GetService<IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions>>()
                             ?.Value?.SerializerOptions;
-                        for (int i = 0; i < actionDef.Parameters.Length; i++)
+                        for (int i = 0; i < action.Parameters.Length; i++)
                         {
-                            var param = actionDef.Parameters[i];
+                            var param = action.Parameters[i];
                             if (TryGetJsonProperty(body, param.Name!, out var val))
                                 args[i] = val.Deserialize(param.ParameterType, jsonOptions);
                             else if (param.HasDefaultValue)
@@ -642,7 +640,7 @@ internal static class OhDataEndpointFactory
                         return ODataError(400, "InvalidBody", ex.Message);
                     }
                 }
-                var result = await actionDef.Invoke(args, ct);
+                var result = await action.Invoke(args, ct);
                 return result is not null ? Results.Ok(result) : Results.NoContent();
             }).WithTags(name).Produces(200).Produces(204).Produces(400);
         }
