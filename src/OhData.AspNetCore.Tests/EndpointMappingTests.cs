@@ -748,4 +748,56 @@ public class EndpointMappingTests
         await app.DisposeAsync();
     }
 
+    // ── H1: GetAll null result returns empty collection ──────────────────────
+    [Fact]
+    public async Task GetAll_NullResult_ReturnsEmptyCollection()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NullGetAllProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NullGetAllWidgets");
+        Assert.True(json.TryGetProperty("value", out var value));
+        Assert.Equal(0, value.GetArrayLength());
+    }
+
+    // ── H3: Decimal key type parsed correctly ────────────────────────────────
+    [Fact]
+    public async Task DecimalKey_ParsedFromRoute()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DecimalKeyProfile>());
+        var response = await fx.Client.GetAsync("/odata/DecimalItems(1.5)");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    // ── H4: MaxTop zero/negative throws ──────────────────────────────────────
+    [Fact]
+    public void MaxTop_Zero_ThrowsArgumentOutOfRange()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new OhData.Abstractions.EntitySetDefaults { MaxTop = 0 });
+    }
+
+    [Fact]
+    public void MaxTop_Negative_ThrowsArgumentOutOfRange()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new OhData.Abstractions.EntitySetDefaults { MaxTop = -1 });
+    }
+
+    [Fact]
+    public void MaxTop_Null_IsAllowed()
+    {
+        var defaults = new OhData.Abstractions.EntitySetDefaults { MaxTop = null };
+        Assert.Null(defaults.MaxTop);
+    }
+
+    // ── H6: Bound action with case-insensitive param name ────────────────────
+    [Fact]
+    public async Task BoundAction_CaseInsensitiveParamName_Succeeds()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>());
+        // Send "Suffix" (PascalCase) when the C# param is "suffix" (camelCase)
+        var response = await fx.Client.PostAsync("/odata/BoundWidgets/AddSuffix",
+            new StringContent("{\"Suffix\": \"!\"}", System.Text.Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+    }
+
 }
