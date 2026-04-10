@@ -180,7 +180,7 @@ internal class ETagWidgetProfile : EntitySetProfile<int, Widget>
             _store.Add(widget);
             return Task.FromResult(widget);
         };
-        GetETag = widget => $"v{widget.Name.Length}"; // simple deterministic ETag
+        UseETag(x => x.Name);
     }
 }
 
@@ -223,5 +223,68 @@ internal class BoundOpsProfile : EntitySetProfile<int, Widget>
     private void AddSuffix(string suffix)
     {
         foreach (var w in _store) w.Name += suffix;
+    }
+}
+
+/// <summary>Profile for testing PUT null (no-match) returning 404.</summary>
+internal class NullPutProfile : EntitySetProfile<int, Widget>
+{
+    public NullPutProfile() : base(x => x.Id)
+    {
+        EntitySetName = "NullPutWidgets";
+        GetById = (id, ct) => Task.FromResult<Widget?>(null);
+        PutById = (id, widget, ct) => Task.FromResult<Widget>(null!); // always "not found"
+    }
+}
+
+/// <summary>Profile for testing bound function with Guid parameter (H5).</summary>
+internal class GuidFunctionProfile : EntitySetProfile<int, Widget>
+{
+    public GuidFunctionProfile() : base(x => x.Id)
+    {
+        EntitySetName = "GuidFnWidgets";
+        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(Array.Empty<Widget>());
+        BindFunction(EchoGuid);
+    }
+
+    private Task<string> EchoGuid(Guid id) => Task.FromResult(id.ToString());
+}
+
+/// <summary>Profile for testing void Task bound action returns 204 (H2).</summary>
+internal class VoidActionProfile : EntitySetProfile<int, Widget>
+{
+    public bool WasCalled { get; private set; }
+
+    public VoidActionProfile() : base(x => x.Id)
+    {
+        EntitySetName = "VoidActionWidgets";
+        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(Array.Empty<Widget>());
+        BindAction(DoNothing);
+    }
+
+    private Task DoNothing() { WasCalled = true; return Task.CompletedTask; }
+}
+
+/// <summary>Profile for testing GetQueryable MaxTop enforcement (C3).</summary>
+internal class MaxTopProfile : EntitySetProfile<int, Widget>
+{
+    private readonly List<Widget> _store = Enumerable.Range(1, 20)
+        .Select(i => new Widget { Id = i, Name = $"W{i}" }).ToList();
+
+    public MaxTopProfile() : base(x => x.Id)
+    {
+        EntitySetName = "MaxTopWidgets";
+        MaxTop = 5; // per-profile cap
+        GetQueryable = (ct) => Task.FromResult(_store.AsQueryable());
+    }
+}
+
+/// <summary>Profile for testing multi-registration in a single host (test gap).</summary>
+internal class SecondProfile : EntitySetProfile<int, Widget>
+{
+    public SecondProfile() : base(x => x.Id)
+    {
+        EntitySetName = "SecondWidgets";
+        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(new[] { new Widget { Id = 99, Name = "Second" } });
     }
 }
