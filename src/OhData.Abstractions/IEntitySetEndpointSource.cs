@@ -10,12 +10,12 @@ public sealed class AuthorizationConfig
     {
         Required = required;
         Policy = policy;
-        Roles = roles;
+        Roles = roles is not null ? Array.AsReadOnly(roles) : null;
     }
 
     public bool Required { get; }
     public string? Policy { get; }
-    public string[]? Roles { get; }
+    public IReadOnlyList<string>? Roles { get; }
 }
 
 /// <summary>
