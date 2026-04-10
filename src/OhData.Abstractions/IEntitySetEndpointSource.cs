@@ -44,6 +44,9 @@ internal interface IEntitySetEndpointSource
     IReadOnlyList<BoundOperationDefinition> BoundFunctions { get; }
     IReadOnlyList<BoundOperationDefinition> BoundActions { get; }
 
+    int? MaxTop { get; }
+    string InvokeGetKeyString(object model);
+
     Task<object?> InvokeGetAllAsync(CancellationToken ct);
     Task<IQueryable<object>> InvokeGetQueryableAsync(CancellationToken ct);
     Task<object?> InvokeGetByIdAsync(object key, CancellationToken ct);
