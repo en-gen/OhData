@@ -1,4 +1,4 @@
-using Microsoft.Extensions.DependencyInjection;
+﻿using Microsoft.Extensions.DependencyInjection;
 using OhData.AspNetCore;
 using Xunit;
 
@@ -95,4 +95,19 @@ public class OhDataBuilderTests
             services.BuildServiceProvider().GetRequiredService<OhDataRegistration>();
         });
     }
+
+    [Fact]
+    public void AddOhData_Named_BothRegistrationsAccessible()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddOhData("v1", o => o.WithPrefix("/v1").AddProfile<WidgetProfile>());
+        services.AddOhData("v2", o => o.WithPrefix("/v2").AddProfile<EmptyProfile>());
+        var provider = services.BuildServiceProvider();
+        var v1 = provider.GetRequiredKeyedService<OhDataRegistration>("v1");
+        var v2 = provider.GetRequiredKeyedService<OhDataRegistration>("v2");
+        Assert.Equal("/v1", v1.Prefix);
+        Assert.Equal("/v2", v2.Prefix);
+    }
+
 }

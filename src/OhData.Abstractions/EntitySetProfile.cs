@@ -34,11 +34,14 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
     protected Func<TKey, CancellationToken, Task<bool>>? Delete = null;
 
+    protected Func<TModel, string>? GetETag = null;
+
     private AuthorizationConfig? _authorization;
 
     private readonly ICollection<Action<EntityTypeConfiguration<TModel>>> _configurators;
     private readonly ICollection<Delegate> _functions;
     private readonly ICollection<Delegate> _actions;
+    private readonly List<NavigationRouteDefinition> _navRoutes = new();
 
     protected EntitySetProfile(Expression<Func<TModel, TKey>> getKey)
     {
@@ -133,6 +136,22 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _configurators.Add(x => x.HasOptional(navigation));
     }
 
+    protected void HasOptional<TNavigation>(
+        Expression<Func<TModel, TNavigation>> navigation,
+        Func<TKey, CancellationToken, Task<TNavigation?>>? get)
+        where TNavigation : class
+    {
+        HasOptional(navigation);
+        if (get is null) return;
+        var propName = ((MemberExpression)navigation.Body).Member.Name;
+        _navRoutes.Add(new NavigationRouteDefinition
+        {
+            PropertyName = propName,
+            IsCollection = false,
+            Handler = async (key, ct) => (object?)await get((TKey)key, ct)
+        });
+    }
+
     protected void HasRequired<TNavigation>(Expression<Func<TModel, TNavigation>> navigation)
         where TNavigation : class
     {
@@ -140,11 +159,43 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _configurators.Add(x => x.HasRequired(navigation));
     }
 
+    protected void HasRequired<TNavigation>(
+        Expression<Func<TModel, TNavigation>> navigation,
+        Func<TKey, CancellationToken, Task<TNavigation>>? get)
+        where TNavigation : class
+    {
+        HasRequired(navigation);
+        if (get is null) return;
+        var propName = ((MemberExpression)navigation.Body).Member.Name;
+        _navRoutes.Add(new NavigationRouteDefinition
+        {
+            PropertyName = propName,
+            IsCollection = false,
+            Handler = async (key, ct) => (object?)await get((TKey)key, ct)
+        });
+    }
+
     protected void HasMany<TNavigation>(Expression<Func<TModel, IEnumerable<TNavigation>>> navigation)
         where TNavigation : class
     {
         if (navigation == null) throw new ArgumentNullException(nameof(navigation));
         _configurators.Add(x => x.HasMany(navigation));
+    }
+
+    protected void HasMany<TNavigation>(
+        Expression<Func<TModel, IEnumerable<TNavigation>>> navigation,
+        Func<TKey, CancellationToken, Task<IEnumerable<TNavigation>>>? getAll)
+        where TNavigation : class
+    {
+        HasMany(navigation);
+        if (getAll is null) return;
+        var propName = ((MemberExpression)navigation.Body).Member.Name;
+        _navRoutes.Add(new NavigationRouteDefinition
+        {
+            PropertyName = propName,
+            IsCollection = true,
+            Handler = async (key, ct) => (object?)await getAll((TKey)key, ct)
+        });
     }
 
     protected void BindFunction(Delegate handler) => _functions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
@@ -167,7 +218,10 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     bool IEntitySetEndpointSource.HasPutById => PutById is not null;
     bool IEntitySetEndpointSource.HasPatch => Patch is not null;
     bool IEntitySetEndpointSource.HasDelete => Delete is not null;
+    bool IEntitySetEndpointSource.HasETag => GetETag is not null;
     AuthorizationConfig? IEntitySetEndpointSource.Authorization => _authorization;
+    IReadOnlyList<NavigationRouteDefinition> IEntitySetEndpointSource.NavigationRoutes => _navRoutes;
+    string IEntitySetEndpointSource.InvokeGetETag(object model) => GetETag!((TModel)model);
 
     async Task<object?> IEntitySetEndpointSource.InvokeGetAllAsync(CancellationToken ct) =>
         (object?)await GetAll!.Invoke(ct);
