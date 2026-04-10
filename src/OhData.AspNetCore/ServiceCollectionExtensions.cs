@@ -26,6 +26,16 @@ public static class ServiceCollectionExtensions
         Action<OhDataBuilder> configure,
         Action<OhDataOptions>? configureOptions = null)
     {
+        // Detect duplicate registration names eagerly (at AddOhData call time) rather than at
+        // startup, because the DI container silently replaces keyed singletons with the same key.
+        if (services.Any(d => d.IsKeyedService
+                && d.ServiceKey is string k
+                && StringComparer.OrdinalIgnoreCase.Equals(k, name)
+                && d.ServiceType == typeof(OhDataRegistration)))
+            throw new InvalidOperationException(
+                $"OhData: a registration named '{name}' is already registered. " +
+                "Call AddOhData with a different name, or remove the duplicate call.");
+
         services.TryAddSingleton<OhDataRegistrationCollection>();
         services.AddOptions<OhDataOptions>();
 
