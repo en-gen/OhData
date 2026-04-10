@@ -464,5 +464,79 @@ internal static class OhDataEndpointFactory
                 .Produces(404);
             ApplyAuth(rb, authConfig);
         }
+
+        // Bound functions — GET /{EntitySet}/{FunctionName}?param=value
+        foreach (var fn in source.BoundFunctions)
+        {
+            var fnDef = fn;
+            var rb = entityGroup.MapGet($"/{fnDef.Name}", async (HttpContext ctx, CancellationToken ct) =>
+            {
+                var args = new object?[fnDef.Parameters.Length];
+                for (int i = 0; i < fnDef.Parameters.Length; i++)
+                {
+                    var param = fnDef.Parameters[i];
+                    if (ctx.Request.Query.TryGetValue(param.Name!, out var val))
+                    {
+                        try
+                        {
+                            args[i] = Convert.ChangeType(val.ToString(), param.ParameterType);
+                        }
+                        catch
+                        {
+                            return ODataError(400, "InvalidParameter",
+                                $"Cannot convert parameter '{param.Name}' value to {param.ParameterType.Name}.");
+                        }
+                    }
+                    else if (param.HasDefaultValue)
+                    {
+                        args[i] = param.DefaultValue;
+                    }
+                    else
+                    {
+                        return ODataError(400, "MissingParameter",
+                            $"Required parameter '{param.Name}' is missing.");
+                    }
+                }
+                var result = await fnDef.Invoke(args, ct);
+                return result is not null ? Results.Ok(result) : Results.NoContent();
+            }).WithTags(name).Produces(200).Produces(204).Produces(400);
+            ApplyAuth(rb, authConfig);
+        }
+
+        // Bound actions — POST /{EntitySet}/{ActionName} with JSON body params
+        foreach (var action in source.BoundActions)
+        {
+            var actionDef = action;
+            var rb = entityGroup.MapPost($"/{actionDef.Name}", async (HttpContext ctx, CancellationToken ct) =>
+            {
+                var args = new object?[actionDef.Parameters.Length];
+                if (actionDef.Parameters.Length > 0)
+                {
+                    try
+                    {
+                        var body = await JsonSerializer.DeserializeAsync<JsonElement>(
+                            ctx.Request.Body, cancellationToken: ct);
+                        for (int i = 0; i < actionDef.Parameters.Length; i++)
+                        {
+                            var param = actionDef.Parameters[i];
+                            if (body.TryGetProperty(param.Name!, out var val))
+                                args[i] = val.Deserialize(param.ParameterType);
+                            else if (param.HasDefaultValue)
+                                args[i] = param.DefaultValue;
+                            else
+                                return ODataError(400, "MissingParameter",
+                                    $"Required parameter '{param.Name}' is missing.");
+                        }
+                    }
+                    catch (JsonException ex)
+                    {
+                        return ODataError(400, "InvalidBody", ex.Message);
+                    }
+                }
+                var result = await actionDef.Invoke(args, ct);
+                return result is not null ? Results.Ok(result) : Results.NoContent();
+            }).WithTags(name).Produces(200).Produces(204).Produces(400);
+            ApplyAuth(rb, authConfig);
+        }
     }
 }

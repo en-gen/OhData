@@ -41,6 +41,8 @@ internal interface IEntitySetEndpointSource
     AuthorizationConfig? Authorization { get; }
 
     IReadOnlyList<NavigationRouteDefinition> NavigationRoutes { get; }
+    IReadOnlyList<BoundOperationDefinition> BoundFunctions { get; }
+    IReadOnlyList<BoundOperationDefinition> BoundActions { get; }
 
     Task<object?> InvokeGetAllAsync(CancellationToken ct);
     Task<IQueryable<object>> InvokeGetQueryableAsync(CancellationToken ct);
