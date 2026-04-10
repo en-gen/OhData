@@ -290,6 +290,28 @@ internal class RoleAuthProfile : EntitySetProfile<int, Widget>
     }
 }
 
+/// <summary>Profile for testing GetAll returning null (H1 — null-safe).</summary>
+internal class NullGetAllProfile : EntitySetProfile<int, Widget>
+{
+    public NullGetAllProfile() : base(x => x.Id)
+    {
+        EntitySetName = "NullGetAllWidgets";
+        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(null!);
+    }
+}
+
+/// <summary>Profile with decimal key for key parser testing (H3).</summary>
+internal class DecimalItem { public decimal Id { get; set; } public string Name { get; set; } = ""; }
+internal class DecimalKeyProfile : EntitySetProfile<decimal, DecimalItem>
+{
+    private static readonly List<DecimalItem> _store = new() { new() { Id = 1.5m, Name = "Half" } };
+    public DecimalKeyProfile() : base(x => x.Id)
+    {
+        EntitySetName = "DecimalItems";
+        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(x => x.Id == id));
+    }
+}
+
 /// <summary>Profile for testing multi-registration in a single host (test gap).</summary>
 internal class SecondProfile : EntitySetProfile<int, Widget>
 {
