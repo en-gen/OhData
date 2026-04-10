@@ -15,10 +15,12 @@ public sealed class OhDataBuilder
     private readonly IServiceCollection _services;
     private readonly List<Type> _profileTypes = new();
     private string _prefix = "/odata";
+    private readonly string _name;
 
-    internal OhDataBuilder(IServiceCollection services)
+    internal OhDataBuilder(IServiceCollection services, string name = OhDataDefaults.DefaultRegistrationName)
     {
         _services = services;
+        _name = name;
     }
 
     /// <summary>
@@ -47,8 +49,9 @@ public sealed class OhDataBuilder
     {
         var capturedTypes = _profileTypes.ToList();
         var capturedPrefix = _prefix;
+        var capturedName = _name;
 
-        _services.AddSingleton<OhDataRegistration>(sp =>
+        _services.AddKeyedSingleton<OhDataRegistration>(capturedName, (sp, _) =>
         {
             var logger = sp.GetService<ILoggerFactory>()?.CreateLogger("OhData");
             var modelBuilder = new ODataConventionModelBuilder();
@@ -93,7 +96,17 @@ public sealed class OhDataBuilder
                 string.Join(", ", profiles.Select(p => p.EntitySetName)),
                 capturedPrefix);
 
-            return new OhDataRegistration(capturedPrefix, edmModel, profiles, options);
+            var reg = new OhDataRegistration(capturedPrefix, edmModel, profiles, options);
+            // Also register in the collection for named access
+            sp.GetRequiredService<OhDataRegistrationCollection>().Add(capturedName, reg);
+            return reg;
         });
+
+        // Backwards compat: the default registration is also accessible as an unkeyed singleton
+        if (capturedName == OhDataDefaults.DefaultRegistrationName)
+        {
+            _services.AddSingleton<OhDataRegistration>(sp =>
+                sp.GetRequiredKeyedService<OhDataRegistration>(OhDataDefaults.DefaultRegistrationName));
+        }
     }
 }
