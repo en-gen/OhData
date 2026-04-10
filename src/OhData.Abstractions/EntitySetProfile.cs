@@ -36,8 +36,20 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
     protected Func<TKey, CancellationToken, Task<bool>>? Delete = null;
 
-    protected int? MaxTop { get; init; } = null;
+    private int? _maxTop;
+    protected int? MaxTop
+    {
+        get => _maxTop;
+        init
+        {
+            if (value is <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxTop), value, "MaxTop must be a positive integer or null.");
+            _maxTop = value;
+        }
+    }
     private int? _resolvedMaxTop;
+    private IReadOnlyList<BoundOperationDefinition>? _resolvedBoundFunctions;
+    private IReadOnlyList<BoundOperationDefinition>? _resolvedBoundActions;
 
     protected Func<TModel, string>? GetETag = null;
 
@@ -175,6 +187,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
                 if (param.HasDefaultValue) entityActionParam.HasDefaultValue($"{param.DefaultValue}");
             }
         }
+
+        _resolvedBoundFunctions = _functions.Select(d => BoundOperationDefinition.From(d, isAction: false)).ToList();
+        _resolvedBoundActions = _actions.Select(d => BoundOperationDefinition.From(d, isAction: true)).ToList();
     }
 
     protected void HasOptional<TNavigation>(Expression<Func<TModel, TNavigation>> navigation)
@@ -290,9 +305,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     AuthorizationConfig? IEntitySetEndpointSource.Authorization => _authorization;
     IReadOnlyList<NavigationRouteDefinition> IEntitySetEndpointSource.NavigationRoutes => _navRoutes;
     IReadOnlyList<BoundOperationDefinition> IEntitySetEndpointSource.BoundFunctions =>
-        _functions.Select(d => BoundOperationDefinition.From(d, isAction: false)).ToList();
+        _resolvedBoundFunctions ?? _functions.Select(d => BoundOperationDefinition.From(d, isAction: false)).ToList();
     IReadOnlyList<BoundOperationDefinition> IEntitySetEndpointSource.BoundActions =>
-        _actions.Select(d => BoundOperationDefinition.From(d, isAction: true)).ToList();
+        _resolvedBoundActions ?? _actions.Select(d => BoundOperationDefinition.From(d, isAction: true)).ToList();
     string IEntitySetEndpointSource.InvokeGetETag(object model) => GetETag!((TModel)model);
 
     private Func<TModel, string>? _keyToString;
