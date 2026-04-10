@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.OData.Query.Wrapper;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.OData.Edm;
 using Microsoft.OData.Edm.Csdl;
 using Microsoft.OData.UriParser;
 using OhData.Abstractions;
@@ -24,10 +25,25 @@ internal static class OhDataEndpointFactory
         typeof(OhDataEndpointFactory)
             .GetMethod(nameof(MapEntitySet), BindingFlags.NonPublic | BindingFlags.Static)!;
 
+    private static string BuildMetadataXml(IEdmModel model)
+    {
+        var sb = new StringBuilder();
+        using var xmlWriter = XmlWriter.Create(sb, new XmlWriterSettings { Indent = true });
+        CsdlWriter.TryWriteCsdl(model, xmlWriter, CsdlTarget.OData, out _);
+        xmlWriter.Flush();
+        return sb.ToString();
+    }
+
     public static RouteGroupBuilder MapAll(IEndpointRouteBuilder routes, OhDataRegistration registration)
     {
         var prefix = registration.Prefix;
         var group = routes.MapGroup(prefix);
+
+        // Pre-compute static responses that are determined at startup.
+        var metadataXml = BuildMetadataXml(registration.EdmModel);
+        var serviceDocEntitySets = registration.Profiles
+            .Select(p => new { name = p.EntitySetName, kind = "EntitySet", url = p.EntitySetName })
+            .ToArray();
 
         // Service document -- lists available entity sets
         group.MapGet("", (HttpContext ctx) =>
@@ -36,21 +52,12 @@ internal static class OhDataEndpointFactory
             return Results.Ok(new Dictionary<string, object>
             {
                 ["@odata.context"] = $"{baseUrl}/$metadata",
-                ["value"] = registration.Profiles
-                    .Select(p => new { name = p.EntitySetName, kind = "EntitySet", url = p.EntitySetName })
-                    .ToArray()
+                ["value"] = serviceDocEntitySets
             });
         });
 
         // $metadata -- CSDL XML describing the EDM model
-        group.MapGet("/$metadata", () =>
-        {
-            var sb = new StringBuilder();
-            using var xmlWriter = XmlWriter.Create(sb, new XmlWriterSettings { Indent = true });
-            CsdlWriter.TryWriteCsdl(registration.EdmModel, xmlWriter, CsdlTarget.OData, out _);
-            xmlWriter.Flush();
-            return Results.Content(sb.ToString(), "application/xml");
-        });
+        group.MapGet("/$metadata", () => Results.Content(metadataXml, "application/xml"));
 
         // Resolve logger from the original routes ServiceProvider (group doesn't expose it)
         var loggerFactory = routes.ServiceProvider.GetService<ILoggerFactory>();
@@ -94,7 +101,11 @@ internal static class OhDataEndpointFactory
     {
         if (!source.HasETag) return null;
         if (!ctx.Request.Headers.TryGetValue("If-Match", out var ifMatch)) return null;
-        var ifMatchValue = ifMatch.ToString().Trim('"');
+        var raw = ifMatch.ToString().Trim();
+        // Per RFC 7232: strip optional weak validator prefix W/" before comparing.
+        if (raw.StartsWith("W/", StringComparison.OrdinalIgnoreCase))
+            raw = raw.Substring(2);
+        var ifMatchValue = raw.Trim('"');
         if (ifMatchValue == "*") return null; // wildcard -- skip check
 
         var current = await source.InvokeGetByIdAsync(parsedKey, ct);
@@ -462,15 +473,24 @@ internal static class OhDataEndpointFactory
         {
             var navPropertyName = nav.PropertyName;
             var rb = parentGroup.MapGet($"/{name}({{key}})/{navPropertyName}",
-                async (string key, CancellationToken ct) =>
+                async (string key, HttpContext ctx, CancellationToken ct) =>
                 {
                     try
                     {
                         var parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
                         var result = await nav.Handler(parsedKey, ct);
-                        return result is not null
-                            ? Results.Ok(result)
-                            : ODataError(404, "NotFound", $"{name}({key})/{navPropertyName} not found.");
+                        if (result is null)
+                            return ODataError(404, "NotFound", $"{name}({key})/{navPropertyName} not found.");
+                        if (nav.IsCollection)
+                        {
+                            var baseUrl = $"{ctx.Request.Scheme}://{ctx.Request.Host}{ctx.Request.PathBase}{prefix}";
+                            return Results.Ok(new Dictionary<string, object?>
+                            {
+                                ["@odata.context"] = $"{baseUrl}/$metadata#{name}/{navPropertyName}",
+                                ["value"] = result
+                            });
+                        }
+                        return Results.Ok(result);
                     }
                     catch (FormatException ex)
                     {
