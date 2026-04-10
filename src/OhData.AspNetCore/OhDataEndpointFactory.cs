@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.OData.Query.Wrapper;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Microsoft.OData.Edm;
 using Microsoft.OData.Edm.Csdl;
 using Microsoft.OData.UriParser;
@@ -297,7 +298,8 @@ internal static class OhDataEndpointFactory
                             "This resource does not support $filter, $orderby, $top, or $skip. " +
                             "Configure GetQueryable to enable server-side query processing.");
 
-                    var items = (object)((IEnumerable<TModel>)result!).ToArray();
+                    var enumerable = result as IEnumerable<TModel> ?? Enumerable.Empty<TModel>();
+                    var items = (object)enumerable.ToArray();
                     var finalItems = ApplySelectPostProcess(items, options);
 
                     var baseUrl = $"{ctx.Request.Scheme}://{ctx.Request.Host}{ctx.Request.PathBase}{prefix}";
@@ -522,7 +524,7 @@ internal static class OhDataEndpointFactory
                             var converter = System.ComponentModel.TypeDescriptor.GetConverter(targetType);
                             args[i] = converter.ConvertFromInvariantString(val.ToString() ?? "");
                         }
-                        catch
+                        catch (Exception ex) when (ex is FormatException or NotSupportedException or InvalidCastException or OverflowException)
                         {
                             return ODataError(400, "InvalidParameter",
                                 $"Cannot convert parameter '{param.Name}' value to {param.ParameterType.Name}.");
@@ -545,6 +547,8 @@ internal static class OhDataEndpointFactory
         }
 
         // Bound actions — POST /{EntitySet}/{ActionName} with JSON body params
+        // Note: TryGetJsonProperty (below) provides case-insensitive JSON property lookup,
+        // matching the case-insensitive query string lookup used for bound functions.
         foreach (var action in source.BoundActions)
         {
             var actionDef = action;
@@ -557,11 +561,14 @@ internal static class OhDataEndpointFactory
                     {
                         var body = await JsonSerializer.DeserializeAsync<JsonElement>(
                             ctx.Request.Body, cancellationToken: ct);
+                        var jsonOptions = ctx.RequestServices
+                            .GetService<IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions>>()
+                            ?.Value?.SerializerOptions;
                         for (int i = 0; i < actionDef.Parameters.Length; i++)
                         {
                             var param = actionDef.Parameters[i];
-                            if (body.TryGetProperty(param.Name!, out var val))
-                                args[i] = val.Deserialize(param.ParameterType);
+                            if (TryGetJsonProperty(body, param.Name!, out var val))
+                                args[i] = val.Deserialize(param.ParameterType, jsonOptions);
                             else if (param.HasDefaultValue)
                                 args[i] = param.DefaultValue;
                             else
@@ -579,5 +586,19 @@ internal static class OhDataEndpointFactory
             }).WithTags(name).Produces(200).Produces(204).Produces(400);
             ApplyAuth(rb, authConfig);
         }
+    }
+
+    private static bool TryGetJsonProperty(JsonElement obj, string name, out JsonElement value)
+    {
+        foreach (var prop in obj.EnumerateObject())
+        {
+            if (string.Equals(prop.Name, name, StringComparison.OrdinalIgnoreCase))
+            {
+                value = prop.Value;
+                return true;
+            }
+        }
+        value = default;
+        return false;
     }
 }

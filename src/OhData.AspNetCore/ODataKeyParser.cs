@@ -21,7 +21,9 @@ internal static class ODataKeyParser
             if (keyType == typeof(short)) return short.Parse(rawKey);
             if (keyType == typeof(string)) return rawKey;
 
-            return Convert.ChangeType(rawKey, keyType);
+            var converter = System.ComponentModel.TypeDescriptor.GetConverter(keyType);
+            return converter.ConvertFromInvariantString(rawKey)
+                ?? throw new FormatException($"Cannot parse '{rawKey}' as {keyType.Name}.");
         }
         catch (Exception ex) when (ex is FormatException or InvalidCastException or OverflowException)
         {
