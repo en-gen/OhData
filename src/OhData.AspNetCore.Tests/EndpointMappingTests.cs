@@ -49,6 +49,59 @@ public class EndpointMappingTests
         Assert.True(long.TryParse(body, out _));
     }
 
+    [Fact]
+    public async Task Count_Queryable_WithFilter_ReturnsFilteredCount()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
+        var response = await fx.Client.GetAsync("/odata/QueryableWidgets/$count?$filter=Name eq 'Sprocket'");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.True(long.TryParse(body, out var count));
+        Assert.Equal(1L, count);
+    }
+
+    [Fact]
+    public async Task Count_Queryable_NoFilter_ReturnsTotalCount()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
+        var response = await fx.Client.GetAsync("/odata/QueryableWidgets/$count");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.True(long.TryParse(body, out var count));
+        Assert.Equal(2L, count);
+    }
+
+    [Fact]
+    public async Task GetAll_WithCountTrue_ReturnsOdataCountInEnvelope()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets?$count=true");
+        Assert.True(json.TryGetProperty("@odata.count", out var countEl));
+        Assert.Equal(2L, countEl.GetInt64());
+    }
+
+    [Fact]
+    public async Task GetAll_WithCountTrueAndFilter_OdataCountReflectsFilteredTotal()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>(
+            "/odata/QueryableWidgets?$count=true&$filter=Name eq 'Cog'");
+        Assert.True(json.TryGetProperty("@odata.count", out var countEl));
+        Assert.Equal(1L, countEl.GetInt64());
+        Assert.Equal(1, json.GetProperty("value").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task GetAll_InvalidFilterProperty_Returns400ODataError()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
+        var response = await fx.Client.GetAsync("/odata/QueryableWidgets?$filter=DoesNotExist eq 'x'");
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(json.TryGetProperty("error", out var err));
+        Assert.Equal("InvalidQueryOption", err.GetProperty("code").GetString());
+    }
+
     // â”€â”€ Single GET â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     [Fact]
@@ -316,16 +369,16 @@ public class EndpointMappingTests
     }
 
     [Fact]
-    public async Task Select_GetAllPath_UnknownProperty_ThrowsODataException()
+    public async Task Select_GetAllPath_UnknownProperty_Returns400()
     {
         // OData validates $select property names against the EDM model at parse time.
-        // Requesting a non-existent property throws ODataException.
-        // This is a known limitation: the GetAll path uses ODataQueryOptions which validates
-        // the model, so unknown property names are rejected rather than silently dropped.
+        // Requesting a non-existent property should return 400 with an OData error body.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
-        // The unhandled ODataException propagates through the test host
-        await Assert.ThrowsAsync<Microsoft.OData.ODataException>(
-            () => fx.Client.GetAsync("/odata/Widgets?$select=Name,DoesNotExist"));
+        var response = await fx.Client.GetAsync("/odata/Widgets?$select=Name,DoesNotExist");
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(json.TryGetProperty("error", out var err));
+        Assert.Equal("InvalidQueryOption", err.GetProperty("code").GetString());
     }
 
     [Fact]

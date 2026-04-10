@@ -185,23 +185,28 @@ internal static class OhDataEndpointFactory
         {
             entityGroup.MapGet("", async (HttpContext ctx, CancellationToken ct) =>
             {
-                var odataCtx = new ODataQueryContext(registration.EdmModel, typeof(TModel), null);
-                var options  = new ODataQueryOptions<TModel>(odataCtx, ctx.Request);
-                var queryable = await odataSource.InvokeGetODataQueryableAsync(options, ct);
+                try
+                {
+                    var odataCtx = new ODataQueryContext(registration.EdmModel, typeof(TModel), null);
+                    var options  = new ODataQueryOptions<TModel>(odataCtx, ctx.Request);
+                    var queryable = await odataSource.InvokeGetODataQueryableAsync(options, ct);
 
-                // Materialize results
-                var items = queryable is IQueryable<TModel> typed
-                    ? (object)typed.ToArray()
-                    : queryable.Cast<object>().ToArray();
+                    var items = queryable is IQueryable<TModel> typed
+                        ? (object)typed.ToArray()
+                        : queryable.Cast<object>().ToArray();
+                    var finalItems = ApplySelectPostProcess(items, options);
 
-                // Post-process: strip unselected properties using JsonNode when $select is active
-                var finalItems = ApplySelectPostProcess(items, options);
-
-                var baseUrl = $"{ctx.Request.Scheme}://{ctx.Request.Host}{ctx.Request.PathBase}{prefix}";
-                var envelope = new Dictionary<string, object?>();
-                envelope["@odata.context"] = $"{baseUrl}/$metadata#{name}";
-                envelope["value"] = finalItems;
-                return Results.Ok(envelope);
+                    var baseUrl = $"{ctx.Request.Scheme}://{ctx.Request.Host}{ctx.Request.PathBase}{prefix}";
+                    return Results.Ok(new Dictionary<string, object?>
+                    {
+                        ["@odata.context"] = $"{baseUrl}/$metadata#{name}",
+                        ["value"] = finalItems
+                    });
+                }
+                catch (Microsoft.OData.ODataException ex)
+                {
+                    return ODataError(400, "InvalidQueryOption", ex.Message);
+                }
             }).WithTags(name).Produces(200).Produces(400);
         }
         // Priority 2: base GetQueryable (IQueryable without ODataQueryOptions)
@@ -209,116 +214,117 @@ internal static class OhDataEndpointFactory
         {
             entityGroup.MapGet("", async (HttpContext ctx, CancellationToken ct) =>
             {
-                var queryable = (IQueryable<TModel>)(await source.InvokeGetQueryableAsync(ct))
-                                .Cast<TModel>();
-
-                var odataCtx = new ODataQueryContext(registration.EdmModel, typeof(TModel), null);
-                var options  = new ODataQueryOptions<TModel>(odataCtx, ctx.Request);
-
-                long? odataCount = null;
-                if (options.Count?.Value == true)
+                try
                 {
-                    // Count before skip/top: apply filter only
-                    var countQ = options.Filter is not null
-                        ? (IQueryable<TModel>)options.Filter.ApplyTo(queryable, new ODataQuerySettings())
-                        : queryable;
-                    odataCount = countQ.LongCount();
+                    var queryable = (IQueryable<TModel>)(await source.InvokeGetQueryableAsync(ct))
+                                    .Cast<TModel>();
+
+                    var odataCtx = new ODataQueryContext(registration.EdmModel, typeof(TModel), null);
+                    var options  = new ODataQueryOptions<TModel>(odataCtx, ctx.Request);
+
+                    long? odataCount = null;
+                    if (options.Count?.Value == true)
+                    {
+                        var countQ = options.Filter is not null
+                            ? (IQueryable<TModel>)options.Filter.ApplyTo(queryable, new ODataQuerySettings())
+                            : queryable;
+                        odataCount = countQ.LongCount();
+                    }
+
+                    // Apply filter/orderby/skip/top without $select so TModel shape is preserved.
+                    // $select is handled via JsonNode post-processing to avoid ISelectExpandWrapper casing issues.
+                    var settings = new ODataQuerySettings();
+                    IQueryable<TModel> filtered = queryable;
+                    if (options.Filter is not null)
+                        filtered = (IQueryable<TModel>)options.Filter.ApplyTo(filtered, settings);
+                    if (options.OrderBy is not null)
+                        filtered = (IQueryable<TModel>)options.OrderBy.ApplyTo(filtered, settings);
+                    if (options.Skip is not null)
+                        filtered = (IQueryable<TModel>)options.Skip.ApplyTo(filtered, settings);
+                    if (options.Top is not null)
+                        filtered = (IQueryable<TModel>)options.Top.ApplyTo(filtered, settings);
+
+                    var items = (object)filtered.ToArray();
+                    var finalItems = ApplySelectPostProcess(items, options);
+
+                    var baseUrl = $"{ctx.Request.Scheme}://{ctx.Request.Host}{ctx.Request.PathBase}{prefix}";
+                    var envelope = new Dictionary<string, object?>();
+                    envelope["@odata.context"] = $"{baseUrl}/$metadata#{name}";
+                    if (odataCount.HasValue) envelope["@odata.count"] = odataCount;
+                    envelope["value"] = finalItems;
+                    return Results.Ok(envelope);
                 }
-
-                // Apply filter/orderby/skip/top without $select to keep TModel intact.
-                // $select is handled via JsonNode post-processing so ISelectExpandWrapper is avoided.
-                var settings = new ODataQuerySettings();
-                IQueryable<TModel> filtered = queryable;
-                if (options.Filter is not null)
-                    filtered = (IQueryable<TModel>)options.Filter.ApplyTo(filtered, settings);
-                if (options.OrderBy is not null)
-                    filtered = (IQueryable<TModel>)options.OrderBy.ApplyTo(filtered, settings);
-                if (options.Skip is not null)
-                    filtered = (IQueryable<TModel>)options.Skip.ApplyTo(filtered, settings);
-                if (options.Top is not null)
-                    filtered = (IQueryable<TModel>)options.Top.ApplyTo(filtered, settings);
-
-                // Materialize as TModel[] so JsonSerializer can produce clean JSON
-                var items = (object)filtered.ToArray();
-
-                // Post-process: strip unselected properties using JsonNode when $select is active
-                var finalItems = ApplySelectPostProcess(items, options);
-
-                var baseUrl = $"{ctx.Request.Scheme}://{ctx.Request.Host}{ctx.Request.PathBase}{prefix}";
-                var envelope = new Dictionary<string, object?>();
-                envelope["@odata.context"] = $"{baseUrl}/$metadata#{name}";
-                if (odataCount.HasValue) envelope["@odata.count"] = odataCount;
-                envelope["value"] = finalItems;
-                return Results.Ok(envelope);
+                catch (Microsoft.OData.ODataException ex)
+                {
+                    return ODataError(400, "InvalidQueryOption", ex.Message);
+                }
             }).WithTags(name).Produces(200).Produces(400);
         }
         else if (source.HasGetAll)
         {
             entityGroup.MapGet("", async (HttpContext ctx, CancellationToken ct) =>
             {
-                logger?.LogDebug("GET {Prefix}/{Name}", prefix, name);
-                var result = await source.InvokeGetAllAsync(ct);
+                try
+                {
+                    logger?.LogDebug("GET {Prefix}/{Name}", prefix, name);
+                    var result = await source.InvokeGetAllAsync(ct);
 
-                var odataCtx = new ODataQueryContext(registration.EdmModel, typeof(TModel), null);
-                var options  = new ODataQueryOptions<TModel>(odataCtx, ctx.Request);
+                    var odataCtx = new ODataQueryContext(registration.EdmModel, typeof(TModel), null);
+                    var options  = new ODataQueryOptions<TModel>(odataCtx, ctx.Request);
 
-                // Materialize the IEnumerable items
-                var items = (object)((IEnumerable<TModel>)result!).ToArray();
+                    var items = (object)((IEnumerable<TModel>)result!).ToArray();
+                    var finalItems = ApplySelectPostProcess(items, options);
 
-                // Post-process: strip unselected properties using JsonNode when $select is active
-                var finalItems = ApplySelectPostProcess(items, options);
-
-                var baseUrl = $"{ctx.Request.Scheme}://{ctx.Request.Host}{ctx.Request.PathBase}{prefix}";
-                var envelope = new Dictionary<string, object?>();
-                envelope["@odata.context"] = $"{baseUrl}/$metadata#{name}";
-                envelope["value"] = finalItems;
-                return Results.Ok(envelope);
+                    var baseUrl = $"{ctx.Request.Scheme}://{ctx.Request.Host}{ctx.Request.PathBase}{prefix}";
+                    return Results.Ok(new Dictionary<string, object?>
+                    {
+                        ["@odata.context"] = $"{baseUrl}/$metadata#{name}",
+                        ["value"] = finalItems
+                    });
+                }
+                catch (Microsoft.OData.ODataException ex)
+                {
+                    return ODataError(400, "InvalidQueryOption", ex.Message);
+                }
             }).WithTags(name).Produces(200).Produces(400);
         }
 
-        if (source.HasGetQueryable || source.HasGetAll)
+        var hasCountSource = (source is IODataEntitySetEndpointSource odsCheck && odsCheck.HasGetODataQueryable)
+            || source.HasGetQueryable || source.HasGetAll;
+        if (hasCountSource)
         {
             entityGroup.MapGet("/$count", async (HttpContext ctx, CancellationToken ct) =>
             {
-                // Priority 1: ODataEntitySetProfile with direct ODataQueryOptions handler
-        if (source is IODataEntitySetEndpointSource odataSource && odataSource.HasGetODataQueryable)
-        {
-            entityGroup.MapGet("", async (HttpContext ctx, CancellationToken ct) =>
-            {
-                var odataCtx = new ODataQueryContext(registration.EdmModel, typeof(TModel), null);
-                var options  = new ODataQueryOptions<TModel>(odataCtx, ctx.Request);
-                var queryable = await odataSource.InvokeGetODataQueryableAsync(options, ct);
-
-                // Materialize results
-                var items = queryable is IQueryable<TModel> typed
-                    ? (object)typed.ToArray()
-                    : queryable.Cast<object>().ToArray();
-
-                // Post-process: strip unselected properties using JsonNode when $select is active
-                var finalItems = ApplySelectPostProcess(items, options);
-
-                var baseUrl = $"{ctx.Request.Scheme}://{ctx.Request.Host}{ctx.Request.PathBase}{prefix}";
-                var envelope = new Dictionary<string, object?>();
-                envelope["@odata.context"] = $"{baseUrl}/$metadata#{name}";
-                envelope["value"] = finalItems;
-                return Results.Ok(envelope);
-            }).WithTags(name).Produces(200).Produces(400);
-        }
-        // Priority 2: base GetQueryable (IQueryable without ODataQueryOptions)
-        else if (source.HasGetQueryable)
+                try
                 {
-                    var q = (IQueryable<TModel>)(await source.InvokeGetQueryableAsync(ct)).Cast<TModel>();
-                    var odataCtx = new ODataQueryContext(registration.EdmModel, typeof(TModel), null);
-                    var options  = new ODataQueryOptions<TModel>(odataCtx, ctx.Request);
-                    var filtered = options.Filter is not null
-                        ? (IQueryable<TModel>)options.Filter.ApplyTo(q, new ODataQuerySettings())
-                        : q;
-                    return Results.Ok(filtered.LongCount());
+                    if (source is IODataEntitySetEndpointSource odataCountSrc && odataCountSrc.HasGetODataQueryable)
+                    {
+                        var odataCtx = new ODataQueryContext(registration.EdmModel, typeof(TModel), null);
+                        var options  = new ODataQueryOptions<TModel>(odataCtx, ctx.Request);
+                        var queryable = (IQueryable<TModel>)(await odataCountSrc.InvokeGetODataQueryableAsync(options, ct)).Cast<TModel>();
+                        var filtered = options.Filter is not null
+                            ? (IQueryable<TModel>)options.Filter.ApplyTo(queryable, new ODataQuerySettings())
+                            : queryable;
+                        return Results.Ok(filtered.LongCount());
+                    }
+                    if (source.HasGetQueryable)
+                    {
+                        var q = (IQueryable<TModel>)(await source.InvokeGetQueryableAsync(ct)).Cast<TModel>();
+                        var odataCtx = new ODataQueryContext(registration.EdmModel, typeof(TModel), null);
+                        var options  = new ODataQueryOptions<TModel>(odataCtx, ctx.Request);
+                        var filtered = options.Filter is not null
+                            ? (IQueryable<TModel>)options.Filter.ApplyTo(q, new ODataQuerySettings())
+                            : q;
+                        return Results.Ok(filtered.LongCount());
+                    }
+                    var items = (IEnumerable<TModel>)(await source.InvokeGetAllAsync(ct))!;
+                    return Results.Ok(items.LongCount());
                 }
-
-                var items = (IEnumerable<TModel>)(await source.InvokeGetAllAsync(ct))!;
-                return Results.Ok(items.LongCount());
-            }).WithTags(name).Produces<long>(200);
+                catch (Microsoft.OData.ODataException ex)
+                {
+                    return ODataError(400, "InvalidQueryOption", ex.Message);
+                }
+            }).WithTags(name).Produces<long>(200).Produces(400);
         }
 
         if (source.HasGetById)
