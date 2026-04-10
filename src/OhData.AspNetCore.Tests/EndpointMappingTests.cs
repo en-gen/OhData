@@ -910,6 +910,15 @@ public class EndpointMappingTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
+    [Fact]
+    public async Task Patch_MalformedJson_Returns400()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var response = await fx.Client.PatchAsync("/odata/Widgets(1)",
+            new StringContent("{broken", System.Text.Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
     // ── M5: WithPrefix normalization ──────────────────────────────────────────
 
     [Fact]

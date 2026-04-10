@@ -335,9 +335,10 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// <summary>Requires any authenticated user. May be combined with <see cref="RequireRoles"/>.</summary>
     protected void RequireAuthorization()
     {
-        if (_authRequired && _authPolicy is null && _authRoles is null)
+        if (_authRequired)
             throw new InvalidOperationException(
-                $"RequireAuthorization() has already been called on this profile. Call it only once.");
+                "Authorization has already been configured on this profile. " +
+                "RequireAuthorization() is implicit when RequireAuthorization(policy) or RequireRoles() is called.");
         _authRequired = true;
     }
 
