@@ -17,6 +17,7 @@
 
 	<ItemGroup>
 		<ProjectReference Include="..\OhData.Abstractions\OhData.Abstractions.csproj" />
+		<ProjectReference Include="..\OhData.Abstractions.AspNetCore.OData\OhData.Abstractions.AspNetCore.OData.csproj" />
 	</ItemGroup>
 
 </Project>

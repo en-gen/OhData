@@ -36,7 +36,11 @@ internal interface IEntitySetEndpointSource
     bool HasPatch { get; }
     bool HasDelete { get; }
 
+    bool HasETag { get; }
+
     AuthorizationConfig? Authorization { get; }
+
+    IReadOnlyList<NavigationRouteDefinition> NavigationRoutes { get; }
 
     Task<object?> InvokeGetAllAsync(CancellationToken ct);
     Task<IQueryable<object>> InvokeGetQueryableAsync(CancellationToken ct);
@@ -45,4 +49,5 @@ internal interface IEntitySetEndpointSource
     Task<object?> InvokePutByIdAsync(object key, object model, CancellationToken ct);
     Task<object?> InvokePatchAsync(object key, object model, CancellationToken ct);
     Task<bool> InvokeDeleteAsync(object key, CancellationToken ct);
+    string InvokeGetETag(object model);
 }

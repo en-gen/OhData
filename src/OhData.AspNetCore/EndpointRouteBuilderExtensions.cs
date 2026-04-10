@@ -14,8 +14,14 @@ public static class EndpointRouteBuilderExtensions
     /// (e.g. <c>.RequireAuthorization()</c>).
     /// </summary>
     public static RouteGroupBuilder MapOhData(this IEndpointRouteBuilder routes)
+        => routes.MapOhData(OhDataDefaults.DefaultRegistrationName);
+
+    /// <summary>
+    /// Maps all OData endpoints for the named OhData registration.
+    /// </summary>
+    public static RouteGroupBuilder MapOhData(this IEndpointRouteBuilder routes, string name)
     {
-        var registration = routes.ServiceProvider.GetRequiredService<OhDataRegistration>();
+        var registration = routes.ServiceProvider.GetRequiredKeyedService<OhDataRegistration>(name);
         return OhDataEndpointFactory.MapAll(routes, registration);
     }
 }
