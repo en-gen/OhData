@@ -1,7 +1,11 @@
-﻿namespace OhData.Abstractions;
+namespace OhData.Abstractions;
 
 public sealed class OhDataContext
 {
-    // TODO: WIP - just an example
-    internal IEnumerable<Type> RegisteredModelTypes { get; set; }
+    internal OhDataContext(IReadOnlyList<Type> registeredModelTypes)
+    {
+        RegisteredModelTypes = registeredModelTypes;
+    }
+
+    internal IReadOnlyList<Type> RegisteredModelTypes { get; }
 }
