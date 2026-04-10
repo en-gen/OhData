@@ -321,3 +321,73 @@ internal class SecondProfile : EntitySetProfile<int, Widget>
         GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(new[] { new Widget { Id = 99, Name = "Second" } });
     }
 }
+
+/// <summary>Profile with DateTimeOffset key for key parser testing (H3 revisit).</summary>
+internal class DateTimeOffsetItem { public DateTimeOffset Id { get; set; } public string Name { get; set; } = ""; }
+internal class DateTimeOffsetKeyProfile : EntitySetProfile<DateTimeOffset, DateTimeOffsetItem>
+{
+    private static readonly DateTimeOffset _key = new DateTimeOffset(2024, 1, 15, 12, 0, 0, TimeSpan.Zero);
+    private static readonly List<DateTimeOffsetItem> _store = new() { new() { Id = _key, Name = "Item" } };
+    public DateTimeOffsetKeyProfile() : base(x => x.Id)
+    {
+        EntitySetName = "DateTimeOffsetItems";
+        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(x => x.Id == id));
+    }
+}
+
+/// <summary>Profile with DateTime key for key parser testing (H3 revisit).</summary>
+internal class DateTimeItem { public DateTime Id { get; set; } public string Name { get; set; } = ""; }
+internal class DateTimeKeyProfile : EntitySetProfile<DateTime, DateTimeItem>
+{
+    private static readonly DateTime _key = new DateTime(2024, 6, 1, 0, 0, 0, DateTimeKind.Utc);
+    private static readonly List<DateTimeItem> _store = new() { new() { Id = _key, Name = "Item" } };
+    public DateTimeKeyProfile() : base(x => x.Id)
+    {
+        EntitySetName = "DateTimeItems";
+        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(x => x.Id == id));
+    }
+}
+
+/// <summary>Profile with DateOnly key for key parser testing (H3 revisit).</summary>
+internal class DateOnlyItem { public DateOnly Id { get; set; } public string Name { get; set; } = ""; }
+internal class DateOnlyKeyProfile : EntitySetProfile<DateOnly, DateOnlyItem>
+{
+    private static readonly DateOnly _key = new DateOnly(2024, 3, 20);
+    private static readonly List<DateOnlyItem> _store = new() { new() { Id = _key, Name = "Item" } };
+    public DateOnlyKeyProfile() : base(x => x.Id)
+    {
+        EntitySetName = "DateOnlyItems";
+        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(x => x.Id == id));
+    }
+}
+
+/// <summary>Profile with both policy AND roles — verifies auth is applied additively to all route types.</summary>
+internal class PolicyAndRolesWidgetProfile : EntitySetProfile<int, Widget>
+{
+    private readonly List<Widget> _store = new() { new() { Id = 1, Name = "Sprocket" } };
+
+    public PolicyAndRolesWidgetProfile() : base(x => x.Id)
+    {
+        EntitySetName = "PolicyRoleWidgets";
+        RequireAuthorization("TestPolicy");
+        RequireRoles("Admin");
+
+        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store);
+        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
+        Post = (widget, ct) => { _store.Add(widget); return Task.FromResult(widget); };
+    }
+}
+
+/// <summary>Profile for testing DELETE non-idempotent behavior (returns 404 when not found).</summary>
+internal class NonIdempotentDeleteProfile : EntitySetProfile<int, Widget>
+{
+    private readonly List<Widget> _store = new() { new() { Id = 1, Name = "Sprocket" } };
+
+    public NonIdempotentDeleteProfile() : base(x => x.Id)
+    {
+        EntitySetName = "NonIdempotentWidgets";
+        IdempotentDelete = false;
+        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
+        Delete = (id, ct) => Task.FromResult(_store.RemoveAll(w => w.Id == id) > 0);
+    }
+}

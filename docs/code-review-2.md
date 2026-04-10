@@ -95,6 +95,8 @@ Two issues:
 
 Both the `ExtractSelectedProperties` HashSet and the `ApplySelectPostProcess` filter use `StringComparer.OrdinalIgnoreCase`. OData v4 identifiers are case-sensitive per spec. The case-insensitive matching is more forgiving for users but technically non-compliant. This is a reasonable design choice for a framework emphasizing simplicity — but should be documented as a deliberate deviation.
 
+> **Resolved:** Investigation revealed that `Microsoft.AspNetCore.OData`'s parser normalizes `$select` identifiers to the EDM property name regardless of input casing (e.g. `$select=name` resolves to EDM identifier `Name`). The `OrdinalIgnoreCase` comparison at post-processing time serves as a safety net for any JSON serialization casing differences. Retained with a clarifying comment explaining the normalization behavior. — `src/OhData.AspNetCore/OhDataEndpointFactory.cs` — confidence: high.
+
 ### M2. `RequireAuthorization` / `RequireRoles` — last call wins silently
 
 `src/OhData.Abstractions/EntitySetProfile.cs:272-274`
@@ -107,17 +109,23 @@ protected void RequireRoles(params string[] roles) => _authorization = new Autho
 
 Each call overwrites `_authorization`. A profile constructor that calls `RequireAuthorization("MyPolicy")` then `RequireRoles("Admin")` silently discards the policy. No warning, no exception. A `throw` on double-configure would prevent mistakes.
 
+> **Resolved:** Split `_authorization` into three backing fields (`_authRequired`, `_authPolicy`, `_authRoles`). `RequireAuthorization(policy)` and `RequireRoles(roles)` may be combined (policy AND roles both enforced). Duplicate calls of the same kind throw `InvalidOperationException`. `ApplyAuth` in the factory now uses `policy.RequireRole(...)` per ASP.NET Core role-based auth docs. — `src/OhData.Abstractions/EntitySetProfile.cs`, `src/OhData.AspNetCore/OhDataEndpointFactory.cs` — confidence: high.
+
 ### M3. No framework-level logging for bound operation EDM registration failures
 
 `src/OhData.Abstractions/EntitySetProfile.cs:129-177`
 
 If the OData model builder rejects a function or action (e.g., unsupported parameter type, invalid return type), the exception propagates from `FunctionConfiguration.Returns<T>()` or `ActionConfiguration.Parameter()` with model-builder-level messages. No `logger.LogError(...)` wrapping with the profile name, method name, or operation type. Users see a stack trace originating from `Microsoft.OData.ModelBuilder` internals with no indication which profile or method caused it.
 
+> **Resolved:** Wrapped `vmb.VisitModelBuilder(...)` call in `OhDataBuilder.Register()` with `try/catch`. On failure: `LogError` with profile name, then re-throw as `InvalidOperationException` with profile name in message and original as inner exception. — `src/OhData.AspNetCore/OhDataBuilder.cs` — confidence: high.
+
 ### M4. PUT/PATCH don't validate URL key matches body key
 
 `src/OhData.AspNetCore/OhDataEndpointFactory.cs:399-410, 425-446`
 
 The URL key is parsed and passed to `PutById(parsedKey, model, ct)`. The model's key property (e.g., `model.Id`) may differ. Example: `PUT /Widgets(1)` with body `{"id":2, "name":"X"}` applies the body to entity with key 1, not 2. The handler receives key=1 and model.Id=2. This is standard OData behavior (URL key takes precedence), but users may not expect it. Should be documented.
+
+> **Resolved:** Added key mismatch validation to both PUT and PATCH handlers. After parsing the URL key and deserializing the body, `InvokeGetKeyString(model)` compares the body's key property against the URL key (Ordinal string comparison). Mismatch returns `400 BadRequest`. Existing tests updated to include `Id` in request bodies. — `src/OhData.AspNetCore/OhDataEndpointFactory.cs` — confidence: high.
 
 ### M5. `OhDataBuilder.WithPrefix` doesn't validate leading slash
 
@@ -129,6 +137,8 @@ _prefix = prefix.TrimEnd('/');
 
 Trims trailing slash but allows `"odata"` without leading slash. This works because `MapGroup("odata")` produces routes like `/odata/Widgets`, but could surprise users who expect the prefix string to appear verbatim in the URL. Validating or auto-prepending `/` would be more defensive.
 
+> **Resolved:** Normalization instead of validation — `_prefix = '/' + prefix.Trim('/')`. Accepts `"odata"`, `"/odata"`, `"odata/"`, and `"/odata/"` — all normalize to `"/odata"`. Consistent with how ASP.NET Core route builders handle prefix strings. — `src/OhData.AspNetCore/OhDataBuilder.cs` — confidence: high.
+
 ### M6. `EntitySetDefaults` never registered in DI — `GetService` always falls back
 
 `src/OhData.AspNetCore/OhDataBuilder.cs:59`
@@ -139,11 +149,15 @@ var defaults = sp.GetService<EntitySetDefaults>() ?? new EntitySetDefaults();
 
 `EntitySetDefaults` is never registered by `AddOhData`. The `GetService` call always returns null, always falls back to `new EntitySetDefaults()`. This creates a hidden extension point: users *can* register custom defaults via `services.AddSingleton<EntitySetDefaults>(...)`, but this is undocumented and untested. Either document it or remove the `GetService` call.
 
+> **Resolved:** Removed `GetService<EntitySetDefaults>()`. Added `private readonly EntitySetDefaults _defaults = new()` field and `WithDefaults(Action<EntitySetDefaults>)` fluent method to `OhDataBuilder`. Captured in `Register()` as `capturedDefaults`. Consistent with `WithPrefix` and `AddProfile` — explicit, discoverable, no hidden DI path. — `src/OhData.AspNetCore/OhDataBuilder.cs` — confidence: high.
+
 ### M7. `OhDataContext` is vestigial
 
 `src/OhData.Abstractions/OhDataContext.cs`
 
 `RegisteredProfileTypes` is `internal`, passed through `IVisitModelBuilder.VisitModelBuilder(builder, context, defaults)`, but no production code reads it. The base `EntitySetProfile.VisitModelBuilder` ignores `context` entirely. The parameter exists for theoretical use in `AdvancedConfigure` overrides, but `AdvancedConfigure` only receives `EntitySetConfiguration<TModel>` — not the context. Either plumb `OhDataContext` to `AdvancedConfigure` to justify its existence, or remove it.
+
+> **Resolved:** Deleted `OhDataContext.cs`. Removed `context` parameter from `IVisitModelBuilder.VisitModelBuilder` and `EntitySetProfile.VisitModelBuilder`. Removed `new OhDataContext(capturedTypes)` construction in `OhDataBuilder.Register()`. Nothing read `RegisteredProfileTypes`. — `src/OhData.Abstractions/OhDataContext.cs` (deleted), `src/OhData.Abstractions/IVisitModelBuilder.cs`, `src/OhData.Abstractions/EntitySetProfile.cs`, `src/OhData.AspNetCore/OhDataBuilder.cs` — confidence: high.
 
 ---
 
@@ -173,6 +187,33 @@ var defaults = sp.GetService<EntitySetDefaults>() ?? new EntitySetDefaults();
 | `$expand` navigation expansion | `OrderProfile` enables it; no test exercises it |
 | Authenticated requests with specific claims/roles | `NoOpAuthHandler` always returns `NoResult`; no positive-auth test exists |
 | `GetAll` delegate returning null | No test; would NRE per H1 |
+
+---
+
+## ADDITIONAL SCOPE (Second-pass additions)
+
+### A1. ODataKeyParser — TypeCode-based dispatch for all CLR primitives + temporal types
+
+`src/OhData.AspNetCore/ODataKeyParser.cs`
+
+H3 resolved the `Convert.ChangeType` gap with `TypeDescriptor.GetConverter`. This revisit replaces that approach with `Type.GetTypeCode` switch for all primitive CLR types plus explicit guards for `Guid`, `DateTimeOffset`, `DateOnly`, and `TimeOnly`. Temporal types were not covered by `TypeDescriptor.GetConverter` in all environments. The `TypeCode` switch is explicit, fast, and complete for the common numeric + boolean + datetime primitives. `TypeDescriptor` is retained as final fallback for enums and truly custom types.
+
+> **Resolved:** Rewrote `ODataKeyParser.Parse` using `Type.GetTypeCode` switch covering `Int16/32/64`, `UInt16/32/64`, `Byte`, `SByte`, `Decimal`, `Double`, `Single`, `Boolean`, `DateTime` (roundtrip). Explicit `if` guards for `Guid`, `DateTimeOffset` (roundtrip), `DateOnly`, `TimeOnly`. String (single-quote stripping) handled before the switch. `TypeDescriptor.GetConverter` retained as final fallback. Outer `catch` narrowed to `FormatException | InvalidCastException | OverflowException | ArgumentException`. Tests added for `decimal`, `DateTimeOffset`, `DateTime`, `DateOnly` key types. — `src/OhData.AspNetCore/ODataKeyParser.cs` — confidence: high.
+
+### A2. DELETE idempotency — configurable, default 204
+
+`src/OhData.AspNetCore/OhDataEndpointFactory.cs` (DELETE handler)
+
+OData spec says DELETE should be idempotent: deleting an already-deleted resource should succeed. The existing handler returned `404` when `Delete` returned `false`, which is non-compliant and surprising. Users who want strict "was it found" semantics should be able to opt out.
+
+> **Resolved:** Added `IdempotentDelete` property following the resolved-field pattern of `MaxTop`:
+> - `EntitySetDefaults.IdempotentDelete` — `bool`, default `true`
+> - `EntitySetProfile.IdempotentDelete` — `protected bool? IdempotentDelete { get; init; }` (null = inherit from defaults)
+> - `_resolvedIdempotentDelete` — set in `VisitModelBuilder` as `IdempotentDelete ?? defaults.IdempotentDelete`
+> - `IEntitySetEndpointSource.IdempotentDelete` — exposes resolved value
+> - DELETE handler: `if (!deleted && !source.IdempotentDelete) return ODataError(404, ...); return Results.NoContent();`
+>
+> Default behavior: `Delete` returning `false` → `204 No Content`. Opt out per profile via `IdempotentDelete = false` → `404`. — `src/OhData.Abstractions/EntitySetDefaults.cs`, `src/OhData.Abstractions/EntitySetProfile.cs`, `src/OhData.Abstractions/IEntitySetEndpointSource.cs`, `src/OhData.AspNetCore/OhDataEndpointFactory.cs` — confidence: high.
 
 ---
 

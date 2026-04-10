@@ -49,8 +49,11 @@ app.UseSwaggerUI(c =>
     c.SwaggerEndpoint("/swagger/v2/swagger.json", "v2");
 });
 
-// Scalar API reference at /scalar
-app.MapScalarApiReference();
+// Scalar API reference at /scalar — point at Swashbuckle's JSON endpoints
+app.MapScalarApiReference(options =>
+{
+    options.WithOpenApiRoutePattern("/swagger/{documentName}/swagger.json");
+});
 
 app.MapOhData("v1").WithOpenApi().WithGroupName("v1");
 app.MapOhData("v2").WithOpenApi().WithGroupName("v2");
