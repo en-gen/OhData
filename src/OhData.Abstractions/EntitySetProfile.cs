@@ -11,18 +11,18 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 {
     private readonly Expression<Func<TModel, TKey>> _getKey;
 
-    protected string EntitySetName;
+    protected string EntitySetName { get; init; }
 
-    protected bool? SelectEnabled;
-    protected bool? ExpandEnabled;
-    protected bool? FilterEnabled;
-    protected bool? OrderByEnabled;
-    protected bool? CountEnabled;
+    protected bool? SelectEnabled { get; init; }
+    protected bool? ExpandEnabled { get; init; }
+    protected bool? FilterEnabled { get; init; }
+    protected bool? OrderByEnabled { get; init; }
+    protected bool? CountEnabled { get; init; }
 
-    protected string[]? SelectProperties = null;
-    protected string[]? ExpandProperties = null;
-    protected string[]? FilterProperties = null;
-    protected string[]? OrderByProperties = null;
+    protected string[]? SelectProperties { get; init; } = null;
+    protected string[]? ExpandProperties { get; init; } = null;
+    protected string[]? FilterProperties { get; init; } = null;
+    protected string[]? OrderByProperties { get; init; } = null;
 
     protected Func<CancellationToken, Task<IEnumerable<TModel>>>? GetAll = null;
     protected Func<CancellationToken, Task<IQueryable<TModel>>>? GetQueryable = null;
@@ -36,7 +36,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
     protected Func<TKey, CancellationToken, Task<bool>>? Delete = null;
 
-    protected int? MaxTop = null;
+    protected int? MaxTop { get; init; } = null;
     private int? _resolvedMaxTop;
 
     protected Func<TModel, string>? GetETag = null;
@@ -191,7 +191,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     {
         HasOptional(navigation);
         if (get is null) return;
-        var propName = ((MemberExpression)navigation.Body).Member.Name;
+        var propName = GetNavigationPropertyName(navigation.Body);
         _navRoutes.Add(new NavigationRouteDefinition
         {
             PropertyName = propName,
@@ -214,7 +214,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     {
         HasRequired(navigation);
         if (get is null) return;
-        var propName = ((MemberExpression)navigation.Body).Member.Name;
+        var propName = GetNavigationPropertyName(navigation.Body);
         _navRoutes.Add(new NavigationRouteDefinition
         {
             PropertyName = propName,
@@ -237,7 +237,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     {
         HasMany(navigation);
         if (getAll is null) return;
-        var propName = ((MemberExpression)navigation.Body).Member.Name;
+        var propName = GetNavigationPropertyName(navigation.Body);
         _navRoutes.Add(new NavigationRouteDefinition
         {
             PropertyName = propName,
@@ -248,6 +248,14 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
     protected void BindFunction(Delegate handler) => _functions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
     protected void BindAction(Delegate handler) => _actions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
+
+    private static string GetNavigationPropertyName(Expression body)
+    {
+        if (body is MemberExpression me) return me.Member.Name;
+        if (body is UnaryExpression ue) return GetNavigationPropertyName(ue.Operand);
+        throw new ArgumentException(
+            $"Cannot extract property name from expression type {body.NodeType}. Use a simple property accessor: x => x.PropertyName.");
+    }
 
     private static Type? GetCollectionElementType(Type type)
     {
