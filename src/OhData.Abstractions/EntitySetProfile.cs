@@ -1,5 +1,7 @@
 using System.Linq.Expressions;
 using System.Reflection;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.OData.ModelBuilder;
 
 namespace OhData.Abstractions;
@@ -26,7 +28,6 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected Func<CancellationToken, Task<IQueryable<TModel>>>? GetQueryable = null;
     protected Func<TKey, CancellationToken, Task<TModel?>>? GetById = null;
 
-    protected Func<TModel, CancellationToken, Task<TModel>>? Put = null;
     protected Func<TKey, TModel, CancellationToken, Task<TModel>>? PutById = null;
 
     protected Func<TModel, CancellationToken, Task<TModel>>? Post = null;
@@ -35,7 +36,38 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
     protected Func<TKey, CancellationToken, Task<bool>>? Delete = null;
 
+    protected int? MaxTop = null;
+    private int? _resolvedMaxTop;
+
     protected Func<TModel, string>? GetETag = null;
+
+    /// <summary>
+    /// Opts in to ETag generation. The framework hashes the values of the specified
+    /// properties using SHA-256 and encodes the result as Base64.
+    /// <para>
+    /// Supports <c>byte[]</c> values (e.g. row-version columns) directly;
+    /// all other values are hashed as their UTF-8 string representations.
+    /// </para>
+    /// </summary>
+    protected void UseETag(params Expression<Func<TModel, object?>>[] propertySelectors)
+    {
+        var getters = propertySelectors.Select(e => e.Compile()).ToArray();
+        GetETag = model =>
+        {
+            using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            var sep = new byte[] { 0x00 };
+            for (var i = 0; i < getters.Length; i++)
+            {
+                if (i > 0) hasher.AppendData(sep);
+                var value = getters[i](model);
+                if (value is byte[] bytes)
+                    hasher.AppendData(bytes);
+                else if (value is not null)
+                    hasher.AppendData(Encoding.UTF8.GetBytes(value.ToString()!));
+            }
+            return Convert.ToBase64String(hasher.GetHashAndReset());
+        };
+    }
 
     private AuthorizationConfig? _authorization;
 
@@ -80,6 +112,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
         // if AdvancedConfigure wasn't overridden, work your magic
         var entityType = entitySet.EntityType;
+
+        _resolvedMaxTop = MaxTop ?? defaults.MaxTop;
 
         if (SelectEnabled ?? defaults.SelectEnabled) entityType.Select(SelectProperties);
         if (ExpandEnabled ?? defaults.ExpandEnabled) entityType.Expand(ExpandProperties);
@@ -252,6 +286,16 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     IReadOnlyList<BoundOperationDefinition> IEntitySetEndpointSource.BoundActions =>
         _actions.Select(d => BoundOperationDefinition.From(d, isAction: true)).ToList();
     string IEntitySetEndpointSource.InvokeGetETag(object model) => GetETag!((TModel)model);
+
+    private Func<TModel, string>? _keyToString;
+    private Func<TModel, string> CompileKeyToString()
+    {
+        var compiled = _getKey.Compile();
+        return model => compiled(model)?.ToString() ?? "";
+    }
+    string IEntitySetEndpointSource.InvokeGetKeyString(object model)
+        => (_keyToString ??= CompileKeyToString())((TModel)model);
+    int? IEntitySetEndpointSource.MaxTop => _resolvedMaxTop;
 
     async Task<object?> IEntitySetEndpointSource.InvokeGetAllAsync(CancellationToken ct) =>
         (object?)await GetAll!.Invoke(ct);

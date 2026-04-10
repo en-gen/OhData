@@ -20,6 +20,8 @@ internal sealed class BoundOperationDefinition
             && allParams[^1].ParameterType == typeof(CancellationToken);
         var visibleParams = hasCt ? allParams[..^1] : allParams;
 
+        var isVoidTask = method.ReturnType == typeof(Task) || method.ReturnType == typeof(void);
+
         return new BoundOperationDefinition
         {
             Name = method.Name,
@@ -30,11 +32,18 @@ internal sealed class BoundOperationDefinition
                 var fullArgs = hasCt
                     ? [.. args, (object)ct]
                     : args;
-                var raw = del.DynamicInvoke(fullArgs);
+                object? raw;
+                try { raw = del.DynamicInvoke(fullArgs); }
+                catch (System.Reflection.TargetInvocationException tie) when (tie.InnerException is not null)
+                {
+                    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(tie.InnerException).Throw();
+                    throw; // unreachable
+                }
                 if (raw is null) return null;
                 if (raw is Task task)
                 {
                     await task.ConfigureAwait(false);
+                    if (isVoidTask) return null;
                     // Task<T>: extract Result via reflection
                     var resultProp = task.GetType().GetProperty("Result");
                     return resultProp?.GetValue(task);
