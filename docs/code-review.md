@@ -90,6 +90,8 @@ Second call silently overwrites the first. No exception, no warning. First regis
 
 Both are deterministic after startup. The CSDL XML serialization allocates `StringBuilder` + `XmlWriter` on every `GET /$metadata`. Should be computed once and cached.
 
+> **Resolved:** Extracted `private static string BuildMetadataXml(IEdmModel)` helper. Called once in `MapAll()` at startup; result is closed over by the `/$metadata` lambda — zero per-request allocations. Service document entity set array pre-computed into `serviceDocEntitySets` at startup; only the base URL (request-specific) is computed per-request. — `src/OhData.AspNetCore/OhDataEndpointFactory.cs` — confidence: high.
+
 ### M2. PUT handler returns `200 null` when result is null (no 404 check)
 
 PATCH correctly checks for null and returns 404. PUT does not — returns `Results.Ok(null)`. Inconsistent.
@@ -100,21 +102,31 @@ PATCH correctly checks for null and returns 404. PUT does not — returns `Resul
 
 If `InvokePostAsync` returns null, `Results.Created(...)` produces a 201 with null body.
 
+> **Resolved (bundled with H4):** The null check (`if (result is null) return ODataError(400, ...)`) was added as part of the H4 POST Location header fix — null must be detected before the key extraction that builds the Location URL. — `src/OhData.AspNetCore/OhDataEndpointFactory.cs` — confidence: high.
+
 ### M4. Navigation routes don't wrap in OData envelope
 
 Navigation `GET /Parents(1)/Children` returns bare `Results.Ok(result)` while all other collection routes return `{"@odata.context": "...", "value": [...]}`. Inconsistency confuses OData clients.
+
+> **Resolved:** Navigation route lambda now accepts `HttpContext ctx`. When `nav.IsCollection` is true, result is wrapped in `{"@odata.context": "…/$metadata#{Name}/{NavProp}", "value": result}`. Single-object navigations remain bare (consistent with `GetById`). — `src/OhData.AspNetCore/OhDataEndpointFactory.cs` — confidence: high.
 
 ### M5. `EntitySetName` and query-option fields are mutable on a singleton
 
 These `protected` fields can be modified after route registration, creating divergence between the EDM model and runtime behavior. Should be `{ get; protected init; }`.
 
+> **Resolved:** Converted `EntitySetName`, `SelectEnabled`, `ExpandEnabled`, `FilterEnabled`, `OrderByEnabled`, `CountEnabled`, `SelectProperties`, `ExpandProperties`, `FilterProperties`, `OrderByProperties`, and `MaxTop` from fields to `{ get; init; }` properties. C# `init` setters are callable from base and derived constructors, so no callers required changes. Handler delegate fields (`GetAll`, `GetById`, etc.) are intentionally left as fields — they are not configuration state and are not mentioned in this issue. — `src/OhData.Abstractions/EntitySetProfile.cs` — confidence: high.
+
 ### M6. Weak ETag prefix not handled in `If-Match` parsing
 
 `Trim('"')` doesn't handle `W/"..."` — the `W/` prefix remains, causing guaranteed mismatch. The server never generates weak ETags but should parse them correctly per RFC 7232.
 
+> **Resolved:** `CheckETagAsync` now trims whitespace, then strips a leading `W/` prefix (case-insensitive per RFC 7232), then trims quotes. A `W/"version"` header now compares correctly against the stored ETag. — `src/OhData.AspNetCore/OhDataEndpointFactory.cs` — confidence: high.
+
 ### M7. `$count` returns `application/json` — OData spec says `text/plain`
 
 `Results.Ok(count)` returns JSON content type. OData requires `text/plain` for `/$count`.
+
+> **Resolved (bundled with H3):** All three `/$count` handler branches now return `Results.Content(count.ToString(), "text/plain")`. — `src/OhData.AspNetCore/OhDataEndpointFactory.cs` — confidence: high.
 
 ### M8. `Put` field declared but never wired to a route — dead code / misleading
 
@@ -126,17 +138,25 @@ These `protected` fields can be modified after route registration, creating dive
 
 Stored in a singleton. Callers can mutate `config.Roles[0] = "hacker"`. Should use `IReadOnlyList<string>`.
 
+> **Resolved:** `AuthorizationConfig.Roles` property type changed from `string[]?` to `IReadOnlyList<string>?`. Constructor stores via `Array.AsReadOnly(roles)` — the wrapper prevents mutation even if the caller retains a reference to the original array. Factory callers updated from `{ Length: > 0 }` to `{ Count: > 0 }` pattern. — `src/OhData.Abstractions/IEntitySetEndpointSource.cs`, `src/OhData.AspNetCore/OhDataEndpointFactory.cs` — confidence: high.
+
 ### M10. Navigation expression cast assumes `MemberExpression` — breaks on wrapped expressions
 
 `HasMany`/`HasOptional`/`HasRequired` cast `navigation.Body` directly to `MemberExpression`. Expressions like `x => (object)x.Prop` (UnaryExpression) throw `InvalidCastException` with no useful message.
+
+> **Resolved:** Added `private static string GetNavigationPropertyName(Expression body)` that handles `MemberExpression` directly and recursively unwraps `UnaryExpression` (handles boxing casts and conversions). Throws `ArgumentException` with a clear message for any other expression type. All three `HasOptional`/`HasRequired`/`HasMany` overloads use this helper. — `src/OhData.Abstractions/EntitySetProfile.cs` — confidence: high.
 
 ### M11. `OhDataContext.RegisteredModelTypes` contains profile types, not model types
 
 Misleading property name.
 
+> **Resolved:** Renamed `RegisteredModelTypes` → `RegisteredProfileTypes` in `OhDataContext`. The property is `internal` and was only declared (never read externally), so no callers required updating. — `src/OhData.Abstractions/OhDataContext.cs` — confidence: high.
+
 ### M12. Named registration test creates two separate hosts instead of one host with two registrations
 
 `MultipleRegistrations_BothMapIndependently` doesn't actually test the keyed-singleton coexistence.
+
+> **Resolved:** Added `MultipleRegistrations_SingleHost_BothRoute` test that registers two named OhData instances (`v1`/`v2`) into a single `WebApplication`, maps both, starts the host, and verifies both route prefixes resolve. — `src/OhData.AspNetCore.Tests/EndpointMappingTests.cs` — confidence: high.
 
 ---
 
