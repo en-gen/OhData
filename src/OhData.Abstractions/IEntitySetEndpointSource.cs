@@ -4,19 +4,7 @@ namespace OhData.Abstractions;
 /// Holds per-profile authorization configuration. Stored in Abstractions (no ASP.NET Core refs)
 /// and applied by the factory in OhData.AspNetCore.
 /// </summary>
-public sealed class AuthorizationConfig
-{
-    public AuthorizationConfig(bool required, string? policy, string[]? roles)
-    {
-        Required = required;
-        Policy = policy;
-        Roles = roles is not null ? Array.AsReadOnly(roles) : null;
-    }
-
-    public bool Required { get; }
-    public string? Policy { get; }
-    public IReadOnlyList<string>? Roles { get; }
-}
+public sealed record AuthorizationConfig(bool Required, string? Policy, IReadOnlyList<string>? Roles);
 
 /// <summary>
 /// Internal contract used by OhData.AspNetCore to interrogate a profile and invoke its handlers
