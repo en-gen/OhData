@@ -30,7 +30,7 @@ public sealed class OhDataBuilder
     {
         if (string.IsNullOrWhiteSpace(prefix))
             throw new ArgumentException("Prefix must not be empty.", nameof(prefix));
-        _prefix = '/' + prefix.Trim('/');
+        _prefix = '/' + prefix.Trim().Trim('/');
         return this;
     }
 

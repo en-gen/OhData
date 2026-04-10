@@ -97,6 +97,18 @@ public class OhDataBuilderTests
     }
 
     [Fact]
+    public void AddProfile_Duplicate_Throws()
+    {
+        var services = new ServiceCollection();
+        Assert.Throws<InvalidOperationException>(() =>
+            services.AddOhData(o =>
+            {
+                o.AddProfile<WidgetProfile>();
+                o.AddProfile<WidgetProfile>(); // duplicate — should throw
+            }));
+    }
+
+    [Fact]
     public void AddOhData_Named_BothRegistrationsAccessible()
     {
         var services = new ServiceCollection();

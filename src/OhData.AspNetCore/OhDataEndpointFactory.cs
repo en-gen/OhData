@@ -26,6 +26,8 @@ internal static class OhDataEndpointFactory
         typeof(OhDataEndpointFactory)
             .GetMethod(nameof(MapEntitySet), BindingFlags.NonPublic | BindingFlags.Static)!;
 
+    private static readonly string[] PatchMethod = new[] { "PATCH" };
+
     private static string BuildMetadataXml(IEdmModel model)
     {
         var sb = new StringBuilder();
@@ -295,7 +297,6 @@ internal static class OhDataEndpointFactory
                 try
                 {
                     logger?.LogDebug("GET {Prefix}/{Name}", prefix, name);
-                    var result = await source.InvokeGetAllAsync(ct);
 
                     var odataCtx = new ODataQueryContext(registration.EdmModel, typeof(TModel), null);
                     var options  = new ODataQueryOptions<TModel>(odataCtx, ctx.Request);
@@ -306,6 +307,7 @@ internal static class OhDataEndpointFactory
                             "This resource does not support $filter, $orderby, $top, or $skip. " +
                             "Configure GetQueryable to enable server-side query processing.");
 
+                    var result = await source.InvokeGetAllAsync(ct);
                     var enumerable = result as IEnumerable<TModel> ?? Enumerable.Empty<TModel>();
                     var items = (object)enumerable.ToArray();
                     var finalItems = ApplySelectPostProcess(items, options);
@@ -349,10 +351,10 @@ internal static class OhDataEndpointFactory
                             : q;
                         return Results.Content(filtered.LongCount().ToString(), "text/plain");
                     }
-                    var items = await source.InvokeGetAllAsync(ct) as IEnumerable<TModel> ?? Enumerable.Empty<TModel>();
                     if (options.Filter is not null)
                         return ODataError(400, "UnsupportedQueryOption",
                             "$filter is not supported on this resource. Configure GetQueryable to enable server-side filtering.");
+                    var items = await source.InvokeGetAllAsync(ct) as IEnumerable<TModel> ?? Enumerable.Empty<TModel>();
                     return Results.Content(items.LongCount().ToString(), "text/plain");
                 }
                 catch (Microsoft.OData.ODataException ex)
@@ -436,7 +438,7 @@ internal static class OhDataEndpointFactory
         var usePatchDelta = source is IODataEntitySetEndpointSource odataPatchSrc && odataPatchSrc.HasPatchDelta;
         if (source.HasPatch || usePatchDelta)
         {
-            var rb = parentGroup.MapMethods($"/{name}({{key}})", new[] { "PATCH" }, async (string key, HttpContext ctx, CancellationToken ct) =>
+            var rb = parentGroup.MapMethods($"/{name}({{key}})", PatchMethod, async (string key, HttpContext ctx, CancellationToken ct) =>
             {
                 logger?.LogDebug("PATCH {Prefix}/{Name}({Key})", prefix, name, key);
                 try
@@ -448,11 +450,12 @@ internal static class OhDataEndpointFactory
                     var body = await JsonSerializer.DeserializeAsync<JsonElement>(
                         ctx.Request.Body, jsonOptions, ct);
 
+                    var model = body.Deserialize<TModel>(jsonOptions)!;
+
                     // Only validate key mismatch if the key property was explicitly present in the body.
                     // PATCH is a partial update — the key may be omitted. URL key is authoritative.
                     if (TryGetJsonProperty(body, source.KeyPropertyName, out _))
                     {
-                        var model = body.Deserialize<TModel>(jsonOptions)!;
                         var bodyKeyStr = source.InvokeGetKeyString(model);
                         var parsedKeyStr = string.Format(CultureInfo.InvariantCulture, "{0}", parsedKey);
                         if (!string.Equals(parsedKeyStr, bodyKeyStr, StringComparison.Ordinal))
@@ -482,13 +485,16 @@ internal static class OhDataEndpointFactory
                     }
                     else
                     {
-                        var model = body.Deserialize<TModel>(jsonOptions)!;
                         result = await source.InvokePatchAsync(parsedKey, model, ct);
                     }
 
                     if (result is not null && source.HasETag)
                         ctx.Response.Headers.ETag = $"\"{source.InvokeGetETag(result)}\"";
                     return result is not null ? Results.Ok(result) : ODataError(404, "NotFound", $"{name} with key '{key}' was not found.");
+                }
+                catch (JsonException ex)
+                {
+                    return ODataError(400, "InvalidBody", ex.Message);
                 }
                 catch (FormatException ex)
                 {

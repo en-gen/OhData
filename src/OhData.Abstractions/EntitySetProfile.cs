@@ -73,6 +73,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// </summary>
     protected void UseETag(params Expression<Func<TModel, object?>>[] propertySelectors)
     {
+        if (propertySelectors.Length == 0)
+            throw new ArgumentException("At least one property selector is required.", nameof(propertySelectors));
         var getters = propertySelectors.Select(e => e.Compile()).ToArray();
         var sep = new byte[] { 0x00 };
         _getETag = model =>
@@ -121,6 +123,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     {
         var entitySet = builder.EntitySet<TModel>(EntitySetName);
 
+        _resolvedMaxTop = MaxTop ?? defaults.MaxTop;
+        _resolvedIdempotentDelete = IdempotentDelete ?? defaults.IdempotentDelete;
+
         AdvancedConfigure(entitySet);
 
         // eject if AdvancedConfigure was overridden
@@ -136,9 +141,6 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
         // if AdvancedConfigure wasn't overridden, work your magic
         var entityType = entitySet.EntityType;
-
-        _resolvedMaxTop = MaxTop ?? defaults.MaxTop;
-        _resolvedIdempotentDelete = IdempotentDelete ?? defaults.IdempotentDelete;
 
         if (SelectEnabled ?? defaults.SelectEnabled) entityType.Select(SelectProperties);
         if (ExpandEnabled ?? defaults.ExpandEnabled) entityType.Expand(ExpandProperties);
@@ -159,14 +161,18 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
             {
                 var entityFunctionParam = entityFunction.Parameter(param.ParameterType, param.Name!);
                 if (param.IsOptional) entityFunctionParam.Optional();
-                if (param.HasDefaultValue) entityFunctionParam.HasDefaultValue($"{param.DefaultValue}");
+                if (param.HasDefaultValue)
+                {
+                    var defaultStr = param.DefaultValue is bool b ? (b ? "true" : "false") : $"{param.DefaultValue}";
+                    entityFunctionParam.HasDefaultValue(defaultStr);
+                }
             }
 
-            // Determine return type: unwrap Task<T> if needed
+            // Determine return type: unwrap Task<T>/ValueTask<T> if needed
             var rawReturn = method.ReturnType;
-            var returnType = rawReturn.IsGenericType && rawReturn.GetGenericTypeDefinition() == typeof(Task<>)
+            var returnType = rawReturn.IsGenericType && (rawReturn.GetGenericTypeDefinition() == typeof(Task<>) || rawReturn.GetGenericTypeDefinition() == typeof(ValueTask<>))
                 ? rawReturn.GetGenericArguments()[0]
-                : rawReturn == typeof(Task) || rawReturn == typeof(void) ? null : rawReturn;
+                : rawReturn == typeof(Task) || rawReturn == typeof(void) || rawReturn == typeof(ValueTask) ? null : rawReturn;
 
             if (returnType is not null)
             {
@@ -197,14 +203,18 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
             {
                 var entityActionParam = entityAction.Parameter(param.ParameterType, param.Name!);
                 if (param.IsOptional) entityActionParam.Optional();
-                if (param.HasDefaultValue) entityActionParam.HasDefaultValue($"{param.DefaultValue}");
+                if (param.HasDefaultValue)
+                {
+                    var defaultStr = param.DefaultValue is bool b ? (b ? "true" : "false") : $"{param.DefaultValue}";
+                    entityActionParam.HasDefaultValue(defaultStr);
+                }
             }
 
             // Resolve return type for $metadata, mirroring the function logic above.
             var rawActionReturn = method.ReturnType;
-            var actionReturnType = rawActionReturn.IsGenericType && rawActionReturn.GetGenericTypeDefinition() == typeof(Task<>)
+            var actionReturnType = rawActionReturn.IsGenericType && (rawActionReturn.GetGenericTypeDefinition() == typeof(Task<>) || rawActionReturn.GetGenericTypeDefinition() == typeof(ValueTask<>))
                 ? rawActionReturn.GetGenericArguments()[0]
-                : rawActionReturn == typeof(Task) || rawActionReturn == typeof(void) ? null : rawActionReturn;
+                : rawActionReturn == typeof(Task) || rawActionReturn == typeof(void) || rawActionReturn == typeof(ValueTask) ? null : rawActionReturn;
 
             if (actionReturnType is not null)
             {
@@ -352,6 +362,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// </summary>
     protected void RequireRoles(params string[] roles)
     {
+        if (roles.Length == 0)
+            throw new ArgumentException("At least one role must be specified.", nameof(roles));
         if (_authRoles is not null)
             throw new InvalidOperationException(
                 $"Roles have already been set on this profile. Call RequireRoles only once.");

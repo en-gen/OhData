@@ -157,7 +157,7 @@ public class EndpointMappingTests
     public async Task EmptyProfile_GetAll_Returns404()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EmptyProfile>());
-        var response = await fx.Client.GetAsync("/odata/Widgets");
+        var response = await fx.Client.GetAsync("/odata/EmptyWidgets");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
@@ -235,7 +235,7 @@ public class EndpointMappingTests
     public async Task Delete_RouteOmitted_WhenHandlerNotConfigured()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EmptyProfile>());
-        var response = await fx.Client.DeleteAsync("/odata/Widgets(1)");
+        var response = await fx.Client.DeleteAsync("/odata/EmptyWidgets(1)");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
@@ -273,7 +273,7 @@ public class EndpointMappingTests
     public async Task Patch_RouteOmitted_WhenHandlerNotConfigured()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EmptyProfile>());
-        var request = new HttpRequestMessage(HttpMethod.Patch, "/odata/Widgets(1)")
+        var request = new HttpRequestMessage(HttpMethod.Patch, "/odata/EmptyWidgets(1)")
         {
             Content = JsonContent.Create(new Widget { Name = "Changed" })
         };
@@ -756,19 +756,16 @@ public class EndpointMappingTests
         builder.Services.AddLogging();
         builder.Services.AddOhData("v1", o => o.WithPrefix("/v1").AddProfile<WidgetProfile>());
         builder.Services.AddOhData("v2", o => o.WithPrefix("/v2").AddProfile<SecondProfile>());
-        var app = builder.Build();
+        await using var app = builder.Build();
         app.MapOhData("v1");
         app.MapOhData("v2");
         await app.StartAsync();
-        var client = ((Microsoft.Extensions.Hosting.IHost)app).GetTestClient();
+        using var client = ((Microsoft.Extensions.Hosting.IHost)app).GetTestClient();
 
         var r1 = await client.GetAsync("/v1/Widgets");
         var r2 = await client.GetAsync("/v2/SecondWidgets");
         Assert.Equal(HttpStatusCode.OK, r1.StatusCode);
         Assert.Equal(HttpStatusCode.OK, r2.StatusCode);
-
-        client.Dispose();
-        await app.DisposeAsync();
     }
 
     // ── H1: GetAll null result returns empty collection ──────────────────────
@@ -938,12 +935,13 @@ public class EndpointMappingTests
     [Fact]
     public async Task WithDefaults_MaxTop_AppliedToProfiles()
     {
-        // Default MaxTop = 3 via builder; no per-profile override
+        // Default MaxTop = 1 via builder; no per-profile override.
+        // QueryableWidgetProfile has 2 items, so MaxTop=1 should cap results to 1.
         await using var fx = await TestHostBuilder.BuildAsync(o =>
-            o.WithDefaults(d => d.MaxTop = 3)
+            o.WithDefaults(d => d.MaxTop = 1)
              .AddProfile<QueryableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets");
-        Assert.Equal(2, json.GetProperty("value").GetArrayLength()); // only 2 items in store, both within cap
+        Assert.Equal(1, json.GetProperty("value").GetArrayLength());
     }
 
     // ── H3 revisit: temporal key types ────────────────────────────────────────
