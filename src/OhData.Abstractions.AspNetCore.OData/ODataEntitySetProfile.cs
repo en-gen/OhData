@@ -8,7 +8,6 @@ public abstract class ODataEntitySetProfile<TKey, TModel> : EntitySetProfile<TKe
     where TModel : class
 {
     protected new Func<ODataQueryOptions<TModel>, CancellationToken, Task<IQueryable<TModel>>>? GetQueryable = null;
-    protected Func<ODataQueryOptions<TModel>, CancellationToken, Task<IEnumerable<TModel>>>? GetEnumerable = null;
 
     /// <summary>
     /// PATCH handler that receives an OData <see cref="Delta{TModel}"/> representing only the
@@ -23,19 +22,12 @@ public abstract class ODataEntitySetProfile<TKey, TModel> : EntitySetProfile<TKe
 
     // IODataEntitySetEndpointSource implementation
     bool IODataEntitySetEndpointSource.HasGetODataQueryable  => GetQueryable is not null;
-    bool IODataEntitySetEndpointSource.HasGetODataEnumerable => GetEnumerable is not null;
     bool IODataEntitySetEndpointSource.HasPatchDelta => PatchDelta is not null;
 
     async Task<IQueryable<object>> IODataEntitySetEndpointSource.InvokeGetODataQueryableAsync(ODataQueryOptions options, CancellationToken ct)
     {
         var typedOptions = (ODataQueryOptions<TModel>)options;
         return (await GetQueryable!(typedOptions, ct)).Cast<object>();
-    }
-
-    async Task<IEnumerable<object>> IODataEntitySetEndpointSource.InvokeGetODataEnumerableAsync(ODataQueryOptions options, CancellationToken ct)
-    {
-        var typedOptions = (ODataQueryOptions<TModel>)options;
-        return (await GetEnumerable!(typedOptions, ct)).Cast<object>();
     }
 
     async Task<object?> IODataEntitySetEndpointSource.InvokePatchDeltaAsync(object key, Delta delta, CancellationToken ct)

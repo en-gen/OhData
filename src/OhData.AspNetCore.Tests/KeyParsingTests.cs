@@ -39,6 +39,15 @@ public class KeyParsingTests
     }
 
     [Fact]
+    public async Task GetById_StringKey_EscapedQuotes_Returns200()
+    {
+        // OData spec: single quotes within string keys are escaped as ''
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ThingProfile>());
+        var response = await fx.Client.GetAsync("/odata/Things('O''Brien')");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
     public async Task BadIntKey_Returns400()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
@@ -65,7 +74,7 @@ public class KeyParsingTests
 
     private class ThingProfile : EntitySetProfile<string, Thing>
     {
-        private static readonly List<Thing> Store = new() { new() { Id = "alpha" } };
+        private static readonly List<Thing> Store = new() { new() { Id = "alpha" }, new() { Id = "O'Brien" } };
 
         public ThingProfile() : base(x => x.Id)
         {
