@@ -69,4 +69,6 @@ app.MapOhData("v2").WithOpenApi().WithGroupName("v2");
 // Redirect root to Scalar v1 doc
 app.MapGet("/", () => Results.Redirect("/scalar/v1")).ExcludeFromDescription();
 
+app.MapGet("/health", () => Results.Ok()).ExcludeFromDescription();
+
 app.Run();
