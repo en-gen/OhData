@@ -45,7 +45,11 @@ public sealed class ODataClientException : Exception
         var statusCode = (int)response.StatusCode;
 
         string? body = null;
-        try { body = await response.Content.ReadAsStringAsync(ct); }
+        try
+        {
+            if (response.Content is not null)
+                body = await response.Content.ReadAsStringAsync(ct);
+        }
         catch { /* best-effort */ }
 
         if (body is not null)
