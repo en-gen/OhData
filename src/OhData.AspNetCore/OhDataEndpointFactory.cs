@@ -77,7 +77,7 @@ internal static class OhDataEndpointFactory
         {
             _mapEntitySetMethod
                 .MakeGenericMethod(profile.KeyType, profile.ModelType)
-                .Invoke(null, new object[] { group, profile, registration, loggerFactory });
+                .Invoke(null, new object?[] { group, profile, registration, loggerFactory });
         }
 
         return group;
