@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using OhData.AspNetCore;
 using OhData.AspNetCore.Versioning;
@@ -42,6 +43,12 @@ var app = builder.Build();
 // Seed the in-memory database
 DbSeeder.Seed(app.Services.GetRequiredService<AppDbContext>());
 
+// Support reverse proxies (Render, Azure, etc.) forwarding scheme/host headers
+app.UseForwardedHeaders(new ForwardedHeadersOptions
+{
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
+});
+
 app.UseSwagger();
 app.UseSwaggerUI(c =>
 {
@@ -58,7 +65,7 @@ app.MapScalarApiReference(options =>
 app.MapOhData("v1").WithOpenApi().WithGroupName("v1");
 app.MapOhData("v2").WithOpenApi().WithGroupName("v2");
 
-// Redirect root to Scalar
-app.MapGet("/", () => Results.Redirect("/scalar")).ExcludeFromDescription();
+// Redirect root to Scalar v1 doc
+app.MapGet("/", () => Results.Redirect("/scalar/v1")).ExcludeFromDescription();
 
 app.Run();
