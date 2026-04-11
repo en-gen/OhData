@@ -25,10 +25,10 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected bool? OrderByEnabled { get; init; }
     protected bool? CountEnabled { get; init; }
 
-    protected string[]? SelectProperties { get; init; } = null;
-    protected string[]? ExpandProperties { get; init; } = null;
-    protected string[]? FilterProperties { get; init; } = null;
-    protected string[]? OrderByProperties { get; init; } = null;
+    private string[]? _selectProperties;
+    private string[]? _expandProperties;
+    private string[]? _filterProperties;
+    private string[]? _orderByProperties;
 
     protected Func<CancellationToken, Task<IEnumerable<TModel>>>? GetAll = null;
     protected Func<CancellationToken, Task<IQueryable<TModel>>>? GetQueryable = null;
@@ -146,10 +146,10 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         // if AdvancedConfigure wasn't overridden, work your magic
         var entityType = entitySet.EntityType;
 
-        if (SelectEnabled ?? defaults.SelectEnabled) entityType.Select(SelectProperties);
-        if (ExpandEnabled ?? defaults.ExpandEnabled) entityType.Expand(ExpandProperties);
-        if (FilterEnabled ?? defaults.FilterEnabled) entityType.Filter(FilterProperties);
-        if (OrderByEnabled ?? defaults.OrderByEnabled) entityType.OrderBy(OrderByProperties);
+        if (SelectEnabled ?? defaults.SelectEnabled) entityType.Select(_selectProperties);
+        if (ExpandEnabled ?? defaults.ExpandEnabled) entityType.Expand(_expandProperties);
+        if (FilterEnabled ?? defaults.FilterEnabled) entityType.Filter(_filterProperties);
+        if (OrderByEnabled ?? defaults.OrderByEnabled) entityType.OrderBy(_orderByProperties);
         if (CountEnabled ?? defaults.CountEnabled) entityType.Count();
 
         entityType.HasKey(_getKey);
@@ -242,6 +242,99 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
         _resolvedBoundFunctions = _functions.Select(d => BoundOperationDefinition.From(d, isAction: false)).ToList();
         _resolvedBoundActions = _actions.Select(d => BoundOperationDefinition.From(d, isAction: true)).ToList();
+    }
+
+    /// <summary>
+    /// Restricts the properties that may appear in <c>$filter</c> queries.
+    /// Set using either this overload or the string overload, not both.
+    /// Pass no arguments (or call with <c>null</c>) to allow all properties.
+    /// </summary>
+    protected void FilterProperties(params Expression<Func<TModel, object?>>[] properties)
+        => _filterProperties = ExtractNames(properties);
+
+    /// <summary>
+    /// Restricts the properties that may appear in <c>$filter</c> queries.
+    /// Set using either this overload or the expression overload, not both.
+    /// Pass no arguments (or call with <c>null</c>) to allow all properties.
+    /// </summary>
+    protected void FilterProperties(params string[]? properties)
+        => _filterProperties = properties;
+
+    /// <summary>
+    /// Restricts the properties that may appear in <c>$orderby</c> clauses.
+    /// Set using either this overload or the string overload, not both.
+    /// Pass no arguments (or call with <c>null</c>) to allow all properties.
+    /// </summary>
+    protected void OrderByProperties(params Expression<Func<TModel, object?>>[] properties)
+        => _orderByProperties = ExtractNames(properties);
+
+    /// <summary>
+    /// Restricts the properties that may appear in <c>$orderby</c> clauses.
+    /// Set using either this overload or the expression overload, not both.
+    /// Pass no arguments (or call with <c>null</c>) to allow all properties.
+    /// </summary>
+    protected void OrderByProperties(params string[]? properties)
+        => _orderByProperties = properties;
+
+    /// <summary>
+    /// Restricts the properties that may appear in <c>$select</c> clauses.
+    /// Set using either this overload or the string overload, not both.
+    /// Pass no arguments (or call with <c>null</c>) to allow all properties.
+    /// </summary>
+    protected void SelectProperties(params Expression<Func<TModel, object?>>[] properties)
+        => _selectProperties = ExtractNames(properties);
+
+    /// <summary>
+    /// Restricts the properties that may appear in <c>$select</c> clauses.
+    /// Set using either this overload or the expression overload, not both.
+    /// Pass no arguments (or call with <c>null</c>) to allow all properties.
+    /// </summary>
+    protected void SelectProperties(params string[]? properties)
+        => _selectProperties = properties;
+
+    /// <summary>
+    /// Restricts the properties that may be used in <c>$expand</c> clauses.
+    /// Set using either this overload or the string overload, not both.
+    /// Pass no arguments (or call with <c>null</c>) to allow all properties.
+    /// </summary>
+    protected void ExpandProperties(params Expression<Func<TModel, object?>>[] properties)
+        => _expandProperties = ExtractNames(properties);
+
+    /// <summary>
+    /// Restricts the properties that may be used in <c>$expand</c> clauses.
+    /// Set using either this overload or the expression overload, not both.
+    /// Pass no arguments (or call with <c>null</c>) to allow all properties.
+    /// </summary>
+    protected void ExpandProperties(params string[]? properties)
+        => _expandProperties = properties;
+
+    /// <summary>
+    /// Extracts member names from a set of simple property-access expressions.
+    /// Throws <see cref="ArgumentException"/> if an expression is not a direct member access.
+    /// </summary>
+    private static string[] ExtractNames(Expression<Func<TModel, object?>>[] expressions)
+    {
+        var names = new string[expressions.Length];
+        for (var i = 0; i < expressions.Length; i++)
+        {
+            var body = expressions[i].Body;
+
+            // Strip boxing Convert / ConvertChecked nodes (e.g. value types cast to object)
+            if (body is UnaryExpression unary &&
+                (unary.NodeType == ExpressionType.Convert || unary.NodeType == ExpressionType.ConvertChecked))
+            {
+                body = unary.Operand;
+            }
+
+            if (body is not MemberExpression member)
+                throw new ArgumentException(
+                    $"Expression at index {i} must be a direct property access (e.g. x => x.Name). " +
+                    $"Nested access such as x => x.Category.Name is not supported.",
+                    nameof(expressions));
+
+            names[i] = member.Member.Name;
+        }
+        return names;
     }
 
     protected void HasOptional<TNavigation>(Expression<Func<TModel, TNavigation>> navigation)
