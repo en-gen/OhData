@@ -1,3 +1,5 @@
+using System;
+
 namespace OhData.Client;
 
 /// <summary>

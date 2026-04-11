@@ -1,3 +1,4 @@
+using System;
 using OhData.Client.Internal;
 using Xunit;
 
