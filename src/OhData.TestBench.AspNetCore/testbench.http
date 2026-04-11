@@ -1,0 +1,193 @@
+### OhData TestBench — sample HTTP requests
+### Use VS Code REST Client or JetBrains HTTP Client
+### Start with: dotnet run --project src/OhData.TestBench.AspNetCore
+
+@baseUrl = http://localhost:5099
+
+# ── Service documents & metadata ─────────────────────────────────────────────
+
+GET {{baseUrl}}/v1
+
+###
+
+GET {{baseUrl}}/v2
+
+###
+
+GET {{baseUrl}}/v1/$metadata
+
+###
+
+GET {{baseUrl}}/v2/$metadata
+
+###
+
+# ── Products — collection queries ────────────────────────────────────────────
+
+### All products
+GET {{baseUrl}}/v1/Products
+
+###
+
+### Filter by category
+GET {{baseUrl}}/v1/Products?$filter=Category eq 'Hardware'
+
+###
+
+### Filter by price range
+GET {{baseUrl}}/v1/Products?$filter=Price lt 15.00
+
+###
+
+### Order by price descending, take top 3
+GET {{baseUrl}}/v1/Products?$orderby=Price desc&$top=3
+
+###
+
+### Page: skip 2, take 2
+GET {{baseUrl}}/v1/Products?$skip=2&$top=2&$orderby=Id
+
+###
+
+### Inline count
+GET {{baseUrl}}/v1/Products?$count=true
+
+###
+
+### Inline count with filter
+GET {{baseUrl}}/v1/Products?$count=true&$filter=Category eq 'Electronics'
+
+###
+
+### Select specific properties
+GET {{baseUrl}}/v1/Products?$select=Name,Price
+
+###
+
+### Combine filter + orderby + select
+GET {{baseUrl}}/v1/Products?$filter=Price gt 10.00&$orderby=Price&$select=Name,Price,Category
+
+###
+
+### Count endpoint
+GET {{baseUrl}}/v1/Products/$count
+
+###
+
+### Count with filter
+GET {{baseUrl}}/v1/Products/$count?$filter=Category eq 'Hardware'
+
+###
+
+# ── Products — single item ────────────────────────────────────────────────────
+
+### Get by id
+GET {{baseUrl}}/v1/Products(1)
+
+###
+
+### Get non-existent id → 404
+GET {{baseUrl}}/v1/Products(999)
+
+###
+
+# ── Products — write operations ───────────────────────────────────────────────
+
+### Create a product
+POST {{baseUrl}}/v1/Products
+Content-Type: application/json
+
+{
+  "name": "New Widget",
+  "price": 7.50,
+  "category": "Hardware"
+}
+
+###
+
+### Update a product (replace)
+PUT {{baseUrl}}/v1/Products(1)
+Content-Type: application/json
+
+{
+  "name": "Updated Widget",
+  "price": 11.99,
+  "category": "Hardware"
+}
+
+###
+
+### Partial update
+PATCH {{baseUrl}}/v1/Products(1)
+Content-Type: application/json
+
+{
+  "price": 8.99
+}
+
+###
+
+### Delete a product
+DELETE {{baseUrl}}/v1/Products(3)
+
+###
+
+# ── Categories — simple GetAll (string key) ───────────────────────────────────
+
+GET {{baseUrl}}/v1/Categories
+
+###
+
+GET {{baseUrl}}/v1/Categories('Hardware')
+
+###
+
+# ── Orders — navigation property routing (v2 only) ───────────────────────────
+
+### All orders
+GET {{baseUrl}}/v2/Orders
+
+###
+
+### Order by id
+GET {{baseUrl}}/v2/Orders(11111111-1111-1111-1111-111111111111)
+
+###
+
+### Navigation route — order lines for a specific order
+GET {{baseUrl}}/v2/Orders(11111111-1111-1111-1111-111111111111)/Lines
+
+###
+
+### Navigation route — different order
+GET {{baseUrl}}/v2/Orders(22222222-2222-2222-2222-222222222222)/Lines
+
+###
+
+# ── ETags (if GetETag is configured) ─────────────────────────────────────────
+
+### If-Match: optimistic concurrency check
+### First get the ETag from a GET response, then use it:
+PUT {{baseUrl}}/v1/Products(2)
+Content-Type: application/json
+If-Match: "some-etag-value"
+
+{
+  "name": "Updated Gadget",
+  "price": 22.99,
+  "category": "Electronics"
+}
+
+###
+
+# ── Versioning — v2 has Orders, v1 does not ───────────────────────────────────
+
+### Orders exist in v2
+GET {{baseUrl}}/v2/Orders
+
+###
+
+### Orders do not exist in v1 → 404
+GET {{baseUrl}}/v1/Orders
+
+###

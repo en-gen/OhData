@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "OhData TestBench",
+      "runtimeExecutable": "dotnet",
+      "runtimeArgs": ["run", "--project", "src/OhData.TestBench.AspNetCore"],
+      "port": 5001
+    }
+  ]
+}
