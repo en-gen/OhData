@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using System.Linq;
 using Microsoft.OData.Edm;
 using OhData.Abstractions;
 
