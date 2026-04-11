@@ -49,18 +49,16 @@ app.UseForwardedHeaders(new ForwardedHeadersOptions
     ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
 });
 
-app.UseSwagger();
+// Expose OpenAPI JSON at /openapi/{documentName}.json — Scalar's expected default
+app.UseSwagger(c => c.RouteTemplate = "/openapi/{documentName}.json");
 app.UseSwaggerUI(c =>
 {
-    c.SwaggerEndpoint("/swagger/v1/swagger.json", "v1");
-    c.SwaggerEndpoint("/swagger/v2/swagger.json", "v2");
+    c.SwaggerEndpoint("/openapi/v1.json", "v1");
+    c.SwaggerEndpoint("/openapi/v2.json", "v2");
 });
 
-// Scalar API reference at /scalar — point at Swashbuckle's JSON endpoints
-app.MapScalarApiReference(options =>
-{
-    options.WithOpenApiRoutePattern("/swagger/{documentName}/swagger.json");
-});
+// Scalar API reference at /scalar/{documentName} — uses /openapi/{documentName}.json by default
+app.MapScalarApiReference();
 
 app.MapOhData("v1").WithOpenApi().WithGroupName("v1");
 app.MapOhData("v2").WithOpenApi().WithGroupName("v2");
