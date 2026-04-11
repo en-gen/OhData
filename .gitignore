@@ -352,3 +352,7 @@ MigrationBackup/
 
 # Ionide (cross platform F# VS Code tools) working folder
 .ionide/
+
+# k6 generated reports (generated output; keep the directory itself)
+/k6/reports/*
+!/k6/reports/.gitkeep

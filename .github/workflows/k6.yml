@@ -1,0 +1,27 @@
+name: k6 Integration Tests
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+
+jobs:
+  k6:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run k6 tests
+        run: docker compose -f docker-compose.k6.yml up --abort-on-container-exit --exit-code-from k6
+      - name: Upload k6 report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-report
+          path: k6/reports/
+      - name: Write summary
+        if: always()
+        run: |
+          if [ -f k6/reports/summary.md ]; then
+            cat k6/reports/summary.md >> $GITHUB_STEP_SUMMARY
+          fi
