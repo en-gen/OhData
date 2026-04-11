@@ -2,6 +2,8 @@
 
 	<PropertyGroup>
 		<TargetFramework>net8.0</TargetFramework>
+		<!-- AD0001: RouteHandlerAnalyzer NullReferenceException — pre-existing analyzer bug, not our code -->
+		<NoWarn>$(NoWarn);AD0001</NoWarn>
 	</PropertyGroup>
 
 	<ItemGroup>
