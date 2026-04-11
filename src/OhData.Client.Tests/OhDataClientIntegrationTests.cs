@@ -151,4 +151,32 @@ public class OhDataClientIntegrationTests : IAsyncDisposable
         var widgets = await Client.For<Widget>().ToListAsync();
         Assert.Equal(2, widgets.Count);
     }
+
+    // ── C6: ToPageAsync ──────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ToPageAsync_ReturnsBothItemsAndTotalCount()
+    {
+        var page = await Client.For<Widget>().ToPageAsync();
+        Assert.Equal(2, page.Items.Count);
+        Assert.Equal(2L, page.TotalCount);
+    }
+
+    [Fact]
+    public async Task ToPageAsync_WithTop_ItemsSubsetButCountIsTotal()
+    {
+        var page = await Client.For<Widget>().Top(1).ToPageAsync();
+        Assert.Single(page.Items);
+        // Total count reflects all matches, not the page size
+        Assert.Equal(2L, page.TotalCount);
+    }
+
+    [Fact]
+    public async Task IncludeCount_ToListAsync_DoesNotBreak()
+    {
+        // IncludeCount() affects URL but ToListAsync() only reads the value array —
+        // the presence of @odata.count in the response should not cause issues.
+        var items = await Client.For<Widget>().IncludeCount().ToListAsync();
+        Assert.Equal(2, items.Count);
+    }
 }

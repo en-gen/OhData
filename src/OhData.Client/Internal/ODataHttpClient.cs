@@ -38,6 +38,20 @@ internal sealed class ODataHttpClient
         return envelope?.Value ?? [];
     }
 
+    internal async Task<ODataPage<T>> GetPageAsync<T>(string url, CancellationToken ct)
+        where T : class
+    {
+        using var response = await _http.GetAsync(url, ct);
+        await EnsureSuccessAsync(response, url, ct);
+        var envelope = await response.Content
+            .ReadFromJsonAsync<ODataCollectionResponse<T>>(_options.JsonOptions, ct);
+        return new ODataPage<T>
+        {
+            Items      = envelope?.Value ?? [],
+            TotalCount = envelope?.Count,
+        };
+    }
+
     // ── GET single ──────────────────────────────────────────────────────────────
 
     internal async Task<T?> GetSingleAsync<T>(string url, CancellationToken ct)
