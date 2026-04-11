@@ -100,7 +100,7 @@ internal sealed class FilterTranslator : ExpressionVisitor
         else
         {
             // Captured variable or outer-scope field — evaluate at translation time
-            var value = Expression.Lambda(node).Compile().DynamicInvoke();
+            var value = Expression.Lambda<Func<object?>>(Expression.Convert(node, typeof(object))).Compile()();
             _sb.Append(FormatLiteral(value));
         }
         return node;

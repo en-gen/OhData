@@ -9,6 +9,14 @@ public class EntitySetClientUrlTests
 {
     private sealed class Widget { public int Id { get; set; } public string Name { get; set; } = ""; public decimal Price { get; set; } }
 
+    // Helper entity with a navigation property for C5/C7 validation tests
+    private sealed class Product { public int Id { get; set; } public string Name { get; set; } = ""; public Category Category { get; set; } = new(); }
+    private sealed class Category { public string Name { get; set; } = ""; }
+
+    private static EntitySetClient<Product> ProductBuilder() =>
+        new OhDataClient(new HttpClient { BaseAddress = new Uri("http://localhost/") })
+            .For<Product>("Products");
+
     private static EntitySetClient<Widget> Builder() =>
         new OhDataClient(new HttpClient { BaseAddress = new Uri("http://localhost/") })
             .For<Widget>("Widgets");
@@ -137,5 +145,64 @@ public class EntitySetClientUrlTests
             Guid g    => $"Widgets({g})",
             _         => $"Widgets({key})",
         };
+    }
+
+    // ── C5: Select params expression overload ───────────────────────────────────
+
+    [Fact]
+    public void Select_TwoDirectMemberExpressions_ProducesCorrectUrl() =>
+        Assert.Equal(
+            "Widgets?$select=Id%2CName",
+            Builder().Select(x => x.Id, x => x.Name).BuildCollectionUrl());
+
+    [Fact]
+    public void Select_ThreeDirectMemberExpressions_ProducesCorrectUrl() =>
+        Assert.Equal(
+            "Widgets?$select=Id%2CName%2CPrice",
+            Builder().Select(x => x.Id, x => x.Name, x => x.Price).BuildCollectionUrl());
+
+    [Fact]
+    public void Select_NavigationPathInParams_ThrowsArgumentException() =>
+        Assert.Throws<ArgumentException>(() =>
+            ProductBuilder().Select(x => x.Id, x => x.Category.Name));
+
+    // ── C7: Expand params expression overload ───────────────────────────────────
+
+    [Fact]
+    public void Expand_TwoDirectMemberExpressions_ProducesCorrectUrl()
+    {
+        // Product has Category; add a second nav property class for the test
+        var url = ProductBuilder().Expand(x => x.Category).BuildCollectionUrl();
+        Assert.Equal("Products?$expand=Category", url);
+    }
+
+    [Fact]
+    public void Expand_NavigationChainInParams_ThrowsArgumentException() =>
+        Assert.Throws<ArgumentException>(() =>
+            ProductBuilder().Expand(x => x.Id, x => x.Category.Name));
+
+    // ── C6: IncludeCount and ToPageAsync URL ────────────────────────────────────
+
+    [Fact]
+    public void IncludeCount_AppendsCountParam() =>
+        Assert.Contains("$count=true", Builder().IncludeCount().BuildCollectionUrl());
+
+    [Fact]
+    public void IncludeCount_WithFilterAndTop_AllParamsPresent()
+    {
+        var url = Builder().Filter(x => x.Price > 5).Top(10).IncludeCount().BuildCollectionUrl();
+        Assert.Contains("$filter=",    url);
+        Assert.Contains("$top=10",     url);
+        Assert.Contains("$count=true", url);
+    }
+
+    [Fact]
+    public void IncludeCount_DoesNotAffectBaseBuilder()
+    {
+        var base_ = Builder().Filter(x => x.Price > 10);
+        var withCount = base_.IncludeCount();
+
+        Assert.DoesNotContain("$count", base_.BuildCollectionUrl());
+        Assert.Contains("$count=true",  withCount.BuildCollectionUrl());
     }
 }

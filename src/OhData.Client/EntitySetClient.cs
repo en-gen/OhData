@@ -18,12 +18,13 @@ public sealed class EntitySetClient<T> where T : class
     // ── Immutable state ─────────────────────────────────────────────────────────
 
     private sealed record QueryState(
-        string? Filter   = null,
-        string? Select   = null,
-        string? OrderBy  = null,
-        string? Expand   = null,
-        int?    Top      = null,
-        int?    Skip     = null);
+        string? Filter     = null,
+        string? Select     = null,
+        string? OrderBy    = null,
+        string? Expand     = null,
+        int?    Top        = null,
+        int?    Skip       = null,
+        bool    WithCount  = false);
 
     private readonly ODataHttpClient    _http;
     private readonly OhDataClientOptions _options;
@@ -61,6 +62,25 @@ public sealed class EntitySetClient<T> where T : class
     public EntitySetClient<T> Select(Expression<Func<T, object?>> selector)
         => With(_state with { Select = SelectTranslator.Translate(selector) });
 
+    /// <summary>
+    /// Projects the response to a subset of properties using typed member-access expressions.
+    /// Each expression must be a direct (non-chained) member access on <typeparamref name="T"/>
+    /// (e.g. <c>x => x.Id</c>). Navigation paths such as <c>x => x.Category.Name</c> are
+    /// not supported here — use <see cref="Expand(Expression{Func{T, object?}}[])"/> for
+    /// navigation properties.
+    /// </summary>
+    /// <exception cref="ArgumentException">
+    /// Thrown when any expression is not a direct member access on <typeparamref name="T"/>.
+    /// </exception>
+    public EntitySetClient<T> Select(params Expression<Func<T, object?>>[] properties)
+    {
+        var names = new string[properties.Length];
+        for (var i = 0; i < properties.Length; i++)
+            names[i] = ExtractDirectMember(properties[i],
+                "$select does not support navigation paths; use Expand for navigation properties.");
+        return With(_state with { Select = string.Join(',', names) });
+    }
+
     /// <summary>Projects the response to a subset of properties by name.</summary>
     public EntitySetClient<T> Select(params string[] properties)
         => With(_state with { Select = string.Join(',', properties) });
@@ -69,6 +89,24 @@ public sealed class EntitySetClient<T> where T : class
     /// <example><code>.Expand(x => x.Category)</code></example>
     public EntitySetClient<T> Expand(Expression<Func<T, object?>> navProperty)
         => With(_state with { Expand = ExtractPath(navProperty) });
+
+    /// <summary>
+    /// Expands multiple navigation properties using typed member-access expressions.
+    /// Each expression must be a direct (non-chained) member access on <typeparamref name="T"/>
+    /// (e.g. <c>x => x.Category</c>). For complex nested OData <c>$expand</c> syntax
+    /// (e.g. <c>Category($select=Name)</c>) use the string overload instead.
+    /// </summary>
+    /// <exception cref="ArgumentException">
+    /// Thrown when any expression is not a direct member access on <typeparamref name="T"/>.
+    /// </exception>
+    public EntitySetClient<T> Expand(params Expression<Func<T, object?>>[] navProperties)
+    {
+        var names = new string[navProperties.Length];
+        for (var i = 0; i < navProperties.Length; i++)
+            names[i] = ExtractDirectMember(navProperties[i],
+                "$expand does not support nested expansion; use the string overload for complex $expand syntax.");
+        return With(_state with { Expand = string.Join(',', names) });
+    }
 
     /// <summary>Expands navigation properties by name.</summary>
     public EntitySetClient<T> Expand(params string[] navProperties)
@@ -108,6 +146,13 @@ public sealed class EntitySetClient<T> where T : class
     /// <summary>Skips the first <paramref name="count"/> results (for paging).</summary>
     public EntitySetClient<T> Skip(int count) => With(_state with { Skip = count });
 
+    /// <summary>
+    /// Requests an inline total count from the server by appending <c>$count=true</c>.
+    /// The count is available on the <see cref="ODataPage{T}.TotalCount"/> property
+    /// of the result returned by <see cref="ToPageAsync"/>.
+    /// </summary>
+    public EntitySetClient<T> IncludeCount() => With(_state with { WithCount = true });
+
     // ── Key transition ──────────────────────────────────────────────────────────
 
     /// <summary>
@@ -138,6 +183,13 @@ public sealed class EntitySetClient<T> where T : class
         => _http.GetCountAsync(BuildCountUrl(), ct);
 
     /// <summary>
+    /// Executes GET with <c>$count=true</c> and returns both the items and the total
+    /// matching count (before any <c>$top</c>/<c>$skip</c>).
+    /// </summary>
+    public Task<ODataPage<T>> ToPageAsync(CancellationToken ct = default)
+        => _http.GetPageAsync<T>(With(_state with { WithCount = true }).BuildCollectionUrl(), ct);
+
+    /// <summary>
     /// POST a new entity. Returns the created entity as returned by the server
     /// (including any server-assigned key or computed fields).
     /// </summary>
@@ -155,6 +207,7 @@ public sealed class EntitySetClient<T> where T : class
         if (_state.Expand  is not null) parts.Add($"$expand={Uri.EscapeDataString(_state.Expand)}");
         if (_state.Top.HasValue)        parts.Add($"$top={_state.Top.Value}");
         if (_state.Skip.HasValue)       parts.Add($"$skip={_state.Skip.Value}");
+        if (_state.WithCount)           parts.Add("$count=true");
 
         return parts.Count == 0
             ? _entitySetName
@@ -200,5 +253,27 @@ public sealed class EntitySetClient<T> where T : class
 
         throw new ArgumentException(
             $"Expected a property-access expression (e.g. x => x.Name), got: '{expr}'.");
+    }
+
+    /// <summary>
+    /// Extracts the name of a single direct member of <typeparamref name="T"/> from
+    /// <paramref name="expr"/>. Throws <see cref="ArgumentException"/> (with
+    /// <paramref name="errorMessage"/>) when the expression is chained
+    /// (e.g. <c>x => x.Category.Name</c>) rather than a direct access
+    /// (e.g. <c>x => x.Id</c>).
+    /// </summary>
+    private static string ExtractDirectMember(Expression<Func<T, object?>> expr, string errorMessage)
+    {
+        Expression body = expr.Body;
+        while (body is UnaryExpression u
+            && u.NodeType is ExpressionType.Convert or ExpressionType.ConvertChecked)
+            body = u.Operand;
+
+        if (body is MemberExpression member
+            && member.Expression is ParameterExpression p
+            && p == expr.Parameters[0])
+            return member.Member.Name;
+
+        throw new ArgumentException(errorMessage);
     }
 }
