@@ -3,6 +3,10 @@
 ##
 ## Get latest from https://github.com/github/gitignore/blob/master/VisualStudio.gitignore
 
+# Claude Code worktree directories (git worktrees managed by Claude Code CLI)
+.claude/worktrees/
+.claire/
+
 # User-specific files
 *.rsuser
 *.suo
