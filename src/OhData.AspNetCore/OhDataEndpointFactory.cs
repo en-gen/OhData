@@ -402,7 +402,7 @@ internal static class OhDataEndpointFactory
                 var baseUrl = BuildBaseUrl(ctx, prefix);
                 return Results.Created($"{baseUrl}/{name}({keyStr})", result);
             });
-            rb.Produces<TModel>(201).Produces(400);
+            rb.WithTags(name).Produces<TModel>(201).Produces(400);
         }
 
         if (source.HasPutById)
