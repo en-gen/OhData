@@ -9,6 +9,8 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    env:
+      HUSKY: 0   # skip git hook installation in CI
 
     steps:
       - uses: actions/checkout@v4
@@ -22,16 +24,21 @@ jobs:
       - name: Restore
         run: dotnet restore src/OhData.sln
 
+      - name: Format check
+        run: dotnet format src/OhData.sln --verify-no-changes
+
       - name: Build
         run: dotnet build src/OhData.sln --no-restore -c Release
 
-      - name: Test
-        run: dotnet test src/OhData.AspNetCore.Tests/OhData.AspNetCore.Tests.csproj --no-build -c Release --logger "trx;LogFileName=test-results.trx"
+      - name: Test with coverage
+        run: |
+          dotnet test src/OhData.AspNetCore.Tests/OhData.AspNetCore.Tests.csproj \
+            --no-build -c Release \
+            --collect:"XPlat Code Coverage" \
+            --results-directory ./coverage
 
-      - name: Publish test results
-        uses: dorny/test-reporter@v1
-        if: always()
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
         with:
-          name: Test Results
-          path: '**/test-results.trx'
-          reporter: dotnet-trx
+          directory: ./coverage
+          fail_ci_if_error: false

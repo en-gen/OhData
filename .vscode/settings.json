@@ -1,5 +1,12 @@
 {
   "workbench.editorAssociations": {
     "*.md": "vscode.markdown.preview.editor"
+  },
+  "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": {
+    "source.fixAll": "explicit"
+  },
+  "[csharp]": {
+    "editor.defaultFormatter": "ms-dotnettools.csharp"
   }
 }

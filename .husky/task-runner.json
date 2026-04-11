@@ -1,0 +1,10 @@
+{
+  "tasks": [
+    {
+      "name": "dotnet-format",
+      "command": "dotnet",
+      "args": ["format", "src/OhData.sln", "--include", "${staged}", "--no-restore"],
+      "include": ["**/*.cs", "**/*.csproj"]
+    }
+  ]
+}

@@ -4,6 +4,7 @@ updates:
     directory: /src
     schedule:
       interval: weekly
+<<<<<<< HEAD
     open-pull-requests-limit: 10
     target-branch: develop
 

@@ -1,4 +1,6 @@
-﻿namespace OhData.Abstractions;
+using System;
+
+namespace OhData.Abstractions;
 
 public class EntitySetDefaults
 {

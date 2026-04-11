@@ -1,4 +1,4 @@
-﻿using Microsoft.OData.ModelBuilder;
+using Microsoft.OData.ModelBuilder;
 
 namespace OhData.Abstractions;
 
