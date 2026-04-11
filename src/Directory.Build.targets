@@ -1,0 +1,16 @@
+<Project>
+  <!--
+    Auto-install Husky git hooks after every restore.
+    Set HUSKY=0 or CI=true to skip (CI enforces format via dotnet format - -verify-no-changes instead).
+  -->
+  <Target Name="HuskyInstall" AfterTargets="Restore" Condition="'$(HUSKY)' != '0' AND '$(CI)' != 'true'">
+    <Exec Command="dotnet tool restore"
+          StandardOutputImportance="Low"
+          StandardErrorImportance="Normal"
+          WorkingDirectory="$(MSBuildThisFileDirectory)../" />
+    <Exec Command="dotnet husky install"
+          StandardOutputImportance="Low"
+          StandardErrorImportance="Normal"
+          WorkingDirectory="$(MSBuildThisFileDirectory)../" />
+  </Target>
+</Project>
