@@ -236,8 +236,12 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
         CountEnabled   = true;
 
         // Restrict which properties can be used in each operation
-        FilterProperties  = new[] { "CustomerId", "Status", "CreatedAt" };
-        OrderByProperties = new[] { "CreatedAt", "Total" };
+        // Expression overload (preferred — compile-time safe, IntelliSense, refactorable):
+        FilterProperties(x => x.CustomerId, x => x.Status, x => x.CreatedAt);
+        OrderByProperties(x => x.CreatedAt, x => x.Total);
+
+        // String overload (escape hatch for dynamic/late-bound cases):
+        // FilterProperties("CustomerId", "Status", "CreatedAt");
 
         // Declare navigation properties for $expand
         HasOptional(x => x.Customer);
