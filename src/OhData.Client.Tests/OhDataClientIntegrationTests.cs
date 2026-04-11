@@ -104,7 +104,8 @@ public class OhDataClientIntegrationTests : IAsyncDisposable
     {
         var updated = await Client.For<Widget>().Key(1)
             .PutAsync(new Widget { Id = 1, Name = "Sprocket-Replaced" });
-        Assert.Equal("Sprocket-Replaced", updated.Name);
+        Assert.NotNull(updated);
+        Assert.Equal("Sprocket-Replaced", updated!.Name);
     }
 
     // ── PATCH ────────────────────────────────────────────────────────────────────
@@ -114,8 +115,9 @@ public class OhDataClientIntegrationTests : IAsyncDisposable
     {
         var patched = await Client.For<Widget>().Key(2)
             .PatchAsync(new { Name = "Cog-Patched" });
-        Assert.Equal("Cog-Patched", patched.Name);
-        Assert.Equal(2, patched.Id);
+        Assert.NotNull(patched);
+        Assert.Equal("Cog-Patched", patched!.Name);
+        Assert.Equal(2, patched!.Id);
     }
 
     // ── DELETE ──────────────────────────────────────────────────────────────────
@@ -178,5 +180,51 @@ public class OhDataClientIntegrationTests : IAsyncDisposable
         // the presence of @odata.count in the response should not cause issues.
         var items = await Client.For<Widget>().IncludeCount().ToListAsync();
         Assert.Equal(2, items.Count);
+    }
+
+    // ── AnyAsync ─────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task AnyAsync_NonEmptyCollection_ReturnsTrue()
+    {
+        var any = await Client.For<Widget>().AnyAsync();
+        Assert.True(any);
+    }
+
+    [Fact]
+    public async Task AnyAsync_NoMatch_ReturnsFalse()
+    {
+        var any = await Client.For<Widget>()
+            .Filter(x => x.Name == "DoesNotExist")
+            .AnyAsync();
+        Assert.False(any);
+    }
+
+    // ── Argument validation ───────────────────────────────────────────────────────
+
+    [Fact]
+    public void OhDataClient_NullBaseAddress_ThrowsArgumentNullException()
+    {
+        Assert.Throws<ArgumentNullException>(() => new OhDataClient((string)null!));
+    }
+
+    [Fact]
+    public void OhDataClient_EmptyBaseAddress_ThrowsArgumentException()
+    {
+        Assert.Throws<ArgumentException>(() => new OhDataClient(""));
+    }
+
+    [Fact]
+    public void Top_Negative_ThrowsArgumentOutOfRangeException()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            Client.For<Widget>().Top(-1));
+    }
+
+    [Fact]
+    public void Skip_Negative_ThrowsArgumentOutOfRangeException()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            Client.For<Widget>().Skip(-1));
     }
 }

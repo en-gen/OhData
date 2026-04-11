@@ -1,21 +1,26 @@
 using System;
+using System.Collections.Concurrent;
 using System.Reflection;
 
 namespace OhData.Client.Internal;
 
 internal static class EntitySetNameConvention
 {
+    // Cache resolved names to avoid repeated reflection on every For<T>() call.
+    private static readonly ConcurrentDictionary<Type, string> _cache = new();
+
     /// <summary>
     /// Returns the OData entity set name for <paramref name="entityType"/>:
     /// uses <see cref="ODataEntitySetAttribute"/> when present, otherwise applies
     /// simple English pluralisation to the type name.
+    /// Results are cached per type so reflection is only performed once per entity type.
     /// </summary>
     public static string Resolve(Type entityType)
-    {
-        var attr = entityType.GetCustomAttribute<ODataEntitySetAttribute>();
-        if (attr is not null) return attr.Name;
-        return Pluralize(entityType.Name);
-    }
+        => _cache.GetOrAdd(entityType, static t =>
+        {
+            var attr = t.GetCustomAttribute<ODataEntitySetAttribute>();
+            return attr is not null ? attr.Name : Pluralize(t.Name);
+        });
 
     /// <summary>
     /// Applies simple English pluralisation rules to <paramref name="name"/>:

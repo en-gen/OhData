@@ -36,18 +36,20 @@ public sealed class KeyedEntitySetClient<T> where T : class
 
     /// <summary>
     /// PUT <c>/{EntitySet}(key)</c> with a full entity replacement.
-    /// Returns the updated entity as returned by the server.
+    /// Returns the updated entity as returned by the server, or <see langword="null"/>
+    /// when the server returns HTTP 204 No Content (preference <c>return=minimal</c>).
     /// </summary>
-    public Task<T> PutAsync(T entity, CancellationToken ct = default)
+    public Task<T?> PutAsync(T entity, CancellationToken ct = default)
         => _http.PutAsync(Url, entity, ct);
 
     /// <summary>
     /// PATCH <c>/{EntitySet}(key)</c> with a partial update.
     /// <paramref name="patch"/> can be an anonymous object (<c>new { Price = 9.99m }</c>)
     /// or any type whose serialised properties are the fields to update.
-    /// Returns the updated entity as returned by the server.
+    /// Returns the updated entity as returned by the server, or <see langword="null"/>
+    /// when the server returns HTTP 204 No Content (preference <c>return=minimal</c>).
     /// </summary>
-    public Task<T> PatchAsync(object patch, CancellationToken ct = default)
+    public Task<T?> PatchAsync(object patch, CancellationToken ct = default)
         => _http.PatchAsync<T>(Url, patch, ct);
 
     /// <summary>

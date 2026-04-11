@@ -44,8 +44,13 @@ public sealed class OhDataClient : IDisposable
     /// Base URL of the OData service, e.g. <c>https://api.example.com/v1</c>.
     /// A trailing slash is added automatically if absent.
     /// </param>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="baseAddress"/> is null.</exception>
+    /// <exception cref="ArgumentException">Thrown when <paramref name="baseAddress"/> is empty.</exception>
     public OhDataClient(string baseAddress, OhDataClientOptions? options = null)
     {
+        ArgumentNullException.ThrowIfNull(baseAddress);
+        if (baseAddress.Length == 0)
+            throw new ArgumentException("Base address must not be empty.", nameof(baseAddress));
         _options        = options ?? new OhDataClientOptions();
         _httpClient     = new HttpClient { BaseAddress = new Uri(baseAddress.TrimEnd('/') + '/') };
         _http           = new ODataHttpClient(_httpClient, _options);
