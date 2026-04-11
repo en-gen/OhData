@@ -81,7 +81,15 @@ public sealed class EntitySetClient<T> where T : class
         return With(_state with { Select = string.Join(',', names) });
     }
 
-    /// <summary>Projects the response to a subset of properties by name.</summary>
+    /// <summary>
+    /// Projects the response to a subset of properties by name.
+    /// Property names must exactly match the server-side property names (case-sensitive on most OData servers).
+    /// Passing an empty array produces an empty <c>$select=</c> parameter — prefer omitting <c>Select</c> entirely
+    /// when no projection is desired.
+    /// </summary>
+    /// <example><code>
+    /// .Select("Id", "Name", "Price")
+    /// </code></example>
     public EntitySetClient<T> Select(params string[] properties)
         => With(_state with { Select = string.Join(',', properties) });
 
@@ -108,7 +116,15 @@ public sealed class EntitySetClient<T> where T : class
         return With(_state with { Expand = string.Join(',', names) });
     }
 
-    /// <summary>Expands navigation properties by name.</summary>
+    /// <summary>
+    /// Expands navigation properties by name. Supports complex nested OData <c>$expand</c> syntax
+    /// (e.g. <c>"Category($select=Name)"</c>) that the typed-expression overloads do not support.
+    /// </summary>
+    /// <example><code>
+    /// .Expand("Category", "Tags")
+    /// // Complex nested expand:
+    /// .Expand("Category($select=Name;$expand=Parent)")
+    /// </code></example>
     public EntitySetClient<T> Expand(params string[] navProperties)
         => With(_state with { Expand = string.Join(',', navProperties) });
 
@@ -141,10 +157,20 @@ public sealed class EntitySetClient<T> where T : class
     }
 
     /// <summary>Limits the number of results returned.</summary>
-    public EntitySetClient<T> Top(int count) => With(_state with { Top = count });
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="count"/> is negative.</exception>
+    public EntitySetClient<T> Top(int count)
+    {
+        if (count < 0) throw new ArgumentOutOfRangeException(nameof(count), count, "$top must be >= 0.");
+        return With(_state with { Top = count });
+    }
 
     /// <summary>Skips the first <paramref name="count"/> results (for paging).</summary>
-    public EntitySetClient<T> Skip(int count) => With(_state with { Skip = count });
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="count"/> is negative.</exception>
+    public EntitySetClient<T> Skip(int count)
+    {
+        if (count < 0) throw new ArgumentOutOfRangeException(nameof(count), count, "$skip must be >= 0.");
+        return With(_state with { Skip = count });
+    }
 
     /// <summary>
     /// Requests an inline total count from the server by appending <c>$count=true</c>.
@@ -183,6 +209,13 @@ public sealed class EntitySetClient<T> where T : class
         => _http.GetCountAsync(BuildCountUrl(), ct);
 
     /// <summary>
+    /// Returns <see langword="true"/> when at least one entity matches the current query options;
+    /// <see langword="false"/> otherwise. Executes GET <c>/$count</c>.
+    /// </summary>
+    public async Task<bool> AnyAsync(CancellationToken ct = default)
+        => await CountAsync(ct) > 0;
+
+    /// <summary>
     /// Executes GET with <c>$count=true</c> and returns both the items and the total
     /// matching count (before any <c>$top</c>/<c>$skip</c>).
     /// </summary>
@@ -193,6 +226,10 @@ public sealed class EntitySetClient<T> where T : class
     /// POST a new entity. Returns the created entity as returned by the server
     /// (including any server-assigned key or computed fields).
     /// </summary>
+    /// <remarks>
+    /// Any query options set on the builder (Filter, Select, OrderBy, etc.) are ignored
+    /// for POST — the request always targets the bare entity set URL.
+    /// </remarks>
     public Task<T> InsertAsync(T entity, CancellationToken ct = default)
         => _http.PostAsync(_entitySetName, entity, ct);
 
@@ -200,6 +237,16 @@ public sealed class EntitySetClient<T> where T : class
 
     internal string BuildCollectionUrl()
     {
+        // Fast path: no query options — avoids allocating the parts list.
+        if (_state.Filter  is null &&
+            _state.Select  is null &&
+            _state.OrderBy is null &&
+            _state.Expand  is null &&
+            !_state.Top.HasValue   &&
+            !_state.Skip.HasValue  &&
+            !_state.WithCount)
+            return _entitySetName;
+
         var parts = new List<string>(6);
         if (_state.Filter  is not null) parts.Add($"$filter={Uri.EscapeDataString(_state.Filter)}");
         if (_state.Select  is not null) parts.Add($"$select={Uri.EscapeDataString(_state.Select)}");

@@ -67,7 +67,7 @@ public sealed class ODataClientException : Exception
             catch { /* not an OData envelope — fall through */ }
         }
 
-        var raw = body is { Length: > 500 } ? body[..500] + "…" : body ?? "";
+        var raw = body is { Length: > 1000 } ? body[..1000] + "…" : body ?? "";
         return new ODataClientException(statusCode, "", raw, requestUrl);
     }
 }

@@ -39,11 +39,13 @@ internal sealed class FilterTranslator : ExpressionVisitor
             ExpressionType.LessThanOrEqual    => ("le",  false),
             ExpressionType.AndAlso            => ("and", true),
             ExpressionType.OrElse             => ("or",  true),
-            ExpressionType.Add                => ("add", false),
-            ExpressionType.Subtract           => ("sub", false),
-            ExpressionType.Multiply           => ("mul", false),
-            ExpressionType.Divide             => ("div", false),
-            ExpressionType.Modulo             => ("mod", false),
+            // Arithmetic: always parenthesize operands to avoid precedence ambiguity.
+            // E.g. (A + B) * C must stay ((A) add (B)) mul (C) not "A add B mul C".
+            ExpressionType.Add                => ("add", true),
+            ExpressionType.Subtract           => ("sub", true),
+            ExpressionType.Multiply           => ("mul", true),
+            ExpressionType.Divide             => ("div", true),
+            ExpressionType.Modulo             => ("mod", true),
             _ => throw new NotSupportedException(
                 $"Binary operator '{node.NodeType}' is not supported in OData $filter expressions.")
         };
@@ -123,11 +125,33 @@ internal sealed class FilterTranslator : ExpressionVisitor
          && node.Method.IsStatic
          && node.Method.DeclaringType == typeof(string))
         {
+            // Render the argument once; reuse the string to avoid double-compiling closures.
+            var start = _sb.Length;
+            Visit(node.Arguments[0]);
+            var rendered = _sb.ToString(start, _sb.Length - start);
+            _sb.Remove(start, _sb.Length - start);
             _sb.Append('(');
-            Visit(node.Arguments[0]);
+            _sb.Append(rendered);
             _sb.Append(" eq null or ");
-            Visit(node.Arguments[0]);
+            _sb.Append(rendered);
             _sb.Append(" eq '')");
+            return node;
+        }
+
+        // Static string.IsNullOrWhiteSpace(x.Prop) — translates to (prop eq null or trim(prop) eq '')
+        if (node.Method.Name     == "IsNullOrWhiteSpace"
+         && node.Method.IsStatic
+         && node.Method.DeclaringType == typeof(string))
+        {
+            var start = _sb.Length;
+            Visit(node.Arguments[0]);
+            var rendered = _sb.ToString(start, _sb.Length - start);
+            _sb.Remove(start, _sb.Length - start);
+            _sb.Append('(');
+            _sb.Append(rendered);
+            _sb.Append(" eq null or trim(");
+            _sb.Append(rendered);
+            _sb.Append(") eq '')");
             return node;
         }
 
@@ -211,12 +235,12 @@ internal sealed class FilterTranslator : ExpressionVisitor
         string s        => $"'{s.Replace("'", "''")}'",
         char c          => $"'{c}'",
         Guid g          => g.ToString(),
-        DateTime dt     => dt.Kind == DateTimeKind.Utc
-                               ? $"'{dt:yyyy-MM-ddTHH:mm:ssZ}'"
-                               : $"'{dt:yyyy-MM-ddTHH:mm:ss}'",
+        DateTime dt        => dt.Kind == DateTimeKind.Utc
+                                 ? dt.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture)
+                                 : dt.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture),
         DateTimeOffset dto => dto.Offset == TimeSpan.Zero
-                               ? $"'{dto:yyyy-MM-ddTHH:mm:ssZ}'"
-                               : $"'{dto:yyyy-MM-ddTHH:mm:sszzz}'",
+                                 ? dto.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture)
+                                 : dto.ToString("yyyy-MM-ddTHH:mm:sszzz", CultureInfo.InvariantCulture),
         DateOnly d      => $"'{d:yyyy-MM-dd}'",
         TimeOnly t      => $"'{t:HH:mm:ss}'",
         float f         => f.ToString("R", CultureInfo.InvariantCulture),

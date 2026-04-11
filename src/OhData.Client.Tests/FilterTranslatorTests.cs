@@ -103,8 +103,50 @@ public class FilterTranslatorTests
     [Fact]
     public void FormatLiteral_DateTimeUtc()
     {
+        // OData 4.0 spec: DateTimeOffset literals are NOT quoted with single-quotes.
         var dt = new DateTime(2024, 6, 1, 12, 0, 0, DateTimeKind.Utc);
-        Assert.Equal("'2024-06-01T12:00:00Z'", FilterTranslator.FormatLiteral(dt));
+        Assert.Equal("2024-06-01T12:00:00Z", FilterTranslator.FormatLiteral(dt));
+    }
+
+    [Fact]
+    public void FormatLiteral_DateTimeOffsetUtc()
+    {
+        var dto = new DateTimeOffset(2024, 6, 1, 12, 0, 0, TimeSpan.Zero);
+        Assert.Equal("2024-06-01T12:00:00Z", FilterTranslator.FormatLiteral(dto));
+    }
+
+    // ── String.IsNullOrEmpty ────────────────────────────────────────────────────
+
+    [Fact]
+    public void IsNullOrEmpty_ProducesCorrectFilter() =>
+        Assert.Equal("(Name eq null or Name eq '')", F<Item>(x => string.IsNullOrEmpty(x.Name)));
+
+    [Fact]
+    public void IsNullOrEmpty_Negated_ProducesCorrectFilter() =>
+        Assert.Equal("not ((Name eq null or Name eq ''))", F<Item>(x => !string.IsNullOrEmpty(x.Name)));
+
+    // ── String.IsNullOrWhiteSpace ───────────────────────────────────────────────
+
+    [Fact]
+    public void IsNullOrWhiteSpace_ProducesCorrectFilter() =>
+        Assert.Equal("(Name eq null or trim(Name) eq '')", F<Item>(x => string.IsNullOrWhiteSpace(x.Name)));
+
+    // ── Arithmetic parenthesization ─────────────────────────────────────────────
+
+    [Fact]
+    public void Arithmetic_Add() =>
+        Assert.Equal("(Price) add (1) eq 1", F<Item>(x => x.Price + 1 == 1));
+
+    [Fact]
+    public void Arithmetic_NestedAddInMultiply()
+    {
+        // (A + B) * C should not become A add B mul C (wrong precedence)
+        // It should become ((A) add (B)) mul (C) which equals ((Price) add (1)) mul (2)
+        var filter = F<Item>(x => (x.Price + 1) * 2 == 10);
+        Assert.Contains("add", filter);
+        Assert.Contains("mul", filter);
+        // Ensure add operands are parenthesized — the add must appear inside parens before mul
+        Assert.Contains("(Price) add (1)", filter);
     }
 
     // ── Unsupported — should throw ──────────────────────────────────────────────
