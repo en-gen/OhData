@@ -63,10 +63,11 @@ internal static class OhDataEndpointFactory
                 ["@odata.context"] = $"{baseUrl}/$metadata",
                 ["value"] = serviceDocEntitySets
             });
-        });
+        }).WithTags("OData");
 
         // $metadata -- CSDL XML describing the EDM model
-        group.MapGet("/$metadata", () => Results.Content(metadataXml, "application/xml"));
+        group.MapGet("/$metadata", () => Results.Content(metadataXml, "application/xml"))
+            .WithTags("OData");
 
         // Resolve logger from the original routes ServiceProvider (group doesn't expose it)
         var loggerFactory = routes.ServiceProvider.GetService<ILoggerFactory>();
