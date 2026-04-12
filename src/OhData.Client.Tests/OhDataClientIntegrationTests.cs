@@ -93,7 +93,8 @@ public class OhDataClientIntegrationTests : IAsyncDisposable
     {
         var created = await Client.For<Widget>()
             .InsertAsync(new Widget { Name = "NewWidget" });
-        Assert.True(created.Id > 0);
+        Assert.NotNull(created);
+        Assert.True(created!.Id > 0);
         Assert.Equal("NewWidget", created.Name);
     }
 
@@ -127,8 +128,9 @@ public class OhDataClientIntegrationTests : IAsyncDisposable
     {
         var created = await Client.For<Widget>()
             .InsertAsync(new Widget { Name = "ToDelete" });
+        Assert.NotNull(created);
 
-        await Client.For<Widget>().Key(created.Id).DeleteAsync();
+        await Client.For<Widget>().Key(created!.Id).DeleteAsync();
 
         var after = await Client.For<Widget>().Key(created.Id).GetAsync();
         Assert.Null(after);
