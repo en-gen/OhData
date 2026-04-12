@@ -4,6 +4,9 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace OhData.AspNetCore;
 
+/// <summary>
+/// Extension methods on <see cref="IEndpointRouteBuilder"/> for mapping OhData endpoints.
+/// </summary>
 public static class EndpointRouteBuilderExtensions
 {
     /// <summary>
