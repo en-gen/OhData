@@ -16,6 +16,7 @@ public sealed class OhDataBuilder
 {
     private readonly IServiceCollection _services;
     private readonly List<Type> _profileTypes = new();
+    private readonly List<UnboundOperationDefinition> _unboundOps = new();
     private string _prefix = "/odata";
     private readonly string _name;
     private readonly EntitySetDefaults _defaults = new();
@@ -54,18 +55,54 @@ public sealed class OhDataBuilder
     public OhDataBuilder AddProfile<TProfile>() where TProfile : class, IEntitySetProfile
     {
         if (_profileTypes.Contains(typeof(TProfile)))
+        {
             throw new InvalidOperationException(
                 $"OhData: profile type '{typeof(TProfile).Name}' is already registered. Remove the duplicate AddProfile call.");
+        }
+
         _services.AddSingleton<TProfile>();
         _profileTypes.Add(typeof(TProfile));
+        return this;
+    }
+
+    /// <summary>
+    /// Registers an unbound function at the service root: <c>GET /prefix/{name}</c>.
+    /// Parameters are read from query-string values; <see cref="System.Threading.CancellationToken"/>
+    /// is detected and injected automatically if present.
+    /// </summary>
+    /// <param name="handler">The function delegate. The method name is used as the route segment unless <paramref name="name"/> is specified.</param>
+    /// <param name="name">Optional explicit route name. Use when passing lambdas to override the compiler-generated name.</param>
+    public OhDataBuilder AddFunction(Delegate handler, string? name = null)
+    {
+        if (handler is null) throw new ArgumentNullException(nameof(handler));
+        var op = UnboundOperationDefinition.From(handler, isAction: false);
+        if (name is not null) op = op with { Name = name };
+        _unboundOps.Add(op);
+        return this;
+    }
+
+    /// <summary>
+    /// Registers an unbound action at the service root: <c>POST /prefix/{name}</c>.
+    /// Parameters are read from the JSON request body; <see cref="System.Threading.CancellationToken"/>
+    /// is detected and injected automatically if present.
+    /// </summary>
+    /// <param name="handler">The action delegate. The method name is used as the route segment unless <paramref name="name"/> is specified.</param>
+    /// <param name="name">Optional explicit route name. Use when passing lambdas to override the compiler-generated name.</param>
+    public OhDataBuilder AddAction(Delegate handler, string? name = null)
+    {
+        if (handler is null) throw new ArgumentNullException(nameof(handler));
+        var op = UnboundOperationDefinition.From(handler, isAction: true);
+        if (name is not null) op = op with { Name = name };
+        _unboundOps.Add(op);
         return this;
     }
 
     internal void Register()
     {
         var capturedTypes = _profileTypes.ToList();
-        var capturedPrefix = _prefix;
-        var capturedName = _name;
+        var capturedUnbound = _unboundOps.ToList();
+        string capturedPrefix = _prefix;
+        string capturedName = _name;
         var capturedDefaults = _defaults;
 
         _services.AddKeyedSingleton<OhDataRegistration>(capturedName, (sp, _) =>
@@ -77,7 +114,7 @@ public sealed class OhDataBuilder
 
             foreach (var type in capturedTypes)
             {
-                var instance = sp.GetRequiredService(type);
+                object instance = sp.GetRequiredService(type);
 
                 if (instance is IVisitModelBuilder vmb)
                 {
@@ -95,11 +132,15 @@ public sealed class OhDataBuilder
                 }
 
                 if (instance is IEntitySetEndpointSource source)
+                {
                     profiles.Add(source);
+                }
                 else
+                {
                     logger?.LogWarning(
                         "OhData: {Type} does not implement IEntitySetEndpointSource and will be skipped",
                         type.Name);
+                }
             }
 
             var duplicates = profiles
@@ -108,9 +149,37 @@ public sealed class OhDataBuilder
                 .Select(g => g.Key)
                 .ToList();
             if (duplicates.Count > 0)
+            {
                 throw new InvalidOperationException(
                     $"OhData: duplicate entity set name(s) registered: {string.Join(", ", duplicates)}. " +
                     "Each entity set name must be unique within an OhData registration.");
+            }
+
+            // Gap 7: register unbound functions/actions in the EDM as FunctionImport/ActionImport
+            // Must be done BEFORE GetEdmModel() so they appear in $metadata.
+            foreach (var op in capturedUnbound)
+            {
+                if (!op.IsAction)
+                {
+                    var fn = modelBuilder.Function(op.Name);
+                    RegisterUnboundOpReturnType(fn, op);
+                    foreach (var param in op.Parameters)
+                    {
+                        var p = fn.Parameter(param.ParameterType, param.Name!);
+                        if (param.IsOptional) p.Optional();
+                    }
+                }
+                else
+                {
+                    var act = modelBuilder.Action(op.Name);
+                    RegisterUnboundOpReturnType(act, op);
+                    foreach (var param in op.Parameters)
+                    {
+                        var p = act.Parameter(param.ParameterType, param.Name!);
+                        if (param.IsOptional) p.Optional();
+                    }
+                }
+            }
 
             var edmModel = modelBuilder.GetEdmModel();
             logger?.LogInformation(
@@ -119,7 +188,7 @@ public sealed class OhDataBuilder
                 string.Join(", ", profiles.Select(p => p.EntitySetName)),
                 capturedPrefix);
 
-            var reg = new OhDataRegistration(capturedPrefix, edmModel, profiles);
+            var reg = new OhDataRegistration(capturedPrefix, edmModel, profiles, capturedUnbound);
             // Also register in the collection for named access
             sp.GetRequiredService<OhDataRegistrationCollection>().Add(capturedName, reg);
             return reg;
@@ -131,5 +200,27 @@ public sealed class OhDataBuilder
             _services.AddSingleton<OhDataRegistration>(sp =>
                 sp.GetRequiredKeyedService<OhDataRegistration>(OhDataDefaults.DefaultRegistrationName));
         }
+    }
+
+    private static void RegisterUnboundOpReturnType(FunctionConfiguration fn, UnboundOperationDefinition op)
+    {
+        if (op.ReturnType is null) return;
+        var refl = op.ReturnsCollection
+            ? typeof(FunctionConfiguration).GetMethod(nameof(FunctionConfiguration.ReturnsCollection), System.Array.Empty<Type>())!
+                  .MakeGenericMethod(op.ReturnType)
+            : typeof(FunctionConfiguration).GetMethod(nameof(FunctionConfiguration.Returns), System.Array.Empty<Type>())!
+                  .MakeGenericMethod(op.ReturnType);
+        refl.Invoke(fn, null);
+    }
+
+    private static void RegisterUnboundOpReturnType(ActionConfiguration act, UnboundOperationDefinition op)
+    {
+        if (op.ReturnType is null) return;
+        var refl = op.ReturnsCollection
+            ? typeof(ActionConfiguration).GetMethod(nameof(ActionConfiguration.ReturnsCollection), System.Array.Empty<Type>())!
+                  .MakeGenericMethod(op.ReturnType)
+            : typeof(ActionConfiguration).GetMethod(nameof(ActionConfiguration.Returns), System.Array.Empty<Type>())!
+                  .MakeGenericMethod(op.ReturnType);
+        refl.Invoke(act, null);
     }
 }

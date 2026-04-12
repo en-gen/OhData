@@ -446,3 +446,186 @@ internal class ExpandableParentProfile : EntitySetProfile<int, Parent>
                 Task.FromResult<IEnumerable<Child>>(_children.Where(c => c.ParentId == parentId)));
     }
 }
+
+// ── Batch 2 gap fixtures ──────────────────────────────────────────────────────
+
+/// <summary>Profile for testing @odata.etag in response body (Gap 2, batch 2).</summary>
+internal class ETagBodyProfile : EntitySetProfile<int, Widget>
+{
+    private readonly List<Widget> _store = new() { new() { Id = 1, Name = "Sprocket" } };
+
+    public ETagBodyProfile() : base(x => x.Id)
+    {
+        EntitySetName = "ETagBodyWidgets";
+        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
+        Post = (widget, ct) =>
+        {
+            widget.Id = _store.Count > 0 ? _store.Max(w => w.Id) + 1 : 1;
+            _store.Add(widget);
+            return Task.FromResult(widget);
+        };
+        PutById = (id, widget, ct) =>
+        {
+            _store.RemoveAll(w => w.Id == id);
+            widget.Id = id;
+            _store.Add(widget);
+            return Task.FromResult(widget);
+        };
+        Patch = (id, widget, ct) =>
+        {
+            var existing = _store.FirstOrDefault(w => w.Id == id);
+            if (existing is null) return Task.FromResult<Widget?>(null);
+            if (widget.Name != "") existing.Name = widget.Name;
+            return Task.FromResult<Widget?>(existing);
+        };
+        UseETag(x => x.Name);
+    }
+}
+
+/// <summary>Profile for testing upsert via PUT (Gap 3, batch 2).</summary>
+internal class UpsertProfile : EntitySetProfile<int, Widget>
+{
+    private readonly List<Widget> _store = new() { new() { Id = 1, Name = "Existing" } };
+
+    public UpsertProfile() : base(x => x.Id)
+    {
+        EntitySetName = "UpsertWidgets";
+        AllowUpsert = true;
+
+        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
+        Post = (widget, ct) =>
+        {
+            widget.Id = widget.Id == 0 ? (_store.Count > 0 ? _store.Max(w => w.Id) + 1 : 1) : widget.Id;
+            _store.Add(widget);
+            return Task.FromResult(widget);
+        };
+        PutById = (id, widget, ct) =>
+        {
+            var existing = _store.FirstOrDefault(w => w.Id == id);
+            if (existing is null) return Task.FromResult<Widget>(null!); // signal "not found" → upsert
+            _store.RemoveAll(w => w.Id == id);
+            widget.Id = id;
+            _store.Add(widget);
+            return Task.FromResult(widget);
+        };
+    }
+}
+
+/// <summary>Profile for testing $search query option (Gap 4, batch 2).</summary>
+internal class SearchableWidgetProfile : EntitySetProfile<int, Widget>
+{
+    private readonly List<Widget> _store = new()
+    {
+        new() { Id = 1, Name = "Alpha" },
+        new() { Id = 2, Name = "Beta" },
+        new() { Id = 3, Name = "Gamma" },
+    };
+
+    public SearchableWidgetProfile() : base(x => x.Id)
+    {
+        EntitySetName = "SearchableWidgets";
+        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store);
+        Search = (term, ct) =>
+            Task.FromResult<IEnumerable<Widget>>(
+                _store.Where(w => w.Name.Contains(term, System.StringComparison.OrdinalIgnoreCase)));
+    }
+}
+
+/// <summary>Profile for testing $search rejection when no handler (Gap 4, batch 2).</summary>
+internal class NoSearchProfile : EntitySetProfile<int, Widget>
+{
+    private readonly List<Widget> _store = new() { new() { Id = 1, Name = "Alpha" } };
+
+    public NoSearchProfile() : base(x => x.Id)
+    {
+        EntitySetName = "NoSearchWidgets";
+        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store);
+    }
+}
+
+/// <summary>Profile for testing navigation query options + $ref (Gap 5 + Gap 6, batch 2).</summary>
+internal class NavQueryProfile : EntitySetProfile<int, Parent>
+{
+    private static readonly List<Parent> _parents = new() { new() { Id = 1, Name = "Parent1" } };
+    private static readonly List<Child> _children = new()
+    {
+        new() { Id = 1, ParentId = 1, Name = "Child1" },
+        new() { Id = 2, ParentId = 1, Name = "Child2" },
+        new() { Id = 3, ParentId = 1, Name = "Child3" },
+    };
+    private static readonly List<(int parentId, string relatedId)> _refs = new();
+
+    public NavQueryProfile() : base(x => x.Id)
+    {
+        EntitySetName = "NavQueryParents";
+        GetAll = (ct) => Task.FromResult<IEnumerable<Parent>>(_parents);
+        GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(p => p.Id == id));
+
+        HasMany(
+            navigation: x => x.Children!,
+            getAll: (parentId, ct) =>
+                Task.FromResult<IEnumerable<Child>>(_children.Where(c => c.ParentId == parentId)),
+            addRef: (parentId, relatedId, ct) =>
+            {
+                _refs.Add((parentId, relatedId));
+                return Task.CompletedTask;
+            },
+            removeRef: (parentId, relatedId, ct) =>
+            {
+                _refs.RemoveAll(r => r.parentId == parentId && r.relatedId == relatedId);
+                return Task.CompletedTask;
+            });
+    }
+}
+
+/// <summary>Profile for testing $expand on the GetAll path (Gap 8, batch 2).</summary>
+internal class ExpandableGetAllProfile : EntitySetProfile<int, Parent>
+{
+    private static readonly List<Parent> _parents = new()
+    {
+        new() { Id = 1, Name = "ParentA" },
+        new() { Id = 2, Name = "ParentB" },
+    };
+    private static readonly List<Child> _children = new()
+    {
+        new() { Id = 1, ParentId = 1, Name = "Child1" },
+        new() { Id = 2, ParentId = 2, Name = "Child2" },
+    };
+
+    public ExpandableGetAllProfile() : base(x => x.Id)
+    {
+        EntitySetName = "ExpandableGetAllParents";
+        ExpandEnabled = true;
+
+        GetAll = (ct) => Task.FromResult<IEnumerable<Parent>>(_parents);
+
+        HasMany(x => x.Children!,
+            getAll: (parentId, ct) =>
+                Task.FromResult<IEnumerable<Child>>(_children.Where(c => c.ParentId == parentId)));
+    }
+}
+
+/// <summary>Profile for testing @odata.context on function results (Gap 1, batch 2).</summary>
+internal class ContextFunctionProfile : EntitySetProfile<int, Widget>
+{
+    private readonly List<Widget> _store = new()
+    {
+        new() { Id = 1, Name = "Alpha" },
+        new() { Id = 2, Name = "Beta" },
+    };
+
+    public ContextFunctionProfile() : base(x => x.Id)
+    {
+        EntitySetName = "ContextFnWidgets";
+        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store);
+        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
+        BindFunction(GetFirst);
+        BindFunction(GetAll2);
+    }
+
+    // Returns single TModel — should get context=..#EntitySet/$entity
+    private Task<Widget?> GetFirst() => Task.FromResult<Widget?>(_store.FirstOrDefault());
+
+    // Returns IEnumerable<TModel> — should get context=..#EntitySet and value array
+    private Task<IEnumerable<Widget>> GetAll2() => Task.FromResult<IEnumerable<Widget>>(_store);
+}

@@ -561,9 +561,14 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>());
         var response = await fx.Client.GetAsync("/odata/BoundWidgets/GetByName?name=Alpha");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var items = await response.Content.ReadFromJsonAsync<Widget[]>();
-        Assert.Single(items!);
-        Assert.Equal("Alpha", items![0].Name);
+        // Gap 1: bound function returning IEnumerable<TModel> is wrapped in OData envelope
+        string body = await response.Content.ReadAsStringAsync();
+        var json = JsonSerializer.Deserialize<JsonElement>(body);
+        Assert.True(json.TryGetProperty("@odata.context", out _), $"Expected @odata.context in envelope. Body was: {body}");
+        Assert.True(json.TryGetProperty("value", out var value), $"Expected 'value' key. Body was: {body}");
+        Assert.Equal(1, value.GetArrayLength());
+        // Items serialized using ASP.NET Core's camelCase serializer
+        Assert.Equal("Alpha", value[0].GetProperty("name").GetString());
     }
 
     [Fact]
@@ -1256,6 +1261,264 @@ public class EndpointMappingTests
         var first = json.GetProperty("value")[0];
         var children = first.GetProperty("Children");
         Assert.True(children.GetArrayLength() > 0);
+    }
+
+    // ── Batch 2, Gap 1: @odata.context on function/action responses ───────────────
+
+    [Fact]
+    public async Task BoundFunction_ReturnsCollectionOfTModel_IncludesOdataContext()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ContextFunctionProfile>());
+        var resp = await fx.Client.GetAsync("/odata/ContextFnWidgets/GetAll2");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(json.TryGetProperty("@odata.context", out var ctx));
+        Assert.Contains("ContextFnWidgets", ctx.GetString()!);
+        Assert.True(json.TryGetProperty("value", out var val));
+        Assert.Equal(JsonValueKind.Array, val.ValueKind);
+    }
+
+    [Fact]
+    public async Task BoundFunction_ReturnsSingleTModel_IncludesOdataContext()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ContextFunctionProfile>());
+        var resp = await fx.Client.GetAsync("/odata/ContextFnWidgets/GetFirst");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(json.TryGetProperty("@odata.context", out var ctx));
+        Assert.Contains("/$entity", ctx.GetString()!);
+    }
+
+    // ── Batch 2, Gap 2: @odata.etag in response body ──────────────────────────────
+
+    [Fact]
+    public async Task GetById_WithETag_ResponseBodyIncludesOdataEtag()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagBodyProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ETagBodyWidgets(1)");
+        Assert.True(json.TryGetProperty("@odata.etag", out _), "Expected @odata.etag in GetById body");
+    }
+
+    [Fact]
+    public async Task Post_WithETag_ResponseBodyIncludesOdataEtag()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagBodyProfile>());
+        var resp = await fx.Client.PostAsJsonAsync("/odata/ETagBodyWidgets", new Widget { Name = "New" });
+        var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(json.TryGetProperty("@odata.etag", out _), "Expected @odata.etag in POST body");
+    }
+
+    [Fact]
+    public async Task Put_WithETag_ResponseBodyIncludesOdataEtag()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagBodyProfile>());
+        var resp = await fx.Client.PutAsJsonAsync("/odata/ETagBodyWidgets(1)", new Widget { Id = 1, Name = "Updated" });
+        var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(json.TryGetProperty("@odata.etag", out _), "Expected @odata.etag in PUT body");
+    }
+
+    [Fact]
+    public async Task Patch_WithETag_ResponseBodyIncludesOdataEtag()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagBodyProfile>());
+        var resp = await fx.Client.PatchAsync("/odata/ETagBodyWidgets(1)",
+            new StringContent("{\"name\":\"Patched\"}", System.Text.Encoding.UTF8, "application/json"));
+        var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(json.TryGetProperty("@odata.etag", out _), "Expected @odata.etag in PATCH body");
+    }
+
+    // ── Batch 2, Gap 3: Upsert via PUT ────────────────────────────────────────────
+
+    [Fact]
+    public async Task Put_AllowUpsert_NonExistingKey_Returns201()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<UpsertProfile>());
+        var resp = await fx.Client.PutAsJsonAsync("/odata/UpsertWidgets(99)", new Widget { Id = 99, Name = "NewViaUpsert" });
+        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Put_NoAllowUpsert_NonExistingKey_Returns404()
+    {
+        // Default WidgetProfile does not set AllowUpsert — PUT to missing key returns 404
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NullPutProfile>());
+        var resp = await fx.Client.PutAsJsonAsync("/odata/NullPutWidgets(99)", new Widget { Id = 99, Name = "X" });
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Put_AllowUpsert_ExistingKey_Returns200()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<UpsertProfile>());
+        var resp = await fx.Client.PutAsJsonAsync("/odata/UpsertWidgets(1)", new Widget { Id = 1, Name = "UpdatedExisting" });
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+    }
+
+    // ── Batch 2, Gap 4: $search query option ──────────────────────────────────────
+
+    [Fact]
+    public async Task Search_WithHandler_ReturnsFilteredResults()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<SearchableWidgetProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/SearchableWidgets?$search=Alpha");
+        var value = json.GetProperty("value");
+        Assert.Equal(1, value.GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Search_WithHandler_NoMatch_ReturnsEmptyCollection()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<SearchableWidgetProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/SearchableWidgets?$search=NoMatch");
+        var value = json.GetProperty("value");
+        Assert.Equal(0, value.GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Search_WithoutHandler_Returns400()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NoSearchProfile>());
+        var resp = await fx.Client.GetAsync("/odata/NoSearchWidgets?$search=anything");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("UnsupportedQueryOption", json.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    // ── Batch 2, Gap 5: Query options on navigation collection results ─────────────
+
+    [Fact]
+    public async Task NavigationCollection_WithTop_ReturnsLimitedItems()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavQueryProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavQueryParents(1)/Children?$top=1");
+        var value = json.GetProperty("value");
+        Assert.Equal(1, value.GetArrayLength());
+    }
+
+    [Fact]
+    public async Task NavigationCollection_WithSkip_SkipsItems()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavQueryProfile>());
+        var all = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavQueryParents(1)/Children");
+        int allCount = all.GetProperty("value").GetArrayLength();
+
+        var skipped = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavQueryParents(1)/Children?$skip=1");
+        int skippedCount = skipped.GetProperty("value").GetArrayLength();
+        Assert.Equal(allCount - 1, skippedCount);
+    }
+
+    [Fact]
+    public async Task NavigationCollection_WithCountTrue_ReturnsOdataCount()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavQueryProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavQueryParents(1)/Children?$count=true");
+        Assert.True(json.TryGetProperty("@odata.count", out var count));
+        Assert.True(count.GetInt64() > 0);
+    }
+
+    // ── Batch 2, Gap 6: $ref endpoints for navigation ─────────────────────────────
+
+    [Fact]
+    public async Task NavigationRef_Get_Returns200WithContext()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavQueryProfile>());
+        var resp = await fx.Client.GetAsync("/odata/NavQueryParents(1)/Children/$ref");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(json.TryGetProperty("@odata.context", out _));
+    }
+
+    [Fact]
+    public async Task NavigationRef_Post_Returns204()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavQueryProfile>());
+        var resp = await fx.Client.PostAsync("/odata/NavQueryParents(1)/Children/$ref",
+            new StringContent("{\"@odata.id\":\"http://localhost/odata/Children(99)\"}", System.Text.Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.NoContent, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task NavigationRef_Delete_Returns204()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavQueryProfile>());
+        var resp = await fx.Client.DeleteAsync("/odata/NavQueryParents(1)/Children/$ref?$id=http://localhost/odata/Children(1)");
+        Assert.Equal(HttpStatusCode.NoContent, resp.StatusCode);
+    }
+
+    // ── Batch 2, Gap 7: Unbound functions and actions ─────────────────────────────
+
+    [Fact]
+    public async Task UnboundFunction_ReturnsResult()
+    {
+        Func<string, Task<string>> greet = name => Task.FromResult($"Hello, {name}!");
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddFunction(greet, "Greet"));
+        var resp = await fx.Client.GetAsync("/odata/Greet?name=World");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        string? body = await resp.Content.ReadFromJsonAsync<string>();
+        Assert.Equal("Hello, World!", body);
+    }
+
+    [Fact]
+    public async Task UnboundFunction_MissingParam_Returns400()
+    {
+        Func<string, Task<string>> greet2 = name2 => Task.FromResult($"Hi, {name2}!");
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddFunction(greet2, "Greet2"));
+        var resp = await fx.Client.GetAsync("/odata/Greet2");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("MissingParameter", json.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task UnboundAction_ExecutesSideEffect()
+    {
+        bool called = false;
+        Func<string, Task> echoDelegate = message => { called = true; return Task.CompletedTask; };
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddAction(echoDelegate, "Echo"));
+        var resp = await fx.Client.PostAsync("/odata/Echo",
+            new StringContent("{\"message\":\"test\"}", System.Text.Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.NoContent, resp.StatusCode);
+        Assert.True(called);
+    }
+
+    [Fact]
+    public async Task UnboundAction_WithReturnValue_Returns200()
+    {
+        Func<int, int, Task<int>> addDelegate = (a, b) => Task.FromResult(a + b);
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddAction(addDelegate, "AddNumbers"));
+        var resp = await fx.Client.PostAsync("/odata/AddNumbers",
+            new StringContent("{\"a\":3,\"b\":4}", System.Text.Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        int result = await resp.Content.ReadFromJsonAsync<int>();
+        Assert.Equal(7, result);
+    }
+
+    // ── Batch 2, Gap 8: $expand on GetAll path ────────────────────────────────────
+
+    [Fact]
+    public async Task Expand_OnGetAllPath_InlinesNavigationData()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ExpandableGetAllProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ExpandableGetAllParents?$expand=Children");
+        var value = json.GetProperty("value");
+        Assert.True(value.GetArrayLength() > 0);
+        var first = value[0];
+        Assert.True(first.TryGetProperty("Children", out var children));
+        Assert.Equal(JsonValueKind.Array, children.ValueKind);
+    }
+
+    [Fact]
+    public async Task Expand_OnGetAllPath_ChildrenDataPresent()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ExpandableGetAllProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ExpandableGetAllParents?$expand=Children");
+        var value = json.GetProperty("value");
+        // Both parents should have their children expanded
+        for (int i = 0; i < value.GetArrayLength(); i++)
+        {
+            Assert.True(value[i].TryGetProperty("Children", out var children));
+            Assert.Equal(JsonValueKind.Array, children.ValueKind);
+        }
     }
 
 }
