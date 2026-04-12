@@ -317,6 +317,39 @@ internal static class OhDataEndpointFactory
         return props;
     }
 
+    // Batch 3: build the navigation collection envelope, applying $select if present.
+    private static Dictionary<string, object?> BuildNavEnvelope(
+        string baseUrl, string name, string key, string navPropertyName,
+        long? navCount, object[] itemArray, HttpContext ctx)
+    {
+        // Apply $select post-processing for navigation results if requested.
+        // We parse the $select query param directly (navigation routes don't go through
+        // ODataQueryOptions) and filter the serialized items.
+        object valueToReturn = itemArray;
+        if (ctx.Request.Query.TryGetValue("$select", out var selectParam) && !string.IsNullOrEmpty(selectParam))
+        {
+            var selectedProps = new HashSet<string>(
+                selectParam.ToString().Split(',').Select(p => p.Trim()),
+                StringComparer.OrdinalIgnoreCase);
+            var json = JsonSerializer.SerializeToNode(itemArray, _camelCaseSerializerOptions)!.AsArray();
+            foreach (var item in json)
+            {
+                if (item is not JsonObject obj) continue;
+                var toRemove = obj.Select(p => p.Key)
+                                 .Where(k => !selectedProps.Contains(k, StringComparer.OrdinalIgnoreCase))
+                                 .ToList();
+                foreach (string? k in toRemove) obj.Remove(k);
+            }
+            valueToReturn = json;
+        }
+
+        var envelope = new Dictionary<string, object?>();
+        envelope["@odata.context"] = $"{baseUrl}/$metadata#{name}({key})/{navPropertyName}";
+        if (navCount.HasValue) envelope["@odata.count"] = navCount;
+        envelope["value"] = valueToReturn;
+        return envelope;
+    }
+
     // Gap 8: $expand data loading (§11.2.4)
     private static async Task<object> ApplyExpandAsync(
         object[] items,
@@ -440,17 +473,22 @@ internal static class OhDataEndpointFactory
                     var options = new ODataQueryOptions<TModel>(odataCtx, ctx.Request);
                     var queryable = await odataSource.InvokeGetODataQueryableAsync(options, ct);
 
-                    object items = queryable is IQueryable<TModel> typed
-                        ? (object)typed.ToArray()
-                        : queryable.Cast<object>().ToArray();
+                    object[] items = queryable is IQueryable<TModel> typed
+                        ? typed.ToArray()
+                        : queryable.Cast<TModel>().ToArray();
+
                     object finalItems = ApplySelectPostProcess(items, options);
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
-                    return Results.Ok(new Dictionary<string, object?>
-                    {
-                        ["@odata.context"] = $"{baseUrl}/$metadata#{name}",
-                        ["value"] = finalItems
-                    });
+                    var envelope = new Dictionary<string, object?>();
+                    envelope["@odata.context"] = $"{baseUrl}/$metadata#{name}";
+                    // $count=true: the profile applies its own query options (including $top/$skip),
+                    // so we count the returned items. Profiles that need a pre-$top count should
+                    // handle $count themselves inside GetODataQueryable.
+                    if (options.Count?.Value == true)
+                        envelope["@odata.count"] = (long)items.Length;
+                    envelope["value"] = finalItems;
+                    return Results.Ok(envelope);
                 }
                 catch (Microsoft.OData.ODataException ex)
                 {
@@ -956,11 +994,9 @@ internal static class OhDataEndpointFactory
                             }
 
                             object[] itemArray = items.ToArray();
-                            var envelope = new Dictionary<string, object?>();
-                            envelope["@odata.context"] = $"{baseUrl}/$metadata#{name}({key})/{navPropertyName}";
-                            if (navCount.HasValue) envelope["@odata.count"] = navCount;
-                            envelope["value"] = itemArray;
-                            return Results.Ok(envelope);
+                            // Batch 3: apply $select post-processing to navigation collection results
+                            var navEnv = BuildNavEnvelope(baseUrl, name, key, navPropertyName, navCount, itemArray, ctx);
+                            return Results.Ok(navEnv);
                         }
                         return Results.Ok(result);
                     }
@@ -974,6 +1010,34 @@ internal static class OhDataEndpointFactory
                 .Produces(200)
                 .Produces(404);
             ApplyAuth(rb, authConfig);
+
+            // Batch 3: GET /{name}({key})/{nav}/$count — standalone count for navigation collections (§11.2.3)
+            if (navIsCollection)
+            {
+                string navCountPropertyName = navPropertyName;
+                var countRb = parentGroup.MapGet($"/{name}({{key}})/{navCountPropertyName}/$count",
+                    async (string key, CancellationToken ct) =>
+                    {
+                        try
+                        {
+                            object parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
+                            object? result = await nav.Handler(parsedKey, ct);
+                            if (result is null) return Results.NotFound();
+                            var rawColl = result as System.Collections.IEnumerable;
+                            long count = rawColl is not null ? rawColl.Cast<object>().LongCount() : 1L;
+                            return Results.Content(count.ToString(CultureInfo.InvariantCulture), "text/plain");
+                        }
+                        catch (FormatException ex)
+                        {
+                            logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", key, name);
+                            return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'");
+                        }
+                    })
+                    .WithTags(name)
+                    .Produces(200)
+                    .Produces(404);
+                ApplyAuth(countRb, authConfig);
+            }
 
             // Gap 6: $ref endpoints for navigation (§11.4.6)
             string navRefPropertyName = nav.PropertyName;
