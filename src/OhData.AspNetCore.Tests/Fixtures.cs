@@ -747,3 +747,66 @@ internal class NavCountProfile : EntitySetProfile<int, Parent>
                     _children.Where(c => c.ParentId == parentId).ToList()));
     }
 }
+
+// ── Batch 4 fixtures ─────────────────────────────────────────────────────────
+
+/// <summary>
+/// Profile with ETag and GetAll so tests can verify @odata.etag appears in collection responses.
+/// </summary>
+internal class ETagCollectionProfile : EntitySetProfile<int, Widget>
+{
+    private static readonly List<Widget> _store = new()
+    {
+        new() { Id = 1, Name = "Sprocket" },
+        new() { Id = 2, Name = "Cog" },
+    };
+
+    public ETagCollectionProfile() : base(x => x.Id)
+    {
+        EntitySetName = "ETagCollWidgets";
+        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store);
+        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
+        UseETag(x => x.Name);
+    }
+}
+
+/// <summary>
+/// Profile with GetQueryable and MaxTop for Prefer: maxpagesize tests.
+/// </summary>
+internal class MaxPageSizeProfile : EntitySetProfile<int, Widget>
+{
+    private static readonly List<Widget> _store = Enumerable.Range(1, 20)
+        .Select(i => new Widget { Id = i, Name = $"Widget{i}" })
+        .ToList();
+
+    public MaxPageSizeProfile() : base(x => x.Id)
+    {
+        EntitySetName = "MaxPageWidgets";
+        FilterEnabled = true;
+        OrderByEnabled = true;
+        GetQueryable = (ct) => Task.FromResult<IQueryable<Widget>>(_store.AsQueryable());
+        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
+    }
+}
+
+/// <summary>
+/// Profile that sets source.HasETag for If-Match list parsing tests.
+/// </summary>
+internal class ETagIfMatchProfile : EntitySetProfile<int, Widget>
+{
+    private readonly List<Widget> _store = new() { new() { Id = 1, Name = "Sprocket" } };
+
+    public ETagIfMatchProfile() : base(x => x.Id)
+    {
+        EntitySetName = "IfMatchWidgets";
+        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
+        PutById = (id, widget, ct) =>
+        {
+            _store.RemoveAll(w => w.Id == id);
+            widget.Id = id;
+            _store.Add(widget);
+            return Task.FromResult(widget);
+        };
+        UseETag(x => x.Name);
+    }
+}
