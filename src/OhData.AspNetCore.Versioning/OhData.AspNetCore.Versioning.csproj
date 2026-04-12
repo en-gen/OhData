@@ -1,9 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-    <LangVersion>latest</LangVersion>
+    <PackageId>OhData.AspNetCore.Versioning</PackageId>
+    <Description>API versioning helpers for OhData. Combines registration name and prefix in a single call.</Description>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\OhData.AspNetCore\OhData.AspNetCore.csproj" />
