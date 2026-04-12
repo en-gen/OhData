@@ -74,7 +74,9 @@ internal static class EntitySetNameConvention
         if (name.EndsWith("sh", StringComparison.Ordinal) ||
             name.EndsWith("ch", StringComparison.Ordinal) ||
             name.EndsWith('s') || name.EndsWith('x') || name.EndsWith('z'))
+        {
             return name + "es";
+        }
 
         // default: append s  (Product → Products, Order → Orders)
         return name + "s";

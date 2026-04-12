@@ -13,6 +13,8 @@
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" Version="0.14.*" />
     <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="8.*" />
+    <PackageReference Include="Microsoft.OData.Client" Version="8.*" />
+    <PackageReference Include="Microsoft.OData.ModelBuilder" Version="2.*" />
   </ItemGroup>
 
   <ItemGroup>

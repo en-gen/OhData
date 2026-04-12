@@ -13,7 +13,7 @@ namespace OhData.Client.Tests;
 public class OhDataClientIntegrationTests : IAsyncDisposable
 {
     private readonly ClientTestFixture _fixture;
-    private          OhDataClient      Client => _fixture.Client;
+    private OhDataClient Client => _fixture.Client;
 
     public OhDataClientIntegrationTests()
     {
@@ -64,7 +64,7 @@ public class OhDataClientIntegrationTests : IAsyncDisposable
     [Fact]
     public async Task CountAsync_ReturnsTotal()
     {
-        var count = await Client.For<Widget>().CountAsync();
+        long count = await Client.For<Widget>().CountAsync();
         Assert.Equal(2, count);
     }
 
@@ -187,14 +187,14 @@ public class OhDataClientIntegrationTests : IAsyncDisposable
     [Fact]
     public async Task AnyAsync_NonEmptyCollection_ReturnsTrue()
     {
-        var any = await Client.For<Widget>().AnyAsync();
+        bool any = await Client.For<Widget>().AnyAsync();
         Assert.True(any);
     }
 
     [Fact]
     public async Task AnyAsync_NoMatch_ReturnsFalse()
     {
-        var any = await Client.For<Widget>()
+        bool any = await Client.For<Widget>()
             .Filter(x => x.Name == "DoesNotExist")
             .AnyAsync();
         Assert.False(any);
