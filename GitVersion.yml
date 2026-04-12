@@ -7,29 +7,29 @@ branches:
   main:
     regex: ^main$
     is-release-branch: true
-    tag: ''
+    label: ''
   develop:
     regex: ^develop$
-    tag: alpha
+    label: alpha
     increment: Minor
   feature:
     regex: ^(story|feature)[/-]
-    tag: '{BranchName}'
+    label: '{BranchName}'
     increment: Inherit
   bugfix:
     regex: ^bug[/-]
-    tag: '{BranchName}'
+    label: '{BranchName}'
     increment: Patch
   release:
     regex: ^release[/-]
-    tag: rc
+    label: rc
     increment: None
     is-release-branch: true
   hotfix:
     regex: ^hotfix[/-]
-    tag: hotfix
+    label: hotfix
     increment: Patch
   pull-request:
     regex: ^(pull|pr)[/-]
-    tag: pr
+    label: pr
     increment: Inherit
