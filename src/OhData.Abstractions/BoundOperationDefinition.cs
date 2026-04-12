@@ -5,22 +5,46 @@ using System.Threading.Tasks;
 
 namespace OhData.Abstractions;
 
+/// <summary>
+/// Describes a bound function or action registered via
+/// <c>BindFunction</c>, <c>BindAction</c>, <c>BindEntityFunction</c>, or <c>BindEntityAction</c>
+/// on an <see cref="EntitySetProfile{TKey,TModel}"/>. Built once at startup and cached.
+/// </summary>
 internal sealed record BoundOperationDefinition
 {
+    /// <summary>The OData operation name (the delegate method name).</summary>
     public required string Name { get; init; }
+
+    /// <summary>
+    /// <c>true</c> for actions (OData §11.5.4, HTTP POST); <c>false</c> for functions
+    /// (OData §11.5.3, HTTP GET).
+    /// </summary>
     public required bool IsAction { get; init; }
+
+    /// <summary>
+    /// The visible OData parameters (all delegate parameters except <see cref="CancellationToken"/>
+    /// and, for entity-level operations, the leading key parameter).
+    /// </summary>
     public required ParameterInfo[] Parameters { get; init; }
 
-    // Gap 7: true when this operation is bound to a single entity (key-parameterized)
-    // rather than the entity set collection.
+    /// <summary>
+    /// <c>true</c> when this operation is bound to a single entity
+    /// (<c>GET/POST /{EntitySet}({key})/{Name}</c>); <c>false</c> when bound to the entity set
+    /// collection (<c>GET/POST /{EntitySet}/{Name}</c>).
+    /// </summary>
     public bool IsEntityLevel { get; init; } = false;
 
-    // Invokes the underlying delegate; CancellationToken is automatically appended if the
-    // original method accepts it as its last parameter.
-    // Note: DynamicInvoke is ~100x slower than a direct typed invocation in microbenchmarks,
-    // but the absolute cost (~1-5us) is negligible relative to HTTP endpoint overhead (~1-50ms).
-    // A pre-compiled strongly-typed invoker via expression trees would eliminate this, but adds
-    // significant startup complexity for minimal per-request benefit.
+    /// <summary>
+    /// Invokes the underlying delegate, automatically appending a <see cref="CancellationToken"/>
+    /// when the original method accepts one.
+    /// </summary>
+    /// <remarks>
+    /// Uses <see cref="Delegate.DynamicInvoke"/> internally. In microbenchmarks this is ~100× slower
+    /// than a direct typed call, but the absolute cost (~1–5 µs) is negligible relative to HTTP
+    /// endpoint overhead (~1–50 ms). A pre-compiled strongly-typed invoker via expression trees
+    /// would eliminate this overhead but adds significant startup complexity for minimal
+    /// per-request benefit.
+    /// </remarks>
     public required Func<object?[], CancellationToken, Task<object?>> Invoke { get; init; }
 
     internal static BoundOperationDefinition From(Delegate del, bool isAction, bool isEntityLevel = false)

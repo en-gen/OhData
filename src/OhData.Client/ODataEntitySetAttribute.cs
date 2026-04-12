@@ -4,7 +4,7 @@ namespace OhData.Client;
 
 /// <summary>
 /// Overrides the OData entity set name used by <see cref="OhDataClient.For{T}()"/>
-/// when the conventional pluralisation of <typeparamref name="T"/>'s name is not correct.
+/// when the conventional pluralisation of the entity type's name is not correct.
 /// </summary>
 /// <example>
 /// <code>

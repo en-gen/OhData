@@ -23,10 +23,15 @@ public sealed class OhDataRegistration
         UnboundOperations = unboundOps ?? System.Array.Empty<UnboundOperationDefinition>();
     }
 
+    /// <summary>The URL prefix under which all entity set routes are mounted, e.g. <c>"/odata"</c>.</summary>
     public string Prefix { get; }
+
+    /// <summary>The compiled OData Entity Data Model (EDM) built from all registered profiles.</summary>
     public IEdmModel EdmModel { get; }
+
     internal IReadOnlyList<IEntitySetEndpointSource> Profiles { get; }
     internal IReadOnlyList<UnboundOperationDefinition> UnboundOperations { get; }
 
+    /// <summary>The OData entity set names exposed by this registration.</summary>
     public IEnumerable<string> EntitySetNames => Profiles.Select(p => p.EntitySetName);
 }
