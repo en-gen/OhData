@@ -11,6 +11,10 @@ internal sealed record BoundOperationDefinition
     public required bool IsAction { get; init; }
     public required ParameterInfo[] Parameters { get; init; }
 
+    // Gap 7: true when this operation is bound to a single entity (key-parameterized)
+    // rather than the entity set collection.
+    public bool IsEntityLevel { get; init; } = false;
+
     // Invokes the underlying delegate; CancellationToken is automatically appended if the
     // original method accepts it as its last parameter.
     // Note: DynamicInvoke is ~100x slower than a direct typed invocation in microbenchmarks,
@@ -19,16 +23,16 @@ internal sealed record BoundOperationDefinition
     // significant startup complexity for minimal per-request benefit.
     public required Func<object?[], CancellationToken, Task<object?>> Invoke { get; init; }
 
-    internal static BoundOperationDefinition From(Delegate del, bool isAction)
+    internal static BoundOperationDefinition From(Delegate del, bool isAction, bool isEntityLevel = false)
     {
         var method = del.Method;
         var allParams = method.GetParameters();
-        var hasCt = allParams.Length > 0
+        bool hasCt = allParams.Length > 0
             && allParams[^1].ParameterType == typeof(CancellationToken);
         var visibleParams = hasCt ? allParams[..^1] : allParams;
 
         var returnType = method.ReturnType;
-        var isVoidReturn = returnType == typeof(void)
+        bool isVoidReturn = returnType == typeof(void)
             || returnType == typeof(Task)
             || returnType == typeof(ValueTask);
 
@@ -48,10 +52,11 @@ internal sealed record BoundOperationDefinition
         {
             Name = method.Name,
             IsAction = isAction,
+            IsEntityLevel = isEntityLevel,
             Parameters = visibleParams,
             Invoke = async (args, ct) =>
             {
-                var fullArgs = hasCt
+                object?[] fullArgs = hasCt
                     ? [.. args, (object)ct]
                     : args;
                 object? raw;
