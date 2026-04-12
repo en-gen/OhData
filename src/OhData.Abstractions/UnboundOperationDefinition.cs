@@ -76,32 +76,7 @@ internal sealed record UnboundOperationDefinition
             Parameters = visibleParams,
             ReturnType = returnType,
             ReturnsCollection = returnsCollection,
-            Invoke = async (args, ct) =>
-            {
-                object?[] fullArgs = hasCt ? [.. args, (object)ct] : args;
-                object? raw;
-                try { raw = del.DynamicInvoke(fullArgs); }
-                catch (TargetInvocationException tie) when (tie.InnerException is not null)
-                {
-                    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(tie.InnerException).Throw();
-                    throw;
-                }
-                if (raw is null) return null;
-                if (raw is ValueTask vt) { await vt.ConfigureAwait(false); return null; }
-                if (raw.GetType() is { IsGenericType: true } rawType
-                    && rawType.GetGenericTypeDefinition() == typeof(ValueTask<>))
-                {
-                    var asTaskMethod = rawType.GetMethod("AsTask")!;
-                    raw = asTaskMethod.Invoke(raw, null)!;
-                }
-                if (raw is Task task)
-                {
-                    await task.ConfigureAwait(false);
-                    if (isVoidReturn) return null;
-                    return resultProp?.GetValue(task);
-                }
-                return raw;
-            }
+            Invoke = AsyncDispatchHelper.BuildInvoker(del, hasCt, isVoidReturn, resultProp)
         };
     }
 
