@@ -2,14 +2,26 @@
 
 Convention-based OData 4.0 server and typed client for ASP.NET Core. Define a profile class, assign handler delegates, and get a fully spec-compliant OData API — no controllers required. Consume it from .NET with a fluent, LINQ-native client.
 
+## Getting Started
+
+Install the server package:
+
+```
+dotnet add package OhData.AspNetCore
+```
+
+Install the client package:
+
+```
+dotnet add package OhData.Client
+```
+
 ## Packages
 
 | Package | NuGet | What it does |
 |---------|-------|--------------|
 | `OhData.Abstractions` | [![NuGet](https://img.shields.io/nuget/v/OhData.Abstractions)](https://www.nuget.org/packages/OhData.Abstractions) | `EntitySetProfile<TKey,TModel>` base class. No ASP.NET Core dependency. |
-| `OhData.AspNetCore` | [![NuGet](https://img.shields.io/nuget/v/OhData.AspNetCore)](https://www.nuget.org/packages/OhData.AspNetCore) | DI registration, endpoint factory, minimal API routes. |
-| `OhData.AspNetCore.Versioning` | [![NuGet](https://img.shields.io/nuget/v/OhData.AspNetCore.Versioning)](https://www.nuget.org/packages/OhData.AspNetCore.Versioning) | `AddOhDataVersion` / `MapOhDataVersion` convenience wrappers. |
-| `OhData.Abstractions.AspNetCore.OData` | [![NuGet](https://img.shields.io/nuget/v/OhData.Abstractions.AspNetCore.OData)](https://www.nuget.org/packages/OhData.Abstractions.AspNetCore.OData) | `ODataEntitySetProfile<TKey,TModel>` — exposes `ODataQueryOptions<T>` and `Delta<T>` directly for full pushdown control. |
+| `OhData.AspNetCore` | [![NuGet](https://img.shields.io/nuget/v/OhData.AspNetCore)](https://www.nuget.org/packages/OhData.AspNetCore) | DI registration, endpoint factory, minimal API routes. Includes `AddOhDataVersion` / `MapOhDataVersion` versioning helpers and `ODataEntitySetProfile<TKey,TModel>` for full OData pushdown control. |
 | `OhData.Client` | [![NuGet](https://img.shields.io/nuget/v/OhData.Client)](https://www.nuget.org/packages/OhData.Client) | Typed .NET client. Fluent builder with LINQ-based `$filter`, `$select`, `$expand`, `$orderby`, and pagination. |
 
 ---
