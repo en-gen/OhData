@@ -230,13 +230,14 @@ public sealed class EntitySetClient<T> where T : class
 
     /// <summary>
     /// POST a new entity. Returns the created entity as returned by the server
-    /// (including any server-assigned key or computed fields).
+    /// (including any server-assigned key or computed fields), or <see langword="null"/>
+    /// when the server responds with 204 No Content (Prefer: return=minimal).
     /// </summary>
     /// <remarks>
     /// Any query options set on the builder (Filter, Select, OrderBy, etc.) are ignored
     /// for POST — the request always targets the bare entity set URL.
     /// </remarks>
-    public Task<T> InsertAsync(T entity, CancellationToken ct = default)
+    public Task<T?> InsertAsync(T entity, CancellationToken ct = default)
         => _http.PostAsync(_entitySetName, entity, ct);
 
     // ── URL building (internal for testing) ────────────────────────────────────

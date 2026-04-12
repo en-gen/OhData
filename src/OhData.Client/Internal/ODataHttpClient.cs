@@ -60,8 +60,8 @@ internal sealed class ODataHttpClient
         using var response = await _http.GetAsync(url, ct);
         if (response.StatusCode == HttpStatusCode.NotFound) return null;
         await EnsureSuccessAsync(response, url, ct);
-        return await response.Content.ReadFromJsonAsync<T>(_options.JsonOptions, ct)
-               ?? throw new InvalidOperationException($"GET '{url}' returned HTTP 200 with an empty body.");
+        if (response.StatusCode == System.Net.HttpStatusCode.NoContent) return null;
+        return await response.Content.ReadFromJsonAsync<T>(_options.JsonOptions, ct);
     }
 
     // ── GET $count ──────────────────────────────────────────────────────────────
@@ -83,13 +83,13 @@ internal sealed class ODataHttpClient
 
     // ── POST ────────────────────────────────────────────────────────────────────
 
-    internal async Task<T> PostAsync<T>(string url, T body, CancellationToken ct)
+    internal async Task<T?> PostAsync<T>(string url, T body, CancellationToken ct)
         where T : class
     {
         using var response = await _http.PostAsJsonAsync(url, body, _options.JsonOptions, ct);
         await EnsureSuccessAsync(response, url, ct);
-        return await response.Content.ReadFromJsonAsync<T>(_options.JsonOptions, ct)
-               ?? throw new InvalidOperationException($"POST to '{url}' returned an empty body.");
+        if (response.StatusCode == System.Net.HttpStatusCode.NoContent) return null;
+        return await response.Content.ReadFromJsonAsync<T>(_options.JsonOptions, ct);
     }
 
     // ── PUT ─────────────────────────────────────────────────────────────────────
