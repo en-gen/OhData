@@ -20,8 +20,8 @@ namespace OhData.ClientTestBench;
 
 internal class Widget
 {
-    public int    Id    { get; set; }
-    public string Name  { get; set; } = "";
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
     public decimal Price { get; set; }
 }
 
@@ -42,30 +42,30 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
             new() { Id = 3, Name = "Bracket",  Price = 12.00m },
         };
 
-        GetQueryable = (ct)       => Task.FromResult(_store.AsQueryable());
-        GetById      = (id, ct)   => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
-        Post         = (w, ct)    =>
+        GetQueryable = (ct) => Task.FromResult(_store.AsQueryable());
+        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
+        Post = (w, ct) =>
         {
             w.Id = _store.Count > 0 ? _store.Max(x => x.Id) + 1 : 1;
             _store.Add(w);
             return Task.FromResult(w);
         };
-        PutById      = (id, w, ct) =>
+        PutById = (id, w, ct) =>
         {
             _store.RemoveAll(x => x.Id == id);
             w.Id = id;
             _store.Add(w);
             return Task.FromResult(w);
         };
-        Patch        = (id, w, ct) =>
+        Patch = (id, w, ct) =>
         {
             var existing = _store.FirstOrDefault(x => x.Id == id);
             if (existing is null) return Task.FromResult<Widget?>(null);
-            if (w.Name  != "") existing.Name  = w.Name;
-            if (w.Price != 0)  existing.Price = w.Price;
+            if (w.Name != "") existing.Name = w.Name;
+            if (w.Price != 0) existing.Price = w.Price;
             return Task.FromResult<Widget?>(existing);
         };
-        Delete       = (id, ct)   => Task.FromResult(_store.RemoveAll(w => w.Id == id) > 0);
+        Delete = (id, ct) => Task.FromResult(_store.RemoveAll(w => w.Id == id) > 0);
     }
 }
 
@@ -178,12 +178,12 @@ internal static class Program
 
         await writer.WriteLineAsync();
         await writer.WriteLineAsync("--- GET $count ---");
-        var count = await client.For<Widget>().CountAsync();
+        long count = await client.For<Widget>().CountAsync();
         await writer.WriteLineAsync($"Total: {count}");
 
         await writer.WriteLineAsync();
         await writer.WriteLineAsync("--- AnyAsync ---");
-        var any = await client.For<Widget>().AnyAsync();
+        bool any = await client.For<Widget>().AnyAsync();
         await writer.WriteLineAsync($"Any: {any}");
 
         await writer.WriteLineAsync();

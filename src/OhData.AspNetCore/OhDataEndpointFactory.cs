@@ -973,7 +973,7 @@ internal static class OhDataEndpointFactory
 
             // GET /{name}({key})/{nav}/$ref — returns reference envelope
             var refGetRb = parentGroup.MapGet($"/{name}({{key}})/{navRefPropertyName}/$ref",
-                async (string key, HttpContext ctx, CancellationToken ct) =>
+                (string key, HttpContext ctx) =>
                 {
                     try
                     {

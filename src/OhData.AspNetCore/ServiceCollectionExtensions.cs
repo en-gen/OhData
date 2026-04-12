@@ -31,9 +31,11 @@ public static class ServiceCollectionExtensions
                 && d.ServiceKey is string k
                 && StringComparer.OrdinalIgnoreCase.Equals(k, name)
                 && d.ServiceType == typeof(OhDataRegistration)))
+        {
             throw new InvalidOperationException(
                 $"OhData: a registration named '{name}' is already registered. " +
                 "Call AddOhData with a different name, or remove the duplicate call.");
+        }
 
         services.TryAddSingleton<OhDataRegistrationCollection>();
 

@@ -25,7 +25,7 @@ public abstract class ODataEntitySetProfile<TKey, TModel> : EntitySetProfile<TKe
     }
 
     // IODataEntitySetEndpointSource implementation
-    bool IODataEntitySetEndpointSource.HasGetODataQueryable  => GetQueryable is not null;
+    bool IODataEntitySetEndpointSource.HasGetODataQueryable => GetQueryable is not null;
     bool IODataEntitySetEndpointSource.HasPatchDelta => PatchDelta is not null;
 
     async Task<IQueryable<object>> IODataEntitySetEndpointSource.InvokeGetODataQueryableAsync(ODataQueryOptions options, CancellationToken ct)
