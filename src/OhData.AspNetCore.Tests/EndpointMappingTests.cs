@@ -1982,6 +1982,51 @@ public class EndpointMappingTests
         Assert.Equal(1, json.GetProperty("value").GetArrayLength());
     }
 
+    // ── Batch 6: OData-MaxVersion header, Prefer:return=representation on PUT/PATCH, HEAD ──
+
+    [Fact]
+    public async Task Response_IncludesODataMaxVersionHeader()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        HttpResponseMessage response = await fx.Client.GetAsync("/odata/Widgets");
+        Assert.True(response.Headers.TryGetValues("OData-MaxVersion", out System.Collections.Generic.IEnumerable<string>? vals));
+        Assert.Contains(vals!, v => v == "4.0");
+    }
+
+    [Fact]
+    public async Task Put_ReturnRepresentation_ReturnsPreferenceAppliedHeader()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var request = new HttpRequestMessage(HttpMethod.Put, "/odata/Widgets(1)");
+        request.Headers.Add("Prefer", "return=representation");
+        request.Content = JsonContent.Create(new { Id = 1, Name = "Updated" });
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.True(response.Headers.TryGetValues("Preference-Applied", out System.Collections.Generic.IEnumerable<string>? applied));
+        Assert.Contains(applied!, v => v.Contains("return=representation"));
+    }
+
+    [Fact]
+    public async Task Patch_ReturnRepresentation_ReturnsPreferenceAppliedHeader()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var request = new HttpRequestMessage(HttpMethod.Patch, "/odata/Widgets(1)");
+        request.Headers.Add("Prefer", "return=representation");
+        request.Content = JsonContent.Create(new { Name = "Patched" });
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.True(response.Headers.TryGetValues("Preference-Applied", out System.Collections.Generic.IEnumerable<string>? applied));
+        Assert.Contains(applied!, v => v.Contains("return=representation"));
+    }
+
+    [Fact]
+    public async Task GetAll_TopZero_ReturnsEmptyArray()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
+        JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets?$top=0");
+        Assert.Equal(0, json.GetProperty("value").GetArrayLength());
+    }
+
 }
 
 // ── Auth test helpers (not registered as profiles — instantiated directly) ───

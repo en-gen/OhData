@@ -105,6 +105,8 @@ internal static class OhDataEndpointFactory
         group.AddEndpointFilter(async (ctx, next) =>
         {
             ctx.HttpContext.Response.Headers["OData-Version"] = "4.0";
+            // §8.2.6: OData-MaxVersion indicates the highest OData protocol version this server supports.
+            ctx.HttpContext.Response.Headers["OData-MaxVersion"] = "4.0";
 
             string path = ctx.HttpContext.Request.Path.Value ?? "";
             bool isMetadata = path.EndsWith("/$metadata", StringComparison.OrdinalIgnoreCase);
@@ -963,6 +965,13 @@ internal static class OhDataEndpointFactory
                         return Results.NoContent();
                     }
 
+                    // §8.2.8.7: Prefer: return=representation — explicit opt-in; already the default behaviour.
+                    if (ctx.Request.Headers.TryGetValue("Prefer", out var putPrefer)
+                        && putPrefer.ToString().Contains("return=representation", StringComparison.OrdinalIgnoreCase))
+                    {
+                        ctx.Response.Headers["Preference-Applied"] = "return=representation";
+                    }
+
                     // Gap 5: include @odata.id in PUT response
                     // Gap 2: include @odata.etag in body
                     string odataId = $"{BuildBaseUrl(ctx, prefix)}/{name}({key})";
@@ -1048,6 +1057,13 @@ internal static class OhDataEndpointFactory
                     {
                         ctx.Response.Headers["Preference-Applied"] = "return=minimal";
                         return Results.NoContent();
+                    }
+
+                    // §8.2.8.7: Prefer: return=representation — explicit opt-in; already the default behaviour.
+                    if (ctx.Request.Headers.TryGetValue("Prefer", out var patchPrefer)
+                        && patchPrefer.ToString().Contains("return=representation", StringComparison.OrdinalIgnoreCase))
+                    {
+                        ctx.Response.Headers["Preference-Applied"] = "return=representation";
                     }
 
                     // Gap 5: include @odata.id in PATCH response
