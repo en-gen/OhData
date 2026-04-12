@@ -70,8 +70,27 @@ internal static class OhDataEndpointFactory
 
     private static IEnumerable<string> ParseETagList(string raw)
     {
-        // Split comma-separated ETags; handle wildcard "*"
-        return raw.Split(',').Select(s => s.Trim().Trim('"'));
+        // Split comma-separated ETags per RFC 7232 §3.1.
+        // Each entry may optionally carry a W/ weak-validator prefix; strip it before comparison.
+        return raw.Split(',').Select(s =>
+        {
+            string t = s.Trim();
+            if (t.StartsWith("W/", StringComparison.OrdinalIgnoreCase))
+                t = t.Substring(2);
+            return t.Trim('"');
+        });
+    }
+
+    private static int? ParseMaxPageSize(HttpContext ctx)
+    {
+        // Honour Prefer: maxpagesize=N (§8.2.8.3).
+        if (!ctx.Request.Headers.TryGetValue("Prefer", out var prefer)) return null;
+        const string prefix = "maxpagesize=";
+        string val = prefer.ToString();
+        int idx = val.IndexOf(prefix, StringComparison.OrdinalIgnoreCase);
+        if (idx < 0) return null;
+        string num = val.Substring(idx + prefix.Length).Split(new[] { ',', ';' })[0].Trim();
+        return int.TryParse(num, out int n) && n > 0 ? n : (int?)null;
     }
 
     public static RouteGroupBuilder MapAll(IEndpointRouteBuilder routes, OhDataRegistration registration)
@@ -79,10 +98,28 @@ internal static class OhDataEndpointFactory
         string prefix = registration.Prefix;
         var group = routes.MapGroup(prefix);
 
-        // Gap 1: Add OData-Version: 4.0 header to all responses (§8.2.6)
+        // Gap 1: Add OData-Version: 4.0 header to all responses (§8.2.6).
+        // Batch 4: Return 406 Not Acceptable when the client cannot accept application/json (§8.2.3).
+        // $metadata returns application/xml, so it is exempted from the JSON-only check.
         group.AddEndpointFilter(async (ctx, next) =>
         {
             ctx.HttpContext.Response.Headers["OData-Version"] = "4.0";
+
+            string path = ctx.HttpContext.Request.Path.Value ?? "";
+            bool isMetadata = path.EndsWith("/$metadata", StringComparison.OrdinalIgnoreCase);
+            if (!isMetadata)
+            {
+                string accept = ctx.HttpContext.Request.Headers.Accept.ToString();
+                if (!string.IsNullOrEmpty(accept)
+                    && !accept.Contains("application/json", StringComparison.OrdinalIgnoreCase)
+                    && !accept.Contains("*/*", StringComparison.OrdinalIgnoreCase))
+                {
+                    return ODataError(406, "NotAcceptable",
+                        "The server can only produce application/json responses. " +
+                        "Set Accept: application/json or omit the Accept header.");
+                }
+            }
+
             return await next(ctx);
         });
 
@@ -254,18 +291,17 @@ internal static class OhDataEndpointFactory
     {
         if (!source.HasETag) return null;
         if (!ctx.Request.Headers.TryGetValue("If-Match", out var ifMatch)) return null;
-        string raw = ifMatch.ToString().Trim();
-        // Per RFC 7232: strip optional weak validator prefix W/" before comparing.
-        if (raw.StartsWith("W/", StringComparison.OrdinalIgnoreCase))
-            raw = raw.Substring(2);
-        string ifMatchValue = raw.Trim('"');
-        if (ifMatchValue == "*") return null; // wildcard -- skip check
+
+        // RFC 7232 §3.1: If-Match may carry a comma-separated list of ETags.
+        // The precondition is satisfied if the current ETag matches any one of them.
+        var etagList = ParseETagList(ifMatch.ToString()).ToList();
+        if (etagList.Contains("*")) return null; // wildcard -- always matches
 
         object? current = await source.InvokeGetByIdAsync(parsedKey, ct);
         if (current is null)
             return ODataError(404, "NotFound", "Resource not found.");
         string currentETag = source.InvokeGetETag(current);
-        if (currentETag != ifMatchValue)
+        if (!etagList.Contains(currentETag))
             return ODataError(412, "PreconditionFailed", "The ETag does not match the current resource version.");
         return null; // OK to proceed
     }
@@ -287,16 +323,47 @@ internal static class OhDataEndpointFactory
         var selectedProps = ExtractSelectedProperties(options.SelectExpand.SelectExpandClause);
         if (selectedProps is null) return items;
 
-        var json = JsonSerializer.SerializeToNode(items, _camelCaseSerializerOptions)!.AsArray();
+        // Accept a pre-converted JsonArray (e.g., from ETag annotation injection) to avoid
+        // double-serialisation. Otherwise serialise with camelCase to match the rest of the pipeline.
+        JsonArray json = items is JsonArray existingJson
+            ? existingJson
+            : JsonSerializer.SerializeToNode(items, _camelCaseSerializerOptions)!.AsArray();
+
         foreach (JsonObject obj in json.OfType<JsonObject>())
         {
             var toRemove = obj.Select(p => p.Key)
-                             .Where(k => !selectedProps.Contains(k, StringComparer.OrdinalIgnoreCase))
+                             // OData annotations (e.g. @odata.etag) are metadata and must survive $select.
+                             .Where(k => !k.StartsWith("@", StringComparison.Ordinal) &&
+                                         !selectedProps.Contains(k, StringComparer.OrdinalIgnoreCase))
                              .ToList();
             foreach (string? key in toRemove) obj.Remove(key);
         }
 
         return json;
+    }
+
+    // Batch 4: Inject @odata.etag into a JsonArray using the original (pre-expand) items array
+    // to compute each ETag. The input json is modified in-place and returned.
+    private static JsonArray InjectETagsIntoJsonArray(JsonArray json, object[] originalItems, IEntitySetEndpointSource source)
+    {
+        for (int i = 0; i < Math.Min(json.Count, originalItems.Length); i++)
+        {
+            if (json[i] is JsonObject obj)
+            {
+                string etag = source.InvokeGetETag(originalItems[i]);
+                obj["@odata.etag"] = JsonValue.Create($"\"{etag}\"");
+            }
+        }
+        return json;
+    }
+
+    // Batch 4: Apply @odata.etag annotation to each entity in an object[] collection response.
+    // Returns the original array unchanged when ETag is not configured.
+    private static object ApplyCollectionAnnotations(object[] items, IEntitySetEndpointSource source)
+    {
+        if (!source.HasETag) return items;
+        var json = JsonSerializer.SerializeToNode(items, _camelCaseSerializerOptions)!.AsArray();
+        return InjectETagsIntoJsonArray(json, items, source);
     }
 
     private static HashSet<string>? ExtractSelectedProperties(SelectExpandClause clause)
@@ -475,7 +542,9 @@ internal static class OhDataEndpointFactory
                         ? typed.ToArray()
                         : queryable.Cast<TModel>().ToArray();
 
-                    object finalItems = ApplySelectPostProcess(items, options);
+                    // Batch 4: inject @odata.etag per item before $select so the annotation survives.
+                    object annotated = ApplyCollectionAnnotations(items, source);
+                    object finalItems = ApplySelectPostProcess(annotated, options);
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
@@ -559,16 +628,28 @@ internal static class OhDataEndpointFactory
                     else if (effectiveSkip > 0)
                         filtered = filtered.Skip(effectiveSkip);
 
+                    // Batch 4: Prefer: maxpagesize=N — client-requested page limit (§8.2.8.3).
+                    // $top takes precedence; maxpagesize overrides source.MaxTop when $top is absent.
+                    int? preferredPageSize = ParseMaxPageSize(ctx);
                     if (options.Top is not null)
+                    {
                         filtered = (IQueryable<TModel>)options.Top.ApplyTo(filtered, settings);
-                    else if (source.MaxTop.HasValue)
-                        filtered = filtered.Take(source.MaxTop.Value);
+                    }
+                    else
+                    {
+                        int? pageLimit = preferredPageSize ?? source.MaxTop;
+                        if (pageLimit.HasValue)
+                            filtered = filtered.Take(pageLimit.Value);
+                        if (preferredPageSize.HasValue)
+                            ctx.Response.Headers["Preference-Applied"] = $"maxpagesize={preferredPageSize.Value}";
+                    }
 
                     var items = filtered.ToArray();
 
-                    // Gap 3: compute nextLink when MaxTop is set and page is full
+                    // Gap 3: compute nextLink when MaxTop (or preferred page size) is set and page is full
                     string? nextLink = null;
-                    if (source.MaxTop.HasValue && items.Length == source.MaxTop.Value)
+                    int effectivePageSize = preferredPageSize ?? (source.MaxTop ?? 0);
+                    if (effectivePageSize > 0 && items.Length == effectivePageSize)
                     {
                         int nextSkip = effectiveSkip + items.Length;
                         string token = Convert.ToBase64String(BitConverter.GetBytes(nextSkip));
@@ -577,9 +658,22 @@ internal static class OhDataEndpointFactory
 
                     // Gap 8: apply $expand inline data loading
                     object expandedItems = await ApplyExpandAsync(items, options, source, ct);
-                    object finalItems = expandedItems is object[] arr
-                        ? ApplySelectPostProcess(arr, options)
-                        : ApplySelectPostProcess(expandedItems, options);
+
+                    // Batch 4: inject @odata.etag per item (using original items for ETag computation).
+                    object annotated;
+                    if (expandedItems is object[] expandedArr)
+                    {
+                        annotated = ApplyCollectionAnnotations(expandedArr, source);
+                    }
+                    else
+                    {
+                        // $expand produced a JsonArray — inject ETags from the original items array.
+                        annotated = source.HasETag && expandedItems is JsonArray jArr
+                            ? InjectETagsIntoJsonArray(jArr, items, source)
+                            : expandedItems;
+                    }
+
+                    object finalItems = ApplySelectPostProcess(annotated, options);
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
@@ -641,9 +735,21 @@ internal static class OhDataEndpointFactory
 
                     // Gap 8: apply $expand inline data loading on GetAll path
                     object expandedItems = await ApplyExpandAsync(rawItems, options, source, ct);
-                    object finalItems = expandedItems is object[] arr
-                        ? ApplySelectPostProcess(arr, options)
-                        : ApplySelectPostProcess(expandedItems, options);
+
+                    // Batch 4: inject @odata.etag per item (using original rawItems for ETag computation).
+                    object annotatedItems;
+                    if (expandedItems is object[] expandedArr)
+                    {
+                        annotatedItems = ApplyCollectionAnnotations(expandedArr, source);
+                    }
+                    else
+                    {
+                        annotatedItems = source.HasETag && expandedItems is JsonArray jArr
+                            ? InjectETagsIntoJsonArray(jArr, rawItems, source)
+                            : expandedItems;
+                    }
+
+                    object finalItems = ApplySelectPostProcess(annotatedItems, options);
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     return Results.Ok(new Dictionary<string, object?>
