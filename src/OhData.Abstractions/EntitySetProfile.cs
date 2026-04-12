@@ -261,7 +261,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected EntitySetProfile(Expression<Func<TModel, TKey>> getKey)
     {
         _getKey = getKey;
-        EntitySetName = $"{typeof(TModel).Name}s";
+        EntitySetName = PluralizationHelper.Pluralize(typeof(TModel).Name);
 
         _configurators = new List<Action<EntityTypeConfiguration<TModel>>>();
         _functions = new List<Delegate>();
@@ -948,11 +948,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _authRequired ? new AuthorizationConfig(true, _authPolicy, _authRoles) : null;
     IReadOnlyList<NavigationRouteDefinition> IEntitySetEndpointSource.NavigationRoutes => _navRoutes;
     IReadOnlyList<BoundOperationDefinition> IEntitySetEndpointSource.BoundFunctions =>
-        _resolvedBoundFunctions ?? _functions.Select(d => BoundOperationDefinition.From(d, isAction: false))
+        _resolvedBoundFunctions ??= _functions.Select(d => BoundOperationDefinition.From(d, isAction: false))
             .Concat(_entityFunctions.Select(d => BoundOperationDefinition.From(d, isAction: false, isEntityLevel: true)))
             .ToList();
     IReadOnlyList<BoundOperationDefinition> IEntitySetEndpointSource.BoundActions =>
-        _resolvedBoundActions ?? _actions.Select(d => BoundOperationDefinition.From(d, isAction: true))
+        _resolvedBoundActions ??= _actions.Select(d => BoundOperationDefinition.From(d, isAction: true))
             .Concat(_entityActions.Select(d => BoundOperationDefinition.From(d, isAction: true, isEntityLevel: true)))
             .ToList();
     string IEntitySetEndpointSource.InvokeGetETag(object model) => _getETag!((TModel)model);
@@ -997,4 +997,36 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
     Task<bool> IEntitySetEndpointSource.InvokeDeleteAsync(object key, CancellationToken ct) =>
         Delete!.Invoke((TKey)key, ct);
+}
+
+/// <summary>
+/// Simple English pluralisation rules used to derive the default entity set name
+/// from the model type name.
+/// </summary>
+internal static class PluralizationHelper
+{
+    /// <summary>
+    /// Applies simple English pluralisation rules to <paramref name="name"/>:
+    /// consonant + y ending replaces y with ies; s/sh/ch/x/z endings append es;
+    /// everything else appends s.
+    /// </summary>
+    internal static string Pluralize(string name)
+    {
+        if (name.Length == 0) return name;
+
+        // ends in consonant + y  ->  replace y with ies  (Category -> Categories)
+        if (name.EndsWith('y') && name.Length > 1 && !"aeiouAEIOU".Contains(name[^2]))
+            return name[..^1] + "ies";
+
+        // ends in s, sh, ch, x, z  ->  append es  (Status -> Statuses)
+        if (name.EndsWith("sh", StringComparison.Ordinal) ||
+            name.EndsWith("ch", StringComparison.Ordinal) ||
+            name.EndsWith('s') || name.EndsWith('x') || name.EndsWith('z'))
+        {
+            return name + "es";
+        }
+
+        // default: append s  (Product -> Products, Order -> Orders)
+        return name + "s";
+    }
 }
