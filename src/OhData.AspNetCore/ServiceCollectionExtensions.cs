@@ -5,6 +5,10 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace OhData.AspNetCore;
 
+/// <summary>
+/// Extension methods on <see cref="Microsoft.Extensions.DependencyInjection.IServiceCollection"/>
+/// for registering OhData services.
+/// </summary>
 public static class ServiceCollectionExtensions
 {
     /// <summary>
