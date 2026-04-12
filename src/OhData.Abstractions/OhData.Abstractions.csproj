@@ -2,6 +2,8 @@
 
 	<PropertyGroup>
 		<TargetFramework>net8.0</TargetFramework>
+		<PackageId>OhData.Abstractions</PackageId>
+		<Description>Base abstractions for defining OData 4.0 entity sets. No ASP.NET Core dependency.</Description>
 	</PropertyGroup>
 
 	<ItemGroup>
