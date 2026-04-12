@@ -18,7 +18,7 @@ using OhData.AspNetCore;
 using OhData.Client;
 using Xunit;
 
-namespace OhData.MicrosoftClientCompatibility.Tests;
+namespace OhData.MicrosoftODataClient.Tests;
 
 // ── Shared test entities ─────────────────────────────────────────────────────
 

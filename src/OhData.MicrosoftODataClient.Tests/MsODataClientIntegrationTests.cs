@@ -20,7 +20,7 @@ using Xunit;
 // Entity type must be public so Microsoft.OData.Client can instantiate it via reflection
 // from a different assembly. Uses a distinct namespace to avoid clash with internal Widget
 // defined in ODataProtocolComplianceTests.cs.
-namespace OhData.MicrosoftClientCompatibility.MsClient;
+namespace OhData.MicrosoftODataClient.Tests.MsClient;
 
 // ── Entity type ───────────────────────────────────────────────────────────────
 
