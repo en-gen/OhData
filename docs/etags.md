@@ -1,6 +1,6 @@
 # ETags and Optimistic Concurrency
 
-OhData supports HTTP ETags for optimistic concurrency control via `UseETag` on the profile.
+OhData supports HTTP ETags for optimistic concurrency control. Opt in per entity set by calling `UseETag` inside the profile constructor.
 
 ## Setup
 
@@ -9,87 +9,87 @@ public class ProductProfile : EntitySetProfile<int, Product>
 {
     public ProductProfile() : base(x => x.Id)
     {
-        // Opt in by specifying the property (or properties) to hash
-        UseETag(x => x.RowVersion);
+        // Hash one or more properties into the ETag
+        UseETag(x => x.RowVersion);   // byte[] row-version column
 
-        GetById  = (id, ct) => ...;
-        PutById  = (id, product, ct) => ...;
-        Delete   = (id, ct) => ...;
+        GetById = (id, ct) => ...;
+        PutById = (id, product, ct) => ...;  // If-Match checked before proceeding
+        Patch   = (id, product, ct) => ...;  // same
+        Delete  = (id, ct) => ...;           // same
     }
 }
 ```
 
-`UseETag` accepts one or more property selectors. The framework SHA-256 hashes their values and Base64-encodes the result. `byte[]` properties (e.g. row-version columns) are hashed directly; all other values are hashed as their UTF-8 string representations.
+`UseETag` accepts one or more property selectors. The framework SHA-256 hashes their values and Base64-encodes the result. `byte[]` properties are hashed directly (ideal for SQL row-version columns); all other values are hashed as their UTF-8 string representations.
 
-## Multiple properties
+Hash multiple fields together — the ETag changes if any of them changes:
 
 ```csharp
-// Hash several fields together
 UseETag(x => x.Name, x => x.Price, x => x.UpdatedAt);
 ```
 
 ## Response headers
 
-When `UseETag` is configured, the framework adds an `ETag` header to:
-- `GET /{EntitySet}({key})` — 200 response
-- `POST /{EntitySet}` — 201 response
-- `PUT /{EntitySet}({key})` — 200 response
-- `PATCH /{EntitySet}({key})` — 200 response
+When `UseETag` is configured, the `ETag` response header is added to:
 
-The ETag value is `"<base64-sha256>"` (double-quoted per HTTP spec).
+| Operation | Status | Header |
+|-----------|--------|--------|
+| `GET /{EntitySet}({key})` | 200 | `ETag: "dGVzdA=="` |
+| `POST /{EntitySet}` | 201 | `ETag: "..."` |
+| `PUT /{EntitySet}({key})` | 200 | `ETag: "..."` |
+| `PATCH /{EntitySet}({key})` | 200 | `ETag: "..."` |
 
-## `If-Match` checking on write operations
+The ETag value is double-quoted per the HTTP spec: `"<base64-sha256>"`.
 
-On `PUT`, `PATCH`, and `DELETE`, if the request includes an `If-Match` header and `UseETag` is configured, the framework:
-1. Fetches the current entity via `GetById`
+The `@odata.etag` annotation is also included in the response body for each entity.
+
+## Conditional write operations
+
+On `PUT`, `PATCH`, and `DELETE`, if the request includes an `If-Match` header:
+
+1. The framework fetches the current entity via `GetById`
 2. Computes the current ETag
-3. Compares against the `If-Match` value (strips surrounding quotes)
-4. If they differ: returns `412 Precondition Failed`
-5. If they match (or `If-Match: *`): proceeds with the operation
+3. Checks whether it appears in the `If-Match` list (comma-separated ETags per RFC 7232)
+4. Returns `412 Precondition Failed` if no match; proceeds if matched
 
-**This requires `GetById` to be set alongside `UseETag` for write checks to work.**
+`If-Match: *` always passes (any current entity matches).
 
 ```http
 PUT /odata/Products(1)
 If-Match: "dGVzdA=="
 Content-Type: application/json
 
-{ "name": "Updated Widget", "price": 12.99, "category": "Hardware" }
+{ "id": 1, "name": "Updated Widget", "price": 12.99 }
 ```
 
-→ `412 Precondition Failed` if the ETag has changed since the client last read the entity.
+**`GetById` must be configured for If-Match checking to work on write operations.**
 
-## `If-None-Match: *` on POST
+## Conditional reads
 
-Not currently supported. The framework cannot extract the entity key from the POST body at the framework level without knowing the key property at request time. Implement this check in the `Post` handler if needed.
+On `GET /{EntitySet}({key})`, if the request includes an `If-None-Match` header:
 
-## Advanced: custom ETag function
+- If the current ETag matches any value in `If-None-Match`, returns `304 Not Modified` (no body)
+- Otherwise proceeds normally and returns the full entity
 
-For cases that cannot be expressed as property selectors, set `GetETag` directly:
+This lets clients avoid re-downloading unchanged data.
 
-```csharp
-GetETag = product => MyCustomHasher.Compute(product);
-```
+## Concurrency note
 
-`GetETag` is `Func<TModel, string>?`. When both `UseETag` and `GetETag` are assigned, the last one set wins (they both write to the same backing field).
+The ETag check is a best-effort conflict signal, not an atomic operation. The framework fetches the entity in one database call, then the caller performs the write in a separate operation — another request may modify the entity between those two steps. For true atomic optimistic concurrency, use a database-level mechanism (e.g. SQL `WHERE RowVersion = @expected`) inside the handler itself and return `null` / throw on conflict.
 
-## Example: row version
+## Example: SQL row-version column
 
 ```csharp
 public class Product
 {
     public int Id { get; set; }
     public string Name { get; set; } = "";
+    [Timestamp]
     public byte[] RowVersion { get; set; } = [];
 }
 
-// In profile:
+// Profile:
 UseETag(x => x.RowVersion);
 ```
 
-## Example: composite hash
-
-```csharp
-// Hash three fields together — ETag changes whenever any of them changes
-UseETag(x => x.Name, x => x.Price, x => x.Category);
-```
+EF Core updates `RowVersion` automatically on every `SaveChanges`. The ETag changes on every write.
