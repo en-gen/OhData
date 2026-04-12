@@ -110,10 +110,10 @@ internal sealed class TestServerRequestMessage : DataServiceClientRequestMessage
     private HttpRequestMessage BuildRequest()
     {
         var req = new HttpRequestMessage(new HttpMethod(Method), Url);
-        foreach (var kv in _headers)
+        foreach (var kv in _headers.Where(kv =>
+            !kv.Key.Equals("Content-Type", StringComparison.OrdinalIgnoreCase) &&
+            !kv.Key.Equals("Content-Length", StringComparison.OrdinalIgnoreCase)))
         {
-            if (kv.Key.Equals("Content-Type", StringComparison.OrdinalIgnoreCase)) continue;
-            if (kv.Key.Equals("Content-Length", StringComparison.OrdinalIgnoreCase)) continue;
             req.Headers.TryAddWithoutValidation(kv.Key, kv.Value);
         }
         if (_bodyStream is { Length: > 0 })
