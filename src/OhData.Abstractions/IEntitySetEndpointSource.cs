@@ -40,6 +40,8 @@ internal interface IEntitySetEndpointSource
 
     int? MaxTop { get; }
     bool IdempotentDelete { get; }
+    bool AllowUpsert { get; }
+    bool HasSearch { get; }
     string KeyPropertyName { get; }
     string InvokeGetKeyString(object model);
 
@@ -50,5 +52,6 @@ internal interface IEntitySetEndpointSource
     Task<object?> InvokePutByIdAsync(object key, object model, CancellationToken ct);
     Task<object?> InvokePatchAsync(object key, object model, CancellationToken ct);
     Task<bool> InvokeDeleteAsync(object key, CancellationToken ct);
+    Task<IEnumerable<object>> InvokeSearchAsync(string searchTerm, CancellationToken ct);
     string InvokeGetETag(object model);
 }
