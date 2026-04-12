@@ -80,14 +80,14 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         if (propertySelectors.Length == 0)
             throw new ArgumentException("At least one property selector is required.", nameof(propertySelectors));
         var getters = propertySelectors.Select(e => e.Compile()).ToArray();
-        var sep = new byte[] { 0x00 };
+        byte[] sep = new byte[] { 0x00 };
         _getETag = model =>
         {
             using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-            for (var i = 0; i < getters.Length; i++)
+            for (int i = 0; i < getters.Length; i++)
             {
                 if (i > 0) hasher.AppendData(sep);
-                var value = getters[i](model);
+                object? value = getters[i](model);
                 if (value is byte[] bytes)
                     hasher.AppendData(bytes);
                 else if (value is not null)
@@ -104,6 +104,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private readonly ICollection<Action<EntityTypeConfiguration<TModel>>> _configurators;
     private readonly ICollection<Delegate> _functions;
     private readonly ICollection<Delegate> _actions;
+    private readonly ICollection<Delegate> _entityFunctions;
+    private readonly ICollection<Delegate> _entityActions;
     private readonly List<NavigationRouteDefinition> _navRoutes = new();
 
     protected EntitySetProfile(Expression<Func<TModel, TKey>> getKey)
@@ -114,6 +116,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _configurators = new List<Action<EntityTypeConfiguration<TModel>>>();
         _functions = new List<Delegate>();
         _actions = new List<Delegate>();
+        _entityFunctions = new List<Delegate>();
+        _entityActions = new List<Delegate>();
     }
 
     /// <summary>
@@ -167,7 +171,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
                 if (param.IsOptional) entityFunctionParam.Optional();
                 if (param.HasDefaultValue)
                 {
-                    var defaultStr = param.DefaultValue is bool b ? (b ? "true" : "false") : $"{param.DefaultValue}";
+                    string defaultStr = param.DefaultValue is bool b ? (b ? "true" : "false") : $"{param.DefaultValue}";
                     entityFunctionParam.HasDefaultValue(defaultStr);
                 }
             }
@@ -209,7 +213,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
                 if (param.IsOptional) entityActionParam.Optional();
                 if (param.HasDefaultValue)
                 {
-                    var defaultStr = param.DefaultValue is bool b ? (b ? "true" : "false") : $"{param.DefaultValue}";
+                    string defaultStr = param.DefaultValue is bool b ? (b ? "true" : "false") : $"{param.DefaultValue}";
                     entityActionParam.HasDefaultValue(defaultStr);
                 }
             }
@@ -240,8 +244,97 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
             }
         }
 
-        _resolvedBoundFunctions = _functions.Select(d => BoundOperationDefinition.From(d, isAction: false)).ToList();
-        _resolvedBoundActions = _actions.Select(d => BoundOperationDefinition.From(d, isAction: true)).ToList();
+        // Gap 7: Register entity-level functions bound to the entity type (not collection)
+        foreach (var method in _entityFunctions.Select(x => x.Method))
+        {
+            // Skip the first parameter — it is the key (TKey), not an OData parameter
+            var entityFunction = entityType.Function(method.Name);
+            var allParams = method.GetParameters().Where(p => p.ParameterType != typeof(CancellationToken)).Skip(1);
+
+            foreach (var param in allParams)
+            {
+                var entityFunctionParam = entityFunction.Parameter(param.ParameterType, param.Name!);
+                if (param.IsOptional) entityFunctionParam.Optional();
+                if (param.HasDefaultValue)
+                {
+                    string defaultStr = param.DefaultValue is bool b ? (b ? "true" : "false") : $"{param.DefaultValue}";
+                    entityFunctionParam.HasDefaultValue(defaultStr);
+                }
+            }
+
+            var rawReturn = method.ReturnType;
+            var returnType = rawReturn.IsGenericType && (rawReturn.GetGenericTypeDefinition() == typeof(Task<>) || rawReturn.GetGenericTypeDefinition() == typeof(ValueTask<>))
+                ? rawReturn.GetGenericArguments()[0]
+                : rawReturn == typeof(Task) || rawReturn == typeof(void) || rawReturn == typeof(ValueTask) ? null : rawReturn;
+
+            if (returnType is not null)
+            {
+                var collectionElement = GetCollectionElementType(returnType);
+                if (collectionElement is not null)
+                {
+                    typeof(FunctionConfiguration)
+                        .GetMethod(nameof(FunctionConfiguration.ReturnsCollection), Array.Empty<Type>())!
+                        .MakeGenericMethod(collectionElement)
+                        .Invoke(entityFunction, null);
+                }
+                else
+                {
+                    typeof(FunctionConfiguration)
+                        .GetMethod(nameof(FunctionConfiguration.Returns), Array.Empty<Type>())!
+                        .MakeGenericMethod(returnType)
+                        .Invoke(entityFunction, null);
+                }
+            }
+        }
+
+        // Gap 7: Register entity-level actions bound to the entity type (not collection)
+        foreach (var method in _entityActions.Select(x => x.Method))
+        {
+            var entityAction = entityType.Action(method.Name);
+            var allParams = method.GetParameters().Where(p => p.ParameterType != typeof(CancellationToken)).Skip(1);
+
+            foreach (var param in allParams)
+            {
+                var entityActionParam = entityAction.Parameter(param.ParameterType, param.Name!);
+                if (param.IsOptional) entityActionParam.Optional();
+                if (param.HasDefaultValue)
+                {
+                    string defaultStr = param.DefaultValue is bool b ? (b ? "true" : "false") : $"{param.DefaultValue}";
+                    entityActionParam.HasDefaultValue(defaultStr);
+                }
+            }
+
+            var rawActionReturn = method.ReturnType;
+            var actionReturnType = rawActionReturn.IsGenericType && (rawActionReturn.GetGenericTypeDefinition() == typeof(Task<>) || rawActionReturn.GetGenericTypeDefinition() == typeof(ValueTask<>))
+                ? rawActionReturn.GetGenericArguments()[0]
+                : rawActionReturn == typeof(Task) || rawActionReturn == typeof(void) || rawActionReturn == typeof(ValueTask) ? null : rawActionReturn;
+
+            if (actionReturnType is not null)
+            {
+                var collectionElement = GetCollectionElementType(actionReturnType);
+                if (collectionElement is not null)
+                {
+                    typeof(ActionConfiguration)
+                        .GetMethod(nameof(ActionConfiguration.ReturnsCollection), Array.Empty<Type>())!
+                        .MakeGenericMethod(collectionElement)
+                        .Invoke(entityAction, null);
+                }
+                else
+                {
+                    typeof(ActionConfiguration)
+                        .GetMethod(nameof(ActionConfiguration.Returns), Array.Empty<Type>())!
+                        .MakeGenericMethod(actionReturnType)
+                        .Invoke(entityAction, null);
+                }
+            }
+        }
+
+        _resolvedBoundFunctions = _functions.Select(d => BoundOperationDefinition.From(d, isAction: false))
+            .Concat(_entityFunctions.Select(d => BoundOperationDefinition.From(d, isAction: false, isEntityLevel: true)))
+            .ToList();
+        _resolvedBoundActions = _actions.Select(d => BoundOperationDefinition.From(d, isAction: true))
+            .Concat(_entityActions.Select(d => BoundOperationDefinition.From(d, isAction: true, isEntityLevel: true)))
+            .ToList();
     }
 
     /// <summary>
@@ -314,8 +407,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// </summary>
     private static string[] ExtractNames(Expression<Func<TModel, object?>>[] expressions)
     {
-        var names = new string[expressions.Length];
-        for (var i = 0; i < expressions.Length; i++)
+        string[] names = new string[expressions.Length];
+        for (int i = 0; i < expressions.Length; i++)
         {
             var body = expressions[i].Body;
 
@@ -327,10 +420,12 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
             }
 
             if (body is not MemberExpression member)
+            {
                 throw new ArgumentException(
                     $"Expression at index {i} must be a direct property access (e.g. x => x.Name). " +
                     $"Nested access such as x => x.Category.Name is not supported.",
                     nameof(expressions));
+            }
 
             names[i] = member.Member.Name;
         }
@@ -351,7 +446,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     {
         HasOptional(navigation);
         if (get is null) return;
-        var propName = GetNavigationPropertyName(navigation.Body);
+        string propName = GetNavigationPropertyName(navigation.Body);
         _navRoutes.Add(new NavigationRouteDefinition
         {
             PropertyName = propName,
@@ -374,7 +469,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     {
         HasRequired(navigation);
         if (get is null) return;
-        var propName = GetNavigationPropertyName(navigation.Body);
+        string propName = GetNavigationPropertyName(navigation.Body);
         _navRoutes.Add(new NavigationRouteDefinition
         {
             PropertyName = propName,
@@ -397,7 +492,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     {
         HasMany(navigation);
         if (getAll is null) return;
-        var propName = GetNavigationPropertyName(navigation.Body);
+        string propName = GetNavigationPropertyName(navigation.Body);
         _navRoutes.Add(new NavigationRouteDefinition
         {
             PropertyName = propName,
@@ -408,6 +503,18 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
     protected void BindFunction(Delegate handler) => _functions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
     protected void BindAction(Delegate handler) => _actions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
+
+    /// <summary>
+    /// Registers an entity-level bound function: GET /{EntitySet}({key})/{MethodName}.
+    /// The handler's first non-CancellationToken parameter must be the key (TKey).
+    /// </summary>
+    protected void BindEntityFunction(Delegate handler) => _entityFunctions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
+
+    /// <summary>
+    /// Registers an entity-level bound action: POST /{EntitySet}({key})/{MethodName}.
+    /// The handler's first non-CancellationToken parameter must be the key (TKey).
+    /// </summary>
+    protected void BindEntityAction(Delegate handler) => _entityActions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
 
     private static string GetNavigationPropertyName(Expression body)
     {
@@ -433,9 +540,12 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected void RequireAuthorization()
     {
         if (_authRequired)
+        {
             throw new InvalidOperationException(
                 "Authorization has already been configured on this profile. " +
                 "RequireAuthorization() is implicit when RequireAuthorization(policy) or RequireRoles() is called.");
+        }
+
         _authRequired = true;
     }
 
@@ -447,8 +557,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected void RequireAuthorization(string policy)
     {
         if (_authPolicy is not null)
+        {
             throw new InvalidOperationException(
                 $"A policy ('{_authPolicy}') has already been set on this profile. Call RequireAuthorization(policy) only once.");
+        }
+
         _authPolicy = policy;
         _authRequired = true;
     }
@@ -463,8 +576,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         if (roles.Length == 0)
             throw new ArgumentException("At least one role must be specified.", nameof(roles));
         if (_authRoles is not null)
+        {
             throw new InvalidOperationException(
                 $"Roles have already been set on this profile. Call RequireRoles only once.");
+        }
+
         _authRoles = Array.AsReadOnly(roles);
         _authRequired = true;
     }
@@ -487,9 +603,13 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _authRequired ? new AuthorizationConfig(true, _authPolicy, _authRoles) : null;
     IReadOnlyList<NavigationRouteDefinition> IEntitySetEndpointSource.NavigationRoutes => _navRoutes;
     IReadOnlyList<BoundOperationDefinition> IEntitySetEndpointSource.BoundFunctions =>
-        _resolvedBoundFunctions ?? _functions.Select(d => BoundOperationDefinition.From(d, isAction: false)).ToList();
+        _resolvedBoundFunctions ?? _functions.Select(d => BoundOperationDefinition.From(d, isAction: false))
+            .Concat(_entityFunctions.Select(d => BoundOperationDefinition.From(d, isAction: false, isEntityLevel: true)))
+            .ToList();
     IReadOnlyList<BoundOperationDefinition> IEntitySetEndpointSource.BoundActions =>
-        _resolvedBoundActions ?? _actions.Select(d => BoundOperationDefinition.From(d, isAction: true)).ToList();
+        _resolvedBoundActions ?? _actions.Select(d => BoundOperationDefinition.From(d, isAction: true))
+            .Concat(_entityActions.Select(d => BoundOperationDefinition.From(d, isAction: true, isEntityLevel: true)))
+            .ToList();
     string IEntitySetEndpointSource.InvokeGetETag(object model) => _getETag!((TModel)model);
 
     private Func<TModel, string>? _keyToString;
