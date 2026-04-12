@@ -11,11 +11,20 @@ internal static class ODataKeyParser
     /// Supports all primitive CLR types, <see cref="Guid"/>, <see cref="DateTime"/>,
     /// <see cref="DateTimeOffset"/>, <see cref="DateOnly"/>, <see cref="TimeOnly"/>,
     /// enums, and any type with a registered <see cref="TypeConverter"/>.
-    /// String keys may be wrapped in single quotes (OData convention) — the quotes are stripped.
+    /// String keys may be wrapped in single quotes (OData convention) -- the quotes are stripped.
+    /// Nullable&lt;T&gt; keys are supported: the literal string "null" returns <c>null</c>,
+    /// any other value is parsed as the underlying type T.
     /// </summary>
-    public static object Parse(string rawKey, Type keyType)
+    public static object? Parse(string rawKey, Type keyType)
     {
-        // String keys arrive as 'value' — strip the surrounding single quotes
+        var underlying = Nullable.GetUnderlyingType(keyType);
+        if (underlying is not null)
+        {
+            if (rawKey == "null") return null;
+            return Parse(rawKey, underlying);
+        }
+
+        // String keys arrive as 'value' -- strip the surrounding single quotes
         if (keyType == typeof(string))
         {
             return rawKey.StartsWith("'") && rawKey.EndsWith("'") && rawKey.Length >= 2
