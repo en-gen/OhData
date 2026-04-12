@@ -1877,6 +1877,111 @@ public class EndpointMappingTests
         Assert.Equal(3, json.GetProperty("value").GetArrayLength());
     }
 
+    // ── Batch 5: $format, Content-Location, @odata.count on GetAll ───────────
+
+    [Fact]
+    public async Task Format_JsonShorthand_Returns200()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        HttpResponseMessage response = await fx.Client.GetAsync("/odata/Widgets?$format=json");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Format_ApplicationJson_Returns200()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        // $format=application/json must be percent-encoded in query strings
+        HttpResponseMessage response = await fx.Client.GetAsync("/odata/Widgets?$format=application%2Fjson");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Format_UnsupportedValue_Returns400()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        HttpResponseMessage response = await fx.Client.GetAsync("/odata/Widgets?$format=xml");
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        string body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("UnsupportedFormat", body);
+    }
+
+    [Fact]
+    public async Task Format_UnsupportedValue_TakesPrecedenceOverAccept()
+    {
+        // $format=xml should return 400 even if Accept: application/json is also set
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets?$format=xml");
+        request.Headers.Add("Accept", "application/json");
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Post_ResponseIncludesContentLocationHeader()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        HttpResponseMessage response = await fx.Client.PostAsJsonAsync("/odata/Widgets", new { Name = "Sprocket" });
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.NotNull(response.Headers.Location);
+        // Content-Location is a content header in .NET's HTTP model (RFC 7231 §3.1.4.2)
+        Assert.True(response.Content.Headers.Contains("Content-Location"));
+        string contentLocation = response.Content.Headers.GetValues("Content-Location").First();
+        // Content-Location should equal Location
+        Assert.Equal(response.Headers.Location!.ToString(), contentLocation);
+    }
+
+    [Fact]
+    public async Task Post_Minimal_ResponseIncludesContentLocationHeader()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var request = new HttpRequestMessage(HttpMethod.Post, "/odata/Widgets");
+        request.Headers.Add("Prefer", "return=minimal");
+        request.Content = JsonContent.Create(new { Name = "Sprocket" });
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        // Content-Location may be in either content or response headers depending on HTTP implementation
+        bool hasContentLocation =
+            response.Content.Headers.Contains("Content-Location") ||
+            response.Headers.Contains("Content-Location");
+        Assert.True(hasContentLocation);
+    }
+
+    [Fact]
+    public async Task Post_ReturnRepresentation_ReturnsPreferenceAppliedHeader()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var request = new HttpRequestMessage(HttpMethod.Post, "/odata/Widgets");
+        request.Headers.Add("Prefer", "return=representation");
+        request.Content = JsonContent.Create(new { Name = "Sprocket" });
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.True(response.Headers.TryGetValues("Preference-Applied", out System.Collections.Generic.IEnumerable<string>? applied));
+        Assert.Contains(applied!, v => v.Contains("return=representation"));
+    }
+
+    [Fact]
+    public async Task GetAll_CountTrue_ReturnsOdataCount()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/Widgets?$count=true");
+        Assert.True(json.TryGetProperty("@odata.count", out JsonElement count));
+        Assert.Equal(JsonValueKind.Number, count.ValueKind);
+        Assert.Equal(2, count.GetInt32());
+    }
+
+    [Fact]
+    public async Task GetAll_SearchWithCountTrue_ReturnsOdataCount()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<SearchableWidgetProfile>());
+        // SearchableWidgets has Alpha, Beta, Gamma; searching "alph" matches only "Alpha" = 1 result
+        JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/SearchableWidgets?$search=alph&$count=true");
+        Assert.True(json.TryGetProperty("@odata.count", out JsonElement count));
+        Assert.Equal(JsonValueKind.Number, count.ValueKind);
+        Assert.Equal(1, count.GetInt32());
+        Assert.Equal(1, json.GetProperty("value").GetArrayLength());
+    }
+
 }
 
 // ── Auth test helpers (not registered as profiles — instantiated directly) ───
