@@ -27,4 +27,10 @@ public class EntitySetDefaults
     /// Set to <c>false</c> to return <c>404 Not Found</c> instead.
     /// </summary>
     public bool IdempotentDelete { get; set; } = true;
+
+    /// <summary>
+    /// When <c>true</c>, a <c>PUT</c> to a non-existent key will create the entity (upsert).
+    /// Default <c>false</c> — PUT to a missing key returns 404.
+    /// </summary>
+    public bool AllowUpsert { get; set; } = false;
 }
