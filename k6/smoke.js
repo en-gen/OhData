@@ -76,21 +76,25 @@ export default function (data) {
 
   // ── $filter ─────────────────────────────────────────────────────────────────
   group('$filter', () => {
+    // Property names must match the EDM model (PascalCase: Price, Name, Category).
+    // Spaces in OData query syntax must be percent-encoded (%20) because k6 sends
+    // URLs verbatim and Kestrel treats a literal space as an HTTP request-line
+    // terminator, returning 400 with an empty body.
     const cases = [
       // Comparison operators
-      { qs: "$filter=price eq 9.99",         label: 'eq numeric',     expect: (v) => v.length >= 1 && v.every(p => p.price === 9.99) },
-      { qs: "$filter=price ne 9.99",         label: 'ne numeric',     expect: (v) => v.every(p => p.price !== 9.99) },
-      { qs: "$filter=price gt 10",           label: 'gt numeric',     expect: (v) => v.every(p => p.price > 10) },
-      { qs: "$filter=price lt 10",           label: 'lt numeric',     expect: (v) => v.every(p => p.price < 10) },
-      { qs: "$filter=price ge 9.99",         label: 'ge numeric',     expect: (v) => v.every(p => p.price >= 9.99) },
-      { qs: "$filter=price le 9.99",         label: 'le numeric',     expect: (v) => v.every(p => p.price <= 9.99) },
+      { qs: "$filter=Price%20eq%209.99",         label: 'eq numeric',     expect: (v) => v.length >= 1 && v.every(p => p.price === 9.99) },
+      { qs: "$filter=Price%20ne%209.99",         label: 'ne numeric',     expect: (v) => v.every(p => p.price !== 9.99) },
+      { qs: "$filter=Price%20gt%2010",           label: 'gt numeric',     expect: (v) => v.every(p => p.price > 10) },
+      { qs: "$filter=Price%20lt%2010",           label: 'lt numeric',     expect: (v) => v.every(p => p.price < 10) },
+      { qs: "$filter=Price%20ge%209.99",         label: 'ge numeric',     expect: (v) => v.every(p => p.price >= 9.99) },
+      { qs: "$filter=Price%20le%209.99",         label: 'le numeric',     expect: (v) => v.every(p => p.price <= 9.99) },
       // String functions
-      { qs: "$filter=contains(name,'get')",  label: 'contains',       expect: (v) => v.length >= 1 && v.every(p => p.name.toLowerCase().includes('get')) },
-      { qs: "$filter=startswith(name,'W')",  label: 'startswith',     expect: (v) => v.every(p => p.name.startsWith('W')) },
-      { qs: "$filter=endswith(name,'et')",   label: 'endswith',       expect: (v) => v.every(p => p.name.toLowerCase().endsWith('et')) },
+      { qs: "$filter=contains(Name,'get')",      label: 'contains',       expect: (v) => v.length >= 1 && v.every(p => p.name.toLowerCase().includes('get')) },
+      { qs: "$filter=startswith(Name,'W')",      label: 'startswith',     expect: (v) => v.every(p => p.name.startsWith('W')) },
+      { qs: "$filter=endswith(Name,'et')",       label: 'endswith',       expect: (v) => v.every(p => p.name.toLowerCase().endsWith('et')) },
       // Logical combinations
-      { qs: "$filter=price gt 5 and price lt 20",   label: 'and',   expect: (v) => v.every(p => p.price > 5 && p.price < 20) },
-      { qs: "$filter=price lt 5 or price gt 30",    label: 'or',    expect: (v) => v.every(p => p.price < 5 || p.price > 30) },
+      { qs: "$filter=Price%20gt%205%20and%20Price%20lt%2020",   label: 'and',   expect: (v) => v.every(p => p.price > 5 && p.price < 20) },
+      { qs: "$filter=Price%20lt%205%20or%20Price%20gt%2030",    label: 'or',    expect: (v) => v.every(p => p.price < 5 || p.price > 30) },
     ];
 
     for (const tc of cases) {
@@ -105,7 +109,7 @@ export default function (data) {
 
   // ── $orderby ────────────────────────────────────────────────────────────────
   group('$orderby', () => {
-    const ascRes = http.get(`${BASE_URL}/v1/Products?$orderby=price`);
+    const ascRes = http.get(`${BASE_URL}/v1/Products?$orderby=Price`);
     check(ascRes, {
       'orderby price asc 200': (r) => r.status === 200,
       'orderby price asc ordered': (r) => {
@@ -117,7 +121,8 @@ export default function (data) {
       },
     });
 
-    const descRes = http.get(`${BASE_URL}/v1/Products?$orderby=price desc`);
+    // "desc" keyword must be separated from the property name by a space → %20
+    const descRes = http.get(`${BASE_URL}/v1/Products?$orderby=Price%20desc`);
     check(descRes, {
       'orderby price desc 200': (r) => r.status === 200,
       'orderby price desc ordered': (r) => {
@@ -129,7 +134,7 @@ export default function (data) {
       },
     });
 
-    const multiRes = http.get(`${BASE_URL}/v1/Products?$orderby=category,price desc`);
+    const multiRes = http.get(`${BASE_URL}/v1/Products?$orderby=Category,Price%20desc`);
     check(multiRes, {
       'orderby multi-property 200': (r) => r.status === 200,
       'orderby multi-property has results': (r) => JSON.parse(r.body).value.length > 0,
