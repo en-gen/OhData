@@ -42,6 +42,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
     protected Func<TKey, CancellationToken, Task<bool>>? Delete = null;
 
+    // Gap 4: $search support
+    protected Func<string, CancellationToken, Task<IEnumerable<TModel>>>? Search = null;
+
     private int? _maxTop;
     protected int? MaxTop
     {
@@ -62,6 +65,14 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// </summary>
     protected bool? IdempotentDelete { get; init; }
     private bool _resolvedIdempotentDelete;
+
+    /// <summary>
+    /// When <c>true</c>, a <c>PUT</c> to a non-existent key creates the entity (upsert, §11.4.4).
+    /// Requires <see cref="Post"/> to also be configured. Inherits from
+    /// <see cref="EntitySetDefaults.AllowUpsert"/> when <c>null</c>.
+    /// </summary>
+    protected bool? AllowUpsert { get; init; }
+    private bool _resolvedAllowUpsert;
     private IReadOnlyList<BoundOperationDefinition>? _resolvedBoundFunctions;
     private IReadOnlyList<BoundOperationDefinition>? _resolvedBoundActions;
 
@@ -133,6 +144,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
         _resolvedMaxTop = MaxTop ?? defaults.MaxTop;
         _resolvedIdempotentDelete = IdempotentDelete ?? defaults.IdempotentDelete;
+        _resolvedAllowUpsert = AllowUpsert ?? defaults.AllowUpsert;
 
         AdvancedConfigure(entitySet);
 
@@ -501,6 +513,64 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         });
     }
 
+    /// <summary>
+    /// Registers a many navigation with optional <c>$ref</c> link management handlers (§11.4.6).
+    /// </summary>
+    protected void HasMany<TNavigation>(
+        Expression<Func<TModel, IEnumerable<TNavigation>>> navigation,
+        Func<TKey, CancellationToken, Task<IEnumerable<TNavigation>>>? getAll,
+        Func<TKey, string, CancellationToken, Task>? addRef = null,
+        Func<TKey, string, CancellationToken, Task>? removeRef = null)
+        where TNavigation : class
+    {
+        HasMany(navigation);
+        if (getAll is null && addRef is null && removeRef is null) return;
+        string propName = GetNavigationPropertyName(navigation.Body);
+        _navRoutes.Add(new NavigationRouteDefinition
+        {
+            PropertyName = propName,
+            IsCollection = true,
+            Handler = getAll is not null
+                ? async (key, ct) => (object?)await getAll((TKey)key, ct)
+                : (_, _) => Task.FromResult<object?>(null),
+            AddRef = addRef is not null
+                ? (key, relatedId, ct) => addRef((TKey)key, (string)relatedId, ct)
+                : (Func<object, object, CancellationToken, Task>?)null,
+            RemoveRef = removeRef is not null
+                ? (key, relatedId, ct) => removeRef((TKey)key, (string)relatedId, ct)
+                : (Func<object, object, CancellationToken, Task>?)null,
+        });
+    }
+
+    /// <summary>
+    /// Registers an optional navigation with optional <c>$ref</c> link management handlers (§11.4.6).
+    /// </summary>
+    protected void HasOptional<TNavigation>(
+        Expression<Func<TModel, TNavigation>> navigation,
+        Func<TKey, CancellationToken, Task<TNavigation?>>? get,
+        Func<TKey, string, CancellationToken, Task>? setRef = null,
+        Func<TKey, string, CancellationToken, Task>? removeRef = null)
+        where TNavigation : class
+    {
+        HasOptional(navigation);
+        if (get is null && setRef is null && removeRef is null) return;
+        string propName = GetNavigationPropertyName(navigation.Body);
+        _navRoutes.Add(new NavigationRouteDefinition
+        {
+            PropertyName = propName,
+            IsCollection = false,
+            Handler = get is not null
+                ? async (key, ct) => (object?)await get((TKey)key, ct)
+                : (_, _) => Task.FromResult<object?>(null),
+            AddRef = setRef is not null
+                ? (key, relatedId, ct) => setRef((TKey)key, (string)relatedId, ct)
+                : (Func<object, object, CancellationToken, Task>?)null,
+            RemoveRef = removeRef is not null
+                ? (key, relatedId, ct) => removeRef((TKey)key, (string)relatedId, ct)
+                : (Func<object, object, CancellationToken, Task>?)null,
+        });
+    }
+
     protected void BindFunction(Delegate handler) => _functions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
     protected void BindAction(Delegate handler) => _actions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
 
@@ -622,7 +692,15 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         => LazyInitializer.EnsureInitialized(ref _keyToString, CompileKeyToString)((TModel)model);
     int? IEntitySetEndpointSource.MaxTop => _resolvedMaxTop;
     bool IEntitySetEndpointSource.IdempotentDelete => _resolvedIdempotentDelete;
+    bool IEntitySetEndpointSource.AllowUpsert => _resolvedAllowUpsert;
+    bool IEntitySetEndpointSource.HasSearch => Search is not null;
     string IEntitySetEndpointSource.KeyPropertyName => GetNavigationPropertyName(_getKey.Body);
+
+    async Task<IEnumerable<object>> IEntitySetEndpointSource.InvokeSearchAsync(string searchTerm, CancellationToken ct)
+    {
+        var result = await Search!.Invoke(searchTerm, ct);
+        return result.Cast<object>();
+    }
 
     async Task<object?> IEntitySetEndpointSource.InvokeGetAllAsync(CancellationToken ct) =>
         (object?)await GetAll!.Invoke(ct);
