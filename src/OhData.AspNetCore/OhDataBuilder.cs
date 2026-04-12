@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.OData.ModelBuilder;
@@ -63,6 +64,58 @@ public sealed class OhDataBuilder
         _services.AddSingleton<TProfile>();
         _profileTypes.Add(typeof(TProfile));
         return this;
+    }
+
+    /// <summary>
+    /// Scans the specified assemblies for <see cref="EntitySetProfile{TKey,TModel}"/> subclasses
+    /// and registers each discovered profile as if it had been passed to
+    /// <see cref="AddProfile{TProfile}"/> individually.
+    /// </summary>
+    /// <param name="configure">
+    /// Callback that receives a <see cref="ProfileScanner"/> and specifies which assemblies
+    /// to scan, e.g. <c>s =&gt; s.InAssemblyOf&lt;Program&gt;()</c>.
+    /// </param>
+    /// <example>
+    /// <code>
+    /// services.AddOhData(builder =&gt; builder
+    ///     .AddProfilesFrom(s =&gt; s
+    ///         .InAssemblyOf&lt;Program&gt;()
+    ///         .In(typeof(ExternalProfile).Assembly)));
+    /// </code>
+    /// </example>
+    public OhDataBuilder AddProfilesFrom(Action<ProfileScanner> configure)
+    {
+        if (configure is null) throw new ArgumentNullException(nameof(configure));
+        var scanner = new ProfileScanner(_profileTypes);
+        configure(scanner);
+        foreach (var type in scanner.Scan())
+            AddProfileType(type);
+        return this;
+    }
+
+    /// <summary>
+    /// Scans the assembly that contains <typeparamref name="T"/> for
+    /// <see cref="EntitySetProfile{TKey,TModel}"/> subclasses and registers each one.
+    /// Equivalent to <c>AddProfilesFrom(s =&gt; s.InAssemblyOf&lt;T&gt;())</c>.
+    /// </summary>
+    /// <typeparam name="T">Any type whose containing assembly should be scanned.</typeparam>
+    public OhDataBuilder AddProfilesFromAssemblyOf<T>() =>
+        AddProfilesFrom(s => s.InAssemblyOf<T>());
+
+    /// <summary>
+    /// Scans the specified assemblies for <see cref="EntitySetProfile{TKey,TModel}"/> subclasses
+    /// and registers each one.
+    /// Equivalent to <c>AddProfilesFrom(s =&gt; s.In(assemblies))</c>.
+    /// </summary>
+    /// <param name="assemblies">One or more assemblies to scan.</param>
+    public OhDataBuilder AddProfilesFromAssembly(params Assembly[] assemblies) =>
+        AddProfilesFrom(s => s.In(assemblies));
+
+    private void AddProfileType(Type type)
+    {
+        if (_profileTypes.Contains(type)) return;
+        _services.AddSingleton(type);
+        _profileTypes.Add(type);
     }
 
     /// <summary>
