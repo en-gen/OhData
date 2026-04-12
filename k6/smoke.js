@@ -6,7 +6,11 @@ const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
 
 export const options = {
   thresholds: {
-    http_req_failed: ['rate<0.01'],
+    // http_req_failed is omitted: the test deliberately sends requests that expect
+    // 4xx/404 responses (error cases, missing-entity GETs, versioning checks), so
+    // the failure rate is inherently > 1%.  Individual correctness is covered by
+    // the `checks` assertions in each group.
+    'checks': ['rate>0.99'],
     'http_req_duration{group:::collection GET}': ['p(95)<500'],
   },
 };
@@ -265,9 +269,11 @@ export default function (data) {
   group('PUT', () => {
     if (!testProductId) return;
 
+    // OhData validates that the key in the URL matches the key in the body.
+    // Include the id so the handler doesn't reject with 400 key-mismatch.
     const res = http.put(
       `${BASE_URL}/v1/Products(${testProductId})`,
-      JSON.stringify({ name: 'UpdatedProduct', price: 99.99, category: 'Updated' }),
+      JSON.stringify({ id: testProductId, name: 'UpdatedProduct', price: 99.99, category: 'Updated' }),
       { headers }
     );
     check(res, {
@@ -302,9 +308,11 @@ export default function (data) {
       });
     }
 
+    // ProductProfile uses the default IdempotentDelete=true setting, so deleting a
+    // non-existent entity is a no-op that returns 204 (not 404).
     const notFoundRes = http.del(`${BASE_URL}/v1/Products(${MISSING_ID})`);
     check(notFoundRes, {
-      'DELETE missing 404': (r) => r.status === 404,
+      'DELETE missing idempotent 204': (r) => r.status === 204,
     });
   });
 

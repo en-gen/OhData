@@ -286,11 +286,12 @@ public class EndpointMappingTests
     [Fact]
     public async Task Select_SingleProperty_OnlySelectedPropertyPresent()
     {
+        // $select uses JsonSerializer with camelCase to match the rest of the OData response.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets?$select=Name");
         var firstItem = json.GetProperty("value")[0];
-        Assert.True(firstItem.TryGetProperty("Name", out _));
-        Assert.False(firstItem.TryGetProperty("Id", out _));
+        Assert.True(firstItem.TryGetProperty("name", out _));
+        Assert.False(firstItem.TryGetProperty("id", out _));
     }
 
     [Fact]
@@ -299,8 +300,8 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets?$select=Id");
         var firstItem = json.GetProperty("value")[0];
-        Assert.True(firstItem.TryGetProperty("Id", out _));
-        Assert.False(firstItem.TryGetProperty("Name", out _));
+        Assert.True(firstItem.TryGetProperty("id", out _));
+        Assert.False(firstItem.TryGetProperty("name", out _));
     }
 
     [Fact]
@@ -309,8 +310,8 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets?$select=Id,Name");
         var firstItem = json.GetProperty("value")[0];
-        Assert.True(firstItem.TryGetProperty("Id", out _));
-        Assert.True(firstItem.TryGetProperty("Name", out _));
+        Assert.True(firstItem.TryGetProperty("id", out _));
+        Assert.True(firstItem.TryGetProperty("name", out _));
     }
 
     [Fact]
@@ -332,31 +333,33 @@ public class EndpointMappingTests
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets?$select=Name");
         var values = json.GetProperty("value");
         string?[] names = Enumerable.Range(0, values.GetArrayLength())
-            .Select(i => values[i].GetProperty("Name").GetString())
+            .Select(i => values[i].GetProperty("name").GetString())
             .ToArray();
         Assert.Contains("Sprocket", names);
         Assert.Contains("Cog", names);
     }
 
-    // $select on the IEnumerable (GetAll) path â€" ExpandoObject post-materialization
+    // $select on the IEnumerable (GetAll) path — JsonNode post-materialization
     [Fact]
     public async Task Select_GetAllPath_SingleProperty_OnlySelectedPropertyPresent()
     {
+        // $select uses camelCase serialization so the output matches the rest of the response.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/Widgets?$select=Name");
         var firstItem = json.GetProperty("value")[0];
-        Assert.True(firstItem.TryGetProperty("Name", out _));
-        Assert.False(firstItem.TryGetProperty("Id", out _));
+        Assert.True(firstItem.TryGetProperty("name", out _));
+        Assert.False(firstItem.TryGetProperty("id", out _));
     }
 
     [Fact]
     public async Task Select_GetAllPath_LowercaseInput_NormalizedToEdmName()
     {
         // The OData parser normalizes $select=name to EDM identifier "Name" — behaves like $select=Name.
+        // Output uses camelCase ("name") to be consistent with non-$select responses.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/Widgets?$select=name");
         var firstItem = json.GetProperty("value")[0];
-        Assert.True(firstItem.TryGetProperty("Name", out _));
+        Assert.True(firstItem.TryGetProperty("name", out _));
     }
 
     [Fact]
@@ -383,28 +386,28 @@ public class EndpointMappingTests
     }
 
     [Fact]
-    public async Task Select_GetAll_PropertyCasingMatchesPascalCase()
+    public async Task Select_GetAll_PropertyCasingMatchesCamelCase()
     {
-        // JsonSerializer default uses PascalCase for C# property names.
-        // The resulting JSON key is always PascalCase, not camelCase.
+        // $select uses JsonSerializer with camelCase so the output is consistent with
+        // non-$select OData responses (which ASP.NET Core serializes as camelCase).
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/Widgets?$select=Name");
         var first = json.GetProperty("value")[0];
-        Assert.True(first.TryGetProperty("Name", out _));   // PascalCase
-        Assert.False(first.TryGetProperty("name", out _));  // NOT camelCase
+        Assert.True(first.TryGetProperty("name", out _));   // camelCase
+        Assert.False(first.TryGetProperty("Name", out _));  // NOT PascalCase
     }
     // â"€â"€ EF Core InMemory + ISelectExpandWrapper â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
     [Fact]
     public async Task Select_EfCoreInMemory_SingleProperty_OnlySelectedPropertyPresent()
     {
-        // Verifies the ISelectExpandWrapper approach works with EF Core InMemory provider.
-        // ISelectExpandWrapper.ToDictionary() uses PascalCase keys matching the EDM property names.
+        // Verifies that $select works with the GetQueryable (EF Core) path.
+        // Output uses camelCase to be consistent with non-$select responses.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EfCoreWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<System.Text.Json.JsonElement>("/odata/EfWidgets?$select=Name");
         var firstItem = json.GetProperty("value")[0];
-        Assert.True(firstItem.TryGetProperty("Name", out _));
-        Assert.False(firstItem.TryGetProperty("Id", out _));
+        Assert.True(firstItem.TryGetProperty("name", out _));
+        Assert.False(firstItem.TryGetProperty("id", out _));
     }
 
     [Fact]
@@ -414,7 +417,7 @@ public class EndpointMappingTests
         var json = await fx.Client.GetFromJsonAsync<System.Text.Json.JsonElement>("/odata/EfWidgets?$select=Name");
         var values = json.GetProperty("value");
         string?[] names = System.Linq.Enumerable.Range(0, values.GetArrayLength())
-            .Select(i => values[i].GetProperty("Name").GetString())
+            .Select(i => values[i].GetProperty("name").GetString())
             .ToArray();
         Assert.Contains("Sprocket", names);
         Assert.Contains("Cog", names);
@@ -830,27 +833,28 @@ public class EndpointMappingTests
     [Fact]
     public async Task Select_PascalCase_PropertyIncluded_OthersExcluded()
     {
-        // $select=Name (EDM PascalCase) returns only the Name property
+        // $select=Name returns only the name property (in camelCase to be consistent
+        // with the rest of the OData response serialization).
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets?$select=Name");
         var items = json.GetProperty("value");
         Assert.True(items.GetArrayLength() > 0);
         var first = items[0];
-        Assert.True(first.TryGetProperty("Name", out _), "Expected 'Name' property to be present");
-        Assert.False(first.TryGetProperty("Id", out _), "Expected 'Id' to be excluded");
+        Assert.True(first.TryGetProperty("name", out _), "Expected 'name' property to be present (camelCase)");
+        Assert.False(first.TryGetProperty("id", out _), "Expected 'id' to be excluded");
     }
 
     [Fact]
     public async Task Select_LowercaseInput_NormalizedToEdmName_PropertyIncluded()
     {
         // The Microsoft.OData parser normalizes $select=name to EDM identifier "Name",
-        // so the result is the same as $select=Name.
+        // so the result is the same as $select=Name — output is camelCase "name".
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets?$select=name");
         var items = json.GetProperty("value");
         Assert.True(items.GetArrayLength() > 0);
         var first = items[0];
-        Assert.True(first.TryGetProperty("Name", out _), "Expected 'Name' present — OData parser normalizes to EDM name");
+        Assert.True(first.TryGetProperty("name", out _), "Expected 'name' present — OData parser normalizes to EDM name, output is camelCase");
     }
 
     // ── M2: Authorization double-configure guards ─────────────────────────────
