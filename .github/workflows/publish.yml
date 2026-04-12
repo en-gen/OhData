@@ -1,0 +1,78 @@
+name: Publish to NuGet
+
+# Fires when a GitHub Release is published (drafted releases do not trigger this).
+# To publish: merge your release branch to main, then create a GitHub Release
+# targeting main with a tag like v0.1.0. The tag must match the GitVersion
+# computed version or the pack step will embed a mismatched version.
+#
+# Prerequisites (one-time setup):
+#   1. Create a NuGet API key at https://www.nuget.org/account/apikeys
+#      scoped to Glob pattern "OhData.*" with Push permission.
+#   2. Add it to this repo: Settings > Secrets and variables > Actions > New secret
+#      Name: NUGET_API_KEY
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      HUSKY: 0
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # GitVersion needs full history
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.x
+
+      # Compute the NuGet version from GitVersion and expose it as
+      # ${{ steps.gitversion.outputs.nuGetVersionV2 }} (e.g. "0.1.0" on main).
+      - name: Install GitVersion
+        uses: gittools/actions/gitversion/setup@v3
+        with:
+          versionSpec: '6.x'
+
+      - name: Compute version
+        id: gitversion
+        uses: gittools/actions/gitversion/execute@v3
+
+      - name: Restore
+        run: dotnet restore src/OhData.sln
+
+      - name: Build
+        run: dotnet build src/OhData.sln --no-restore -c Release
+
+      - name: Test
+        run: |
+          dotnet test src/OhData.AspNetCore.Tests/OhData.AspNetCore.Tests.csproj \
+            --no-build -c Release
+          dotnet test src/OhData.Client.Tests/OhData.Client.Tests.csproj \
+            --no-build -c Release
+
+      - name: Pack
+        run: |
+          VERSION="${{ steps.gitversion.outputs.nuGetVersionV2 }}"
+          dotnet pack src/OhData.Abstractions/OhData.Abstractions.csproj \
+            --no-build -c Release \
+            -p:Version="$VERSION" \
+            -o ./nupkg
+          dotnet pack src/OhData.AspNetCore/OhData.AspNetCore.csproj \
+            --no-build -c Release \
+            -p:Version="$VERSION" \
+            -o ./nupkg
+          dotnet pack src/OhData.Client/OhData.Client.csproj \
+            --no-build -c Release \
+            -p:Version="$VERSION" \
+            -o ./nupkg
+
+      - name: Push to NuGet
+        run: |
+          dotnet nuget push "./nupkg/*.nupkg" \
+            --api-key "${{ secrets.NUGET_API_KEY }}" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
