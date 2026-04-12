@@ -1,20 +1,25 @@
 # Authorization
 
-OhData integrates with standard ASP.NET Core authentication and authorization. There is no OhData-specific auth system — the framework applies ASP.NET Core's own `RequireAuthorization` to the registered endpoints.
+OhData integrates with standard ASP.NET Core authentication and authorization — there is no OhData-specific auth system. The framework applies ASP.NET Core's own `RequireAuthorization` to the registered endpoints based on what you declare in the profile.
 
-## Setup
+## Middleware setup
 
-Auth middleware must be configured before `MapOhData()`:
+Configure auth middleware in `Program.cs` before `MapOhData()`:
 
 ```csharp
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options => { ... });
-builder.Services.AddAuthorization();
+    .AddJwtBearer(options => { /* configure token validation */ });
+
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("AdminOnly", p => p.RequireClaim("role", "admin"));
+});
 
 // ...
 
 app.UseAuthentication();
 app.UseAuthorization();
+
 app.MapOhData();
 ```
 
@@ -23,37 +28,46 @@ app.MapOhData();
 Inside the profile constructor, call one of:
 
 ```csharp
-// Any authenticated user (valid identity, any role/claim)
-RequireAuthorization();
-
-// Named ASP.NET Core policy (defined via AddAuthorization(options => options.AddPolicy(...)))
-RequireAuthorization("AdminPolicy");
-
-// One or more roles (comma-joined, standard ASP.NET Core role check)
-RequireRoles("Admin", "SuperAdmin");
-```
-
-Only one requirement can be active per profile. Calling multiple methods overwrites the previous.
-
-## Scope of application
-
-Authorization applies to **all operations** on the entity set. There is no per-operation granularity in the current version — if you need some operations to be open and others protected, use two separate profiles with different entity set names and delegate to the same underlying service.
-
-## How it works internally
-
-`EntitySetProfile` stores an `AuthorizationConfig` record (in `OhData.Abstractions`, no ASP.NET Core dependency):
-
-```csharp
-public sealed class AuthorizationConfig
+public class ProductProfile : EntitySetProfile<int, Product>
 {
-    public bool Required { get; init; }
-    public string? Policy { get; init; }
-    public string[]? Roles { get; init; }
+    public ProductProfile() : base(x => x.Id)
+    {
+        // Any authenticated user (valid identity, any role or claim)
+        RequireAuthorization();
+
+        // Named ASP.NET Core authorization policy
+        RequireAuthorization("AdminOnly");
+
+        // One or more roles — user must have at least one (OR semantics)
+        RequireRoles("Admin", "SuperAdmin");
+
+        GetAll = (ct) => ...;
+    }
 }
 ```
 
-At endpoint registration, `OhDataEndpointFactory` calls `.RequireAuthorization(...)` on each `RouteHandlerBuilder`, which is the same call you'd make manually on any minimal API endpoint.
+`RequireAuthorization(policy)` and `RequireRoles(roles)` may each be called once per profile and combine with AND semantics (both must pass). Calling either method twice throws `InvalidOperationException` at startup.
 
-## Unauthenticated behaviour
+## Scope
 
-When auth is required and the request has no valid identity, ASP.NET Core returns `401 Unauthorized`. When a valid identity lacks the required role or policy claim, it returns `403 Forbidden`. OhData does not intercept or alter this behaviour.
+Authorization applies to **all operations** on the entity set — GET, POST, PUT, PATCH, DELETE, navigation routes, and bound operations all get the same requirement. Per-operation granularity is not supported.
+
+If you need some operations open and others protected, split them across two profiles with different entity set names that delegate to the same underlying service.
+
+## Response behaviour
+
+When auth is required and the request has no valid identity, ASP.NET Core returns `401 Unauthorized`. When a valid identity lacks the required role or policy claim, it returns `403 Forbidden`. OhData does not intercept or modify these responses.
+
+## Global auth (all entity sets)
+
+Apply auth to all routes at once using the `RouteGroupBuilder` returned by `MapOhData()`:
+
+```csharp
+// Every OhData route requires an authenticated user
+app.MapOhData().RequireAuthorization();
+
+// Named registrations:
+app.MapOhData("v1").RequireAuthorization("V1Policy");
+```
+
+Per-profile `RequireAuthorization()` applies in addition to any group-level requirement.

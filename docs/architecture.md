@@ -1,38 +1,40 @@
 # Architecture
 
+This document describes how OhData works under the hood. It's intended for contributors and for engineers who need to understand the framework's behaviour deeply — for example, when using `AdvancedConfigure` or building an extension on top of OhData.
+
 ## Core idea
 
-OhData takes the position that an OData API is fully derivable from three things:
-1. The entity type and its key type
-2. Which CRUD operations are supported
-3. Which OData query capabilities are allowed
+An OData API is fully derivable from three things:
 
-A `EntitySetProfile<TKey, TModel>` subclass declares all three. At startup, the framework reads these declarations and registers minimal API endpoints — no controllers, no runtime reflection on request.
+1. The entity type and its key type
+2. Which CRUD operations are supported (handler delegates)
+3. Which OData query capabilities are allowed (`FilterEnabled`, `SelectEnabled`, etc.)
+
+`EntitySetProfile<TKey, TModel>` declares all three. At startup, the framework reads these declarations and registers minimal API endpoints — no controllers, no per-request reflection.
 
 ## Startup flow
 
 ```
 AddOhData(builder => builder.AddProfile<T>())
   │
-  └─► OhDataBuilder collects profile types, stores prefix + name
+  └─► OhDataBuilder collects profile types, prefix, and defaults
         │
-        └─► .Register() adds a keyed singleton factory to DI:
-              │
+        └─► DI factory (keyed singleton) builds OhDataRegistration:
               ├─ Resolves each profile from DI (singletons)
               ├─ Calls IVisitModelBuilder.VisitModelBuilder() on each
               │    → builds ODataConventionModelBuilder → IEdmModel
-              ├─ Casts each profile to IEntitySetEndpointSource
               ├─ Validates for duplicate entity set names
-              └─ Stores prefix + EdmModel + sources in OhDataRegistration
+              └─ Stores prefix + EdmModel + profiles in OhDataRegistration
 
 app.MapOhData()
   │
   └─► OhDataEndpointFactory.MapAll(routes, registration)
         │
-        ├─ routes.MapGroup(prefix) → RouteGroupBuilder
-        ├─ GET ""          → service document
+        ├─ MapGroup(prefix) → RouteGroupBuilder
+        │    └─ endpoint filter: OData-Version header, $format, Accept validation
+        ├─ GET ""          → service document (JSON)
         ├─ GET /$metadata  → CSDL XML from IEdmModel
-        └─ per profile: MakeGenericMethod(KeyType, ModelType).Invoke(MapEntitySet)
+        └─ per profile: MakeGenericMethod(KeyType, ModelType).Invoke(MapEntitySet<TKey,TModel>)
               │
               ├─ GET  /{name}               if HasGetQueryable or HasGetAll
               ├─ GET  /{name}/$count        if HasGetQueryable or HasGetAll
@@ -41,101 +43,81 @@ app.MapOhData()
               ├─ PUT  /{name}({key})        if HasPutById
               ├─ PATCH/{name}({key})        if HasPatch
               ├─ DELETE/{name}({key})       if HasDelete
-              ├─ GET  /{name}({key})/{nav}  per NavigationRoute
-              ├─ GET  /{name}/{fn}          per BoundFunction
-              └─ POST /{name}/{action}      per BoundAction
-                   └─ each gets .WithTags(name) + .ApplyAuth(profile.Authorization)
+              ├─ GET  /{name}({key})/{nav}  per navigation route with handler
+              ├─ GET  /{name}/{fn}          per collection-bound function
+              └─ POST /{name}/{action}      per collection-bound action
+                   (entity-bound ops follow the same pattern with key in the route)
 ```
 
 ## Type erasure via `IEntitySetEndpointSource`
 
-Profiles are generic (`EntitySetProfile<Guid, Product>`) but the factory iterates `IEntitySetEndpointSource` — a non-generic internal interface. This lets the factory inspect `HasGetAll`, `HasGetById`, etc. and invoke handlers without knowing `TKey`/`TModel` at compile time.
+Profiles are generic (`EntitySetProfile<Guid, Product>`) but the factory iterates `IEntitySetEndpointSource` — a non-generic internal interface. This lets the factory inspect `HasGetAll`, `HasGetById`, etc. and route requests without knowing `TKey`/`TModel` at compile time.
 
-The generic types are reintroduced in exactly one place: `MapEntitySet<TKey, TModel>`, called via `MethodInfo.MakeGenericMethod(profile.KeyType, profile.ModelType).Invoke(...)`. This is the only reflection in the hot path — it runs once at startup, not per-request.
+The generic types are reintroduced in exactly one place: `MapEntitySet<TKey, TModel>`, called via `MethodInfo.MakeGenericMethod(profile.KeyType, profile.ModelType).Invoke(...)`. This reflection runs once at startup, not per request.
 
-## GET collection — three handler paths
+## GET collection — handler priority
 
-**Priority 1: `IODataEntitySetEndpointSource`** (from `OhData.Abstractions.AspNetCore.OData`)
-- Profile implements `IODataEntitySetEndpointSource` and has `HasGetODataQueryable = true`
-- Factory constructs `ODataQueryOptions<TModel>`, passes directly to the handler
-- Handler applies options and returns an `IQueryable<object>`
-- Factory materializes and applies `$select` post-processing
+When both `GetQueryable` and `GetAll` are set, `GetQueryable` wins:
 
-**Priority 2: `GetQueryable`** (base `EntitySetProfile`)
-- Profile provides `Func<CancellationToken, Task<IQueryable<TModel>>>`
-- Factory constructs `ODataQueryOptions<TModel>` from the request and EDM model
-- Applies filter/orderby/skip/top individually via `ApplyTo(IQueryable)` (EF Core pushdown)
-- `$select` applied via JsonNode post-processing (avoids `ISelectExpandWrapper` casing issues)
-- `$count=true` → count applied before skip/top, embedded in envelope as `@odata.count`
+1. **`IODataEntitySetEndpointSource`** (from `OhData.Abstractions.AspNetCore.OData`) — profile receives `ODataQueryOptions<TModel>` directly and applies options itself
+2. **`GetQueryable`** — framework applies `$filter`/`$orderby`/`$skip`/`$top` via `ApplyTo(IQueryable)`, enabling EF Core SQL pushdown
+3. **`GetAll`** — framework returns all items; no query options applied
 
-**Priority 3: `GetAll`** (IEnumerable, simple path)
-- No query options applied — developer chose the simple path
-- `$select` applied via JsonNode post-processing
-
-## `$select` implementation (JsonNode post-processing)
+## `$select` — JSON post-processing
 
 When `$select` is active, the framework:
-1. Materializes the result as `TModel[]` (for GetQueryable) or as-is (for GetAll)
+1. Materializes the full entity array
 2. Serializes to `JsonNode`
 3. Removes non-selected property nodes from each item
-4. Returns the stripped array
 
-This approach is used instead of `ISelectExpandWrapper.ToDictionary()` to avoid a PascalCase/camelCase inconsistency: `ApplyTo` with `$select` produces wrapper objects with EDM PascalCase keys, while normal serialization produces camelCase. JsonNode post-processing preserves the existing naming policy.
+This is done instead of using `ISelectExpandWrapper.ToDictionary()` because OData's wrapper produces PascalCase keys while normal serialization produces camelCase — the `JsonNode` approach preserves the existing naming policy.
 
-## Route template gotcha: `MapGroup` slash insertion
+## Route templates and `MapGroup`
 
-ASP.NET Core's `MapGroup` inserts a `/` separator between the group prefix and a route template that doesn't start with `/`. This breaks OData key syntax:
+`MapGroup` inserts a `/` between the group prefix and any template that doesn't start with `/`. This breaks OData key syntax:
 
 ```
-// Wrong: MapGroup("/odata/Widgets") + MapGet("({key})") → /odata/Widgets/({key})
-// Right: MapGroup("/odata")         + MapGet("/Widgets({key})") → /odata/Widgets({key})
+// Wrong: group("/odata/Products") + MapGet("({key})") → /odata/Products/({key})
+// Right: group("/odata")          + MapGet("/Products({key})") → /odata/Products({key})
 ```
 
-All entity-set routes are therefore mapped directly on the top-level `MapGroup("/prefix")` group with the entity set name baked into each template (e.g. `"/Widgets({key})"`, not `"({key})"` on a sub-group).
+All entity-set routes with key syntax are mapped on the top-level `/prefix` group with the entity set name embedded in the template. Collection-level routes (GET/POST, `/$count`, bound operations) are mapped on a per-entity sub-group — this works because they don't have key syntax.
 
-Collection-level routes (GET "", POST, bound functions, bound actions, `/$count`) are mapped on a per-entity sub-group using `MapGroup($"/{name}")` — this works because they don't have key syntax.
+## `AdvancedConfigure` — full EDM control
 
-## Named registrations
+Overriding `AdvancedConfigure(EntitySetConfiguration<TModel>)` bypasses all automatic EDM configuration (query capabilities, navigation properties, key setup). Detection is via `MethodInfo.DeclaringType` comparison at startup:
 
-`OhDataRegistration` is stored as `AddKeyedSingleton<OhDataRegistration>(name)` so multiple calls to `AddOhData("v1", ...)` / `AddOhData("v2", ...)` coexist without overwriting each other. The default (unnamed) registration uses the key `"__default__"` and is also exposed as an unkeyed singleton for backwards compatibility.
-
-`OhDataRegistrationCollection` is a singleton dictionary that maps names to registrations for introspection.
-
-## EDM model building
-
-`IVisitModelBuilder` (internal) is the visitor interface. `EntitySetProfile` implements it to register entity sets, query capabilities, nav properties, and bound functions/actions on `ODataConventionModelBuilder`. The resulting `IEdmModel` is stored in `OhDataRegistration` and served at `$metadata`.
-
-For bound functions, the framework uses reflection to call the generic `FunctionConfiguration.Returns<T>()` / `FunctionConfiguration.ReturnsCollection<T>()` methods with the runtime return type derived from the delegate.
-
-If `AdvancedConfigure(EntitySetConfiguration<TModel>)` is overridden in a subclass, all automatic configuration is bypassed (detected via `MethodInfo.DeclaringType` comparison at startup, not per-request).
-
-## Authorization
-
-`EntitySetProfile` stores an `AuthorizationConfig` (policy, roles, or bare require-auth) set by `RequireAuthorization()` / `RequireRoles()`. At endpoint registration time, `OhDataEndpointFactory` calls `.RequireAuthorization(...)` on each `RouteHandlerBuilder` individually — all operations on the entity set get the same auth requirement. Auth requirements are stored as plain data in `OhData.Abstractions` (no ASP.NET Core reference); the factory in `OhData.AspNetCore` performs the actual `RequireAuthorization` call.
-
-## ETags
-
-`EntitySetProfile` stores `Func<TModel, string>? GetETag`. At endpoint registration, the factory:
-- Adds `ETag` response header to GET/POST/PUT/PATCH responses
-- On PUT/PATCH/DELETE, reads `If-Match` header, fetches current entity via `GetById`, compares ETags, returns 412 if mismatched
+```csharp
+protected override void AdvancedConfigure(EntitySetConfiguration<Product> config)
+{
+    config.EntityType.HasKey(x => x.Id);
+    config.EntityType.Select().OrderBy().Filter();
+    // full Microsoft.OData.ModelBuilder API
+}
+```
 
 ## Dependency structure
 
 ```
 OhData.Abstractions (net8.0)
-  └─ Microsoft.OData.ModelBuilder [2.*, 3)
+  └─ Microsoft.OData.ModelBuilder
   └─ [no ASP.NET Core reference]
+
+OhData.Abstractions.AspNetCore.OData (net8.0)
+  └─ OhData.Abstractions
+  └─ Microsoft.AspNetCore.OData
 
 OhData.AspNetCore (net8.0)
   └─ OhData.Abstractions
   └─ OhData.Abstractions.AspNetCore.OData
   └─ Microsoft.AspNetCore.App (framework reference)
-  └─ Microsoft.AspNetCore.OData [9.4.*, 10)
+  └─ Microsoft.AspNetCore.OData
 
 OhData.AspNetCore.Versioning (net8.0)
   └─ OhData.AspNetCore
 
-OhData.Abstractions.AspNetCore.OData (net8.0)
-  └─ OhData.Abstractions
-  └─ Microsoft.AspNetCore.OData [9.4.*, 10)
+OhData.Client (net8.0)
+  └─ [no OhData server reference — standalone]
 ```
+
+`OhData.Abstractions` has no ASP.NET Core dependency. Authorization configuration (`AuthorizationConfig`), navigation route definitions, and bound operation definitions are stored as plain data types there; the factory in `OhData.AspNetCore` applies them to the ASP.NET Core endpoint builder at startup.
