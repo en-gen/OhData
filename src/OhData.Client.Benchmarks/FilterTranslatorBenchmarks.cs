@@ -30,7 +30,7 @@ public class FilterTranslatorBenchmarks
     static FilterTranslatorBenchmarks()
     {
         decimal threshold = 99.9m;
-        string  prefix    = "Widget";
+        string prefix = "Widget";
         _withCapture = x => x.Price > threshold && x.Name.StartsWith(prefix);
     }
 
@@ -56,8 +56,8 @@ public class FilterTranslatorBenchmarks
 /// </summary>
 public sealed class BenchWidget
 {
-    public int     Id       { get; set; }
-    public string  Name     { get; set; } = "";
-    public decimal Price    { get; set; }
-    public bool    IsActive { get; set; }
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public decimal Price { get; set; }
+    public bool IsActive { get; set; }
 }

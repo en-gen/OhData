@@ -30,8 +30,8 @@ public sealed class OhDataClientOptions
     /// </remarks>
     public JsonSerializerOptions JsonOptions { get; set; } = new JsonSerializerOptions
     {
-        PropertyNamingPolicy        = JsonNamingPolicy.CamelCase,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         PropertyNameCaseInsensitive = true,
-        DefaultIgnoreCondition      = JsonIgnoreCondition.WhenWritingNull,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 }

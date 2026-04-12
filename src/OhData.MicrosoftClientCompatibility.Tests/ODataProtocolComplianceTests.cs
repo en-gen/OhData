@@ -24,8 +24,8 @@ namespace OhData.MicrosoftClientCompatibility.Tests;
 
 internal class Widget
 {
-    public int    Id    { get; set; }
-    public string Name  { get; set; } = "";
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
     public decimal Price { get; set; }
 }
 
@@ -44,30 +44,30 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
             new() { Id = 3, Name = "Bracket",  Price = 12.00m },
         };
 
-        GetQueryable = (ct)        => Task.FromResult(_store.AsQueryable());
-        GetById      = (id, ct)    => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
-        Post         = (w, ct)     =>
+        GetQueryable = (ct) => Task.FromResult(_store.AsQueryable());
+        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
+        Post = (w, ct) =>
         {
             w.Id = _store.Count > 0 ? _store.Max(x => x.Id) + 1 : 1;
             _store.Add(w);
             return Task.FromResult(w);
         };
-        PutById      = (id, w, ct) =>
+        PutById = (id, w, ct) =>
         {
             _store.RemoveAll(x => x.Id == id);
             w.Id = id;
             _store.Add(w);
             return Task.FromResult(w);
         };
-        Patch        = (id, w, ct) =>
+        Patch = (id, w, ct) =>
         {
             var existing = _store.FirstOrDefault(x => x.Id == id);
             if (existing is null) return Task.FromResult<Widget?>(null);
-            if (w.Name  != "") existing.Name  = w.Name;
-            if (w.Price != 0)  existing.Price = w.Price;
+            if (w.Name != "") existing.Name = w.Name;
+            if (w.Price != 0) existing.Price = w.Price;
             return Task.FromResult<Widget?>(existing);
         };
-        Delete       = (id, ct)    => Task.FromResult(_store.RemoveAll(w => w.Id == id) > 0);
+        Delete = (id, ct) => Task.FromResult(_store.RemoveAll(w => w.Id == id) > 0);
     }
 }
 
@@ -82,12 +82,12 @@ internal sealed class CompatibilityTestFixture : IAsyncDisposable
 
     private CompatibilityTestFixture(WebApplication app)
     {
-        _app           = app;
-        RawHttpClient  = ((IHost)app).GetTestClient();
+        _app = app;
+        RawHttpClient = ((IHost)app).GetTestClient();
         // RawHttpClient base is http://localhost/ — we'll use relative paths from there.
         var odataHttpClient = ((IHost)app).GetTestClient();
         odataHttpClient.BaseAddress = new Uri(odataHttpClient.BaseAddress!, Prefix.Trim('/') + "/");
-        OhDataClient   = new OhDataClient(odataHttpClient);
+        OhDataClient = new OhDataClient(odataHttpClient);
     }
 
     public static async Task<CompatibilityTestFixture> BuildAsync()
@@ -119,9 +119,9 @@ internal sealed class CompatibilityTestFixture : IAsyncDisposable
 
 internal sealed class ODataCollectionEnvelope<T>
 {
-    [JsonPropertyName("@odata.context")] public string?  Context { get; set; }
-    [JsonPropertyName("@odata.count")]   public long?    Count   { get; set; }
-    [JsonPropertyName("value")]          public List<T>? Value   { get; set; }
+    [JsonPropertyName("@odata.context")] public string? Context { get; set; }
+    [JsonPropertyName("@odata.count")] public long? Count { get; set; }
+    [JsonPropertyName("value")] public List<T>? Value { get; set; }
 }
 
 internal sealed class ODataErrorEnvelope
@@ -131,7 +131,7 @@ internal sealed class ODataErrorEnvelope
 
 internal sealed class ODataErrorBody
 {
-    [JsonPropertyName("code")]    public string? Code    { get; set; }
+    [JsonPropertyName("code")] public string? Code { get; set; }
     [JsonPropertyName("message")] public string? Message { get; set; }
 }
 
@@ -176,7 +176,7 @@ public class ODataProtocolComplianceTests : IAsyncDisposable
         var response = await _fixture.RawHttpClient.GetAsync("/odata/$metadata");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var contentType = response.Content.Headers.ContentType?.MediaType ?? "";
+        string contentType = response.Content.Headers.ContentType?.MediaType ?? "";
         // OData CSDL is application/xml or application/atomsvc+xml or application/json
         Assert.True(
             contentType.Contains("xml") || contentType.Contains("json"),
@@ -190,7 +190,7 @@ public class ODataProtocolComplianceTests : IAsyncDisposable
     [Fact]
     public async Task Metadata_ContainsWidgetsEntitySet()
     {
-        var body = await _fixture.RawHttpClient.GetStringAsync("/odata/$metadata");
+        string body = await _fixture.RawHttpClient.GetStringAsync("/odata/$metadata");
         Assert.Contains("Widgets", body, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -205,7 +205,7 @@ public class ODataProtocolComplianceTests : IAsyncDisposable
     {
         var response = await _fixture.RawHttpClient.GetAsync("/odata/");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var body = await response.Content.ReadAsStringAsync();
+        string body = await response.Content.ReadAsStringAsync();
         // Service document contains "value" array of entity set links
         Assert.Contains("value", body, StringComparison.OrdinalIgnoreCase);
     }
@@ -314,7 +314,7 @@ public class ODataProtocolComplianceTests : IAsyncDisposable
             .GetAsync("/odata/Widgets?$select=Id,Name");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        var body = await response.Content.ReadAsStringAsync();
+        string body = await response.Content.ReadAsStringAsync();
         var doc = JsonDocument.Parse(body);
         var firstItem = doc.RootElement.GetProperty("value")[0];
 
@@ -364,8 +364,8 @@ public class ODataProtocolComplianceTests : IAsyncDisposable
         var response = await _fixture.RawHttpClient.GetAsync("/odata/Widgets/$count");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        var body = await response.Content.ReadAsStringAsync();
-        Assert.True(long.TryParse(body.Trim(), out var count), $"Expected plain-text integer, got: '{body}'");
+        string body = await response.Content.ReadAsStringAsync();
+        Assert.True(long.TryParse(body.Trim(), out long count), $"Expected plain-text integer, got: '{body}'");
         Assert.True(count >= 3, $"Expected at least 3 widgets, got {count}");
     }
 
@@ -428,7 +428,7 @@ public class ODataProtocolComplianceTests : IAsyncDisposable
         var response = await _fixture.RawHttpClient.DeleteAsync("/odata/Widgets(9999)");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
 
-        var body = await response.Content.ReadAsStringAsync();
+        string body = await response.Content.ReadAsStringAsync();
         var envelope = JsonSerializer.Deserialize<ODataErrorEnvelope>(body, _jsonOptions);
         Assert.NotNull(envelope?.Error);
         Assert.False(string.IsNullOrEmpty(envelope!.Error!.Message),

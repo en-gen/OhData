@@ -56,7 +56,10 @@ internal static class SelectTranslator
     {
         while (expr is UnaryExpression u
             && u.NodeType is ExpressionType.Convert or ExpressionType.ConvertChecked)
+        {
             expr = u.Operand;
+        }
+
         return expr;
     }
 }
