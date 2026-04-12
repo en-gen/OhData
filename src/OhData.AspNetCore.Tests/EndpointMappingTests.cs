@@ -1703,6 +1703,180 @@ public class EndpointMappingTests
         Assert.Equal("PatchedCog", json.GetProperty("name").GetString());
     }
 
+    // ── Batch 4: 406 Not Acceptable ──────────────────────────────────────────
+
+    [Fact]
+    public async Task Accept_ApplicationJson_Returns200()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
+        request.Headers.Add("Accept", "application/json");
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Accept_Star_Returns200()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
+        request.Headers.Add("Accept", "*/*");
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Accept_TextXml_Returns406()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
+        request.Headers.Add("Accept", "text/xml");
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.NotAcceptable, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Accept_TextHtml_Returns406()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
+        request.Headers.Add("Accept", "text/html");
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.NotAcceptable, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Accept_Metadata_ApplicationXml_Returns200()
+    {
+        // $metadata returns XML — should not be blocked by the 406 filter
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var request = new HttpRequestMessage(HttpMethod.Get, "/odata/$metadata");
+        request.Headers.Add("Accept", "application/xml");
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    // ── Batch 4: @odata.etag in collection responses ──────────────────────────
+
+    [Fact]
+    public async Task ETagCollection_GetAll_ContainsOdataEtagPerItem()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagCollectionProfile>());
+        JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ETagCollWidgets");
+        JsonElement value = json.GetProperty("value");
+        Assert.True(value.GetArrayLength() > 0);
+        foreach (JsonElement item in value.EnumerateArray())
+        {
+            Assert.True(item.TryGetProperty("@odata.etag", out JsonElement etag),
+                "@odata.etag should be present on each collection item");
+            string? etagStr = etag.GetString();
+            Assert.NotNull(etagStr);
+            Assert.StartsWith("\"", etagStr); // ETags are always quoted
+        }
+    }
+
+    [Fact]
+    public async Task ETagCollection_SelectFiltered_OdataEtagSurvivesSelect()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagCollectionProfile>());
+        JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ETagCollWidgets?$select=name");
+        JsonElement value = json.GetProperty("value");
+        Assert.True(value.GetArrayLength() > 0);
+        foreach (JsonElement item in value.EnumerateArray())
+        {
+            // $select=name should not strip @odata.etag (metadata properties are immune)
+            Assert.True(item.TryGetProperty("@odata.etag", out _),
+                "@odata.etag must not be removed by $select");
+            // id should be stripped by $select
+            Assert.False(item.TryGetProperty("id", out _),
+                "id should be removed by $select=name");
+        }
+    }
+
+    // ── Batch 4: If-Match ETag list (CheckETagAsync uses ParseETagList) ───────
+
+    [Fact]
+    public async Task IfMatch_MultipleEtags_MatchingOneAllowsPut()
+    {
+        // If-Match: "bogus-etag", "<actual-etag>" — second entry matches → 200
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagIfMatchProfile>());
+        // Obtain the current ETag via GET.
+        string etag = (await fx.Client.GetAsync("/odata/IfMatchWidgets(1)")).Headers.ETag!.Tag;
+        var request = new HttpRequestMessage(HttpMethod.Put, "/odata/IfMatchWidgets(1)");
+        request.Headers.TryAddWithoutValidation("If-Match", $"\"bogus-tag\", {etag}");
+        request.Content = JsonContent.Create(new { Id = 1, Name = "Updated" });
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task IfMatch_MultipleEtags_NoneMatchingReturns412()
+    {
+        // If-Match: "bogus1", "bogus2" — neither matches → 412
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagIfMatchProfile>());
+        var request = new HttpRequestMessage(HttpMethod.Put, "/odata/IfMatchWidgets(1)");
+        request.Headers.TryAddWithoutValidation("If-Match", "\"bogus1\", \"bogus2\"");
+        request.Content = JsonContent.Create(new { Id = 1, Name = "Updated" });
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.PreconditionFailed, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task IfMatch_WeakEtagInList_IsStripped()
+    {
+        // W/"<actual-etag>" should match (W/ stripped before comparison) → 200
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagIfMatchProfile>());
+        string etag = (await fx.Client.GetAsync("/odata/IfMatchWidgets(1)")).Headers.ETag!.Tag;
+        var request = new HttpRequestMessage(HttpMethod.Put, "/odata/IfMatchWidgets(1)");
+        request.Headers.TryAddWithoutValidation("If-Match", $"W/{etag}");
+        request.Content = JsonContent.Create(new { Id = 1, Name = "Updated" });
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    // ── Batch 4: Prefer: maxpagesize=N ───────────────────────────────────────
+
+    [Fact]
+    public async Task MaxPageSize_LimitsResultCount()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MaxPageSizeProfile>());
+        HttpResponseMessage response = await fx.Client.GetAsync("/odata/MaxPageWidgets");
+        response.Headers.TryGetValues("Prefer", out _); // Prefer not echoed
+        JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        // No maxpagesize sent — should return all 20
+        Assert.Equal(20, json.GetProperty("value").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task MaxPageSize_WithPrefer_LimitsToRequestedSize()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MaxPageSizeProfile>());
+        var request = new HttpRequestMessage(HttpMethod.Get, "/odata/MaxPageWidgets");
+        request.Headers.Add("Prefer", "maxpagesize=5");
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(5, json.GetProperty("value").GetArrayLength());
+        // @odata.nextLink should be present since page is full
+        Assert.True(json.TryGetProperty("@odata.nextLink", out _), "@odata.nextLink should be set");
+        // Preference-Applied header
+        Assert.True(response.Headers.TryGetValues("Preference-Applied", out IEnumerable<string>? applied));
+        Assert.Contains(applied!, v => v.Contains("maxpagesize=5"));
+    }
+
+    [Fact]
+    public async Task MaxPageSize_ExplicitTopOverridesPrefer()
+    {
+        // $top=3 should take precedence over Prefer: maxpagesize=10
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MaxPageSizeProfile>());
+        var request = new HttpRequestMessage(HttpMethod.Get, "/odata/MaxPageWidgets?$top=3");
+        request.Headers.Add("Prefer", "maxpagesize=10");
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(3, json.GetProperty("value").GetArrayLength());
+    }
+
 }
 
 // ── Auth test helpers (not registered as profiles — instantiated directly) ───
