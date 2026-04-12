@@ -105,8 +105,6 @@ internal static class OhDataEndpointFactory
         group.AddEndpointFilter(async (ctx, next) =>
         {
             ctx.HttpContext.Response.Headers["OData-Version"] = "4.0";
-            // §8.2.6: OData-MaxVersion indicates the highest OData protocol version this server supports.
-            ctx.HttpContext.Response.Headers["OData-MaxVersion"] = "4.0";
 
             string path = ctx.HttpContext.Request.Path.Value ?? "";
             bool isMetadata = path.EndsWith("/$metadata", StringComparison.OrdinalIgnoreCase);

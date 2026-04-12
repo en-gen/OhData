@@ -1985,12 +1985,16 @@ public class EndpointMappingTests
     // ── Batch 6: OData-MaxVersion header, Prefer:return=representation on PUT/PATCH, HEAD ──
 
     [Fact]
-    public async Task Response_IncludesODataMaxVersionHeader()
+    public async Task Response_DoesNotIncludeODataMaxVersionHeader()
     {
+        // OData-MaxVersion is a request-only header (client → server) per §8.2.7.
+        // Servers must NOT include it in responses; only OData-Version is set by the server.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/Widgets");
-        Assert.True(response.Headers.TryGetValues("OData-MaxVersion", out System.Collections.Generic.IEnumerable<string>? vals));
-        Assert.Contains(vals!, v => v == "4.0");
+        Assert.False(response.Headers.Contains("OData-MaxVersion"),
+            "OData-MaxVersion is a request-only header and must not appear in responses.");
+        Assert.True(response.Headers.TryGetValues("OData-Version", out System.Collections.Generic.IEnumerable<string>? ver));
+        Assert.Contains(ver!, v => v == "4.0");
     }
 
     [Fact]
