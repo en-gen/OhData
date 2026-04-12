@@ -50,7 +50,7 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
         {
             w.Id = _store.Count > 0 ? _store.Max(x => x.Id) + 1 : 1;
             _store.Add(w);
-            return Task.FromResult(w);
+            return Task.FromResult<Widget?>(w);
         };
         PutById = (id, w, ct) =>
         {
