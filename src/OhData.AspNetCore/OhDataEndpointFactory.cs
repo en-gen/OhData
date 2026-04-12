@@ -100,7 +100,8 @@ internal static class OhDataEndpointFactory
 
         // Gap 1: Add OData-Version: 4.0 header to all responses (§8.2.6).
         // Batch 4: Return 406 Not Acceptable when the client cannot accept application/json (§8.2.3).
-        // $metadata returns application/xml, so it is exempted from the JSON-only check.
+        // Batch 5: Validate $format query option (§11.2.12); it overrides the Accept header.
+        // $metadata returns application/xml, so it is exempted from the JSON-only checks.
         group.AddEndpointFilter(async (ctx, next) =>
         {
             ctx.HttpContext.Response.Headers["OData-Version"] = "4.0";
@@ -109,14 +110,37 @@ internal static class OhDataEndpointFactory
             bool isMetadata = path.EndsWith("/$metadata", StringComparison.OrdinalIgnoreCase);
             if (!isMetadata)
             {
-                string accept = ctx.HttpContext.Request.Headers.Accept.ToString();
-                if (!string.IsNullOrEmpty(accept)
-                    && !accept.Contains("application/json", StringComparison.OrdinalIgnoreCase)
-                    && !accept.Contains("*/*", StringComparison.OrdinalIgnoreCase))
+                // §11.2.12: $format overrides Accept. Only application/json (and the shorthand
+                // "json") are supported; any other value is rejected with 400.
+                bool formatAccepted = false;
+                if (ctx.HttpContext.Request.Query.TryGetValue("$format", out var formatParam))
                 {
-                    return ODataError(406, "NotAcceptable",
-                        "The server can only produce application/json responses. " +
-                        "Set Accept: application/json or omit the Accept header.");
+                    string fmt = Uri.UnescapeDataString(formatParam.ToString()).Trim();
+                    bool isJsonFormat =
+                        string.Equals(fmt, "json", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(fmt, "application/json", StringComparison.OrdinalIgnoreCase);
+                    if (!isJsonFormat)
+                    {
+                        return ODataError(400, "UnsupportedFormat",
+                            $"The requested format '{fmt}' is not supported. " +
+                            "Only application/json (or the shorthand 'json') is produced.");
+                    }
+
+                    formatAccepted = true;
+                }
+
+                if (!formatAccepted)
+                {
+                    // §8.2.3: Reject Accept headers that don't include application/json or */*.
+                    string accept = ctx.HttpContext.Request.Headers.Accept.ToString();
+                    if (!string.IsNullOrEmpty(accept)
+                        && !accept.Contains("application/json", StringComparison.OrdinalIgnoreCase)
+                        && !accept.Contains("*/*", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return ODataError(406, "NotAcceptable",
+                            "The server can only produce application/json responses. " +
+                            "Set Accept: application/json or omit the Accept header.");
+                    }
                 }
             }
 
@@ -722,11 +746,13 @@ internal static class OhDataEndpointFactory
                         object[] searchItems = searchResults.ToArray();
                         object searchFinal = ApplySelectPostProcess((object)searchItems, options);
                         string searchBaseUrl = BuildBaseUrl(ctx, prefix);
-                        return Results.Ok(new Dictionary<string, object?>
-                        {
-                            ["@odata.context"] = $"{searchBaseUrl}/$metadata#{name}",
-                            ["value"] = searchFinal
-                        });
+                        var searchEnvelope = new Dictionary<string, object?>();
+                        searchEnvelope["@odata.context"] = $"{searchBaseUrl}/$metadata#{name}";
+                        // Batch 5: include @odata.count for search results when $count=true is requested.
+                        if (options.Count?.Value == true)
+                            searchEnvelope["@odata.count"] = (long)searchItems.Length;
+                        searchEnvelope["value"] = searchFinal;
+                        return Results.Ok(searchEnvelope);
                     }
 
                     object? result = await source.InvokeGetAllAsync(ct);
@@ -752,11 +778,13 @@ internal static class OhDataEndpointFactory
                     object finalItems = ApplySelectPostProcess(annotatedItems, options);
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
-                    return Results.Ok(new Dictionary<string, object?>
-                    {
-                        ["@odata.context"] = $"{baseUrl}/$metadata#{name}",
-                        ["value"] = finalItems
-                    });
+                    var envelope = new Dictionary<string, object?>();
+                    envelope["@odata.context"] = $"{baseUrl}/$metadata#{name}";
+                    // Batch 5: §11.2.6.5 — include @odata.count when $count=true is requested on GetAll path.
+                    if (options.Count?.Value == true)
+                        envelope["@odata.count"] = (long)rawItems.Length;
+                    envelope["value"] = finalItems;
+                    return Results.Ok(envelope);
                 }
                 catch (Microsoft.OData.ODataException ex)
                 {
@@ -869,9 +897,22 @@ internal static class OhDataEndpointFactory
                 if (PrefersMinimal(ctx))
                 {
                     ctx.Response.Headers.Location = odataId;
+                    // §8.3.3: Content-Location on 204 mirrors the Location of the created entity.
+                    ctx.Response.Headers["Content-Location"] = odataId;
                     ctx.Response.Headers["Preference-Applied"] = "return=minimal";
                     return Results.NoContent();
                 }
+
+                // §8.2.8.7: Prefer: return=representation — explicit opt-in; already the default behaviour.
+                // Acknowledge the preference in the response header when present.
+                if (ctx.Request.Headers.TryGetValue("Prefer", out var postPrefer)
+                    && postPrefer.ToString().Contains("return=representation", StringComparison.OrdinalIgnoreCase))
+                {
+                    ctx.Response.Headers["Preference-Applied"] = "return=representation";
+                }
+
+                // §8.3.3: Content-Location points to the canonical URL of the created resource.
+                ctx.Response.Headers["Content-Location"] = odataId;
 
                 // Gap 5: include @odata.id in POST response body
                 // Gap 2: include @odata.etag in body
