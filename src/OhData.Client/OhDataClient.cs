@@ -44,6 +44,7 @@ public sealed class OhDataClient : IDisposable
     /// Base URL of the OData service, e.g. <c>https://api.example.com/v1</c>.
     /// A trailing slash is added automatically if absent.
     /// </param>
+    /// <param name="options">Optional serialization and HTTP options. Uses defaults when <c>null</c>.</param>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="baseAddress"/> is null.</exception>
     /// <exception cref="ArgumentException">Thrown when <paramref name="baseAddress"/> is empty.</exception>
     public OhDataClient(string baseAddress, OhDataClientOptions? options = null)
@@ -63,6 +64,8 @@ public sealed class OhDataClient : IDisposable
     /// disposed when this instance is disposed. Useful with
     /// <c>IHttpClientFactory</c> or test doubles.
     /// </summary>
+    /// <param name="httpClient">The <see cref="HttpClient"/> to use for all requests.</param>
+    /// <param name="options">Optional serialization and HTTP options. Uses defaults when <c>null</c>.</param>
     public OhDataClient(HttpClient httpClient, OhDataClientOptions? options = null)
     {
         _options = options ?? new OhDataClientOptions();

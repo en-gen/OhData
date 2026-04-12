@@ -8,6 +8,13 @@ using Microsoft.AspNetCore.OData.Query;
 
 namespace OhData.Abstractions.AspNetCore.OData;
 
+/// <summary>
+/// Extends <see cref="EntitySetProfile{TKey,TModel}"/> with OData-aware handler overloads that
+/// receive <see cref="ODataQueryOptions{TModel}"/> or <see cref="Delta{TModel}"/> directly,
+/// enabling full OData pushdown to the data source (e.g. EF Core) and true partial-update semantics.
+/// </summary>
+/// <typeparam name="TKey">The CLR type of the entity's primary key.</typeparam>
+/// <typeparam name="TModel">The CLR type of the entity.</typeparam>
 public abstract class ODataEntitySetProfile<TKey, TModel> : EntitySetProfile<TKey, TModel>, IODataEntitySetEndpointSource
     where TModel : class
 {
@@ -28,6 +35,13 @@ public abstract class ODataEntitySetProfile<TKey, TModel> : EntitySetProfile<TKe
     /// </summary>
     protected Func<TKey, Delta<TModel>, CancellationToken, Task<TModel?>>? PatchDelta = null;
 
+    /// <summary>
+    /// Initialises the profile. Pass a key-selector expression that identifies the entity's
+    /// primary key property, e.g. <c>x => x.Id</c>.
+    /// </summary>
+    /// <param name="getKey">
+    /// Expression that selects the key property from <typeparamref name="TModel"/>.
+    /// </param>
     protected ODataEntitySetProfile(Expression<Func<TModel, TKey>> getKey) : base(getKey)
     {
     }
