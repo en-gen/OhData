@@ -10,12 +10,9 @@ public sealed class OhDataRegistrationCollection
 
     internal void Add(string name, OhDataRegistration registration)
     {
-        if (!_registrations.TryAdd(name, registration))
-        {
-            throw new InvalidOperationException(
-                $"OhData: a registration named '{name}' is already registered. " +
-                "Call AddOhData with a different name, or remove the duplicate call.");
-        }
+        // Silently no-op when the name already exists (TryAdd semantics).
+        // The primary duplicate guard is in ServiceCollectionExtensions; this is defense-in-depth.
+        _registrations.TryAdd(name, registration);
     }
 
     /// <summary>

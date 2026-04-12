@@ -322,7 +322,7 @@ internal static class OhDataEndpointFactory
         var etagList = ParseETagList(ifMatch.ToString()).ToList();
         if (etagList.Contains("*")) return null; // wildcard -- always matches
 
-        object? current = await source.InvokeGetByIdAsync(parsedKey, ct);
+        object? current = await source.InvokeGetByIdAsync(parsedKey!, ct);
         if (current is null)
             return ODataError(404, "NotFound", "Resource not found.");
         string currentETag = source.InvokeGetETag(current);
@@ -529,35 +529,26 @@ internal static class OhDataEndpointFactory
 
         var logger = loggerFactory?.CreateLogger("OhData");
 
-        // Create a sub-group for this entity set's collection-level routes.
-        // Auth is applied to this group so collection endpoints are protected.
-        var entityGroup = parentGroup.MapGroup($"/{name}");
-
-        // Key-based routes map on parentGroup directly (with name literal in template) because
-        // ASP.NET Core route groups insert a separator before non-slash-prefixed segments, which
-        // would produce /name/({key}) instead of /name({key}). Auth is applied per-route below.
+        // Create an auth group for this entity set with an empty prefix so that auth is
+        // applied once and propagates to all routes (both collection and key-based).
+        // Key-based routes use templates like "/{name}({key})" which embed the entity set name
+        // and must be mapped directly here rather than in a sub-group, because MapGroup inserts
+        // a separator that would produce /name/({key}) instead of /name({key}).
         AuthorizationConfig? authConfig = source.Authorization;
-
-        static void ApplyAuth(RouteHandlerBuilder rb, AuthorizationConfig? auth)
-        {
-            if (auth is null) return;
-            if (auth.Policy is not null)
-                rb.RequireAuthorization(auth.Policy);
-            if (auth.Roles is { Count: > 0 })
-                rb.RequireAuthorization(policy => policy.RequireRole(auth.Roles.ToArray()));
-            if (auth.Policy is null && auth.Roles is null or { Count: 0 })
-                rb.RequireAuthorization();
-        }
+        var entityAuthGroup = parentGroup.MapGroup("");
 
         if (authConfig is not null)
         {
             if (authConfig.Policy is not null)
-                entityGroup.RequireAuthorization(authConfig.Policy);
+                entityAuthGroup.RequireAuthorization(authConfig.Policy);
             if (authConfig.Roles is { Count: > 0 })
-                entityGroup.RequireAuthorization(policy => policy.RequireRole(authConfig.Roles.ToArray()));
+                entityAuthGroup.RequireAuthorization(policy => policy.RequireRole(authConfig.Roles.ToArray()));
             if (authConfig.Policy is null && authConfig.Roles is null or { Count: 0 })
-                entityGroup.RequireAuthorization();
+                entityAuthGroup.RequireAuthorization();
         }
+
+        // Collection-level routes use a sub-group so they can use the short "" template.
+        var entityGroup = entityAuthGroup.MapGroup($"/{name}");
 
         // Priority 1: ODataEntitySetProfile with direct ODataQueryOptions handler
         if (source is IODataEntitySetEndpointSource odataSource && odataSource.HasGetODataQueryable)
@@ -858,13 +849,13 @@ internal static class OhDataEndpointFactory
 
         if (source.HasGetById)
         {
-            var rb = parentGroup.MapGet($"/{name}({{key}})", async (string key, HttpContext ctx, CancellationToken ct) =>
+            var rb = entityAuthGroup.MapGet($"/{name}({{key}})", async (string key, HttpContext ctx, CancellationToken ct) =>
             {
                 logger?.LogDebug("GET {Prefix}/{Name}({Key})", prefix, name, key);
                 try
                 {
-                    object parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
-                    object? result = await source.InvokeGetByIdAsync(parsedKey, ct);
+                    object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
+                    object? result = await source.InvokeGetByIdAsync(parsedKey!, ct);
                     string? etagValue = null;
                     if (result is not null && source.HasETag)
                     {
@@ -893,7 +884,6 @@ internal static class OhDataEndpointFactory
                 }
             });
             rb.WithTags(name).Produces<TModel>(200).Produces(404);
-            ApplyAuth(rb, authConfig);
         }
 
         if (source.HasPost)
@@ -924,41 +914,43 @@ internal static class OhDataEndpointFactory
                     ctx.Response.Headers["Preference-Applied"] = "return=minimal";
                     return Results.NoContent();
                 }
-
-                // §8.2.8.7: Prefer: return=representation — explicit opt-in; already the default behaviour.
-                // Acknowledge the preference in the response header when present.
-                if (ctx.Request.Headers.TryGetValue("Prefer", out var postPrefer)
-                    && postPrefer.ToString().Contains("return=representation", StringComparison.OrdinalIgnoreCase))
+                else
                 {
-                    ctx.Response.Headers["Preference-Applied"] = "return=representation";
+                    // §8.3.3: Content-Location points to the canonical URL of the created resource.
+                    ctx.Response.Headers["Content-Location"] = odataId;
+
+                    // §8.2.8.7: Prefer: return=representation — explicit opt-in; already the default behaviour.
+                    // Acknowledge the preference in the response header when present.
+                    if (ctx.Request.Headers.TryGetValue("Prefer", out var postPrefer)
+                        && postPrefer.ToString().Contains("return=representation", StringComparison.OrdinalIgnoreCase))
+                    {
+                        ctx.Response.Headers["Preference-Applied"] = "return=representation";
+                    }
+
+                    // Gap 5: include @odata.id in POST response body
+                    // Gap 2: include @odata.etag in body
+                    var createdNode = ODataEntityNode(ctx, prefix, $"{name}/$entity", result, odataId: odataId, etag: postEtag);
+                    return Results.Created(odataId, createdNode);
                 }
-
-                // §8.3.3: Content-Location points to the canonical URL of the created resource.
-                ctx.Response.Headers["Content-Location"] = odataId;
-
-                // Gap 5: include @odata.id in POST response body
-                // Gap 2: include @odata.etag in body
-                var createdNode = ODataEntityNode(ctx, prefix, $"{name}/$entity", result, odataId: odataId, etag: postEtag);
-                return Results.Created(odataId, createdNode);
             });
             rb.WithTags(name).Produces<TModel>(201).Produces(400);
         }
 
         if (source.HasPutById)
         {
-            var rb = parentGroup.MapPut($"/{name}({{key}})", async (string key, TModel model, HttpContext ctx, CancellationToken ct) =>
+            var rb = entityAuthGroup.MapPut($"/{name}({{key}})", async (string key, TModel model, HttpContext ctx, CancellationToken ct) =>
             {
                 logger?.LogDebug("PUT {Prefix}/{Name}({Key})", prefix, name, key);
                 try
                 {
-                    object parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
+                    object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
                     string bodyKeyStr = source.InvokeGetKeyString(model);
                     string parsedKeyStr = string.Format(CultureInfo.InvariantCulture, "{0}", parsedKey);
                     if (!string.Equals(parsedKeyStr, bodyKeyStr, StringComparison.Ordinal))
                         return ODataError(400, "BadRequest", "Key in URL does not match key in request body.", target: "key");
-                    var etagCheck = await CheckETagAsync(source, ctx, parsedKey, ct);
+                    var etagCheck = await CheckETagAsync(source, ctx, parsedKey!, ct);
                     if (etagCheck is not null) return etagCheck;
-                    object? result = await source.InvokePutByIdAsync(parsedKey, model, ct);
+                    object? result = await source.InvokePutByIdAsync(parsedKey!, model, ct);
 
                     // Gap 3: Upsert via PUT (§11.4.4) — create entity when result is null and AllowUpsert enabled
                     bool wasCreated = false;
@@ -1006,18 +998,17 @@ internal static class OhDataEndpointFactory
                 }
             });
             rb.WithTags(name).Produces<TModel>(200).Produces(400).Produces(404);
-            ApplyAuth(rb, authConfig);
         }
 
         bool usePatchDelta = source is IODataEntitySetEndpointSource odataPatchSrc && odataPatchSrc.HasPatchDelta;
         if (source.HasPatch || usePatchDelta)
         {
-            var rb = parentGroup.MapMethods($"/{name}({{key}})", PatchMethod, async (string key, HttpContext ctx, CancellationToken ct) =>
+            var rb = entityAuthGroup.MapMethods($"/{name}({{key}})", PatchMethod, async (string key, HttpContext ctx, CancellationToken ct) =>
             {
                 logger?.LogDebug("PATCH {Prefix}/{Name}({Key})", prefix, name, key);
                 try
                 {
-                    object parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
+                    object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
                     var jsonOptions = ctx.RequestServices
                         .GetService<IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions>>()
                         ?.Value?.SerializerOptions;
@@ -1036,7 +1027,7 @@ internal static class OhDataEndpointFactory
                             return ODataError(400, "BadRequest", "Key in URL does not match key in request body.", target: "key");
                     }
 
-                    var etagCheck = await CheckETagAsync(source, ctx, parsedKey, ct);
+                    var etagCheck = await CheckETagAsync(source, ctx, parsedKey!, ct);
                     if (etagCheck is not null) return etagCheck;
 
                     object? result;
@@ -1055,11 +1046,11 @@ internal static class OhDataEndpointFactory
                                 delta.TrySetPropertyValue(clrProp.Name, value);
                             }
                         }
-                        result = await ((IODataEntitySetEndpointSource)source).InvokePatchDeltaAsync(parsedKey, delta, ct);
+                        result = await ((IODataEntitySetEndpointSource)source).InvokePatchDeltaAsync(parsedKey!, delta, ct);
                     }
                     else
                     {
-                        result = await source.InvokePatchAsync(parsedKey, model, ct);
+                        result = await source.InvokePatchAsync(parsedKey!, model, ct);
                     }
 
                     string? patchEtag = null;
@@ -1103,20 +1094,19 @@ internal static class OhDataEndpointFactory
             });
             rb.Accepts<TModel>("application/json");
             rb.WithTags(name).Produces<TModel>(200).Produces(400).Produces(404);
-            ApplyAuth(rb, authConfig);
         }
 
         if (source.HasDelete)
         {
-            var rb = parentGroup.MapDelete($"/{name}({{key}})", async (string key, HttpContext ctx, CancellationToken ct) =>
+            var rb = entityAuthGroup.MapDelete($"/{name}({{key}})", async (string key, HttpContext ctx, CancellationToken ct) =>
             {
                 logger?.LogDebug("DELETE {Prefix}/{Name}({Key})", prefix, name, key);
                 try
                 {
-                    object parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
-                    var etagCheck = await CheckETagAsync(source, ctx, parsedKey, ct);
+                    object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
+                    var etagCheck = await CheckETagAsync(source, ctx, parsedKey!, ct);
                     if (etagCheck is not null) return etagCheck;
-                    bool deleted = await source.InvokeDeleteAsync(parsedKey, ct);
+                    bool deleted = await source.InvokeDeleteAsync(parsedKey!, ct);
                     if (!deleted && !source.IdempotentDelete)
                         return ODataError(404, "NotFound", $"{name} with key '{key}' was not found.");
                     return Results.NoContent();
@@ -1128,7 +1118,6 @@ internal static class OhDataEndpointFactory
                 }
             });
             rb.WithTags(name).Produces(204).Produces(400).Produces(404);
-            ApplyAuth(rb, authConfig);
         }
 
         // Navigation property routes
@@ -1136,13 +1125,13 @@ internal static class OhDataEndpointFactory
         {
             string navPropertyName = nav.PropertyName;
             bool navIsCollection = nav.IsCollection;
-            var rb = parentGroup.MapGet($"/{name}({{key}})/{navPropertyName}",
+            var rb = entityAuthGroup.MapGet($"/{name}({{key}})/{navPropertyName}",
                 async (string key, HttpContext ctx, CancellationToken ct) =>
                 {
                     try
                     {
-                        object parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
-                        object? result = await nav.Handler(parsedKey, ct);
+                        object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
+                        object? result = await nav.Handler(parsedKey!, ct);
                         if (result is null)
                             return ODataError(404, "NotFound", $"{name}({key})/{navPropertyName} not found.");
                         if (navIsCollection)
@@ -1190,19 +1179,18 @@ internal static class OhDataEndpointFactory
                 .WithTags(name)
                 .Produces(200)
                 .Produces(404);
-            ApplyAuth(rb, authConfig);
 
             // Batch 3: GET /{name}({key})/{nav}/$count — standalone count for navigation collections (§11.2.3)
             if (navIsCollection)
             {
                 string navCountPropertyName = navPropertyName;
-                var countRb = parentGroup.MapGet($"/{name}({{key}})/{navCountPropertyName}/$count",
+                var countRb = entityAuthGroup.MapGet($"/{name}({{key}})/{navCountPropertyName}/$count",
                     async (string key, CancellationToken ct) =>
                     {
                         try
                         {
-                            object parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
-                            object? result = await nav.Handler(parsedKey, ct);
+                            object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
+                            object? result = await nav.Handler(parsedKey!, ct);
                             if (result is null) return Results.NotFound();
                             var rawColl = result as System.Collections.IEnumerable;
                             long count = rawColl is not null ? rawColl.Cast<object>().LongCount() : 1L;
@@ -1217,7 +1205,6 @@ internal static class OhDataEndpointFactory
                     .WithTags(name)
                     .Produces(200)
                     .Produces(404);
-                ApplyAuth(countRb, authConfig);
             }
 
             // Gap 6: $ref endpoints for navigation (§11.4.6)
@@ -1225,12 +1212,12 @@ internal static class OhDataEndpointFactory
             bool navRefIsCollection = nav.IsCollection;
 
             // GET /{name}({key})/{nav}/$ref — returns reference envelope
-            var refGetRb = parentGroup.MapGet($"/{name}({{key}})/{navRefPropertyName}/$ref",
+            var refGetRb = entityAuthGroup.MapGet($"/{name}({{key}})/{navRefPropertyName}/$ref",
                 (string key, HttpContext ctx) =>
                 {
                     try
                     {
-                        object parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
+                        object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
                         string baseUrl = BuildBaseUrl(ctx, prefix);
                         string context = $"{baseUrl}/$metadata#{name}({key})/{navRefPropertyName}/$ref";
 
@@ -1261,23 +1248,22 @@ internal static class OhDataEndpointFactory
                 })
                 .WithTags(name)
                 .Produces(200);
-            ApplyAuth(refGetRb, authConfig);
 
             // POST /{name}({key})/{nav}/$ref (add relationship)
             if (nav.AddRef is not null)
             {
                 var addRefDelegate = nav.AddRef;
-                var refPostRb = parentGroup.MapPost($"/{name}({{key}})/{navRefPropertyName}/$ref",
+                var refPostRb = entityAuthGroup.MapPost($"/{name}({{key}})/{navRefPropertyName}/$ref",
                     async (string key, HttpContext ctx, CancellationToken ct) =>
                     {
                         try
                         {
-                            object parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
+                            object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
                             var body = await JsonSerializer.DeserializeAsync<JsonElement>(ctx.Request.Body, cancellationToken: ct);
                             if (!TryGetJsonProperty(body, "@odata.id", out var odataIdEl))
                                 return ODataError(400, "BadRequest", "Request body must contain '@odata.id'.");
                             string relatedId = odataIdEl.GetString() ?? "";
-                            await addRefDelegate(parsedKey, (object)relatedId, ct);
+                            await addRefDelegate(parsedKey!, (object)relatedId, ct);
                             return Results.NoContent();
                         }
                         catch (FormatException ex)
@@ -1289,24 +1275,23 @@ internal static class OhDataEndpointFactory
                     .WithTags(name)
                     .Produces(204)
                     .Produces(400);
-                ApplyAuth(refPostRb, authConfig);
             }
 
             // DELETE /{name}({key})/{nav}/$ref (remove relationship)
             if (nav.RemoveRef is not null)
             {
                 var removeRefDelegate = nav.RemoveRef;
-                var refDeleteRb = parentGroup.MapDelete($"/{name}({{key}})/{navRefPropertyName}/$ref",
+                var refDeleteRb = entityAuthGroup.MapDelete($"/{name}({{key}})/{navRefPropertyName}/$ref",
                     async (string key, HttpContext ctx, CancellationToken ct) =>
                     {
                         try
                         {
-                            object parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
+                            object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
                             // For DELETE $ref on collection nav, the related id may come from query param $id
                             string relatedId = ctx.Request.Query.TryGetValue("$id", out var idVal)
                                 ? idVal.ToString()
                                 : "";
-                            await removeRefDelegate(parsedKey, (object)relatedId, ct);
+                            await removeRefDelegate(parsedKey!, (object)relatedId, ct);
                             return Results.NoContent();
                         }
                         catch (FormatException ex)
@@ -1318,7 +1303,6 @@ internal static class OhDataEndpointFactory
                     .WithTags(name)
                     .Produces(204)
                     .Produces(400);
-                ApplyAuth(refDeleteRb, authConfig);
             }
         }
 
@@ -1418,12 +1402,12 @@ internal static class OhDataEndpointFactory
         foreach (var fn in source.BoundFunctions.Where(f => f.IsEntityLevel))
         {
             var fnCapture = fn;
-            var rb = parentGroup.MapGet($"/{name}({{key}})/{fn.Name}",
+            var rb = entityAuthGroup.MapGet($"/{name}({{key}})/{fn.Name}",
                 async (string key, HttpContext ctx, CancellationToken ct) =>
                 {
                     try
                     {
-                        object parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
+                        object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
                         // First arg is the key; remaining come from query string
                         object?[] args = new object?[fnCapture.Parameters.Length];
                         args[0] = parsedKey;
@@ -1467,19 +1451,18 @@ internal static class OhDataEndpointFactory
                     }
                 })
                 .WithTags(name).Produces(200).Produces(204).Produces(400);
-            ApplyAuth(rb, authConfig);
         }
 
         // Gap 7: Entity-level bound actions — POST /{name}({key})/{action.Name}
         foreach (var action in source.BoundActions.Where(a => a.IsEntityLevel))
         {
             var actionCapture = action;
-            var rb = parentGroup.MapMethods($"/{name}({{key}})/{action.Name}", new[] { "POST" },
+            var rb = entityAuthGroup.MapMethods($"/{name}({{key}})/{action.Name}", new[] { "POST" },
                 async (string key, HttpContext ctx, CancellationToken ct) =>
                 {
                     try
                     {
-                        object parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
+                        object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
                         object?[] args = new object?[actionCapture.Parameters.Length];
                         args[0] = parsedKey;
                         if (actionCapture.Parameters.Length > 1)
@@ -1526,7 +1509,6 @@ internal static class OhDataEndpointFactory
                     }
                 })
                 .WithTags(name).Produces(200).Produces(204).Produces(400);
-            ApplyAuth(rb, authConfig);
         }
 
     }
@@ -1594,3 +1576,4 @@ internal static class OhDataEndpointFactory
         return false;
     }
 }
+
