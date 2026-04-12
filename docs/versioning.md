@@ -1,66 +1,80 @@
 # API Versioning
 
-OhData supports multiple simultaneous registrations with different prefixes. Each registration has its own EDM model, route prefix, and set of profiles.
+OhData supports multiple simultaneous registrations with independent prefixes, EDM models, and profile sets. Each registration is completely isolated — no shared state.
 
 ## Named registrations
 
 ```csharp
-builder.Services.AddOhData("v1", ohdata =>
-    ohdata
-        .WithPrefix("/v1")
-        .AddProfile<ProductProfileV1>()
-);
+builder.Services.AddOhData("v1", o => o
+    .WithPrefix("/v1")
+    .AddProfile<ProductProfileV1>());
 
-builder.Services.AddOhData("v2", ohdata =>
-    ohdata
-        .WithPrefix("/v2")
-        .AddProfile<ProductProfileV1>()
-        .AddProfile<CustomerProfileV2>()   // new in v2
-);
+builder.Services.AddOhData("v2", o => o
+    .WithPrefix("/v2")
+    .AddProfile<ProductProfileV1>()
+    .AddProfile<CustomerProfileV2>());   // new entity set in v2
 
-app.MapOhData("v1").WithOpenApi().WithGroupName("v1");
-app.MapOhData("v2").WithOpenApi().WithGroupName("v2");
+app.MapOhData("v1");
+app.MapOhData("v2");
 ```
 
-Each named registration is stored as `AddKeyedSingleton<OhDataRegistration>(name)`, so multiple calls don't overwrite each other.
+Each call produces its own EDM model and route group at its prefix:
 
-The unnamed overloads (`AddOhData(...)` / `MapOhData()`) use the default key `"__default__"` internally, so they coexist cleanly with named registrations.
+```
+GET /v1/Products       ← v1 registration
+GET /v2/Products       ← v2 registration
+GET /v2/Customers      ← v2 only
+```
 
 ## `OhData.AspNetCore.Versioning` convenience package
+
+Combines name and prefix into a single call:
 
 ```csharp
 using OhData.AspNetCore.Versioning;
 
-// Combines name + prefix in one call
 builder.Services.AddOhDataVersion("v1", "/v1", o => o.AddProfile<ProductProfileV1>());
-builder.Services.AddOhDataVersion("v2", "/v2", o => o.AddProfile<ProductProfileV2>());
+builder.Services.AddOhDataVersion("v2", "/v2", o => o
+    .AddProfile<ProductProfileV1>()
+    .AddProfile<CustomerProfileV2>());
 
 app.MapOhDataVersion("v1");
 app.MapOhDataVersion("v2");
 ```
 
-`AddOhDataVersion(name, prefix, configure)` is equivalent to:
-```csharp
-services.AddOhData(name, o => { o.WithPrefix(prefix); configure(o); });
-```
+## OpenAPI / Swagger partitioning
 
-## Swagger partitioning
-
-With Swashbuckle, add a `DocInclusionPredicate` to route each endpoint to the matching Swagger doc:
+Chain `WithOpenApi()` and `WithGroupName()` on the `RouteGroupBuilder` returned by `MapOhData()`:
 
 ```csharp
-builder.Services.AddSwaggerGen(c =>
-{
-    c.SwaggerDoc("v1", new() { Title = "My API v1", Version = "v1" });
-    c.SwaggerDoc("v2", new() { Title = "My API v2", Version = "v2" });
-    c.DocInclusionPredicate((docName, apiDesc) =>
-        apiDesc.GroupName is null || apiDesc.GroupName == docName);
-});
-
 app.MapOhData("v1").WithOpenApi().WithGroupName("v1");
 app.MapOhData("v2").WithOpenApi().WithGroupName("v2");
 ```
 
+With Swashbuckle, add a `DocInclusionPredicate` so each endpoint appears in the correct doc:
+
+```csharp
+builder.Services.AddSwaggerGen(c =>
+{
+    c.SwaggerDoc("v1", new OpenApiInfo { Title = "My API", Version = "v1" });
+    c.SwaggerDoc("v2", new OpenApiInfo { Title = "My API", Version = "v2" });
+    c.DocInclusionPredicate((docName, apiDesc) =>
+        apiDesc.GroupName is null || apiDesc.GroupName == docName);
+});
+```
+
+## Default (unnamed) registration
+
+Calling `AddOhData(...)` without a name uses the key `"__default__"` internally and coexists cleanly with named registrations:
+
+```csharp
+builder.Services.AddOhData(o => o.WithPrefix("/odata").AddProfile<ProductProfile>());
+builder.Services.AddOhData("v2", o => o.WithPrefix("/v2").AddProfile<ProductProfileV2>());
+
+app.MapOhData();       // maps __default__
+app.MapOhData("v2");   // maps v2
+```
+
 ## Startup validation
 
-Each registration independently validates for duplicate entity set names within that registration. A registration with two profiles that have the same `EntitySetName` will throw `InvalidOperationException` at startup.
+Each registration independently validates for duplicate entity set names. Two profiles with the same `EntitySetName` within a single registration throw `InvalidOperationException` at startup. Duplicate names across different registrations are allowed.
