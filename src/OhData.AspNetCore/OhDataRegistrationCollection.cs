@@ -11,9 +11,11 @@ public sealed class OhDataRegistrationCollection
     internal void Add(string name, OhDataRegistration registration)
     {
         if (!_registrations.TryAdd(name, registration))
+        {
             throw new InvalidOperationException(
                 $"OhData: a registration named '{name}' is already registered. " +
                 "Call AddOhData with a different name, or remove the duplicate call.");
+        }
     }
 
     public OhDataRegistration Get(string name)

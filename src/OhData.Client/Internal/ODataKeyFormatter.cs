@@ -23,22 +23,22 @@ internal static class ODataKeyFormatter
     public static string Format(object key)
     {
         if (key is null) throw new ArgumentNullException(nameof(key), "OData key value must not be null.");
-        var literal = key switch
+        string literal = key switch
         {
-            string s           => $"'{s.Replace("'", "''")}'",
-            Guid g             => g.ToString(),
-            bool b             => b ? "true" : "false",
-            char c             => $"'{c}'",
-            DateTime dt        => dt.Kind == DateTimeKind.Utc
+            string s => $"'{s.Replace("'", "''")}'",
+            Guid g => g.ToString(),
+            bool b => b ? "true" : "false",
+            char c => $"'{c}'",
+            DateTime dt => dt.Kind == DateTimeKind.Utc
                                       ? dt.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture)
                                       : dt.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture),
             DateTimeOffset dto => dto.Offset == TimeSpan.Zero
                                       ? dto.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture)
                                       : dto.ToString("yyyy-MM-ddTHH:mm:sszzz", CultureInfo.InvariantCulture),
-            DateOnly d         => $"'{d:yyyy-MM-dd}'",
-            TimeOnly t         => $"'{t:HH:mm:ss}'",
+            DateOnly d => $"'{d:yyyy-MM-dd}'",
+            TimeOnly t => $"'{t:HH:mm:ss}'",
             // All other numeric types: invariant culture, no quotes
-            _                  => string.Format(CultureInfo.InvariantCulture, "{0}", key),
+            _ => string.Format(CultureInfo.InvariantCulture, "{0}", key),
         };
         // Percent-encode so string keys with reserved chars (/, ?, #, space) are safe in the URL path.
         // Integers and GUIDs contain only [0-9a-f-] so encoding is a no-op for them.

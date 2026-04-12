@@ -18,28 +18,28 @@ public sealed class EntitySetClient<T> where T : class
     // ── Immutable state ─────────────────────────────────────────────────────────
 
     private sealed record QueryState(
-        string? Filter     = null,
-        string? Select     = null,
-        string? OrderBy    = null,
-        string? Expand     = null,
-        int?    Top        = null,
-        int?    Skip       = null,
-        bool    WithCount  = false);
+        string? Filter = null,
+        string? Select = null,
+        string? OrderBy = null,
+        string? Expand = null,
+        int? Top = null,
+        int? Skip = null,
+        bool WithCount = false);
 
-    private readonly ODataHttpClient    _http;
+    private readonly ODataHttpClient _http;
     private readonly OhDataClientOptions _options;
-    private readonly string             _entitySetName;
-    private readonly QueryState         _state;
+    private readonly string _entitySetName;
+    private readonly QueryState _state;
 
     internal EntitySetClient(ODataHttpClient http, OhDataClientOptions options, string entitySetName)
         : this(http, options, entitySetName, new QueryState()) { }
 
     private EntitySetClient(ODataHttpClient http, OhDataClientOptions options, string entitySetName, QueryState state)
     {
-        _http          = http;
-        _options       = options;
+        _http = http;
+        _options = options;
         _entitySetName = entitySetName;
-        _state         = state;
+        _state = state;
     }
 
     // ── Builder methods ─────────────────────────────────────────────────────────
@@ -74,10 +74,13 @@ public sealed class EntitySetClient<T> where T : class
     /// </exception>
     public EntitySetClient<T> Select(params Expression<Func<T, object?>>[] properties)
     {
-        var names = new string[properties.Length];
-        for (var i = 0; i < properties.Length; i++)
+        string[] names = new string[properties.Length];
+        for (int i = 0; i < properties.Length; i++)
+        {
             names[i] = ExtractDirectMember(properties[i],
                 "$select does not support navigation paths; use Expand for navigation properties.");
+        }
+
         return With(_state with { Select = string.Join(',', names) });
     }
 
@@ -109,10 +112,13 @@ public sealed class EntitySetClient<T> where T : class
     /// </exception>
     public EntitySetClient<T> Expand(params Expression<Func<T, object?>>[] navProperties)
     {
-        var names = new string[navProperties.Length];
-        for (var i = 0; i < navProperties.Length; i++)
+        string[] names = new string[navProperties.Length];
+        for (int i = 0; i < navProperties.Length; i++)
+        {
             names[i] = ExtractDirectMember(navProperties[i],
                 "$expand does not support nested expansion; use the string overload for complex $expand syntax.");
+        }
+
         return With(_state with { Expand = string.Join(',', names) });
     }
 
@@ -139,7 +145,7 @@ public sealed class EntitySetClient<T> where T : class
     /// <summary>Appends a secondary ascending sort.</summary>
     public EntitySetClient<T> ThenBy(Expression<Func<T, object?>> keySelector)
     {
-        var path = ExtractPath(keySelector);
+        string path = ExtractPath(keySelector);
         return With(_state with
         {
             OrderBy = _state.OrderBy is null ? path : $"{_state.OrderBy},{path}"
@@ -149,7 +155,7 @@ public sealed class EntitySetClient<T> where T : class
     /// <summary>Appends a secondary descending sort.</summary>
     public EntitySetClient<T> ThenByDescending(Expression<Func<T, object?>> keySelector)
     {
-        var path = $"{ExtractPath(keySelector)} desc";
+        string path = $"{ExtractPath(keySelector)} desc";
         return With(_state with
         {
             OrderBy = _state.OrderBy is null ? path : $"{_state.OrderBy},{path}"
@@ -238,23 +244,25 @@ public sealed class EntitySetClient<T> where T : class
     internal string BuildCollectionUrl()
     {
         // Fast path: no query options — avoids allocating the parts list.
-        if (_state.Filter  is null &&
-            _state.Select  is null &&
+        if (_state.Filter is null &&
+            _state.Select is null &&
             _state.OrderBy is null &&
-            _state.Expand  is null &&
-            !_state.Top.HasValue   &&
-            !_state.Skip.HasValue  &&
+            _state.Expand is null &&
+            !_state.Top.HasValue &&
+            !_state.Skip.HasValue &&
             !_state.WithCount)
+        {
             return _entitySetName;
+        }
 
         var parts = new List<string>(6);
-        if (_state.Filter  is not null) parts.Add($"$filter={Uri.EscapeDataString(_state.Filter)}");
-        if (_state.Select  is not null) parts.Add($"$select={Uri.EscapeDataString(_state.Select)}");
+        if (_state.Filter is not null) parts.Add($"$filter={Uri.EscapeDataString(_state.Filter)}");
+        if (_state.Select is not null) parts.Add($"$select={Uri.EscapeDataString(_state.Select)}");
         if (_state.OrderBy is not null) parts.Add($"$orderby={Uri.EscapeDataString(_state.OrderBy)}");
-        if (_state.Expand  is not null) parts.Add($"$expand={Uri.EscapeDataString(_state.Expand)}");
-        if (_state.Top.HasValue)        parts.Add($"$top={_state.Top.Value}");
-        if (_state.Skip.HasValue)       parts.Add($"$skip={_state.Skip.Value}");
-        if (_state.WithCount)           parts.Add("$count=true");
+        if (_state.Expand is not null) parts.Add($"$expand={Uri.EscapeDataString(_state.Expand)}");
+        if (_state.Top.HasValue) parts.Add($"$top={_state.Top.Value}");
+        if (_state.Skip.HasValue) parts.Add($"$skip={_state.Skip.Value}");
+        if (_state.WithCount) parts.Add("$count=true");
 
         return parts.Count == 0
             ? _entitySetName
@@ -282,7 +290,9 @@ public sealed class EntitySetClient<T> where T : class
         Expression body = expr.Body;
         while (body is UnaryExpression u
             && u.NodeType is ExpressionType.Convert or ExpressionType.ConvertChecked)
+        {
             body = u.Operand;
+        }
 
         return ExtractMemberPath(body, expr.Parameters[0]);
     }
@@ -314,12 +324,16 @@ public sealed class EntitySetClient<T> where T : class
         Expression body = expr.Body;
         while (body is UnaryExpression u
             && u.NodeType is ExpressionType.Convert or ExpressionType.ConvertChecked)
+        {
             body = u.Operand;
+        }
 
         if (body is MemberExpression member
             && member.Expression is ParameterExpression p
             && p == expr.Parameters[0])
+        {
             return member.Member.Name;
+        }
 
         throw new ArgumentException(errorMessage);
     }

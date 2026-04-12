@@ -272,6 +272,14 @@ internal static class OhDataEndpointFactory
 
     // -- JsonNode $select post-processing helpers ---------------------------------
 
+    // Serialize with camelCase so the filtered JsonArray has the same casing as the
+    // rest of the OData response (which goes through ASP.NET Core's camelCase pipeline).
+    // JsonArray nodes are returned as-is by Results.Ok, bypassing that pipeline.
+    private static readonly JsonSerializerOptions _camelCaseSerializerOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    };
+
     private static object ApplySelectPostProcess(object items, ODataQueryOptions options)
     {
         if (options.SelectExpand?.SelectExpandClause is null) return items;
@@ -279,7 +287,7 @@ internal static class OhDataEndpointFactory
         var selectedProps = ExtractSelectedProperties(options.SelectExpand.SelectExpandClause);
         if (selectedProps is null) return items;
 
-        var json = JsonSerializer.SerializeToNode(items)!.AsArray();
+        var json = JsonSerializer.SerializeToNode(items, _camelCaseSerializerOptions)!.AsArray();
         foreach (var item in json)
         {
             if (item is not JsonObject obj) continue;
@@ -973,7 +981,7 @@ internal static class OhDataEndpointFactory
 
             // GET /{name}({key})/{nav}/$ref — returns reference envelope
             var refGetRb = parentGroup.MapGet($"/{name}({{key}})/{navRefPropertyName}/$ref",
-                async (string key, HttpContext ctx, CancellationToken ct) =>
+                (string key, HttpContext ctx) =>
                 {
                     try
                     {

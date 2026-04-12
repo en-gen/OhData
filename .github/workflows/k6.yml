@@ -11,6 +11,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # GitVersion requires full history to compute semantic version
+      - name: Prepare k6 reports directory
+        run: mkdir -p k6/reports && chmod 777 k6/reports
       - name: Run k6 tests
         run: docker compose -f docker-compose.k6.yml up --abort-on-container-exit --exit-code-from k6
       - name: Upload k6 report

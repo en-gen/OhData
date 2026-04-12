@@ -19,7 +19,7 @@ namespace OhData.Client.Tests;
 
 internal class Widget
 {
-    public int    Id   { get; set; }
+    public int Id { get; set; }
     public string Name { get; set; } = "";
 }
 
@@ -37,29 +37,29 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
             new() { Id = 2, Name = "Cog" },
         };
 
-        GetQueryable = (ct)       => Task.FromResult(_store.AsQueryable());
-        GetById   = (id, ct)      => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
-        Post      = (widget, ct)  =>
+        GetQueryable = (ct) => Task.FromResult(_store.AsQueryable());
+        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
+        Post = (widget, ct) =>
         {
             widget.Id = _store.Count > 0 ? _store.Max(w => w.Id) + 1 : 1;
             _store.Add(widget);
             return Task.FromResult(widget);
         };
-        PutById   = (id, w, ct)   =>
+        PutById = (id, w, ct) =>
         {
             _store.RemoveAll(x => x.Id == id);
             w.Id = id;
             _store.Add(w);
             return Task.FromResult(w);
         };
-        Patch     = (id, w, ct)   =>
+        Patch = (id, w, ct) =>
         {
             var existing = _store.FirstOrDefault(x => x.Id == id);
             if (existing is null) return Task.FromResult<Widget?>(null);
             if (w.Name != "") existing.Name = w.Name;
             return Task.FromResult<Widget?>(existing);
         };
-        Delete    = (id, ct)      => Task.FromResult(_store.RemoveAll(w => w.Id == id) > 0);
+        Delete = (id, ct) => Task.FromResult(_store.RemoveAll(w => w.Id == id) > 0);
     }
 }
 
@@ -68,16 +68,16 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
 internal sealed class ClientTestFixture : IAsyncDisposable
 {
     private readonly WebApplication _app;
-    public HttpClient   HttpClient { get; }
-    public OhDataClient Client     { get; }
+    public HttpClient HttpClient { get; }
+    public OhDataClient Client { get; }
 
     private ClientTestFixture(WebApplication app, string prefix)
     {
-        _app       = app;
+        _app = app;
         HttpClient = ((IHost)app).GetTestClient();
         // Point the base address at the OData prefix so relative URLs like "Widgets" resolve correctly.
         HttpClient.BaseAddress = new Uri(HttpClient.BaseAddress!, prefix.Trim('/') + "/");
-        Client     = new OhDataClient(HttpClient);
+        Client = new OhDataClient(HttpClient);
     }
 
     public static async Task<ClientTestFixture> BuildAsync(string prefix = "/odata")

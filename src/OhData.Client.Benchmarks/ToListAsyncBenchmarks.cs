@@ -26,9 +26,9 @@ namespace OhData.Client.Benchmarks;
 [MemoryDiagnoser]
 public class ToListAsyncBenchmarks
 {
-    private WebApplication _serverApp  = null!;
-    private OhDataClient   _client     = null!;
-    private HttpClient     _httpClient = null!;
+    private WebApplication _serverApp = null!;
+    private OhDataClient _client = null!;
+    private HttpClient _httpClient = null!;
 
     [GlobalSetup]
     public async Task Setup()
@@ -46,9 +46,9 @@ public class ToListAsyncBenchmarks
         _serverApp.MapOhData();
         await _serverApp.StartAsync();
 
-        _httpClient             = ((IHost)_serverApp).GetTestClient();
+        _httpClient = ((IHost)_serverApp).GetTestClient();
         _httpClient.BaseAddress = new Uri(_httpClient.BaseAddress!, "odata/");
-        _client                 = new OhDataClient(_httpClient);
+        _client = new OhDataClient(_httpClient);
     }
 
     [GlobalCleanup]

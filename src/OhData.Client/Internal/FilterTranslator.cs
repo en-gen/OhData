@@ -12,7 +12,7 @@ namespace OhData.Client.Internal;
 /// </summary>
 internal sealed class FilterTranslator : ExpressionVisitor
 {
-    private readonly StringBuilder       _sb        = new();
+    private readonly StringBuilder _sb = new();
     private readonly ParameterExpression _parameter;
 
     private FilterTranslator(ParameterExpression parameter) => _parameter = parameter;
@@ -31,21 +31,21 @@ internal sealed class FilterTranslator : ExpressionVisitor
     {
         var (op, parens) = node.NodeType switch
         {
-            ExpressionType.Equal              => ("eq",  false),
-            ExpressionType.NotEqual           => ("ne",  false),
-            ExpressionType.GreaterThan        => ("gt",  false),
-            ExpressionType.GreaterThanOrEqual => ("ge",  false),
-            ExpressionType.LessThan           => ("lt",  false),
-            ExpressionType.LessThanOrEqual    => ("le",  false),
-            ExpressionType.AndAlso            => ("and", true),
-            ExpressionType.OrElse             => ("or",  true),
+            ExpressionType.Equal => ("eq", false),
+            ExpressionType.NotEqual => ("ne", false),
+            ExpressionType.GreaterThan => ("gt", false),
+            ExpressionType.GreaterThanOrEqual => ("ge", false),
+            ExpressionType.LessThan => ("lt", false),
+            ExpressionType.LessThanOrEqual => ("le", false),
+            ExpressionType.AndAlso => ("and", true),
+            ExpressionType.OrElse => ("or", true),
             // Arithmetic: always parenthesize operands to avoid precedence ambiguity.
             // E.g. (A + B) * C must stay ((A) add (B)) mul (C) not "A add B mul C".
-            ExpressionType.Add                => ("add", true),
-            ExpressionType.Subtract           => ("sub", true),
-            ExpressionType.Multiply           => ("mul", true),
-            ExpressionType.Divide             => ("div", true),
-            ExpressionType.Modulo             => ("mod", true),
+            ExpressionType.Add => ("add", true),
+            ExpressionType.Subtract => ("sub", true),
+            ExpressionType.Multiply => ("mul", true),
+            ExpressionType.Divide => ("div", true),
+            ExpressionType.Modulo => ("mod", true),
             _ => throw new NotSupportedException(
                 $"Binary operator '{node.NodeType}' is not supported in OData $filter expressions.")
         };
@@ -53,7 +53,7 @@ internal sealed class FilterTranslator : ExpressionVisitor
         if (parens)
         {
             // Wrap each operand: (left) and/or (right)
-            _sb.Append('('); Visit(node.Left);  _sb.Append(')');
+            _sb.Append('('); Visit(node.Left); _sb.Append(')');
             _sb.Append($" {op} ");
             _sb.Append('('); Visit(node.Right); _sb.Append(')');
         }
@@ -95,14 +95,14 @@ internal sealed class FilterTranslator : ExpressionVisitor
 
     protected override Expression VisitMember(MemberExpression node)
     {
-        if (TryGetPropertyPath(node, out var path))
+        if (TryGetPropertyPath(node, out string? path))
         {
             _sb.Append(path);
         }
         else
         {
             // Captured variable or outer-scope field — evaluate at translation time
-            var value = Expression.Lambda<Func<object?>>(Expression.Convert(node, typeof(object))).Compile()();
+            object? value = Expression.Lambda<Func<object?>>(Expression.Convert(node, typeof(object))).Compile()();
             _sb.Append(FormatLiteral(value));
         }
         return node;
@@ -121,14 +121,14 @@ internal sealed class FilterTranslator : ExpressionVisitor
     protected override Expression VisitMethodCall(MethodCallExpression node)
     {
         // Static string.IsNullOrEmpty(x.Prop)
-        if (node.Method.Name     == "IsNullOrEmpty"
+        if (node.Method.Name == "IsNullOrEmpty"
          && node.Method.IsStatic
          && node.Method.DeclaringType == typeof(string))
         {
             // Render the argument once; reuse the string to avoid double-compiling closures.
-            var start = _sb.Length;
+            int start = _sb.Length;
             Visit(node.Arguments[0]);
-            var rendered = _sb.ToString(start, _sb.Length - start);
+            string rendered = _sb.ToString(start, _sb.Length - start);
             _sb.Remove(start, _sb.Length - start);
             _sb.Append('(');
             _sb.Append(rendered);
@@ -139,13 +139,13 @@ internal sealed class FilterTranslator : ExpressionVisitor
         }
 
         // Static string.IsNullOrWhiteSpace(x.Prop) — translates to (prop eq null or trim(prop) eq '')
-        if (node.Method.Name     == "IsNullOrWhiteSpace"
+        if (node.Method.Name == "IsNullOrWhiteSpace"
          && node.Method.IsStatic
          && node.Method.DeclaringType == typeof(string))
         {
-            var start = _sb.Length;
+            int start = _sb.Length;
             Visit(node.Arguments[0]);
-            var rendered = _sb.ToString(start, _sb.Length - start);
+            string rendered = _sb.ToString(start, _sb.Length - start);
             _sb.Remove(start, _sb.Length - start);
             _sb.Append('(');
             _sb.Append(rendered);
@@ -213,7 +213,7 @@ internal sealed class FilterTranslator : ExpressionVisitor
             return true;
         }
 
-        if (expr is MemberExpression member && TryGetPropertyPath(member.Expression!, out var parent))
+        if (expr is MemberExpression member && TryGetPropertyPath(member.Expression!, out string? parent))
         {
             path = parent.Length == 0
                 ? member.Member.Name
@@ -230,25 +230,25 @@ internal sealed class FilterTranslator : ExpressionVisitor
     /// <summary>Formats a CLR value as an OData literal string (no surrounding whitespace).</summary>
     internal static string FormatLiteral(object? value) => value switch
     {
-        null            => "null",
-        bool b          => b ? "true" : "false",
-        string s        => $"'{s.Replace("'", "''")}'",
-        char c          => $"'{c}'",
-        Guid g          => g.ToString(),
-        DateTime dt        => dt.Kind == DateTimeKind.Utc
+        null => "null",
+        bool b => b ? "true" : "false",
+        string s => $"'{s.Replace("'", "''")}'",
+        char c => $"'{c}'",
+        Guid g => g.ToString(),
+        DateTime dt => dt.Kind == DateTimeKind.Utc
                                  ? dt.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture)
                                  : dt.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture),
         DateTimeOffset dto => dto.Offset == TimeSpan.Zero
                                  ? dto.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture)
                                  : dto.ToString("yyyy-MM-ddTHH:mm:sszzz", CultureInfo.InvariantCulture),
-        DateOnly d      => $"'{d:yyyy-MM-dd}'",
-        TimeOnly t      => $"'{t:HH:mm:ss}'",
-        float f         => f.ToString("R", CultureInfo.InvariantCulture),
-        double d        => d.ToString("R", CultureInfo.InvariantCulture),
-        decimal dec     => dec.ToString(CultureInfo.InvariantCulture),
+        DateOnly d => $"'{d:yyyy-MM-dd}'",
+        TimeOnly t => $"'{t:HH:mm:ss}'",
+        float f => f.ToString("R", CultureInfo.InvariantCulture),
+        double d => d.ToString("R", CultureInfo.InvariantCulture),
+        decimal dec => dec.ToString(CultureInfo.InvariantCulture),
         // All other numeric types (int, long, short, byte, sbyte, uint, ulong, ushort)
         _ when value.GetType().IsEnum
                         => Convert.ToInt64(value).ToString(CultureInfo.InvariantCulture),
-        _               => string.Format(CultureInfo.InvariantCulture, "{0}", value),
+        _ => string.Format(CultureInfo.InvariantCulture, "{0}", value),
     };
 }

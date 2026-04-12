@@ -8,11 +8,11 @@ public class FilterTranslatorTests
 {
     private sealed class Item
     {
-        public int     Id       { get; set; }
-        public string  Name     { get; set; } = "";
-        public decimal Price    { get; set; }
-        public bool    IsActive { get; set; }
-        public Sub?    Sub      { get; set; }
+        public int Id { get; set; }
+        public string Name { get; set; } = "";
+        public decimal Price { get; set; }
+        public bool IsActive { get; set; }
+        public Sub? Sub { get; set; }
     }
 
     private sealed class Sub { public string Code { get; set; } = ""; }
@@ -22,12 +22,12 @@ public class FilterTranslatorTests
 
     // ── Comparison operators ────────────────────────────────────────────────────
 
-    [Fact] public void Equal_Int()     => Assert.Equal("Id eq 1",     F<Item>(x => x.Id == 1));
-    [Fact] public void NotEqual_Int()  => Assert.Equal("Id ne 1",     F<Item>(x => x.Id != 1));
-    [Fact] public void GreaterThan()   => Assert.Equal("Price gt 10", F<Item>(x => x.Price > 10));
-    [Fact] public void GreaterOrEqual()=> Assert.Equal("Price ge 10", F<Item>(x => x.Price >= 10));
-    [Fact] public void LessThan()      => Assert.Equal("Price lt 10", F<Item>(x => x.Price < 10));
-    [Fact] public void LessOrEqual()   => Assert.Equal("Price le 10", F<Item>(x => x.Price <= 10));
+    [Fact] public void Equal_Int() => Assert.Equal("Id eq 1", F<Item>(x => x.Id == 1));
+    [Fact] public void NotEqual_Int() => Assert.Equal("Id ne 1", F<Item>(x => x.Id != 1));
+    [Fact] public void GreaterThan() => Assert.Equal("Price gt 10", F<Item>(x => x.Price > 10));
+    [Fact] public void GreaterOrEqual() => Assert.Equal("Price ge 10", F<Item>(x => x.Price >= 10));
+    [Fact] public void LessThan() => Assert.Equal("Price lt 10", F<Item>(x => x.Price < 10));
+    [Fact] public void LessOrEqual() => Assert.Equal("Price le 10", F<Item>(x => x.Price <= 10));
 
     // ── Logical operators ───────────────────────────────────────────────────────
 
@@ -45,12 +45,12 @@ public class FilterTranslatorTests
 
     // ── String methods ──────────────────────────────────────────────────────────
 
-    [Fact] public void Contains()   => Assert.Equal("contains(Name,'foo')",      F<Item>(x => x.Name.Contains("foo")));
-    [Fact] public void StartsWith() => Assert.Equal("startswith(Name,'W')",      F<Item>(x => x.Name.StartsWith("W")));
-    [Fact] public void EndsWith()   => Assert.Equal("endswith(Name,'t')",        F<Item>(x => x.Name.EndsWith("t")));
-    [Fact] public void ToLower()    => Assert.Equal("tolower(Name) eq 'foo'",    F<Item>(x => x.Name.ToLower() == "foo"));
-    [Fact] public void ToUpper()    => Assert.Equal("toupper(Name) eq 'FOO'",    F<Item>(x => x.Name.ToUpper() == "FOO"));
-    [Fact] public void Trim()       => Assert.Equal("trim(Name) eq 'foo'",       F<Item>(x => x.Name.Trim() == "foo"));
+    [Fact] public void Contains() => Assert.Equal("contains(Name,'foo')", F<Item>(x => x.Name.Contains("foo")));
+    [Fact] public void StartsWith() => Assert.Equal("startswith(Name,'W')", F<Item>(x => x.Name.StartsWith("W")));
+    [Fact] public void EndsWith() => Assert.Equal("endswith(Name,'t')", F<Item>(x => x.Name.EndsWith("t")));
+    [Fact] public void ToLower() => Assert.Equal("tolower(Name) eq 'foo'", F<Item>(x => x.Name.ToLower() == "foo"));
+    [Fact] public void ToUpper() => Assert.Equal("toupper(Name) eq 'FOO'", F<Item>(x => x.Name.ToUpper() == "FOO"));
+    [Fact] public void Trim() => Assert.Equal("trim(Name) eq 'foo'", F<Item>(x => x.Name.Trim() == "foo"));
 
     // ── String literal escaping ─────────────────────────────────────────────────
 
@@ -60,8 +60,8 @@ public class FilterTranslatorTests
 
     // ── Null literals ───────────────────────────────────────────────────────────
 
-    [Fact] public void Equal_Null()    => Assert.Equal("Name eq null",  F<Item>(x => x.Name == null));
-    [Fact] public void NotEqual_Null() => Assert.Equal("Name ne null",  F<Item>(x => x.Name != null));
+    [Fact] public void Equal_Null() => Assert.Equal("Name eq null", F<Item>(x => x.Name == null));
+    [Fact] public void NotEqual_Null() => Assert.Equal("Name ne null", F<Item>(x => x.Name != null));
 
     // ── Navigation paths ────────────────────────────────────────────────────────
 
@@ -81,17 +81,17 @@ public class FilterTranslatorTests
     [Fact]
     public void CapturedString()
     {
-        var name = "Widget";
+        string name = "Widget";
         Assert.Equal("Name eq 'Widget'", F<Item>(x => x.Name == name));
     }
 
     // ── Literal formatting ──────────────────────────────────────────────────────
 
-    [Fact] public void FormatLiteral_Null()    => Assert.Equal("null",  FilterTranslator.FormatLiteral(null));
-    [Fact] public void FormatLiteral_True()    => Assert.Equal("true",  FilterTranslator.FormatLiteral(true));
-    [Fact] public void FormatLiteral_False()   => Assert.Equal("false", FilterTranslator.FormatLiteral(false));
-    [Fact] public void FormatLiteral_Int()     => Assert.Equal("42",    FilterTranslator.FormatLiteral(42));
-    [Fact] public void FormatLiteral_Decimal() => Assert.Equal("9.99",  FilterTranslator.FormatLiteral(9.99m));
+    [Fact] public void FormatLiteral_Null() => Assert.Equal("null", FilterTranslator.FormatLiteral(null));
+    [Fact] public void FormatLiteral_True() => Assert.Equal("true", FilterTranslator.FormatLiteral(true));
+    [Fact] public void FormatLiteral_False() => Assert.Equal("false", FilterTranslator.FormatLiteral(false));
+    [Fact] public void FormatLiteral_Int() => Assert.Equal("42", FilterTranslator.FormatLiteral(42));
+    [Fact] public void FormatLiteral_Decimal() => Assert.Equal("9.99", FilterTranslator.FormatLiteral(9.99m));
 
     [Fact]
     public void FormatLiteral_Guid()
@@ -142,7 +142,7 @@ public class FilterTranslatorTests
     {
         // (A + B) * C should not become A add B mul C (wrong precedence)
         // It should become ((A) add (B)) mul (C) which equals ((Price) add (1)) mul (2)
-        var filter = F<Item>(x => (x.Price + 1) * 2 == 10);
+        string filter = F<Item>(x => (x.Price + 1) * 2 == 10);
         Assert.Contains("add", filter);
         Assert.Contains("mul", filter);
         // Ensure add operands are parenthesized — the add must appear inside parens before mul

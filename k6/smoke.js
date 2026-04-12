@@ -6,7 +6,11 @@ const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
 
 export const options = {
   thresholds: {
-    http_req_failed: ['rate<0.01'],
+    // http_req_failed is omitted: the test deliberately sends requests that expect
+    // 4xx/404 responses (error cases, missing-entity GETs, versioning checks), so
+    // the failure rate is inherently > 1%.  Individual correctness is covered by
+    // the `checks` assertions in each group.
+    'checks': ['rate>0.99'],
     'http_req_duration{group:::collection GET}': ['p(95)<500'],
   },
 };
@@ -76,21 +80,25 @@ export default function (data) {
 
   // ── $filter ─────────────────────────────────────────────────────────────────
   group('$filter', () => {
+    // Property names must match the EDM model (PascalCase: Price, Name, Category).
+    // Spaces in OData query syntax must be percent-encoded (%20) because k6 sends
+    // URLs verbatim and Kestrel treats a literal space as an HTTP request-line
+    // terminator, returning 400 with an empty body.
     const cases = [
       // Comparison operators
-      { qs: "$filter=price eq 9.99",         label: 'eq numeric',     expect: (v) => v.length >= 1 && v.every(p => p.price === 9.99) },
-      { qs: "$filter=price ne 9.99",         label: 'ne numeric',     expect: (v) => v.every(p => p.price !== 9.99) },
-      { qs: "$filter=price gt 10",           label: 'gt numeric',     expect: (v) => v.every(p => p.price > 10) },
-      { qs: "$filter=price lt 10",           label: 'lt numeric',     expect: (v) => v.every(p => p.price < 10) },
-      { qs: "$filter=price ge 9.99",         label: 'ge numeric',     expect: (v) => v.every(p => p.price >= 9.99) },
-      { qs: "$filter=price le 9.99",         label: 'le numeric',     expect: (v) => v.every(p => p.price <= 9.99) },
+      { qs: "$filter=Price%20eq%209.99",         label: 'eq numeric',     expect: (v) => v.length >= 1 && v.every(p => p.price === 9.99) },
+      { qs: "$filter=Price%20ne%209.99",         label: 'ne numeric',     expect: (v) => v.every(p => p.price !== 9.99) },
+      { qs: "$filter=Price%20gt%2010",           label: 'gt numeric',     expect: (v) => v.every(p => p.price > 10) },
+      { qs: "$filter=Price%20lt%2010",           label: 'lt numeric',     expect: (v) => v.every(p => p.price < 10) },
+      { qs: "$filter=Price%20ge%209.99",         label: 'ge numeric',     expect: (v) => v.every(p => p.price >= 9.99) },
+      { qs: "$filter=Price%20le%209.99",         label: 'le numeric',     expect: (v) => v.every(p => p.price <= 9.99) },
       // String functions
-      { qs: "$filter=contains(name,'get')",  label: 'contains',       expect: (v) => v.length >= 1 && v.every(p => p.name.toLowerCase().includes('get')) },
-      { qs: "$filter=startswith(name,'W')",  label: 'startswith',     expect: (v) => v.every(p => p.name.startsWith('W')) },
-      { qs: "$filter=endswith(name,'et')",   label: 'endswith',       expect: (v) => v.every(p => p.name.toLowerCase().endsWith('et')) },
+      { qs: "$filter=contains(Name,'get')",      label: 'contains',       expect: (v) => v.length >= 1 && v.every(p => p.name.toLowerCase().includes('get')) },
+      { qs: "$filter=startswith(Name,'W')",      label: 'startswith',     expect: (v) => v.every(p => p.name.startsWith('W')) },
+      { qs: "$filter=endswith(Name,'et')",       label: 'endswith',       expect: (v) => v.every(p => p.name.toLowerCase().endsWith('et')) },
       // Logical combinations
-      { qs: "$filter=price gt 5 and price lt 20",   label: 'and',   expect: (v) => v.every(p => p.price > 5 && p.price < 20) },
-      { qs: "$filter=price lt 5 or price gt 30",    label: 'or',    expect: (v) => v.every(p => p.price < 5 || p.price > 30) },
+      { qs: "$filter=Price%20gt%205%20and%20Price%20lt%2020",   label: 'and',   expect: (v) => v.every(p => p.price > 5 && p.price < 20) },
+      { qs: "$filter=Price%20lt%205%20or%20Price%20gt%2030",    label: 'or',    expect: (v) => v.every(p => p.price < 5 || p.price > 30) },
     ];
 
     for (const tc of cases) {
@@ -105,7 +113,7 @@ export default function (data) {
 
   // ── $orderby ────────────────────────────────────────────────────────────────
   group('$orderby', () => {
-    const ascRes = http.get(`${BASE_URL}/v1/Products?$orderby=price`);
+    const ascRes = http.get(`${BASE_URL}/v1/Products?$orderby=Price`);
     check(ascRes, {
       'orderby price asc 200': (r) => r.status === 200,
       'orderby price asc ordered': (r) => {
@@ -117,7 +125,8 @@ export default function (data) {
       },
     });
 
-    const descRes = http.get(`${BASE_URL}/v1/Products?$orderby=price desc`);
+    // "desc" keyword must be separated from the property name by a space → %20
+    const descRes = http.get(`${BASE_URL}/v1/Products?$orderby=Price%20desc`);
     check(descRes, {
       'orderby price desc 200': (r) => r.status === 200,
       'orderby price desc ordered': (r) => {
@@ -129,7 +138,7 @@ export default function (data) {
       },
     });
 
-    const multiRes = http.get(`${BASE_URL}/v1/Products?$orderby=category,price desc`);
+    const multiRes = http.get(`${BASE_URL}/v1/Products?$orderby=Category,Price%20desc`);
     check(multiRes, {
       'orderby multi-property 200': (r) => r.status === 200,
       'orderby multi-property has results': (r) => JSON.parse(r.body).value.length > 0,
@@ -260,9 +269,11 @@ export default function (data) {
   group('PUT', () => {
     if (!testProductId) return;
 
+    // OhData validates that the key in the URL matches the key in the body.
+    // Include the id so the handler doesn't reject with 400 key-mismatch.
     const res = http.put(
       `${BASE_URL}/v1/Products(${testProductId})`,
-      JSON.stringify({ name: 'UpdatedProduct', price: 99.99, category: 'Updated' }),
+      JSON.stringify({ id: testProductId, name: 'UpdatedProduct', price: 99.99, category: 'Updated' }),
       { headers }
     );
     check(res, {
@@ -297,9 +308,11 @@ export default function (data) {
       });
     }
 
+    // ProductProfile uses the default IdempotentDelete=true setting, so deleting a
+    // non-existent entity is a no-op that returns 204 (not 404).
     const notFoundRes = http.del(`${BASE_URL}/v1/Products(${MISSING_ID})`);
     check(notFoundRes, {
-      'DELETE missing 404': (r) => r.status === 404,
+      'DELETE missing idempotent 204': (r) => r.status === 204,
     });
   });
 

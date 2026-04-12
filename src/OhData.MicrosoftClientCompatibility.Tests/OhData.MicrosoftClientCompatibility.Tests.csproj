@@ -12,6 +12,8 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="8.*" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.*" />
+    <PackageReference Include="Microsoft.OData.Client" Version="8.*" />
+    <PackageReference Include="Microsoft.OData.ModelBuilder" Version="2.*" />
     <PackageReference Include="xunit" Version="2.*" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.*">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>

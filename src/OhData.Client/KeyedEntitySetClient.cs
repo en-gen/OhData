@@ -11,21 +11,21 @@ namespace OhData.Client;
 /// <typeparam name="T">The entity type.</typeparam>
 public sealed class KeyedEntitySetClient<T> where T : class
 {
-    private readonly ODataHttpClient    _http;
+    private readonly ODataHttpClient _http;
     private readonly OhDataClientOptions _options;
-    private readonly string             _entitySetName;
-    private readonly string             _formattedKey;
+    private readonly string _entitySetName;
+    private readonly string _formattedKey;
 
     internal KeyedEntitySetClient(
-        ODataHttpClient     http,
+        ODataHttpClient http,
         OhDataClientOptions options,
-        string              entitySetName,
-        string              formattedKey)
+        string entitySetName,
+        string formattedKey)
     {
-        _http          = http;
-        _options       = options;
+        _http = http;
+        _options = options;
         _entitySetName = entitySetName;
-        _formattedKey  = formattedKey;
+        _formattedKey = formattedKey;
     }
 
     /// <summary>

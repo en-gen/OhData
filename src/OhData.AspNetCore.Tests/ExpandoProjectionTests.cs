@@ -210,7 +210,7 @@ public class ExpandoProjectionTests
         dict["Name"] = "Widget";
         dict["Price"] = 9.99m;
 
-        var json = JsonSerializer.Serialize(expando);
+        string json = JsonSerializer.Serialize(expando);
         var element = JsonDocument.Parse(json).RootElement;
 
         Assert.Equal(JsonValueKind.Object, element.ValueKind);
@@ -225,7 +225,7 @@ public class ExpandoProjectionTests
         dict["Name"] = "Widget";
         dict["Price"] = 9.99m;
 
-        var json = JsonSerializer.Serialize(expando);
+        string json = JsonSerializer.Serialize(expando);
         var element = JsonDocument.Parse(json).RootElement;
 
         // Keys appear exactly as set in the dictionary (PascalCase here)
@@ -243,7 +243,7 @@ public class ExpandoProjectionTests
         var dict = (IDictionary<string, object?>)expando;
         dict["Name"] = null;
 
-        var json = JsonSerializer.Serialize(expando);
+        string json = JsonSerializer.Serialize(expando);
         var element = JsonDocument.Parse(json).RootElement;
 
         Assert.Equal(JsonValueKind.Null, element.GetProperty("Name").ValueKind);
@@ -258,7 +258,7 @@ public class ExpandoProjectionTests
             BuildExpando(("Name", (object?)"Gadget"), ("Price", (object?)24.99m)),
         };
 
-        var json = JsonSerializer.Serialize(items);
+        string json = JsonSerializer.Serialize(items);
         var array = JsonDocument.Parse(json).RootElement;
 
         Assert.Equal(JsonValueKind.Array, array.ValueKind);

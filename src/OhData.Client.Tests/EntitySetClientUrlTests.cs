@@ -72,7 +72,7 @@ public class EntitySetClientUrlTests
     [Fact]
     public void AllOptions_CorrectOrder()
     {
-        var url = Builder()
+        string url = Builder()
             .Filter(x => x.Price > 5)
             .Select("Id", "Name")
             .OrderBy(x => x.Name)
@@ -83,12 +83,12 @@ public class EntitySetClientUrlTests
 
         // $filter, $select, $orderby, $expand, $top, $skip
         Assert.StartsWith("Widgets?", url);
-        Assert.Contains("$filter=",  url);
-        Assert.Contains("$select=",  url);
+        Assert.Contains("$filter=", url);
+        Assert.Contains("$select=", url);
         Assert.Contains("$orderby=", url);
-        Assert.Contains("$expand=",  url);
-        Assert.Contains("$top=10",   url);
-        Assert.Contains("$skip=20",  url);
+        Assert.Contains("$expand=", url);
+        Assert.Contains("$top=10", url);
+        Assert.Contains("$skip=20", url);
     }
 
     // ── Count URL ───────────────────────────────────────────────────────────────
@@ -106,9 +106,9 @@ public class EntitySetClientUrlTests
     // ── Keyed URL ───────────────────────────────────────────────────────────────
 
     [Fact]
-    public void Key_Int()    => Assert.Equal("Widgets(42)",      KeyUrl(42));
+    public void Key_Int() => Assert.Equal("Widgets(42)", KeyUrl(42));
     [Fact]
-    public void Key_String() => Assert.Equal("Widgets('foo')",   KeyUrl("foo"));
+    public void Key_String() => Assert.Equal("Widgets('foo')", KeyUrl("foo"));
     [Fact]
     public void Key_Guid()
     {
@@ -126,10 +126,10 @@ public class EntitySetClientUrlTests
         var page2 = base_.Top(10).Skip(10);
 
         // base_ is unmodified
-        Assert.DoesNotContain("$top",  base_.BuildCollectionUrl());
+        Assert.DoesNotContain("$top", base_.BuildCollectionUrl());
         Assert.DoesNotContain("$skip", base_.BuildCollectionUrl());
 
-        Assert.Contains("$skip=0",  page1.BuildCollectionUrl());
+        Assert.Contains("$skip=0", page1.BuildCollectionUrl());
         Assert.Contains("$skip=10", page2.BuildCollectionUrl());
     }
 
@@ -141,9 +141,9 @@ public class EntitySetClientUrlTests
         _ = Builder().Key(key);
         return key switch
         {
-            string s  => $"Widgets('{s}')",
-            Guid g    => $"Widgets({g})",
-            _         => $"Widgets({key})",
+            string s => $"Widgets('{s}')",
+            Guid g => $"Widgets({g})",
+            _ => $"Widgets({key})",
         };
     }
 
@@ -172,7 +172,7 @@ public class EntitySetClientUrlTests
     public void Expand_TwoDirectMemberExpressions_ProducesCorrectUrl()
     {
         // Product has Category; add a second nav property class for the test
-        var url = ProductBuilder().Expand(x => x.Category).BuildCollectionUrl();
+        string url = ProductBuilder().Expand(x => x.Category).BuildCollectionUrl();
         Assert.Equal("Products?$expand=Category", url);
     }
 
@@ -190,9 +190,9 @@ public class EntitySetClientUrlTests
     [Fact]
     public void IncludeCount_WithFilterAndTop_AllParamsPresent()
     {
-        var url = Builder().Filter(x => x.Price > 5).Top(10).IncludeCount().BuildCollectionUrl();
-        Assert.Contains("$filter=",    url);
-        Assert.Contains("$top=10",     url);
+        string url = Builder().Filter(x => x.Price > 5).Top(10).IncludeCount().BuildCollectionUrl();
+        Assert.Contains("$filter=", url);
+        Assert.Contains("$top=10", url);
         Assert.Contains("$count=true", url);
     }
 
@@ -203,6 +203,6 @@ public class EntitySetClientUrlTests
         var withCount = base_.IncludeCount();
 
         Assert.DoesNotContain("$count", base_.BuildCollectionUrl());
-        Assert.Contains("$count=true",  withCount.BuildCollectionUrl());
+        Assert.Contains("$count=true", withCount.BuildCollectionUrl());
     }
 }

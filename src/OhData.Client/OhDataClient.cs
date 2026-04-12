@@ -31,10 +31,10 @@ namespace OhData.Client;
 /// </example>
 public sealed class OhDataClient : IDisposable
 {
-    private readonly ODataHttpClient    _http;
+    private readonly ODataHttpClient _http;
     private readonly OhDataClientOptions _options;
-    private readonly HttpClient         _httpClient;
-    private readonly bool               _ownsHttpClient;
+    private readonly HttpClient _httpClient;
+    private readonly bool _ownsHttpClient;
 
     /// <summary>
     /// Creates a client with an internally managed <see cref="HttpClient"/>.
@@ -51,9 +51,9 @@ public sealed class OhDataClient : IDisposable
         ArgumentNullException.ThrowIfNull(baseAddress);
         if (baseAddress.Length == 0)
             throw new ArgumentException("Base address must not be empty.", nameof(baseAddress));
-        _options        = options ?? new OhDataClientOptions();
-        _httpClient     = new HttpClient { BaseAddress = new Uri(baseAddress.TrimEnd('/') + '/') };
-        _http           = new ODataHttpClient(_httpClient, _options);
+        _options = options ?? new OhDataClientOptions();
+        _httpClient = new HttpClient { BaseAddress = new Uri(baseAddress.TrimEnd('/') + '/') };
+        _http = new ODataHttpClient(_httpClient, _options);
         _ownsHttpClient = true;
     }
 
@@ -65,9 +65,9 @@ public sealed class OhDataClient : IDisposable
     /// </summary>
     public OhDataClient(HttpClient httpClient, OhDataClientOptions? options = null)
     {
-        _options        = options ?? new OhDataClientOptions();
-        _httpClient     = httpClient;
-        _http           = new ODataHttpClient(httpClient, _options);
+        _options = options ?? new OhDataClientOptions();
+        _httpClient = httpClient;
+        _http = new ODataHttpClient(httpClient, _options);
         _ownsHttpClient = false;
     }
 

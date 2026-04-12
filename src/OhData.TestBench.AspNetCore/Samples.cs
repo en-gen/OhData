@@ -71,22 +71,22 @@ public static class DbSeeder
         var order2 = Guid.Parse("22222222-2222-2222-2222-222222222222");
 
         db.Products.AddRange(
-            new Product { Id = 1, Name = "Widget",      Price = 9.99m,  Category = "Hardware" },
-            new Product { Id = 2, Name = "Gadget",      Price = 24.99m, Category = "Electronics" },
-            new Product { Id = 3, Name = "Sprocket",    Price = 4.49m,  Category = "Hardware" },
-            new Product { Id = 4, Name = "Doohickey",   Price = 14.99m, Category = "Misc" },
+            new Product { Id = 1, Name = "Widget", Price = 9.99m, Category = "Hardware" },
+            new Product { Id = 2, Name = "Gadget", Price = 24.99m, Category = "Electronics" },
+            new Product { Id = 3, Name = "Sprocket", Price = 4.49m, Category = "Hardware" },
+            new Product { Id = 4, Name = "Doohickey", Price = 14.99m, Category = "Misc" },
             new Product { Id = 5, Name = "Thingamajig", Price = 39.99m, Category = "Electronics" }
         );
 
         db.Orders.AddRange(
             new Order { Id = order1, CustomerName = "Alice", Total = 34.98m },
-            new Order { Id = order2, CustomerName = "Bob",   Total = 9.99m  }
+            new Order { Id = order2, CustomerName = "Bob", Total = 9.99m }
         );
 
         db.OrderLines.AddRange(
-            new OrderLine { Id = 1, OrderId = order1, ProductName = "Widget",   Quantity = 2, UnitPrice = 9.99m },
+            new OrderLine { Id = 1, OrderId = order1, ProductName = "Widget", Quantity = 2, UnitPrice = 9.99m },
             new OrderLine { Id = 2, OrderId = order1, ProductName = "Sprocket", Quantity = 3, UnitPrice = 4.99m },
-            new OrderLine { Id = 3, OrderId = order2, ProductName = "Widget",   Quantity = 1, UnitPrice = 9.99m }
+            new OrderLine { Id = 3, OrderId = order2, ProductName = "Widget", Quantity = 1, UnitPrice = 9.99m }
         );
 
         db.SaveChanges();
@@ -103,10 +103,10 @@ public class ProductProfile : EntitySetProfile<int, Product>
 {
     public ProductProfile(AppDbContext db) : base(x => x.Id)
     {
-        FilterEnabled  = true;
+        FilterEnabled = true;
         OrderByEnabled = true;
-        CountEnabled   = true;
-        SelectEnabled  = true;
+        CountEnabled = true;
+        SelectEnabled = true;
 
         GetQueryable = (_) => Task.FromResult(db.Products.AsQueryable());
 
@@ -123,8 +123,8 @@ public class ProductProfile : EntitySetProfile<int, Product>
         {
             var existing = db.Products.Find(id);
             if (existing is null) return Task.FromResult<Product>(null!);
-            existing.Name     = product.Name;
-            existing.Price    = product.Price;
+            existing.Name = product.Name;
+            existing.Price = product.Price;
             existing.Category = product.Category;
             db.SaveChanges();
             return Task.FromResult(existing);
@@ -134,8 +134,8 @@ public class ProductProfile : EntitySetProfile<int, Product>
         {
             var existing = db.Products.Find(id);
             if (existing is null) return Task.FromResult<Product?>(null);
-            if (!string.IsNullOrEmpty(product.Name))     existing.Name     = product.Name;
-            if (product.Price > 0)                       existing.Price    = product.Price;
+            if (!string.IsNullOrEmpty(product.Name)) existing.Name = product.Name;
+            if (product.Price > 0) existing.Price = product.Price;
             if (!string.IsNullOrEmpty(product.Category)) existing.Category = product.Category;
             db.SaveChanges();
             return Task.FromResult<Product?>(existing);
@@ -160,10 +160,10 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
 {
     public OrderProfile(AppDbContext db) : base(x => x.Id)
     {
-        FilterEnabled  = true;
+        FilterEnabled = true;
         OrderByEnabled = true;
-        CountEnabled   = true;
-        ExpandEnabled  = true;
+        CountEnabled = true;
+        ExpandEnabled = true;
 
         // Registers: GET /Orders(id)/Lines
         HasMany(x => x.Lines,
@@ -212,7 +212,7 @@ public class CategoryProfile : EntitySetProfile<string, Category>
     {
         EntitySetName = "Categories";
 
-        GetAll  = (_) => Task.FromResult<IEnumerable<Category>>(_categories);
+        GetAll = (_) => Task.FromResult<IEnumerable<Category>>(_categories);
         GetById = (code, _) => Task.FromResult(
             _categories.FirstOrDefault(c => string.Equals(c.Code, code, StringComparison.OrdinalIgnoreCase)));
     }

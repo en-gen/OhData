@@ -12,16 +12,16 @@ public class EntitySetNameConventionTests
 {
     // ── s / sh / ch / x / z endings → es ────────────────────────────────────
 
-    [Fact] public void Pluralize_Box_Boxes()       => Assert.Equal("Boxes",   EntitySetNameConvention.Pluralize("Box"));
-    [Fact] public void Pluralize_Match_Matches()   => Assert.Equal("Matches", EntitySetNameConvention.Pluralize("Match"));
-    [Fact] public void Pluralize_Wish_Wishes()     => Assert.Equal("Wishes",  EntitySetNameConvention.Pluralize("Wish"));
-    [Fact] public void Pluralize_Status_Statuses() => Assert.Equal("Statuses",EntitySetNameConvention.Pluralize("Status"));
-    [Fact] public void Pluralize_Fizz_Fizzes()     => Assert.Equal("Fizzes",  EntitySetNameConvention.Pluralize("Fizz"));
+    [Fact] public void Pluralize_Box_Boxes() => Assert.Equal("Boxes", EntitySetNameConvention.Pluralize("Box"));
+    [Fact] public void Pluralize_Match_Matches() => Assert.Equal("Matches", EntitySetNameConvention.Pluralize("Match"));
+    [Fact] public void Pluralize_Wish_Wishes() => Assert.Equal("Wishes", EntitySetNameConvention.Pluralize("Wish"));
+    [Fact] public void Pluralize_Status_Statuses() => Assert.Equal("Statuses", EntitySetNameConvention.Pluralize("Status"));
+    [Fact] public void Pluralize_Fizz_Fizzes() => Assert.Equal("Fizzes", EntitySetNameConvention.Pluralize("Fizz"));
 
     // ── consonant + y → ies ─────────────────────────────────────────────────
 
     [Fact] public void Pluralize_Category_Categories() => Assert.Equal("Categories", EntitySetNameConvention.Pluralize("Category"));
-    [Fact] public void Pluralize_Entry_Entries()       => Assert.Equal("Entries",    EntitySetNameConvention.Pluralize("Entry"));
+    [Fact] public void Pluralize_Entry_Entries() => Assert.Equal("Entries", EntitySetNameConvention.Pluralize("Entry"));
 
     // ── vowel + y → s (NOT ies) ─────────────────────────────────────────────
 
@@ -31,8 +31,8 @@ public class EntitySetNameConventionTests
     // ── default: append s ───────────────────────────────────────────────────
 
     [Fact] public void Pluralize_Product_Products() => Assert.Equal("Products", EntitySetNameConvention.Pluralize("Product"));
-    [Fact] public void Pluralize_Widget_Widgets()   => Assert.Equal("Widgets",  EntitySetNameConvention.Pluralize("Widget"));
-    [Fact] public void Pluralize_Order_Orders()     => Assert.Equal("Orders",   EntitySetNameConvention.Pluralize("Order"));
+    [Fact] public void Pluralize_Widget_Widgets() => Assert.Equal("Widgets", EntitySetNameConvention.Pluralize("Widget"));
+    [Fact] public void Pluralize_Order_Orders() => Assert.Equal("Orders", EntitySetNameConvention.Pluralize("Order"));
 
     // ── [ODataEntitySet] attribute takes precedence ──────────────────────────
 
