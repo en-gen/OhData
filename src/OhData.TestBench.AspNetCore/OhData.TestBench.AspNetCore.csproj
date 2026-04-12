@@ -14,7 +14,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.*" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.*" />
-    <PackageReference Include="Scalar.AspNetCore" Version="1.*" />
+    <PackageReference Include="Scalar.AspNetCore" Version="2.*" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="8.*" />
   </ItemGroup>
 
