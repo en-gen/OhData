@@ -13,16 +13,16 @@ namespace OhData.Client.Benchmarks;
 [MemoryDiagnoser]
 public class BuildCollectionUrlBenchmarks
 {
-    private EntitySetClient<BenchWidget> _noOptions    = null!;
-    private EntitySetClient<BenchWidget> _filterOnly   = null!;
-    private EntitySetClient<BenchWidget> _allOptions   = null!;
+    private EntitySetClient<BenchWidget> _noOptions = null!;
+    private EntitySetClient<BenchWidget> _filterOnly = null!;
+    private EntitySetClient<BenchWidget> _allOptions = null!;
 
     [GlobalSetup]
     public void Setup()
     {
         var client = new OhDataClient(new HttpClient { BaseAddress = new System.Uri("http://localhost/") });
 
-        _noOptions  = client.For<BenchWidget>("Widgets");
+        _noOptions = client.For<BenchWidget>("Widgets");
 
         _filterOnly = client.For<BenchWidget>("Widgets")
             .Filter(x => x.Price > 10);

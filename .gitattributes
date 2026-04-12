@@ -1,0 +1,14 @@
+# Normalize all text files to LF in the repository and on checkout.
+# This overrides core.autocrlf and ensures consistency between Windows
+# dev environments and Linux CI runners.
+* text=auto eol=lf
+
+# Binary files — never apply line-ending conversion
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.nupkg binary

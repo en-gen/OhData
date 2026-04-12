@@ -31,8 +31,8 @@ public sealed class ODataClientException : Exception
     private ODataClientException(int statusCode, string code, string message, string url)
         : base($"OData request to '{url}' failed with HTTP {statusCode}: [{code}] {message}")
     {
-        StatusCode        = statusCode;
-        ODataErrorCode    = code;
+        StatusCode = statusCode;
+        ODataErrorCode = code;
         ODataErrorMessage = message;
     }
 
@@ -42,7 +42,7 @@ public sealed class ODataClientException : Exception
         JsonSerializerOptions jsonOptions,
         CancellationToken ct)
     {
-        var statusCode = (int)response.StatusCode;
+        int statusCode = (int)response.StatusCode;
 
         string? body = null;
         try
@@ -59,15 +59,15 @@ public sealed class ODataClientException : Exception
                 using var doc = JsonDocument.Parse(body);
                 if (doc.RootElement.TryGetProperty("error", out var errorEl))
                 {
-                    var code    = errorEl.TryGetProperty("code",    out var c) ? c.GetString() ?? "" : "";
-                    var message = errorEl.TryGetProperty("message", out var m) ? m.GetString() ?? "" : "";
+                    string code = errorEl.TryGetProperty("code", out var c) ? c.GetString() ?? "" : "";
+                    string message = errorEl.TryGetProperty("message", out var m) ? m.GetString() ?? "" : "";
                     return new ODataClientException(statusCode, code, message, requestUrl);
                 }
             }
             catch { /* not an OData envelope — fall through */ }
         }
 
-        var raw = body is { Length: > 1000 } ? body[..1000] + "…" : body ?? "";
+        string raw = body is { Length: > 1000 } ? body[..1000] + "…" : body ?? "";
         return new ODataClientException(statusCode, "", raw, requestUrl);
     }
 }

@@ -17,12 +17,12 @@ namespace OhData.Client.Internal;
 /// </summary>
 internal sealed class ODataHttpClient
 {
-    private readonly HttpClient         _http;
+    private readonly HttpClient _http;
     private readonly OhDataClientOptions _options;
 
     internal ODataHttpClient(HttpClient http, OhDataClientOptions options)
     {
-        _http    = http;
+        _http = http;
         _options = options;
     }
 
@@ -47,7 +47,7 @@ internal sealed class ODataHttpClient
             .ReadFromJsonAsync<ODataCollectionResponse<T>>(_options.JsonOptions, ct);
         return new ODataPage<T>
         {
-            Items      = envelope?.Value ?? [],
+            Items = envelope?.Value ?? [],
             TotalCount = envelope?.Count,
         };
     }
@@ -70,11 +70,14 @@ internal sealed class ODataHttpClient
     {
         using var response = await _http.GetAsync(url, ct);
         await EnsureSuccessAsync(response, url, ct);
-        var text = await response.Content.ReadAsStringAsync(ct);
-        var trimmed = text.Trim();
-        if (!long.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out var count))
+        string text = await response.Content.ReadAsStringAsync(ct);
+        string trimmed = text.Trim();
+        if (!long.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out long count))
+        {
             throw new InvalidOperationException(
                 $"GET '{url}' returned a non-numeric $count body: '{trimmed}'");
+        }
+
         return count;
     }
 
@@ -94,8 +97,8 @@ internal sealed class ODataHttpClient
     internal async Task<T?> PutAsync<T>(string url, T body, CancellationToken ct)
         where T : class
     {
-        using var content  = JsonContent.Create(body, options: _options.JsonOptions);
-        using var request  = new HttpRequestMessage(HttpMethod.Put, url) { Content = content };
+        using var content = JsonContent.Create(body, options: _options.JsonOptions);
+        using var request = new HttpRequestMessage(HttpMethod.Put, url) { Content = content };
         using var response = await _http.SendAsync(request, ct);
         await EnsureSuccessAsync(response, url, ct);
         if (response.StatusCode == HttpStatusCode.NoContent) return null;
@@ -109,8 +112,8 @@ internal sealed class ODataHttpClient
         where T : class
     {
         // body may be an anonymous type — serialize via its actual runtime type
-        using var content  = JsonContent.Create(body, body.GetType(), options: _options.JsonOptions);
-        using var request  = new HttpRequestMessage(HttpMethod.Patch, url) { Content = content };
+        using var content = JsonContent.Create(body, body.GetType(), options: _options.JsonOptions);
+        using var request = new HttpRequestMessage(HttpMethod.Patch, url) { Content = content };
         using var response = await _http.SendAsync(request, ct);
         await EnsureSuccessAsync(response, url, ct);
         if (response.StatusCode == HttpStatusCode.NoContent) return null;

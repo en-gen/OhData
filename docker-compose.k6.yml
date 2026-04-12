@@ -6,10 +6,12 @@ services:
     environment:
       ASPNETCORE_URLS: http://+:8080
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      # curl is available in mcr.microsoft.com/dotnet/aspnet; wget is not in the slim image
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 12
+      start_period: 10s
 
   k6:
     image: grafana/k6:latest
