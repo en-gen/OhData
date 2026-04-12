@@ -12,17 +12,53 @@ using Microsoft.OData.ModelBuilder;
 
 namespace OhData.Abstractions;
 
+/// <summary>
+/// Base class for defining an OData entity set. Derive from this class in your application
+/// and assign the handler delegates (<see cref="GetAll"/>, <see cref="GetById"/>, etc.) inside
+/// the constructor to enable the corresponding HTTP endpoints.
+/// </summary>
+/// <typeparam name="TKey">The CLR type of the entity's primary key.</typeparam>
+/// <typeparam name="TModel">The CLR type of the entity.</typeparam>
 public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisitModelBuilder, IEntitySetEndpointSource
     where TModel : class
 {
     private readonly Expression<Func<TModel, TKey>> _getKey;
 
+    /// <summary>
+    /// The OData entity set name used in URL routes and <c>$metadata</c>. Defaults to
+    /// <c>"{ModelTypeName}s"</c>. Override in the derived constructor if a different name is needed:
+    /// <c>EntitySetName = "MyWidgets";</c>
+    /// </summary>
     protected string EntitySetName { get; init; }
 
+    /// <summary>
+    /// Controls whether <c>$select</c> is allowed on this entity set (OData §11.2.4.1).
+    /// Inherits from <see cref="EntitySetDefaults"/> when <c>null</c> (the default).
+    /// </summary>
     protected bool? SelectEnabled { get; init; }
+
+    /// <summary>
+    /// Controls whether <c>$expand</c> is allowed on this entity set (OData §11.2.4.2).
+    /// Inherits from <see cref="EntitySetDefaults"/> when <c>null</c> (the default).
+    /// </summary>
     protected bool? ExpandEnabled { get; init; }
+
+    /// <summary>
+    /// Controls whether <c>$filter</c> is allowed on this entity set (OData §11.2.6.1).
+    /// Inherits from <see cref="EntitySetDefaults"/> when <c>null</c> (the default).
+    /// </summary>
     protected bool? FilterEnabled { get; init; }
+
+    /// <summary>
+    /// Controls whether <c>$orderby</c> is allowed on this entity set (OData §11.2.6.2).
+    /// Inherits from <see cref="EntitySetDefaults"/> when <c>null</c> (the default).
+    /// </summary>
     protected bool? OrderByEnabled { get; init; }
+
+    /// <summary>
+    /// Controls whether <c>$count</c> is allowed on this entity set (OData §11.2.6.5).
+    /// Inherits from <see cref="EntitySetDefaults"/> when <c>null</c> (the default).
+    /// </summary>
     protected bool? CountEnabled { get; init; }
 
     private string[]? _selectProperties;
@@ -30,22 +66,101 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private string[]? _filterProperties;
     private string[]? _orderByProperties;
 
+    /// <summary>
+    /// Registers the <c>GET /{EntitySet}</c> handler (OData §11.2.1 — Requesting a Collection).
+    /// When set, the framework returns the full enumerable as-is with no query options applied.
+    /// Use <see cref="GetQueryable"/> instead when the data source can push <c>$filter</c>,
+    /// <c>$orderby</c>, <c>$skip</c>, and <c>$top</c> to the database.
+    /// </summary>
+    /// <remarks>
+    /// Leaving this <c>null</c> (the default) means no <c>GET /{EntitySet}</c> route is registered,
+    /// unless <see cref="GetQueryable"/> is set.
+    /// </remarks>
     protected Func<CancellationToken, Task<IEnumerable<TModel>>>? GetAll = null;
+
+    /// <summary>
+    /// Registers the <c>GET /{EntitySet}</c> handler using an <see cref="IQueryable{T}"/> source
+    /// (OData §11.2.1 — Requesting a Collection). The framework applies <c>$filter</c>,
+    /// <c>$orderby</c>, <c>$skip</c>, and <c>$top</c> via <c>ApplyTo</c>, enabling full SQL
+    /// pushdown when backed by EF Core. <c>$select</c> is applied via JSON post-processing
+    /// to preserve camelCase naming.
+    /// </summary>
+    /// <remarks>
+    /// Leaving this <c>null</c> (the default) means no <c>GET /{EntitySet}</c> route is registered,
+    /// unless <see cref="GetAll"/> is set. Takes priority over <see cref="GetAll"/> when both are set.
+    /// </remarks>
     protected Func<CancellationToken, Task<IQueryable<TModel>>>? GetQueryable = null;
+
+    /// <summary>
+    /// Registers the <c>GET /{EntitySet}({key})</c> handler (OData §11.2.2 — Requesting an Entity).
+    /// Return <c>null</c> to produce a <c>404 Not Found</c> response per §9.1.4.
+    /// </summary>
+    /// <remarks>
+    /// Leaving this <c>null</c> (the default) means no <c>GET /{EntitySet}({key})</c> route is registered.
+    /// </remarks>
     protected Func<TKey, CancellationToken, Task<TModel?>>? GetById = null;
 
+    /// <summary>
+    /// Registers the <c>PUT /{EntitySet}({key})</c> handler (OData §11.4.3 — Update an Entity).
+    /// Return <c>null</c> to produce a <c>404 Not Found</c> response per §9.1.4.
+    /// </summary>
+    /// <remarks>
+    /// Leaving this <c>null</c> (the default) means no <c>PUT /{EntitySet}({key})</c> route is registered.
+    /// Set <see cref="AllowUpsert"/> to enable upsert semantics (§11.4.4) when the key does not exist.
+    /// </remarks>
     protected Func<TKey, TModel, CancellationToken, Task<TModel>>? PutById = null;
 
+    /// <summary>
+    /// Registers the <c>POST /{EntitySet}</c> handler (OData §11.4.1 — Create an Entity).
+    /// Return <c>null</c> to produce a <c>400 Bad Request</c> response.
+    /// </summary>
+    /// <remarks>
+    /// Leaving this <c>null</c> (the default) means no <c>POST /{EntitySet}</c> route is registered.
+    /// </remarks>
     protected Func<TModel, CancellationToken, Task<TModel>>? Post = null;
 
+    /// <summary>
+    /// Registers the <c>PATCH /{EntitySet}({key})</c> handler for partial entity updates
+    /// (OData §11.4.3 — Update an Entity). Return <c>null</c> to produce a
+    /// <c>404 Not Found</c> response per §9.1.4.
+    /// </summary>
+    /// <remarks>
+    /// Leaving this <c>null</c> (the default) means no <c>PATCH /{EntitySet}({key})</c> route is registered.
+    /// For OData Delta support (true partial-update semantics), use
+    /// <c>ODataEntitySetProfile&lt;TKey, TModel&gt;.PatchDelta</c> instead.
+    /// </remarks>
     protected Func<TKey, TModel, CancellationToken, Task<TModel?>>? Patch = null;
 
+    /// <summary>
+    /// Registers the <c>DELETE /{EntitySet}({key})</c> handler (OData §11.4.5 — Delete an Entity).
+    /// Return <c>false</c> to produce a <c>404 Not Found</c> response; return <c>true</c> for
+    /// <c>204 No Content</c>.
+    /// </summary>
+    /// <remarks>
+    /// Leaving this <c>null</c> (the default) means no <c>DELETE /{EntitySet}({key})</c> route is registered.
+    /// Set <see cref="IdempotentDelete"/> to control the behaviour when the entity does not exist.
+    /// </remarks>
     protected Func<TKey, CancellationToken, Task<bool>>? Delete = null;
 
-    // Gap 4: $search support
+    /// <summary>
+    /// Registers a free-text search handler for <c>GET /{EntitySet}?$search=term</c>
+    /// (OData §11.2.6.6 — System Query Option <c>$search</c>). The raw search term from the
+    /// query string is passed to this delegate; return matching entities.
+    /// </summary>
+    /// <remarks>
+    /// Leaving this <c>null</c> (the default) means <c>$search</c> requests return
+    /// <c>501 Not Implemented</c>.
+    /// </remarks>
     protected Func<string, CancellationToken, Task<IEnumerable<TModel>>>? Search = null;
 
     private int? _maxTop;
+
+    /// <summary>
+    /// Maximum value the client may specify in <c>$top</c> (OData §11.2.6.3).
+    /// The framework enforces this limit; requests exceeding it receive a
+    /// <c>400 Bad Request</c>. Inherits from <see cref="EntitySetDefaults.MaxTop"/> when
+    /// <c>null</c>. Must be a positive integer.
+    /// </summary>
     protected int? MaxTop
     {
         get => _maxTop;
@@ -59,17 +174,20 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private int? _resolvedMaxTop;
 
     /// <summary>
-    /// When <c>true</c>, <c>DELETE</c> on a non-existent resource returns <c>204 No Content</c> (idempotent).
-    /// When <c>false</c>, returns <c>404 Not Found</c>.
+    /// When <c>true</c>, <c>DELETE</c> on a non-existent resource returns <c>204 No Content</c>
+    /// (idempotent semantics). When <c>false</c>, returns <c>404 Not Found</c>.
     /// Inherits from <see cref="EntitySetDefaults.IdempotentDelete"/> when <c>null</c>.
     /// </summary>
+    /// <remarks>
+    /// OData §11.4.5 permits either behaviour; this property selects which the profile uses.
+    /// </remarks>
     protected bool? IdempotentDelete { get; init; }
     private bool _resolvedIdempotentDelete;
 
     /// <summary>
-    /// When <c>true</c>, a <c>PUT</c> to a non-existent key creates the entity (upsert, §11.4.4).
-    /// Requires <see cref="Post"/> to also be configured. Inherits from
-    /// <see cref="EntitySetDefaults.AllowUpsert"/> when <c>null</c>.
+    /// When <c>true</c>, a <c>PUT</c> to a non-existent key creates the entity
+    /// (upsert semantics, OData §11.4.4). Requires <see cref="Post"/> to also be configured.
+    /// Inherits from <see cref="EntitySetDefaults.AllowUpsert"/> when <c>null</c>.
     /// </summary>
     protected bool? AllowUpsert { get; init; }
     private bool _resolvedAllowUpsert;
@@ -80,12 +198,23 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
     /// <summary>
     /// Opts in to ETag generation. The framework hashes the values of the specified
-    /// properties using SHA-256 and encodes the result as Base64.
+    /// properties using SHA-256 and encodes the result as Base64, returning it in the
+    /// <c>ETag</c> response header (OData §8.2.6) and the <c>@odata.etag</c> annotation.
     /// <para>
     /// Supports <c>byte[]</c> values (e.g. row-version columns) directly;
     /// all other values are hashed as their UTF-8 string representations.
     /// </para>
     /// </summary>
+    /// <remarks>
+    /// When ETags are enabled the framework checks the <c>If-Match</c> request header on
+    /// mutating operations (PUT, PATCH, DELETE) and returns <c>412 Precondition Failed</c>
+    /// on mismatch (OData §8.2.5). GET responses support <c>If-None-Match</c> with
+    /// <c>304 Not Modified</c> (OData §8.2.5).
+    /// </remarks>
+    /// <param name="propertySelectors">
+    /// One or more property selectors whose values are combined into the ETag hash.
+    /// At least one selector is required.
+    /// </param>
     protected void UseETag(params Expression<Func<TModel, object?>>[] propertySelectors)
     {
         if (propertySelectors.Length == 0)
@@ -119,6 +248,14 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private readonly ICollection<Delegate> _entityActions;
     private readonly List<NavigationRouteDefinition> _navRoutes = new();
 
+    /// <summary>
+    /// Initialises the profile. Pass a key-selector expression that identifies the entity's
+    /// primary key property.
+    /// </summary>
+    /// <param name="getKey">
+    /// Expression that selects the key property from <typeparamref name="TModel"/>,
+    /// e.g. <c>x => x.Id</c>.
+    /// </param>
     protected EntitySetProfile(Expression<Func<TModel, TKey>> getKey)
     {
         _getKey = getKey;
@@ -444,6 +581,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         return names;
     }
 
+    /// <summary>
+    /// Declares an optional navigation property in the EDM model without registering a GET route.
+    /// </summary>
+    /// <typeparam name="TNavigation">The CLR type of the related entity.</typeparam>
+    /// <param name="navigation">Expression selecting the navigation property.</param>
     protected void HasOptional<TNavigation>(Expression<Func<TModel, TNavigation>> navigation)
         where TNavigation : class
     {
@@ -451,6 +593,17 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _configurators.Add(x => x.HasOptional(navigation));
     }
 
+    /// <summary>
+    /// Declares an optional navigation property and registers a
+    /// <c>GET /{EntitySet}({key})/{Property}</c> route backed by <paramref name="get"/>.
+    /// Pass <c>null</c> for <paramref name="get"/> to declare the navigation in the EDM only.
+    /// </summary>
+    /// <typeparam name="TNavigation">The CLR type of the related entity.</typeparam>
+    /// <param name="navigation">Expression selecting the navigation property.</param>
+    /// <param name="get">
+    /// Handler that loads the related entity by parent key. Return <c>null</c> to produce
+    /// a <c>404 Not Found</c> response.
+    /// </param>
     protected void HasOptional<TNavigation>(
         Expression<Func<TModel, TNavigation>> navigation,
         Func<TKey, CancellationToken, Task<TNavigation?>>? get)
@@ -467,6 +620,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         });
     }
 
+    /// <summary>
+    /// Declares a required navigation property in the EDM model without registering a GET route.
+    /// </summary>
+    /// <typeparam name="TNavigation">The CLR type of the related entity.</typeparam>
+    /// <param name="navigation">Expression selecting the navigation property.</param>
     protected void HasRequired<TNavigation>(Expression<Func<TModel, TNavigation>> navigation)
         where TNavigation : class
     {
@@ -474,6 +632,14 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _configurators.Add(x => x.HasRequired(navigation));
     }
 
+    /// <summary>
+    /// Declares a required navigation property and registers a
+    /// <c>GET /{EntitySet}({key})/{Property}</c> route backed by <paramref name="get"/>.
+    /// Pass <c>null</c> for <paramref name="get"/> to declare the navigation in the EDM only.
+    /// </summary>
+    /// <typeparam name="TNavigation">The CLR type of the related entity.</typeparam>
+    /// <param name="navigation">Expression selecting the navigation property.</param>
+    /// <param name="get">Handler that loads the required related entity by parent key.</param>
     protected void HasRequired<TNavigation>(
         Expression<Func<TModel, TNavigation>> navigation,
         Func<TKey, CancellationToken, Task<TNavigation>>? get)
@@ -490,6 +656,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         });
     }
 
+    /// <summary>
+    /// Declares a collection navigation property in the EDM model without registering a GET route.
+    /// </summary>
+    /// <typeparam name="TNavigation">The CLR type of the related entities.</typeparam>
+    /// <param name="navigation">Expression selecting the collection navigation property.</param>
     protected void HasMany<TNavigation>(Expression<Func<TModel, IEnumerable<TNavigation>>> navigation)
         where TNavigation : class
     {
@@ -497,6 +668,14 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _configurators.Add(x => x.HasMany(navigation));
     }
 
+    /// <summary>
+    /// Declares a collection navigation property and registers a
+    /// <c>GET /{EntitySet}({key})/{Property}</c> route backed by <paramref name="getAll"/>.
+    /// Pass <c>null</c> for <paramref name="getAll"/> to declare the navigation in the EDM only.
+    /// </summary>
+    /// <typeparam name="TNavigation">The CLR type of the related entities.</typeparam>
+    /// <param name="navigation">Expression selecting the collection navigation property.</param>
+    /// <param name="getAll">Handler that loads all related entities for a given parent key.</param>
     protected void HasMany<TNavigation>(
         Expression<Func<TModel, IEnumerable<TNavigation>>> navigation,
         Func<TKey, CancellationToken, Task<IEnumerable<TNavigation>>>? getAll)
@@ -514,8 +693,20 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     }
 
     /// <summary>
-    /// Registers a many navigation with optional <c>$ref</c> link management handlers (§11.4.6).
+    /// Declares a collection navigation property with GET and optional <c>$ref</c> link-management
+    /// handlers (OData §11.4.6 — Managing Links Between Entities).
     /// </summary>
+    /// <typeparam name="TNavigation">The CLR type of the related entities.</typeparam>
+    /// <param name="navigation">Expression selecting the collection navigation property.</param>
+    /// <param name="getAll">Handler that loads all related entities for a given parent key. Pass <c>null</c> to omit the GET route.</param>
+    /// <param name="addRef">
+    /// Handler for <c>POST /{EntitySet}({key})/{Property}/$ref</c>. The second parameter is
+    /// the <c>@odata.id</c> string from the request body. Pass <c>null</c> to omit the route.
+    /// </param>
+    /// <param name="removeRef">
+    /// Handler for <c>DELETE /{EntitySet}({key})/{Property}/$ref?$id=...</c>. Pass <c>null</c>
+    /// to omit the route.
+    /// </param>
     protected void HasMany<TNavigation>(
         Expression<Func<TModel, IEnumerable<TNavigation>>> navigation,
         Func<TKey, CancellationToken, Task<IEnumerable<TNavigation>>>? getAll,
@@ -543,8 +734,20 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     }
 
     /// <summary>
-    /// Registers an optional navigation with optional <c>$ref</c> link management handlers (§11.4.6).
+    /// Declares an optional navigation property with GET and optional <c>$ref</c> link-management
+    /// handlers (OData §11.4.6 — Managing Links Between Entities).
     /// </summary>
+    /// <typeparam name="TNavigation">The CLR type of the related entity.</typeparam>
+    /// <param name="navigation">Expression selecting the navigation property.</param>
+    /// <param name="get">Handler that loads the related entity by parent key. Pass <c>null</c> to omit the GET route.</param>
+    /// <param name="setRef">
+    /// Handler for <c>PUT /{EntitySet}({key})/{Property}/$ref</c>. The second parameter is
+    /// the <c>@odata.id</c> string from the request body. Pass <c>null</c> to omit the route.
+    /// </param>
+    /// <param name="removeRef">
+    /// Handler for <c>DELETE /{EntitySet}({key})/{Property}/$ref</c>. Pass <c>null</c>
+    /// to omit the route.
+    /// </param>
     protected void HasOptional<TNavigation>(
         Expression<Func<TModel, TNavigation>> navigation,
         Func<TKey, CancellationToken, Task<TNavigation?>>? get,
@@ -571,19 +774,52 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         });
     }
 
+    /// <summary>
+    /// Registers a collection-bound OData function: <c>GET /{EntitySet}/{MethodName}?param=value</c>
+    /// (OData §11.5.3 — Invoking a Function). Parameters are read from the query string.
+    /// The method name becomes the function name in the EDM.
+    /// </summary>
+    /// <param name="handler">
+    /// A delegate whose method name is the function name. Parameters (excluding
+    /// <see cref="CancellationToken"/>) are exposed as OData function parameters.
+    /// </param>
     protected void BindFunction(Delegate handler) => _functions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
+
+    /// <summary>
+    /// Registers a collection-bound OData action: <c>POST /{EntitySet}/{MethodName}</c>
+    /// (OData §11.5.4 — Invoking an Action). Parameters are read from a JSON request body.
+    /// The method name becomes the action name in the EDM.
+    /// </summary>
+    /// <param name="handler">
+    /// A delegate whose method name is the action name. Parameters (excluding
+    /// <see cref="CancellationToken"/>) are read from the JSON body as named properties.
+    /// </param>
     protected void BindAction(Delegate handler) => _actions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
 
     /// <summary>
-    /// Registers an entity-level bound function: GET /{EntitySet}({key})/{MethodName}.
-    /// The handler's first non-CancellationToken parameter must be the key (TKey).
+    /// Registers an entity-level bound function: <c>GET /{EntitySet}({key})/{MethodName}</c>
+    /// (OData §11.5.4 — Functions Bound to an Entity). The handler's first non-<see cref="CancellationToken"/>
+    /// parameter must accept the key (<typeparamref name="TKey"/>); additional parameters are
+    /// read from the query string.
     /// </summary>
+    /// <param name="handler">
+    /// A delegate whose method name is the function name. The first parameter receives the
+    /// entity key; remaining parameters (excluding <see cref="CancellationToken"/>) are OData
+    /// function parameters.
+    /// </param>
     protected void BindEntityFunction(Delegate handler) => _entityFunctions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
 
     /// <summary>
-    /// Registers an entity-level bound action: POST /{EntitySet}({key})/{MethodName}.
-    /// The handler's first non-CancellationToken parameter must be the key (TKey).
+    /// Registers an entity-level bound action: <c>POST /{EntitySet}({key})/{MethodName}</c>
+    /// (OData §11.5.4 — Actions Bound to an Entity). The handler's first non-<see cref="CancellationToken"/>
+    /// parameter must accept the key (<typeparamref name="TKey"/>); additional parameters are
+    /// read from a JSON request body.
     /// </summary>
+    /// <param name="handler">
+    /// A delegate whose method name is the action name. The first parameter receives the
+    /// entity key; remaining parameters (excluding <see cref="CancellationToken"/>) are read
+    /// from the JSON body as named properties.
+    /// </param>
     protected void BindEntityAction(Delegate handler) => _entityActions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
 
     private static string GetNavigationPropertyName(Expression body)
