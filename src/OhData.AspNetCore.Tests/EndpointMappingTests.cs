@@ -1,4 +1,4 @@
-﻿using System.Net;
+using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.TestHost;
@@ -45,7 +45,7 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/Widgets/$count");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var body = await response.Content.ReadAsStringAsync();
+        string body = await response.Content.ReadAsStringAsync();
         Assert.True(long.TryParse(body, out _));
     }
 
@@ -55,8 +55,8 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/QueryableWidgets/$count?$filter=Name eq 'Sprocket'");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var body = await response.Content.ReadAsStringAsync();
-        Assert.True(long.TryParse(body, out var count));
+        string body = await response.Content.ReadAsStringAsync();
+        Assert.True(long.TryParse(body, out long count));
         Assert.Equal(1L, count);
     }
 
@@ -66,8 +66,8 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/QueryableWidgets/$count");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var body = await response.Content.ReadAsStringAsync();
-        Assert.True(long.TryParse(body, out var count));
+        string body = await response.Content.ReadAsStringAsync();
+        Assert.True(long.TryParse(body, out long count));
         Assert.Equal(2L, count);
     }
 
@@ -196,7 +196,7 @@ public class EndpointMappingTests
     public async Task Metadata_ContainsEntitySetName()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
-        var xml = await fx.Client.GetStringAsync("/odata/$metadata");
+        string xml = await fx.Client.GetStringAsync("/odata/$metadata");
         Assert.Contains("Widgets", xml);
     }
 
@@ -331,7 +331,7 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets?$select=Name");
         var values = json.GetProperty("value");
-        var names = Enumerable.Range(0, values.GetArrayLength())
+        string?[] names = Enumerable.Range(0, values.GetArrayLength())
             .Select(i => values[i].GetProperty("Name").GetString())
             .ToArray();
         Assert.Contains("Sprocket", names);
@@ -413,7 +413,7 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EfCoreWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<System.Text.Json.JsonElement>("/odata/EfWidgets?$select=Name");
         var values = json.GetProperty("value");
-        var names = System.Linq.Enumerable.Range(0, values.GetArrayLength())
+        string?[] names = System.Linq.Enumerable.Range(0, values.GetArrayLength())
             .Select(i => values[i].GetProperty("Name").GetString())
             .ToArray();
         Assert.Contains("Sprocket", names);
@@ -519,7 +519,7 @@ public class EndpointMappingTests
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagWidgetProfile>());
         var getResp = await fx.Client.GetAsync("/odata/ETagWidgets(1)");
-        var etag = getResp.Headers.ETag!.Tag;
+        string etag = getResp.Headers.ETag!.Tag;
         var request = new HttpRequestMessage(HttpMethod.Put, "/odata/ETagWidgets(1)")
         {
             Content = JsonContent.Create(new Widget { Id = 1, Name = "Updated" }),
@@ -572,7 +572,7 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>());
         var response = await fx.Client.GetAsync("/odata/BoundWidgets/DoubleCount?factor=3");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var count = await response.Content.ReadFromJsonAsync<int>();
+        int count = await response.Content.ReadFromJsonAsync<int>();
         Assert.Equal(6, count); // 2 items × factor 3
     }
 
@@ -605,7 +605,7 @@ public class EndpointMappingTests
             new StringContent("{\"suffix\":\"!\"}", System.Text.Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.NoContent, addResp.StatusCode);
         var listResp = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/BoundWidgets");
-        var names = listResp.GetProperty("value").EnumerateArray()
+        string?[] names = listResp.GetProperty("value").EnumerateArray()
             .Select(x => x.GetProperty("name").GetString()).ToArray();
         Assert.All(names, n => Assert.EndsWith("!", n));
     }
@@ -617,7 +617,7 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
         var response = await fx.Client.PostAsJsonAsync("/odata/Widgets", new Widget { Name = "New" });
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
-        var location = response.Headers.Location?.ToString();
+        string? location = response.Headers.Location?.ToString();
         Assert.NotNull(location);
         // Location must contain the key in OData format: /odata/Widgets(N)
         Assert.Matches(@"Widgets\(\d+\)$", location);
@@ -668,7 +668,7 @@ public class EndpointMappingTests
         var id = Guid.NewGuid();
         var response = await fx.Client.GetAsync($"/odata/GuidFnWidgets/EchoGuid?id={id}");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var returned = await response.Content.ReadFromJsonAsync<string>();
+        string? returned = await response.Content.ReadFromJsonAsync<string>();
         Assert.Equal(id.ToString(), returned);
     }
 
@@ -701,7 +701,7 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MaxTopProfile>());
         // Store has 20 items; MaxTop = 5 on the profile
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/MaxTopWidgets");
-        var count = json.GetProperty("value").GetArrayLength();
+        int count = json.GetProperty("value").GetArrayLength();
         Assert.True(count <= 5, $"Expected at most 5 items (MaxTop=5) but got {count}");
     }
 
@@ -723,7 +723,7 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagWidgetProfile>());
         // First GET to obtain the strong ETag value
         var getResp = await fx.Client.GetAsync("/odata/ETagWidgets(1)");
-        var etag = getResp.Headers.ETag?.Tag?.Trim('"');
+        string? etag = getResp.Headers.ETag?.Tag?.Trim('"');
         Assert.NotNull(etag);
 
         // PUT with W/"<etag>" — should NOT return 412 (weak prefix must be stripped)
@@ -997,6 +997,265 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NonIdempotentDeleteProfile>());
         var response = await fx.Client.DeleteAsync("/odata/NonIdempotentWidgets(999)");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    // ── Gap 1: OData-Version header ──────────────────────────────────────────────
+
+    [Fact]
+    public async Task AllResponses_IncludeODataVersionHeader()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var resp = await fx.Client.GetAsync("/odata/Widgets");
+        Assert.Equal("4.0", resp.Headers.GetValues("OData-Version").FirstOrDefault());
+    }
+
+    [Fact]
+    public async Task AllResponses_Metadata_IncludesODataVersionHeader()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var resp = await fx.Client.GetAsync("/odata/$metadata");
+        Assert.Equal("4.0", resp.Headers.GetValues("OData-Version").FirstOrDefault());
+    }
+
+    // ── Gap 2: If-None-Match → 304 Not Modified ──────────────────────────────────
+
+    [Fact]
+    public async Task GetById_IfNoneMatch_Matching_Returns304()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagWidgetProfile>());
+        var first = await fx.Client.GetAsync("/odata/ETagWidgets(1)");
+        string etag = first.Headers.ETag!.Tag;
+        var req = new HttpRequestMessage(HttpMethod.Get, "/odata/ETagWidgets(1)");
+        req.Headers.TryAddWithoutValidation("If-None-Match", etag);
+        var resp = await fx.Client.SendAsync(req);
+        Assert.Equal(HttpStatusCode.NotModified, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetById_IfNoneMatch_NotMatching_Returns200()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagWidgetProfile>());
+        var req = new HttpRequestMessage(HttpMethod.Get, "/odata/ETagWidgets(1)");
+        req.Headers.TryAddWithoutValidation("If-None-Match", "\"stale-etag\"");
+        var resp = await fx.Client.SendAsync(req);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+    }
+
+    // ── Gap 3: @odata.nextLink + $skiptoken ──────────────────────────────────────
+
+    [Fact]
+    public async Task GetQueryable_MaxTop_AddsNextLink()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o =>
+            o.WithDefaults(d => d.MaxTop = 1).AddProfile<QueryableWidgetProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets");
+        Assert.True(json.TryGetProperty("@odata.nextLink", out _));
+    }
+
+    [Fact]
+    public async Task GetQueryable_FollowNextLink_ReturnsNextPage()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o =>
+            o.WithDefaults(d => d.MaxTop = 1).AddProfile<QueryableWidgetProfile>());
+        var first = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets");
+        string nextLink = first.GetProperty("@odata.nextLink").GetString()!;
+        // nextLink is absolute; strip host for TestClient
+        string path = new Uri(nextLink).PathAndQuery;
+        var second = await fx.Client.GetFromJsonAsync<JsonElement>(path);
+        Assert.True(second.TryGetProperty("value", out var vals));
+        Assert.Equal(1, vals.GetArrayLength());
+    }
+
+    [Fact]
+    public async Task GetQueryable_NoNextLink_WhenPageNotFull()
+    {
+        // MaxTop=10 but only 2 items — page is not full, so no nextLink
+        await using var fx = await TestHostBuilder.BuildAsync(o =>
+            o.WithDefaults(d => d.MaxTop = 10).AddProfile<QueryableWidgetProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets");
+        Assert.False(json.TryGetProperty("@odata.nextLink", out _));
+    }
+
+    // ── Gap 4: Prefer: return=minimal ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task Post_PreferMinimal_Returns204WithLocation()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var req = new HttpRequestMessage(HttpMethod.Post, "/odata/Widgets")
+        {
+            Content = JsonContent.Create(new Widget { Name = "X" })
+        };
+        req.Headers.TryAddWithoutValidation("Prefer", "return=minimal");
+        var resp = await fx.Client.SendAsync(req);
+        Assert.Equal(HttpStatusCode.NoContent, resp.StatusCode);
+        Assert.NotNull(resp.Headers.Location);
+    }
+
+    [Fact]
+    public async Task Put_PreferMinimal_Returns204()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var req = new HttpRequestMessage(HttpMethod.Put, "/odata/Widgets(1)")
+        {
+            Content = JsonContent.Create(new Widget { Id = 1, Name = "X" })
+        };
+        req.Headers.TryAddWithoutValidation("Prefer", "return=minimal");
+        var resp = await fx.Client.SendAsync(req);
+        Assert.Equal(HttpStatusCode.NoContent, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Patch_PreferMinimal_Returns204()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var req = new HttpRequestMessage(HttpMethod.Patch, "/odata/Widgets(1)")
+        {
+            Content = new StringContent("{\"name\":\"X\"}", System.Text.Encoding.UTF8, "application/json")
+        };
+        req.Headers.TryAddWithoutValidation("Prefer", "return=minimal");
+        var resp = await fx.Client.SendAsync(req);
+        Assert.Equal(HttpStatusCode.NoContent, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Post_NoPreferHeader_Returns201WithBody()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var resp = await fx.Client.PostAsJsonAsync("/odata/Widgets", new Widget { Name = "X" });
+        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.NotEmpty(body);
+    }
+
+    // ── Gap 5: @odata.id entity self-link ─────────────────────────────────────────
+
+    [Fact]
+    public async Task GetById_ResponseContainsOdataId()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/Widgets(1)");
+        Assert.True(json.TryGetProperty("@odata.id", out var id));
+        Assert.Contains("Widgets(1)", id.GetString());
+    }
+
+    [Fact]
+    public async Task Put_ResponseContainsOdataId()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var resp = await fx.Client.PutAsJsonAsync("/odata/Widgets(1)", new Widget { Id = 1, Name = "Updated" });
+        var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(json.TryGetProperty("@odata.id", out var id));
+        Assert.Contains("Widgets(1)", id.GetString());
+    }
+
+    [Fact]
+    public async Task Post_ResponseContainsOdataId()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var resp = await fx.Client.PostAsJsonAsync("/odata/Widgets", new Widget { Name = "New" });
+        var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(json.TryGetProperty("@odata.id", out var id));
+        Assert.NotNull(id.GetString());
+        Assert.Contains("Widgets", id.GetString());
+    }
+
+    // ── Gap 6: error.target + error.details ───────────────────────────────────────
+
+    [Fact]
+    public async Task PutById_KeyMismatch_ErrorHasTarget()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var resp = await fx.Client.PutAsync("/odata/Widgets(1)",
+            new StringContent("{\"id\":2,\"name\":\"X\"}", System.Text.Encoding.UTF8, "application/json"));
+        var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        string? target = json.GetProperty("error").GetProperty("target").GetString();
+        Assert.Equal("key", target);
+    }
+
+    [Fact]
+    public async Task PatchById_KeyMismatch_ErrorHasTarget()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var resp = await fx.Client.PatchAsync("/odata/Widgets(1)",
+            new StringContent("{\"id\":2,\"name\":\"X\"}", System.Text.Encoding.UTF8, "application/json"));
+        var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        string? target = json.GetProperty("error").GetProperty("target").GetString();
+        Assert.Equal("key", target);
+    }
+
+    [Fact]
+    public async Task GetById_BadKeyFormat_ErrorHasTarget()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var resp = await fx.Client.GetAsync("/odata/Widgets(notanint)");
+        var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(json.GetProperty("error").TryGetProperty("target", out var target));
+        Assert.Equal("key", target.GetString());
+    }
+
+    // ── Gap 7: Entity-level bound functions and actions ───────────────────────────
+
+    [Fact]
+    public async Task EntityBoundFunction_ReturnsEntityData()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EntityBoundOpsProfile>());
+        var resp = await fx.Client.GetAsync("/odata/EntityBoundWidgets(1)/GetNameForKey");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        string? name = await resp.Content.ReadFromJsonAsync<string>();
+        Assert.Equal("Alpha", name);
+    }
+
+    [Fact]
+    public async Task EntityBoundFunction_UnknownKey_ReturnsOk_WithEmptyString()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EntityBoundOpsProfile>());
+        var resp = await fx.Client.GetAsync("/odata/EntityBoundWidgets(999)/GetNameForKey");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task EntityBoundAction_MutatesEntity()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EntityBoundOpsProfile>());
+        var renameResp = await fx.Client.PostAsync("/odata/EntityBoundWidgets(1)/RenameWidget",
+            new StringContent("{\"newName\":\"Renamed\"}", System.Text.Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.NoContent, renameResp.StatusCode);
+
+        var getResp = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/EntityBoundWidgets");
+        string?[] names = getResp.GetProperty("value").EnumerateArray()
+            .Select(x => x.GetProperty("name").GetString()).ToArray();
+        Assert.Contains("Renamed", names);
+    }
+
+    [Fact]
+    public async Task EntityBoundFunction_BadKey_Returns400()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EntityBoundOpsProfile>());
+        var resp = await fx.Client.GetAsync("/odata/EntityBoundWidgets(notanint)/GetNameForKey");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    // ── Gap 8: $expand data loading ───────────────────────────────────────────────
+
+    [Fact]
+    public async Task Expand_InlinesNavigationData()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ExpandableParentProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ExpandableParents?$expand=Children");
+        var first = json.GetProperty("value")[0];
+        Assert.True(first.TryGetProperty("Children", out var children));
+        Assert.Equal(JsonValueKind.Array, children.ValueKind);
+    }
+
+    [Fact]
+    public async Task Expand_WithChildren_ChildrenDataPresent()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ExpandableParentProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ExpandableParents?$expand=Children");
+        var first = json.GetProperty("value")[0];
+        var children = first.GetProperty("Children");
+        Assert.True(children.GetArrayLength() > 0);
     }
 
 }

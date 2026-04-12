@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using OhData.Abstractions;
 
 namespace OhData.AspNetCore.Tests;
@@ -389,5 +389,60 @@ internal class NonIdempotentDeleteProfile : EntitySetProfile<int, Widget>
         IdempotentDelete = false;
         GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
         Delete = (id, ct) => Task.FromResult(_store.RemoveAll(w => w.Id == id) > 0);
+    }
+}
+
+/// <summary>Profile for testing entity-level bound functions and actions (Gap 7).</summary>
+internal class EntityBoundOpsProfile : EntitySetProfile<int, Widget>
+{
+    private readonly List<Widget> _store = new()
+    {
+        new() { Id = 1, Name = "Alpha" },
+        new() { Id = 2, Name = "Beta" },
+    };
+
+    public EntityBoundOpsProfile() : base(x => x.Id)
+    {
+        EntitySetName = "EntityBoundWidgets";
+        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store);
+        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
+
+        BindEntityFunction(GetNameForKey);
+        BindEntityAction(RenameWidget);
+    }
+
+    // Entity-level function: GET /EntityBoundWidgets(1)/GetNameForKey
+    private Task<string> GetNameForKey(int key)
+    {
+        var widget = _store.FirstOrDefault(w => w.Id == key);
+        return Task.FromResult(widget?.Name ?? "");
+    }
+
+    // Entity-level action: POST /EntityBoundWidgets(1)/RenameWidget { "newName": "..." }
+    private Task RenameWidget(int key, string newName)
+    {
+        var widget = _store.FirstOrDefault(w => w.Id == key);
+        if (widget is not null) widget.Name = newName;
+        return Task.CompletedTask;
+    }
+}
+
+/// <summary>Profile for testing $expand data loading (Gap 8) using the GetQueryable path.</summary>
+internal class ExpandableParentProfile : EntitySetProfile<int, Parent>
+{
+    private static readonly List<Parent> _parents = new() { new() { Id = 1, Name = "Parent1" } };
+    private static readonly List<Child> _children = new() { new() { Id = 1, ParentId = 1, Name = "Child1" } };
+
+    public ExpandableParentProfile() : base(x => x.Id)
+    {
+        EntitySetName = "ExpandableParents";
+        ExpandEnabled = true;
+
+        GetQueryable = (ct) => Task.FromResult(_parents.AsQueryable());
+        GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(p => p.Id == id));
+
+        HasMany(x => x.Children!,
+            getAll: (parentId, ct) =>
+                Task.FromResult<IEnumerable<Child>>(_children.Where(c => c.ParentId == parentId)));
     }
 }
