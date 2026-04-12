@@ -35,7 +35,14 @@ public sealed class OhDataBuilder
     {
         if (string.IsNullOrWhiteSpace(prefix))
             throw new ArgumentException("Prefix must not be empty.", nameof(prefix));
-        _prefix = '/' + prefix.Trim().Trim('/');
+        string normalized = '/' + prefix.Trim().Trim('/');
+        if (!System.Text.RegularExpressions.Regex.IsMatch(normalized, @"^/[A-Za-z0-9._~!$&'()*+,;=:@/\-]*$"))
+        {
+            throw new ArgumentException(
+                $"Prefix '{normalized}' contains characters that are not valid in a URL path segment.", nameof(prefix));
+        }
+
+        _prefix = normalized;
         return this;
     }
 
@@ -114,7 +121,10 @@ public sealed class OhDataBuilder
     private void AddProfileType(Type type)
     {
         if (_profileTypes.Contains(type)) return;
-        _services.AddSingleton(type);
+        // If another OhData registration already registered this profile type as a singleton,
+        // skip re-registering it in DI but still track it for this builder's route mapping.
+        if (!_services.Any(s => s.ServiceType == type))
+            _services.AddSingleton(type);
         _profileTypes.Add(type);
     }
 

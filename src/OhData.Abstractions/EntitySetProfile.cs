@@ -261,6 +261,15 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected EntitySetProfile(Expression<Func<TModel, TKey>> getKey)
     {
         _getKey = getKey;
+        var keyBody = getKey.Body is System.Linq.Expressions.UnaryExpression u ? u.Operand : getKey.Body;
+        if (keyBody is not System.Linq.Expressions.MemberExpression)
+        {
+            throw new ArgumentException(
+                "The key selector must be a direct property access expression (e.g. x => x.Id). " +
+                "Computed or chained key selectors are not supported.",
+                nameof(getKey));
+        }
+
         EntitySetName = PluralizationHelper.Pluralize(typeof(TModel).Name);
 
         _configurators = new List<Action<EntityTypeConfiguration<TModel>>>();
