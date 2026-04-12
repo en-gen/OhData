@@ -2,6 +2,8 @@
 
 	<PropertyGroup>
 		<TargetFramework>net8.0</TargetFramework>
+		<PackageId>OhData.Abstractions.AspNetCore.OData</PackageId>
+		<Description>OhData abstractions for profiles that receive ODataQueryOptions directly.</Description>
 	</PropertyGroup>
 
 	<ItemGroup>

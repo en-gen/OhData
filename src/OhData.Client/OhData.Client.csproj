@@ -2,6 +2,8 @@
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
+    <PackageId>OhData.Client</PackageId>
+    <Description>Typed OData 4.0 client with LINQ filter translation for .NET.</Description>
   </PropertyGroup>
 
 </Project>
