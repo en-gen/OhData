@@ -1,5 +1,13 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.OData.Deltas;
+using Microsoft.AspNetCore.OData.Query;
 using Microsoft.EntityFrameworkCore;
 using OhData.Abstractions;
+using OhData.Abstractions.AspNetCore.OData;
 
 namespace OhData.AspNetCore.Tests;
 
@@ -628,4 +636,114 @@ internal class ContextFunctionProfile : EntitySetProfile<int, Widget>
 
     // Returns IEnumerable<TModel> — should get context=..#EntitySet and value array
     private Task<IEnumerable<Widget>> GetAll2() => Task.FromResult<IEnumerable<Widget>>(_store);
+}
+
+// ── Batch 3 fixtures ─────────────────────────────────────────────────────────
+
+/// <summary>
+/// Profile that extends <see cref="ODataEntitySetProfile{TKey,TModel}"/> and sets
+/// <c>GetODataQueryable</c> so the Priority-1 handler code path is exercised.
+/// The profile receives <see cref="ODataQueryOptions{TModel}"/> directly and applies
+/// them to the in-memory list — demonstrating full ODataQueryOptions pushdown.
+/// </summary>
+internal class ODataWidgetProfile : ODataEntitySetProfile<int, Widget>
+{
+    private static readonly List<Widget> _store = new()
+    {
+        new() { Id = 1, Name = "Sprocket" },
+        new() { Id = 2, Name = "Cog" },
+        new() { Id = 3, Name = "Bolt" },
+    };
+
+    public ODataWidgetProfile() : base(x => x.Id)
+    {
+        EntitySetName = "ODataWidgets";
+        FilterEnabled = true;
+        OrderByEnabled = true;
+        CountEnabled = true;
+        SelectEnabled = true;
+
+        // Priority-1 handler: profile applies ODataQueryOptions itself.
+        GetODataQueryable = (options, ct) =>
+        {
+            var q = _store.AsQueryable();
+            // Apply filter/orderby/skip/top via the options object.
+            var applied = options.ApplyTo(q) as IQueryable<Widget>;
+            return Task.FromResult(applied ?? q);
+        };
+
+        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
+
+        Post = (widget, ct) =>
+        {
+            widget.Id = _store.Count > 0 ? _store.Max(w => w.Id) + 1 : 1;
+            _store.Add(widget);
+            return Task.FromResult(widget);
+        };
+
+        Delete = (id, ct) => Task.FromResult(_store.RemoveAll(w => w.Id == id) > 0);
+    }
+}
+
+/// <summary>
+/// Profile that extends <see cref="ODataEntitySetProfile{TKey,TModel}"/> and sets
+/// <c>PatchDelta</c> so the <see cref="Microsoft.AspNetCore.OData.Deltas.Delta{T}"/>
+/// partial-update code path is exercised.
+/// </summary>
+internal class DeltaPatchWidgetProfile : ODataEntitySetProfile<int, Widget>
+{
+    private static readonly List<Widget> _store = new()
+    {
+        new() { Id = 1, Name = "Sprocket" },
+        new() { Id = 2, Name = "Cog" },
+    };
+
+    public DeltaPatchWidgetProfile() : base(x => x.Id)
+    {
+        EntitySetName = "DeltaWidgets";
+
+        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store);
+        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
+
+        // Delta-aware partial update: only the properties present in the request body are changed.
+        PatchDelta = (id, delta, ct) =>
+        {
+            var existing = _store.FirstOrDefault(w => w.Id == id);
+            if (existing is null) return Task.FromResult<Widget?>(null);
+            delta.Patch(existing);
+            return Task.FromResult<Widget?>(existing);
+        };
+    }
+}
+
+/// <summary>
+/// Navigation profile for Batch 3 nav/$count and nav/$select tests.
+/// Uses the existing Parent/Child entities.
+/// </summary>
+internal class NavCountProfile : EntitySetProfile<int, Parent>
+{
+    private static readonly List<Parent> _parents = new()
+    {
+        new() { Id = 1, Name = "Parent1" },
+        new() { Id = 2, Name = "Parent2" },
+    };
+
+    private static readonly List<Child> _children = new()
+    {
+        new() { Id = 10, ParentId = 1, Name = "ChildA" },
+        new() { Id = 11, ParentId = 1, Name = "ChildB" },
+        new() { Id = 20, ParentId = 2, Name = "ChildC" },
+    };
+
+    public NavCountProfile() : base(x => x.Id)
+    {
+        EntitySetName = "NavCountParents";
+        GetAll = (ct) => Task.FromResult<IEnumerable<Parent>>(_parents);
+        GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(w => w.Id == id));
+
+        HasMany(x => x.Children!,
+            getAll: (parentId, ct) =>
+                Task.FromResult<IEnumerable<Child>>(
+                    _children.Where(c => c.ParentId == parentId).ToList()));
+    }
 }

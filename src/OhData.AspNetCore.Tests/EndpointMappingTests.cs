@@ -1525,6 +1525,184 @@ public class EndpointMappingTests
         }
     }
 
+    // ── Batch 3: Navigation /$count standalone endpoint (§11.2.3) ─────────────
+
+    [Fact]
+    public async Task NavigationCollection_CountEndpoint_Returns200WithInteger()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavCountProfile>());
+        HttpResponseMessage response = await fx.Client.GetAsync("/odata/NavCountParents(1)/Children/$count");
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        string body = await response.Content.ReadAsStringAsync();
+        Assert.True(int.TryParse(body, out int count), $"Expected integer body, got: {body}");
+        Assert.Equal(2, count); // Parent 1 has ChildA + ChildB
+    }
+
+    [Fact]
+    public async Task NavigationCollection_CountEndpoint_ReturnsCorrectCountForParent2()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavCountProfile>());
+        HttpResponseMessage response = await fx.Client.GetAsync("/odata/NavCountParents(2)/Children/$count");
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        string body = await response.Content.ReadAsStringAsync();
+        Assert.True(int.TryParse(body, out int count));
+        Assert.Equal(1, count); // Parent 2 has only ChildC
+    }
+
+    [Fact]
+    public async Task NavigationCollection_CountEndpoint_BadKey_Returns400()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavCountProfile>());
+        var response = await fx.Client.GetAsync("/odata/NavCountParents(notanint)/Children/$count");
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    // ── Batch 3: $select on navigation collection results ─────────────────────
+
+    [Fact]
+    public async Task NavigationCollection_WithSelect_FiltersProperties()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavCountProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavCountParents(1)/Children?$select=Name");
+        var value = json.GetProperty("value");
+        Assert.True(value.GetArrayLength() > 0);
+        var first = value[0];
+        Assert.True(first.TryGetProperty("name", out _), "Expected 'name' property (camelCase) to be present");
+        Assert.False(first.TryGetProperty("id", out _), "Expected 'id' to be excluded by $select");
+    }
+
+    [Fact]
+    public async Task NavigationCollection_WithSelect_MultipleProperties()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavCountProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavCountParents(1)/Children?$select=Id,Name");
+        var value = json.GetProperty("value");
+        Assert.True(value.GetArrayLength() > 0);
+        var first = value[0];
+        Assert.True(first.TryGetProperty("id", out _), "Expected 'id' to be present");
+        Assert.True(first.TryGetProperty("name", out _), "Expected 'name' to be present");
+        Assert.False(first.TryGetProperty("parentId", out _), "Expected 'parentId' to be excluded");
+    }
+
+    // ── Batch 3: IODataEntitySetEndpointSource (Priority-1 handler) ───────────
+
+    [Fact]
+    public async Task ODataProfile_CollectionGet_Returns200WithValueArray()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataWidgetProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataWidgets");
+        Assert.True(json.TryGetProperty("value", out var value));
+        Assert.Equal(JsonValueKind.Array, value.ValueKind);
+        Assert.Equal(3, value.GetArrayLength());
+    }
+
+    [Fact]
+    public async Task ODataProfile_Filter_AppliedByProfile()
+    {
+        // The Priority-1 handler receives ODataQueryOptions and applies them itself.
+        // $filter=Name eq 'Cog' should return only Cog.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataWidgetProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataWidgets?$filter=Name%20eq%20'Cog'");
+        var value = json.GetProperty("value");
+        Assert.Equal(1, value.GetArrayLength());
+        Assert.Equal("Cog", value[0].GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public async Task ODataProfile_Top_LimitsResults()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataWidgetProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataWidgets?$top=1");
+        Assert.Equal(1, json.GetProperty("value").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task ODataProfile_Skip_SkipsResults()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataWidgetProfile>());
+        var all = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataWidgets");
+        var skipped = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataWidgets?$skip=1");
+        Assert.Equal(
+            all.GetProperty("value").GetArrayLength() - 1,
+            skipped.GetProperty("value").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task ODataProfile_OrderBy_SortsResults()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataWidgetProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataWidgets?$orderby=Name");
+        var value = json.GetProperty("value");
+        string?[] names = Enumerable.Range(0, value.GetArrayLength())
+            .Select(i => value[i].GetProperty("name").GetString())
+            .ToArray();
+        Assert.Equal(names.OrderBy(n => n).ToArray(), names);
+    }
+
+    [Fact]
+    public async Task ODataProfile_CountInline_ReturnsOdataCount()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataWidgetProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataWidgets?$count=true");
+        Assert.True(json.TryGetProperty("@odata.count", out var count));
+        Assert.Equal(3, count.GetInt32());
+    }
+
+    [Fact]
+    public async Task ODataProfile_CountStandalone_ReturnsInteger()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataWidgetProfile>());
+        HttpResponseMessage response = await fx.Client.GetAsync("/odata/ODataWidgets/$count");
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        string body = await response.Content.ReadAsStringAsync();
+        Assert.True(int.TryParse(body, out int count));
+        Assert.Equal(3, count);
+    }
+
+    [Fact]
+    public async Task ODataProfile_GetById_Returns200()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataWidgetProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataWidgets(1)");
+        Assert.Equal("Sprocket", json.GetProperty("name").GetString());
+    }
+
+    // ── Batch 3: Delta<TModel> PATCH via PatchDelta ───────────────────────────
+
+    [Fact]
+    public async Task DeltaPatch_PartialUpdate_OnlyChangesSpecifiedProperties()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DeltaPatchWidgetProfile>());
+        // Patch only the Name — Id should be unchanged
+        var response = await fx.Client.PatchAsJsonAsync(
+            "/odata/DeltaWidgets(1)",
+            new { Name = "Modified" });
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Modified", json.GetProperty("name").GetString());
+        Assert.Equal(1, json.GetProperty("id").GetInt32());
+    }
+
+    [Fact]
+    public async Task DeltaPatch_MissingEntity_Returns404()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DeltaPatchWidgetProfile>());
+        var response = await fx.Client.PatchAsJsonAsync(
+            "/odata/DeltaWidgets(99)",
+            new { Name = "Ghost" });
+        Assert.Equal(System.Net.HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task DeltaPatch_EntityStillReadableAfterPatch()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DeltaPatchWidgetProfile>());
+        await fx.Client.PatchAsJsonAsync("/odata/DeltaWidgets(2)", new { Name = "PatchedCog" });
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/DeltaWidgets(2)");
+        Assert.Equal("PatchedCog", json.GetProperty("name").GetString());
+    }
+
 }
 
 // ── Auth test helpers (not registered as profiles — instantiated directly) ───
