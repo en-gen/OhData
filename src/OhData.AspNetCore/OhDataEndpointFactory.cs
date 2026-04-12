@@ -314,6 +314,7 @@ internal static class OhDataEndpointFactory
         CancellationToken ct)
     {
         if (!source.HasETag) return null;
+        if (!source.HasGetById) return null;
         if (!ctx.Request.Headers.TryGetValue("If-Match", out var ifMatch)) return null;
 
         // RFC 7232 §3.1: If-Match may carry a comma-separated list of ETags.
@@ -516,6 +517,13 @@ internal static class OhDataEndpointFactory
         ILoggerFactory? loggerFactory)
         where TModel : class
     {
+        if (source.HasETag && !source.HasGetById)
+        {
+            throw new InvalidOperationException(
+                $"Entity set '{source.EntitySetName}': UseETag requires GetById to also be configured. " +
+                "ETag validation on PUT/PATCH/DELETE requires fetching the current entity.");
+        }
+
         string name = source.EntitySetName;
         string prefix = registration.Prefix;
 
@@ -620,7 +628,7 @@ internal static class OhDataEndpointFactory
                     if (options.Count?.Value == true)
                     {
                         var countQ = options.Filter is not null
-                            ? (IQueryable<TModel>)options.Filter.ApplyTo(queryable, new ODataQuerySettings { PageSize = source.MaxTop })
+                            ? (IQueryable<TModel>)options.Filter.ApplyTo(queryable, new ODataQuerySettings())
                             : queryable;
                         odataCount = countQ.LongCount();
                     }
@@ -744,7 +752,21 @@ internal static class OhDataEndpointFactory
 
                         var searchResults = await source.InvokeSearchAsync(searchTerm.ToString(), ct);
                         object[] searchItems = searchResults.ToArray();
-                        object searchFinal = ApplySelectPostProcess((object)searchItems, options);
+
+                        object searchExpanded = await ApplyExpandAsync(searchItems, options, source, ct);
+                        object searchAnnotated;
+                        if (searchExpanded is object[] searchExpandedArr)
+                        {
+                            searchAnnotated = ApplyCollectionAnnotations(searchExpandedArr, source);
+                        }
+                        else
+                        {
+                            searchAnnotated = source.HasETag && searchExpanded is System.Text.Json.Nodes.JsonArray searchJArr
+                                ? InjectETagsIntoJsonArray(searchJArr, searchItems, source)
+                                : searchExpanded;
+                        }
+
+                        object searchFinal = ApplySelectPostProcess(searchAnnotated, options);
                         string searchBaseUrl = BuildBaseUrl(ctx, prefix);
                         var searchEnvelope = new Dictionary<string, object?>();
                         searchEnvelope["@odata.context"] = $"{searchBaseUrl}/$metadata#{name}";
@@ -814,7 +836,7 @@ internal static class OhDataEndpointFactory
                     {
                         var q = (IQueryable<TModel>)(await source.InvokeGetQueryableAsync(ct)).Cast<TModel>();
                         var filtered = options.Filter is not null
-                            ? (IQueryable<TModel>)options.Filter.ApplyTo(q, new ODataQuerySettings { PageSize = source.MaxTop })
+                            ? (IQueryable<TModel>)options.Filter.ApplyTo(q, new ODataQuerySettings())
                             : q;
                         return Results.Content(filtered.LongCount().ToString(), "text/plain");
                     }

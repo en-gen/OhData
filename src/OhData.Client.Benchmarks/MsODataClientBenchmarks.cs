@@ -55,7 +55,7 @@ internal sealed class MsBenchWidgetProfile : EntitySetProfile<int, MsBenchWidget
         {
             widget.Id = _store.Count > 0 ? _store.Max(w => w.Id) + 1 : 1;
             _store.Add(widget);
-            return Task.FromResult(widget);
+            return Task.FromResult<MsBenchWidget?>(widget);
         };
     }
 }

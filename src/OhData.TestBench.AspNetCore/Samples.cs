@@ -116,7 +116,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
         {
             db.Products.Add(product);
             db.SaveChanges();
-            return Task.FromResult(product);
+            return Task.FromResult<Product?>(product);
         };
 
         PutById = (id, product, _) =>
@@ -181,7 +181,7 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
             order.Id = Guid.NewGuid();
             db.Orders.Add(order);
             db.SaveChanges();
-            return Task.FromResult(order);
+            return Task.FromResult<Order?>(order);
         };
 
         Delete = (id, _) =>

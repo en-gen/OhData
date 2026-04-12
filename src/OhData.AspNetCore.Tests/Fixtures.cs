@@ -42,7 +42,7 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
         {
             widget.Id = _store.Count > 0 ? _store.Max(w => w.Id) + 1 : 1;
             _store.Add(widget);
-            return Task.FromResult(widget);
+            return Task.FromResult<Widget?>(widget);
         };
 
         PutById = (id, widget, ct) =>
@@ -382,7 +382,7 @@ internal class PolicyAndRolesWidgetProfile : EntitySetProfile<int, Widget>
 
         GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store);
         GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
-        Post = (widget, ct) => { _store.Add(widget); return Task.FromResult(widget); };
+        Post = (widget, ct) => { _store.Add(widget); return Task.FromResult<Widget?>(widget); };
     }
 }
 
@@ -470,7 +470,7 @@ internal class ETagBodyProfile : EntitySetProfile<int, Widget>
         {
             widget.Id = _store.Count > 0 ? _store.Max(w => w.Id) + 1 : 1;
             _store.Add(widget);
-            return Task.FromResult(widget);
+            return Task.FromResult<Widget?>(widget);
         };
         PutById = (id, widget, ct) =>
         {
@@ -505,7 +505,7 @@ internal class UpsertProfile : EntitySetProfile<int, Widget>
         {
             widget.Id = widget.Id == 0 ? (_store.Count > 0 ? _store.Max(w => w.Id) + 1 : 1) : widget.Id;
             _store.Add(widget);
-            return Task.FromResult(widget);
+            return Task.FromResult<Widget?>(widget);
         };
         PutById = (id, widget, ct) =>
         {
@@ -678,7 +678,7 @@ internal class ODataWidgetProfile : ODataEntitySetProfile<int, Widget>
         {
             widget.Id = _store.Count > 0 ? _store.Max(w => w.Id) + 1 : 1;
             _store.Add(widget);
-            return Task.FromResult(widget);
+            return Task.FromResult<Widget?>(widget);
         };
 
         Delete = (id, ct) => Task.FromResult(_store.RemoveAll(w => w.Id == id) > 0);

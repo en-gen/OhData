@@ -117,7 +117,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// <remarks>
     /// Leaving this <c>null</c> (the default) means no <c>POST /{EntitySet}</c> route is registered.
     /// </remarks>
-    protected Func<TModel, CancellationToken, Task<TModel>>? Post = null;
+    protected Func<TModel, CancellationToken, Task<TModel?>>? Post = null;
 
     /// <summary>
     /// Registers the <c>PATCH /{EntitySet}({key})</c> handler for partial entity updates
@@ -193,6 +193,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private bool _resolvedAllowUpsert;
     private IReadOnlyList<BoundOperationDefinition>? _resolvedBoundFunctions;
     private IReadOnlyList<BoundOperationDefinition>? _resolvedBoundActions;
+    private bool _isSealed;
 
     private Func<TModel, string>? _getETag;
 
@@ -217,6 +218,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// </param>
     protected void UseETag(params Expression<Func<TModel, object?>>[] propertySelectors)
     {
+        ThrowIfSealed();
         if (propertySelectors.Length == 0)
             throw new ArgumentException("At least one property selector is required.", nameof(propertySelectors));
         var getters = propertySelectors.Select(e => e.Compile()).ToArray();
@@ -484,6 +486,21 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _resolvedBoundActions = _actions.Select(d => BoundOperationDefinition.From(d, isAction: true))
             .Concat(_entityActions.Select(d => BoundOperationDefinition.From(d, isAction: true, isEntityLevel: true)))
             .ToList();
+        _isSealed = true;
+    }
+
+    /// <summary>
+    /// Throws <see cref="InvalidOperationException"/> when the profile has already been sealed
+    /// by the framework. Mutating methods call this guard to enforce constructor-only configuration.
+    /// </summary>
+    private void ThrowIfSealed()
+    {
+        if (_isSealed)
+        {
+            throw new InvalidOperationException(
+                "This profile has already been registered and cannot be modified. " +
+                "Configure the profile entirely within the constructor.");
+        }
     }
 
     /// <summary>
@@ -589,6 +606,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected void HasOptional<TNavigation>(Expression<Func<TModel, TNavigation>> navigation)
         where TNavigation : class
     {
+        ThrowIfSealed();
         if (navigation == null) throw new ArgumentNullException(nameof(navigation));
         _configurators.Add(x => x.HasOptional(navigation));
     }
@@ -628,6 +646,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected void HasRequired<TNavigation>(Expression<Func<TModel, TNavigation>> navigation)
         where TNavigation : class
     {
+        ThrowIfSealed();
         if (navigation == null) throw new ArgumentNullException(nameof(navigation));
         _configurators.Add(x => x.HasRequired(navigation));
     }
@@ -664,6 +683,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected void HasMany<TNavigation>(Expression<Func<TModel, IEnumerable<TNavigation>>> navigation)
         where TNavigation : class
     {
+        ThrowIfSealed();
         if (navigation == null) throw new ArgumentNullException(nameof(navigation));
         _configurators.Add(x => x.HasMany(navigation));
     }
@@ -783,7 +803,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// A delegate whose method name is the function name. Parameters (excluding
     /// <see cref="CancellationToken"/>) are exposed as OData function parameters.
     /// </param>
-    protected void BindFunction(Delegate handler) => _functions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
+    protected void BindFunction(Delegate handler)
+    {
+        ThrowIfSealed();
+        _functions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
+    }
 
     /// <summary>
     /// Registers a collection-bound OData action: <c>POST /{EntitySet}/{MethodName}</c>
@@ -794,7 +818,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// A delegate whose method name is the action name. Parameters (excluding
     /// <see cref="CancellationToken"/>) are read from the JSON body as named properties.
     /// </param>
-    protected void BindAction(Delegate handler) => _actions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
+    protected void BindAction(Delegate handler)
+    {
+        ThrowIfSealed();
+        _actions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
+    }
 
     /// <summary>
     /// Registers an entity-level bound function: <c>GET /{EntitySet}({key})/{MethodName}</c>
@@ -807,7 +835,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// entity key; remaining parameters (excluding <see cref="CancellationToken"/>) are OData
     /// function parameters.
     /// </param>
-    protected void BindEntityFunction(Delegate handler) => _entityFunctions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
+    protected void BindEntityFunction(Delegate handler)
+    {
+        ThrowIfSealed();
+        _entityFunctions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
+    }
 
     /// <summary>
     /// Registers an entity-level bound action: <c>POST /{EntitySet}({key})/{MethodName}</c>
@@ -820,7 +852,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// entity key; remaining parameters (excluding <see cref="CancellationToken"/>) are read
     /// from the JSON body as named properties.
     /// </param>
-    protected void BindEntityAction(Delegate handler) => _entityActions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
+    protected void BindEntityAction(Delegate handler)
+    {
+        ThrowIfSealed();
+        _entityActions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
+    }
 
     private static string GetNavigationPropertyName(Expression body)
     {
@@ -845,6 +881,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// <summary>Requires any authenticated user. May be combined with <see cref="RequireRoles"/>.</summary>
     protected void RequireAuthorization()
     {
+        ThrowIfSealed();
         if (_authRequired)
         {
             throw new InvalidOperationException(
@@ -862,6 +899,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// </summary>
     protected void RequireAuthorization(string policy)
     {
+        ThrowIfSealed();
         if (_authPolicy is not null)
         {
             throw new InvalidOperationException(
@@ -879,6 +917,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// </summary>
     protected void RequireRoles(params string[] roles)
     {
+        ThrowIfSealed();
         if (roles.Length == 0)
             throw new ArgumentException("At least one role must be specified.", nameof(roles));
         if (_authRoles is not null)
