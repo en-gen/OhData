@@ -288,9 +288,8 @@ internal static class OhDataEndpointFactory
         if (selectedProps is null) return items;
 
         var json = JsonSerializer.SerializeToNode(items, _camelCaseSerializerOptions)!.AsArray();
-        foreach (var item in json)
+        foreach (JsonObject obj in json.OfType<JsonObject>())
         {
-            if (item is not JsonObject obj) continue;
             var toRemove = obj.Select(p => p.Key)
                              .Where(k => !selectedProps.Contains(k, StringComparer.OrdinalIgnoreCase))
                              .ToList();
@@ -332,9 +331,8 @@ internal static class OhDataEndpointFactory
                 selectParam.ToString().Split(',').Select(p => p.Trim()),
                 StringComparer.OrdinalIgnoreCase);
             var json = JsonSerializer.SerializeToNode(itemArray, _camelCaseSerializerOptions)!.AsArray();
-            foreach (var item in json)
+            foreach (JsonObject obj in json.OfType<JsonObject>())
             {
-                if (item is not JsonObject obj) continue;
                 var toRemove = obj.Select(p => p.Key)
                                  .Where(k => !selectedProps.Contains(k, StringComparer.OrdinalIgnoreCase))
                                  .ToList();
