@@ -319,6 +319,34 @@ public sealed class EntitySetClient<T> where T : class
         };
     }
 
+    /// <summary>Executes GET and returns all matching entities as an array.</summary>
+    public async Task<T[]> ToArrayAsync(CancellationToken ct = default)
+        => [.. await ToListAsync(ct)];
+
+    /// <summary>
+    /// Executes GET with <c>$top=1</c> and returns the first result.
+    /// Throws <see cref="InvalidOperationException"/> when the collection is empty
+    /// (use <see cref="FirstOrDefaultAsync"/> if the collection may be empty).
+    /// </summary>
+    public async Task<T> FirstAsync(CancellationToken ct = default)
+    {
+        T? result = await FirstOrDefaultAsync(ct);
+        return result ?? throw new InvalidOperationException(
+            "Sequence contains no elements matching the query.");
+    }
+
+    /// <summary>
+    /// Executes GET with <c>$top=2</c> and returns the single matching entity.
+    /// Throws <see cref="InvalidOperationException"/> when no entity or more than one entity matches.
+    /// Use <see cref="SingleOrDefaultAsync"/> if zero results is a valid outcome.
+    /// </summary>
+    public async Task<T> SingleAsync(CancellationToken ct = default)
+    {
+        T? result = await SingleOrDefaultAsync(ct);
+        return result ?? throw new InvalidOperationException(
+            "Sequence contains no elements matching the query.");
+    }
+
     // ── URL building (internal for testing) ────────────────────────────────────
 
     internal string BuildCollectionUrl()

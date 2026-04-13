@@ -520,4 +520,74 @@ public class OhDataClientIntegrationTests : IAsyncDisposable
         Assert.Throws<ArgumentOutOfRangeException>(() =>
             Client.For<Widget>().Skip(-1));
     }
+
+    // ── ToArrayAsync ─────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ToArrayAsync_ReturnsArray()
+    {
+        Widget[] widgets = await Client.For<Widget>().ToArrayAsync();
+        Assert.Equal(2, widgets.Length);
+        Assert.Contains(widgets, w => w.Name == "Sprocket");
+        Assert.Contains(widgets, w => w.Name == "Cog");
+    }
+
+    // ── FirstAsync ───────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task FirstAsync_Throws_WhenEmpty()
+    {
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Client.For<Widget>()
+                .Filter(x => x.Name == "DoesNotExist")
+                .FirstAsync());
+    }
+
+    // ── SingleAsync ──────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task SingleAsync_Throws_WhenEmpty()
+    {
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Client.For<Widget>()
+                .Filter(x => x.Name == "DoesNotExist")
+                .SingleAsync());
+    }
+}
+
+public class NotFoundBehaviorTests : IAsyncDisposable
+{
+    private readonly ClientTestFixture _fixture;
+
+    public NotFoundBehaviorTests()
+    {
+        _fixture = ClientTestFixture.BuildAsync().GetAwaiter().GetResult();
+    }
+
+    public async ValueTask DisposeAsync() => await _fixture.DisposeAsync();
+
+    [Fact]
+    public async Task NotFoundBehavior_ReturnNull_ReturnsNull_OnMissingKey()
+    {
+        // Default behavior: GetAsync returns null on 404.
+        var client = new OhDataClient(_fixture.HttpClient, new OhDataClientOptions
+        {
+            NotFoundBehavior = NotFoundBehavior.ReturnNull
+        });
+        var widget = await client.For<Widget>().Key(999).GetAsync();
+        Assert.Null(widget);
+    }
+
+    [Fact]
+    public async Task NotFoundBehavior_Throw_ThrowsODataClientException_OnMissingKey()
+    {
+        // Opt-in behavior: GetAsync throws ODataClientException with 404 status.
+        var client = new OhDataClient(_fixture.HttpClient, new OhDataClientOptions
+        {
+            NotFoundBehavior = NotFoundBehavior.Throw
+        });
+        var ex = await Assert.ThrowsAsync<ODataClientException>(
+            () => client.For<Widget>().Key(999).GetAsync());
+        Assert.Equal(404, ex.StatusCode);
+    }
 }
