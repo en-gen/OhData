@@ -24,6 +24,7 @@ builder.Services.AddSwaggerGen(c =>
     // Route each endpoint to the doc matching its group name
     c.DocInclusionPredicate((docName, apiDesc) =>
         apiDesc.GroupName is null || apiDesc.GroupName == docName);
+    c.OperationFilter<OhDataSwaggerOperationFilter>();
 });
 
 // ── OhData versioned registrations ───────────────────────────────────────────

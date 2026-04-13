@@ -15,6 +15,7 @@
 	<ItemGroup>
 		<PackageReference Include="Microsoft.AspNetCore.OData" Version="[9.4.*, 10)" />
 		<PackageReference Include="Microsoft.OData.ModelBuilder" Version="[2.*, 3)" />
+		<PackageReference Include="Swashbuckle.AspNetCore.SwaggerGen" Version="[10.*, 11)" />
 	</ItemGroup>
 
 	<ItemGroup>

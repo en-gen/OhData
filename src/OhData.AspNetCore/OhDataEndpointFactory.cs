@@ -624,7 +624,15 @@ internal static class OhDataEndpointFactory
                 {
                     return ODataError(400, "InvalidQueryOption", ex.Message);
                 }
-            }).WithTags(name).Produces(200).Produces(400);
+            }).WithTags(name).Produces(200).Produces(400)
+              .WithMetadata(new OhDataQueryOptionsMetadata(
+                  FilterEnabled: source.FilterEnabled,
+                  OrderByEnabled: source.OrderByEnabled,
+                  SelectEnabled: source.SelectEnabled,
+                  ExpandEnabled: source.ExpandEnabled,
+                  CountEnabled: source.CountEnabled,
+                  SearchEnabled: source.HasSearch,
+                  MaxTop: source.MaxTop));
         }
         // Priority 2: base GetQueryable (IQueryable without ODataQueryOptions)
         else if (source.HasGetQueryable)
@@ -743,7 +751,15 @@ internal static class OhDataEndpointFactory
                 {
                     return ODataError(400, "InvalidQueryOption", ex.Message);
                 }
-            }).WithTags(name).Produces(200).Produces(400);
+            }).WithTags(name).Produces(200).Produces(400)
+              .WithMetadata(new OhDataQueryOptionsMetadata(
+                  FilterEnabled: source.FilterEnabled,
+                  OrderByEnabled: source.OrderByEnabled,
+                  SelectEnabled: source.SelectEnabled,
+                  ExpandEnabled: source.ExpandEnabled,
+                  CountEnabled: source.CountEnabled,
+                  SearchEnabled: source.HasSearch,
+                  MaxTop: source.MaxTop));
         }
         else if (source.HasGetAll)
         {
@@ -805,7 +821,15 @@ internal static class OhDataEndpointFactory
                 {
                     return ODataError(400, "InvalidQueryOption", ex.Message);
                 }
-            }).WithTags(name).Produces(200).Produces(400);
+            }).WithTags(name).Produces(200).Produces(400)
+              .WithMetadata(new OhDataQueryOptionsMetadata(
+                  FilterEnabled: false,
+                  OrderByEnabled: false,
+                  SelectEnabled: false,
+                  ExpandEnabled: false,
+                  CountEnabled: false,
+                  SearchEnabled: source.HasSearch,
+                  MaxTop: null));
         }
 
         bool hasCountSource = (source is IODataEntitySetEndpointSource odsCheck && odsCheck.HasGetODataQueryable)
@@ -852,7 +876,15 @@ internal static class OhDataEndpointFactory
                 {
                     return ODataError(400, "InvalidQueryOption", ex.Message);
                 }
-            }).WithTags(name).Produces<long>(200).Produces(400);
+            }).WithTags(name).Produces<long>(200).Produces(400)
+              .WithMetadata(new OhDataQueryOptionsMetadata(
+                  FilterEnabled: source.FilterEnabled,
+                  OrderByEnabled: false,
+                  SelectEnabled: false,
+                  ExpandEnabled: false,
+                  CountEnabled: true,
+                  SearchEnabled: false,
+                  MaxTop: null));
         }
 
         if (source.HasGetById)
@@ -891,7 +923,15 @@ internal static class OhDataEndpointFactory
                     return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
                 }
             });
-            rb.WithTags(name).Produces<TModel>(200).Produces(404);
+            rb.WithTags(name).Produces<TModel>(200).Produces(404)
+              .WithMetadata(new OhDataQueryOptionsMetadata(
+                  FilterEnabled: false,
+                  OrderByEnabled: false,
+                  SelectEnabled: source.SelectEnabled,
+                  ExpandEnabled: source.ExpandEnabled,
+                  CountEnabled: false,
+                  SearchEnabled: false,
+                  MaxTop: null));
         }
 
         if (source.HasPost)
