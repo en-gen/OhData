@@ -1,9 +1,14 @@
+using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Microsoft.AspNetCore.OData.Query;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using OhData.Abstractions;
+using OhData.Abstractions.AspNetCore.OData;
 using OhData.AspNetCore;
 using Xunit;
 
@@ -1472,6 +1477,42 @@ public class EndpointMappingTests
         Assert.Equal(HttpStatusCode.NoContent, resp.StatusCode);
     }
 
+    // ── M-2: GET $ref with @odata.id population ───────────────────────────────
+
+    [Fact]
+    public async Task NavigationRef_Get_WithRefTargetEntitySet_ReturnsPopulatedRefs()
+    {
+        // NavRefProfile configures refTargetEntitySet="Children" so GET $ref should
+        // return an array of objects with @odata.id values.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavRefProfile>());
+        var resp = await fx.Client.GetAsync("/odata/NavRefParents(1)/Children/$ref");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(json.TryGetProperty("value", out var value));
+        Assert.Equal(JsonValueKind.Array, value.ValueKind);
+        Assert.Equal(2, value.GetArrayLength());
+        // Each entry must have @odata.id
+        for (int i = 0; i < value.GetArrayLength(); i++)
+        {
+            Assert.True(value[i].TryGetProperty("@odata.id", out var odataId));
+            string? id = odataId.GetString();
+            Assert.NotNull(id);
+            Assert.Contains("Children(", id);
+        }
+    }
+
+    [Fact]
+    public async Task NavigationRef_Get_WithoutRefTargetEntitySet_ReturnsEmptyArray()
+    {
+        // NavQueryProfile does not set refTargetEntitySet — should return empty value array (existing behavior).
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavQueryProfile>());
+        var resp = await fx.Client.GetAsync("/odata/NavQueryParents(1)/Children/$ref");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(json.TryGetProperty("value", out var value));
+        Assert.Equal(0, value.GetArrayLength());
+    }
+
     // ── Batch 2, Gap 7: Unbound functions and actions ─────────────────────────────
 
     [Fact]
@@ -1688,6 +1729,41 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataWidgets(1)");
         Assert.Equal("Sprocket", json.GetProperty("name").GetString());
+    }
+
+    // ── ODataQueryResult<TModel> (H-1 / M-6) ─────────────────────────────────
+
+    [Fact]
+    public async Task ODataQueryResult_WithTotalCount_CountReflectsPrePageTotal()
+    {
+        // ODataQueryResultProfile has 20 items but applies $top itself and returns TotalCount=20.
+        // $count in the envelope should be 20 (pre-paging), not 5 (post-paging).
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataQueryResultProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataResultWidgets?$top=5&$count=true");
+        Assert.True(json.TryGetProperty("@odata.count", out var count));
+        Assert.Equal(20L, count.GetInt64());
+        Assert.Equal(5, json.GetProperty("value").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task ODataQueryResult_WithNextLink_NextLinkPropagated()
+    {
+        // ODataQueryNextLinkProfile always sets NextLink = "http://next".
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataQueryNextLinkProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataNextLinkWidgets");
+        Assert.True(json.TryGetProperty("@odata.nextLink", out var nextLink));
+        Assert.Equal("http://next", nextLink.GetString());
+    }
+
+    [Fact]
+    public async Task ODataQueryResult_WithoutTotalCount_CountFallsBackToItemLength()
+    {
+        // ODataWidgetProfile does not set TotalCount — $count should fall back to items.Length.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataWidgetProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataWidgets?$count=true");
+        Assert.True(json.TryGetProperty("@odata.count", out var count));
+        // ODataWidgets has 3 items; no TotalCount set so falls back to item count.
+        Assert.Equal(3L, count.GetInt64());
     }
 
     // ── Batch 3: Delta<TModel> PATCH via PatchDelta ───────────────────────────
@@ -2054,6 +2130,212 @@ public class EndpointMappingTests
         Assert.Equal(0, json.GetProperty("value").GetArrayLength());
     }
 
+    // ── M-1: ETag wildcard * in If-Match ─────────────────────────────────────
+
+    [Fact]
+    public async Task ETag_IfMatch_Wildcard_AlwaysMatchesOnPut()
+    {
+        // If-Match: * must always match regardless of the current ETag — should return 200, not 412.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagWidgetProfile>());
+        var request = new HttpRequestMessage(HttpMethod.Put, "/odata/ETagWidgets(1)");
+        request.Headers.TryAddWithoutValidation("If-Match", "*");
+        request.Content = JsonContent.Create(new Widget { Id = 1, Name = "Sprocket" });
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ETag_IfMatch_Wildcard_AlwaysMatchesOnDelete()
+    {
+        // If-Match: * must always match regardless of the current ETag — should return 204, not 412.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagWidgetProfile>());
+        var request = new HttpRequestMessage(HttpMethod.Delete, "/odata/ETagWidgets(1)");
+        request.Headers.TryAddWithoutValidation("If-Match", "*");
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.True(
+            response.StatusCode == HttpStatusCode.NoContent || response.StatusCode == HttpStatusCode.OK,
+            $"Expected 200 or 204 but got {(int)response.StatusCode}");
+    }
+
+    // ── M-2: ETag comma-separated list in If-Match ────────────────────────────
+
+    [Fact]
+    public async Task ETag_IfMatch_MultipleETags_OneMatches_Returns200()
+    {
+        // If-Match: "wrongetag", "<actual>" — second entry matches → 200
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagIfMatchProfile>());
+        string etag = (await fx.Client.GetAsync("/odata/IfMatchWidgets(1)")).Headers.ETag!.Tag;
+        var request = new HttpRequestMessage(HttpMethod.Put, "/odata/IfMatchWidgets(1)");
+        request.Headers.TryAddWithoutValidation("If-Match", $"\"wrongetag\", {etag}");
+        request.Content = JsonContent.Create(new Widget { Id = 1, Name = "Updated" });
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ETag_IfMatch_MultipleETags_NoneMatch_Returns412()
+    {
+        // If-Match: "wrong1", "wrong2" — neither matches → 412
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagIfMatchProfile>());
+        var request = new HttpRequestMessage(HttpMethod.Put, "/odata/IfMatchWidgets(1)");
+        request.Headers.TryAddWithoutValidation("If-Match", "\"wrong1\", \"wrong2\"");
+        request.Content = JsonContent.Create(new Widget { Id = 1, Name = "Updated" });
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.PreconditionFailed, response.StatusCode);
+    }
+
+    // ── H-1: $ref handler invocation ─────────────────────────────────────────
+
+    [Fact]
+    public async Task NavigationRef_Post_InvokesAddRefHandler()
+    {
+        TrackingRefProfile.AddCalls.Clear();
+        TrackingRefProfile.RemoveCalls.Clear();
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<TrackingRefProfile>());
+        HttpResponseMessage response = await fx.Client.PostAsync(
+            "/odata/TrackingParents(1)/Children/$ref",
+            new System.Net.Http.StringContent(
+                "{\"@odata.id\":\"http://localhost/odata/Children(99)\"}",
+                System.Text.Encoding.UTF8,
+                "application/json"));
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Single(TrackingRefProfile.AddCalls);
+        (int parentId, string relatedId) = TrackingRefProfile.AddCalls[0];
+        Assert.Equal(1, parentId);
+        Assert.Contains("99", relatedId);
+    }
+
+    [Fact]
+    public async Task NavigationRef_Delete_InvokesRemoveRefHandler()
+    {
+        TrackingRefProfile.AddCalls.Clear();
+        TrackingRefProfile.RemoveCalls.Clear();
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<TrackingRefProfile>());
+        HttpResponseMessage response = await fx.Client.DeleteAsync(
+            "/odata/TrackingParents(1)/Children/$ref?$id=http://localhost/odata/Children(1)");
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Single(TrackingRefProfile.RemoveCalls);
+        (int parentId, string relatedId) = TrackingRefProfile.RemoveCalls[0];
+        Assert.Equal(1, parentId);
+    }
+
+    [Fact]
+    public async Task NavigationRef_Post_MissingOdataId_Returns400()
+    {
+        TrackingRefProfile.AddCalls.Clear();
+        TrackingRefProfile.RemoveCalls.Clear();
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<TrackingRefProfile>());
+        HttpResponseMessage response = await fx.Client.PostAsync(
+            "/odata/TrackingParents(1)/Children/$ref",
+            new System.Net.Http.StringContent(
+                "{\"something\":\"else\"}",
+                System.Text.Encoding.UTF8,
+                "application/json"));
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    // ── H-2: AdvancedConfigure override ──────────────────────────────────────
+
+    [Fact]
+    public async Task AdvancedConfigure_Override_ServerStartsAndResponds()
+    {
+        // Verifies the profile with AdvancedConfigure builds without error
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AdvancedConfigureProfile>());
+        HttpResponseMessage response = await fx.Client.GetAsync("/odata/AdvancedWidgets");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(json.TryGetProperty("value", out _), "Expected OData envelope with value array");
+    }
+
+    [Fact]
+    public async Task AdvancedConfigure_Override_GetById_Works()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AdvancedConfigureProfile>());
+        HttpResponseMessage response = await fx.Client.GetAsync("/odata/AdvancedWidgets(1)");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Alpha", json.GetProperty("name").GetString());
+    }
+
+    // ── M-3: $select on navigation collection ────────────────────────────────
+
+    [Fact]
+    public async Task Navigation_Select_FiltersToRequestedProperty()
+    {
+        // $select=Name should include camelCase "name" but exclude "id" and "parentId"
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavQueryProfile>());
+        JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavQueryParents(1)/Children?$select=Name");
+        JsonElement value = json.GetProperty("value");
+        Assert.True(value.GetArrayLength() > 0);
+        JsonElement first = value[0];
+        Assert.True(first.TryGetProperty("name", out _), "Expected 'name' property to be present");
+        Assert.False(first.TryGetProperty("id", out _), "Expected 'id' to be excluded by $select");
+        Assert.False(first.TryGetProperty("parentId", out _), "Expected 'parentId' to be excluded by $select");
+    }
+
+    [Fact]
+    public async Task Navigation_OrderBy_SilentlyIgnored_Returns200()
+    {
+        // $orderby has no effect on the GetAll nav path but must not cause an error
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavQueryProfile>());
+        HttpResponseMessage response = await fx.Client.GetAsync("/odata/NavQueryParents(1)/Children?$orderby=Name desc");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(json.TryGetProperty("value", out JsonElement value));
+        Assert.True(value.GetArrayLength() > 0);
+    }
+
+    // ── Private inner fixture classes ─────────────────────────────────────────
+
+    private class TrackingRefProfile : EntitySetProfile<int, Parent>
+    {
+        internal static readonly System.Collections.Generic.List<(int ParentId, string RelatedId)> AddCalls = new();
+        internal static readonly System.Collections.Generic.List<(int ParentId, string RelatedId)> RemoveCalls = new();
+        private static readonly System.Collections.Generic.List<Parent> Store = new() { new() { Id = 1, Name = "P1" } };
+
+        public TrackingRefProfile() : base(x => x.Id)
+        {
+            EntitySetName = "TrackingParents";
+            GetAll = (ct) => System.Threading.Tasks.Task.FromResult<System.Collections.Generic.IEnumerable<Parent>>(Store);
+            HasMany(
+                navigation: x => x.Children!,
+                getAll: (parentId, ct) => System.Threading.Tasks.Task.FromResult<System.Collections.Generic.IEnumerable<Child>>(System.Array.Empty<Child>()),
+                addRef: (parentId, relatedId, ct) =>
+                {
+                    AddCalls.Add((parentId, relatedId));
+                    return System.Threading.Tasks.Task.CompletedTask;
+                },
+                removeRef: (parentId, relatedId, ct) =>
+                {
+                    RemoveCalls.Add((parentId, relatedId));
+                    return System.Threading.Tasks.Task.CompletedTask;
+                });
+        }
+    }
+
+    private class AdvancedConfigureProfile : EntitySetProfile<int, Widget>
+    {
+        private static readonly System.Collections.Generic.List<Widget> Store = new()
+        {
+            new() { Id = 1, Name = "Alpha" },
+            new() { Id = 2, Name = "Beta" },
+        };
+
+        public AdvancedConfigureProfile() : base(x => x.Id)
+        {
+            EntitySetName = "AdvancedWidgets";
+            FilterEnabled = true;
+            OrderByEnabled = true;
+            GetQueryable = (ct) => System.Threading.Tasks.Task.FromResult(Store.AsQueryable());
+            GetById = (id, ct) => System.Threading.Tasks.Task.FromResult(Store.FirstOrDefault(w => w.Id == id));
+        }
+
+        protected override void AdvancedConfigure(Microsoft.OData.ModelBuilder.EntitySetConfiguration<Widget> config)
+        {
+            config.EntityType.HasKey(w => w.Id);
+        }
+    }
+
 }
 
 // ── Auth test helpers (not registered as profiles — instantiated directly) ───
@@ -2082,5 +2364,56 @@ internal class PolicyAndRolesProfile : OhData.Abstractions.EntitySetProfile<int,
     {
         RequireAuthorization("MyPolicy");
         RequireRoles("Admin"); // should combine, not throw
+    }
+}
+
+/// <summary>
+/// Profile that applies its own paging and returns <see cref="ODataQueryResult{TModel}"/>
+/// with a pre-paging <c>TotalCount</c> so the framework uses it for <c>@odata.count</c>.
+/// </summary>
+internal class ODataQueryResultProfile : ODataEntitySetProfile<int, Widget>
+{
+    private static readonly List<Widget> Store = Enumerable.Range(1, 20)
+        .Select(i => new Widget { Id = i, Name = $"Widget{i}" }).ToList();
+
+    public ODataQueryResultProfile() : base(x => x.Id)
+    {
+        EntitySetName = "ODataResultWidgets";
+        CountEnabled = true;
+        GetODataQueryable = (options, ct) =>
+        {
+            // Profile applies paging itself and returns TotalCount (pre-paging).
+            long totalCount = Store.Count;
+            var q = Store.AsQueryable();
+            if (options.Top?.Value is { } top)
+            {
+                q = q.Take(top);
+            }
+            return System.Threading.Tasks.Task.FromResult(new ODataQueryResult<Widget>
+            {
+                Items = q,
+                TotalCount = totalCount,
+            });
+        };
+    }
+}
+
+/// <summary>
+/// Profile that sets a <c>NextLink</c> on every response to verify it is propagated.
+/// </summary>
+internal class ODataQueryNextLinkProfile : ODataEntitySetProfile<int, Widget>
+{
+    public ODataQueryNextLinkProfile() : base(x => x.Id)
+    {
+        EntitySetName = "ODataNextLinkWidgets";
+        GetODataQueryable = (options, ct) =>
+        {
+            var items = new List<Widget> { new() { Id = 1, Name = "W1" } }.AsQueryable();
+            return System.Threading.Tasks.Task.FromResult(new ODataQueryResult<Widget>
+            {
+                Items = items,
+                NextLink = "http://next",
+            });
+        };
     }
 }

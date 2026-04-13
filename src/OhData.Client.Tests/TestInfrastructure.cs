@@ -31,6 +31,9 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
     public WidgetProfile() : base(x => x.Id)
     {
         IdempotentDelete = false;
+        FilterEnabled = true;
+        SelectEnabled = true;
+        OrderByEnabled = true;
 
         _store = new List<Widget>
         {
@@ -48,7 +51,8 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
         };
         PutById = (id, w, ct) =>
         {
-            _store.RemoveAll(x => x.Id == id);
+            int removed = _store.RemoveAll(x => x.Id == id);
+            if (removed == 0) return Task.FromResult<Widget>(null!);
             w.Id = id;
             _store.Add(w);
             return Task.FromResult(w);
@@ -61,6 +65,72 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
             return Task.FromResult<Widget?>(existing);
         };
         Delete = (id, ct) => Task.FromResult(_store.RemoveAll(w => w.Id == id) > 0);
+    }
+}
+
+/// <summary>
+/// Profile with ETag support for optimistic concurrency tests.
+/// ETag is derived from the widget's Name field.
+/// </summary>
+internal class ETagWidgetProfile : EntitySetProfile<int, Widget>
+{
+    private readonly List<Widget> _store;
+
+    public ETagWidgetProfile() : base(x => x.Id)
+    {
+        EntitySetName = "ETagWidgets";
+        IdempotentDelete = false;
+
+        _store = new List<Widget>
+        {
+            new() { Id = 1, Name = "Sprocket" },
+            new() { Id = 2, Name = "Cog" },
+        };
+
+        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
+        Post = (widget, ct) =>
+        {
+            widget.Id = _store.Count > 0 ? _store.Max(w => w.Id) + 1 : 1;
+            _store.Add(widget);
+            return Task.FromResult<Widget?>(widget);
+        };
+        PutById = (id, w, ct) =>
+        {
+            int removed = _store.RemoveAll(x => x.Id == id);
+            if (removed == 0) return Task.FromResult<Widget>(null!);
+            w.Id = id;
+            _store.Add(w);
+            return Task.FromResult(w);
+        };
+        Patch = (id, delta, ct) =>
+        {
+            var existing = _store.FirstOrDefault(x => x.Id == id);
+            if (existing is null) return Task.FromResult<Widget?>(null);
+            delta.Patch(existing);
+            return Task.FromResult<Widget?>(existing);
+        };
+        Delete = (id, ct) => Task.FromResult(_store.RemoveAll(w => w.Id == id) > 0);
+
+        UseETag(x => x.Name);
+    }
+}
+
+/// <summary>
+/// Profile with MaxTop set for nextLink pagination tests.
+/// Contains 10 items with a MaxTop of 3, so the first page always has a nextLink.
+/// </summary>
+internal class PaginatedWidgetProfile : EntitySetProfile<int, Widget>
+{
+    private static readonly List<Widget> _store =
+        Enumerable.Range(1, 10).Select(i => new Widget { Id = i, Name = $"Widget{i}" }).ToList();
+
+    public PaginatedWidgetProfile() : base(x => x.Id)
+    {
+        EntitySetName = "PaginatedWidgets";
+        MaxTop = 3;
+        FilterEnabled = true;
+        OrderByEnabled = true;
+        GetQueryable = (ct) => Task.FromResult(_store.AsQueryable());
     }
 }
 
@@ -102,6 +172,90 @@ internal sealed class ClientTestFixture : IAsyncDisposable
     {
         Client.Dispose();
         HttpClient.Dispose();
+        await _app.DisposeAsync();
+    }
+}
+
+/// <summary>
+/// Fixture that registers <see cref="ETagWidgetProfile"/> in addition to <see cref="WidgetProfile"/>.
+/// Used for ETag / If-Match integration tests.
+/// </summary>
+internal sealed class ETagClientTestFixture : IAsyncDisposable
+{
+    private readonly WebApplication _app;
+    private readonly HttpClient _httpClient;
+    public OhDataClient Client { get; }
+
+    private ETagClientTestFixture(WebApplication app, string prefix)
+    {
+        _app = app;
+        _httpClient = ((IHost)app).GetTestClient();
+        _httpClient.BaseAddress = new Uri(_httpClient.BaseAddress!, prefix.Trim('/') + "/");
+        Client = new OhDataClient(_httpClient);
+    }
+
+    public static async Task<ETagClientTestFixture> BuildAsync(string prefix = "/odata")
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Services.AddLogging(b => b.ClearProviders());
+        builder.Services.AddOhData(o =>
+        {
+            o.WithPrefix(prefix);
+            o.AddProfile<WidgetProfile>();
+            o.AddProfile<ETagWidgetProfile>();
+        });
+
+        var app = builder.Build();
+        app.MapOhData();
+        await app.StartAsync();
+        return new ETagClientTestFixture(app, prefix);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        Client.Dispose();
+        _httpClient.Dispose();
+        await _app.DisposeAsync();
+    }
+}
+
+/// <summary>
+/// Fixture that registers <see cref="PaginatedWidgetProfile"/> for nextLink pagination tests.
+/// </summary>
+internal sealed class PaginatedClientTestFixture : IAsyncDisposable
+{
+    private readonly WebApplication _app;
+    public OhDataClient Client { get; }
+
+    private PaginatedClientTestFixture(WebApplication app, string prefix)
+    {
+        _app = app;
+        HttpClient httpClient = ((IHost)app).GetTestClient();
+        httpClient.BaseAddress = new Uri(httpClient.BaseAddress!, prefix.Trim('/') + "/");
+        Client = new OhDataClient(httpClient);
+    }
+
+    public static async Task<PaginatedClientTestFixture> BuildAsync(string prefix = "/odata")
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Services.AddLogging(b => b.ClearProviders());
+        builder.Services.AddOhData(o =>
+        {
+            o.WithPrefix(prefix);
+            o.AddProfile<PaginatedWidgetProfile>();
+        });
+
+        var app = builder.Build();
+        app.MapOhData();
+        await app.StartAsync();
+        return new PaginatedClientTestFixture(app, prefix);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        Client.Dispose();
         await _app.DisposeAsync();
     }
 }

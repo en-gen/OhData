@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using OhData.Client.Internal;
@@ -15,17 +17,23 @@ public sealed class KeyedEntitySetClient<T> where T : class
     private readonly OhDataClientOptions _options;
     private readonly string _entitySetName;
     private readonly string _formattedKey;
+    private readonly string? _select;
+    private readonly string? _expand;
 
     internal KeyedEntitySetClient(
         ODataHttpClient http,
         OhDataClientOptions options,
         string entitySetName,
-        string formattedKey)
+        string formattedKey,
+        string? select = null,
+        string? expand = null)
     {
         _http = http;
         _options = options;
         _entitySetName = entitySetName;
         _formattedKey = formattedKey;
+        _select = select;
+        _expand = expand;
     }
 
     /// <summary>
@@ -35,29 +43,55 @@ public sealed class KeyedEntitySetClient<T> where T : class
         => _http.GetSingleAsync<T>(Url, ct);
 
     /// <summary>
-    /// PUT <c>/{EntitySet}(key)</c> with a full entity replacement.
-    /// Returns the updated entity as returned by the server, or <see langword="null"/>
-    /// when the server returns HTTP 204 No Content (preference <c>return=minimal</c>).
+    /// GET <c>/{EntitySet}(key)</c> with ETag — returns the entity and the server's current ETag value.
+    /// Pass the ETag to <see cref="PutAsync(T, string?, bool, CancellationToken)"/> for optimistic concurrency.
     /// </summary>
-    public Task<T?> PutAsync(T entity, CancellationToken ct = default)
-        => _http.PutAsync(Url, entity, ct);
+    public Task<(T? Entity, string? ETag)> GetWithETagAsync(CancellationToken ct = default)
+        => _http.GetSingleWithETagAsync<T>(Url, ct);
+
+    /// <summary>
+    /// PUT <c>/{EntitySet}(key)</c> with a full entity replacement.
+    /// Optionally supply an If-Match ETag for optimistic concurrency or set
+    /// <paramref name="preferMinimal"/> to request a 204 No Content response.
+    /// Returns the updated entity as returned by the server, or <see langword="null"/>
+    /// when the server returns HTTP 204 No Content.
+    /// Throws <see cref="ODataClientException"/> with status 412 if <paramref name="ifMatch"/>
+    /// is supplied and does not match the server's current ETag.
+    /// </summary>
+    public Task<T?> PutAsync(T entity, string? ifMatch = null, bool preferMinimal = false, CancellationToken ct = default)
+        => _http.PutAsync(Url, entity, ifMatch, preferMinimal, ct);
 
     /// <summary>
     /// PATCH <c>/{EntitySet}(key)</c> with a partial update.
     /// <paramref name="patch"/> can be an anonymous object (<c>new { Price = 9.99m }</c>)
     /// or any type whose serialised properties are the fields to update.
+    /// Optionally supply an If-Match ETag for optimistic concurrency or set
+    /// <paramref name="preferMinimal"/> to request a 204 No Content response.
     /// Returns the updated entity as returned by the server, or <see langword="null"/>
-    /// when the server returns HTTP 204 No Content (preference <c>return=minimal</c>).
+    /// when the server returns HTTP 204 No Content.
     /// </summary>
-    public Task<T?> PatchAsync(object patch, CancellationToken ct = default)
-        => _http.PatchAsync<T>(Url, patch, ct);
+    public Task<T?> PatchAsync(object patch, string? ifMatch = null, bool preferMinimal = false, CancellationToken ct = default)
+        => _http.PatchAsync<T>(Url, patch, ifMatch, preferMinimal, ct);
 
     /// <summary>
-    /// DELETE <c>/{EntitySet}(key)</c>. Throws <see cref="ODataClientException"/> on failure
-    /// (including 404 when the server is configured with non-idempotent deletes).
+    /// DELETE <c>/{EntitySet}(key)</c>. Optionally supply an If-Match ETag for optimistic concurrency.
+    /// Throws <see cref="ODataClientException"/> on failure (including 404 when the server is
+    /// configured with non-idempotent deletes).
     /// </summary>
-    public Task DeleteAsync(CancellationToken ct = default)
-        => _http.DeleteAsync(Url, ct);
+    public Task DeleteAsync(string? ifMatch = null, CancellationToken ct = default)
+        => _http.DeleteAsync(Url, ifMatch, ct);
 
-    private string Url => $"{_entitySetName}({_formattedKey})";
+    private string Url
+    {
+        get
+        {
+            string baseUrl = $"{_entitySetName}({_formattedKey})";
+            var parts = new List<string>(2);
+            if (_select is not null) parts.Add($"$select={Uri.EscapeDataString(_select)}");
+            if (_expand is not null) parts.Add($"$expand={Uri.EscapeDataString(_expand)}");
+            return parts.Count == 0 ? baseUrl : $"{baseUrl}?{string.Join('&', parts)}";
+        }
+    }
+
+    internal string BuildEntityUrl() => Url;
 }

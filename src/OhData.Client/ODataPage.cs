@@ -18,4 +18,10 @@ public sealed class ODataPage<T>
     /// or <see langword="null"/> when the server did not return an inline count.
     /// </summary>
     public long? TotalCount { get; init; }
+
+    /// <summary>
+    /// The URL to follow to retrieve the next page of results, or <see langword="null"/>
+    /// when there are no more pages.
+    /// </summary>
+    public string? NextLink { get; init; }
 }
