@@ -1293,9 +1293,9 @@ internal static class OhDataEndpointFactory
                                 });
                             }
 
-                            // Return minimal compliant $ref envelope — full @odata.id population
-                            // requires knowing the related entity's key property, which is not
-                            // available without generic type context. Return empty value array.
+                            // No ChildEntitySetName/ChildKeyPropertyName configured — return minimal
+                            // envelope. Use HasMany(..., refTargetEntitySet: "...") to enable
+                            // populated @odata.id references.
                             return Results.Ok(new Dictionary<string, object?>
                             {
                                 ["@odata.context"] = context,
@@ -1304,6 +1304,29 @@ internal static class OhDataEndpointFactory
                         }
                         else
                         {
+                            // Single-entity $ref: when ChildEntitySetName and ChildKeyPropertyName
+                            // are configured, call the handler to get the related entity and build
+                            // the @odata.id link (OData §11.4.6.1).
+                            if (refNavCapture.ChildEntitySetName is not null && refNavCapture.ChildKeyPropertyName is not null)
+                            {
+                                object? child = await refNavCapture.Handler(parsedKey!, ct);
+                                if (child is not null)
+                                {
+                                    var kProp = child.GetType().GetProperty(
+                                        refNavCapture.ChildKeyPropertyName,
+                                        BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+                                    if (kProp?.GetValue(child) is { } k)
+                                    {
+                                        string childKey = string.Format(CultureInfo.InvariantCulture, "{0}", k);
+                                        return Results.Ok(new Dictionary<string, object?>
+                                        {
+                                            ["@odata.context"] = context,
+                                            ["@odata.id"] = $"{baseUrl}/{refNavCapture.ChildEntitySetName}({childKey})"
+                                        });
+                                    }
+                                }
+                            }
+
                             return Results.Ok(new Dictionary<string, object?>
                             {
                                 ["@odata.context"] = context

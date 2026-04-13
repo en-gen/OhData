@@ -649,6 +649,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Declares an optional navigation property and registers a
     /// <c>GET /{EntitySet}({key})/{Property}</c> route backed by <paramref name="get"/>.
     /// Pass <c>null</c> for <paramref name="get"/> to declare the navigation in the EDM only.
+    /// Optionally supply <paramref name="refTargetEntitySet"/> to enable populated
+    /// <c>@odata.id</c> references on <c>GET /{EntitySet}({key})/{Property}/$ref</c>.
     /// </summary>
     /// <typeparam name="TNavigation">The CLR type of the related entity.</typeparam>
     /// <param name="navigation">Expression selecting the navigation property.</param>
@@ -656,19 +658,30 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Handler that loads the related entity by parent key. Return <c>null</c> to produce
     /// a <c>404 Not Found</c> response.
     /// </param>
+    /// <param name="refTargetEntitySet">
+    /// The entity-set name of the navigation target (e.g. <c>"Suppliers"</c>). When set,
+    /// <c>GET /$ref</c> returns an <c>@odata.id</c> link instead of an empty envelope.
+    /// The target key is detected by convention: tries <c>Id</c> then <c>{TypeName}Id</c>.
+    /// </param>
     protected void HasOptional<TNavigation>(
         Expression<Func<TModel, TNavigation>> navigation,
-        Func<TKey, CancellationToken, Task<TNavigation?>>? get)
+        Func<TKey, CancellationToken, Task<TNavigation?>>? get,
+        string? refTargetEntitySet = null)
         where TNavigation : class
     {
         HasOptional(navigation);
-        if (get is null) return;
+        if (get is null && refTargetEntitySet is null) return;
         string propName = GetNavigationPropertyName(navigation.Body);
+        string? childKeyPropName = DetectChildKeyProperty<TNavigation>(refTargetEntitySet);
         _navRoutes.Add(new NavigationRouteDefinition
         {
             PropertyName = propName,
             IsCollection = false,
-            Handler = async (key, ct) => (object?)await get((TKey)key, ct)
+            Handler = get is not null
+                ? async (key, ct) => (object?)await get((TKey)key, ct)
+                : (_, _) => Task.FromResult<object?>(null),
+            ChildEntitySetName = refTargetEntitySet,
+            ChildKeyPropertyName = childKeyPropName,
         });
     }
 
@@ -689,23 +702,36 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Declares a required navigation property and registers a
     /// <c>GET /{EntitySet}({key})/{Property}</c> route backed by <paramref name="get"/>.
     /// Pass <c>null</c> for <paramref name="get"/> to declare the navigation in the EDM only.
+    /// Optionally supply <paramref name="refTargetEntitySet"/> to enable populated
+    /// <c>@odata.id</c> references on <c>GET /{EntitySet}({key})/{Property}/$ref</c>.
     /// </summary>
     /// <typeparam name="TNavigation">The CLR type of the related entity.</typeparam>
     /// <param name="navigation">Expression selecting the navigation property.</param>
     /// <param name="get">Handler that loads the required related entity by parent key.</param>
+    /// <param name="refTargetEntitySet">
+    /// The entity-set name of the navigation target (e.g. <c>"Suppliers"</c>). When set,
+    /// <c>GET /$ref</c> returns an <c>@odata.id</c> link instead of an empty envelope.
+    /// The target key is detected by convention: tries <c>Id</c> then <c>{TypeName}Id</c>.
+    /// </param>
     protected void HasRequired<TNavigation>(
         Expression<Func<TModel, TNavigation>> navigation,
-        Func<TKey, CancellationToken, Task<TNavigation>>? get)
+        Func<TKey, CancellationToken, Task<TNavigation>>? get,
+        string? refTargetEntitySet = null)
         where TNavigation : class
     {
         HasRequired(navigation);
-        if (get is null) return;
+        if (get is null && refTargetEntitySet is null) return;
         string propName = GetNavigationPropertyName(navigation.Body);
+        string? childKeyPropName = DetectChildKeyProperty<TNavigation>(refTargetEntitySet);
         _navRoutes.Add(new NavigationRouteDefinition
         {
             PropertyName = propName,
             IsCollection = false,
-            Handler = async (key, ct) => (object?)await get((TKey)key, ct)
+            Handler = get is not null
+                ? async (key, ct) => (object?)await get((TKey)key, ct)
+                : (_, _) => Task.FromResult<object?>(null),
+            ChildEntitySetName = refTargetEntitySet,
+            ChildKeyPropertyName = childKeyPropName,
         });
     }
 
@@ -824,16 +850,23 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Handler for <c>DELETE /{EntitySet}({key})/{Property}/$ref</c>. Pass <c>null</c>
     /// to omit the route.
     /// </param>
+    /// <param name="refTargetEntitySet">
+    /// The entity-set name of the navigation target (e.g. <c>"Suppliers"</c>). When set,
+    /// <c>GET /$ref</c> returns an <c>@odata.id</c> link instead of an empty envelope.
+    /// The target key is detected by convention: tries <c>Id</c> then <c>{TypeName}Id</c>.
+    /// </param>
     protected void HasOptional<TNavigation>(
         Expression<Func<TModel, TNavigation>> navigation,
         Func<TKey, CancellationToken, Task<TNavigation?>>? get,
         Func<TKey, string, CancellationToken, Task>? setRef = null,
-        Func<TKey, string, CancellationToken, Task>? removeRef = null)
+        Func<TKey, string, CancellationToken, Task>? removeRef = null,
+        string? refTargetEntitySet = null)
         where TNavigation : class
     {
         HasOptional(navigation);
-        if (get is null && setRef is null && removeRef is null) return;
+        if (get is null && setRef is null && removeRef is null && refTargetEntitySet is null) return;
         string propName = GetNavigationPropertyName(navigation.Body);
+        string? childKeyPropName = DetectChildKeyProperty<TNavigation>(refTargetEntitySet);
         _navRoutes.Add(new NavigationRouteDefinition
         {
             PropertyName = propName,
@@ -847,6 +880,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
             RemoveRef = removeRef is not null
                 ? (key, relatedId, ct) => removeRef((TKey)key, (string)relatedId, ct)
                 : (Func<object, object, CancellationToken, Task>?)null,
+            ChildEntitySetName = refTargetEntitySet,
+            ChildKeyPropertyName = childKeyPropName,
         });
     }
 
@@ -920,6 +955,21 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         if (body is UnaryExpression ue) return GetNavigationPropertyName(ue.Operand);
         throw new ArgumentException(
             $"Cannot extract property name from expression type {body.NodeType}. Use a simple property accessor: x => x.PropertyName.");
+    }
+
+    /// <summary>
+    /// Detects the key property of <typeparamref name="TNavigation"/> by convention when
+    /// <paramref name="refTargetEntitySet"/> is supplied. Tries <c>Id</c> first, then
+    /// <c>{TypeName}Id</c>. Returns <c>null</c> when <paramref name="refTargetEntitySet"/>
+    /// is <c>null</c> or no matching property is found.
+    /// </summary>
+    private static string? DetectChildKeyProperty<TNavigation>(string? refTargetEntitySet)
+    {
+        if (refTargetEntitySet is null) return null;
+        string typeName = typeof(TNavigation).Name;
+        var idProp = typeof(TNavigation).GetProperty("Id", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase)
+            ?? typeof(TNavigation).GetProperty(typeName + "Id", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+        return idProp?.Name;
     }
 
     private static Type? GetCollectionElementType(Type type)
