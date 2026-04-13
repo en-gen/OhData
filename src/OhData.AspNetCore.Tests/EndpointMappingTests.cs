@@ -293,14 +293,6 @@ public class EndpointMappingTests
     }
 
     [Fact]
-    public async Task Patch_WithoutGetById_ThrowsAtStartup()
-    {
-        // Startup validation: configuring Patch without GetById must throw.
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => TestHostBuilder.BuildAsync(o => o.AddProfile<PatchWithoutGetByIdProfile>()));
-    }
-
-    [Fact]
     public async Task Patch_RouteOmitted_WhenHandlerNotConfigured()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EmptyProfile>());

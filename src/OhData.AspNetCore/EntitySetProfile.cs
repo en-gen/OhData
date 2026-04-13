@@ -1,0 +1,1041 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+using System.Linq.Expressions;
+using System.Reflection;
+using System.Security.Cryptography;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.OData.Deltas;
+using Microsoft.OData.ModelBuilder;
+
+namespace OhData.Abstractions;
+
+/// <summary>
+/// Base class for defining an OData entity set. Derive from this class in your application
+/// and assign the handler delegates (<see cref="GetAll"/>, <see cref="GetById"/>, etc.) inside
+/// the constructor to enable the corresponding HTTP endpoints.
+/// </summary>
+/// <typeparam name="TKey">The CLR type of the entity's primary key.</typeparam>
+/// <typeparam name="TModel">The CLR type of the entity.</typeparam>
+public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisitModelBuilder, IEntitySetEndpointSource
+    where TModel : class
+{
+    private readonly Expression<Func<TModel, TKey>> _getKey;
+
+    /// <summary>
+    /// The OData entity set name used in URL routes and <c>$metadata</c>. Defaults to
+    /// <c>"{ModelTypeName}s"</c>. Override in the derived constructor if a different name is needed:
+    /// <c>EntitySetName = "MyWidgets";</c>
+    /// </summary>
+    protected string EntitySetName { get; init; }
+
+    /// <summary>
+    /// Controls whether <c>$select</c> is allowed on this entity set (OData §11.2.4.1).
+    /// Inherits from <see cref="EntitySetDefaults"/> when <c>null</c> (the default).
+    /// </summary>
+    protected bool? SelectEnabled { get; init; }
+
+    /// <summary>
+    /// Controls whether <c>$expand</c> is allowed on this entity set (OData §11.2.4.2).
+    /// Inherits from <see cref="EntitySetDefaults"/> when <c>null</c> (the default).
+    /// </summary>
+    protected bool? ExpandEnabled { get; init; }
+
+    /// <summary>
+    /// Controls whether <c>$filter</c> is allowed on this entity set (OData §11.2.6.1).
+    /// Inherits from <see cref="EntitySetDefaults"/> when <c>null</c> (the default).
+    /// </summary>
+    protected bool? FilterEnabled { get; init; }
+
+    /// <summary>
+    /// Controls whether <c>$orderby</c> is allowed on this entity set (OData §11.2.6.2).
+    /// Inherits from <see cref="EntitySetDefaults"/> when <c>null</c> (the default).
+    /// </summary>
+    protected bool? OrderByEnabled { get; init; }
+
+    /// <summary>
+    /// Controls whether <c>$count</c> is allowed on this entity set (OData §11.2.6.5).
+    /// Inherits from <see cref="EntitySetDefaults"/> when <c>null</c> (the default).
+    /// </summary>
+    protected bool? CountEnabled { get; init; }
+
+    private string[]? _selectProperties;
+    private string[]? _expandProperties;
+    private string[]? _filterProperties;
+    private string[]? _orderByProperties;
+
+    /// <summary>
+    /// Registers the <c>GET /{EntitySet}</c> handler (OData §11.2.1 — Requesting a Collection).
+    /// When set, the framework returns the full enumerable as-is with no query options applied.
+    /// Use <see cref="GetQueryable"/> instead when the data source can push <c>$filter</c>,
+    /// <c>$orderby</c>, <c>$skip</c>, and <c>$top</c> to the database.
+    /// </summary>
+    /// <remarks>
+    /// Leaving this <c>null</c> (the default) means no <c>GET /{EntitySet}</c> route is registered,
+    /// unless <see cref="GetQueryable"/> is set.
+    /// </remarks>
+    protected Func<CancellationToken, Task<IEnumerable<TModel>>>? GetAll = null;
+
+    /// <summary>
+    /// Registers the <c>GET /{EntitySet}</c> handler using an <see cref="IQueryable{T}"/> source
+    /// (OData §11.2.1 — Requesting a Collection). The framework applies <c>$filter</c>,
+    /// <c>$orderby</c>, <c>$skip</c>, and <c>$top</c> via <c>ApplyTo</c>, enabling full SQL
+    /// pushdown when backed by EF Core. <c>$select</c> is applied via JSON post-processing
+    /// to preserve camelCase naming.
+    /// </summary>
+    /// <remarks>
+    /// Leaving this <c>null</c> (the default) means no <c>GET /{EntitySet}</c> route is registered,
+    /// unless <see cref="GetAll"/> is set. Takes priority over <see cref="GetAll"/> when both are set.
+    /// </remarks>
+    protected Func<CancellationToken, Task<IQueryable<TModel>>>? GetQueryable = null;
+
+    /// <summary>
+    /// Registers the <c>GET /{EntitySet}({key})</c> handler (OData §11.2.2 — Requesting an Entity).
+    /// Return <c>null</c> to produce a <c>404 Not Found</c> response per §9.1.4.
+    /// </summary>
+    /// <remarks>
+    /// Leaving this <c>null</c> (the default) means no <c>GET /{EntitySet}({key})</c> route is registered.
+    /// </remarks>
+    protected Func<TKey, CancellationToken, Task<TModel?>>? GetById = null;
+
+    /// <summary>
+    /// Registers the <c>PUT /{EntitySet}({key})</c> handler (OData §11.4.3 — Update an Entity).
+    /// Return <c>null</c> to produce a <c>404 Not Found</c> response per §9.1.4.
+    /// </summary>
+    /// <remarks>
+    /// Leaving this <c>null</c> (the default) means no <c>PUT /{EntitySet}({key})</c> route is registered.
+    /// Set <see cref="AllowUpsert"/> to enable upsert semantics (§11.4.4) when the key does not exist.
+    /// </remarks>
+    protected Func<TKey, TModel, CancellationToken, Task<TModel>>? PutById = null;
+
+    /// <summary>
+    /// Registers the <c>POST /{EntitySet}</c> handler (OData §11.4.1 — Create an Entity).
+    /// Return <c>null</c> to produce a <c>400 Bad Request</c> response.
+    /// </summary>
+    /// <remarks>
+    /// Leaving this <c>null</c> (the default) means no <c>POST /{EntitySet}</c> route is registered.
+    /// </remarks>
+    protected Func<TModel, CancellationToken, Task<TModel?>>? Post = null;
+
+    /// <summary>
+    /// Handler for PATCH /{EntitySet}({key}).
+    /// The handler receives a <see cref="Delta{TModel}"/> containing only the properties
+    /// present in the request body. Use <see cref="Delta{TModel}.GetChangedPropertyNames"/>
+    /// to inspect which properties were sent, or call <c>delta.Patch(existingEntity)</c>
+    /// to apply changed fields in-place. The handler is responsible for fetching the
+    /// existing entity (if needed) and persisting the changes.
+    /// Return <c>null</c> to produce a 404 Not Found response.
+    /// </summary>
+    protected Func<TKey, Delta<TModel>, CancellationToken, Task<TModel?>>? Patch = null;
+
+    /// <summary>
+    /// Registers the <c>DELETE /{EntitySet}({key})</c> handler (OData §11.4.5 — Delete an Entity).
+    /// Return <c>false</c> to produce a <c>404 Not Found</c> response; return <c>true</c> for
+    /// <c>204 No Content</c>.
+    /// </summary>
+    /// <remarks>
+    /// Leaving this <c>null</c> (the default) means no <c>DELETE /{EntitySet}({key})</c> route is registered.
+    /// Set <see cref="IdempotentDelete"/> to control the behaviour when the entity does not exist.
+    /// </remarks>
+    protected Func<TKey, CancellationToken, Task<bool>>? Delete = null;
+
+    /// <summary>
+    /// Registers a free-text search handler for <c>GET /{EntitySet}?$search=term</c>
+    /// (OData §11.2.6.6 — System Query Option <c>$search</c>). The raw search term from the
+    /// query string is passed to this delegate; return matching entities.
+    /// </summary>
+    /// <remarks>
+    /// Leaving this <c>null</c> (the default) means <c>$search</c> requests return
+    /// <c>501 Not Implemented</c>.
+    /// </remarks>
+    protected Func<string, CancellationToken, Task<IEnumerable<TModel>>>? Search = null;
+
+    private int? _maxTop;
+
+    /// <summary>
+    /// Maximum value the client may specify in <c>$top</c> (OData §11.2.6.3).
+    /// The framework enforces this limit; requests exceeding it receive a
+    /// <c>400 Bad Request</c>. Inherits from <see cref="EntitySetDefaults.MaxTop"/> when
+    /// <c>null</c>. Must be a positive integer.
+    /// </summary>
+    protected int? MaxTop
+    {
+        get => _maxTop;
+        init
+        {
+            if (value is <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxTop), value, "MaxTop must be a positive integer or null.");
+            _maxTop = value;
+        }
+    }
+    private int? _resolvedMaxTop;
+
+    /// <summary>
+    /// When <c>true</c>, <c>DELETE</c> on a non-existent resource returns <c>204 No Content</c>
+    /// (idempotent semantics). When <c>false</c>, returns <c>404 Not Found</c>.
+    /// Inherits from <see cref="EntitySetDefaults.IdempotentDelete"/> when <c>null</c>.
+    /// </summary>
+    /// <remarks>
+    /// OData §11.4.5 permits either behaviour; this property selects which the profile uses.
+    /// </remarks>
+    protected bool? IdempotentDelete { get; init; }
+    private bool _resolvedIdempotentDelete;
+
+    /// <summary>
+    /// When <c>true</c>, a <c>PUT</c> to a non-existent key creates the entity
+    /// (upsert semantics, OData §11.4.4). Requires <see cref="Post"/> to also be configured.
+    /// Inherits from <see cref="EntitySetDefaults.AllowUpsert"/> when <c>null</c>.
+    /// </summary>
+    protected bool? AllowUpsert { get; init; }
+    private bool _resolvedAllowUpsert;
+    private IReadOnlyList<BoundOperationDefinition>? _resolvedBoundFunctions;
+    private IReadOnlyList<BoundOperationDefinition>? _resolvedBoundActions;
+    private bool _isSealed;
+
+    private Func<TModel, string>? _getETag;
+
+    /// <summary>
+    /// Opts in to ETag generation. The framework hashes the values of the specified
+    /// properties using SHA-256 and encodes the result as Base64, returning it in the
+    /// <c>ETag</c> response header (OData §8.2.6) and the <c>@odata.etag</c> annotation.
+    /// <para>
+    /// Supports <c>byte[]</c> values (e.g. row-version columns) directly;
+    /// all other values are hashed as their UTF-8 string representations.
+    /// </para>
+    /// </summary>
+    /// <remarks>
+    /// When ETags are enabled the framework checks the <c>If-Match</c> request header on
+    /// mutating operations (PUT, PATCH, DELETE) and returns <c>412 Precondition Failed</c>
+    /// on mismatch (OData §8.2.5). GET responses support <c>If-None-Match</c> with
+    /// <c>304 Not Modified</c> (OData §8.2.5).
+    /// </remarks>
+    /// <param name="propertySelectors">
+    /// One or more property selectors whose values are combined into the ETag hash.
+    /// At least one selector is required.
+    /// </param>
+    protected void UseETag(params Expression<Func<TModel, object?>>[] propertySelectors)
+    {
+        ThrowIfSealed();
+        if (propertySelectors.Length == 0)
+            throw new ArgumentException("At least one property selector is required.", nameof(propertySelectors));
+        var getters = propertySelectors.Select(e => e.Compile()).ToArray();
+        byte[] sep = new byte[] { 0x00 };
+        _getETag = model =>
+        {
+            using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            for (int i = 0; i < getters.Length; i++)
+            {
+                if (i > 0) hasher.AppendData(sep);
+                object? value = getters[i](model);
+                if (value is byte[] bytes)
+                    hasher.AppendData(bytes);
+                else if (value is not null)
+                    hasher.AppendData(Encoding.UTF8.GetBytes(value.ToString()!));
+            }
+            return Convert.ToBase64String(hasher.GetHashAndReset());
+        };
+    }
+
+    private bool _authRequired;
+    private string? _authPolicy;
+    private IReadOnlyList<string>? _authRoles;
+
+    private readonly ICollection<Action<EntityTypeConfiguration<TModel>>> _configurators;
+    private readonly ICollection<Delegate> _functions;
+    private readonly ICollection<Delegate> _actions;
+    private readonly ICollection<Delegate> _entityFunctions;
+    private readonly ICollection<Delegate> _entityActions;
+    private readonly List<NavigationRouteDefinition> _navRoutes = new();
+
+    /// <summary>
+    /// Initialises the profile. Pass a key-selector expression that identifies the entity's
+    /// primary key property.
+    /// </summary>
+    /// <param name="getKey">
+    /// Expression that selects the key property from <typeparamref name="TModel"/>,
+    /// e.g. <c>x => x.Id</c>.
+    /// </param>
+    protected EntitySetProfile(Expression<Func<TModel, TKey>> getKey)
+    {
+        _getKey = getKey;
+        var keyBody = getKey.Body is System.Linq.Expressions.UnaryExpression u ? u.Operand : getKey.Body;
+        if (keyBody is not System.Linq.Expressions.MemberExpression)
+        {
+            throw new ArgumentException(
+                "The key selector must be a direct property access expression (e.g. x => x.Id). " +
+                "Computed or chained key selectors are not supported.",
+                nameof(getKey));
+        }
+
+        EntitySetName = PluralizationHelper.Pluralize(typeof(TModel).Name);
+
+        _configurators = new List<Action<EntityTypeConfiguration<TModel>>>();
+        _functions = new List<Delegate>();
+        _actions = new List<Delegate>();
+        _entityFunctions = new List<Delegate>();
+        _entityActions = new List<Delegate>();
+    }
+
+    /// <summary>
+    /// Hands over full configuration control. If this method is overridden, you are ejecting
+    /// from all other configuration behaviors of this class.
+    /// </summary>
+    protected virtual void AdvancedConfigure(EntitySetConfiguration<TModel> configuration) { }
+
+    // explicit interface implementation to enforce internal
+    void IVisitModelBuilder.VisitModelBuilder(ODataModelBuilder builder, EntitySetDefaults defaults)
+    {
+        var entitySet = builder.EntitySet<TModel>(EntitySetName);
+
+        _resolvedMaxTop = MaxTop ?? defaults.MaxTop;
+        _resolvedIdempotentDelete = IdempotentDelete ?? defaults.IdempotentDelete;
+        _resolvedAllowUpsert = AllowUpsert ?? defaults.AllowUpsert;
+
+        AdvancedConfigure(entitySet);
+
+        // eject if AdvancedConfigure was overridden
+        var advancedConfigureDeclaredInType = GetType()
+            .GetMethod(
+                nameof(AdvancedConfigure),
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public,
+                null,
+                new[] { typeof(EntitySetConfiguration<TModel>) },
+                null)
+            ?.DeclaringType;
+        if (advancedConfigureDeclaredInType != typeof(EntitySetProfile<TKey, TModel>)) return;
+
+        // if AdvancedConfigure wasn't overridden, work your magic
+        var entityType = entitySet.EntityType;
+
+        if (SelectEnabled ?? defaults.SelectEnabled) entityType.Select(_selectProperties);
+        if (ExpandEnabled ?? defaults.ExpandEnabled) entityType.Expand(_expandProperties);
+        if (FilterEnabled ?? defaults.FilterEnabled) entityType.Filter(_filterProperties);
+        if (OrderByEnabled ?? defaults.OrderByEnabled) entityType.OrderBy(_orderByProperties);
+        if (CountEnabled ?? defaults.CountEnabled) entityType.Count();
+
+        entityType.HasKey(_getKey);
+        foreach (var configurator in _configurators) configurator(entityType);
+
+        var entityCollection = entityType.Collection;
+
+        foreach (var method in _functions.Select(x => x.Method))
+        {
+            var entityFunction = entityCollection.Function(method.Name);
+
+            foreach (var param in method.GetParameters().Where(p => p.ParameterType != typeof(CancellationToken)))
+            {
+                var entityFunctionParam = entityFunction.Parameter(param.ParameterType, param.Name!);
+                if (param.IsOptional) entityFunctionParam.Optional();
+                if (param.HasDefaultValue)
+                {
+                    string defaultStr = param.DefaultValue is bool b ? (b ? "true" : "false") : $"{param.DefaultValue}";
+                    entityFunctionParam.HasDefaultValue(defaultStr);
+                }
+            }
+
+            // Determine return type: unwrap Task<T>/ValueTask<T> if needed
+            var rawReturn = method.ReturnType;
+            var returnType = rawReturn.IsGenericType && (rawReturn.GetGenericTypeDefinition() == typeof(Task<>) || rawReturn.GetGenericTypeDefinition() == typeof(ValueTask<>))
+                ? rawReturn.GetGenericArguments()[0]
+                : rawReturn == typeof(Task) || rawReturn == typeof(void) || rawReturn == typeof(ValueTask) ? null : rawReturn;
+
+            if (returnType is not null)
+            {
+                // FunctionConfiguration only exposes generic Returns<T>/ReturnsCollection<T>; call via reflection.
+                var collectionElement = GetCollectionElementType(returnType);
+                if (collectionElement is not null)
+                {
+                    typeof(FunctionConfiguration)
+                        .GetMethod(nameof(FunctionConfiguration.ReturnsCollection), Array.Empty<Type>())!
+                        .MakeGenericMethod(collectionElement)
+                        .Invoke(entityFunction, null);
+                }
+                else
+                {
+                    typeof(FunctionConfiguration)
+                        .GetMethod(nameof(FunctionConfiguration.Returns), Array.Empty<Type>())!
+                        .MakeGenericMethod(returnType)
+                        .Invoke(entityFunction, null);
+                }
+            }
+        }
+
+        foreach (var method in _actions.Select(x => x.Method))
+        {
+            var entityAction = entityCollection.Action(method.Name);
+
+            foreach (var param in method.GetParameters().Where(p => p.ParameterType != typeof(CancellationToken)))
+            {
+                var entityActionParam = entityAction.Parameter(param.ParameterType, param.Name!);
+                if (param.IsOptional) entityActionParam.Optional();
+                if (param.HasDefaultValue)
+                {
+                    string defaultStr = param.DefaultValue is bool b ? (b ? "true" : "false") : $"{param.DefaultValue}";
+                    entityActionParam.HasDefaultValue(defaultStr);
+                }
+            }
+
+            // Resolve return type for $metadata, mirroring the function logic above.
+            var rawActionReturn = method.ReturnType;
+            var actionReturnType = rawActionReturn.IsGenericType && (rawActionReturn.GetGenericTypeDefinition() == typeof(Task<>) || rawActionReturn.GetGenericTypeDefinition() == typeof(ValueTask<>))
+                ? rawActionReturn.GetGenericArguments()[0]
+                : rawActionReturn == typeof(Task) || rawActionReturn == typeof(void) || rawActionReturn == typeof(ValueTask) ? null : rawActionReturn;
+
+            if (actionReturnType is not null)
+            {
+                var collectionElement = GetCollectionElementType(actionReturnType);
+                if (collectionElement is not null)
+                {
+                    typeof(ActionConfiguration)
+                        .GetMethod(nameof(ActionConfiguration.ReturnsCollection), Array.Empty<Type>())!
+                        .MakeGenericMethod(collectionElement)
+                        .Invoke(entityAction, null);
+                }
+                else
+                {
+                    typeof(ActionConfiguration)
+                        .GetMethod(nameof(ActionConfiguration.Returns), Array.Empty<Type>())!
+                        .MakeGenericMethod(actionReturnType)
+                        .Invoke(entityAction, null);
+                }
+            }
+        }
+
+        // Gap 7: Register entity-level functions bound to the entity type (not collection)
+        foreach (var method in _entityFunctions.Select(x => x.Method))
+        {
+            // Skip the first parameter — it is the key (TKey), not an OData parameter
+            var entityFunction = entityType.Function(method.Name);
+            var allParams = method.GetParameters().Where(p => p.ParameterType != typeof(CancellationToken)).Skip(1);
+
+            foreach (var param in allParams)
+            {
+                var entityFunctionParam = entityFunction.Parameter(param.ParameterType, param.Name!);
+                if (param.IsOptional) entityFunctionParam.Optional();
+                if (param.HasDefaultValue)
+                {
+                    string defaultStr = param.DefaultValue is bool b ? (b ? "true" : "false") : $"{param.DefaultValue}";
+                    entityFunctionParam.HasDefaultValue(defaultStr);
+                }
+            }
+
+            var rawReturn = method.ReturnType;
+            var returnType = rawReturn.IsGenericType && (rawReturn.GetGenericTypeDefinition() == typeof(Task<>) || rawReturn.GetGenericTypeDefinition() == typeof(ValueTask<>))
+                ? rawReturn.GetGenericArguments()[0]
+                : rawReturn == typeof(Task) || rawReturn == typeof(void) || rawReturn == typeof(ValueTask) ? null : rawReturn;
+
+            if (returnType is not null)
+            {
+                var collectionElement = GetCollectionElementType(returnType);
+                if (collectionElement is not null)
+                {
+                    typeof(FunctionConfiguration)
+                        .GetMethod(nameof(FunctionConfiguration.ReturnsCollection), Array.Empty<Type>())!
+                        .MakeGenericMethod(collectionElement)
+                        .Invoke(entityFunction, null);
+                }
+                else
+                {
+                    typeof(FunctionConfiguration)
+                        .GetMethod(nameof(FunctionConfiguration.Returns), Array.Empty<Type>())!
+                        .MakeGenericMethod(returnType)
+                        .Invoke(entityFunction, null);
+                }
+            }
+        }
+
+        // Gap 7: Register entity-level actions bound to the entity type (not collection)
+        foreach (var method in _entityActions.Select(x => x.Method))
+        {
+            var entityAction = entityType.Action(method.Name);
+            var allParams = method.GetParameters().Where(p => p.ParameterType != typeof(CancellationToken)).Skip(1);
+
+            foreach (var param in allParams)
+            {
+                var entityActionParam = entityAction.Parameter(param.ParameterType, param.Name!);
+                if (param.IsOptional) entityActionParam.Optional();
+                if (param.HasDefaultValue)
+                {
+                    string defaultStr = param.DefaultValue is bool b ? (b ? "true" : "false") : $"{param.DefaultValue}";
+                    entityActionParam.HasDefaultValue(defaultStr);
+                }
+            }
+
+            var rawActionReturn = method.ReturnType;
+            var actionReturnType = rawActionReturn.IsGenericType && (rawActionReturn.GetGenericTypeDefinition() == typeof(Task<>) || rawActionReturn.GetGenericTypeDefinition() == typeof(ValueTask<>))
+                ? rawActionReturn.GetGenericArguments()[0]
+                : rawActionReturn == typeof(Task) || rawActionReturn == typeof(void) || rawActionReturn == typeof(ValueTask) ? null : rawActionReturn;
+
+            if (actionReturnType is not null)
+            {
+                var collectionElement = GetCollectionElementType(actionReturnType);
+                if (collectionElement is not null)
+                {
+                    typeof(ActionConfiguration)
+                        .GetMethod(nameof(ActionConfiguration.ReturnsCollection), Array.Empty<Type>())!
+                        .MakeGenericMethod(collectionElement)
+                        .Invoke(entityAction, null);
+                }
+                else
+                {
+                    typeof(ActionConfiguration)
+                        .GetMethod(nameof(ActionConfiguration.Returns), Array.Empty<Type>())!
+                        .MakeGenericMethod(actionReturnType)
+                        .Invoke(entityAction, null);
+                }
+            }
+        }
+
+        _resolvedBoundFunctions = _functions.Select(d => BoundOperationDefinition.From(d, isAction: false))
+            .Concat(_entityFunctions.Select(d => BoundOperationDefinition.From(d, isAction: false, isEntityLevel: true)))
+            .ToList();
+        _resolvedBoundActions = _actions.Select(d => BoundOperationDefinition.From(d, isAction: true))
+            .Concat(_entityActions.Select(d => BoundOperationDefinition.From(d, isAction: true, isEntityLevel: true)))
+            .ToList();
+        _isSealed = true;
+    }
+
+    /// <summary>
+    /// Throws <see cref="InvalidOperationException"/> when the profile has already been sealed
+    /// by the framework. Mutating methods call this guard to enforce constructor-only configuration.
+    /// </summary>
+    private void ThrowIfSealed()
+    {
+        if (_isSealed)
+        {
+            throw new InvalidOperationException(
+                "This profile has already been registered and cannot be modified. " +
+                "Configure the profile entirely within the constructor.");
+        }
+    }
+
+    /// <summary>
+    /// Restricts the properties that may appear in <c>$filter</c> queries.
+    /// Set using either this overload or the string overload, not both.
+    /// Pass no arguments (or call with <c>null</c>) to allow all properties.
+    /// </summary>
+    protected void FilterProperties(params Expression<Func<TModel, object?>>[] properties)
+        => _filterProperties = ExtractNames(properties);
+
+    /// <summary>
+    /// Restricts the properties that may appear in <c>$filter</c> queries.
+    /// Set using either this overload or the expression overload, not both.
+    /// Pass no arguments (or call with <c>null</c>) to allow all properties.
+    /// </summary>
+    protected void FilterProperties(params string[]? properties)
+        => _filterProperties = properties;
+
+    /// <summary>
+    /// Restricts the properties that may appear in <c>$orderby</c> clauses.
+    /// Set using either this overload or the string overload, not both.
+    /// Pass no arguments (or call with <c>null</c>) to allow all properties.
+    /// </summary>
+    protected void OrderByProperties(params Expression<Func<TModel, object?>>[] properties)
+        => _orderByProperties = ExtractNames(properties);
+
+    /// <summary>
+    /// Restricts the properties that may appear in <c>$orderby</c> clauses.
+    /// Set using either this overload or the expression overload, not both.
+    /// Pass no arguments (or call with <c>null</c>) to allow all properties.
+    /// </summary>
+    protected void OrderByProperties(params string[]? properties)
+        => _orderByProperties = properties;
+
+    /// <summary>
+    /// Restricts the properties that may appear in <c>$select</c> clauses.
+    /// Set using either this overload or the string overload, not both.
+    /// Pass no arguments (or call with <c>null</c>) to allow all properties.
+    /// </summary>
+    protected void SelectProperties(params Expression<Func<TModel, object?>>[] properties)
+        => _selectProperties = ExtractNames(properties);
+
+    /// <summary>
+    /// Restricts the properties that may appear in <c>$select</c> clauses.
+    /// Set using either this overload or the expression overload, not both.
+    /// Pass no arguments (or call with <c>null</c>) to allow all properties.
+    /// </summary>
+    protected void SelectProperties(params string[]? properties)
+        => _selectProperties = properties;
+
+    /// <summary>
+    /// Restricts the properties that may be used in <c>$expand</c> clauses.
+    /// Set using either this overload or the string overload, not both.
+    /// Pass no arguments (or call with <c>null</c>) to allow all properties.
+    /// </summary>
+    protected void ExpandProperties(params Expression<Func<TModel, object?>>[] properties)
+        => _expandProperties = ExtractNames(properties);
+
+    /// <summary>
+    /// Restricts the properties that may be used in <c>$expand</c> clauses.
+    /// Set using either this overload or the expression overload, not both.
+    /// Pass no arguments (or call with <c>null</c>) to allow all properties.
+    /// </summary>
+    protected void ExpandProperties(params string[]? properties)
+        => _expandProperties = properties;
+
+    /// <summary>
+    /// Extracts member names from a set of simple property-access expressions.
+    /// Throws <see cref="ArgumentException"/> if an expression is not a direct member access.
+    /// </summary>
+    private static string[] ExtractNames(Expression<Func<TModel, object?>>[] expressions)
+    {
+        string[] names = new string[expressions.Length];
+        for (int i = 0; i < expressions.Length; i++)
+        {
+            var body = expressions[i].Body;
+
+            // Strip boxing Convert / ConvertChecked nodes (e.g. value types cast to object)
+            if (body is UnaryExpression unary &&
+                (unary.NodeType == ExpressionType.Convert || unary.NodeType == ExpressionType.ConvertChecked))
+            {
+                body = unary.Operand;
+            }
+
+            if (body is not MemberExpression member)
+            {
+                throw new ArgumentException(
+                    $"Expression at index {i} must be a direct property access (e.g. x => x.Name). " +
+                    $"Nested access such as x => x.Category.Name is not supported.",
+                    nameof(expressions));
+            }
+
+            names[i] = member.Member.Name;
+        }
+        return names;
+    }
+
+    /// <summary>
+    /// Declares an optional navigation property in the EDM model without registering a GET route.
+    /// </summary>
+    /// <typeparam name="TNavigation">The CLR type of the related entity.</typeparam>
+    /// <param name="navigation">Expression selecting the navigation property.</param>
+    protected void HasOptional<TNavigation>(Expression<Func<TModel, TNavigation>> navigation)
+        where TNavigation : class
+    {
+        ThrowIfSealed();
+        if (navigation == null) throw new ArgumentNullException(nameof(navigation));
+        _configurators.Add(x => x.HasOptional(navigation));
+    }
+
+    /// <summary>
+    /// Declares an optional navigation property and registers a
+    /// <c>GET /{EntitySet}({key})/{Property}</c> route backed by <paramref name="get"/>.
+    /// Pass <c>null</c> for <paramref name="get"/> to declare the navigation in the EDM only.
+    /// </summary>
+    /// <typeparam name="TNavigation">The CLR type of the related entity.</typeparam>
+    /// <param name="navigation">Expression selecting the navigation property.</param>
+    /// <param name="get">
+    /// Handler that loads the related entity by parent key. Return <c>null</c> to produce
+    /// a <c>404 Not Found</c> response.
+    /// </param>
+    protected void HasOptional<TNavigation>(
+        Expression<Func<TModel, TNavigation>> navigation,
+        Func<TKey, CancellationToken, Task<TNavigation?>>? get)
+        where TNavigation : class
+    {
+        HasOptional(navigation);
+        if (get is null) return;
+        string propName = GetNavigationPropertyName(navigation.Body);
+        _navRoutes.Add(new NavigationRouteDefinition
+        {
+            PropertyName = propName,
+            IsCollection = false,
+            Handler = async (key, ct) => (object?)await get((TKey)key, ct)
+        });
+    }
+
+    /// <summary>
+    /// Declares a required navigation property in the EDM model without registering a GET route.
+    /// </summary>
+    /// <typeparam name="TNavigation">The CLR type of the related entity.</typeparam>
+    /// <param name="navigation">Expression selecting the navigation property.</param>
+    protected void HasRequired<TNavigation>(Expression<Func<TModel, TNavigation>> navigation)
+        where TNavigation : class
+    {
+        ThrowIfSealed();
+        if (navigation == null) throw new ArgumentNullException(nameof(navigation));
+        _configurators.Add(x => x.HasRequired(navigation));
+    }
+
+    /// <summary>
+    /// Declares a required navigation property and registers a
+    /// <c>GET /{EntitySet}({key})/{Property}</c> route backed by <paramref name="get"/>.
+    /// Pass <c>null</c> for <paramref name="get"/> to declare the navigation in the EDM only.
+    /// </summary>
+    /// <typeparam name="TNavigation">The CLR type of the related entity.</typeparam>
+    /// <param name="navigation">Expression selecting the navigation property.</param>
+    /// <param name="get">Handler that loads the required related entity by parent key.</param>
+    protected void HasRequired<TNavigation>(
+        Expression<Func<TModel, TNavigation>> navigation,
+        Func<TKey, CancellationToken, Task<TNavigation>>? get)
+        where TNavigation : class
+    {
+        HasRequired(navigation);
+        if (get is null) return;
+        string propName = GetNavigationPropertyName(navigation.Body);
+        _navRoutes.Add(new NavigationRouteDefinition
+        {
+            PropertyName = propName,
+            IsCollection = false,
+            Handler = async (key, ct) => (object?)await get((TKey)key, ct)
+        });
+    }
+
+    /// <summary>
+    /// Declares a collection navigation property in the EDM model without registering a GET route.
+    /// </summary>
+    /// <typeparam name="TNavigation">The CLR type of the related entities.</typeparam>
+    /// <param name="navigation">Expression selecting the collection navigation property.</param>
+    protected void HasMany<TNavigation>(Expression<Func<TModel, IEnumerable<TNavigation>>> navigation)
+        where TNavigation : class
+    {
+        ThrowIfSealed();
+        if (navigation == null) throw new ArgumentNullException(nameof(navigation));
+        _configurators.Add(x => x.HasMany(navigation));
+    }
+
+    /// <summary>
+    /// Declares a collection navigation property and registers a
+    /// <c>GET /{EntitySet}({key})/{Property}</c> route backed by <paramref name="getAll"/>.
+    /// Pass <c>null</c> for <paramref name="getAll"/> to declare the navigation in the EDM only.
+    /// </summary>
+    /// <typeparam name="TNavigation">The CLR type of the related entities.</typeparam>
+    /// <param name="navigation">Expression selecting the collection navigation property.</param>
+    /// <param name="getAll">Handler that loads all related entities for a given parent key.</param>
+    protected void HasMany<TNavigation>(
+        Expression<Func<TModel, IEnumerable<TNavigation>>> navigation,
+        Func<TKey, CancellationToken, Task<IEnumerable<TNavigation>>>? getAll)
+        where TNavigation : class
+    {
+        HasMany(navigation);
+        if (getAll is null) return;
+        string propName = GetNavigationPropertyName(navigation.Body);
+        _navRoutes.Add(new NavigationRouteDefinition
+        {
+            PropertyName = propName,
+            IsCollection = true,
+            Handler = async (key, ct) => (object?)await getAll((TKey)key, ct)
+        });
+    }
+
+    /// <summary>
+    /// Declares a collection navigation property with GET and optional <c>$ref</c> link-management
+    /// handlers (OData §11.4.6 — Managing Links Between Entities).
+    /// </summary>
+    /// <typeparam name="TNavigation">The CLR type of the related entities.</typeparam>
+    /// <param name="navigation">Expression selecting the collection navigation property.</param>
+    /// <param name="getAll">Handler that loads all related entities for a given parent key. Pass <c>null</c> to omit the GET route.</param>
+    /// <param name="addRef">
+    /// Handler for <c>POST /{EntitySet}({key})/{Property}/$ref</c>. The second parameter is
+    /// the <c>@odata.id</c> string from the request body. Pass <c>null</c> to omit the route.
+    /// </param>
+    /// <param name="removeRef">
+    /// Handler for <c>DELETE /{EntitySet}({key})/{Property}/$ref?$id=...</c>. Pass <c>null</c>
+    /// to omit the route.
+    /// </param>
+    protected void HasMany<TNavigation>(
+        Expression<Func<TModel, IEnumerable<TNavigation>>> navigation,
+        Func<TKey, CancellationToken, Task<IEnumerable<TNavigation>>>? getAll,
+        Func<TKey, string, CancellationToken, Task>? addRef = null,
+        Func<TKey, string, CancellationToken, Task>? removeRef = null)
+        where TNavigation : class
+    {
+        HasMany(navigation);
+        if (getAll is null && addRef is null && removeRef is null) return;
+        string propName = GetNavigationPropertyName(navigation.Body);
+        _navRoutes.Add(new NavigationRouteDefinition
+        {
+            PropertyName = propName,
+            IsCollection = true,
+            Handler = getAll is not null
+                ? async (key, ct) => (object?)await getAll((TKey)key, ct)
+                : (_, _) => Task.FromResult<object?>(null),
+            AddRef = addRef is not null
+                ? (key, relatedId, ct) => addRef((TKey)key, (string)relatedId, ct)
+                : (Func<object, object, CancellationToken, Task>?)null,
+            RemoveRef = removeRef is not null
+                ? (key, relatedId, ct) => removeRef((TKey)key, (string)relatedId, ct)
+                : (Func<object, object, CancellationToken, Task>?)null,
+        });
+    }
+
+    /// <summary>
+    /// Declares an optional navigation property with GET and optional <c>$ref</c> link-management
+    /// handlers (OData §11.4.6 — Managing Links Between Entities).
+    /// </summary>
+    /// <typeparam name="TNavigation">The CLR type of the related entity.</typeparam>
+    /// <param name="navigation">Expression selecting the navigation property.</param>
+    /// <param name="get">Handler that loads the related entity by parent key. Pass <c>null</c> to omit the GET route.</param>
+    /// <param name="setRef">
+    /// Handler for <c>PUT /{EntitySet}({key})/{Property}/$ref</c>. The second parameter is
+    /// the <c>@odata.id</c> string from the request body. Pass <c>null</c> to omit the route.
+    /// </param>
+    /// <param name="removeRef">
+    /// Handler for <c>DELETE /{EntitySet}({key})/{Property}/$ref</c>. Pass <c>null</c>
+    /// to omit the route.
+    /// </param>
+    protected void HasOptional<TNavigation>(
+        Expression<Func<TModel, TNavigation>> navigation,
+        Func<TKey, CancellationToken, Task<TNavigation?>>? get,
+        Func<TKey, string, CancellationToken, Task>? setRef = null,
+        Func<TKey, string, CancellationToken, Task>? removeRef = null)
+        where TNavigation : class
+    {
+        HasOptional(navigation);
+        if (get is null && setRef is null && removeRef is null) return;
+        string propName = GetNavigationPropertyName(navigation.Body);
+        _navRoutes.Add(new NavigationRouteDefinition
+        {
+            PropertyName = propName,
+            IsCollection = false,
+            Handler = get is not null
+                ? async (key, ct) => (object?)await get((TKey)key, ct)
+                : (_, _) => Task.FromResult<object?>(null),
+            AddRef = setRef is not null
+                ? (key, relatedId, ct) => setRef((TKey)key, (string)relatedId, ct)
+                : (Func<object, object, CancellationToken, Task>?)null,
+            RemoveRef = removeRef is not null
+                ? (key, relatedId, ct) => removeRef((TKey)key, (string)relatedId, ct)
+                : (Func<object, object, CancellationToken, Task>?)null,
+        });
+    }
+
+    /// <summary>
+    /// Registers a collection-bound OData function: <c>GET /{EntitySet}/{MethodName}?param=value</c>
+    /// (OData §11.5.3 — Invoking a Function). Parameters are read from the query string.
+    /// The method name becomes the function name in the EDM.
+    /// </summary>
+    /// <param name="handler">
+    /// A delegate whose method name is the function name. Parameters (excluding
+    /// <see cref="CancellationToken"/>) are exposed as OData function parameters.
+    /// </param>
+    protected void BindFunction(Delegate handler)
+    {
+        ThrowIfSealed();
+        _functions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
+    }
+
+    /// <summary>
+    /// Registers a collection-bound OData action: <c>POST /{EntitySet}/{MethodName}</c>
+    /// (OData §11.5.4 — Invoking an Action). Parameters are read from a JSON request body.
+    /// The method name becomes the action name in the EDM.
+    /// </summary>
+    /// <param name="handler">
+    /// A delegate whose method name is the action name. Parameters (excluding
+    /// <see cref="CancellationToken"/>) are read from the JSON body as named properties.
+    /// </param>
+    protected void BindAction(Delegate handler)
+    {
+        ThrowIfSealed();
+        _actions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
+    }
+
+    /// <summary>
+    /// Registers an entity-level bound function: <c>GET /{EntitySet}({key})/{MethodName}</c>
+    /// (OData §11.5.4 — Functions Bound to an Entity). The handler's first non-<see cref="CancellationToken"/>
+    /// parameter must accept the key (<typeparamref name="TKey"/>); additional parameters are
+    /// read from the query string.
+    /// </summary>
+    /// <param name="handler">
+    /// A delegate whose method name is the function name. The first parameter receives the
+    /// entity key; remaining parameters (excluding <see cref="CancellationToken"/>) are OData
+    /// function parameters.
+    /// </param>
+    protected void BindEntityFunction(Delegate handler)
+    {
+        ThrowIfSealed();
+        _entityFunctions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
+    }
+
+    /// <summary>
+    /// Registers an entity-level bound action: <c>POST /{EntitySet}({key})/{MethodName}</c>
+    /// (OData §11.5.4 — Actions Bound to an Entity). The handler's first non-<see cref="CancellationToken"/>
+    /// parameter must accept the key (<typeparamref name="TKey"/>); additional parameters are
+    /// read from a JSON request body.
+    /// </summary>
+    /// <param name="handler">
+    /// A delegate whose method name is the action name. The first parameter receives the
+    /// entity key; remaining parameters (excluding <see cref="CancellationToken"/>) are read
+    /// from the JSON body as named properties.
+    /// </param>
+    protected void BindEntityAction(Delegate handler)
+    {
+        ThrowIfSealed();
+        _entityActions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
+    }
+
+    private static string GetNavigationPropertyName(Expression body)
+    {
+        if (body is MemberExpression me) return me.Member.Name;
+        if (body is UnaryExpression ue) return GetNavigationPropertyName(ue.Operand);
+        throw new ArgumentException(
+            $"Cannot extract property name from expression type {body.NodeType}. Use a simple property accessor: x => x.PropertyName.");
+    }
+
+    private static Type? GetCollectionElementType(Type type)
+    {
+        if (type == typeof(string)) return null; // string is IEnumerable<char> but not a "collection" here
+        if (type.IsArray) return type.GetElementType();
+        foreach (var iface in new[] { type }.Concat(type.GetInterfaces()))
+        {
+            if (iface.IsGenericType && iface.GetGenericTypeDefinition() == typeof(IEnumerable<>))
+                return iface.GetGenericArguments()[0];
+        }
+        return null;
+    }
+
+    /// <summary>Requires any authenticated user. May be combined with <see cref="RequireRoles"/>.</summary>
+    protected void RequireAuthorization()
+    {
+        ThrowIfSealed();
+        if (_authRequired)
+        {
+            throw new InvalidOperationException(
+                "Authorization has already been configured on this profile. " +
+                "RequireAuthorization() is implicit when RequireAuthorization(policy) or RequireRoles() is called.");
+        }
+
+        _authRequired = true;
+    }
+
+    /// <summary>
+    /// Requires a named ASP.NET Core authorization policy.
+    /// Register policies via <c>services.AddAuthorization(o => o.AddPolicy(...))</c>.
+    /// May be combined with <see cref="RequireRoles"/>.
+    /// </summary>
+    protected void RequireAuthorization(string policy)
+    {
+        ThrowIfSealed();
+        if (_authPolicy is not null)
+        {
+            throw new InvalidOperationException(
+                $"A policy ('{_authPolicy}') has already been set on this profile. Call RequireAuthorization(policy) only once.");
+        }
+
+        _authPolicy = policy;
+        _authRequired = true;
+    }
+
+    /// <summary>
+    /// Requires the user to be in at least one of the specified roles (OR semantics).
+    /// May be combined with <see cref="RequireAuthorization(string)"/>.
+    /// For AND semantics, register a named policy via <c>services.AddAuthorizationBuilder().AddPolicy(...)</c>.
+    /// </summary>
+    protected void RequireRoles(params string[] roles)
+    {
+        ThrowIfSealed();
+        if (roles.Length == 0)
+            throw new ArgumentException("At least one role must be specified.", nameof(roles));
+        if (_authRoles is not null)
+        {
+            throw new InvalidOperationException(
+                $"Roles have already been set on this profile. Call RequireRoles only once.");
+        }
+
+        _authRoles = Array.AsReadOnly(roles);
+        _authRequired = true;
+    }
+
+    // ── IEntitySetEndpointSource ─────────────────────────────────────────────
+
+    string IEntitySetEndpointSource.EntitySetName => EntitySetName;
+    Type IEntitySetEndpointSource.KeyType => typeof(TKey);
+    Type IEntitySetEndpointSource.ModelType => typeof(TModel);
+
+    bool IEntitySetEndpointSource.HasGetAll => GetAll is not null;
+    bool IEntitySetEndpointSource.HasGetQueryable => GetQueryable is not null;
+    bool IEntitySetEndpointSource.HasGetById => GetById is not null;
+    bool IEntitySetEndpointSource.HasPost => Post is not null;
+    bool IEntitySetEndpointSource.HasPutById => PutById is not null;
+    bool IEntitySetEndpointSource.HasPatch => Patch is not null;
+    bool IEntitySetEndpointSource.HasDelete => Delete is not null;
+    bool IEntitySetEndpointSource.HasETag => _getETag is not null;
+    AuthorizationConfig? IEntitySetEndpointSource.Authorization =>
+        _authRequired ? new AuthorizationConfig(true, _authPolicy, _authRoles) : null;
+    IReadOnlyList<NavigationRouteDefinition> IEntitySetEndpointSource.NavigationRoutes => _navRoutes;
+    IReadOnlyList<BoundOperationDefinition> IEntitySetEndpointSource.BoundFunctions =>
+        _resolvedBoundFunctions ??= _functions.Select(d => BoundOperationDefinition.From(d, isAction: false))
+            .Concat(_entityFunctions.Select(d => BoundOperationDefinition.From(d, isAction: false, isEntityLevel: true)))
+            .ToList();
+    IReadOnlyList<BoundOperationDefinition> IEntitySetEndpointSource.BoundActions =>
+        _resolvedBoundActions ??= _actions.Select(d => BoundOperationDefinition.From(d, isAction: true))
+            .Concat(_entityActions.Select(d => BoundOperationDefinition.From(d, isAction: true, isEntityLevel: true)))
+            .ToList();
+    string IEntitySetEndpointSource.InvokeGetETag(object model) => _getETag!((TModel)model);
+
+    private Func<TModel, string>? _keyToString;
+    private Func<TModel, string> CompileKeyToString()
+    {
+        var compiled = _getKey.Compile();
+        return model => string.Format(CultureInfo.InvariantCulture, "{0}", compiled(model)) ?? "";
+    }
+    string IEntitySetEndpointSource.InvokeGetKeyString(object model)
+        => LazyInitializer.EnsureInitialized(ref _keyToString, CompileKeyToString)((TModel)model);
+    int? IEntitySetEndpointSource.MaxTop => _resolvedMaxTop;
+    bool IEntitySetEndpointSource.IdempotentDelete => _resolvedIdempotentDelete;
+    bool IEntitySetEndpointSource.AllowUpsert => _resolvedAllowUpsert;
+    bool IEntitySetEndpointSource.HasSearch => Search is not null;
+    string IEntitySetEndpointSource.KeyPropertyName => GetNavigationPropertyName(_getKey.Body);
+
+    async Task<IEnumerable<object>> IEntitySetEndpointSource.InvokeSearchAsync(string searchTerm, CancellationToken ct)
+    {
+        var result = await Search!.Invoke(searchTerm, ct);
+        return result.Cast<object>();
+    }
+
+    async Task<object?> IEntitySetEndpointSource.InvokeGetAllAsync(CancellationToken ct) =>
+        (object?)await GetAll!.Invoke(ct);
+
+    async Task<IQueryable<object>> IEntitySetEndpointSource.InvokeGetQueryableAsync(CancellationToken ct) =>
+        (await GetQueryable!.Invoke(ct)).Cast<object>();
+
+    async Task<object?> IEntitySetEndpointSource.InvokeGetByIdAsync(object key, CancellationToken ct) =>
+        (object?)await GetById!.Invoke((TKey)key, ct);
+
+    async Task<object?> IEntitySetEndpointSource.InvokePostAsync(object model, CancellationToken ct) =>
+        (object?)await Post!.Invoke((TModel)model, ct);
+
+    async Task<object?> IEntitySetEndpointSource.InvokePutByIdAsync(object key, object model, CancellationToken ct) =>
+        (object?)await PutById!.Invoke((TKey)key, (TModel)model, ct);
+
+    async Task<object?> IEntitySetEndpointSource.InvokePatchAsync(object key, Delta delta, CancellationToken ct) =>
+        (object?)await Patch!.Invoke((TKey)key, (Delta<TModel>)delta, ct);
+
+    Task<bool> IEntitySetEndpointSource.InvokeDeleteAsync(object key, CancellationToken ct) =>
+        Delete!.Invoke((TKey)key, ct);
+}
+
+/// <summary>
+/// Simple English pluralisation rules used to derive the default entity set name
+/// from the model type name.
+/// </summary>
+internal static class PluralizationHelper
+{
+    /// <summary>
+    /// Applies simple English pluralisation rules to <paramref name="name"/>:
+    /// consonant + y ending replaces y with ies; s/sh/ch/x/z endings append es;
+    /// everything else appends s.
+    /// </summary>
+    internal static string Pluralize(string name)
+    {
+        if (name.Length == 0) return name;
+
+        // ends in consonant + y  ->  replace y with ies  (Category -> Categories)
+        if (name.EndsWith('y') && name.Length > 1 && !"aeiouAEIOU".Contains(name[^2]))
+            return name[..^1] + "ies";
+
+        // ends in s, sh, ch, x, z  ->  append es  (Status -> Statuses)
+        if (name.EndsWith("sh", StringComparison.Ordinal) ||
+            name.EndsWith("ch", StringComparison.Ordinal) ||
+            name.EndsWith('s') || name.EndsWith('x') || name.EndsWith('z'))
+        {
+            return name + "es";
+        }
+
+        // default: append s  (Product -> Products, Order -> Orders)
+        return name + "s";
+    }
+}

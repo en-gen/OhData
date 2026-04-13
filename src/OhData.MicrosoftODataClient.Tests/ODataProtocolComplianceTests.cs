@@ -12,6 +12,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.AspNetCore.OData.Deltas;
 using Microsoft.Extensions.Logging;
 using OhData.Abstractions;
 using OhData.AspNetCore;
@@ -59,12 +60,11 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
             _store.Add(w);
             return Task.FromResult(w);
         };
-        Patch = (id, w, ct) =>
+        Patch = (id, delta, ct) =>
         {
             var existing = _store.FirstOrDefault(x => x.Id == id);
             if (existing is null) return Task.FromResult<Widget?>(null);
-            if (w.Name != "") existing.Name = w.Name;
-            if (w.Price != 0) existing.Price = w.Price;
+            delta.Patch(existing);
             return Task.FromResult<Widget?>(existing);
         };
         Delete = (id, ct) => Task.FromResult(_store.RemoveAll(w => w.Id == id) > 0);

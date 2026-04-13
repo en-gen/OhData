@@ -55,9 +55,13 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
 
         Delete = (id, ct) => Task.FromResult(_store.RemoveAll(w => w.Id == id) > 0);
 
-        // The framework fetches the existing entity via GetById, applies the request delta,
-        // and passes the merged entity here -- no manual fetch-and-merge needed.
-        Patch = (id, widget, ct) => Task.FromResult<Widget?>(widget);
+        Patch = (id, delta, ct) =>
+        {
+            var existing = _store.FirstOrDefault(w => w.Id == id);
+            if (existing is null) return Task.FromResult<Widget?>(null);
+            delta.Patch(existing);
+            return Task.FromResult<Widget?>(existing);
+        };
     }
 }
 
@@ -475,11 +479,11 @@ internal class ETagBodyProfile : EntitySetProfile<int, Widget>
             _store.Add(widget);
             return Task.FromResult(widget);
         };
-        Patch = (id, widget, ct) =>
+        Patch = (id, delta, ct) =>
         {
             var existing = _store.FirstOrDefault(w => w.Id == id);
             if (existing is null) return Task.FromResult<Widget?>(null);
-            if (widget.Name != "") existing.Name = widget.Name;
+            delta.Patch(existing);
             return Task.FromResult<Widget?>(existing);
         };
         UseETag(x => x.Name);
@@ -682,11 +686,9 @@ internal class ODataWidgetProfile : ODataEntitySetProfile<int, Widget>
 }
 
 /// <summary>
-/// Profile that extends <see cref="ODataEntitySetProfile{TKey,TModel}"/> and sets
-/// <c>PatchDelta</c> so the <see cref="Microsoft.AspNetCore.OData.Deltas.Delta{T}"/>
-/// partial-update code path is exercised.
+/// Profile that uses <c>Patch</c> with <see cref="Delta{T}"/> for partial-update semantics.
 /// </summary>
-internal class DeltaPatchWidgetProfile : ODataEntitySetProfile<int, Widget>
+internal class DeltaPatchWidgetProfile : EntitySetProfile<int, Widget>
 {
     private static readonly List<Widget> _store = new()
     {
@@ -702,7 +704,7 @@ internal class DeltaPatchWidgetProfile : ODataEntitySetProfile<int, Widget>
         GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
 
         // Delta-aware partial update: only the properties present in the request body are changed.
-        PatchDelta = (id, delta, ct) =>
+        Patch = (id, delta, ct) =>
         {
             var existing = _store.FirstOrDefault(w => w.Id == id);
             if (existing is null) return Task.FromResult<Widget?>(null);
@@ -836,18 +838,13 @@ internal class PatchItemProfile : EntitySetProfile<int, PatchItem>
 
         GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(x => x.Id == id));
 
-        // Framework delivers the current entity with delta applied -- just return it.
-        Patch = (id, item, ct) => Task.FromResult<PatchItem?>(item);
+        Patch = (id, delta, ct) =>
+        {
+            var existing = _store.FirstOrDefault(x => x.Id == id);
+            if (existing is null) return Task.FromResult<PatchItem?>(null);
+            delta.Patch(existing);
+            return Task.FromResult<PatchItem?>(existing);
+        };
     }
 }
 
-/// <summary>Profile that sets Patch without GetById -- used to verify startup validation throws.</summary>
-internal class PatchWithoutGetByIdProfile : EntitySetProfile<int, PatchItem>
-{
-    public PatchWithoutGetByIdProfile() : base(x => x.Id)
-    {
-        EntitySetName = "BadPatchItems";
-        Patch = (id, item, ct) => Task.FromResult<PatchItem?>(item);
-        // GetById intentionally absent -- framework must throw at startup.
-    }
-}
