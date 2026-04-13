@@ -22,10 +22,22 @@ public sealed class OhDataBuilder
     private readonly string _name;
     private readonly EntitySetDefaults _defaults = new();
 
+    // Tracks profile types registered across all OhData registrations on this IServiceCollection.
+    // Stored as a singleton marker so it is shared between all OhDataBuilder instances.
+    private sealed class GlobalProfileRegistry
+    {
+        internal readonly HashSet<Type> RegisteredTypes = new();
+    }
+
     internal OhDataBuilder(IServiceCollection services, string name = OhDataDefaults.DefaultRegistrationName)
     {
         _services = services;
         _name = name;
+
+        // Ensure the cross-registration tracker is registered in DI exactly once,
+        // as an instance singleton so it is available before the container is built.
+        if (!_services.Any(s => s.ServiceType == typeof(GlobalProfileRegistry)))
+            _services.AddSingleton(new GlobalProfileRegistry());
     }
 
     /// <summary>
@@ -66,6 +78,19 @@ public sealed class OhDataBuilder
         {
             throw new InvalidOperationException(
                 $"OhData: profile type '{typeof(TProfile).Name}' is already registered. Remove the duplicate AddProfile call.");
+        }
+
+        // Detect the same profile type being registered in a different OhData registration.
+        // Retrieve the tracker directly from the registered descriptors to avoid requiring a built container.
+        var registryDescriptor = _services.FirstOrDefault(s => s.ServiceType == typeof(GlobalProfileRegistry));
+        if (registryDescriptor?.ImplementationInstance is GlobalProfileRegistry registry)
+        {
+            if (!registry.RegisteredTypes.Add(typeof(TProfile)))
+            {
+                throw new InvalidOperationException(
+                    $"Profile type '{typeof(TProfile).Name}' has already been registered in a different " +
+                    "OhData registration. A profile type cannot be shared across registrations.");
+            }
         }
 
         _services.AddSingleton<TProfile>();
