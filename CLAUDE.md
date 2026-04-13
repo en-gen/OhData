@@ -50,7 +50,7 @@ app.MapOhData()  →  returns RouteGroupBuilder
             GET    /{EntitySet}/$count
             GET    /{EntitySet}({key})       (GetById)
             POST   /{EntitySet}              (Post)
-            PUT    /{EntitySet}({key})       (PutById)
+            PUT    /{EntitySet}({key})       (Put)
             PATCH  /{EntitySet}({key})       (Patch)
             DELETE /{EntitySet}({key})       (Delete — returns Task<bool>; false→404)
             GET    /{EntitySet}({key})/{nav} (navigation routes with handler)

@@ -941,7 +941,7 @@ internal static class OhDataEndpointFactory
             rb.WithTags(name).Produces<TModel>(201).Produces(400);
         }
 
-        if (source.HasPutById)
+        if (source.HasPut)
         {
             var rb = entityAuthGroup.MapPut($"/{name}({{key}})", async (string key, TModel model, HttpContext ctx, CancellationToken ct) =>
             {
@@ -955,7 +955,7 @@ internal static class OhDataEndpointFactory
                         return ODataError(400, "BadRequest", "Key in URL does not match key in request body.", target: "key");
                     var etagCheck = await CheckETagAsync(source, ctx, parsedKey!, ct);
                     if (etagCheck is not null) return etagCheck;
-                    object? result = await source.InvokePutByIdAsync(parsedKey!, model, ct);
+                    object? result = await source.InvokePutAsync(parsedKey!, model, ct);
 
                     // Gap 3: Upsert via PUT (§11.4.4) — create entity when result is null and AllowUpsert enabled
                     bool wasCreated = false;

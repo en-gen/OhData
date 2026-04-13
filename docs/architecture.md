@@ -40,7 +40,7 @@ app.MapOhData()
               ├─ GET  /{name}/$count        if HasGetQueryable or HasGetAll
               ├─ GET  /{name}({key})        if HasGetById
               ├─ POST /{name}               if HasPost
-              ├─ PUT  /{name}({key})        if HasPutById
+              ├─ PUT  /{name}({key})        if HasPut
               ├─ PATCH/{name}({key})        if HasPatch
               ├─ DELETE/{name}({key})       if HasDelete
               ├─ GET  /{name}({key})/{nav}  per navigation route with handler
