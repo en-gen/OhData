@@ -30,7 +30,7 @@ to be prepared and released before disclosing publicly.
 
 ## Scope
 
-This policy covers the `OhData.AspNetCore` and `OhData.Client` NuGet packages and
+This policy covers the `EnGen.OhData.AspNetCore` and `EnGen.OhData.Client` NuGet packages and
 the code in this repository. It does not cover vulnerabilities in upstream
 dependencies (e.g. `Microsoft.AspNetCore.OData`) -- report those to their
 respective maintainers.

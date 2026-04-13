@@ -5,7 +5,7 @@ A typed .NET client for OData 4.0 services. Provides a fluent, LINQ-style API fo
 ## Installation
 
 ```
-dotnet add package OhData.Client
+dotnet add package EnGen.OhData.Client
 ```
 
 ## Setup

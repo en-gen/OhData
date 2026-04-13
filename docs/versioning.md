@@ -26,9 +26,9 @@ GET /v2/Products       ← v2 registration
 GET /v2/Customers      ← v2 only
 ```
 
-## `OhData.AspNetCore.Versioning` convenience package
+## Versioning convenience helpers
 
-Combines name and prefix into a single call:
+`AddOhDataVersion` and `MapOhDataVersion` are included in `EnGen.OhData.AspNetCore` and combine name and prefix into a single call:
 
 ```csharp
 using OhData.AspNetCore.Versioning;
