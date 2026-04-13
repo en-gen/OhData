@@ -20,8 +20,7 @@ dotnet add package OhData.Client
 
 | Package | NuGet | What it does |
 |---------|-------|--------------|
-| `OhData.Abstractions` | [![NuGet](https://img.shields.io/nuget/v/OhData.Abstractions)](https://www.nuget.org/packages/OhData.Abstractions) | `EntitySetProfile<TKey,TModel>` base class. No ASP.NET Core dependency. |
-| `OhData.AspNetCore` | [![NuGet](https://img.shields.io/nuget/v/OhData.AspNetCore)](https://www.nuget.org/packages/OhData.AspNetCore) | DI registration, endpoint factory, minimal API routes. Includes `AddOhDataVersion` / `MapOhDataVersion` versioning helpers and `ODataEntitySetProfile<TKey,TModel>` for full OData pushdown control. |
+| `OhData.AspNetCore` | [![NuGet](https://img.shields.io/nuget/v/OhData.AspNetCore)](https://www.nuget.org/packages/OhData.AspNetCore) | `EntitySetProfile<TKey,TModel>` base class, DI registration, endpoint factory, minimal API routes. Includes `AddOhDataVersion` / `MapOhDataVersion` versioning helpers and `ODataEntitySetProfile<TKey,TModel>` for full OData pushdown control. |
 | `OhData.Client` | [![NuGet](https://img.shields.io/nuget/v/OhData.Client)](https://www.nuget.org/packages/OhData.Client) | Typed .NET client. Fluent builder with LINQ-based `$filter`, `$select`, `$expand`, `$orderby`, and pagination. |
 
 ---
@@ -52,6 +51,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
         GetById      = (id, ct) => db.Products.FindAsync(id, ct).AsTask();
         Post         = (p, ct) => { db.Products.Add(p); return db.SaveChangesAsync(ct).ContinueWith(_ => (Product?)p); };
         PutById      = (id, p, ct) => { db.Products.Update(p); return db.SaveChangesAsync(ct).ContinueWith(_ => (Product?)p); };
+        Patch        = (id, delta, ct) => { var e = db.Products.Find(id); return Task.FromResult(e is null ? null : delta.Patch(e)); };
         Delete       = (id, ct) => { /* remove by id */ return Task.FromResult(true); };
     }
 }
@@ -76,6 +76,7 @@ This produces:
 | `GET` | `/odata/Products({key})` | `GetById` |
 | `POST` | `/odata/Products` | `Post` |
 | `PUT` | `/odata/Products({key})` | `PutById` |
+| `PATCH` | `/odata/Products({key})` | `Patch` |
 | `DELETE` | `/odata/Products({key})` | `Delete` |
 
 Only routes with a handler assigned are registered. Unassigned handlers produce no route.
@@ -94,7 +95,7 @@ var page = await client.For<Product>()
     .OrderBy(x => x.Name)
     .Top(20)
     .Skip(0)
-    .ToPageAsync();     // returns ODataPage<Product> with Items + TotalCount
+    .ToPageAsync();     // returns ODataPage<Product> with Items, TotalCount, NextLink
 
 // Get a single entity — returns null on 404
 Product? p = await client.For<Product>().Key(42).GetAsync();
