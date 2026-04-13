@@ -14,18 +14,18 @@ jobs:
         with:
           fetch-depth: 0  # GitVersion requires full history to compute semantic version
       - name: Prepare k6 reports directory
-        run: mkdir -p k6/reports && chmod 777 k6/reports
+        run: mkdir -p tests/k6/reports && chmod 777 tests/k6/reports
       - name: Run k6 tests
-        run: docker compose -f docker-compose.k6.yml up --abort-on-container-exit --exit-code-from k6
+        run: docker compose -f tests/docker-compose.k6.yml up --abort-on-container-exit --exit-code-from k6
       - name: Upload k6 report
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: k6-report
-          path: k6/reports/
+          path: tests/k6/reports/
       - name: Write summary
         if: always()
         run: |
-          if [ -f k6/reports/summary.md ]; then
-            cat k6/reports/summary.md >> $GITHUB_STEP_SUMMARY
+          if [ -f tests/k6/reports/summary.md ]; then
+            cat tests/k6/reports/summary.md >> $GITHUB_STEP_SUMMARY
           fi

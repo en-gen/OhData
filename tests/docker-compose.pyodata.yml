@@ -1,8 +1,8 @@
 services:
   testbench:
     build:
-      context: .
-      dockerfile: src/OhData.TestBench.AspNetCore/Dockerfile
+      context: ..
+      dockerfile: Dockerfile
     environment:
       ASPNETCORE_URLS: http://+:8080
     healthcheck:
@@ -13,14 +13,12 @@ services:
       retries: 12
       start_period: 10s
 
-  k6:
-    image: grafana/k6:latest
+  pyodata:
+    build:
+      context: pyodata
+      dockerfile: Dockerfile
     depends_on:
       testbench:
         condition: service_healthy
-    volumes:
-      - ./k6:/scripts
-      - ./k6/reports:/reports
-    command: run --out json=/reports/results.json /scripts/smoke.js
     environment:
       BASE_URL: http://testbench:8080
