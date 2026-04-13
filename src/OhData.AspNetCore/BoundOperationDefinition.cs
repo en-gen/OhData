@@ -50,6 +50,18 @@ internal sealed record BoundOperationDefinition
     internal static BoundOperationDefinition From(Delegate del, bool isAction, bool isEntityLevel = false)
     {
         var method = del.Method;
+
+        // Reject compiler-generated names (lambdas produce names like '<.ctor>b__0_0').
+        // The name becomes the OData operation name in the EDM — it must be a valid identifier.
+        if (method.Name.Contains('<') || method.Name.Contains('>'))
+        {
+            string kind = isAction ? "action" : "function";
+            throw new InvalidOperationException(
+                $"Cannot bind a compiler-generated method as an OData {kind}. " +
+                $"Use a named method instead of a lambda (detected name: '{method.Name}'). " +
+                $"Example: BindFunction(MyFunction) where MyFunction is a named method on the profile.");
+        }
+
         var allParams = method.GetParameters();
         bool hasCt = allParams.Length > 0
             && allParams[^1].ParameterType == typeof(CancellationToken);
