@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Net.Http;
 using System.Threading.Tasks;
 using Xunit;
+using OhData.Client;
 
 namespace OhData.Client.Tests;
 
@@ -143,6 +144,44 @@ public class NextLinkIntegrationTests : IAsyncDisposable
         var page = await Client.For<Widget>("PaginatedWidgets").Skip(9).ToPageAsync();
         Assert.Single(page.Items);
         Assert.Null(page.NextLink);
+    }
+
+    // ── ToAsyncEnumerable ────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ToAsyncEnumerable_YieldsAllItemsAcrossPages()
+    {
+        // PaginatedWidgetProfile has MaxTop=3 and 10 items.
+        // ToAsyncEnumerable should follow all nextLinks and yield all 10 items.
+        var items = new List<Widget>();
+        await foreach (Widget w in Client.For<Widget>("PaginatedWidgets").ToAsyncEnumerable())
+            items.Add(w);
+
+        Assert.Equal(10, items.Count);
+    }
+
+    [Fact]
+    public async Task ToAsyncEnumerable_WithFilter_YieldsFilteredItems()
+    {
+        // Filter for widgets with Id <= 5 — should yield only 5 items across pages.
+        var items = new List<Widget>();
+        await foreach (Widget w in Client.For<Widget>("PaginatedWidgets")
+            .Filter(x => x.Id <= 5)
+            .ToAsyncEnumerable())
+        {
+            items.Add(w);
+        }
+
+        Assert.Equal(5, items.Count);
+        Assert.All(items, w => Assert.True(w.Id <= 5));
+    }
+
+    [Fact]
+    public async Task ToListAsync_YieldsAllPages()
+    {
+        // Regression: ToListAsync should follow nextLinks after the refactor to use ToAsyncEnumerable.
+        var items = await Client.For<Widget>("PaginatedWidgets").ToListAsync();
+        Assert.Equal(10, items.Count);
     }
 }
 
