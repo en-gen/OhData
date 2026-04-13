@@ -42,6 +42,11 @@ internal interface IEntitySetEndpointSource
     bool IdempotentDelete { get; }
     bool AllowUpsert { get; }
     bool HasSearch { get; }
+    bool FilterEnabled { get; }
+    bool OrderByEnabled { get; }
+    bool SelectEnabled { get; }
+    bool ExpandEnabled { get; }
+    bool CountEnabled { get; }
     string KeyPropertyName { get; }
     string InvokeGetKeyString(object model);
     bool IsAdvancedConfigureOverridden { get; }

@@ -173,6 +173,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         }
     }
     private int? _resolvedMaxTop;
+    private bool _resolvedFilterEnabled;
+    private bool _resolvedOrderByEnabled;
+    private bool _resolvedSelectEnabled;
+    private bool _resolvedExpandEnabled;
+    private bool _resolvedCountEnabled;
 
     /// <summary>
     /// When <c>true</c>, <c>DELETE</c> on a non-existent resource returns <c>204 No Content</c>
@@ -307,6 +312,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _resolvedMaxTop = MaxTop ?? defaults.MaxTop;
         _resolvedIdempotentDelete = IdempotentDelete ?? defaults.IdempotentDelete;
         _resolvedAllowUpsert = AllowUpsert ?? defaults.AllowUpsert;
+        _resolvedFilterEnabled = FilterEnabled ?? defaults.FilterEnabled;
+        _resolvedOrderByEnabled = OrderByEnabled ?? defaults.OrderByEnabled;
+        _resolvedSelectEnabled = SelectEnabled ?? defaults.SelectEnabled;
+        _resolvedExpandEnabled = ExpandEnabled ?? defaults.ExpandEnabled;
+        _resolvedCountEnabled = CountEnabled ?? defaults.CountEnabled;
 
         AdvancedConfigure(entitySet);
 
@@ -1015,6 +1025,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     bool IEntitySetEndpointSource.IdempotentDelete => _resolvedIdempotentDelete;
     bool IEntitySetEndpointSource.AllowUpsert => _resolvedAllowUpsert;
     bool IEntitySetEndpointSource.HasSearch => Search is not null;
+    bool IEntitySetEndpointSource.FilterEnabled => _resolvedFilterEnabled;
+    bool IEntitySetEndpointSource.OrderByEnabled => _resolvedOrderByEnabled;
+    bool IEntitySetEndpointSource.SelectEnabled => _resolvedSelectEnabled;
+    bool IEntitySetEndpointSource.ExpandEnabled => _resolvedExpandEnabled;
+    bool IEntitySetEndpointSource.CountEnabled => _resolvedCountEnabled;
     string IEntitySetEndpointSource.KeyPropertyName => GetNavigationPropertyName(_getKey.Body);
     bool IEntitySetEndpointSource.IsAdvancedConfigureOverridden => _isAdvancedConfigureOverridden;
 

@@ -14,6 +14,7 @@
 
 	<ItemGroup>
 		<PackageReference Include="Microsoft.AspNetCore.OData" Version="[9.4.*, 10)" />
+		<PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="[8.0.*, 11)" />
 		<PackageReference Include="Microsoft.OData.ModelBuilder" Version="[2.*, 3)" />
 	</ItemGroup>
 
