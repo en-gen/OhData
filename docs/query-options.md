@@ -43,7 +43,7 @@ The framework does not prescribe how `items` or `totalCount` are obtained. That 
 
 If `TotalCount` is not set and the client sends `$count=true`, the count in the response will reflect only the current page size, which is incorrect per the OData spec. Prefer always supplying `TotalCount` when using this handler.
 
-> **Note:** `GetODataQueryable` is available on `ODataEntitySetProfile<TKey, TModel>`, not the base `EntitySetProfile<TKey, TModel>`. It requires the `OhData.AspNetCore` package.
+> **Note:** `GetODataQueryable` is available on `ODataEntitySetProfile<TKey, TModel>`, not the base `EntitySetProfile<TKey, TModel>`. It requires the `EnGen.OhData.AspNetCore` package.
 
 ### `GetQueryable` — IQueryable with pushdown (recommended for databases)
 
