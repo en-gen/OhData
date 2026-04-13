@@ -74,5 +74,5 @@ By submitting a PR you agree that your contribution will be licensed under the
 ## Reporting bugs
 
 Open an issue using the Bug Report template. Include a minimal reproduction
-if possible. Do not open issues for security vulnerabilities — see
+if possible. Do not open issues for security vulnerabilities - see
 [SECURITY.md](SECURITY.md) if that file exists, or email the maintainer directly.

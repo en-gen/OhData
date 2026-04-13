@@ -57,7 +57,7 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
         GetById = (id, ct) => Task.FromResult(store.Find(id));
     }
 
-    // First param is the key — the framework extracts it from the URL
+    // First param is the key - the framework extracts it from the URL
     private Task<int> GetLineCount(Guid orderId, CancellationToken ct) =>
         Task.FromResult(store.Find(orderId)?.Lines.Count ?? 0);
 
@@ -72,7 +72,7 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
 
 ## Parameters
 
-### Functions — query string
+### Functions - query string
 
 Function parameters are read from the query string. Any CLR type that can be parsed from a string (including primitives, `Guid`, `DateTimeOffset`, enums) is supported:
 
@@ -81,7 +81,7 @@ GET /Products/GetCheapest?maxPrice=10.00
 GET /Orders/CreatedBetween?from=2024-01-01&to=2024-03-31
 ```
 
-### Actions — JSON body
+### Actions - JSON body
 
 Action parameters are read from a JSON request body as named properties:
 
@@ -109,7 +109,7 @@ Optional parameters and their defaults are reflected in `$metadata`.
 
 ## Return types
 
-Any return type is supported — the result is serialized as JSON. Wrap in `Task<T>` for async operations, or return `void`/`Task` for no-content responses:
+Any return type is supported - the result is serialized as JSON. Wrap in `Task<T>` for async operations, or return `void`/`Task` for no-content responses:
 
 ```csharp
 // Returns a single entity
@@ -128,4 +128,4 @@ Bound operations are registered in the EDM model and appear in `GET /$metadata`.
 
 ## Error handling
 
-Exceptions thrown from the handler propagate as `500 Internal Server Error`. To return OData error responses from within a handler, throw a structured exception or return an appropriate HTTP result — consider wrapping the operation in try/catch and returning `Results.Problem(...)` if granular error control is needed.
+Exceptions thrown from the handler propagate as `500 Internal Server Error`. To return OData error responses from within a handler, throw a structured exception or return an appropriate HTTP result - consider wrapping the operation in try/catch and returning `Results.Problem(...)` if granular error control is needed.
