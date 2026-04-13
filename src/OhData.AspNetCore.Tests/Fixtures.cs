@@ -875,3 +875,67 @@ internal class PatchItemProfile : EntitySetProfile<int, PatchItem>
     }
 }
 
+// ── Coverage-gap fixtures ─────────────────────────────────────────────────────
+
+/// <summary>
+/// H-1: Profile using GetODataQueryable that returns ODataQueryResult with a
+/// pre-set TotalCount (10) but only 2 items. Used to verify that $count=true
+/// uses TotalCount from the result rather than the item count.
+/// </summary>
+internal class ODataTotalCountProfile : ODataEntitySetProfile<int, Widget>
+{
+    private static readonly List<Widget> _store = new()
+    {
+        new() { Id = 1, Name = "Alpha" },
+        new() { Id = 2, Name = "Beta" },
+    };
+
+    public ODataTotalCountProfile() : base(x => x.Id)
+    {
+        EntitySetName = "TotalCountWidgets";
+        CountEnabled = true;
+
+        // Returns only 2 items but advertises TotalCount = 10 (simulating a pre-paged query)
+        GetODataQueryable = (options, ct) =>
+            System.Threading.Tasks.Task.FromResult(new ODataQueryResult<Widget>
+            {
+                Items = _store.AsQueryable(),
+                TotalCount = 10,
+            });
+    }
+}
+
+/// <summary>
+/// M-4: Profile with GetQueryable + ETag + Expand + Select — all three pipeline
+/// features enabled simultaneously. Used to verify the unified JSON pipeline.
+/// </summary>
+internal class ETagExpandSelectProfile : EntitySetProfile<int, Parent>
+{
+    private static readonly List<Parent> _parents = new()
+    {
+        new() { Id = 1, Name = "P1" },
+        new() { Id = 2, Name = "P2" },
+    };
+    private static readonly List<Child> _children = new()
+    {
+        new() { Id = 1, ParentId = 1, Name = "C1" },
+        new() { Id = 2, ParentId = 2, Name = "C2" },
+    };
+
+    public ETagExpandSelectProfile() : base(x => x.Id)
+    {
+        EntitySetName = "ETagExpandSelectParents";
+        SelectEnabled = true;
+        ExpandEnabled = true;
+
+        GetQueryable = (ct) => Task.FromResult(_parents.AsQueryable());
+        GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(p => p.Id == id));
+
+        HasMany(x => x.Children!,
+            getAll: (parentId, ct) =>
+                Task.FromResult<IEnumerable<Child>>(_children.Where(c => c.ParentId == parentId)));
+
+        UseETag(x => x.Name);
+    }
+}
+
