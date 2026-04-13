@@ -121,13 +121,30 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
     /// <summary>
     /// Registers the <c>PATCH /{EntitySet}({key})</c> handler for partial entity updates
-    /// (OData §11.4.3 — Update an Entity). Return <c>null</c> to produce a
-    /// <c>404 Not Found</c> response per §9.1.4.
+    /// (OData §11.4.3 -- Update an Entity).
     /// </summary>
     /// <remarks>
-    /// Leaving this <c>null</c> (the default) means no <c>PATCH /{EntitySet}({key})</c> route is registered.
-    /// For OData Delta support (true partial-update semantics), use
+    /// <para>
+    /// The <typeparamref name="TModel"/> parameter received by the handler is the <em>current
+    /// stored entity</em> with the request-body properties merged in. Only properties
+    /// explicitly present in the JSON request body are overwritten; all others retain their
+    /// current values. This gives true OData partial-update semantics without requiring the
+    /// handler to manage the merge itself.
+    /// </para>
+    /// <para>
+    /// <strong>GetById must also be configured.</strong> The framework fetches the existing
+    /// entity via <c>GetById</c> before invoking this handler. A startup-time
+    /// <see cref="InvalidOperationException"/> is thrown if <c>GetById</c> is absent.
+    /// </para>
+    /// <para>
+    /// Return the updated entity for a 200 response, or <c>null</c> to produce a
+    /// <c>404 Not Found</c> response per §9.1.4.
+    /// Leaving this field <c>null</c> (the default) means no route is registered.
+    /// </para>
+    /// <para>
+    /// For direct <c>Delta&lt;TModel&gt;</c> access use
     /// <c>ODataEntitySetProfile&lt;TKey, TModel&gt;.PatchDelta</c> instead.
+    /// </para>
     /// </remarks>
     protected Func<TKey, TModel, CancellationToken, Task<TModel?>>? Patch = null;
 

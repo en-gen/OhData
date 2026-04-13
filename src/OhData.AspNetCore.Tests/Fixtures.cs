@@ -55,13 +55,9 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
 
         Delete = (id, ct) => Task.FromResult(_store.RemoveAll(w => w.Id == id) > 0);
 
-        Patch = (id, widget, ct) =>
-        {
-            var existing = _store.FirstOrDefault(w => w.Id == id);
-            if (existing is null) return Task.FromResult<Widget?>(null);
-            if (widget.Name != "") existing.Name = widget.Name;
-            return Task.FromResult<Widget?>(existing);
-        };
+        // The framework fetches the existing entity via GetById, applies the request delta,
+        // and passes the merged entity here -- no manual fetch-and-merge needed.
+        Patch = (id, widget, ct) => Task.FromResult<Widget?>(widget);
     }
 }
 
@@ -808,5 +804,50 @@ internal class ETagIfMatchProfile : EntitySetProfile<int, Widget>
             return Task.FromResult(widget);
         };
         UseETag(x => x.Name);
+    }
+}
+
+// -- Partial-update (delta semantics) test fixtures ----------------------------
+
+/// <summary>Three-field entity used to verify that PATCH preserves fields not in the request body.</summary>
+internal class PatchItem
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public decimal Price { get; set; }
+}
+
+/// <summary>
+/// Profile that demonstrates the new Patch delta semantics: the handler receives the
+/// pre-fetched entity with only request-body fields overwritten. No manual merge needed.
+/// </summary>
+internal class PatchItemProfile : EntitySetProfile<int, PatchItem>
+{
+    private readonly List<PatchItem> _store;
+
+    public PatchItemProfile() : base(x => x.Id)
+    {
+        EntitySetName = "PatchItems";
+        _store = new List<PatchItem>
+        {
+            new() { Id = 1, Name = "Widget", Price = 9.99m },
+            new() { Id = 2, Name = "Gadget", Price = 19.99m },
+        };
+
+        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(x => x.Id == id));
+
+        // Framework delivers the current entity with delta applied -- just return it.
+        Patch = (id, item, ct) => Task.FromResult<PatchItem?>(item);
+    }
+}
+
+/// <summary>Profile that sets Patch without GetById -- used to verify startup validation throws.</summary>
+internal class PatchWithoutGetByIdProfile : EntitySetProfile<int, PatchItem>
+{
+    public PatchWithoutGetByIdProfile() : base(x => x.Id)
+    {
+        EntitySetName = "BadPatchItems";
+        Patch = (id, item, ct) => Task.FromResult<PatchItem?>(item);
+        // GetById intentionally absent -- framework must throw at startup.
     }
 }

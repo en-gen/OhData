@@ -174,9 +174,19 @@ internal static class OhDataEndpointFactory
         // One set of CRUD routes per registered profile
         foreach (var profile in registration.Profiles)
         {
-            _mapEntitySetMethod
-                .MakeGenericMethod(profile.KeyType, profile.ModelType)
-                .Invoke(null, new object?[] { group, profile, registration, loggerFactory });
+            try
+            {
+                _mapEntitySetMethod
+                    .MakeGenericMethod(profile.KeyType, profile.ModelType)
+                    .Invoke(null, new object?[] { group, profile, registration, loggerFactory });
+            }
+            catch (System.Reflection.TargetInvocationException tie) when (tie.InnerException is not null)
+            {
+                // Unwrap reflection wrapper so callers see the real exception (e.g. InvalidOperationException
+                // from startup validation) rather than a TargetInvocationException.
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(tie.InnerException).Throw();
+                throw; // unreachable
+            }
         }
 
         // Gap 7: Unbound functions/actions — registered once at service root level (§11.5.1)
@@ -522,6 +532,14 @@ internal static class OhDataEndpointFactory
             throw new InvalidOperationException(
                 $"Entity set '{source.EntitySetName}': UseETag requires GetById to also be configured. " +
                 "ETag validation on PUT/PATCH/DELETE requires fetching the current entity.");
+        }
+
+        if (source.HasPatch && !source.HasGetById)
+        {
+            throw new InvalidOperationException(
+                $"Entity set '{source.EntitySetName}': Patch requires GetById to also be configured. " +
+                "The framework fetches the existing entity via GetById, applies the request delta, " +
+                "then passes the merged entity to the Patch handler.");
         }
 
         string name = source.EntitySetName;
@@ -1015,13 +1033,25 @@ internal static class OhDataEndpointFactory
                     var body = await JsonSerializer.DeserializeAsync<JsonElement>(
                         ctx.Request.Body, jsonOptions, ct);
 
-                    var model = body.Deserialize<TModel>(jsonOptions)!;
+                    // Standard Patch and PatchDelta both build a Delta<TModel> from the JSON body.
+                    // Standard Patch additionally fetches the existing entity via GetById, applies
+                    // the delta in-place, and passes the merged entity to the handler -- giving
+                    // true partial-update semantics per OData spec §11.4.3 without changing the
+                    // handler signature. PatchDelta passes the delta directly for callers that
+                    // need raw Delta<TModel> access (ODataEntitySetProfile only).
+                    object? fetchedEntity = null;
+                    if (!usePatchDelta)
+                    {
+                        fetchedEntity = await source.InvokeGetByIdAsync(parsedKey!, ct);
+                        if (fetchedEntity is null)
+                            return ODataError(404, "NotFound", $"{name} with key '{key}' was not found.");
+                    }
 
                     // Only validate key mismatch if the key property was explicitly present in the body.
-                    // PATCH is a partial update — the key may be omitted. URL key is authoritative.
-                    if (TryGetJsonProperty(body, source.KeyPropertyName, out _))
+                    // PATCH is a partial update -- the key may be omitted. URL key is authoritative.
+                    if (TryGetJsonProperty(body, source.KeyPropertyName, out JsonElement keyEl))
                     {
-                        string bodyKeyStr = source.InvokeGetKeyString(model);
+                        string bodyKeyStr = keyEl.ToString();
                         string parsedKeyStr = string.Format(CultureInfo.InvariantCulture, "{0}", parsedKey);
                         if (!string.Equals(parsedKeyStr, bodyKeyStr, StringComparison.Ordinal))
                             return ODataError(400, "BadRequest", "Key in URL does not match key in request body.", target: "key");
@@ -1030,27 +1060,30 @@ internal static class OhDataEndpointFactory
                     var etagCheck = await CheckETagAsync(source, ctx, parsedKey!, ct);
                     if (etagCheck is not null) return etagCheck;
 
+                    // Build Delta<TModel>: only properties present in the request body are set.
+                    var patchDelta = new Microsoft.AspNetCore.OData.Deltas.Delta<TModel>();
+                    foreach (var prop in body.EnumerateObject())
+                    {
+                        var clrProp = typeof(TModel).GetProperty(prop.Name,
+                            BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance);
+                        if (clrProp is not null)
+                        {
+                            object? value = prop.Value.Deserialize(clrProp.PropertyType, jsonOptions);
+                            patchDelta.TrySetPropertyValue(clrProp.Name, value);
+                        }
+                    }
+
                     object? result;
                     if (usePatchDelta)
                     {
-                        // Build Delta<TModel> from the JSON body — only properties present in the
-                        // request are set, giving the handler true partial-update semantics.
-                        var delta = new Microsoft.AspNetCore.OData.Deltas.Delta<TModel>();
-                        foreach (var prop in body.EnumerateObject())
-                        {
-                            var clrProp = typeof(TModel).GetProperty(prop.Name,
-                                BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance);
-                            if (clrProp is not null)
-                            {
-                                object? value = prop.Value.Deserialize(clrProp.PropertyType, jsonOptions);
-                                delta.TrySetPropertyValue(clrProp.Name, value);
-                            }
-                        }
-                        result = await ((IODataEntitySetEndpointSource)source).InvokePatchDeltaAsync(parsedKey!, delta, ct);
+                        result = await ((IODataEntitySetEndpointSource)source).InvokePatchDeltaAsync(parsedKey!, patchDelta, ct);
                     }
                     else
                     {
-                        result = await source.InvokePatchAsync(parsedKey!, model, ct);
+                        // Apply delta to the fetched entity; handler receives the merged, fully-populated model.
+                        var existing = (TModel)fetchedEntity!;
+                        patchDelta.Patch(existing);
+                        result = await source.InvokePatchAsync(parsedKey!, existing, ct);
                     }
 
                     string? patchEtag = null;
