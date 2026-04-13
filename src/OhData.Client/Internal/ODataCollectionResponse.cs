@@ -15,6 +15,9 @@ internal sealed class ODataCollectionResponse<T>
     [JsonPropertyName("@odata.count")]
     public long? Count { get; set; }
 
+    [JsonPropertyName("@odata.nextLink")]
+    public string? NextLink { get; set; }
+
     [JsonPropertyName("value")]
     public List<T> Value { get; set; } = [];
 }
