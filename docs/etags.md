@@ -22,7 +22,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
 
 `UseETag` accepts one or more property selectors. The framework SHA-256 hashes their values and Base64-encodes the result. `byte[]` properties are hashed directly (ideal for SQL row-version columns); all other values are hashed as their UTF-8 string representations.
 
-Hash multiple fields together — the ETag changes if any of them changes:
+Hash multiple fields together - the ETag changes if any of them changes:
 
 ```csharp
 UseETag(x => x.Name, x => x.Price, x => x.UpdatedAt);
@@ -75,7 +75,7 @@ This lets clients avoid re-downloading unchanged data.
 
 ## Concurrency note
 
-The ETag check is a best-effort conflict signal, not an atomic operation. The framework fetches the entity in one database call, then the caller performs the write in a separate operation — another request may modify the entity between those two steps. For true atomic optimistic concurrency, use a database-level mechanism (e.g. SQL `WHERE RowVersion = @expected`) inside the handler itself and return `null` / throw on conflict.
+The ETag check is a best-effort conflict signal, not an atomic operation. The framework fetches the entity in one database call, then the caller performs the write in a separate operation - another request may modify the entity between those two steps. For true atomic optimistic concurrency, use a database-level mechanism (e.g. SQL `WHERE RowVersion = @expected`) inside the handler itself and return `null` / throw on conflict.
 
 ## Example: SQL row-version column
 

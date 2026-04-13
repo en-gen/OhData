@@ -1,6 +1,6 @@
 # API Versioning
 
-OhData supports multiple simultaneous registrations with independent prefixes, EDM models, and profile sets. Each registration is completely isolated — no shared state.
+OhData supports multiple simultaneous registrations with independent prefixes, EDM models, and profile sets. Each registration is completely isolated - no shared state.
 
 ## Named registrations
 

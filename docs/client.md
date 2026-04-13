@@ -1,6 +1,6 @@
 # OhData.Client
 
-A typed .NET client for OData 4.0 services. Provides a fluent, LINQ-style API for querying and mutating entity sets — no code generation required.
+A typed .NET client for OData 4.0 services. Provides a fluent, LINQ-style API for querying and mutating entity sets - no code generation required.
 
 ## Installation
 
@@ -11,7 +11,7 @@ dotnet add package EnGen.OhData.Client
 ## Setup
 
 ```csharp
-// Create directly (owns the HttpClient — dispose when done)
+// Create directly (owns the HttpClient - dispose when done)
 var client = new OhDataClient("https://api.example.com/odata");
 
 // Or wrap a caller-supplied HttpClient (recommended for IHttpClientFactory)
@@ -64,7 +64,7 @@ client.For<Category>("MyCategories")
 
 ## Querying
 
-`For<T>()` returns an `EntitySetClient<T>`. All builder methods are immutable — each call returns a new instance, making it safe to compose partial queries:
+`For<T>()` returns an `EntitySetClient<T>`. All builder methods are immutable - each call returns a new instance, making it safe to compose partial queries:
 
 ```csharp
 var base = client.For<Product>().Filter(x => x.IsActive);
@@ -75,7 +75,7 @@ var pricey = await base.Filter(x => x.Price > 100).OrderBy(x => x.Name).ToListAs
 
 ### `$filter`
 
-Filter with a LINQ predicate — translated to an OData `$filter` string at call time:
+Filter with a LINQ predicate - translated to an OData `$filter` string at call time:
 
 ```csharp
 // Comparison and logical operators
@@ -202,8 +202,8 @@ foreach (var p in page.Items) { ... }
 ```
 
 `ODataPage<T>` has:
-- `Items` — the entities on this page
-- `TotalCount` — total matching entities (pre-pagination), `null` if the server didn't return `@odata.count`
+- `Items` - the entities on this page
+- `TotalCount` - total matching entities (pre-pagination), `null` if the server didn't return `@odata.count`
 
 ### `FirstOrDefaultAsync`
 
@@ -217,7 +217,7 @@ Product? cheapest = await client.For<Product>()
 
 ### `CountAsync`
 
-Hits `GET /{EntitySet}/$count` — returns the total count as a `long`:
+Hits `GET /{EntitySet}/$count` - returns the total count as a `long`:
 
 ```csharp
 long count = await client.For<Product>()
@@ -311,9 +311,9 @@ catch (ODataClientException ex)
 ```
 
 `ODataClientException` properties:
-- `StatusCode` — the `HttpStatusCode`
-- `ODataErrorCode` — the `"code"` field from the OData error body, or `null`
-- `ODataErrorMessage` — the `"message"` field, or the raw response body if not a valid OData error
+- `StatusCode` - the `HttpStatusCode`
+- `ODataErrorCode` - the `"code"` field from the OData error body, or `null`
+- `ODataErrorMessage` - the `"message"` field, or the raw response body if not a valid OData error
 
 ---
 

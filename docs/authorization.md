@@ -1,6 +1,6 @@
 # Authorization
 
-OhData integrates with standard ASP.NET Core authentication and authorization — there is no OhData-specific auth system. The framework applies ASP.NET Core's own `RequireAuthorization` to the registered endpoints based on what you declare in the profile.
+OhData integrates with standard ASP.NET Core authentication and authorization - there is no OhData-specific auth system. The framework applies ASP.NET Core's own `RequireAuthorization` to the registered endpoints based on what you declare in the profile.
 
 ## Middleware setup
 
@@ -38,7 +38,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
         // Named ASP.NET Core authorization policy
         RequireAuthorization("AdminOnly");
 
-        // One or more roles — user must have at least one (OR semantics)
+        // One or more roles - user must have at least one (OR semantics)
         RequireRoles("Admin", "SuperAdmin");
 
         GetAll = (ct) => ...;
@@ -50,7 +50,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
 
 ## Scope
 
-Authorization applies to **all operations** on the entity set — GET, POST, PUT, PATCH, DELETE, navigation routes, and bound operations all get the same requirement. Per-operation granularity is not supported.
+Authorization applies to **all operations** on the entity set - GET, POST, PUT, PATCH, DELETE, navigation routes, and bound operations all get the same requirement. Per-operation granularity is not supported.
 
 If you need some operations open and others protected, split them across two profiles with different entity set names that delegate to the same underlying service.
 

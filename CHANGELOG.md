@@ -13,7 +13,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 **Server (OhData.AspNetCore)**
 
-- Convention-based OData 4.0 endpoint registration via `EntitySetProfile<TKey, TModel>` —
+- Convention-based OData 4.0 endpoint registration via `EntitySetProfile<TKey, TModel>`  - 
   no controllers required
 - `GetAll`, `GetQueryable` (IQueryable with EF Core pushdown), `GetById`, `Post`, `PutById`,
   `Patch`, and `Delete` handler slots; unregistered slots produce no route
@@ -75,7 +75,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- `Delete` handler returns `Task<bool>` — `false` produces a 404 OData error response
+- `Delete` handler returns `Task<bool>` - `false` produces a 404 OData error response
 - `$select` uses JsonNode post-processing (not `ISelectExpandWrapper`) to preserve
   camelCase consistency
 - OData spec compliance improvements across batches 1-6:
