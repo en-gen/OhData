@@ -28,7 +28,7 @@ jobs:
 
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.x
+          dotnet-version: 10.x
 
       # Compute the NuGet version from GitVersion and expose it as
       # ${{ steps.gitversion.outputs.nuGetVersionV2 }} (e.g. "0.1.0" on main).
