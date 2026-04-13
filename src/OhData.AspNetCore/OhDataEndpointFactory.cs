@@ -652,7 +652,11 @@ internal static class OhDataEndpointFactory
                             byte[] bytes = Convert.FromBase64String(Uri.UnescapeDataString(tokenVal.ToString()));
                             tokenSkip = BitConverter.ToInt32(bytes, 0);
                         }
-                        catch { /* ignore malformed token */ }
+                        catch
+                        {
+                            return ODataError(400, "InvalidSkipToken",
+                                "The skiptoken value is invalid or has been corrupted.");
+                        }
                     }
 
                     int effectiveSkip = tokenSkip ?? 0;
@@ -682,7 +686,7 @@ internal static class OhDataEndpointFactory
                     // Gap 3: compute nextLink when MaxTop (or preferred page size) is set and page is full
                     string? nextLink = null;
                     int effectivePageSize = preferredPageSize ?? (source.MaxTop ?? 0);
-                    if (effectivePageSize > 0 && items.Length == effectivePageSize)
+                    if (effectivePageSize > 0 && items.Length == effectivePageSize && options.Top is null)
                     {
                         int nextSkip = effectiveSkip + items.Length;
                         string token = Convert.ToBase64String(BitConverter.GetBytes(nextSkip));
