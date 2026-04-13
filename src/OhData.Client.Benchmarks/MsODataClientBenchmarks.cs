@@ -5,7 +5,6 @@ using System.Linq;
 using System.Net.Http;
 using System.Threading.Tasks;
 using BenchmarkDotNet.Attributes;
-using BenchmarkDotNet.Jobs;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
@@ -206,7 +205,6 @@ internal sealed class BenchResponseMessage : IODataResponseMessage
 ///
 /// Transport: Microsoft.OData.Client → BenchRequestMessage → HttpClient → TestServer → OhData
 /// </summary>
-[SimpleJob(RuntimeMoniker.Net80)]
 [MemoryDiagnoser]
 public class MsODataClientBenchmarks
 {
