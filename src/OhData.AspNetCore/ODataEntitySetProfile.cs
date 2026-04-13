@@ -29,13 +29,6 @@ public abstract class ODataEntitySetProfile<TKey, TModel> : EntitySetProfile<TKe
     protected Func<ODataQueryOptions<TModel>, CancellationToken, Task<IQueryable<TModel>>>? GetODataQueryable = null;
 
     /// <summary>
-    /// PATCH handler that receives an OData <see cref="Delta{TModel}"/> representing only the
-    /// properties present in the request body. Preferred over the base <c>Patch</c> delegate
-    /// when true partial update semantics are needed.
-    /// </summary>
-    protected Func<TKey, Delta<TModel>, CancellationToken, Task<TModel?>>? PatchDelta = null;
-
-    /// <summary>
     /// Initialises the profile. Pass a key-selector expression that identifies the entity's
     /// primary key property, e.g. <c>x => x.Id</c>.
     /// </summary>
@@ -48,17 +41,10 @@ public abstract class ODataEntitySetProfile<TKey, TModel> : EntitySetProfile<TKe
 
     // IODataEntitySetEndpointSource implementation
     bool IODataEntitySetEndpointSource.HasGetODataQueryable => GetODataQueryable is not null;
-    bool IODataEntitySetEndpointSource.HasPatchDelta => PatchDelta is not null;
 
     async Task<IQueryable<object>> IODataEntitySetEndpointSource.InvokeGetODataQueryableAsync(ODataQueryOptions options, CancellationToken ct)
     {
         var typedOptions = (ODataQueryOptions<TModel>)options;
         return (await GetODataQueryable!(typedOptions, ct)).Cast<object>();
-    }
-
-    async Task<object?> IODataEntitySetEndpointSource.InvokePatchDeltaAsync(object key, Delta delta, CancellationToken ct)
-    {
-        var typedDelta = (Delta<TModel>)delta;
-        return (object?)await PatchDelta!((TKey)key, typedDelta, ct);
     }
 }

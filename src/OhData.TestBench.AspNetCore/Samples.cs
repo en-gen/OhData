@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.OData.Deltas;
 using Microsoft.EntityFrameworkCore;
 using OhData.Abstractions;
 
@@ -130,13 +131,11 @@ public class ProductProfile : EntitySetProfile<int, Product>
             return Task.FromResult(existing);
         };
 
-        Patch = (id, product, _) =>
+        Patch = (id, delta, _) =>
         {
             var existing = db.Products.Find(id);
             if (existing is null) return Task.FromResult<Product?>(null);
-            if (!string.IsNullOrEmpty(product.Name)) existing.Name = product.Name;
-            if (product.Price > 0) existing.Price = product.Price;
-            if (!string.IsNullOrEmpty(product.Category)) existing.Category = product.Category;
+            delta.Patch(existing);
             db.SaveChanges();
             return Task.FromResult<Product?>(existing);
         };
