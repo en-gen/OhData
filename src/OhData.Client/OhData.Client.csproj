@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
-    <PackageId>OhData.Client</PackageId>
+    <PackageId>EnGen.OhData.Client</PackageId>
     <Description>Typed OData 4.0 client with LINQ filter translation for .NET.</Description>
   </PropertyGroup>
 
