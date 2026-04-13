@@ -805,16 +805,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         if (getAll is null && addRef is null && removeRef is null && refTargetEntitySet is null) return;
         string propName = GetNavigationPropertyName(navigation.Body);
 
-        // Detect child key property by convention when refTargetEntitySet is provided.
-        string? childKeyPropName = null;
-        if (refTargetEntitySet is not null)
-        {
-            string typeName = typeof(TNavigation).Name;
-            // Try "Id" first, then "{TypeName}Id"
-            var idProp = typeof(TNavigation).GetProperty("Id", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase)
-                ?? typeof(TNavigation).GetProperty(typeName + "Id", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
-            childKeyPropName = idProp?.Name;
-        }
+        string? childKeyPropName = DetectChildKeyProperty<TNavigation>(refTargetEntitySet);
 
         _navRoutes.Add(new NavigationRouteDefinition
         {
