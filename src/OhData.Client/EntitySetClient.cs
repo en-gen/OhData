@@ -291,29 +291,6 @@ public sealed class EntitySetClient<T> where T : class
         => _http.GetPageAsync<T>(With(_state with { WithCount = true }).BuildCollectionUrl(), ct);
 
     /// <summary>
-    /// Streams all entities across multiple pages, following <c>@odata.nextLink</c>
-    /// until no further pages remain. Items from each page are yielded as they arrive.
-    /// </summary>
-    /// <remarks>
-    /// This method does not apply any client-side <c>$top</c> limit — the server's
-    /// page size (MaxTop / Prefer: maxpagesize) drives pagination. If you want only
-    /// the first N items use <see cref="Top"/> and <see cref="ToListAsync"/> instead.
-    /// </remarks>
-    public async IAsyncEnumerable<T> ToAsyncEnumerable([EnumeratorCancellation] CancellationToken ct = default)
-    {
-        string? url = BuildCollectionUrl();
-
-        while (url is not null)
-        {
-            ODataPage<T> page = await _http.GetPageAsync<T>(url, ct);
-            foreach (T item in page.Items)
-                yield return item;
-
-            url = page.NextLink;
-        }
-    }
-
-    /// <summary>
     /// POST a new entity. Returns the created entity as returned by the server
     /// (including any server-assigned key or computed fields), or <see langword="null"/>
     /// when the server responds with 204 No Content (Prefer: return=minimal).
