@@ -49,7 +49,7 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
             _store.Add(widget);
             return Task.FromResult<Widget?>(widget);
         };
-        PutById = (id, w, ct) =>
+        Put = (id, w, ct) =>
         {
             int removed = _store.RemoveAll(x => x.Id == id);
             if (removed == 0) return Task.FromResult<Widget>(null!);
@@ -94,7 +94,7 @@ internal class ETagWidgetProfile : EntitySetProfile<int, Widget>
             _store.Add(widget);
             return Task.FromResult<Widget?>(widget);
         };
-        PutById = (id, w, ct) =>
+        Put = (id, w, ct) =>
         {
             int removed = _store.RemoveAll(x => x.Id == id);
             if (removed == 0) return Task.FromResult<Widget>(null!);

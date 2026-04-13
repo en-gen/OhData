@@ -53,7 +53,7 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
             _store.Add(w);
             return Task.FromResult<Widget?>(w);
         };
-        PutById = (id, w, ct) =>
+        Put = (id, w, ct) =>
         {
             _store.RemoveAll(x => x.Id == id);
             w.Id = id;

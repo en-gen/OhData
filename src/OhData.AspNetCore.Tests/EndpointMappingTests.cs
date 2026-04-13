@@ -149,7 +149,7 @@ public class EndpointMappingTests
     // â"€â"€ PUT â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
     [Fact]
-    public async Task PutById_ExistingKey_Returns200()
+    public async Task Put_ExistingKey_Returns200()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
         var response = await fx.Client.PutAsJsonAsync("/odata/Widgets(1)", new Widget { Id = 1, Name = "Updated" });
@@ -919,7 +919,7 @@ public class EndpointMappingTests
     // ── M4: PUT/PATCH key mismatch returns 400 ────────────────────────────────
 
     [Fact]
-    public async Task PutById_KeyMismatch_Returns400()
+    public async Task Put_KeyMismatch_Returns400()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
         var response = await fx.Client.PutAsync("/odata/Widgets(1)",
@@ -1200,7 +1200,7 @@ public class EndpointMappingTests
     // ── Gap 6: error.target + error.details ───────────────────────────────────────
 
     [Fact]
-    public async Task PutById_KeyMismatch_ErrorHasTarget()
+    public async Task Put_KeyMismatch_ErrorHasTarget()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
         var resp = await fx.Client.PutAsync("/odata/Widgets(1)",

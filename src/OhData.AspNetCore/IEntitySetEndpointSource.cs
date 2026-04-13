@@ -26,7 +26,7 @@ internal interface IEntitySetEndpointSource
     bool HasGetQueryable { get; }
     bool HasGetById { get; }
     bool HasPost { get; }
-    bool HasPutById { get; }
+    bool HasPut { get; }
     bool HasPatch { get; }
     bool HasDelete { get; }
 
@@ -50,7 +50,7 @@ internal interface IEntitySetEndpointSource
     Task<IQueryable<object>> InvokeGetQueryableAsync(CancellationToken ct);
     Task<object?> InvokeGetByIdAsync(object key, CancellationToken ct);
     Task<object?> InvokePostAsync(object model, CancellationToken ct);
-    Task<object?> InvokePutByIdAsync(object key, object model, CancellationToken ct);
+    Task<object?> InvokePutAsync(object key, object model, CancellationToken ct);
     Task<object?> InvokePatchAsync(object key, Delta delta, CancellationToken ct);
     Task<bool> InvokeDeleteAsync(object key, CancellationToken ct);
     Task<IEnumerable<object>> InvokeSearchAsync(string searchTerm, CancellationToken ct);

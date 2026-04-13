@@ -120,7 +120,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
             return Task.FromResult<Product?>(product);
         };
 
-        PutById = (id, product, _) =>
+        Put = (id, product, _) =>
         {
             var existing = db.Products.Find(id);
             if (existing is null) return Task.FromResult<Product>(null!);

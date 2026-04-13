@@ -13,7 +13,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
         UseETag(x => x.RowVersion);   // byte[] row-version column
 
         GetById = (id, ct) => ...;
-        PutById = (id, product, ct) => ...;  // If-Match checked before proceeding
+        Put     = (id, product, ct) => ...;  // If-Match checked before proceeding
         Patch   = (id, product, ct) => ...;  // same
         Delete  = (id, ct) => ...;           // same
     }
