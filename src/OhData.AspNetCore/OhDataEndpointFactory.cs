@@ -433,7 +433,8 @@ internal static class OhDataEndpointFactory
     }
 
     // Batch 4: Inject @odata.etag into a JsonArray using the original (pre-expand) items array
-    // to compute each ETag. The input json is modified in-place and returned.
+    // to compute each ETag. Per OData-JSON §4.5, annotations precede the properties they describe,
+    // so rebuild each JsonObject with @odata.etag first.
     private static JsonArray InjectETagsIntoJsonArray(JsonArray json, object[] originalItems, IEntitySetEndpointSource source)
     {
         for (int i = 0; i < Math.Min(json.Count, originalItems.Length); i++)
@@ -441,7 +442,13 @@ internal static class OhDataEndpointFactory
             if (json[i] is JsonObject obj)
             {
                 string etag = source.InvokeGetETag(originalItems[i]);
-                obj["@odata.etag"] = JsonValue.Create($"\"{etag}\"");
+                var reordered = new JsonObject { ["@odata.etag"] = JsonValue.Create($"\"{etag}\"") };
+                foreach (var prop in obj.ToList())
+                {
+                    obj.Remove(prop.Key);
+                    reordered[prop.Key] = prop.Value;
+                }
+                json[i] = reordered;
             }
         }
         return json;
@@ -514,18 +521,31 @@ internal static class OhDataEndpointFactory
 
     // Gap 5: ODataEntityNode with optional @odata.id
     // Gap 2: optional @odata.etag in response body (§4.5.9)
+    // OData-JSON §4.5: annotations SHOULD appear before the properties they describe.
+    // Build a new JsonObject with annotations first, then copy entity properties.
     private static JsonObject ODataEntityNode(
         HttpContext ctx, string prefix, string contextSegment, object entity,
         JsonSerializerOptions? jsonOptions, string? odataId = null, string? etag = null)
     {
-        var node = JsonSerializer.SerializeToNode(entity, jsonOptions)!.AsObject();
+        var serialized = JsonSerializer.SerializeToNode(entity, jsonOptions)!.AsObject();
         string baseUrl = BuildBaseUrl(ctx, prefix);
-        node["@odata.context"] = JsonValue.Create($"{baseUrl}/$metadata#{contextSegment}");
+
+        var node = new JsonObject
+        {
+            ["@odata.context"] = JsonValue.Create($"{baseUrl}/$metadata#{contextSegment}")
+        };
         if (odataId is not null)
             node["@odata.id"] = JsonValue.Create(odataId);
-        // Gap 2: include @odata.etag in body matching the ETag response header (quoted)
         if (etag is not null)
             node["@odata.etag"] = JsonValue.Create($"\"{etag}\"");
+
+        // Copy entity properties after annotations
+        foreach (var prop in serialized.ToList())
+        {
+            serialized.Remove(prop.Key);
+            node[prop.Key] = prop.Value;
+        }
+
         return node;
     }
 
