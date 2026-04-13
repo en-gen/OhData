@@ -1,8 +1,7 @@
 services:
   testbench:
     build:
-      # Build context is the repo root -- mirrors the pattern in docker-compose.k6.yml
-      context: ../..
+      context: ..
       dockerfile: src/OhData.TestBench.AspNetCore/Dockerfile
     environment:
       ASPNETCORE_URLS: http://+:8080
@@ -16,7 +15,7 @@ services:
 
   olingo:
     build:
-      context: .
+      context: olingo
       dockerfile: Dockerfile
     depends_on:
       testbench:
