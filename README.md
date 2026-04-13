@@ -7,21 +7,23 @@ Convention-based OData 4.0 server and typed client for ASP.NET Core. Define a pr
 Install the server package:
 
 ```
-dotnet add package OhData.AspNetCore
+dotnet add package EnGen.OhData.AspNetCore
 ```
 
 Install the client package:
 
 ```
-dotnet add package OhData.Client
+dotnet add package EnGen.OhData.Client
 ```
 
 ## Packages
 
+Packages are published under the `EnGen.` org prefix (similar to how Newtonsoft.Json carries the author's name).
+
 | Package | NuGet | What it does |
 |---------|-------|--------------|
-| `OhData.AspNetCore` | [![NuGet](https://img.shields.io/nuget/v/OhData.AspNetCore)](https://www.nuget.org/packages/OhData.AspNetCore) | `EntitySetProfile<TKey,TModel>` base class, DI registration, endpoint factory, minimal API routes. Includes `AddOhDataVersion` / `MapOhDataVersion` versioning helpers and `ODataEntitySetProfile<TKey,TModel>` for full OData pushdown control. |
-| `OhData.Client` | [![NuGet](https://img.shields.io/nuget/v/OhData.Client)](https://www.nuget.org/packages/OhData.Client) | Typed .NET client. Fluent builder with LINQ-based `$filter`, `$select`, `$expand`, `$orderby`, and pagination. |
+| `EnGen.OhData.AspNetCore` | [![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore) | `EntitySetProfile<TKey,TModel>` base class, DI registration, endpoint factory, minimal API routes. Includes `AddOhDataVersion` / `MapOhDataVersion` versioning helpers and `ODataEntitySetProfile<TKey,TModel>` for full OData pushdown control. |
+| `EnGen.OhData.Client` | [![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.Client)](https://www.nuget.org/packages/EnGen.OhData.Client) | Typed .NET client. Fluent builder with LINQ-based `$filter`, `$select`, `$expand`, `$orderby`, and pagination. |
 
 ---
 

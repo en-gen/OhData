@@ -53,6 +53,27 @@ internal sealed class ODataHttpClient
         };
     }
 
+    /// <summary>
+    /// Fetches a page using an absolute URL (e.g. a <c>@odata.nextLink</c> value).
+    /// Unlike <see cref="GetPageAsync{T}(string, CancellationToken)"/>, the URL is used
+    /// as-is with <see cref="HttpMethod.Get"/> so no base-address composition occurs.
+    /// </summary>
+    internal async Task<ODataPage<T>> GetPageByAbsoluteUrlAsync<T>(string absoluteUrl, CancellationToken ct)
+        where T : class
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, absoluteUrl);
+        using var response = await _http.SendAsync(request, ct);
+        await EnsureSuccessAsync(response, absoluteUrl, ct);
+        var envelope = await response.Content
+            .ReadFromJsonAsync<ODataCollectionResponse<T>>(_options.JsonOptions, ct);
+        return new ODataPage<T>
+        {
+            Items = envelope?.Value ?? [],
+            TotalCount = envelope?.Count,
+            NextLink = envelope?.NextLink,
+        };
+    }
+
     // ── GET single ──────────────────────────────────────────────────────────────
 
     internal async Task<T?> GetSingleAsync<T>(string url, CancellationToken ct)

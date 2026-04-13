@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq.Expressions;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using OhData.Client.Internal;
@@ -230,9 +231,35 @@ public sealed class EntitySetClient<T> where T : class
 
     // ── Terminal operations ─────────────────────────────────────────────────────
 
-    /// <summary>Executes GET and returns all matching entities.</summary>
-    public Task<List<T>> ToListAsync(CancellationToken ct = default)
-        => _http.GetCollectionAsync<T>(BuildCollectionUrl(), ct);
+    /// <summary>
+    /// Lazily fetches all pages by following <c>@odata.nextLink</c>, yielding each entity
+    /// as it arrives. The first page is fetched using the current query state; subsequent
+    /// pages are fetched directly from the server-provided nextLink URL without re-applying
+    /// any client-side query parameters.
+    /// </summary>
+    public async IAsyncEnumerable<T> ToAsyncEnumerable(
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ODataPage<T> page = await _http.GetPageAsync<T>(BuildCollectionUrl(), ct);
+        foreach (T item in page.Items)
+            yield return item;
+
+        while (page.NextLink is not null)
+        {
+            page = await _http.GetPageByAbsoluteUrlAsync<T>(page.NextLink, ct);
+            foreach (T item in page.Items)
+                yield return item;
+        }
+    }
+
+    /// <summary>Executes GET and returns all matching entities, following all nextLinks.</summary>
+    public async Task<List<T>> ToListAsync(CancellationToken ct = default)
+    {
+        var result = new List<T>();
+        await foreach (T item in ToAsyncEnumerable(ct))
+            result.Add(item);
+        return result;
+    }
 
     /// <summary>
     /// Executes GET with <c>$top=1</c> and returns the first result, or

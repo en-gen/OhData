@@ -2,7 +2,7 @@
 
 	<PropertyGroup>
 		<TargetFrameworks>net8.0;net10.0</TargetFrameworks>
-		<PackageId>OhData.AspNetCore</PackageId>
+		<PackageId>EnGen.OhData.AspNetCore</PackageId>
 		<Description>Convention-based OData 4.0 server for ASP.NET Core minimal APIs.</Description>
 		<!-- AD0001: RouteHandlerAnalyzer NullReferenceException — pre-existing analyzer bug, not our code -->
 		<NoWarn>$(NoWarn);AD0001</NoWarn>
