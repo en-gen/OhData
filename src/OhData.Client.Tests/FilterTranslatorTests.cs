@@ -233,8 +233,8 @@ public class FilterTranslatorTests
     // ── FormatLiteral: enum ────────────────────────────────────────────────────
 
     [Fact]
-    public void FormatLiteral_Enum_UsesNumericValue() =>
-        Assert.Equal("1", FilterTranslator.FormatLiteral(ItemStatus.Active));
+    public void FormatLiteral_Enum_UsesMemberName() =>
+        Assert.Equal("'Active'", FilterTranslator.FormatLiteral(ItemStatus.Active));
 
     // ── Filter expressions: date and time types ────────────────────────────────
 
@@ -298,8 +298,8 @@ public class FilterTranslatorTests
     }
 
     [Fact]
-    public void Filter_Enum_UsesNumericValue() =>
-        Assert.Equal("Status eq 1", F<Item>(x => x.Status == ItemStatus.Active));
+    public void Filter_Enum_UsesMemberName() =>
+        Assert.Equal("Status eq 'Active'", F<Item>(x => x.Status == ItemStatus.Active));
 
     [Fact]
     public void Filter_Guid_Equality()

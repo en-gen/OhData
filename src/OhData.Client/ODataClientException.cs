@@ -39,7 +39,6 @@ public sealed class ODataClientException : Exception
     internal static async Task<ODataClientException> FromResponseAsync(
         HttpResponseMessage response,
         string requestUrl,
-        JsonSerializerOptions jsonOptions,
         CancellationToken ct)
     {
         int statusCode = (int)response.StatusCode;

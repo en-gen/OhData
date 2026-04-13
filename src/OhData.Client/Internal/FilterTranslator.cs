@@ -78,9 +78,41 @@ internal sealed class FilterTranslator : ExpressionVisitor
         }
         else
         {
-            Visit(node.Left);
-            _sb.Append($" {op} ");
-            Visit(node.Right);
+            // Detect enum comparisons where the C# compiler emits an integer constant
+            // for the enum literal (e.g. x.Status == MyEnum.Active → Status eq 1).
+            // Re-encode the integer side as an enum member name so OData servers that
+            // declare enum properties receive 'Active' rather than 1.
+            //
+            // The C# compiler may represent enum comparisons in several ways:
+            //   Equal(Status, Constant(1, int32))            ← plain int constant
+            //   Equal(Status, Constant(Active, ItemStatus))  ← enum constant (handled by FormatLiteral)
+            //   Equal(Status, Convert(Constant(1), ItemStatus)) ← Convert-wrapped int to enum
+            //
+            // We detect "one side is or resolves to an enum type, the other is a non-enum
+            // integer constant" and emit the member name.
+            Type? leftEnum = GetEnumType(node.Left);
+            Type? rightEnum = GetEnumType(node.Right);
+            object? rightEnumIntValue = TryGetNonEnumConstantValue(node.Right);
+            object? leftEnumIntValue = TryGetNonEnumConstantValue(node.Left);
+
+            if (leftEnum is not null && rightEnumIntValue is not null)
+            {
+                Visit(node.Left);
+                _sb.Append($" {op} ");
+                _sb.Append(FormatLiteral(Enum.ToObject(leftEnum, rightEnumIntValue)));
+            }
+            else if (rightEnum is not null && leftEnumIntValue is not null)
+            {
+                _sb.Append(FormatLiteral(Enum.ToObject(rightEnum, leftEnumIntValue)));
+                _sb.Append($" {op} ");
+                Visit(node.Right);
+            }
+            else
+            {
+                Visit(node.Left);
+                _sb.Append($" {op} ");
+                Visit(node.Right);
+            }
         }
         return node;
     }
@@ -101,6 +133,15 @@ internal sealed class FilterTranslator : ExpressionVisitor
             case ExpressionType.Convert:
             case ExpressionType.ConvertChecked:
             case ExpressionType.TypeAs:
+                // If the convert is TO an enum type, format the converted value as an enum
+                // member name. C# expression trees may emit Convert(enumType, intConstant)
+                // for enum literal comparisons (e.g. x.Status == MyEnum.Active).
+                if (node.Type.IsEnum && node.Operand is ConstantExpression enumConstant)
+                {
+                    object enumVal = Enum.ToObject(node.Type, enumConstant.Value!);
+                    _sb.Append(FormatLiteral(enumVal));
+                    return node;
+                }
                 Visit(node.Operand);
                 return node;
 
@@ -496,6 +537,52 @@ internal sealed class FilterTranslator : ExpressionVisitor
         return false;
     }
 
+    // ── Enum type extraction ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Returns the enum type for the expression if it represents an enum property or literal.
+    /// Handles three forms:
+    /// <list type="bullet">
+    /// <item><c>MemberAccess</c> of enum type</item>
+    /// <item><c>Convert(MemberAccess_enum, int)</c> — C# converts enum property TO int for comparison</item>
+    /// <item><c>Convert(int, enumType)</c> — C# converts int TO enum type</item>
+    /// </list>
+    /// </summary>
+    private static Type? GetEnumType(Expression expr)
+    {
+        if (expr.Type.IsEnum) return expr.Type;
+        if (expr is UnaryExpression u
+            && u.NodeType is ExpressionType.Convert or ExpressionType.ConvertChecked)
+        {
+            // Convert TO enum type (e.g. Convert(int constant, ItemStatus))
+            if (u.Type.IsEnum) return u.Type;
+            // Convert FROM enum type TO int — the operand is the enum member access
+            if (u.Operand.Type.IsEnum) return u.Operand.Type;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Returns the constant value of <paramref name="expr"/> if it is a non-enum constant
+    /// (including a <c>Convert</c>-wrapped constant), otherwise <see langword="null"/>.
+    /// Used to detect the "integer literal side" of an enum comparison.
+    /// </summary>
+    private static object? TryGetNonEnumConstantValue(Expression expr)
+    {
+        // Direct non-enum constant
+        if (expr is ConstantExpression ce && !ce.Type.IsEnum)
+            return ce.Value;
+        // Convert-wrapped non-enum constant (e.g. Convert(1, ItemStatus))
+        if (expr is UnaryExpression u
+            && u.NodeType is ExpressionType.Convert or ExpressionType.ConvertChecked
+            && u.Operand is ConstantExpression innerCe
+            && !innerCe.Type.IsEnum)
+        {
+            return innerCe.Value;
+        }
+        return null;
+    }
+
     // ── Literal formatting ──────────────────────────────────────────────────────
 
     /// <summary>Formats a CLR value as an OData literal string (no surrounding whitespace).</summary>
@@ -515,7 +602,7 @@ internal sealed class FilterTranslator : ExpressionVisitor
         decimal dec => dec.ToString(CultureInfo.InvariantCulture),
         // All other numeric types (int, long, short, byte, sbyte, uint, ulong, ushort)
         _ when value.GetType().IsEnum
-                        => Convert.ToInt64(value).ToString(CultureInfo.InvariantCulture),
+                        => $"'{value}'",
         _ => string.Format(CultureInfo.InvariantCulture, "{0}", value),
     };
 
