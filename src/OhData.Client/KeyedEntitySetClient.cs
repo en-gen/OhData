@@ -14,40 +14,31 @@ namespace OhData.Client;
 public sealed class KeyedEntitySetClient<T> where T : class
 {
     private readonly ODataHttpClient _http;
-    private readonly OhDataClientOptions _options;
-    private readonly string _entitySetName;
-    private readonly string _formattedKey;
-    private readonly string? _select;
-    private readonly string? _expand;
+    private readonly string _url;
 
     internal KeyedEntitySetClient(
         ODataHttpClient http,
-        OhDataClientOptions options,
         string entitySetName,
         string formattedKey,
         string? select = null,
         string? expand = null)
     {
         _http = http;
-        _options = options;
-        _entitySetName = entitySetName;
-        _formattedKey = formattedKey;
-        _select = select;
-        _expand = expand;
+        _url = BuildUrl(entitySetName, formattedKey, select, expand);
     }
 
     /// <summary>
     /// GET <c>/{EntitySet}(key)</c> — returns <see langword="null"/> on 404.
     /// </summary>
     public Task<T?> GetAsync(CancellationToken ct = default)
-        => _http.GetSingleAsync<T>(Url, ct);
+        => _http.GetSingleAsync<T>(_url, ct);
 
     /// <summary>
     /// GET <c>/{EntitySet}(key)</c> with ETag — returns the entity and the server's current ETag value.
     /// Pass the ETag to <see cref="PutAsync(T, string?, bool, CancellationToken)"/> for optimistic concurrency.
     /// </summary>
     public Task<(T? Entity, string? ETag)> GetWithETagAsync(CancellationToken ct = default)
-        => _http.GetSingleWithETagAsync<T>(Url, ct);
+        => _http.GetSingleWithETagAsync<T>(_url, ct);
 
     /// <summary>
     /// PUT <c>/{EntitySet}(key)</c> with a full entity replacement.
@@ -59,7 +50,7 @@ public sealed class KeyedEntitySetClient<T> where T : class
     /// is supplied and does not match the server's current ETag.
     /// </summary>
     public Task<T?> PutAsync(T entity, string? ifMatch = null, bool preferMinimal = false, CancellationToken ct = default)
-        => _http.PutAsync(Url, entity, ifMatch, preferMinimal, ct);
+        => _http.PutAsync(_url, entity, ifMatch, preferMinimal, ct);
 
     /// <summary>
     /// PATCH <c>/{EntitySet}(key)</c> with a partial update.
@@ -71,7 +62,7 @@ public sealed class KeyedEntitySetClient<T> where T : class
     /// when the server returns HTTP 204 No Content.
     /// </summary>
     public Task<T?> PatchAsync(object patch, string? ifMatch = null, bool preferMinimal = false, CancellationToken ct = default)
-        => _http.PatchAsync<T>(Url, patch, ifMatch, preferMinimal, ct);
+        => _http.PatchAsync<T>(_url, patch, ifMatch, preferMinimal, ct);
 
     /// <summary>
     /// DELETE <c>/{EntitySet}(key)</c>. Optionally supply an If-Match ETag for optimistic concurrency.
@@ -79,19 +70,18 @@ public sealed class KeyedEntitySetClient<T> where T : class
     /// configured with non-idempotent deletes).
     /// </summary>
     public Task DeleteAsync(string? ifMatch = null, CancellationToken ct = default)
-        => _http.DeleteAsync(Url, ifMatch, ct);
+        => _http.DeleteAsync(_url, ifMatch, ct);
 
-    private string Url
+    internal string BuildEntityUrl() => _url;
+
+    private static string BuildUrl(string entitySetName, string formattedKey, string? select, string? expand)
     {
-        get
-        {
-            string baseUrl = $"{_entitySetName}({_formattedKey})";
-            var parts = new List<string>(2);
-            if (_select is not null) parts.Add($"$select={Uri.EscapeDataString(_select)}");
-            if (_expand is not null) parts.Add($"$expand={Uri.EscapeDataString(_expand)}");
-            return parts.Count == 0 ? baseUrl : $"{baseUrl}?{string.Join('&', parts)}";
-        }
-    }
+        string baseUrl = $"{entitySetName}({formattedKey})";
+        if (select is null && expand is null) return baseUrl;
 
-    internal string BuildEntityUrl() => Url;
+        var parts = new List<string>(2);
+        if (select is not null) parts.Add($"$select={Uri.EscapeDataString(select)}");
+        if (expand is not null) parts.Add($"$expand={Uri.EscapeDataString(expand)}");
+        return $"{baseUrl}?{string.Join('&', parts)}";
+    }
 }
