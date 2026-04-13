@@ -37,6 +37,10 @@ internal static class OhDataEndpointFactory
 
     private static readonly string[] PatchMethod = new[] { "PATCH" };
 
+    private static string SanitizeLogValue(string value) =>
+        value.Replace("\r", "\\r", StringComparison.Ordinal)
+             .Replace("\n", "\\n", StringComparison.Ordinal);
+
     private static string BuildMetadataXml(IEdmModel model)
     {
         var sb = new StringBuilder();
@@ -353,7 +357,82 @@ internal static class OhDataEndpointFactory
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
 
-    // Inject @odata.etag into a JsonArray using the original (pre-expand) items array
+    // Unified collection pipeline: Serialize → ETag → Expand → Select.
+    // Serialises exactly once with _camelCaseSerializerOptions, then applies each stage in order.
+    private static async Task<JsonArray> ApplyCollectionPipelineAsync(
+        object[] originalItems,
+        ODataQueryOptions options,
+        IEntitySetEndpointSource source,
+        CancellationToken ct)
+    {
+        // Stage 1: Serialize once with camelCase options.
+        JsonArray json = JsonSerializer.SerializeToNode(originalItems, _camelCaseSerializerOptions)!.AsArray();
+
+        // Stage 2: Inject @odata.etag using the original (pre-expand) items for ETag computation.
+        if (source.HasETag)
+        {
+            InjectETagsIntoJsonArray(json, originalItems, source);
+        }
+
+        // Stage 3: Inject expanded nav properties (if $expand requested).
+        if (options.SelectExpand?.SelectExpandClause is not null)
+        {
+            var expandedProps = options.SelectExpand.SelectExpandClause.SelectedItems
+                .OfType<ExpandedNavigationSelectItem>()
+                .Select(e => e.PathToNavigationProperty.FirstSegment.Identifier)
+                .ToList();
+
+            if (expandedProps.Count > 0)
+            {
+                // Cache the key PropertyInfo once outside the inner loop (M-3 perf fix).
+                PropertyInfo? cachedKeyProp = originalItems.Length > 0
+                    ? originalItems[0].GetType().GetProperty(source.KeyPropertyName, BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance)
+                    : null;
+
+                foreach (string? propName in expandedProps)
+                {
+                    var navRoute = source.NavigationRoutes.FirstOrDefault(n =>
+                        string.Equals(n.PropertyName, propName, StringComparison.OrdinalIgnoreCase));
+                    if (navRoute is null) continue;
+
+                    for (int i = 0; i < originalItems.Length; i++)
+                    {
+                        if (cachedKeyProp?.GetValue(originalItems[i]) is not { } keyVal) continue;
+
+                        object? related = await navRoute.Handler(keyVal, ct);
+                        if (json[i] is JsonObject obj)
+                        {
+                            obj[propName] = related is null
+                                ? null
+                                : JsonSerializer.SerializeToNode(related, _camelCaseSerializerOptions);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Stage 4: Strip unselected properties (if $select requested).
+        if (options.SelectExpand?.SelectExpandClause is not null)
+        {
+            var selectedProps = ExtractSelectedProperties(options.SelectExpand.SelectExpandClause);
+            if (selectedProps is not null)
+            {
+                foreach (JsonObject obj in json.OfType<JsonObject>())
+                {
+                    var toRemove = obj.Select(p => p.Key)
+                                     // OData annotations (e.g. @odata.etag) are metadata and must survive $select.
+                                     .Where(k => !k.StartsWith("@", StringComparison.Ordinal) &&
+                                                 !selectedProps.Contains(k, StringComparer.OrdinalIgnoreCase))
+                                     .ToList();
+                    foreach (string? key in toRemove) obj.Remove(key);
+                }
+            }
+        }
+
+        return json;
+    }
+
+    // Batch 4: Inject @odata.etag into a JsonArray using the original (pre-expand) items array
     // to compute each ETag. The input json is modified in-place and returned.
     private static JsonArray InjectETagsIntoJsonArray(JsonArray json, object[] originalItems, IEntitySetEndpointSource source)
     {
@@ -367,7 +446,6 @@ internal static class OhDataEndpointFactory
         }
         return json;
     }
-
 
     private static HashSet<string>? ExtractSelectedProperties(SelectExpandClause clause)
     {
@@ -432,81 +510,6 @@ internal static class OhDataEndpointFactory
         if (navCount.HasValue) envelope["@odata.count"] = navCount;
         envelope["value"] = valueToReturn;
         return (envelope, null);
-    }
-
-    // Unified single-pass pipeline: serialize once → inject ETags → inject $expand → apply $select.
-    // This replaces the former three-method chain (ApplyExpandAsync / ApplyCollectionAnnotations /
-    // ApplySelectPostProcess) so the collection is serialized to JsonArray exactly once.
-    private static async Task<JsonArray> ApplyCollectionPipelineAsync(
-        object[] originalItems,
-        ODataQueryOptions options,
-        IEntitySetEndpointSource source,
-        CancellationToken ct)
-    {
-        // Step 1: Serialize once with camelCase options.
-        JsonArray json = JsonSerializer.SerializeToNode(originalItems, _camelCaseSerializerOptions)!.AsArray();
-
-        // Step 2: Inject @odata.etag per item (annotation must survive $select stripping).
-        if (source.HasETag)
-        {
-            InjectETagsIntoJsonArray(json, originalItems, source);
-        }
-
-        // Step 3: Inject $expand navigation properties (if any expand was requested).
-        if (options.SelectExpand?.SelectExpandClause is not null)
-        {
-            var expandedProps = options.SelectExpand.SelectExpandClause.SelectedItems
-                .OfType<ExpandedNavigationSelectItem>()
-                .Select(e => e.PathToNavigationProperty.FirstSegment.Identifier)
-                .ToList();
-
-            if (expandedProps.Count > 0)
-            {
-                // Cache the key PropertyInfo once outside the inner loop (M-3 perf fix).
-                PropertyInfo? cachedKeyProp = originalItems.Length > 0
-                    ? originalItems[0].GetType().GetProperty(source.KeyPropertyName, BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance)
-                    : null;
-
-                foreach (string? propName in expandedProps)
-                {
-                    var navRoute = source.NavigationRoutes.FirstOrDefault(n =>
-                        string.Equals(n.PropertyName, propName, StringComparison.OrdinalIgnoreCase));
-                    if (navRoute is null) continue;
-
-                    for (int i = 0; i < originalItems.Length; i++)
-                    {
-                        if (cachedKeyProp?.GetValue(originalItems[i]) is not { } keyVal) continue;
-
-                        object? related = await navRoute.Handler(keyVal, ct);
-                        if (json[i] is JsonObject obj)
-                        {
-                            obj[propName] = related is null
-                                ? null
-                                : JsonSerializer.SerializeToNode(related, _camelCaseSerializerOptions);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Step 4: Apply $select — strip unselected properties (annotations survive via @ prefix guard).
-        if (options.SelectExpand?.SelectExpandClause is not null)
-        {
-            var selectedProps = ExtractSelectedProperties(options.SelectExpand.SelectExpandClause);
-            if (selectedProps is not null)
-            {
-                foreach (JsonObject obj in json.OfType<JsonObject>())
-                {
-                    var toRemove = obj.Select(p => p.Key)
-                                     .Where(k => !k.StartsWith("@", StringComparison.Ordinal) &&
-                                                 !selectedProps.Contains(k, StringComparer.OrdinalIgnoreCase))
-                                     .ToList();
-                    foreach (string? key in toRemove) obj.Remove(key);
-                }
-            }
-        }
-
-        return json;
     }
 
     // Gap 5: ODataEntityNode with optional @odata.id
@@ -856,7 +859,7 @@ internal static class OhDataEndpointFactory
         {
             var rb = entityAuthGroup.MapGet($"/{name}({{key}})", async (string key, HttpContext ctx, CancellationToken ct) =>
             {
-                logger?.LogDebug("GET {Prefix}/{Name}({Key})", prefix, name, key);
+                logger?.LogDebug("GET {Prefix}/{Name}({Key})", prefix, name, SanitizeLogValue(key));
                 try
                 {
                     object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
@@ -884,7 +887,7 @@ internal static class OhDataEndpointFactory
                 }
                 catch (FormatException ex)
                 {
-                    logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", key, name);
+                    logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
                     return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
                 }
             });
@@ -945,7 +948,7 @@ internal static class OhDataEndpointFactory
         {
             var rb = entityAuthGroup.MapPut($"/{name}({{key}})", async (string key, TModel model, HttpContext ctx, CancellationToken ct) =>
             {
-                logger?.LogDebug("PUT {Prefix}/{Name}({Key})", prefix, name, key);
+                logger?.LogDebug("PUT {Prefix}/{Name}({Key})", prefix, name, SanitizeLogValue(key));
                 try
                 {
                     object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
@@ -998,7 +1001,7 @@ internal static class OhDataEndpointFactory
                 }
                 catch (FormatException ex)
                 {
-                    logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", key, name);
+                    logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
                     return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
                 }
             });
@@ -1009,7 +1012,7 @@ internal static class OhDataEndpointFactory
         {
             var rb = entityAuthGroup.MapMethods($"/{name}({{key}})", PatchMethod, async (string key, HttpContext ctx, CancellationToken ct) =>
             {
-                logger?.LogDebug("PATCH {Prefix}/{Name}({Key})", prefix, name, key);
+                logger?.LogDebug("PATCH {Prefix}/{Name}({Key})", prefix, name, SanitizeLogValue(key));
                 try
                 {
                     object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
@@ -1082,7 +1085,7 @@ internal static class OhDataEndpointFactory
                 }
                 catch (FormatException ex)
                 {
-                    logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", key, name);
+                    logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
                     return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
                 }
             });
@@ -1094,7 +1097,7 @@ internal static class OhDataEndpointFactory
         {
             var rb = entityAuthGroup.MapDelete($"/{name}({{key}})", async (string key, HttpContext ctx, CancellationToken ct) =>
             {
-                logger?.LogDebug("DELETE {Prefix}/{Name}({Key})", prefix, name, key);
+                logger?.LogDebug("DELETE {Prefix}/{Name}({Key})", prefix, name, SanitizeLogValue(key));
                 try
                 {
                     object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
@@ -1107,7 +1110,7 @@ internal static class OhDataEndpointFactory
                 }
                 catch (FormatException ex)
                 {
-                    logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", key, name);
+                    logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
                     return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
                 }
             });
@@ -1168,7 +1171,7 @@ internal static class OhDataEndpointFactory
                     }
                     catch (FormatException ex)
                     {
-                        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", key, name);
+                        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
                         return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'");
                     }
                 })
@@ -1194,7 +1197,7 @@ internal static class OhDataEndpointFactory
                         }
                         catch (FormatException ex)
                         {
-                            logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", key, name);
+                            logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
                             return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'");
                         }
                     })
@@ -1269,7 +1272,7 @@ internal static class OhDataEndpointFactory
                     }
                     catch (FormatException ex)
                     {
-                        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", key, name);
+                        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
                         return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'");
                     }
                 })
@@ -1295,7 +1298,7 @@ internal static class OhDataEndpointFactory
                         }
                         catch (FormatException ex)
                         {
-                            logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", key, name);
+                            logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
                             return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'");
                         }
                     })
@@ -1323,7 +1326,7 @@ internal static class OhDataEndpointFactory
                         }
                         catch (FormatException ex)
                         {
-                            logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", key, name);
+                            logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
                             return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'");
                         }
                     })
@@ -1470,7 +1473,7 @@ internal static class OhDataEndpointFactory
                     }
                     catch (FormatException ex)
                     {
-                        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", key, name);
+                        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
                         return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
                     }
                 })
@@ -1525,7 +1528,7 @@ internal static class OhDataEndpointFactory
                     }
                     catch (FormatException ex)
                     {
-                        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", key, name);
+                        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
                         return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
                     }
                 })
