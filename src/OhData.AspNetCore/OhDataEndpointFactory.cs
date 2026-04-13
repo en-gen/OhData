@@ -353,33 +353,7 @@ internal static class OhDataEndpointFactory
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
 
-    private static object ApplySelectPostProcess(object items, ODataQueryOptions options)
-    {
-        if (options.SelectExpand?.SelectExpandClause is null) return items;
-
-        var selectedProps = ExtractSelectedProperties(options.SelectExpand.SelectExpandClause);
-        if (selectedProps is null) return items;
-
-        // Accept a pre-converted JsonArray (e.g., from ETag annotation injection) to avoid
-        // double-serialisation. Otherwise serialise with camelCase to match the rest of the pipeline.
-        JsonArray json = items is JsonArray existingJson
-            ? existingJson
-            : JsonSerializer.SerializeToNode(items, _camelCaseSerializerOptions)!.AsArray();
-
-        foreach (JsonObject obj in json.OfType<JsonObject>())
-        {
-            var toRemove = obj.Select(p => p.Key)
-                             // OData annotations (e.g. @odata.etag) are metadata and must survive $select.
-                             .Where(k => !k.StartsWith("@", StringComparison.Ordinal) &&
-                                         !selectedProps.Contains(k, StringComparer.OrdinalIgnoreCase))
-                             .ToList();
-            foreach (string? key in toRemove) obj.Remove(key);
-        }
-
-        return json;
-    }
-
-    // Batch 4: Inject @odata.etag into a JsonArray using the original (pre-expand) items array
+    // Inject @odata.etag into a JsonArray using the original (pre-expand) items array
     // to compute each ETag. The input json is modified in-place and returned.
     private static JsonArray InjectETagsIntoJsonArray(JsonArray json, object[] originalItems, IEntitySetEndpointSource source)
     {
@@ -394,14 +368,6 @@ internal static class OhDataEndpointFactory
         return json;
     }
 
-    // Batch 4: Apply @odata.etag annotation to each entity in an object[] collection response.
-    // Returns the original array unchanged when ETag is not configured.
-    private static object ApplyCollectionAnnotations(object[] items, IEntitySetEndpointSource source)
-    {
-        if (!source.HasETag) return items;
-        var json = JsonSerializer.SerializeToNode(items, _camelCaseSerializerOptions)!.AsArray();
-        return InjectETagsIntoJsonArray(json, items, source);
-    }
 
     private static HashSet<string>? ExtractSelectedProperties(SelectExpandClause clause)
     {
@@ -421,9 +387,11 @@ internal static class OhDataEndpointFactory
     }
 
     // Batch 3: build the navigation collection envelope, applying $select if present.
-    private static Dictionary<string, object?> BuildNavEnvelope(
+    // Returns (envelope, null) on success or (null, errorResult) when $select contains
+    // an unknown property name.
+    private static (Dictionary<string, object?>? Envelope, IResult? Error) BuildNavEnvelope(
         string baseUrl, string name, string key, string navPropertyName,
-        long? navCount, object[] itemArray, HttpContext ctx)
+        long? navCount, object[] itemArray, HttpContext ctx, Type? navItemType)
     {
         // Apply $select post-processing for navigation results if requested.
         // We parse the $select query param directly (navigation routes don't go through
@@ -434,6 +402,20 @@ internal static class OhDataEndpointFactory
             var selectedProps = new HashSet<string>(
                 selectParam.ToString().Split(',').Select(p => p.Trim()),
                 StringComparer.OrdinalIgnoreCase);
+
+            // Validate each requested property exists on the nav item type.
+            if (navItemType is not null)
+            {
+                foreach (string propName in selectedProps)
+                {
+                    if (navItemType.GetProperty(propName, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase) is null)
+                    {
+                        return (null, ODataError(400, "InvalidQueryOption",
+                            $"Property '{propName}' does not exist on type '{navItemType.Name}'."));
+                    }
+                }
+            }
+
             var json = JsonSerializer.SerializeToNode(itemArray, _camelCaseSerializerOptions)!.AsArray();
             foreach (JsonObject obj in json.OfType<JsonObject>())
             {
@@ -449,49 +431,77 @@ internal static class OhDataEndpointFactory
         envelope["@odata.context"] = $"{baseUrl}/$metadata#{name}({key})/{navPropertyName}";
         if (navCount.HasValue) envelope["@odata.count"] = navCount;
         envelope["value"] = valueToReturn;
-        return envelope;
+        return (envelope, null);
     }
 
-    // Gap 8: $expand data loading (§11.2.4)
-    private static async Task<object> ApplyExpandAsync(
-        object[] items,
+    // Unified single-pass pipeline: serialize once → inject ETags → inject $expand → apply $select.
+    // This replaces the former three-method chain (ApplyExpandAsync / ApplyCollectionAnnotations /
+    // ApplySelectPostProcess) so the collection is serialized to JsonArray exactly once.
+    private static async Task<JsonArray> ApplyCollectionPipelineAsync(
+        object[] originalItems,
         ODataQueryOptions options,
         IEntitySetEndpointSource source,
         CancellationToken ct)
     {
-        if (options.SelectExpand?.SelectExpandClause is null) return items;
+        // Step 1: Serialize once with camelCase options.
+        JsonArray json = JsonSerializer.SerializeToNode(originalItems, _camelCaseSerializerOptions)!.AsArray();
 
-        var expandedProps = options.SelectExpand.SelectExpandClause.SelectedItems
-            .OfType<ExpandedNavigationSelectItem>()
-            .Select(e => e.PathToNavigationProperty.FirstSegment.Identifier)
-            .ToList();
-
-        if (expandedProps.Count == 0) return items;
-
-        var jsonOptions = default(JsonSerializerOptions?);
-        var json = JsonSerializer.SerializeToNode(items)!.AsArray();
-
-        // Cache the key PropertyInfo once outside the inner loop (M-3 perf fix).
-        PropertyInfo? cachedKeyProp = items.Length > 0
-            ? items[0].GetType().GetProperty(source.KeyPropertyName, BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance)
-            : null;
-
-        foreach (string? propName in expandedProps)
+        // Step 2: Inject @odata.etag per item (annotation must survive $select stripping).
+        if (source.HasETag)
         {
-            var navRoute = source.NavigationRoutes.FirstOrDefault(n =>
-                string.Equals(n.PropertyName, propName, StringComparison.OrdinalIgnoreCase));
-            if (navRoute is null) continue;
+            InjectETagsIntoJsonArray(json, originalItems, source);
+        }
 
-            for (int i = 0; i < items.Length; i++)
+        // Step 3: Inject $expand navigation properties (if any expand was requested).
+        if (options.SelectExpand?.SelectExpandClause is not null)
+        {
+            var expandedProps = options.SelectExpand.SelectExpandClause.SelectedItems
+                .OfType<ExpandedNavigationSelectItem>()
+                .Select(e => e.PathToNavigationProperty.FirstSegment.Identifier)
+                .ToList();
+
+            if (expandedProps.Count > 0)
             {
-                if (cachedKeyProp?.GetValue(items[i]) is not { } keyVal) continue;
+                // Cache the key PropertyInfo once outside the inner loop (M-3 perf fix).
+                PropertyInfo? cachedKeyProp = originalItems.Length > 0
+                    ? originalItems[0].GetType().GetProperty(source.KeyPropertyName, BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance)
+                    : null;
 
-                object? related = await navRoute.Handler(keyVal, ct);
-                if (json[i] is JsonObject obj)
+                foreach (string? propName in expandedProps)
                 {
-                    obj[propName] = related is null
-                        ? null
-                        : JsonSerializer.SerializeToNode(related, jsonOptions);
+                    var navRoute = source.NavigationRoutes.FirstOrDefault(n =>
+                        string.Equals(n.PropertyName, propName, StringComparison.OrdinalIgnoreCase));
+                    if (navRoute is null) continue;
+
+                    for (int i = 0; i < originalItems.Length; i++)
+                    {
+                        if (cachedKeyProp?.GetValue(originalItems[i]) is not { } keyVal) continue;
+
+                        object? related = await navRoute.Handler(keyVal, ct);
+                        if (json[i] is JsonObject obj)
+                        {
+                            obj[propName] = related is null
+                                ? null
+                                : JsonSerializer.SerializeToNode(related, _camelCaseSerializerOptions);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Step 4: Apply $select — strip unselected properties (annotations survive via @ prefix guard).
+        if (options.SelectExpand?.SelectExpandClause is not null)
+        {
+            var selectedProps = ExtractSelectedProperties(options.SelectExpand.SelectExpandClause);
+            if (selectedProps is not null)
+            {
+                foreach (JsonObject obj in json.OfType<JsonObject>())
+                {
+                    var toRemove = obj.Select(p => p.Key)
+                                     .Where(k => !k.StartsWith("@", StringComparison.Ordinal) &&
+                                                 !selectedProps.Contains(k, StringComparer.OrdinalIgnoreCase))
+                                     .ToList();
+                    foreach (string? key in toRemove) obj.Remove(key);
                 }
             }
         }
@@ -588,9 +598,7 @@ internal static class OhDataEndpointFactory
 
                     object[] items = queryable.ToArray();
 
-                    // Batch 4: inject @odata.etag per item before $select so the annotation survives.
-                    object annotated = ApplyCollectionAnnotations(items, source);
-                    object finalItems = ApplySelectPostProcess(annotated, options);
+                    JsonArray finalItems = await ApplyCollectionPipelineAsync(items, options, source, ct);
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
@@ -717,24 +725,7 @@ internal static class OhDataEndpointFactory
                         nextLink = BuildNextPageLink(ctx, token);
                     }
 
-                    // Gap 8: apply $expand inline data loading
-                    object expandedItems = await ApplyExpandAsync(items, options, source, ct);
-
-                    // Batch 4: inject @odata.etag per item (using original items for ETag computation).
-                    object annotated;
-                    if (expandedItems is object[] expandedArr)
-                    {
-                        annotated = ApplyCollectionAnnotations(expandedArr, source);
-                    }
-                    else
-                    {
-                        // $expand produced a JsonArray — inject ETags from the original items array.
-                        annotated = source.HasETag && expandedItems is JsonArray jArr
-                            ? InjectETagsIntoJsonArray(jArr, items, source)
-                            : expandedItems;
-                    }
-
-                    object finalItems = ApplySelectPostProcess(annotated, options);
+                    JsonArray finalItems = await ApplyCollectionPipelineAsync(items, options, source, ct);
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
@@ -781,20 +772,7 @@ internal static class OhDataEndpointFactory
                         var searchResults = await source.InvokeSearchAsync(searchTerm.ToString(), ct);
                         object[] searchItems = searchResults.ToArray();
 
-                        object searchExpanded = await ApplyExpandAsync(searchItems, options, source, ct);
-                        object searchAnnotated;
-                        if (searchExpanded is object[] searchExpandedArr)
-                        {
-                            searchAnnotated = ApplyCollectionAnnotations(searchExpandedArr, source);
-                        }
-                        else
-                        {
-                            searchAnnotated = source.HasETag && searchExpanded is System.Text.Json.Nodes.JsonArray searchJArr
-                                ? InjectETagsIntoJsonArray(searchJArr, searchItems, source)
-                                : searchExpanded;
-                        }
-
-                        object searchFinal = ApplySelectPostProcess(searchAnnotated, options);
+                        JsonArray searchFinal = await ApplyCollectionPipelineAsync(searchItems, options, source, ct);
                         string searchBaseUrl = BuildBaseUrl(ctx, prefix);
                         var searchEnvelope = new Dictionary<string, object?>();
                         searchEnvelope["@odata.context"] = $"{searchBaseUrl}/$metadata#{name}";
@@ -809,23 +787,7 @@ internal static class OhDataEndpointFactory
                     var enumerable = result as IEnumerable<TModel> ?? Enumerable.Empty<TModel>();
                     var rawItems = enumerable.ToArray();
 
-                    // Gap 8: apply $expand inline data loading on GetAll path
-                    object expandedItems = await ApplyExpandAsync(rawItems, options, source, ct);
-
-                    // Batch 4: inject @odata.etag per item (using original rawItems for ETag computation).
-                    object annotatedItems;
-                    if (expandedItems is object[] expandedArr)
-                    {
-                        annotatedItems = ApplyCollectionAnnotations(expandedArr, source);
-                    }
-                    else
-                    {
-                        annotatedItems = source.HasETag && expandedItems is JsonArray jArr
-                            ? InjectETagsIntoJsonArray(jArr, rawItems, source)
-                            : expandedItems;
-                    }
-
-                    object finalItems = ApplySelectPostProcess(annotatedItems, options);
+                    JsonArray finalItems = await ApplyCollectionPipelineAsync(rawItems, options, source, ct);
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
@@ -1157,6 +1119,7 @@ internal static class OhDataEndpointFactory
         {
             string navPropertyName = nav.PropertyName;
             bool navIsCollection = nav.IsCollection;
+            Type? navItemType = nav.NavItemType;
             var rb = entityAuthGroup.MapGet($"/{name}({{key}})/{navPropertyName}",
                 async (string key, HttpContext ctx, CancellationToken ct) =>
                 {
@@ -1197,7 +1160,8 @@ internal static class OhDataEndpointFactory
 
                             object[] itemArray = items.ToArray();
                             // Batch 3: apply $select post-processing to navigation collection results
-                            var navEnv = BuildNavEnvelope(baseUrl, name, key, navPropertyName, navCount, itemArray, ctx);
+                            var (navEnv, navEnvError) = BuildNavEnvelope(baseUrl, name, key, navPropertyName, navCount, itemArray, ctx, navItemType);
+                            if (navEnvError is not null) return navEnvError;
                             return Results.Ok(navEnv);
                         }
                         return Results.Ok(result);

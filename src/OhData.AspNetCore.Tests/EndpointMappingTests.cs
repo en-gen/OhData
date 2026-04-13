@@ -1648,6 +1648,19 @@ public class EndpointMappingTests
         Assert.False(first.TryGetProperty("parentId", out _), "Expected 'parentId' to be excluded");
     }
 
+    // ── L-3: $select with invalid property on nav collection returns 400 ─────────
+
+    [Fact]
+    public async Task NavigationCollection_WithSelect_InvalidProperty_Returns400()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavCountProfile>());
+        var response = await fx.Client.GetAsync("/odata/NavCountParents(1)/Children?$select=InvalidProp");
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(json.TryGetProperty("error", out var error), "Expected 'error' in response body");
+        Assert.Equal("InvalidQueryOption", error.GetProperty("code").GetString());
+    }
+
     // ── Batch 3: IODataEntitySetEndpointSource (Priority-1 handler) ───────────
 
     [Fact]

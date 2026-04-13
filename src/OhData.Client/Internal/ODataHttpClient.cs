@@ -176,15 +176,10 @@ internal sealed class ODataHttpClient
 
     // ── Error handling ──────────────────────────────────────────────────────────
 
-    // Cached options for parsing OData error envelopes — avoids allocating a new instance per error.
-    private static readonly JsonSerializerOptions _errorParseOptions =
-        new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-
     private static async Task EnsureSuccessAsync(
         HttpResponseMessage response, string url, CancellationToken ct)
     {
         if (response.IsSuccessStatusCode) return;
-        throw await ODataClientException.FromResponseAsync(
-            response, url, _errorParseOptions, ct);
+        throw await ODataClientException.FromResponseAsync(response, url, ct);
     }
 }
