@@ -195,7 +195,7 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
 }
 
 /// <summary>
-/// Simple category catalog — demonstrates the GetAll (IEnumerable) path with a string key.
+/// Simple category catalog -- demonstrates the GetAll (IEnumerable) path with a string key.
 /// No query options are applied; the handler returns the full list.
 /// </summary>
 public class CategoryProfile : EntitySetProfile<string, Category>
@@ -216,3 +216,18 @@ public class CategoryProfile : EntitySetProfile<string, Category>
             _categories.FirstOrDefault(c => string.Equals(c.Code, code, StringComparison.OrdinalIgnoreCase)));
     }
 }
+
+/// <summary>
+/// v2 variant of <see cref="ProductProfile"/> -- same configuration, separate DI registration
+/// so it can coexist in the v2 OhData registration alongside <see cref="ProductProfile"/> in v1.
+/// </summary>
+public class ProductProfileV2 : ProductProfile
+{
+    public ProductProfileV2(AppDbContext db) : base(db) { }
+}
+
+/// <summary>
+/// v2 variant of <see cref="CategoryProfile"/> -- same configuration, separate DI registration
+/// so it can coexist in the v2 OhData registration alongside <see cref="CategoryProfile"/> in v1.
+/// </summary>
+public class CategoryProfileV2 : CategoryProfile { }
