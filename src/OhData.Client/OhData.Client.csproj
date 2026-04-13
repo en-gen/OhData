@@ -6,4 +6,9 @@
     <Description>Typed OData 4.0 client with LINQ filter translation for .NET.</Description>
   </PropertyGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="OhData.Client.Tests" />
+    <InternalsVisibleTo Include="OhData.Client.Benchmarks" />
+  </ItemGroup>
+
 </Project>

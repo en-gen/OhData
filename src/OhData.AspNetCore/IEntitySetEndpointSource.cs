@@ -44,6 +44,7 @@ internal interface IEntitySetEndpointSource
     bool HasSearch { get; }
     string KeyPropertyName { get; }
     string InvokeGetKeyString(object model);
+    bool IsAdvancedConfigureOverridden { get; }
 
     Task<object?> InvokeGetAllAsync(CancellationToken ct);
     Task<IQueryable<object>> InvokeGetQueryableAsync(CancellationToken ct);

@@ -12,6 +12,39 @@ GetAll = (ct) => Task.FromResult<IEnumerable<Product>>(myList);
 
 Returns all items. The framework does **not** apply any query options to the returned collection — `$filter`, `$orderby`, `$skip`, and `$top` sent by the client are ignored. Use this when your data source is small and in-memory, or when you want complete control over what is returned.
 
+### `GetODataQueryable` — full OData pushdown (advanced)
+
+```csharp
+GetODataQueryable = (opts, ct) => ...
+```
+
+The profile receives the raw `ODataQueryOptions<TModel>` and is responsible for applying them to the data source. Use this when:
+
+- You need full control over how query options are translated (e.g. custom SQL, Dapper, a remote API).
+- You want to apply paging yourself and return the pre-paging total count alongside the results.
+
+Return an `ODataQueryResult<TModel>` to supply paging metadata:
+
+```csharp
+GetODataQueryable = async (opts, ct) =>
+{
+    // Apply filtering, ordering, paging — however your data source requires.
+    var (items, totalCount) = await myDataSource.QueryAsync(opts, ct);
+
+    return new ODataQueryResult<TModel>
+    {
+        Items = items.AsQueryable(),
+        TotalCount = totalCount,   // pre-paging count; used for $count=true
+    };
+};
+```
+
+The framework does not prescribe how `items` or `totalCount` are obtained. That is entirely up to the profile. Some data sources support retrieving both in a single operation (window functions, `COUNT(*) OVER()`); others require two separate requests. Either approach satisfies the contract — the framework only requires that `TotalCount` reflect the number of matching records **before** paging was applied.
+
+If `TotalCount` is not set and the client sends `$count=true`, the count in the response will reflect only the current page size, which is incorrect per the OData spec. Prefer always supplying `TotalCount` when using this handler.
+
+> **Note:** `GetODataQueryable` is available on `ODataEntitySetProfile<TKey, TModel>`, not the base `EntitySetProfile<TKey, TModel>`. It requires the `OhData.AspNetCore` package.
+
 ### `GetQueryable` — IQueryable with pushdown (recommended for databases)
 
 ```csharp
@@ -150,7 +183,13 @@ GET /odata/Products/$count
 GET /odata/Products/$count?$filter=Price gt 10
 ```
 
-On the `GetQueryable` path, filtering is pushed to the database (`COUNT(*) WHERE ...`). On the `GetAll` path, the full collection is enumerated and counted.
+Behaviour depends on the handler path:
+
+| Handler | `$count=true` behaviour |
+|---|---|
+| `GetODataQueryable` | Uses `TotalCount` from `ODataQueryResult<TModel>`. If not supplied, falls back to the current page size — **incorrect per spec**. Always set `TotalCount` on this path. |
+| `GetQueryable` | Framework runs a second `COUNT(*)` query against the `IQueryable` before paging is applied. |
+| `GetAll` | Full collection is enumerated and counted. |
 
 ---
 

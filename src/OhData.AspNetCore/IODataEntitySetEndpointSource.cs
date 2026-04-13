@@ -1,4 +1,3 @@
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.OData.Query;
@@ -9,5 +8,5 @@ namespace OhData.Abstractions.AspNetCore.OData;
 internal interface IODataEntitySetEndpointSource : IEntitySetEndpointSource
 {
     bool HasGetODataQueryable { get; }
-    Task<IQueryable<object>> InvokeGetODataQueryableAsync(ODataQueryOptions options, CancellationToken ct);
+    Task<ODataQueryResult<object>> InvokeGetODataQueryableAsync(ODataQueryOptions options, CancellationToken ct);
 }
