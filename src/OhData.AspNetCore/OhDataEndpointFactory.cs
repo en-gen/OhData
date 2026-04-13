@@ -421,9 +421,11 @@ internal static class OhDataEndpointFactory
     }
 
     // Batch 3: build the navigation collection envelope, applying $select if present.
-    private static Dictionary<string, object?> BuildNavEnvelope(
+    // Returns (envelope, null) on success or (null, errorResult) when $select contains
+    // an unknown property name.
+    private static (Dictionary<string, object?>? Envelope, IResult? Error) BuildNavEnvelope(
         string baseUrl, string name, string key, string navPropertyName,
-        long? navCount, object[] itemArray, HttpContext ctx)
+        long? navCount, object[] itemArray, HttpContext ctx, Type? navItemType)
     {
         // Apply $select post-processing for navigation results if requested.
         // We parse the $select query param directly (navigation routes don't go through
@@ -434,6 +436,20 @@ internal static class OhDataEndpointFactory
             var selectedProps = new HashSet<string>(
                 selectParam.ToString().Split(',').Select(p => p.Trim()),
                 StringComparer.OrdinalIgnoreCase);
+
+            // Validate each requested property exists on the nav item type.
+            if (navItemType is not null)
+            {
+                foreach (string propName in selectedProps)
+                {
+                    if (navItemType.GetProperty(propName, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase) is null)
+                    {
+                        return (null, ODataError(400, "InvalidQueryOption",
+                            $"Property '{propName}' does not exist on type '{navItemType.Name}'."));
+                    }
+                }
+            }
+
             var json = JsonSerializer.SerializeToNode(itemArray, _camelCaseSerializerOptions)!.AsArray();
             foreach (JsonObject obj in json.OfType<JsonObject>())
             {
@@ -449,7 +465,7 @@ internal static class OhDataEndpointFactory
         envelope["@odata.context"] = $"{baseUrl}/$metadata#{name}({key})/{navPropertyName}";
         if (navCount.HasValue) envelope["@odata.count"] = navCount;
         envelope["value"] = valueToReturn;
-        return envelope;
+        return (envelope, null);
     }
 
     // Gap 8: $expand data loading (§11.2.4)
@@ -1157,6 +1173,7 @@ internal static class OhDataEndpointFactory
         {
             string navPropertyName = nav.PropertyName;
             bool navIsCollection = nav.IsCollection;
+            Type? navItemType = nav.NavItemType;
             var rb = entityAuthGroup.MapGet($"/{name}({{key}})/{navPropertyName}",
                 async (string key, HttpContext ctx, CancellationToken ct) =>
                 {
@@ -1197,7 +1214,8 @@ internal static class OhDataEndpointFactory
 
                             object[] itemArray = items.ToArray();
                             // Batch 3: apply $select post-processing to navigation collection results
-                            var navEnv = BuildNavEnvelope(baseUrl, name, key, navPropertyName, navCount, itemArray, ctx);
+                            var (navEnv, navEnvError) = BuildNavEnvelope(baseUrl, name, key, navPropertyName, navCount, itemArray, ctx, navItemType);
+                            if (navEnvError is not null) return navEnvError;
                             return Results.Ok(navEnv);
                         }
                         return Results.Ok(result);

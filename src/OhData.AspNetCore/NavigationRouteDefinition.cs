@@ -54,4 +54,11 @@ internal sealed record NavigationRouteDefinition
     /// Requires <see cref="ChildKeyPropertyName"/> to be set.
     /// </summary>
     public string? ChildEntitySetName { get; init; }
+
+    /// <summary>
+    /// The CLR type of the navigation target entity. Used to validate <c>$select</c>
+    /// property names at request time. <c>null</c> for non-collection navigations where
+    /// <c>$select</c> is not applied by the framework.
+    /// </summary>
+    public Type? NavItemType { get; init; }
 }

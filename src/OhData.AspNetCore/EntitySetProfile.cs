@@ -732,6 +732,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         {
             PropertyName = propName,
             IsCollection = true,
+            NavItemType = typeof(TNavigation),
             Handler = async (key, ct) => (object?)await getAll((TKey)key, ct)
         });
     }
@@ -783,6 +784,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         {
             PropertyName = propName,
             IsCollection = true,
+            NavItemType = typeof(TNavigation),
             Handler = getAll is not null
                 ? async (key, ct) => (object?)await getAll((TKey)key, ct)
                 : (_, _) => Task.FromResult<object?>(null),
