@@ -36,9 +36,9 @@ builder.Services.AddOhDataVersion("v1", "/v1", o =>
      .AddProfile<CategoryProfile>());
 
 builder.Services.AddOhDataVersion("v2", "/v2", o =>
-    o.AddProfile<ProductProfile>()
+    o.AddProfile<ProductProfileV2>()
      .AddProfile<OrderProfile>()
-     .AddProfile<CategoryProfile>());
+     .AddProfile<CategoryProfileV2>());
 
 // ── App pipeline ──────────────────────────────────────────────────────────────
 var app = builder.Build();
