@@ -1252,7 +1252,10 @@ internal static class OhDataEndpointFactory
                             object? result = await nav.Handler(parsedKey!, ct);
                             if (result is null) return Results.NotFound();
                             var rawColl = result as System.Collections.IEnumerable;
-                            long count = rawColl is not null ? rawColl.Cast<object>().LongCount() : 1L;
+                            long count;
+                            if (rawColl is ICollection<object> objColl) count = objColl.Count;
+                            else if (rawColl is System.Collections.ICollection nonGenColl) count = nonGenColl.Count;
+                            else count = rawColl is not null ? rawColl.Cast<object>().LongCount() : 1L;
                             return Results.Content(count.ToString(CultureInfo.InvariantCulture), "text/plain");
                         }
                         catch (FormatException ex)
@@ -1291,12 +1294,14 @@ internal static class OhDataEndpointFactory
                                 var refs = new List<Dictionary<string, string>>();
                                 if (children is System.Collections.IEnumerable childEnum)
                                 {
+                                    // Cache PropertyInfo outside the loop — all children share the same type.
+                                    PropertyInfo? cachedRefKeyProp = null;
                                     foreach (object child in childEnum)
                                     {
-                                        var kProp = child.GetType().GetProperty(
+                                        cachedRefKeyProp ??= child.GetType().GetProperty(
                                             refNavCapture.ChildKeyPropertyName,
                                             BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
-                                        if (kProp?.GetValue(child) is { } k)
+                                        if (cachedRefKeyProp?.GetValue(child) is { } k)
                                         {
                                             string formattedKey = string.Format(CultureInfo.InvariantCulture, "{0}", k);
                                             refs.Add(new Dictionary<string, string>
