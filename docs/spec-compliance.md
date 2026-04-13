@@ -112,7 +112,7 @@ OhData targets the [OData 4.0 specification](https://docs.oasis-open.org/odata/o
 | Feature | Notes |
 |---------|-------|
 | SQL column projection for `$select` | All columns fetched; `$select` trims response JSON only |
-| `@odata.context` on bound operation responses | Not included — return types are arbitrary |
+| `@odata.context` on bound operation responses | Not included - return types are arbitrary |
 | ETag check atomicity | GET-then-write has a race window; use a database-level mechanism for true atomistic concurrency |
 | `If-None-Match` on POST | Not implemented; validate in the `Post` handler if needed |
 | `$compute` | Requires `Microsoft.AspNetCore.OData` v10+ (not yet available on net8.0) |

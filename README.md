@@ -1,6 +1,6 @@
 # OhData
 
-Convention-based OData 4.0 server and typed client for ASP.NET Core. Define a profile class, assign handler delegates, and get a fully spec-compliant OData API — no controllers required. Consume it from .NET with a fluent, LINQ-native client.
+Convention-based OData 4.0 server and typed client for ASP.NET Core. Define a profile class, assign handler delegates, and get a fully spec-compliant OData API - no controllers required. Consume it from .NET with a fluent, LINQ-native client.
 
 ## Getting Started
 
@@ -38,7 +38,7 @@ public class Product
     public decimal Price { get; set; }
 }
 
-// 2. Create a profile — assign only the handlers you need
+// 2. Create a profile - assign only the handlers you need
 public class ProductProfile : EntitySetProfile<int, Product>
 {
     public ProductProfile(AppDbContext db) : base(x => x.Id)
@@ -73,7 +73,7 @@ This produces:
 |--------|-------|---------|
 | `GET` | `/odata` | Service document |
 | `GET` | `/odata/$metadata` | CSDL (EDM) |
-| `GET` | `/odata/Products` | `GetQueryable` — supports `$filter`, `$orderby`, `$skip`, `$top`, `$select`, `$count` |
+| `GET` | `/odata/Products` | `GetQueryable` - supports `$filter`, `$orderby`, `$skip`, `$top`, `$select`, `$count` |
 | `GET` | `/odata/Products/$count` | filtered row count |
 | `GET` | `/odata/Products({key})` | `GetById` |
 | `POST` | `/odata/Products` | `Post` |
@@ -88,7 +88,7 @@ Only routes with a handler assigned are registered. Unassigned handlers produce 
 ## Client quick start
 
 ```csharp
-// Setup — inject via IHttpClientFactory or create directly
+// Setup - inject via IHttpClientFactory or create directly
 var client = new OhDataClient("https://api.example.com/odata");
 
 // Query with LINQ-style filter, ordering, and pagination
@@ -99,7 +99,7 @@ var page = await client.For<Product>()
     .Skip(0)
     .ToPageAsync();     // returns ODataPage<Product> with Items, TotalCount, NextLink
 
-// Get a single entity — returns null on 404
+// Get a single entity - returns null on 404
 Product? p = await client.For<Product>().Key(42).GetAsync();
 
 // Mutate
