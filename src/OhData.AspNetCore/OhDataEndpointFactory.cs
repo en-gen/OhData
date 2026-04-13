@@ -603,8 +603,11 @@ internal static class OhDataEndpointFactory
         // Collection-level routes use a sub-group so they can use the short "" template.
         var entityGroup = entityAuthGroup.MapGroup($"/{name}");
 
-        // Cache ODataQueryContext once at startup so each request does not allocate a new instance.
+        // Cache ODataQueryContext and ODataQuerySettings once at startup so each request
+        // does not allocate new instances. Both are read-only after construction.
         var cachedODataQueryContext = new ODataQueryContext(registration.EdmModel, typeof(TModel), null);
+        var cachedCountSettings = new ODataQuerySettings();
+        var cachedQuerySettings = new ODataQuerySettings { PageSize = source.MaxTop };
 
         // Priority 1: ODataEntitySetProfile with direct ODataQueryOptions handler
         if (source is IODataEntitySetEndpointSource odataSource && odataSource.HasGetODataQueryable)
@@ -686,19 +689,18 @@ internal static class OhDataEndpointFactory
                     if (options.Count?.Value == true)
                     {
                         var countQ = options.Filter is not null
-                            ? (IQueryable<TModel>)options.Filter.ApplyTo(queryable, new ODataQuerySettings())
+                            ? (IQueryable<TModel>)options.Filter.ApplyTo(queryable, cachedCountSettings)
                             : queryable;
                         odataCount = countQ.LongCount();
                     }
 
                     // Apply filter/orderby/skip/top without $select so TModel shape is preserved.
                     // $select is handled via JsonNode post-processing to avoid ISelectExpandWrapper casing issues.
-                    var settings = new ODataQuerySettings { PageSize = source.MaxTop };
                     IQueryable<TModel> filtered = queryable;
                     if (options.Filter is not null)
-                        filtered = (IQueryable<TModel>)options.Filter.ApplyTo(filtered, settings);
+                        filtered = (IQueryable<TModel>)options.Filter.ApplyTo(filtered, cachedQuerySettings);
                     if (options.OrderBy is not null)
-                        filtered = (IQueryable<TModel>)options.OrderBy.ApplyTo(filtered, settings);
+                        filtered = (IQueryable<TModel>)options.OrderBy.ApplyTo(filtered, cachedQuerySettings);
 
                     // Gap 3: $skiptoken → treat as $skip when no $skip is present
                     int? tokenSkip = null;
@@ -718,7 +720,7 @@ internal static class OhDataEndpointFactory
 
                     int effectiveSkip = tokenSkip ?? 0;
                     if (options.Skip is not null)
-                        filtered = (IQueryable<TModel>)options.Skip.ApplyTo(filtered, settings);
+                        filtered = (IQueryable<TModel>)options.Skip.ApplyTo(filtered, cachedQuerySettings);
                     else if (effectiveSkip > 0)
                         filtered = filtered.Skip(effectiveSkip);
 
@@ -733,7 +735,7 @@ internal static class OhDataEndpointFactory
                                 $"The value of '$top' ({options.Top.Value}) exceeds the maximum allowed value ({source.MaxTop.Value}).");
                         }
 
-                        filtered = (IQueryable<TModel>)options.Top.ApplyTo(filtered, settings);
+                        filtered = (IQueryable<TModel>)options.Top.ApplyTo(filtered, cachedQuerySettings);
                     }
                     else
                     {
@@ -875,7 +877,7 @@ internal static class OhDataEndpointFactory
                     {
                         var q = (IQueryable<TModel>)(await source.InvokeGetQueryableAsync(ct)).Cast<TModel>();
                         var filtered = options.Filter is not null
-                            ? (IQueryable<TModel>)options.Filter.ApplyTo(q, new ODataQuerySettings())
+                            ? (IQueryable<TModel>)options.Filter.ApplyTo(q, cachedCountSettings)
                             : q;
                         return Results.Content(filtered.LongCount().ToString(), "text/plain");
                     }
