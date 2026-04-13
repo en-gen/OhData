@@ -471,6 +471,11 @@ internal static class OhDataEndpointFactory
         var jsonOptions = default(JsonSerializerOptions?);
         var json = JsonSerializer.SerializeToNode(items)!.AsArray();
 
+        // Cache the key PropertyInfo once outside the inner loop (M-3 perf fix).
+        PropertyInfo? cachedKeyProp = items.Length > 0
+            ? items[0].GetType().GetProperty(source.KeyPropertyName, BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance)
+            : null;
+
         foreach (string? propName in expandedProps)
         {
             var navRoute = source.NavigationRoutes.FirstOrDefault(n =>
@@ -479,9 +484,7 @@ internal static class OhDataEndpointFactory
 
             for (int i = 0; i < items.Length; i++)
             {
-                var keyProp = items[i].GetType().GetProperty(source.KeyPropertyName,
-                    BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance);
-                if (keyProp?.GetValue(items[i]) is not { } keyVal) continue;
+                if (cachedKeyProp?.GetValue(items[i]) is not { } keyVal) continue;
 
                 object? related = await navRoute.Handler(keyVal, ct);
                 if (json[i] is JsonObject obj)
@@ -539,6 +542,13 @@ internal static class OhDataEndpointFactory
 
         var logger = loggerFactory?.CreateLogger("OhData");
 
+        if (source.IsAdvancedConfigureOverridden)
+        {
+            logger?.LogDebug(
+                "OhData: {EntitySet} uses AdvancedConfigure override — automatic EDM configuration (HasKey, Filter, Select, etc.) was ejected.",
+                name);
+        }
+
         // Create an auth group for this entity set with an empty prefix so that auth is
         // applied once and propagates to all routes (both collection and key-based).
         // Key-based routes use templates like "/{name}({key})" which embed the entity set name
@@ -560,6 +570,9 @@ internal static class OhDataEndpointFactory
         // Collection-level routes use a sub-group so they can use the short "" template.
         var entityGroup = entityAuthGroup.MapGroup($"/{name}");
 
+        // Cache ODataQueryContext once at startup so each request does not allocate a new instance.
+        var cachedODataQueryContext = new ODataQueryContext(registration.EdmModel, typeof(TModel), null);
+
         // Priority 1: ODataEntitySetProfile with direct ODataQueryOptions handler
         if (source is IODataEntitySetEndpointSource odataSource && odataSource.HasGetODataQueryable)
         {
@@ -567,13 +580,13 @@ internal static class OhDataEndpointFactory
             {
                 try
                 {
-                    var odataCtx = new ODataQueryContext(registration.EdmModel, typeof(TModel), null);
-                    var options = new ODataQueryOptions<TModel>(odataCtx, ctx.Request);
-                    var queryable = await odataSource.InvokeGetODataQueryableAsync(options, ct);
+                    var options = new ODataQueryOptions<TModel>(cachedODataQueryContext, ctx.Request);
+                    var odataResult = await odataSource.InvokeGetODataQueryableAsync(options, ct);
+                    var queryable = odataResult.Items is IQueryable<TModel> typedQ
+                        ? typedQ
+                        : odataResult.Items.Cast<TModel>().AsQueryable();
 
-                    object[] items = queryable is IQueryable<TModel> typed
-                        ? typed.ToArray()
-                        : queryable.Cast<TModel>().ToArray();
+                    object[] items = queryable.ToArray();
 
                     // Batch 4: inject @odata.etag per item before $select so the annotation survives.
                     object annotated = ApplyCollectionAnnotations(items, source);
@@ -582,11 +595,17 @@ internal static class OhDataEndpointFactory
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
                     envelope["@odata.context"] = $"{baseUrl}/$metadata#{name}";
-                    // $count=true: the profile applies its own query options (including $top/$skip),
-                    // so we count the returned items. Profiles that need a pre-$top count should
-                    // handle $count themselves inside GetODataQueryable.
+                    // $count=true: prefer TotalCount if profile provided it (pre-paging), otherwise
+                    // fall back to items.Length (post-paging).
                     if (options.Count?.Value == true)
-                        envelope["@odata.count"] = (long)items.Length;
+                    {
+                        envelope["@odata.count"] = odataResult.TotalCount ?? (long)items.Length;
+                    }
+                    // nextLink: prefer profile-provided next link over framework-computed.
+                    if (odataResult.NextLink is not null)
+                    {
+                        envelope["@odata.nextLink"] = odataResult.NextLink;
+                    }
                     envelope["value"] = finalItems;
                     return Results.Ok(envelope);
                 }
@@ -606,8 +625,7 @@ internal static class OhDataEndpointFactory
                     var queryable = (IQueryable<TModel>)(await source.InvokeGetQueryableAsync(ct))
                                     .Cast<TModel>();
 
-                    var odataCtx = new ODataQueryContext(registration.EdmModel, typeof(TModel), null);
-                    var options = new ODataQueryOptions<TModel>(odataCtx, ctx.Request);
+                    var options = new ODataQueryOptions<TModel>(cachedODataQueryContext, ctx.Request);
 
                     // Gap 4: $search on GetQueryable path — delegate to the Search handler, then
                     // apply remaining OData query options on top of the in-memory result set.
@@ -670,6 +688,12 @@ internal static class OhDataEndpointFactory
                     int? preferredPageSize = ParseMaxPageSize(ctx);
                     if (options.Top is not null)
                     {
+                        if (source.MaxTop.HasValue && options.Top.Value > source.MaxTop.Value)
+                        {
+                            return ODataError(400, "InvalidQueryOption",
+                                $"The value of '$top' ({options.Top.Value}) exceeds the maximum allowed value ({source.MaxTop.Value}).");
+                        }
+
                         filtered = (IQueryable<TModel>)options.Top.ApplyTo(filtered, settings);
                     }
                     else
@@ -735,8 +759,7 @@ internal static class OhDataEndpointFactory
                 {
                     logger?.LogDebug("GET {Prefix}/{Name}", prefix, name);
 
-                    var odataCtx = new ODataQueryContext(registration.EdmModel, typeof(TModel), null);
-                    var options = new ODataQueryOptions<TModel>(odataCtx, ctx.Request);
+                    var options = new ODataQueryOptions<TModel>(cachedODataQueryContext, ctx.Request);
 
                     if (options.Filter is not null || options.OrderBy is not null
                         || options.Top is not null || options.Skip is not null)
@@ -828,13 +851,15 @@ internal static class OhDataEndpointFactory
             {
                 try
                 {
-                    var odataCtxCount = new ODataQueryContext(registration.EdmModel, typeof(TModel), null);
-                    var options = new ODataQueryOptions<TModel>(odataCtxCount, ctx.Request);
+                    var options = new ODataQueryOptions<TModel>(cachedODataQueryContext, ctx.Request);
 
                     if (source is IODataEntitySetEndpointSource odataCountSrc && odataCountSrc.HasGetODataQueryable)
                     {
                         // Priority 1 profiles apply query options themselves; don't re-apply $filter.
-                        var queryable = (IQueryable<TModel>)(await odataCountSrc.InvokeGetODataQueryableAsync(options, ct)).Cast<TModel>();
+                        var countResult = await odataCountSrc.InvokeGetODataQueryableAsync(options, ct);
+                        var queryable = countResult.Items is IQueryable<TModel> tq
+                            ? tq
+                            : countResult.Items.Cast<TModel>().AsQueryable();
                         return Results.Content(queryable.LongCount().ToString(), "text/plain");
                     }
                     if (source.HasGetQueryable)
@@ -852,7 +877,11 @@ internal static class OhDataEndpointFactory
                     }
 
                     var items = await source.InvokeGetAllAsync(ct) as IEnumerable<TModel> ?? Enumerable.Empty<TModel>();
-                    return Results.Content(items.LongCount().ToString(), "text/plain");
+                    // Fast path for ICollection (List, Array, etc.) — no enumeration needed.
+                    long count = items is ICollection<TModel> coll
+                        ? (long)coll.Count
+                        : items.LongCount();
+                    return Results.Content(count.ToString(), "text/plain");
                 }
                 catch (Microsoft.OData.ODataException ex)
                 {
@@ -1215,8 +1244,9 @@ internal static class OhDataEndpointFactory
             bool navRefIsCollection = nav.IsCollection;
 
             // GET /{name}({key})/{nav}/$ref — returns reference envelope
+            var refNavCapture = nav;
             var refGetRb = entityAuthGroup.MapGet($"/{name}({{key}})/{navRefPropertyName}/$ref",
-                (string key, HttpContext ctx) =>
+                async (string key, HttpContext ctx, CancellationToken ct) =>
                 {
                     try
                     {
@@ -1226,6 +1256,36 @@ internal static class OhDataEndpointFactory
 
                         if (navRefIsCollection)
                         {
+                            // When ChildEntitySetName and ChildKeyPropertyName are configured,
+                            // build populated @odata.id references (OData §11.4.6.1).
+                            if (refNavCapture.ChildEntitySetName is not null && refNavCapture.ChildKeyPropertyName is not null)
+                            {
+                                object? children = await refNavCapture.Handler(parsedKey!, ct);
+                                var refs = new List<Dictionary<string, string>>();
+                                if (children is System.Collections.IEnumerable childEnum)
+                                {
+                                    foreach (object child in childEnum)
+                                    {
+                                        var kProp = child.GetType().GetProperty(
+                                            refNavCapture.ChildKeyPropertyName,
+                                            BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+                                        if (kProp?.GetValue(child) is { } k)
+                                        {
+                                            string formattedKey = string.Format(CultureInfo.InvariantCulture, "{0}", k);
+                                            refs.Add(new Dictionary<string, string>
+                                            {
+                                                ["@odata.id"] = $"{baseUrl}/{refNavCapture.ChildEntitySetName}({formattedKey})"
+                                            });
+                                        }
+                                    }
+                                }
+                                return Results.Ok(new Dictionary<string, object?>
+                                {
+                                    ["@odata.context"] = context,
+                                    ["value"] = refs
+                                });
+                            }
+
                             // Return minimal compliant $ref envelope — full @odata.id population
                             // requires knowing the related entity's key property, which is not
                             // available without generic type context. Return empty value array.

@@ -49,18 +49,29 @@ public sealed class EntitySetClient<T> where T : class
     /// .Filter(x => x.Price > 10 &amp;&amp; x.Name.StartsWith("W"))
     /// </code></example>
     public EntitySetClient<T> Filter(Expression<Func<T, bool>> predicate)
-        => With(_state with { Filter = FilterTranslator.Translate(predicate) });
+    {
+        string newFilter = FilterTranslator.Translate(predicate, _options.JsonOptions.PropertyNamingPolicy);
+        string composed = _state.Filter is null ? newFilter : $"({_state.Filter}) and ({newFilter})";
+        return With(_state with { Filter = composed });
+    }
 
     /// <summary>Filters using a raw OData <c>$filter</c> string.</summary>
     public EntitySetClient<T> Filter(string rawFilter)
-        => With(_state with { Filter = rawFilter });
+    {
+        string composed = _state.Filter is null ? rawFilter : $"({_state.Filter}) and ({rawFilter})";
+        return With(_state with { Filter = composed });
+    }
 
     /// <summary>Projects the response to a subset of properties.</summary>
     /// <example><code>
     /// .Select(x => new { x.Id, x.Name })
     /// </code></example>
     public EntitySetClient<T> Select(Expression<Func<T, object?>> selector)
-        => With(_state with { Select = SelectTranslator.Translate(selector) });
+    {
+        string newSelect = SelectTranslator.Translate(selector, _options.JsonOptions.PropertyNamingPolicy);
+        string composed = _state.Select is null ? newSelect : $"{_state.Select},{newSelect}";
+        return With(_state with { Select = composed });
+    }
 
     /// <summary>
     /// Projects the response to a subset of properties using typed member-access expressions.
@@ -81,7 +92,9 @@ public sealed class EntitySetClient<T> where T : class
                 "$select does not support navigation paths; use Expand for navigation properties.");
         }
 
-        return With(_state with { Select = string.Join(',', names) });
+        string newSelect = string.Join(',', names);
+        string composed = _state.Select is null ? newSelect : $"{_state.Select},{newSelect}";
+        return With(_state with { Select = composed });
     }
 
     /// <summary>
@@ -94,12 +107,21 @@ public sealed class EntitySetClient<T> where T : class
     /// .Select("Id", "Name", "Price")
     /// </code></example>
     public EntitySetClient<T> Select(params string[] properties)
-        => With(_state with { Select = string.Join(',', properties) });
+    {
+        string newSelect = string.Join(',', properties);
+        string composed = _state.Select is null ? newSelect : $"{_state.Select},{newSelect}";
+        return With(_state with { Select = composed });
+    }
 
     /// <summary>Expands a navigation property.</summary>
     /// <example><code>.Expand(x => x.Category)</code></example>
     public EntitySetClient<T> Expand(Expression<Func<T, object?>> navProperty)
-        => With(_state with { Expand = ExtractPath(navProperty) });
+    {
+        string newExpand = ExtractDirectMember(navProperty,
+            "$expand does not support chained navigation paths; use the string overload for complex $expand syntax.");
+        string composed = _state.Expand is null ? newExpand : $"{_state.Expand},{newExpand}";
+        return With(_state with { Expand = composed });
+    }
 
     /// <summary>
     /// Expands multiple navigation properties using typed member-access expressions.
@@ -119,7 +141,9 @@ public sealed class EntitySetClient<T> where T : class
                 "$expand does not support nested expansion; use the string overload for complex $expand syntax.");
         }
 
-        return With(_state with { Expand = string.Join(',', names) });
+        string newExpand = string.Join(',', names);
+        string composed = _state.Expand is null ? newExpand : $"{_state.Expand},{newExpand}";
+        return With(_state with { Expand = composed });
     }
 
     /// <summary>
@@ -132,7 +156,11 @@ public sealed class EntitySetClient<T> where T : class
     /// .Expand("Category($select=Name;$expand=Parent)")
     /// </code></example>
     public EntitySetClient<T> Expand(params string[] navProperties)
-        => With(_state with { Expand = string.Join(',', navProperties) });
+    {
+        string newExpand = string.Join(',', navProperties);
+        string composed = _state.Expand is null ? newExpand : $"{_state.Expand},{newExpand}";
+        return With(_state with { Expand = composed });
+    }
 
     /// <summary>Sets the primary ascending sort.</summary>
     public EntitySetClient<T> OrderBy(Expression<Func<T, object?>> keySelector)
@@ -191,7 +219,14 @@ public sealed class EntitySetClient<T> where T : class
     /// Transitions to a single-entity builder for the given key.
     /// </summary>
     public KeyedEntitySetClient<T> Key(object keyValue)
-        => new(_http, _options, _entitySetName, ODataKeyFormatter.Format(keyValue));
+        => new(_http, _options, _entitySetName, ODataKeyFormatter.Format(keyValue), _state.Select, _state.Expand);
+
+    /// <summary>
+    /// Transitions to a single-entity builder for the given key.
+    /// This overload provides compile-time type safety for the key value.
+    /// </summary>
+    public KeyedEntitySetClient<T> Key<TKey>(TKey keyValue)
+        => Key((object)keyValue!);
 
     // ── Terminal operations ─────────────────────────────────────────────────────
 
@@ -237,8 +272,25 @@ public sealed class EntitySetClient<T> where T : class
     /// Any query options set on the builder (Filter, Select, OrderBy, etc.) are ignored
     /// for POST -- the request always targets the bare entity set URL.
     /// </remarks>
-    public Task<T?> InsertAsync(T entity, CancellationToken ct = default)
-        => _http.PostAsync(_entitySetName, entity, ct);
+    public Task<T?> InsertAsync(T entity, bool preferMinimal = false, CancellationToken ct = default)
+        => _http.PostAsync(_entitySetName, entity, preferMinimal, ct);
+
+    /// <summary>
+    /// Executes GET with <c>$top=2</c> and returns the single matching entity,
+    /// or <see langword="null"/> when none match. Throws <see cref="InvalidOperationException"/>
+    /// when more than one entity matches (use <see cref="FirstOrDefaultAsync"/> if you expect multiple).
+    /// </summary>
+    public async Task<T?> SingleOrDefaultAsync(CancellationToken ct = default)
+    {
+        var items = await With(_state with { Top = 2 }).ToListAsync(ct);
+        return items.Count switch
+        {
+            0 => null,
+            1 => items[0],
+            _ => throw new InvalidOperationException(
+                "Sequence contains more than one element matching the query. Use FirstOrDefaultAsync if multiple results are expected.")
+        };
+    }
 
     // ── URL building (internal for testing) ────────────────────────────────────
 

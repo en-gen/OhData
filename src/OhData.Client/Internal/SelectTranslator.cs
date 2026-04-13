@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
+using System.Text.Json;
 
 namespace OhData.Client.Internal;
 
@@ -13,38 +14,40 @@ namespace OhData.Client.Internal;
 /// </summary>
 internal static class SelectTranslator
 {
-    public static string Translate<T>(Expression<Func<T, object?>> selector)
+    public static string Translate<T>(Expression<Func<T, object?>> selector, JsonNamingPolicy? namingPolicy = null)
     {
         var body = StripConvert(selector.Body);
         var param = selector.Parameters[0];
 
         // x => new { x.Name, x.Price }  or  x => new { x.Name, Code = x.CategoryCode }
         if (body is NewExpression newExpr)
-            return string.Join(',', newExpr.Arguments.Select(a => ExtractPath(a, param)));
+            return string.Join(',', newExpr.Arguments.Select(a => ExtractPath(a, param, namingPolicy)));
 
         // x => new Dto { Name = x.Name }
         if (body is MemberInitExpression memberInit)
         {
             return string.Join(',', memberInit.Bindings
                 .OfType<MemberAssignment>()
-                .Select(b => ExtractPath(b.Expression, param)));
+                .Select(b => ExtractPath(b.Expression, param, namingPolicy)));
         }
 
         // x => x.Name  (single property)
-        return ExtractPath(body, param);
+        return ExtractPath(body, param, namingPolicy);
     }
 
-    private static string ExtractPath(Expression expr, ParameterExpression param)
+    private static string ExtractPath(Expression expr, ParameterExpression param, JsonNamingPolicy? namingPolicy)
     {
         expr = StripConvert(expr);
 
         if (expr is MemberExpression member)
         {
+            string memberName = namingPolicy?.ConvertName(member.Member.Name) ?? member.Member.Name;
+
             if (member.Expression is ParameterExpression p && p == param)
-                return member.Member.Name;
+                return memberName;
 
             if (member.Expression is not null)
-                return $"{ExtractPath(member.Expression, param)}/{member.Member.Name}";
+                return $"{ExtractPath(member.Expression, param, namingPolicy)}/{memberName}";
         }
 
         throw new ArgumentException(

@@ -35,8 +35,8 @@ internal static class ODataKeyFormatter
             DateTimeOffset dto => dto.Offset == TimeSpan.Zero
                                       ? dto.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture)
                                       : dto.ToString("yyyy-MM-ddTHH:mm:sszzz", CultureInfo.InvariantCulture),
-            DateOnly d => $"'{d:yyyy-MM-dd}'",
-            TimeOnly t => $"'{t:HH:mm:ss}'",
+            DateOnly d => d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            TimeOnly t => t.ToString("HH:mm:ss", CultureInfo.InvariantCulture),
             // All other numeric types: invariant culture, no quotes
             _ => string.Format(CultureInfo.InvariantCulture, "{0}", key),
         };

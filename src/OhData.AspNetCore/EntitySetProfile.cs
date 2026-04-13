@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
@@ -225,23 +226,36 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         byte[] sep = new byte[] { 0x00 };
         _getETag = model =>
         {
-            using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            // Collect all bytes into a buffer, then hash once without allocating a hasher object per call.
+            using var ms = new MemoryStream();
             for (int i = 0; i < getters.Length; i++)
             {
-                if (i > 0) hasher.AppendData(sep);
+                if (i > 0) ms.Write(sep, 0, sep.Length);
                 object? value = getters[i](model);
                 if (value is byte[] bytes)
-                    hasher.AppendData(bytes);
+                {
+                    ms.Write(bytes, 0, bytes.Length);
+                }
                 else if (value is not null)
-                    hasher.AppendData(Encoding.UTF8.GetBytes(value.ToString()!));
+                {
+                    byte[] strBytes = Encoding.UTF8.GetBytes(value.ToString()!);
+                    ms.Write(strBytes, 0, strBytes.Length);
+                }
             }
-            return Convert.ToBase64String(hasher.GetHashAndReset());
+            // Use static SHA256.HashData to avoid per-call object allocation.
+            if (!ms.TryGetBuffer(out ArraySegment<byte> buffer))
+            {
+                buffer = new ArraySegment<byte>(ms.ToArray());
+            }
+            byte[] hash = SHA256.HashData(buffer.AsSpan());
+            return Convert.ToBase64String(hash);
         };
     }
 
     private bool _authRequired;
     private string? _authPolicy;
     private IReadOnlyList<string>? _authRoles;
+    private bool _isAdvancedConfigureOverridden;
 
     private readonly ICollection<Action<EntityTypeConfiguration<TModel>>> _configurators;
     private readonly ICollection<Delegate> _functions;
@@ -305,7 +319,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
                 new[] { typeof(EntitySetConfiguration<TModel>) },
                 null)
             ?.DeclaringType;
-        if (advancedConfigureDeclaredInType != typeof(EntitySetProfile<TKey, TModel>)) return;
+        _isAdvancedConfigureOverridden = advancedConfigureDeclaredInType != typeof(EntitySetProfile<TKey, TModel>);
+        if (_isAdvancedConfigureOverridden) return;
 
         // if AdvancedConfigure wasn't overridden, work your magic
         var entityType = entitySet.EntityType;
@@ -728,6 +743,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// <typeparam name="TNavigation">The CLR type of the related entities.</typeparam>
     /// <param name="navigation">Expression selecting the collection navigation property.</param>
     /// <param name="getAll">Handler that loads all related entities for a given parent key. Pass <c>null</c> to omit the GET route.</param>
+    /// <param name="refTargetEntitySet">
+    /// When set, the GET <c>$ref</c> handler returns populated <c>@odata.id</c> references.
+    /// The value should be the entity-set name of <typeparamref name="TNavigation"/> (e.g. <c>"Orders"</c>).
+    /// The child key property is detected automatically by convention (<c>Id</c> or <c>{TypeName}Id</c>).
+    /// </param>
     /// <param name="addRef">
     /// Handler for <c>POST /{EntitySet}({key})/{Property}/$ref</c>. The second parameter is
     /// the <c>@odata.id</c> string from the request body. Pass <c>null</c> to omit the route.
@@ -739,13 +759,26 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected void HasMany<TNavigation>(
         Expression<Func<TModel, IEnumerable<TNavigation>>> navigation,
         Func<TKey, CancellationToken, Task<IEnumerable<TNavigation>>>? getAll,
+        string? refTargetEntitySet = null,
         Func<TKey, string, CancellationToken, Task>? addRef = null,
         Func<TKey, string, CancellationToken, Task>? removeRef = null)
         where TNavigation : class
     {
         HasMany(navigation);
-        if (getAll is null && addRef is null && removeRef is null) return;
+        if (getAll is null && addRef is null && removeRef is null && refTargetEntitySet is null) return;
         string propName = GetNavigationPropertyName(navigation.Body);
+
+        // Detect child key property by convention when refTargetEntitySet is provided.
+        string? childKeyPropName = null;
+        if (refTargetEntitySet is not null)
+        {
+            string typeName = typeof(TNavigation).Name;
+            // Try "Id" first, then "{TypeName}Id"
+            var idProp = typeof(TNavigation).GetProperty("Id", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase)
+                ?? typeof(TNavigation).GetProperty(typeName + "Id", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+            childKeyPropName = idProp?.Name;
+        }
+
         _navRoutes.Add(new NavigationRouteDefinition
         {
             PropertyName = propName,
@@ -759,6 +792,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
             RemoveRef = removeRef is not null
                 ? (key, relatedId, ct) => removeRef((TKey)key, (string)relatedId, ct)
                 : (Func<object, object, CancellationToken, Task>?)null,
+            ChildEntitySetName = refTargetEntitySet,
+            ChildKeyPropertyName = childKeyPropName,
         });
     }
 
@@ -979,6 +1014,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     bool IEntitySetEndpointSource.AllowUpsert => _resolvedAllowUpsert;
     bool IEntitySetEndpointSource.HasSearch => Search is not null;
     string IEntitySetEndpointSource.KeyPropertyName => GetNavigationPropertyName(_getKey.Body);
+    bool IEntitySetEndpointSource.IsAdvancedConfigureOverridden => _isAdvancedConfigureOverridden;
 
     async Task<IEnumerable<object>> IEntitySetEndpointSource.InvokeSearchAsync(string searchTerm, CancellationToken ct)
     {

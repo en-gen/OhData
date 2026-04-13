@@ -188,6 +188,7 @@ internal class ETagWidgetProfile : EntitySetProfile<int, Widget>
             _store.Add(widget);
             return Task.FromResult(widget);
         };
+        Delete = (id, ct) => Task.FromResult(_store.RemoveAll(w => w.Id == id) > 0);
         UseETag(x => x.Name);
     }
 }
@@ -668,8 +669,8 @@ internal class ODataWidgetProfile : ODataEntitySetProfile<int, Widget>
         {
             var q = _store.AsQueryable();
             // Apply filter/orderby/skip/top via the options object.
-            var applied = options.ApplyTo(q) as IQueryable<Widget>;
-            return Task.FromResult(applied ?? q);
+            var applied = options.ApplyTo(q) as IQueryable<Widget> ?? q;
+            return System.Threading.Tasks.Task.FromResult(new ODataQueryResult<Widget> { Items = applied });
         };
 
         GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
@@ -817,6 +818,32 @@ internal class PatchItem
     public int Id { get; set; }
     public string Name { get; set; } = "";
     public decimal Price { get; set; }
+}
+
+/// <summary>
+/// Profile for testing <c>GET /{EntitySet}({key})/{nav}/$ref</c> with populated <c>@odata.id</c>
+/// references when <c>refTargetEntitySet</c> is configured (M-2).
+/// </summary>
+internal class NavRefProfile : EntitySetProfile<int, Parent>
+{
+    private static readonly List<Parent> _parents = new() { new() { Id = 1, Name = "Parent1" } };
+    private static readonly List<Child> _children = new()
+    {
+        new() { Id = 10, ParentId = 1, Name = "ChildA" },
+        new() { Id = 11, ParentId = 1, Name = "ChildB" },
+    };
+
+    public NavRefProfile() : base(x => x.Id)
+    {
+        EntitySetName = "NavRefParents";
+        GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(p => p.Id == id));
+
+        HasMany(
+            navigation: x => x.Children!,
+            getAll: (parentId, ct) =>
+                Task.FromResult<IEnumerable<Child>>(_children.Where(c => c.ParentId == parentId)),
+            refTargetEntitySet: "Children");
+    }
 }
 
 /// <summary>

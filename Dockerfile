@@ -1,5 +1,6 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
+ENV HUSKY=0
 
 # Copy project files and restore
 COPY src/OhData.AspNetCore/OhData.AspNetCore.csproj OhData.AspNetCore/
