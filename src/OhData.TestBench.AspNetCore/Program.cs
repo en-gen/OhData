@@ -63,8 +63,8 @@ app.UseSwaggerUI(c =>
 // Scalar API reference at /scalar/{documentName} — uses /openapi/{documentName}.json by default
 app.MapScalarApiReference();
 
-app.MapOhData("v1").WithOpenApi().WithGroupName("v1");
-app.MapOhData("v2").WithOpenApi().WithGroupName("v2");
+app.MapOhData("v1").WithGroupName("v1");
+app.MapOhData("v2").WithGroupName("v2");
 
 // Redirect root to Scalar v1 doc
 app.MapGet("/", () => Results.Redirect("/scalar/v1")).ExcludeFromDescription();
