@@ -220,7 +220,7 @@ public sealed class EntitySetClient<T> where T : class
     /// Transitions to a single-entity builder for the given key.
     /// </summary>
     public KeyedEntitySetClient<T> Key(object keyValue)
-        => new(_http, _options, _entitySetName, ODataKeyFormatter.Format(keyValue), _state.Select, _state.Expand);
+        => new(_http, _entitySetName, ODataKeyFormatter.Format(keyValue), _state.Select, _state.Expand);
 
     /// <summary>
     /// Transitions to a single-entity builder for the given key.
