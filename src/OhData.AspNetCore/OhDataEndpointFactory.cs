@@ -97,6 +97,10 @@ internal static class OhDataEndpointFactory
     {
         string prefix = registration.Prefix;
         var group = routes.MapGroup(prefix);
+        // Resolve JsonOptions once at startup so handlers don't pay DI lookup per request.
+        var startupJsonOptions = routes.ServiceProvider
+            .GetService<IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions>>()
+            ?.Value?.SerializerOptions;
 
         // Gap 1: Add OData-Version: 4.0 header to all responses (§8.2.6).
         // Batch 4: Return 406 Not Acceptable when the client cannot accept application/json (§8.2.3).
@@ -178,7 +182,7 @@ internal static class OhDataEndpointFactory
             {
                 _mapEntitySetMethod
                     .MakeGenericMethod(profile.KeyType, profile.ModelType)
-                    .Invoke(null, new object?[] { group, profile, registration, loggerFactory });
+                    .Invoke(null, new object?[] { group, profile, registration, loggerFactory, startupJsonOptions });
             }
             catch (System.Reflection.TargetInvocationException tie) when (tie.InnerException is not null)
             {
@@ -190,14 +194,15 @@ internal static class OhDataEndpointFactory
         }
 
         // Gap 7: Unbound functions/actions — registered once at service root level (§11.5.1)
-        MapUnboundOperations(group, registration.UnboundOperations);
+        MapUnboundOperations(group, registration.UnboundOperations, startupJsonOptions);
 
         return group;
     }
 
     private static void MapUnboundOperations(
         RouteGroupBuilder group,
-        IReadOnlyList<UnboundOperationDefinition> unboundOps)
+        IReadOnlyList<UnboundOperationDefinition> unboundOps,
+        JsonSerializerOptions? jsonOptions)
     {
         foreach (var op in unboundOps)
         {
@@ -252,9 +257,6 @@ internal static class OhDataEndpointFactory
                         {
                             var body = await JsonSerializer.DeserializeAsync<JsonElement>(
                                 ctx.Request.Body, cancellationToken: ct);
-                            var jsonOptions = ctx.RequestServices
-                                .GetService<IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions>>()
-                                ?.Value?.SerializerOptions;
                             for (int i = 0; i < opCapture.Parameters.Length; i++)
                             {
                                 var param = opCapture.Parameters[i];
@@ -498,11 +500,8 @@ internal static class OhDataEndpointFactory
     // Gap 2: optional @odata.etag in response body (§4.5.9)
     private static JsonObject ODataEntityNode(
         HttpContext ctx, string prefix, string contextSegment, object entity,
-        string? odataId = null, string? etag = null)
+        JsonSerializerOptions? jsonOptions, string? odataId = null, string? etag = null)
     {
-        var jsonOptions = ctx.RequestServices
-            .GetService<IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions>>()
-            ?.Value?.SerializerOptions;
         var node = JsonSerializer.SerializeToNode(entity, jsonOptions)!.AsObject();
         string baseUrl = BuildBaseUrl(ctx, prefix);
         node["@odata.context"] = JsonValue.Create($"{baseUrl}/$metadata#{contextSegment}");
@@ -516,15 +515,16 @@ internal static class OhDataEndpointFactory
 
     private static IResult ODataEntityResult(
         HttpContext ctx, string prefix, string name, object entity,
-        string? odataId = null, string? etag = null) =>
-        Results.Ok(ODataEntityNode(ctx, prefix, $"{name}/$entity", entity, odataId: odataId, etag: etag));
+        JsonSerializerOptions? jsonOptions, string? odataId = null, string? etag = null) =>
+        Results.Ok(ODataEntityNode(ctx, prefix, $"{name}/$entity", entity, jsonOptions, odataId: odataId, etag: etag));
 
     // Called via reflection with TKey/TModel resolved from the profile's runtime types.
     private static void MapEntitySet<TKey, TModel>(
         RouteGroupBuilder parentGroup,
         IEntitySetEndpointSource source,
         OhDataRegistration registration,
-        ILoggerFactory? loggerFactory)
+        ILoggerFactory? loggerFactory,
+        JsonSerializerOptions? jsonOptions)
         where TModel : class
     {
         if (source.HasETag && !source.HasGetById)
@@ -893,7 +893,7 @@ internal static class OhDataEndpointFactory
                     // Gap 5: include @odata.id in single-entity response
                     // Gap 2: include @odata.etag in body
                     string odataId = $"{BuildBaseUrl(ctx, prefix)}/{name}({key})";
-                    return ODataEntityResult(ctx, prefix, name, result, odataId: odataId, etag: etagValue);
+                    return ODataEntityResult(ctx, prefix, name, result, jsonOptions, odataId: odataId, etag: etagValue);
                 }
                 catch (FormatException ex)
                 {
@@ -947,7 +947,7 @@ internal static class OhDataEndpointFactory
 
                     // Gap 5: include @odata.id in POST response body
                     // Gap 2: include @odata.etag in body
-                    var createdNode = ODataEntityNode(ctx, prefix, $"{name}/$entity", result, odataId: odataId, etag: postEtag);
+                    var createdNode = ODataEntityNode(ctx, prefix, $"{name}/$entity", result, jsonOptions, odataId: odataId, etag: postEtag);
                     return Results.Created(odataId, createdNode);
                 }
             });
@@ -1006,8 +1006,8 @@ internal static class OhDataEndpointFactory
                     // Gap 2: include @odata.etag in body
                     string odataId = $"{BuildBaseUrl(ctx, prefix)}/{name}({key})";
                     if (wasCreated)
-                        return Results.Created(odataId, ODataEntityNode(ctx, prefix, $"{name}/$entity", result, odataId: odataId, etag: putEtag));
-                    return ODataEntityResult(ctx, prefix, name, result, odataId: odataId, etag: putEtag);
+                        return Results.Created(odataId, ODataEntityNode(ctx, prefix, $"{name}/$entity", result, jsonOptions, odataId: odataId, etag: putEtag));
+                    return ODataEntityResult(ctx, prefix, name, result, jsonOptions, odataId: odataId, etag: putEtag);
                 }
                 catch (FormatException ex)
                 {
@@ -1027,9 +1027,6 @@ internal static class OhDataEndpointFactory
                 try
                 {
                     object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
-                    var jsonOptions = ctx.RequestServices
-                        .GetService<IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions>>()
-                        ?.Value?.SerializerOptions;
                     var body = await JsonSerializer.DeserializeAsync<JsonElement>(
                         ctx.Request.Body, jsonOptions, ct);
 
@@ -1113,7 +1110,7 @@ internal static class OhDataEndpointFactory
                     // Gap 5: include @odata.id in PATCH response
                     // Gap 2: include @odata.etag in body
                     string odataId = $"{BuildBaseUrl(ctx, prefix)}/{name}({key})";
-                    return ODataEntityResult(ctx, prefix, name, result, odataId: odataId, etag: patchEtag);
+                    return ODataEntityResult(ctx, prefix, name, result, jsonOptions, odataId: odataId, etag: patchEtag);
                 }
                 catch (JsonException ex)
                 {
@@ -1378,7 +1375,7 @@ internal static class OhDataEndpointFactory
                 object? result = await fnCapture.Invoke(args, ct);
                 if (result is null) return Results.NoContent();
                 // Gap 1: @odata.context on function results when return type matches TModel
-                return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType);
+                return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions);
             }).WithTags(name).Produces(200).Produces(204).Produces(400);
         }
 
@@ -1397,9 +1394,6 @@ internal static class OhDataEndpointFactory
                     {
                         var body = await JsonSerializer.DeserializeAsync<JsonElement>(
                             ctx.Request.Body, cancellationToken: ct);
-                        var jsonOptions = ctx.RequestServices
-                            .GetService<IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions>>()
-                            ?.Value?.SerializerOptions;
                         for (int i = 0; i < actionCapture.Parameters.Length; i++)
                         {
                             var param = actionCapture.Parameters[i];
@@ -1427,7 +1421,7 @@ internal static class OhDataEndpointFactory
                 object? result = await actionCapture.Invoke(args, ct);
                 if (result is null) return Results.NoContent();
                 // Gap 1: @odata.context on action results when return type matches TModel
-                return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType);
+                return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions);
             }).WithTags(name).Produces(200).Produces(204).Produces(400);
         }
 
@@ -1475,7 +1469,7 @@ internal static class OhDataEndpointFactory
                         object? result = await fnCapture.Invoke(args, ct);
                         if (result is null) return Results.NoContent();
                         // Gap 1: @odata.context on entity-level function results
-                        return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType);
+                        return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions);
                     }
                     catch (FormatException ex)
                     {
@@ -1504,9 +1498,6 @@ internal static class OhDataEndpointFactory
                             {
                                 var body = await JsonSerializer.DeserializeAsync<JsonElement>(
                                     ctx.Request.Body, cancellationToken: ct);
-                                var jsonOptions = ctx.RequestServices
-                                    .GetService<IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions>>()
-                                    ?.Value?.SerializerOptions;
                                 for (int i = 1; i < actionCapture.Parameters.Length; i++)
                                 {
                                     var param = actionCapture.Parameters[i];
@@ -1533,7 +1524,7 @@ internal static class OhDataEndpointFactory
                         object? result = await actionCapture.Invoke(args, ct);
                         if (result is null) return Results.NoContent();
                         // Gap 1: @odata.context on entity-level action results
-                        return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType);
+                        return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions);
                     }
                     catch (FormatException ex)
                     {
@@ -1551,7 +1542,8 @@ internal static class OhDataEndpointFactory
     // For single results (TModel): context = {root}/$metadata#{EntitySet}/$entity
     // For primitives/other types: return Results.Ok directly (no wrapping needed).
     private static IResult WrapBoundOpResult(
-        HttpContext ctx, string prefix, string entitySetName, object result, Type modelType)
+        HttpContext ctx, string prefix, string entitySetName, object result, Type modelType,
+        JsonSerializerOptions? jsonOptions)
     {
         var resultType = result.GetType();
 
@@ -1588,7 +1580,7 @@ internal static class OhDataEndpointFactory
         // Check for single TModel
         if (resultType == modelType || modelType.IsAssignableFrom(resultType))
         {
-            return ODataEntityResult(ctx, prefix, entitySetName, result);
+            return ODataEntityResult(ctx, prefix, entitySetName, result, jsonOptions);
         }
 
         // Primitive/other — no context wrapping
