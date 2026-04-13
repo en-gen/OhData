@@ -30,30 +30,6 @@ Resolved items have been closed and removed. This file contains only open findin
 
 ---
 
-### Performance and Memory
-
-#### M-3: Reflection per item in `$expand` hot path
-
-`OhDataEndpointFactory.cs:482-484` -- `items[i].GetType().GetProperty(source.KeyPropertyName, ...)` is called per item inside the expand loop. This is both a correctness concern (it works, but barely) and a performance concern.
-
-**Suggested fix:** Cache the `PropertyInfo` once outside the loop, or compile a key-getter delegate at startup.
-
-#### M-5: `IncrementalHash` allocation per ETag per entity
-
-`EntitySetProfile.cs:228` -- `UseETag` creates and disposes an `IncrementalHash.CreateHash(SHA256)` per entity. For a collection of 500 entities, that's 500 hash object allocations.
-
-**Suggested fix:** Consider using the static `SHA256.HashData()` method (available in .NET 8+) to avoid the incremental hash object allocation, or pre-allocate and reuse a buffer.
-
-#### L-4: `ODataQueryOptions` constructed per request
-
-`OhDataEndpointFactory.cs:609-610` -- `new ODataQueryContext(...)` and `new ODataQueryOptions<TModel>(...)` are constructed per request. The `ODataQueryContext` could be cached per entity set since it only depends on the EDM model and model type.
-
-#### L-5: `LongCount()` on GetAll `$count` path
-
-`OhDataEndpointFactory.cs:854` -- `items.LongCount()` enumerates the full `IEnumerable` just to count it. For `GetAll` handlers returning large datasets, this fully materializes the collection.
-
----
-
 ### Public API Design
 
 #### L-6: `BindFunction`/`BindAction` name comes from delegate method name
@@ -72,17 +48,9 @@ When users pass lambdas, the function name is the compiler-generated closure met
 
 #### M-8: No ETag/concurrency support on the client
 
-`KeyedEntitySetClient<T>` has no way to set `If-Match` or `If-None-Match` headers on GET responses. The server supports ETags for optimistic concurrency; the client can send `If-Match` on writes (PUT/PATCH/DELETE) but does not expose ETag values received from GET responses.
+`KeyedEntitySetClient<T>` exposes `GetWithETagAsync` to retrieve the ETag from GET responses, but there is no way to set `If-None-Match` headers. The server supports ETags for optimistic concurrency; the client can send `If-Match` on writes (PUT/PATCH/DELETE) via the `ifMatch` parameter, and `GetWithETagAsync` returns the ETag alongside the entity.
 
-**Suggested fix:** Expose ETag from `GetAsync` response headers so callers can supply it on subsequent writes.
-
-#### L-10: No `Prefer: return=minimal` option
-
-The client always expects response bodies on POST/PUT/PATCH. Users cannot opt into `return=minimal` for bandwidth savings.
-
-#### L-11: Missing `SingleOrDefaultAsync`
-
-Only `FirstOrDefaultAsync` is provided. For cases where uniqueness is expected, `SingleOrDefaultAsync` (which validates at most one result) would be useful.
+**Remaining gap:** `If-None-Match` support for conditional GETs.
 
 ---
 
@@ -107,14 +75,8 @@ Only `FirstOrDefaultAsync` is provided. For cases where uniqueness is expected, 
 | H | H-1 | Server/Spec | `$count` on `GetODataQueryable` returns post-page count |
 | M | M-1 | Server/Spec | `$expand` is N+1 |
 | M | M-2 | Server/Spec | `GET $ref` returns empty envelopes |
-| M | M-3 | Server/Perf | Reflection per item in `$expand` |
-| M | M-5 | Server/Perf | Hash allocation per ETag per entity |
-| M | M-8 | Client/API | No ETag value exposed from GET responses |
+| M | M-8 | Client/API | `If-None-Match` not supported |
 | M | M-9 | Client/Perf | `Expression.Compile()` per captured variable |
-| L | L-4 | Server/Perf | `ODataQueryContext` allocated per request |
-| L | L-5 | Server/Perf | `LongCount()` on GetAll `$count` |
 | L | L-6 | Server/API | `BindFunction` lambda naming |
 | L | L-8 | Server/API | Naive pluralization |
-| L | L-10 | Client/API | No `Prefer: return=minimal` |
-| L | L-11 | Client/API | No `SingleOrDefaultAsync` |
 | L | L-12 | Client/Perf | No streaming HTTP reads |
