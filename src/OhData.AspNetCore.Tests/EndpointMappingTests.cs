@@ -270,6 +270,37 @@ public class EndpointMappingTests
     }
 
     [Fact]
+    public async Task Patch_PartialBody_PreservesUnchangedFields()
+    {
+        // Patching only "name" must not reset "price" to its CLR default (0).
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<PatchItemProfile>());
+        var response = await fx.Client.PatchAsJsonAsync("/odata/PatchItems(1)", new { name = "Changed" });
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+        Assert.Equal("Changed", json.GetProperty("name").GetString());
+        Assert.Equal(9.99m, json.GetProperty("price").GetDecimal());
+    }
+
+    [Fact]
+    public async Task Patch_PartialBody_PersistedCorrectlyOnSubsequentGet()
+    {
+        // Verify the store reflects partial update -- unchanged field survives a GET after PATCH.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<PatchItemProfile>());
+        await fx.Client.PatchAsJsonAsync("/odata/PatchItems(2)", new { name = "Renamed" });
+        var json = await fx.Client.GetFromJsonAsync<System.Text.Json.JsonElement>("/odata/PatchItems(2)");
+        Assert.Equal("Renamed", json.GetProperty("name").GetString());
+        Assert.Equal(19.99m, json.GetProperty("price").GetDecimal());
+    }
+
+    [Fact]
+    public async Task Patch_WithoutGetById_ThrowsAtStartup()
+    {
+        // Startup validation: configuring Patch without GetById must throw.
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => TestHostBuilder.BuildAsync(o => o.AddProfile<PatchWithoutGetByIdProfile>()));
+    }
+
+    [Fact]
     public async Task Patch_RouteOmitted_WhenHandlerNotConfigured()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EmptyProfile>());
