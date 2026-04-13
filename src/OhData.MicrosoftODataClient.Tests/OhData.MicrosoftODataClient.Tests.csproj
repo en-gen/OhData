@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net9.0</TargetFramework>
     <IsPackable>false</IsPackable>
     <!-- Test projects do not require XML documentation comments -->
     <NoWarn>$(NoWarn);CS1591</NoWarn>
@@ -12,7 +12,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="8.*" />
+    <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="9.*" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.*" />
     <PackageReference Include="Microsoft.OData.Client" Version="8.*" />
     <PackageReference Include="Microsoft.OData.ModelBuilder" Version="2.*" />
