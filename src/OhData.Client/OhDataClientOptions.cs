@@ -34,4 +34,10 @@ public sealed class OhDataClientOptions
         PropertyNameCaseInsensitive = true,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
+
+    /// <summary>
+    /// Controls how 404 Not Found responses are handled for single-entity GET operations.
+    /// Default is <see cref="NotFoundBehavior.ReturnNull"/>.
+    /// </summary>
+    public NotFoundBehavior NotFoundBehavior { get; set; } = NotFoundBehavior.ReturnNull;
 }

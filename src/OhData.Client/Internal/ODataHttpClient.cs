@@ -80,7 +80,12 @@ internal sealed class ODataHttpClient
         where T : class
     {
         using var response = await _http.GetAsync(url, ct);
-        if (response.StatusCode == HttpStatusCode.NotFound) return null;
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            if (_options.NotFoundBehavior == NotFoundBehavior.Throw)
+                throw await ODataClientException.FromResponseAsync(response, url, ct);
+            return null;
+        }
         await EnsureSuccessAsync(response, url, ct);
         if (response.StatusCode == System.Net.HttpStatusCode.NoContent) return null;
         return await response.Content.ReadFromJsonAsync<T>(_options.JsonOptions, ct);
@@ -187,7 +192,12 @@ internal sealed class ODataHttpClient
         where T : class
     {
         using var response = await _http.GetAsync(url, ct);
-        if (response.StatusCode == HttpStatusCode.NotFound) return (null, null);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            if (_options.NotFoundBehavior == NotFoundBehavior.Throw)
+                throw await ODataClientException.FromResponseAsync(response, url, ct);
+            return (null, null);
+        }
         await EnsureSuccessAsync(response, url, ct);
         if (response.StatusCode == HttpStatusCode.NoContent) return (null, null);
         T? entity = await response.Content.ReadFromJsonAsync<T>(_options.JsonOptions, ct);
