@@ -99,6 +99,12 @@ var page = await client.For<Product>()
     .Skip(0)
     .ToPageAsync();     // returns ODataPage<Product> with Items, TotalCount, NextLink
 
+// Traverse all pages automatically via IAsyncEnumerable - follows @odata.nextLink
+await foreach (Product p in client.For<Product>().Filter(x => x.IsActive).ToAsyncEnumerable())
+{
+    Console.WriteLine(p.Name);
+}
+
 // Get a single entity - returns null on 404
 Product? p = await client.For<Product>().Key(42).GetAsync();
 
