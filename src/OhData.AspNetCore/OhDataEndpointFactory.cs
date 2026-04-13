@@ -22,7 +22,6 @@ using Microsoft.Extensions.Options;
 using Microsoft.OData.Edm;
 using Microsoft.OData.Edm.Csdl;
 using Microsoft.OData.UriParser;
-using Microsoft.OpenApi.Models;
 using OhData.Abstractions;
 using OhData.Abstractions.AspNetCore.OData;
 
@@ -286,38 +285,6 @@ internal static class OhDataEndpointFactory
                 }).Produces(200).Produces(204).Produces(400);
             }
         }
-    }
-
-    private static OpenApiParameter ODataParam(string name, string description, bool required)
-        => new()
-        {
-            Name = name,
-            In = ParameterLocation.Query,
-            Required = required,
-            Schema = new OpenApiSchema { Type = "string" },
-            Description = description,
-        };
-
-    private static void AddCollectionQueryParams(OpenApiOperation op, IEntitySetEndpointSource source)
-    {
-        op.Parameters.Add(ODataParam("$top",
-            "Maximum number of items to return" +
-            (source.MaxTop.HasValue ? $" (server cap: {source.MaxTop})" : ""),
-            required: false));
-        op.Parameters.Add(ODataParam("$skip", "Number of items to skip (offset paging)", required: false));
-
-        if (source.FilterEnabled)
-            op.Parameters.Add(ODataParam("$filter", "OData filter expression (e.g. Price gt 10 and contains(Name,'W'))", required: false));
-        if (source.OrderByEnabled)
-            op.Parameters.Add(ODataParam("$orderby", "OData sort expression (e.g. Name asc,Price desc)", required: false));
-        if (source.SelectEnabled)
-            op.Parameters.Add(ODataParam("$select", "Comma-separated list of properties to include in the response", required: false));
-        if (source.ExpandEnabled)
-            op.Parameters.Add(ODataParam("$expand", "Comma-separated list of navigation properties to expand inline", required: false));
-        if (source.CountEnabled)
-            op.Parameters.Add(ODataParam("$count", "Include total count in response envelope ($count=true)", required: false));
-        if (source.HasSearch)
-            op.Parameters.Add(ODataParam("$search", "Free-text search term", required: false));
     }
 
     private static IResult ODataError(
@@ -655,7 +622,14 @@ internal static class OhDataEndpointFactory
                     return ODataError(400, "InvalidQueryOption", ex.Message);
                 }
             }).WithTags(name).Produces(200).Produces(400)
-              .WithOpenApi(op => { AddCollectionQueryParams(op, source); return op; });
+              .WithMetadata(new OhDataQueryOptionsMetadata(
+                  FilterEnabled: source.FilterEnabled,
+                  OrderByEnabled: source.OrderByEnabled,
+                  SelectEnabled: source.SelectEnabled,
+                  ExpandEnabled: source.ExpandEnabled,
+                  CountEnabled: source.CountEnabled,
+                  SearchEnabled: source.HasSearch,
+                  MaxTop: source.MaxTop));
         }
         // Priority 2: base GetQueryable (IQueryable without ODataQueryOptions)
         else if (source.HasGetQueryable)
@@ -775,7 +749,14 @@ internal static class OhDataEndpointFactory
                     return ODataError(400, "InvalidQueryOption", ex.Message);
                 }
             }).WithTags(name).Produces(200).Produces(400)
-              .WithOpenApi(op => { AddCollectionQueryParams(op, source); return op; });
+              .WithMetadata(new OhDataQueryOptionsMetadata(
+                  FilterEnabled: source.FilterEnabled,
+                  OrderByEnabled: source.OrderByEnabled,
+                  SelectEnabled: source.SelectEnabled,
+                  ExpandEnabled: source.ExpandEnabled,
+                  CountEnabled: source.CountEnabled,
+                  SearchEnabled: source.HasSearch,
+                  MaxTop: source.MaxTop));
         }
         else if (source.HasGetAll)
         {
@@ -838,13 +819,14 @@ internal static class OhDataEndpointFactory
                     return ODataError(400, "InvalidQueryOption", ex.Message);
                 }
             }).WithTags(name).Produces(200).Produces(400)
-              .WithOpenApi(op =>
-              {
-                  // GetAll does not support OData query options; only $search is available if configured.
-                  if (source.HasSearch)
-                      op.Parameters.Add(ODataParam("$search", "Free-text search term", required: false));
-                  return op;
-              });
+              .WithMetadata(new OhDataQueryOptionsMetadata(
+                  FilterEnabled: false,
+                  OrderByEnabled: false,
+                  SelectEnabled: false,
+                  ExpandEnabled: false,
+                  CountEnabled: false,
+                  SearchEnabled: source.HasSearch,
+                  MaxTop: null));
         }
 
         bool hasCountSource = (source is IODataEntitySetEndpointSource odsCheck && odsCheck.HasGetODataQueryable)
@@ -892,12 +874,14 @@ internal static class OhDataEndpointFactory
                     return ODataError(400, "InvalidQueryOption", ex.Message);
                 }
             }).WithTags(name).Produces<long>(200).Produces(400)
-              .WithOpenApi(op =>
-              {
-                  if (source.FilterEnabled)
-                      op.Parameters.Add(ODataParam("$filter", "OData filter expression (e.g. Price gt 10 and contains(Name,'W'))", required: false));
-                  return op;
-              });
+              .WithMetadata(new OhDataQueryOptionsMetadata(
+                  FilterEnabled: source.FilterEnabled,
+                  OrderByEnabled: false,
+                  SelectEnabled: false,
+                  ExpandEnabled: false,
+                  CountEnabled: true,
+                  SearchEnabled: false,
+                  MaxTop: null));
         }
 
         if (source.HasGetById)
@@ -937,14 +921,14 @@ internal static class OhDataEndpointFactory
                 }
             });
             rb.WithTags(name).Produces<TModel>(200).Produces(404)
-              .WithOpenApi(op =>
-              {
-                  if (source.SelectEnabled)
-                      op.Parameters.Add(ODataParam("$select", "Comma-separated list of properties to include in the response", required: false));
-                  if (source.ExpandEnabled)
-                      op.Parameters.Add(ODataParam("$expand", "Comma-separated list of navigation properties to expand inline", required: false));
-                  return op;
-              });
+              .WithMetadata(new OhDataQueryOptionsMetadata(
+                  FilterEnabled: false,
+                  OrderByEnabled: false,
+                  SelectEnabled: source.SelectEnabled,
+                  ExpandEnabled: source.ExpandEnabled,
+                  CountEnabled: false,
+                  SearchEnabled: false,
+                  MaxTop: null));
         }
 
         if (source.HasPost)
