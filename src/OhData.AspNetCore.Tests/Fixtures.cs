@@ -45,7 +45,7 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
             return Task.FromResult<Widget?>(widget);
         };
 
-        PutById = (id, widget, ct) =>
+        Put = (id, widget, ct) =>
         {
             _store.RemoveAll(w => w.Id == id);
             widget.Id = id;
@@ -181,7 +181,7 @@ internal class ETagWidgetProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "ETagWidgets";
         GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
-        PutById = (id, widget, ct) =>
+        Put = (id, widget, ct) =>
         {
             _store.RemoveAll(w => w.Id == id);
             widget.Id = id;
@@ -242,7 +242,7 @@ internal class NullPutProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "NullPutWidgets";
         GetById = (id, ct) => Task.FromResult<Widget?>(null);
-        PutById = (id, widget, ct) => Task.FromResult<Widget>(null!); // always "not found"
+        Put = (id, widget, ct) => Task.FromResult<Widget>(null!); // always "not found"
     }
 }
 
@@ -473,7 +473,7 @@ internal class ETagBodyProfile : EntitySetProfile<int, Widget>
             _store.Add(widget);
             return Task.FromResult<Widget?>(widget);
         };
-        PutById = (id, widget, ct) =>
+        Put = (id, widget, ct) =>
         {
             _store.RemoveAll(w => w.Id == id);
             widget.Id = id;
@@ -508,7 +508,7 @@ internal class UpsertProfile : EntitySetProfile<int, Widget>
             _store.Add(widget);
             return Task.FromResult<Widget?>(widget);
         };
-        PutById = (id, widget, ct) =>
+        Put = (id, widget, ct) =>
         {
             var existing = _store.FirstOrDefault(w => w.Id == id);
             if (existing is null) return Task.FromResult<Widget>(null!); // signal "not found" → upsert
@@ -799,7 +799,7 @@ internal class ETagIfMatchProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "IfMatchWidgets";
         GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
-        PutById = (id, widget, ct) =>
+        Put = (id, widget, ct) =>
         {
             _store.RemoveAll(w => w.Id == id);
             widget.Id = id;

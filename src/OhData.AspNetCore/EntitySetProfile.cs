@@ -110,7 +110,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Leaving this <c>null</c> (the default) means no <c>PUT /{EntitySet}({key})</c> route is registered.
     /// Set <see cref="AllowUpsert"/> to enable upsert semantics (§11.4.4) when the key does not exist.
     /// </remarks>
-    protected Func<TKey, TModel, CancellationToken, Task<TModel>>? PutById = null;
+    protected Func<TKey, TModel, CancellationToken, Task<TModel>>? Put = null;
 
     /// <summary>
     /// Registers the <c>POST /{EntitySet}</c> handler (OData §11.4.1 — Create an Entity).
@@ -986,7 +986,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     bool IEntitySetEndpointSource.HasGetQueryable => GetQueryable is not null;
     bool IEntitySetEndpointSource.HasGetById => GetById is not null;
     bool IEntitySetEndpointSource.HasPost => Post is not null;
-    bool IEntitySetEndpointSource.HasPutById => PutById is not null;
+    bool IEntitySetEndpointSource.HasPut => Put is not null;
     bool IEntitySetEndpointSource.HasPatch => Patch is not null;
     bool IEntitySetEndpointSource.HasDelete => Delete is not null;
     bool IEntitySetEndpointSource.HasETag => _getETag is not null;
@@ -1036,8 +1036,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     async Task<object?> IEntitySetEndpointSource.InvokePostAsync(object model, CancellationToken ct) =>
         (object?)await Post!.Invoke((TModel)model, ct);
 
-    async Task<object?> IEntitySetEndpointSource.InvokePutByIdAsync(object key, object model, CancellationToken ct) =>
-        (object?)await PutById!.Invoke((TKey)key, (TModel)model, ct);
+    async Task<object?> IEntitySetEndpointSource.InvokePutAsync(object key, object model, CancellationToken ct) =>
+        (object?)await Put!.Invoke((TKey)key, (TModel)model, ct);
 
     async Task<object?> IEntitySetEndpointSource.InvokePatchAsync(object key, Delta delta, CancellationToken ct) =>
         (object?)await Patch!.Invoke((TKey)key, (Delta<TModel>)delta, ct);
