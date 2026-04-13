@@ -2349,6 +2349,85 @@ public class EndpointMappingTests
         }
     }
 
+    // ── H-1: ODataQueryResult TotalCount drives @odata.count (gap verification) ─
+
+    [Fact]
+    public async Task ODataQueryResult_TotalCount_NotPageSize_InCountEnvelope()
+    {
+        // ODataTotalCountProfile returns 2 items but sets TotalCount = 10.
+        // $count=true must return 10 (from TotalCount), not 2 (page size).
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataTotalCountProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/TotalCountWidgets?$count=true");
+        Assert.True(json.TryGetProperty("@odata.count", out var countEl),
+            "Expected @odata.count in the response envelope");
+        Assert.Equal(10L, countEl.GetInt64());
+        // The value array itself still has 2 items (profile returns 2).
+        Assert.Equal(2, json.GetProperty("value").GetArrayLength());
+    }
+
+    // ── M-4: Unified pipeline — expand + ETag + select all work together ────────
+
+    [Fact]
+    public async Task UnifiedPipeline_Expand_ETag_Select_ItemsHaveETag()
+    {
+        // ETagExpandSelectProfile has GetQueryable + UseETag + ExpandEnabled + SelectEnabled.
+        // Without $select, every item in the collection should carry @odata.etag.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagExpandSelectProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ETagExpandSelectParents?$expand=Children");
+        var value = json.GetProperty("value");
+        Assert.True(value.GetArrayLength() > 0);
+        foreach (JsonElement item in value.EnumerateArray())
+        {
+            Assert.True(item.TryGetProperty("@odata.etag", out _),
+                "@odata.etag should be present on each item when GetETag is configured");
+            // The expanded navigation should be present.
+            Assert.True(item.TryGetProperty("children", out _),
+                "Expanded 'children' navigation property must be present");
+        }
+    }
+
+    [Fact]
+    public async Task UnifiedPipeline_SelectFiltersProperties_ETagSurvives()
+    {
+        // Requesting $select=Id should strip Name but must NOT strip @odata.etag.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagExpandSelectProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ETagExpandSelectParents?$select=Id");
+        var value = json.GetProperty("value");
+        Assert.True(value.GetArrayLength() > 0);
+        var first = value[0];
+        Assert.True(first.TryGetProperty("id", out _), "id must be present (selected)");
+        Assert.False(first.TryGetProperty("name", out _), "name must be absent (not selected)");
+        Assert.True(first.TryGetProperty("@odata.etag", out _),
+            "@odata.etag must survive $select");
+    }
+
+    [Fact]
+    public async Task UnifiedPipeline_ExpandAndSelect_Together()
+    {
+        // $expand=Children&$select=Id,Name,Children — all three features active at once.
+        // Note: when $select is in use, expanded navigation properties must be explicitly
+        // listed in $select to be included (JsonNode post-processing honours the select list).
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagExpandSelectProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>(
+            "/odata/ETagExpandSelectParents?$expand=Children&$select=Id,Name,Children");
+        var value = json.GetProperty("value");
+        Assert.True(value.GetArrayLength() > 0);
+        var first = value[0];
+        // Selected properties present.
+        Assert.True(first.TryGetProperty("id", out _), "id must be selected");
+        Assert.True(first.TryGetProperty("name", out _), "name must be selected");
+        // Expanded navigation present (listed in $select so it survives post-processing).
+        Assert.True(first.TryGetProperty("children", out _), "children must be expanded");
+        // ETag must survive the combined pipeline.
+        Assert.True(first.TryGetProperty("@odata.etag", out _),
+            "@odata.etag must survive expand + select");
+    }
+
+    // ── M-8: ETag header on GetById (server-side coverage note) ─────────────────
+    // M-8 server-side is already covered by GetById_WithETag_ReturnsETagHeader (line 541).
+    // The client-side API exposes this via KeyedEntitySetClient.GetWithETagAsync, which is
+    // tested in ETagClientIntegrationTests.GetWithETagAsync_ReturnsETagHeader.
+
 }
 
 // ── Auth test helpers (not registered as profiles — instantiated directly) ───

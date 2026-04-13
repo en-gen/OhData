@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Threading.Tasks;
 using Xunit;
@@ -174,6 +175,32 @@ public class NextLinkIntegrationTests : IAsyncDisposable
 
         Assert.Equal(5, items.Count);
         Assert.All(items, w => Assert.True(w.Id <= 5));
+    }
+
+    [Fact]
+    public async Task ToAsyncEnumerable_NoNextLink_ReturnsSinglePage()
+    {
+        // When the server returns fewer items than MaxTop, there is no nextLink.
+        // Requesting with $skip=8 leaves 2 items — no further pages.
+        var items = new List<Widget>();
+        await foreach (Widget w in Client.For<Widget>("PaginatedWidgets").Skip(8).ToAsyncEnumerable())
+        {
+            items.Add(w);
+        }
+        Assert.Equal(2, items.Count);
+    }
+
+    [Fact]
+    public async Task ToAsyncEnumerable_AllIdsPresent_NoDuplicates()
+    {
+        // Each item should appear exactly once across all pages.
+        var ids = new List<int>();
+        await foreach (Widget w in Client.For<Widget>("PaginatedWidgets").ToAsyncEnumerable())
+        {
+            ids.Add(w.Id);
+        }
+        Assert.Equal(10, ids.Distinct().Count());
+        Assert.Equal(Enumerable.Range(1, 10), ids.OrderBy(x => x));
     }
 
     [Fact]
