@@ -35,15 +35,24 @@ GetODataQueryable = async (opts, ct) =>
     {
         Items = items.AsQueryable(),
         TotalCount = totalCount,   // pre-paging count; used for $count=true
+        NextLink = ...,            // optional; emitted as @odata.nextLink
     };
 };
 ```
 
-The framework does not prescribe how `items` or `totalCount` are obtained. That is entirely up to the profile. Some data sources support retrieving both in a single operation (window functions, `COUNT(*) OVER()`); others require two separate requests. Either approach satisfies the contract - the framework only requires that `TotalCount` reflect the number of matching records **before** paging was applied.
+`ODataQueryResult<TModel>` properties:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `Items` | `IQueryable<TModel>` | The (paged) item sequence to materialise. |
+| `TotalCount` | `long?` | Pre-paging total count. Used as `@odata.count` in the response when `$count=true` is requested. Leave `null` to fall back to the length of `Items`. |
+| `NextLink` | `string?` | When set, emitted as `@odata.nextLink` in the response envelope, taking priority over any framework-computed next link. Use this for cursor- or token-based pagination. |
+
+The framework does not prescribe how `items` or `totalCount` are obtained. That is entirely up to the profile. Some data sources support retrieving both in a single operation (window functions, `COUNT(*) OVER()`); others require two separate requests. Either approach satisfies the contract — the framework only requires that `TotalCount` reflect the number of matching records **before** paging was applied.
 
 If `TotalCount` is not set and the client sends `$count=true`, the count in the response will reflect only the current page size, which is incorrect per the OData spec. Prefer always supplying `TotalCount` when using this handler.
 
-> **Note:** `GetODataQueryable` is available on `ODataEntitySetProfile<TKey, TModel>`, not the base `EntitySetProfile<TKey, TModel>`. It requires the `EnGen.OhData.AspNetCore` package.
+> **Note:** `GetODataQueryable` is available on `ODataEntitySetProfile<TKey, TModel>`, not the base `EntitySetProfile<TKey, TModel>`. It requires the `OhData.AspNetCore` package. An `IQueryable<TModel>` is implicitly convertible to `ODataQueryResult<TModel>` for backward compatibility with handlers that return a bare queryable.
 
 ### `GetQueryable` - IQueryable with pushdown (recommended for databases)
 
