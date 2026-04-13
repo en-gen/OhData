@@ -41,4 +41,17 @@ internal sealed record NavigationRouteDefinition
     /// the endpoint is not registered.
     /// </summary>
     public Func<object, object, CancellationToken, Task>? RemoveRef { get; init; }
+
+    /// <summary>
+    /// Property name on the child entity to use as its key in <c>$ref</c> URLs.
+    /// When non-null and <see cref="ChildEntitySetName"/> is also set, the GET <c>$ref</c>
+    /// handler returns populated <c>@odata.id</c> references instead of an empty array.
+    /// </summary>
+    public string? ChildKeyPropertyName { get; init; }
+
+    /// <summary>
+    /// The entity-set name to use in <c>$ref</c> <c>@odata.id</c> URLs (e.g. <c>"Orders"</c>).
+    /// Requires <see cref="ChildKeyPropertyName"/> to be set.
+    /// </summary>
+    public string? ChildEntitySetName { get; init; }
 }
