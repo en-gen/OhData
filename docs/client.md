@@ -158,9 +158,16 @@ For unsupported patterns, pass a raw OData string:
 
 .OrderByDescending(x => x.Price)
 // → $orderby=Price desc
+```
 
+Chain secondary sorts with `ThenBy` / `ThenByDescending`:
+
+```csharp
 .OrderBy(x => x.Category).ThenByDescending(x => x.Price)
 // → $orderby=Category,Price desc
+
+.OrderByDescending(x => x.UpdatedAt).ThenBy(x => x.Name)
+// → $orderby=UpdatedAt desc,Name
 ```
 
 ### `$top` and `$skip`
@@ -171,6 +178,22 @@ For unsupported patterns, pass a raw OData string:
 ```
 
 Both validate `>= 0` and throw `ArgumentOutOfRangeException` otherwise.
+
+### `IncludeCount`
+
+Appends `$count=true` to the request so the server includes the total matching count in the response envelope. The count is available on `ODataPage<T>.TotalCount` when you call `ToPageAsync`:
+
+```csharp
+ODataPage<Product> page = await client.For<Product>()
+    .Filter(x => x.IsActive)
+    .IncludeCount()
+    .Top(20)
+    .ToPageAsync();
+
+Console.WriteLine($"{page.TotalCount} active products");
+```
+
+Note: `ToPageAsync` always forces `$count=true` regardless of whether `IncludeCount` was called. `IncludeCount` is useful when composing query state before calling `ToPageAsync` from a helper.
 
 ---
 
@@ -202,8 +225,11 @@ foreach (var p in page.Items) { ... }
 ```
 
 `ODataPage<T>` has:
-- `Items` - the entities on this page
-- `TotalCount` - total matching entities (pre-pagination), `null` if the server didn't return `@odata.count`
+- `Items` — the entities on this page
+- `TotalCount` — total matching entities (pre-pagination), `null` if the server didn't return `@odata.count`
+- `NextLink` — the URL to follow for the next page of results (server-driven pagination), `null` when there are no more pages
+
+**Server-driven pagination.** When the server enforces a page size via `MaxTop`, it includes `@odata.nextLink` in the response. Inspect `NextLink` to determine whether more pages exist. To follow the link, issue a new request using the URL from `NextLink` directly (it is a fully-qualified absolute URL).
 
 ### `FirstOrDefaultAsync`
 
@@ -235,6 +261,46 @@ bool hasStock = await client.For<Product>()
     .AnyAsync();
 ```
 
+### `FirstAsync`
+
+Returns the first match. Applies `$top=1` automatically. Throws `InvalidOperationException` when the collection is empty (use `FirstOrDefaultAsync` if no results is a valid outcome):
+
+```csharp
+Product cheapest = await client.For<Product>()
+    .OrderBy(x => x.Price)
+    .FirstAsync();
+```
+
+### `SingleOrDefaultAsync`
+
+Returns the single matching entity, or `null` when none match. Applies `$top=2` and throws `InvalidOperationException` when more than one entity matches:
+
+```csharp
+Product? active = await client.For<Product>()
+    .Filter(x => x.Sku == "ABC-1")
+    .SingleOrDefaultAsync();
+```
+
+### `SingleAsync`
+
+Returns the single matching entity. Throws `InvalidOperationException` when zero or more than one entity matches:
+
+```csharp
+Product product = await client.For<Product>()
+    .Filter(x => x.Sku == "ABC-1")
+    .SingleAsync();
+```
+
+### `ToArrayAsync`
+
+Returns all matching items as a `T[]`:
+
+```csharp
+Product[] items = await client.For<Product>()
+    .Filter(x => x.IsActive)
+    .ToArrayAsync();
+```
+
 ---
 
 ## Single-entity operations
@@ -250,11 +316,29 @@ Key values are formatted as OData literals automatically:
 - `string` → `Products('value')`, single quotes escaped
 - `Guid` → `Products(3f2504e0-...)`
 
+A generic overload provides compile-time type safety for the key value:
+
+```csharp
+var keyed = client.For<Product>().Key<int>(42);
+```
+
 ### Get
 
 ```csharp
 // Returns null on 404
 Product? product = await client.For<Product>().Key(42).GetAsync();
+```
+
+### Get with ETag
+
+Retrieves the entity and the server's current ETag in one call. Pass the ETag to `PutAsync` or `PatchAsync` for optimistic concurrency:
+
+```csharp
+var (product, etag) = await client.For<Product>().Key(42).GetWithETagAsync();
+
+// Later — fail with 412 if another client modified the entity in between
+Product? updated = await client.For<Product>().Key(42)
+    .PutAsync(product! with { Price = 5.49m }, ifMatch: etag);
 ```
 
 ### Insert (POST)
@@ -265,12 +349,32 @@ Product created = await client.For<Product>()
     .InsertAsync(new Product { Name = "Cog", Price = 4.99m });
 ```
 
+Pass `preferMinimal: true` to send `Prefer: return=minimal` and receive `204 No Content` instead of the full entity body:
+
+```csharp
+// Returns null when the server honours Prefer: return=minimal
+Product? result = await client.For<Product>()
+    .InsertAsync(new Product { Name = "Cog", Price = 4.99m }, preferMinimal: true);
+```
+
 ### Replace (PUT)
 
 ```csharp
 // Returns the updated entity, or null if the server responds 204 No Content
 Product? updated = await client.For<Product>().Key(42)
     .PutAsync(product with { Price = 5.49m });
+```
+
+Optional parameters:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `ifMatch` | `string?` | If-Match ETag value. Returns `412 Precondition Failed` if the server's current ETag does not match. |
+| `preferMinimal` | `bool` | Send `Prefer: return=minimal`; server may respond with `204 No Content` (method returns `null`). |
+
+```csharp
+Product? updated = await client.For<Product>().Key(42)
+    .PutAsync(product with { Price = 5.49m }, ifMatch: etag, preferMinimal: false);
 ```
 
 ### Partial update (PATCH)
@@ -282,11 +386,24 @@ Product? patched = await client.For<Product>().Key(42)
     .PatchAsync(new { Name = "Cog v2", Price = 5.99m });
 ```
 
+The same optional `ifMatch` and `preferMinimal` parameters as `PutAsync` are available:
+
+```csharp
+Product? patched = await client.For<Product>().Key(42)
+    .PatchAsync(new { Price = 5.99m }, ifMatch: etag);
+```
+
 ### Delete
 
 ```csharp
 // Throws ODataClientException on 404
 await client.For<Product>().Key(42).DeleteAsync();
+```
+
+Pass an ETag to enforce optimistic concurrency — returns `412 Precondition Failed` if the entity has been modified:
+
+```csharp
+await client.For<Product>().Key(42).DeleteAsync(ifMatch: etag);
 ```
 
 ---
@@ -300,20 +417,20 @@ try
 {
     await client.For<Product>().Key(99999).GetAsync();
 }
-catch (ODataClientException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+catch (ODataClientException ex) when (ex.StatusCode == 404)
 {
     Console.WriteLine(ex.ODataErrorMessage);  // "Widget with key '99999' was not found."
 }
 catch (ODataClientException ex)
 {
-    Console.WriteLine($"HTTP {(int)ex.StatusCode}: [{ex.ODataErrorCode}] {ex.ODataErrorMessage}");
+    Console.WriteLine($"HTTP {ex.StatusCode}: [{ex.ODataErrorCode}] {ex.ODataErrorMessage}");
 }
 ```
 
 `ODataClientException` properties:
-- `StatusCode` - the `HttpStatusCode`
-- `ODataErrorCode` - the `"code"` field from the OData error body, or `null`
-- `ODataErrorMessage` - the `"message"` field, or the raw response body if not a valid OData error
+- `StatusCode` — the HTTP status code as an `int` (e.g. `404`, `412`)
+- `ODataErrorCode` — the `"code"` field from the OData error body, or an empty string if the response was not an OData error envelope
+- `ODataErrorMessage` — the `"message"` field, or the raw response body if not a valid OData error
 
 ---
 
@@ -335,9 +452,13 @@ The filter translator and key formatter handle these CLR types:
 
 ---
 
-## Custom JSON options
+## Client options
 
-`OhDataClientOptions.JsonOptions` is applied to both request serialization and response deserialization. Defaults: camelCase naming, case-insensitive reads, null values omitted on write.
+`OhDataClientOptions` is passed to the `OhDataClient` constructor to customise behaviour.
+
+### `JsonOptions`
+
+Applied to both request serialization and response deserialization. Defaults: camelCase naming, case-insensitive reads, null values omitted on write.
 
 ```csharp
 var client = new OhDataClient(httpClient, new OhDataClientOptions
@@ -346,5 +467,21 @@ var client = new OhDataClient(httpClient, new OhDataClientOptions
     {
         Converters = { new JsonStringEnumConverter() }
     }
+});
+```
+
+### `NotFoundBehavior`
+
+Controls how `404 Not Found` responses are handled for single-entity GET operations (`GetAsync`, `GetWithETagAsync`). Default is `NotFoundBehavior.ReturnNull`.
+
+| Value | Behaviour |
+|-------|-----------|
+| `ReturnNull` (default) | Returns `null` when the entity is not found |
+| `Throw` | Throws `ODataClientException` with status `404` |
+
+```csharp
+var client = new OhDataClient(httpClient, new OhDataClientOptions
+{
+    NotFoundBehavior = NotFoundBehavior.Throw
 });
 ```

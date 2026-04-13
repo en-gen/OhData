@@ -73,6 +73,46 @@ On `GET /{EntitySet}({key})`, if the request includes an `If-None-Match` header:
 
 This lets clients avoid re-downloading unchanged data.
 
+## Client-side ETag support
+
+`OhData.Client` exposes ETag-aware methods on `KeyedEntitySetClient<T>`.
+
+### Fetch entity with ETag
+
+```csharp
+var (product, etag) = await client.For<Product>().Key(42).GetWithETagAsync();
+```
+
+Returns a `(T? Entity, string? ETag)` tuple. `ETag` is the raw header value (double-quoted, e.g. `"dGVzdA=="`), or `null` if the server did not send an `ETag` header.
+
+### Conditional write operations
+
+Pass the ETag as `ifMatch` to `PutAsync`, `PatchAsync`, or `DeleteAsync`. The server returns `412 Precondition Failed` if the entity has been modified since the ETag was fetched:
+
+```csharp
+// Fetch with ETag
+var (product, etag) = await client.For<Product>().Key(42).GetWithETagAsync();
+
+// Replace — fails with 412 if another client modified the entity
+Product? updated = await client.For<Product>().Key(42)
+    .PutAsync(product! with { Price = 9.99m }, ifMatch: etag);
+
+// Partial update
+Product? patched = await client.For<Product>().Key(42)
+    .PatchAsync(new { Price = 9.99m }, ifMatch: etag);
+
+// Delete
+await client.For<Product>().Key(42).DeleteAsync(ifMatch: etag);
+```
+
+Pass `"*"` as `ifMatch` to skip the ETag check (match any current entity):
+
+```csharp
+await client.For<Product>().Key(42).DeleteAsync(ifMatch: "\"*\"");
+```
+
+---
+
 ## Concurrency note
 
 The ETag check is a best-effort conflict signal, not an atomic operation. The framework fetches the entity in one database call, then the caller performs the write in a separate operation - another request may modify the entity between those two steps. For true atomic optimistic concurrency, use a database-level mechanism (e.g. SQL `WHERE RowVersion = @expected`) inside the handler itself and return `null` / throw on conflict.
