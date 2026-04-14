@@ -1,7 +1,6 @@
 using System;
 using System.Linq.Expressions;
 using BenchmarkDotNet.Attributes;
-using BenchmarkDotNet.Jobs;
 using OhData.Client.Internal;
 
 namespace OhData.Client.Benchmarks;
@@ -10,7 +9,6 @@ namespace OhData.Client.Benchmarks;
 /// Benchmarks for <see cref="FilterTranslator.Translate{T}"/>.
 /// Measures the cost of translating LINQ expression trees to OData $filter strings.
 /// </summary>
-[SimpleJob(RuntimeMoniker.Net80)]
 [MemoryDiagnoser]
 public class FilterTranslatorBenchmarks
 {
