@@ -36,8 +36,9 @@ EntitySetProfile<TKey, TModel>
 
 AddOhData(builder => builder.AddProfile<MyProfile>())
     └─► OhDataBuilder collects profile types + prefix
+    └─► Profiles registered as AddScoped (not singleton) to support DbContext injection
     └─► OhDataRegistration (keyed singleton) built lazily:
-          resolves each profile, visits the EDM, collects IEntitySetEndpointSource instances
+          temporary scope resolves each profile → visits EDM, collects IEntitySetEndpointSource
     └─► Stored in DI as AddKeyedSingleton<OhDataRegistration>(name)
 
 app.MapOhData()  →  returns RouteGroupBuilder
@@ -81,6 +82,8 @@ app.MapOhData()  →  returns RouteGroupBuilder
 **Bound functions and actions.** `BindFunction(delegate)` / `BindAction(delegate)` in the profile constructor registers HTTP routes at startup and registers the operation in the EDM. Functions: `GET /{EntitySet}/{Name}?param=value`. Actions: `POST /{EntitySet}/{Name}` with JSON body `{ "paramName": value }`. `CancellationToken` parameters are detected and passed automatically.
 
 **Type erasure via `IEntitySetEndpointSource`.** Profiles are generic (`EntitySetProfile<TKey, TModel>`) but the factory iterates them as `IEntitySetEndpointSource` (non-generic, internal). The factory re-introduces the generic types via `MakeGenericMethod(KeyType, ModelType)` once per entity set at startup - not per-request.
+
+**Profiles are scoped; two sources per handler.** Each route handler closure captures two `IEntitySetEndpointSource` references: the startup `source` for structural queries (`HasGetById`, `MaxTop`, auth config, nav route metadata) and a per-request `s = ResolveHandlers(ctx)` resolved from `ctx.RequestServices` for all `Invoke*()` calls. This allows profiles to safely inject scoped dependencies (e.g. `DbContext`) in their constructor. Compiled delegates that don't capture scoped state (ETag, key-to-string) are cached in `static ConcurrentDictionary<Type, ...>` so `Expression.Compile()` runs at most once per type.
 
 **`MapGroup` slash insertion - critical routing rule.** `MapGroup` inserts a `/` between the group prefix and any route template that doesn't start with `/`. This breaks OData key syntax (`Widgets({key})` vs `Widgets/({key})`). All entity-set routes are therefore mapped on the top-level `/prefix` group with the entity set name embedded in the template (e.g. `"/Widgets({key})"`) rather than on a per-entity sub-group. If you add new routes, follow this pattern.
 
