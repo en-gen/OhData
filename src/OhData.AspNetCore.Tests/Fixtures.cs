@@ -193,22 +193,27 @@ internal class ETagWidgetProfile : EntitySetProfile<int, Widget>
     }
 }
 
-internal class BoundOpsProfile : EntitySetProfile<int, Widget>
+internal class BoundOpsStore
 {
-    // Non-static: each DI container gets its own instance to isolate tests.
-    private readonly List<Widget> _store = new()
+    public List<Widget> Items { get; } = new()
     {
         new() { Id = 1, Name = "Alpha" },
         new() { Id = 2, Name = "Beta" },
     };
+}
 
-    public BoundOpsProfile() : base(x => x.Id)
+internal class BoundOpsProfile : EntitySetProfile<int, Widget>
+{
+    private readonly BoundOpsStore _store;
+
+    public BoundOpsProfile(BoundOpsStore store) : base(x => x.Id)
     {
+        _store = store;
         EntitySetName = "BoundWidgets";
         SelectEnabled = true;
         FilterEnabled = true;
 
-        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store);
+        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store.Items);
 
         BindFunction(GetByName);
         BindFunction(DoubleCount);
@@ -218,20 +223,20 @@ internal class BoundOpsProfile : EntitySetProfile<int, Widget>
 
     // Function: GET /BoundWidgets/GetByName?name=Alpha
     private Task<IEnumerable<Widget>> GetByName(string name) =>
-        Task.FromResult<IEnumerable<Widget>>(_store.Where(w =>
+        Task.FromResult<IEnumerable<Widget>>(_store.Items.Where(w =>
             string.Equals(w.Name, name, StringComparison.OrdinalIgnoreCase)));
 
     // Function: GET /BoundWidgets/DoubleCount?factor=2
     private Task<int> DoubleCount(int factor) =>
-        Task.FromResult(_store.Count * factor);
+        Task.FromResult(_store.Items.Count * factor);
 
     // Action: POST /BoundWidgets/ClearAll  (no body params)
-    private void ClearAll() => _store.Clear();
+    private void ClearAll() => _store.Items.Clear();
 
     // Action: POST /BoundWidgets/AddSuffix  { "suffix": "!" }
     private void AddSuffix(string suffix)
     {
-        foreach (var w in _store) w.Name += suffix;
+        foreach (var w in _store.Items) w.Name += suffix;
     }
 }
 
@@ -402,19 +407,25 @@ internal class NonIdempotentDeleteProfile : EntitySetProfile<int, Widget>
 }
 
 /// <summary>Profile for testing entity-level bound functions and actions (Gap 7).</summary>
-internal class EntityBoundOpsProfile : EntitySetProfile<int, Widget>
+internal class EntityBoundOpsStore
 {
-    private readonly List<Widget> _store = new()
+    public List<Widget> Items { get; } = new()
     {
         new() { Id = 1, Name = "Alpha" },
         new() { Id = 2, Name = "Beta" },
     };
+}
 
-    public EntityBoundOpsProfile() : base(x => x.Id)
+internal class EntityBoundOpsProfile : EntitySetProfile<int, Widget>
+{
+    private readonly EntityBoundOpsStore _store;
+
+    public EntityBoundOpsProfile(EntityBoundOpsStore store) : base(x => x.Id)
     {
+        _store = store;
         EntitySetName = "EntityBoundWidgets";
-        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store);
-        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
+        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store.Items);
+        GetById = (id, ct) => Task.FromResult(_store.Items.FirstOrDefault(w => w.Id == id));
 
         BindEntityFunction(GetNameForKey);
         BindEntityAction(RenameWidget);
@@ -423,14 +434,14 @@ internal class EntityBoundOpsProfile : EntitySetProfile<int, Widget>
     // Entity-level function: GET /EntityBoundWidgets(1)/GetNameForKey
     private Task<string> GetNameForKey(int key)
     {
-        var widget = _store.FirstOrDefault(w => w.Id == key);
+        var widget = _store.Items.FirstOrDefault(w => w.Id == key);
         return Task.FromResult(widget?.Name ?? "");
     }
 
     // Entity-level action: POST /EntityBoundWidgets(1)/RenameWidget { "newName": "..." }
     private Task RenameWidget(int key, string newName)
     {
-        var widget = _store.FirstOrDefault(w => w.Id == key);
+        var widget = _store.Items.FirstOrDefault(w => w.Id == key);
         if (widget is not null) widget.Name = newName;
         return Task.CompletedTask;
     }
@@ -850,24 +861,29 @@ internal class NavRefProfile : EntitySetProfile<int, Parent>
 /// Profile that demonstrates the new Patch delta semantics: the handler receives the
 /// pre-fetched entity with only request-body fields overwritten. No manual merge needed.
 /// </summary>
+internal class PatchItemStore
+{
+    public List<PatchItem> Items { get; } = new()
+    {
+        new() { Id = 1, Name = "Widget", Price = 9.99m },
+        new() { Id = 2, Name = "Gadget", Price = 19.99m },
+    };
+}
+
 internal class PatchItemProfile : EntitySetProfile<int, PatchItem>
 {
-    private readonly List<PatchItem> _store;
+    private readonly PatchItemStore _store;
 
-    public PatchItemProfile() : base(x => x.Id)
+    public PatchItemProfile(PatchItemStore store) : base(x => x.Id)
     {
+        _store = store;
         EntitySetName = "PatchItems";
-        _store = new List<PatchItem>
-        {
-            new() { Id = 1, Name = "Widget", Price = 9.99m },
-            new() { Id = 2, Name = "Gadget", Price = 19.99m },
-        };
 
-        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(x => x.Id == id));
+        GetById = (id, ct) => Task.FromResult(_store.Items.FirstOrDefault(x => x.Id == id));
 
         Patch = (id, delta, ct) =>
         {
-            var existing = _store.FirstOrDefault(x => x.Id == id);
+            var existing = _store.Items.FirstOrDefault(x => x.Id == id);
             if (existing is null) return Task.FromResult<PatchItem?>(null);
             delta.Patch(existing);
             return Task.FromResult<PatchItem?>(existing);
