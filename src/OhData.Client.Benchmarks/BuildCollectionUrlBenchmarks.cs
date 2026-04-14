@@ -1,6 +1,5 @@
 using System.Net.Http;
 using BenchmarkDotNet.Attributes;
-using BenchmarkDotNet.Jobs;
 using OhData.Client;
 
 namespace OhData.Client.Benchmarks;
@@ -9,7 +8,6 @@ namespace OhData.Client.Benchmarks;
 /// Benchmarks for <see cref="EntitySetClient{T}.BuildCollectionUrl"/>.
 /// Measures URL construction overhead for different combinations of query options.
 /// </summary>
-[SimpleJob(RuntimeMoniker.Net80)]
 [MemoryDiagnoser]
 public class BuildCollectionUrlBenchmarks
 {

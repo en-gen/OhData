@@ -4,7 +4,6 @@ using System.Linq;
 using System.Net.Http;
 using System.Threading.Tasks;
 using BenchmarkDotNet.Attributes;
-using BenchmarkDotNet.Jobs;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
@@ -22,7 +21,6 @@ namespace OhData.Client.Benchmarks;
 /// Measures the full round-trip: URL build → HTTP → JSON deserialization.
 /// Uses an in-process TestHost to isolate from real network overhead.
 /// </summary>
-[SimpleJob(RuntimeMoniker.Net80)]
 [MemoryDiagnoser]
 public class ToListAsyncBenchmarks
 {
