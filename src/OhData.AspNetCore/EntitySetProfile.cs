@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -24,6 +25,14 @@ namespace OhData.Abstractions;
 public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisitModelBuilder, IEntitySetEndpointSource
     where TModel : class
 {
+    // Caches the compiled ETag function per concrete type. The delegate accesses model
+    // properties only (no DI dependencies), so it is safe to share across request scopes.
+    private static readonly ConcurrentDictionary<Type, Func<TModel, string>> s_etagCache = new();
+
+    // Caches the compiled key-to-string delegate per concrete type. Expression.Compile() is
+    // expensive (~100μs); caching avoids per-request compilation under scoped resolution.
+    private static readonly ConcurrentDictionary<Type, Func<TModel, string>> s_keyToStringCache = new();
+
     private readonly Expression<Func<TModel, TKey>> _getKey;
 
     /// <summary>
@@ -224,6 +233,13 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// </param>
     protected void UseETag(params Expression<Func<TModel, object?>>[] propertySelectors)
     {
+        // Reuse the cached compiled delegate if available (avoids recompiling on every scoped construction).
+        if (s_etagCache.TryGetValue(GetType(), out var cached))
+        {
+            _getETag = cached;
+            return;
+        }
+
         ThrowIfSealed();
         if (propertySelectors.Length == 0)
             throw new ArgumentException("At least one property selector is required.", nameof(propertySelectors));
@@ -255,6 +271,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
             byte[] hash = SHA256.HashData(buffer.AsSpan());
             return Convert.ToBase64String(hash);
         };
+
+        // Cache for per-request instances — this delegate only accesses model properties.
+        s_etagCache.TryAdd(GetType(), _getETag);
     }
 
     private bool _authRequired;
@@ -280,6 +299,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected EntitySetProfile(Expression<Func<TModel, TKey>> getKey)
     {
         _getKey = getKey;
+
         var keyBody = getKey.Body is System.Linq.Expressions.UnaryExpression u ? u.Operand : getKey.Body;
         if (keyBody is not System.Linq.Expressions.MemberExpression)
         {
@@ -543,7 +563,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Pass no arguments (or call with <c>null</c>) to allow all properties.
     /// </summary>
     protected void FilterProperties(params Expression<Func<TModel, object?>>[] properties)
-        => _filterProperties = ExtractNames(properties);
+    {
+        _filterProperties = ExtractNames(properties);
+    }
 
     /// <summary>
     /// Restricts the properties that may appear in <c>$filter</c> queries.
@@ -551,7 +573,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Pass no arguments (or call with <c>null</c>) to allow all properties.
     /// </summary>
     protected void FilterProperties(params string[]? properties)
-        => _filterProperties = properties;
+    {
+        _filterProperties = properties;
+    }
 
     /// <summary>
     /// Restricts the properties that may appear in <c>$orderby</c> clauses.
@@ -559,7 +583,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Pass no arguments (or call with <c>null</c>) to allow all properties.
     /// </summary>
     protected void OrderByProperties(params Expression<Func<TModel, object?>>[] properties)
-        => _orderByProperties = ExtractNames(properties);
+    {
+        _orderByProperties = ExtractNames(properties);
+    }
 
     /// <summary>
     /// Restricts the properties that may appear in <c>$orderby</c> clauses.
@@ -567,7 +593,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Pass no arguments (or call with <c>null</c>) to allow all properties.
     /// </summary>
     protected void OrderByProperties(params string[]? properties)
-        => _orderByProperties = properties;
+    {
+        _orderByProperties = properties;
+    }
 
     /// <summary>
     /// Restricts the properties that may appear in <c>$select</c> clauses.
@@ -575,7 +603,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Pass no arguments (or call with <c>null</c>) to allow all properties.
     /// </summary>
     protected void SelectProperties(params Expression<Func<TModel, object?>>[] properties)
-        => _selectProperties = ExtractNames(properties);
+    {
+        _selectProperties = ExtractNames(properties);
+    }
 
     /// <summary>
     /// Restricts the properties that may appear in <c>$select</c> clauses.
@@ -583,7 +613,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Pass no arguments (or call with <c>null</c>) to allow all properties.
     /// </summary>
     protected void SelectProperties(params string[]? properties)
-        => _selectProperties = properties;
+    {
+        _selectProperties = properties;
+    }
 
     /// <summary>
     /// Restricts the properties that may be used in <c>$expand</c> clauses.
@@ -591,7 +623,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Pass no arguments (or call with <c>null</c>) to allow all properties.
     /// </summary>
     protected void ExpandProperties(params Expression<Func<TModel, object?>>[] properties)
-        => _expandProperties = ExtractNames(properties);
+    {
+        _expandProperties = ExtractNames(properties);
+    }
 
     /// <summary>
     /// Restricts the properties that may be used in <c>$expand</c> clauses.
@@ -599,7 +633,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Pass no arguments (or call with <c>null</c>) to allow all properties.
     /// </summary>
     protected void ExpandProperties(params string[]? properties)
-        => _expandProperties = properties;
+    {
+        _expandProperties = properties;
+    }
 
     /// <summary>
     /// Extracts member names from a set of simple property-access expressions.
@@ -1057,8 +1093,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private Func<TModel, string>? _keyToString;
     private Func<TModel, string> CompileKeyToString()
     {
-        var compiled = _getKey.Compile();
-        return model => string.Format(CultureInfo.InvariantCulture, "{0}", compiled(model)) ?? "";
+        return s_keyToStringCache.GetOrAdd(GetType(), _ =>
+        {
+            var compiled = _getKey.Compile();
+            return model => string.Format(CultureInfo.InvariantCulture, "{0}", compiled(model)) ?? "";
+        });
     }
     string IEntitySetEndpointSource.InvokeGetKeyString(object model)
         => LazyInitializer.EnsureInitialized(ref _keyToString, CompileKeyToString)((TModel)model);
