@@ -278,7 +278,7 @@ public class EndpointMappingTests
     public async Task Patch_PartialBody_PreservesUnchangedFields()
     {
         // Patching only "name" must not reset "price" to its CLR default (0).
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<PatchItemProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<PatchItemProfile>(), configureServices: s => s.AddSingleton(new PatchItemStore()));
         var response = await fx.Client.PatchAsJsonAsync("/odata/PatchItems(1)", new { name = "Changed" });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
@@ -290,7 +290,7 @@ public class EndpointMappingTests
     public async Task Patch_PartialBody_PersistedCorrectlyOnSubsequentGet()
     {
         // Verify the store reflects partial update -- unchanged field survives a GET after PATCH.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<PatchItemProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<PatchItemProfile>(), configureServices: s => s.AddSingleton(new PatchItemStore()));
         await fx.Client.PatchAsJsonAsync("/odata/PatchItems(2)", new { name = "Renamed" });
         var json = await fx.Client.GetFromJsonAsync<System.Text.Json.JsonElement>("/odata/PatchItems(2)");
         Assert.Equal("Renamed", json.GetProperty("name").GetString());
@@ -589,7 +589,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task BoundFunction_WithStringParam_ReturnsFilteredResult()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>(), configureServices: s => s.AddSingleton(new BoundOpsStore()));
         var response = await fx.Client.GetAsync("/odata/BoundWidgets/GetByName?name=Alpha");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         // Gap 1: bound function returning IEnumerable<TModel> is wrapped in OData envelope
@@ -605,7 +605,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task BoundFunction_WithIntParam_ReturnsScalar()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>(), configureServices: s => s.AddSingleton(new BoundOpsStore()));
         var response = await fx.Client.GetAsync("/odata/BoundWidgets/DoubleCount?factor=3");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         int count = await response.Content.ReadFromJsonAsync<int>();
@@ -615,7 +615,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task BoundFunction_MissingRequiredParam_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>(), configureServices: s => s.AddSingleton(new BoundOpsStore()));
         var response = await fx.Client.GetAsync("/odata/BoundWidgets/DoubleCount");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -626,7 +626,7 @@ public class EndpointMappingTests
     public async Task BoundAction_NoParams_Returns204()
     {
         // ClearAll removes all widgets; subsequent GetAll should return empty
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>(), configureServices: s => s.AddSingleton(new BoundOpsStore()));
         var clearResponse = await fx.Client.PostAsync("/odata/BoundWidgets/ClearAll",
             new StringContent("", System.Text.Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.NoContent, clearResponse.StatusCode);
@@ -635,7 +635,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task BoundAction_WithBodyParam_ExecutesSideEffect()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>(), configureServices: s => s.AddSingleton(new BoundOpsStore()));
         // AddSuffix mutates the store; call then verify names changed
         var addResp = await fx.Client.PostAsync("/odata/BoundWidgets/AddSuffix",
             new StringContent("{\"suffix\":\"!\"}", System.Text.Encoding.UTF8, "application/json"));
@@ -849,7 +849,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task BoundAction_CaseInsensitiveParamName_Succeeds()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>(), configureServices: s => s.AddSingleton(new BoundOpsStore()));
         // Send "Suffix" (PascalCase) when the C# param is "suffix" (camelCase)
         var response = await fx.Client.PostAsync("/odata/BoundWidgets/AddSuffix",
             new StringContent("{\"Suffix\": \"!\"}", System.Text.Encoding.UTF8, "application/json"));
@@ -1236,7 +1236,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task EntityBoundFunction_ReturnsEntityData()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EntityBoundOpsProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EntityBoundOpsProfile>(), configureServices: s => s.AddSingleton(new EntityBoundOpsStore()));
         var resp = await fx.Client.GetAsync("/odata/EntityBoundWidgets(1)/GetNameForKey");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         string? name = await resp.Content.ReadFromJsonAsync<string>();
@@ -1246,7 +1246,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task EntityBoundFunction_UnknownKey_ReturnsOk_WithEmptyString()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EntityBoundOpsProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EntityBoundOpsProfile>(), configureServices: s => s.AddSingleton(new EntityBoundOpsStore()));
         var resp = await fx.Client.GetAsync("/odata/EntityBoundWidgets(999)/GetNameForKey");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
     }
@@ -1254,7 +1254,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task EntityBoundAction_MutatesEntity()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EntityBoundOpsProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EntityBoundOpsProfile>(), configureServices: s => s.AddSingleton(new EntityBoundOpsStore()));
         var renameResp = await fx.Client.PostAsync("/odata/EntityBoundWidgets(1)/RenameWidget",
             new StringContent("{\"newName\":\"Renamed\"}", System.Text.Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.NoContent, renameResp.StatusCode);
@@ -1268,7 +1268,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task EntityBoundFunction_BadKey_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EntityBoundOpsProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EntityBoundOpsProfile>(), configureServices: s => s.AddSingleton(new EntityBoundOpsStore()));
         var resp = await fx.Client.GetAsync("/odata/EntityBoundWidgets(notanint)/GetNameForKey");
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
     }

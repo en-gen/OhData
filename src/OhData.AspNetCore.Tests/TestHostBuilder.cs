@@ -36,11 +36,12 @@ internal sealed class TestFixture : IAsyncDisposable
 
 internal static class TestHostBuilder
 {
-    public static async Task<TestFixture> BuildAsync(Action<OhDataBuilder> configure, string prefix = "/odata", bool addAuth = false)
+    public static async Task<TestFixture> BuildAsync(Action<OhDataBuilder> configure, string prefix = "/odata", bool addAuth = false, Action<IServiceCollection>? configureServices = null)
     {
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
         builder.Services.AddLogging();
+        configureServices?.Invoke(builder.Services);
 
         if (addAuth)
         {

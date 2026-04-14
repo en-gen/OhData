@@ -20,7 +20,7 @@ AddOhData(builder => builder.AddProfile<T>())
   └─► OhDataBuilder collects profile types, prefix, and defaults
         │
         └─► DI factory (keyed singleton) builds OhDataRegistration:
-              ├─ Resolves each profile from DI (singletons)
+              ├─ Creates a temporary scope; resolves each profile from DI (scoped)
               ├─ Calls IVisitModelBuilder.VisitModelBuilder() on each
               │    → builds ODataConventionModelBuilder → IEdmModel
               ├─ Validates for duplicate entity set names
@@ -54,6 +54,24 @@ app.MapOhData()
 Profiles are generic (`EntitySetProfile<Guid, Product>`) but the factory iterates `IEntitySetEndpointSource` - a non-generic internal interface. This lets the factory inspect `HasGetAll`, `HasGetById`, etc. and route requests without knowing `TKey`/`TModel` at compile time.
 
 The generic types are reintroduced in exactly one place: `MapEntitySet<TKey, TModel>`, called via `MethodInfo.MakeGenericMethod(profile.KeyType, profile.ModelType).Invoke(...)`. This reflection runs once at startup, not per request.
+
+## Scoped profile resolution
+
+Profiles are registered as **scoped** services, meaning each HTTP request gets a fresh profile instance resolved from the request's DI scope. This enables safe constructor injection of scoped dependencies like `DbContext`:
+
+```csharp
+public class ProductProfile(AppDbContext db) : EntitySetProfile<int, Product>
+{
+    // db is a per-request DbContext — safe to use in all handlers
+}
+```
+
+At startup, `OhDataBuilder.Register()` creates a temporary scope to resolve profiles for EDM construction only. Route handlers capture two references:
+
+- **Startup `source`** — used for structural queries: `HasGetById`, `MaxTop`, `NavigationRoutes` metadata, auth config, etc. These never change after startup.
+- **Per-request `s = ResolveHandlers(ctx)`** — a fresh profile resolved from the request scope, used for all `Invoke*()` calls. This instance carries live scoped dependencies.
+
+Compiled delegates that don't access scoped dependencies (ETag functions, key-to-string) are cached in static `ConcurrentDictionary<Type, ...>` keyed by the concrete profile type, so `Expression.Compile()` runs at most once per type across the application lifetime.
 
 ## GET collection - handler priority
 

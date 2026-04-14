@@ -24,47 +24,51 @@ internal class Widget
     public string Name { get; set; } = "";
 }
 
+internal class WidgetStore
+{
+    public List<Widget> Items { get; } = new()
+    {
+        new() { Id = 1, Name = "Sprocket" },
+        new() { Id = 2, Name = "Cog" },
+    };
+}
+
 internal class WidgetProfile : EntitySetProfile<int, Widget>
 {
-    private readonly List<Widget> _store;
+    private readonly WidgetStore _store;
 
-    public WidgetProfile() : base(x => x.Id)
+    public WidgetProfile(WidgetStore store) : base(x => x.Id)
     {
+        _store = store;
         IdempotentDelete = false;
         FilterEnabled = true;
         SelectEnabled = true;
         OrderByEnabled = true;
 
-        _store = new List<Widget>
-        {
-            new() { Id = 1, Name = "Sprocket" },
-            new() { Id = 2, Name = "Cog" },
-        };
-
-        GetQueryable = (ct) => Task.FromResult(_store.AsQueryable());
-        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
+        GetQueryable = (ct) => Task.FromResult(_store.Items.AsQueryable());
+        GetById = (id, ct) => Task.FromResult(_store.Items.FirstOrDefault(w => w.Id == id));
         Post = (widget, ct) =>
         {
-            widget.Id = _store.Count > 0 ? _store.Max(w => w.Id) + 1 : 1;
-            _store.Add(widget);
+            widget.Id = _store.Items.Count > 0 ? _store.Items.Max(w => w.Id) + 1 : 1;
+            _store.Items.Add(widget);
             return Task.FromResult<Widget?>(widget);
         };
         Put = (id, w, ct) =>
         {
-            int removed = _store.RemoveAll(x => x.Id == id);
+            int removed = _store.Items.RemoveAll(x => x.Id == id);
             if (removed == 0) return Task.FromResult<Widget>(null!);
             w.Id = id;
-            _store.Add(w);
+            _store.Items.Add(w);
             return Task.FromResult(w);
         };
         Patch = (id, delta, ct) =>
         {
-            var existing = _store.FirstOrDefault(x => x.Id == id);
+            var existing = _store.Items.FirstOrDefault(x => x.Id == id);
             if (existing is null) return Task.FromResult<Widget?>(null);
             delta.Patch(existing);
             return Task.FromResult<Widget?>(existing);
         };
-        Delete = (id, ct) => Task.FromResult(_store.RemoveAll(w => w.Id == id) > 0);
+        Delete = (id, ct) => Task.FromResult(_store.Items.RemoveAll(w => w.Id == id) > 0);
     }
 }
 
@@ -72,44 +76,48 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
 /// Profile with ETag support for optimistic concurrency tests.
 /// ETag is derived from the widget's Name field.
 /// </summary>
+internal class ETagWidgetStore
+{
+    public List<Widget> Items { get; } = new()
+    {
+        new() { Id = 1, Name = "Sprocket" },
+        new() { Id = 2, Name = "Cog" },
+    };
+}
+
 internal class ETagWidgetProfile : EntitySetProfile<int, Widget>
 {
-    private readonly List<Widget> _store;
+    private readonly ETagWidgetStore _store;
 
-    public ETagWidgetProfile() : base(x => x.Id)
+    public ETagWidgetProfile(ETagWidgetStore store) : base(x => x.Id)
     {
+        _store = store;
         EntitySetName = "ETagWidgets";
         IdempotentDelete = false;
 
-        _store = new List<Widget>
-        {
-            new() { Id = 1, Name = "Sprocket" },
-            new() { Id = 2, Name = "Cog" },
-        };
-
-        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
+        GetById = (id, ct) => Task.FromResult(_store.Items.FirstOrDefault(w => w.Id == id));
         Post = (widget, ct) =>
         {
-            widget.Id = _store.Count > 0 ? _store.Max(w => w.Id) + 1 : 1;
-            _store.Add(widget);
+            widget.Id = _store.Items.Count > 0 ? _store.Items.Max(w => w.Id) + 1 : 1;
+            _store.Items.Add(widget);
             return Task.FromResult<Widget?>(widget);
         };
         Put = (id, w, ct) =>
         {
-            int removed = _store.RemoveAll(x => x.Id == id);
+            int removed = _store.Items.RemoveAll(x => x.Id == id);
             if (removed == 0) return Task.FromResult<Widget>(null!);
             w.Id = id;
-            _store.Add(w);
+            _store.Items.Add(w);
             return Task.FromResult(w);
         };
         Patch = (id, delta, ct) =>
         {
-            var existing = _store.FirstOrDefault(x => x.Id == id);
+            var existing = _store.Items.FirstOrDefault(x => x.Id == id);
             if (existing is null) return Task.FromResult<Widget?>(null);
             delta.Patch(existing);
             return Task.FromResult<Widget?>(existing);
         };
-        Delete = (id, ct) => Task.FromResult(_store.RemoveAll(w => w.Id == id) > 0);
+        Delete = (id, ct) => Task.FromResult(_store.Items.RemoveAll(w => w.Id == id) > 0);
 
         UseETag(x => x.Name);
     }
@@ -156,6 +164,7 @@ internal sealed class ClientTestFixture : IAsyncDisposable
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
         builder.Services.AddLogging(b => b.ClearProviders());
+        builder.Services.AddSingleton(new WidgetStore());
         builder.Services.AddOhData(o =>
         {
             o.WithPrefix(prefix);
@@ -199,6 +208,8 @@ internal sealed class ETagClientTestFixture : IAsyncDisposable
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
         builder.Services.AddLogging(b => b.ClearProviders());
+        builder.Services.AddSingleton(new WidgetStore());
+        builder.Services.AddSingleton(new ETagWidgetStore());
         builder.Services.AddOhData(o =>
         {
             o.WithPrefix(prefix);

@@ -69,8 +69,8 @@ public sealed class OhDataBuilder
     }
 
     /// <summary>
-    /// Registers an entity set profile. The profile is resolved from DI (singleton),
-    /// so constructor injection is supported.
+    /// Registers an entity set profile. The profile is resolved from DI (scoped),
+    /// so constructor injection of scoped services (e.g. DbContext) is supported.
     /// </summary>
     public OhDataBuilder AddProfile<TProfile>() where TProfile : class, IEntitySetProfile
     {
@@ -93,7 +93,7 @@ public sealed class OhDataBuilder
             }
         }
 
-        _services.AddSingleton<TProfile>();
+        _services.AddScoped<TProfile>();
         _profileTypes.Add(typeof(TProfile));
         return this;
     }
@@ -149,7 +149,7 @@ public sealed class OhDataBuilder
         // If another OhData registration already registered this profile type as a singleton,
         // skip re-registering it in DI but still track it for this builder's route mapping.
         if (!_services.Any(s => s.ServiceType == type))
-            _services.AddSingleton(type);
+            _services.AddScoped(type);
         _profileTypes.Add(type);
     }
 
@@ -200,9 +200,15 @@ public sealed class OhDataBuilder
             var defaults = capturedDefaults;
             var profiles = new List<IEntitySetEndpointSource>();
 
+            // Profiles are registered as scoped so they can safely inject scoped services
+            // (e.g. DbContext). Create a temporary scope for the startup construction which
+            // builds the EDM model and captures structural metadata. The scope is disposed
+            // after registration completes — only structural properties are read afterwards.
+            using var startupScope = sp.CreateScope();
+
             foreach (var type in capturedTypes)
             {
-                object instance = sp.GetRequiredService(type);
+                object instance = startupScope.ServiceProvider.GetRequiredService(type);
 
                 if (instance is IVisitModelBuilder vmb)
                 {
