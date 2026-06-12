@@ -3,7 +3,8 @@
 	<PropertyGroup>
 		<TargetFrameworks>net8.0;net10.0</TargetFrameworks>
 		<PackageId>EnGen.OhData.AspNetCore</PackageId>
-		<Description>Convention-based OData 4.0 server for ASP.NET Core minimal APIs.</Description>
+		<Description>Convention-based OData 4.0 server for ASP.NET Core minimal APIs. Turn declarative profile classes into registered OData endpoints at startup — no controllers required.</Description>
+		<PackageTags>odata;odata4;aspnetcore;minimal-api;rest;api;edm;csdl;entityset</PackageTags>
 		<!-- AD0001: RouteHandlerAnalyzer NullReferenceException — pre-existing analyzer bug, not our code -->
 		<NoWarn>$(NoWarn);AD0001</NoWarn>
 	</PropertyGroup>
