@@ -41,6 +41,17 @@ jobs:
         id: gitversion
         uses: gittools/actions/gitversion/execute@v3
 
+      - name: Validate release tag matches computed version
+        run: |
+          COMPUTED="v${{ steps.gitversion.outputs.nuGetVersionV2 }}"
+          RELEASE_TAG="${{ github.event.release.tag_name }}"
+          if [ "$COMPUTED" != "$RELEASE_TAG" ]; then
+            echo "ERROR: Release tag '$RELEASE_TAG' does not match computed version '$COMPUTED'"
+            echo "Ensure the Git tag on the release matches the GitVersion-computed version."
+            exit 1
+          fi
+          echo "Tag validated: $RELEASE_TAG == $COMPUTED"
+
       - name: Restore
         run: dotnet restore src/OhData.sln
 
@@ -52,6 +63,8 @@ jobs:
           dotnet test src/OhData.AspNetCore.Tests/OhData.AspNetCore.Tests.csproj \
             --no-build -c Release
           dotnet test src/OhData.Client.Tests/OhData.Client.Tests.csproj \
+            --no-build -c Release
+          dotnet test src/OhData.MicrosoftODataClient.Tests/OhData.MicrosoftODataClient.Tests.csproj \
             --no-build -c Release
 
       - name: Pack
