@@ -57,10 +57,6 @@ jobs:
       - name: Pack
         run: |
           VERSION="${{ steps.gitversion.outputs.nuGetVersionV2 }}"
-          dotnet pack src/OhData.Abstractions/OhData.Abstractions.csproj \
-            --no-build -c Release \
-            -p:Version="$VERSION" \
-            -o ./nupkg
           dotnet pack src/OhData.AspNetCore/OhData.AspNetCore.csproj \
             --no-build -c Release \
             -p:Version="$VERSION" \
