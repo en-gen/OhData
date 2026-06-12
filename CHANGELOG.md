@@ -9,6 +9,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+---
+
+## [0.1.0] - 2026-06-11
+
 ### Added
 
 **Server (OhData.AspNetCore)**
@@ -58,10 +62,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (handles irregular plurals)
 - Configurable `JsonSerializerOptions` via `OhDataClientOptions`
 
-**Versioning (OhData.AspNetCore.Versioning)**
+**Versioning helpers (included in OhData.AspNetCore, namespace `OhData.AspNetCore.Versioning`)**
 
-- `AddOhDataVersion(name, prefix, configure)` convenience wrapper
-- `MapOhDataVersion(name)` convenience wrapper
+- `AddOhDataVersion(name, prefix, configure)` convenience wrapper for named multi-version registrations
+- `MapOhDataVersion(name)` convenience wrapper matching `AddOhDataVersion`
 
 **Infrastructure**
 
@@ -91,4 +95,5 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-[Unreleased]: https://github.com/en-gen/OhData/compare/HEAD...HEAD
+[Unreleased]: https://github.com/en-gen/OhData/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/en-gen/OhData/releases/tag/v0.1.0
