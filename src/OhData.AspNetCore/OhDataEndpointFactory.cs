@@ -228,7 +228,7 @@ internal static class OhDataEndpointFactory
                                 var converter = System.ComponentModel.TypeDescriptor.GetConverter(targetType);
                                 args[i] = converter.ConvertFromInvariantString(val.ToString() ?? "");
                             }
-                            catch (Exception ex) when (ex is FormatException or NotSupportedException or InvalidCastException or OverflowException)
+                            catch (Exception ex) when (ex is FormatException or NotSupportedException or InvalidCastException or OverflowException or ArgumentException)
                             {
                                 return ODataError(400, "InvalidParameter",
                                     $"Cannot convert parameter '{param.Name}' value to {param.ParameterType.Name}.",
@@ -1476,7 +1476,7 @@ internal static class OhDataEndpointFactory
                             var converter = System.ComponentModel.TypeDescriptor.GetConverter(targetType);
                             args[i] = converter.ConvertFromInvariantString(val.ToString() ?? "");
                         }
-                        catch (Exception ex) when (ex is FormatException or NotSupportedException or InvalidCastException or OverflowException)
+                        catch (Exception ex) when (ex is FormatException or NotSupportedException or InvalidCastException or OverflowException or ArgumentException)
                         {
                             return ODataError(400, "InvalidParameter",
                                 $"Cannot convert parameter '{param.Name}' value to {param.ParameterType.Name}.",
@@ -1575,7 +1575,7 @@ internal static class OhDataEndpointFactory
                                     var converter = System.ComponentModel.TypeDescriptor.GetConverter(targetType);
                                     args[i] = converter.ConvertFromInvariantString(val.ToString() ?? "");
                                 }
-                                catch (Exception ex) when (ex is FormatException or NotSupportedException or InvalidCastException or OverflowException)
+                                catch (Exception ex) when (ex is FormatException or NotSupportedException or InvalidCastException or OverflowException or ArgumentException)
                                 {
                                     return ODataError(400, "InvalidParameter",
                                         $"Cannot convert parameter '{param.Name}' to {param.ParameterType.Name}.",
