@@ -16,6 +16,13 @@
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageTags>odata;odata4;aspnetcore;rest;api</PackageTags>
+    <PackageReleaseNotes>https://github.com/en-gen/OhData/blob/main/CHANGELOG.md</PackageReleaseNotes>
+    <!-- Symbols: produces .snupkg for debugger step-in support -->
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <!-- Source Link: resolves debugger source to the exact GitHub commit -->
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
   </PropertyGroup>
 
   <ItemGroup>
@@ -24,5 +31,6 @@
 
   <ItemGroup>
     <PackageReference Include="GitVersion.MsBuild" Version="6.7.0" PrivateAssets="All" />
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.*" PrivateAssets="All" />
   </ItemGroup>
 </Project>

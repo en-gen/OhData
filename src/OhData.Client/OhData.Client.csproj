@@ -3,7 +3,8 @@
   <PropertyGroup>
     <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <PackageId>EnGen.OhData.Client</PackageId>
-    <Description>Typed OData 4.0 client with LINQ filter translation for .NET.</Description>
+    <Description>Typed .NET OData 4.0 client with fluent LINQ-based filter, select, expand, and pagination. Works with any OData 4.0 server.</Description>
+    <PackageTags>odata;odata4;odata-client;httpclient;linq;rest;api;filter;pagination</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>
