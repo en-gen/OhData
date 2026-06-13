@@ -409,7 +409,10 @@ internal static class OhDataEndpointFactory
                         object? related = await navRoute.Handler(keyVal, ct);
                         if (json[i] is JsonObject obj)
                         {
-                            obj[propName] = related is null
+                            // Apply the naming policy so the expand key matches the parent's
+                            // property casing (e.g. "children" for camelCase, "Children" for PascalCase).
+                            string expandKey = serializerOptions.PropertyNamingPolicy?.ConvertName(propName) ?? propName;
+                            obj[expandKey] = related is null
                                 ? null
                                 : JsonSerializer.SerializeToNode(related, serializerOptions);
                         }
