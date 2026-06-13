@@ -117,4 +117,15 @@ HasOptional(x => x.Category,
     removeRef: (productId, categoryId, ct) => ...);
 ```
 
+This registers:
+
+| Route | Handler |
+|-------|---------|
+| `GET /Products({key})/Category` | `get` |
+| `PUT /Products({key})/Category/$ref` | `setRef` - body: `{ "@odata.id": "Categories(3)" }` |
+| `DELETE /Products({key})/Category/$ref` | `removeRef` (no `$id` — there is only one link) |
+
 The `addRef`/`setRef` handler receives the raw `@odata.id` string from the request body (e.g. `"Categories(3)"`). Parse the key from it as needed.
+
+> **HTTP method note:** OData 4.0 §11.4.6 requires `POST /$ref` for collection navigations (adding a link)
+> and `PUT /$ref` for single-value navigations (replacing the link). OhData enforces this automatically.
