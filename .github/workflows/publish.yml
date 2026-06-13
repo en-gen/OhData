@@ -33,13 +33,13 @@ jobs:
       # Compute the NuGet version from GitVersion and expose it as
       # ${{ steps.gitversion.outputs.nuGetVersionV2 }} (e.g. "0.1.0" on main).
       - name: Install GitVersion
-        uses: gittools/actions/gitversion/setup@v3
+        uses: gittools/actions/gitversion/setup@v4
         with:
           versionSpec: '6.x'
 
       - name: Compute version
         id: gitversion
-        uses: gittools/actions/gitversion/execute@v3
+        uses: gittools/actions/gitversion/execute@v4
 
       - name: Restore
         run: dotnet restore src/OhData.sln
