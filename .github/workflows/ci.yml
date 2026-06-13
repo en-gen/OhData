@@ -41,8 +41,19 @@ jobs:
             --collect:"XPlat Code Coverage" \
             --results-directory ./coverage
 
+      - name: Pack (dry run)
+        run: |
+          dotnet pack src/OhData.AspNetCore/OhData.AspNetCore.csproj \
+            --no-build -c Release \
+            -p:Version="0.0.0-ci" \
+            -o ./nupkg-ci
+          dotnet pack src/OhData.Client/OhData.Client.csproj \
+            --no-build -c Release \
+            -p:Version="0.0.0-ci" \
+            -o ./nupkg-ci
+
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v4
         with:
           directory: ./coverage
           fail_ci_if_error: false
