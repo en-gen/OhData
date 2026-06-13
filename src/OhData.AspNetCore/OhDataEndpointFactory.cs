@@ -1395,34 +1395,46 @@ internal static class OhDataEndpointFactory
                 .WithTags(name)
                 .Produces(200);
 
-            // POST /{name}({key})/{nav}/$ref (add relationship)
+            // POST /{name}({key})/{nav}/$ref   — collection nav: add a link (§11.4.6.2)
+            // PUT  /{name}({key})/{nav}/$ref   — single-value nav: set the link (§11.4.6.3)
             if (nav.AddRef is not null)
             {
                 string addRefNavPropertyName = navRefPropertyName;
-                var refPostRb = entityAuthGroup.MapPost($"/{name}({{key}})/{navRefPropertyName}/$ref",
-                    async (string key, HttpContext ctx, CancellationToken ct) =>
+                async Task<IResult> handleAddOrSetRef(string key, HttpContext ctx, CancellationToken ct)
+                {
+                    try
                     {
-                        try
-                        {
-                            var s = ResolveHandlers(ctx);
-                            var requestNav = s.NavigationRoutes.First(n => n.PropertyName == addRefNavPropertyName);
-                            object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
-                            var body = await JsonSerializer.DeserializeAsync<JsonElement>(ctx.Request.Body, cancellationToken: ct);
-                            if (!TryGetJsonProperty(body, "@odata.id", out var odataIdEl))
-                                return ODataError(400, "BadRequest", "Request body must contain '@odata.id'.");
-                            string relatedId = odataIdEl.GetString() ?? "";
-                            await requestNav.AddRef!(parsedKey!, (object)relatedId, ct);
-                            return Results.NoContent();
-                        }
-                        catch (FormatException ex)
-                        {
-                            logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                            return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'");
-                        }
-                    })
-                    .WithTags(name)
-                    .Produces(204)
-                    .Produces(400);
+                        var s = ResolveHandlers(ctx);
+                        var requestNav = s.NavigationRoutes.First(n => n.PropertyName == addRefNavPropertyName);
+                        object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
+                        var body = await JsonSerializer.DeserializeAsync<JsonElement>(ctx.Request.Body, cancellationToken: ct);
+                        if (!TryGetJsonProperty(body, "@odata.id", out var odataIdEl))
+                            return ODataError(400, "BadRequest", "Request body must contain '@odata.id'.");
+                        string relatedId = odataIdEl.GetString() ?? "";
+                        await requestNav.AddRef!(parsedKey!, (object)relatedId, ct);
+                        return Results.NoContent();
+                    }
+                    catch (FormatException ex)
+                    {
+                        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
+                        return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'");
+                    }
+                }
+
+                if (navRefIsCollection)
+                {
+                    entityAuthGroup.MapPost($"/{name}({{key}})/{navRefPropertyName}/$ref", handleAddOrSetRef)
+                        .WithTags(name)
+                        .Produces(204)
+                        .Produces(400);
+                }
+                else
+                {
+                    entityAuthGroup.MapPut($"/{name}({{key}})/{navRefPropertyName}/$ref", handleAddOrSetRef)
+                        .WithTags(name)
+                        .Produces(204)
+                        .Produces(400);
+                }
             }
 
             // DELETE /{name}({key})/{nav}/$ref (remove relationship)
