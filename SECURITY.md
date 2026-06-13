@@ -34,3 +34,23 @@ This policy covers the `EnGen.OhData.AspNetCore` and `EnGen.OhData.Client` NuGet
 the code in this repository. It does not cover vulnerabilities in upstream
 dependencies (e.g. `Microsoft.AspNetCore.OData`) -- report those to their
 respective maintainers.
+
+## Responding to a bad release
+
+NuGet.org does not allow package deletion. If a published version contains a critical bug
+or security vulnerability:
+
+1. **Unlist the version** on NuGet.org (go to the package page → Manage →
+   select the affected version → Unlist). Unlisted versions are hidden from search
+   but remain installable by direct version reference (`<PackageVersion>x.y.z</PackageVersion>`).
+
+2. **Deprecate the version** on NuGet.org with an appropriate reason
+   (`Critical Bugs` or `Other`) and a message pointing users to the fixed version.
+   This shows a warning banner in Visual Studio and the NuGet CLI.
+
+3. **Publish a patch release** immediately with the fix following the standard
+   release process in `CONTRIBUTING.md`.
+
+4. **File a GitHub Security Advisory** if the issue is a security vulnerability:
+   go to the repo **Security** tab → **Advisories** → **New draft security advisory**.
+   This generates a CVE and notifies users who have enabled vulnerability alerts.

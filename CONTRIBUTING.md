@@ -71,6 +71,35 @@ A few conventions to be aware of:
 By submitting a PR you agree that your contribution will be licensed under the
 [MIT License](LICENSE) that covers this project.
 
+## Releasing
+
+This section is for maintainers.
+
+### One-time setup: NuGet API key
+
+1. Go to https://www.nuget.org/account/apikeys and create an API key:
+   - **Glob pattern:** `OhData.*`
+   - **Permission:** Push
+   - Set an expiration date and note it for rotation
+2. Add the key to this repo:
+   **Settings → Secrets and variables → Actions → New repository secret**
+   - **Name:** `NUGET_API_KEY`
+   - **Value:** the key from step 1
+
+To rotate the key, repeat step 1 and update the secret in step 2.
+
+### Cutting a release
+
+1. Merge all intended changes into `develop` via PRs.
+2. Create a `release/x.y.z` branch from `develop`.
+3. Update `CHANGELOG.md`: rename `[Unreleased]` to `[x.y.z] - YYYY-MM-DD` and add a fresh `[Unreleased]` section above it. Fix the comparison links at the bottom.
+4. Open a PR from `release/x.y.z` → `main`. Merge once CI is green.
+5. On GitHub, create a **Release** targeting `main` with tag `vx.y.z` (e.g. `v0.1.0`).
+   - The tag **must** match what GitVersion computes from the branch history — the publish workflow validates this and will fail fast if they diverge.
+   - Publishing the release (not draft) triggers the publish workflow automatically.
+6. Verify both `EnGen.OhData.AspNetCore` and `EnGen.OhData.Client` appear on NuGet.org within a few minutes.
+7. Merge `main` back into `develop`.
+
 ## Reporting bugs
 
 Open an issue using the Bug Report template. Include a minimal reproduction
