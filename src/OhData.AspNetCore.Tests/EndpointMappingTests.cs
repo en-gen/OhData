@@ -2238,12 +2238,12 @@ public class EndpointMappingTests
         TrackingRefProfile.AddCalls.Clear();
         TrackingRefProfile.RemoveCalls.Clear();
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<TrackingRefProfile>());
+        using var content = new System.Net.Http.StringContent(
+            "{\"something\":\"else\"}",
+            System.Text.Encoding.UTF8,
+            "application/json");
         HttpResponseMessage response = await fx.Client.PostAsync(
-            "/odata/TrackingParents(1)/Children/$ref",
-            new System.Net.Http.StringContent(
-                "{\"something\":\"else\"}",
-                System.Text.Encoding.UTF8,
-                "application/json"));
+            "/odata/TrackingParents(1)/Children/$ref", content);
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
@@ -2254,12 +2254,12 @@ public class EndpointMappingTests
     {
         TrackingSetRefProfile.SetRefCalls.Clear();
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<TrackingSetRefProfile>());
+        using var content = new System.Net.Http.StringContent(
+            "{\"@odata.id\":\"http://localhost/odata/Children(7)\"}",
+            System.Text.Encoding.UTF8,
+            "application/json");
         HttpResponseMessage response = await fx.Client.PutAsync(
-            "/odata/SetRefParents(1)/PrimaryChild/$ref",
-            new System.Net.Http.StringContent(
-                "{\"@odata.id\":\"http://localhost/odata/Children(7)\"}",
-                System.Text.Encoding.UTF8,
-                "application/json"));
+            "/odata/SetRefParents(1)/PrimaryChild/$ref", content);
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
         Assert.Single(TrackingSetRefProfile.SetRefCalls);
         (int parentId, string relatedId) = TrackingSetRefProfile.SetRefCalls[0];
@@ -2274,12 +2274,12 @@ public class EndpointMappingTests
         // ASP.NET Core returns 405 because GET is registered for the same path.
         TrackingSetRefProfile.SetRefCalls.Clear();
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<TrackingSetRefProfile>());
+        using var content = new System.Net.Http.StringContent(
+            "{\"@odata.id\":\"http://localhost/odata/Children(7)\"}",
+            System.Text.Encoding.UTF8,
+            "application/json");
         HttpResponseMessage response = await fx.Client.PostAsync(
-            "/odata/SetRefParents(1)/PrimaryChild/$ref",
-            new System.Net.Http.StringContent(
-                "{\"@odata.id\":\"http://localhost/odata/Children(7)\"}",
-                System.Text.Encoding.UTF8,
-                "application/json"));
+            "/odata/SetRefParents(1)/PrimaryChild/$ref", content);
         Assert.Equal(HttpStatusCode.MethodNotAllowed, response.StatusCode);
     }
 
@@ -2303,12 +2303,12 @@ public class EndpointMappingTests
         // A nav with only getAll (no addRef) registers GET but not POST.
         // ASP.NET Core returns 405 because another method is registered on the same path.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ReadOnlyNavProfile>());
+        using var content = new System.Net.Http.StringContent(
+            "{\"@odata.id\":\"http://localhost/odata/Children(1)\"}",
+            System.Text.Encoding.UTF8,
+            "application/json");
         HttpResponseMessage response = await fx.Client.PostAsync(
-            "/odata/ReadOnlyParents(1)/Children/$ref",
-            new System.Net.Http.StringContent(
-                "{\"@odata.id\":\"http://localhost/odata/Children(1)\"}",
-                System.Text.Encoding.UTF8,
-                "application/json"));
+            "/odata/ReadOnlyParents(1)/Children/$ref", content);
         Assert.Equal(HttpStatusCode.MethodNotAllowed, response.StatusCode);
     }
 
