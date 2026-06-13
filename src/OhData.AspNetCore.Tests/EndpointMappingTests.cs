@@ -2247,6 +2247,71 @@ public class EndpointMappingTests
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
+    // ── H-1b: single-value nav $ref (setRef → PUT, §11.4.6.3) ───────────────
+
+    [Fact]
+    public async Task NavigationRef_SingleValue_Put_Returns204()
+    {
+        TrackingSetRefProfile.SetRefCalls.Clear();
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<TrackingSetRefProfile>());
+        HttpResponseMessage response = await fx.Client.PutAsync(
+            "/odata/SetRefParents(1)/PrimaryChild/$ref",
+            new System.Net.Http.StringContent(
+                "{\"@odata.id\":\"http://localhost/odata/Children(7)\"}",
+                System.Text.Encoding.UTF8,
+                "application/json"));
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Single(TrackingSetRefProfile.SetRefCalls);
+        (int parentId, string relatedId) = TrackingSetRefProfile.SetRefCalls[0];
+        Assert.Equal(1, parentId);
+        Assert.Contains("7", relatedId);
+    }
+
+    [Fact]
+    public async Task NavigationRef_SingleValue_Post_Returns405()
+    {
+        // POST is not valid for single-value nav; spec requires PUT (§11.4.6.3).
+        // ASP.NET Core returns 405 because GET is registered for the same path.
+        TrackingSetRefProfile.SetRefCalls.Clear();
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<TrackingSetRefProfile>());
+        HttpResponseMessage response = await fx.Client.PostAsync(
+            "/odata/SetRefParents(1)/PrimaryChild/$ref",
+            new System.Net.Http.StringContent(
+                "{\"@odata.id\":\"http://localhost/odata/Children(7)\"}",
+                System.Text.Encoding.UTF8,
+                "application/json"));
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task NavigationRef_SingleValue_Delete_Returns204()
+    {
+        TrackingSetRefProfile.RemoveRefCalls.Clear();
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<TrackingSetRefProfile>());
+        HttpResponseMessage response = await fx.Client.DeleteAsync(
+            "/odata/SetRefParents(1)/PrimaryChild/$ref");
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Single(TrackingSetRefProfile.RemoveRefCalls);
+        (int parentId, string relatedId) = TrackingSetRefProfile.RemoveRefCalls[0];
+        Assert.Equal(1, parentId);
+        Assert.Equal("", relatedId);
+    }
+
+    [Fact]
+    public async Task NavigationRef_Collection_PostWithNoAddRef_Returns405()
+    {
+        // A nav with only getAll (no addRef) registers GET but not POST.
+        // ASP.NET Core returns 405 because another method is registered on the same path.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ReadOnlyNavProfile>());
+        HttpResponseMessage response = await fx.Client.PostAsync(
+            "/odata/ReadOnlyParents(1)/Children/$ref",
+            new System.Net.Http.StringContent(
+                "{\"@odata.id\":\"http://localhost/odata/Children(1)\"}",
+                System.Text.Encoding.UTF8,
+                "application/json"));
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, response.StatusCode);
+    }
+
     // ── H-2: AdvancedConfigure override ──────────────────────────────────────
 
     [Fact]
@@ -2323,6 +2388,46 @@ public class EndpointMappingTests
                     RemoveCalls.Add((parentId, relatedId));
                     return System.Threading.Tasks.Task.CompletedTask;
                 });
+        }
+    }
+
+    private class TrackingSetRefProfile : EntitySetProfile<int, Parent>
+    {
+        internal static readonly System.Collections.Generic.List<(int ParentId, string RelatedId)> SetRefCalls = new();
+        internal static readonly System.Collections.Generic.List<(int ParentId, string RelatedId)> RemoveRefCalls = new();
+        private static readonly System.Collections.Generic.List<Parent> Store = new() { new() { Id = 1, Name = "P1" } };
+
+        public TrackingSetRefProfile() : base(x => x.Id)
+        {
+            EntitySetName = "SetRefParents";
+            GetAll = (ct) => System.Threading.Tasks.Task.FromResult<System.Collections.Generic.IEnumerable<Parent>>(Store);
+            HasOptional(
+                navigation: x => x.PrimaryChild!,
+                get: null,
+                setRef: (parentId, relatedId, ct) =>
+                {
+                    SetRefCalls.Add((parentId, relatedId));
+                    return System.Threading.Tasks.Task.CompletedTask;
+                },
+                removeRef: (parentId, relatedId, ct) =>
+                {
+                    RemoveRefCalls.Add((parentId, relatedId));
+                    return System.Threading.Tasks.Task.CompletedTask;
+                });
+        }
+    }
+
+    private class ReadOnlyNavProfile : EntitySetProfile<int, Parent>
+    {
+        private static readonly System.Collections.Generic.List<Parent> Store = new() { new() { Id = 1, Name = "P1" } };
+
+        public ReadOnlyNavProfile() : base(x => x.Id)
+        {
+            EntitySetName = "ReadOnlyParents";
+            GetAll = (ct) => System.Threading.Tasks.Task.FromResult<System.Collections.Generic.IEnumerable<Parent>>(Store);
+            HasMany(
+                navigation: x => x.Children!,
+                getAll: (parentId, ct) => System.Threading.Tasks.Task.FromResult<System.Collections.Generic.IEnumerable<Child>>(System.Array.Empty<Child>()));
         }
     }
 

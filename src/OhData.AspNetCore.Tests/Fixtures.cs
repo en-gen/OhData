@@ -151,7 +151,7 @@ internal class AuthorizedWidgetProfile : EntitySetProfile<int, Widget>
 }
 
 internal class Child { public int Id { get; set; } public int ParentId { get; set; } public string Name { get; set; } = ""; }
-internal class Parent { public int Id { get; set; } public string Name { get; set; } = ""; public IEnumerable<Child>? Children { get; set; } }
+internal class Parent { public int Id { get; set; } public string Name { get; set; } = ""; public IEnumerable<Child>? Children { get; set; } public Child? PrimaryChild { get; set; } }
 
 internal class ParentWithChildrenProfile : EntitySetProfile<int, Parent>
 {
