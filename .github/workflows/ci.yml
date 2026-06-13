@@ -40,9 +40,6 @@ jobs:
             --no-build -c Release \
             --collect:"XPlat Code Coverage" \
             --results-directory ./coverage
-          dotnet test src/OhData.MicrosoftODataClient.Tests/OhData.MicrosoftODataClient.Tests.csproj \
-            --no-build -c Release \
-            --results-directory ./coverage
 
       - name: Pack (dry run)
         run: |

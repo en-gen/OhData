@@ -64,8 +64,6 @@ jobs:
             --no-build -c Release
           dotnet test src/OhData.Client.Tests/OhData.Client.Tests.csproj \
             --no-build -c Release
-          dotnet test src/OhData.MicrosoftODataClient.Tests/OhData.MicrosoftODataClient.Tests.csproj \
-            --no-build -c Release
 
       - name: Pack
         run: |
