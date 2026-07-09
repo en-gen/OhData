@@ -350,25 +350,29 @@ internal static class OhDataEndpointFactory
 
     // -- JsonNode $select post-processing helpers ---------------------------------
 
-    // Serialize with camelCase so the filtered JsonArray has the same casing as the
-    // rest of the OData response (which goes through ASP.NET Core's camelCase pipeline).
-    // JsonArray nodes are returned as-is by Results.Ok, bypassing that pipeline.
+    // Fallback serializer used when no JsonOptions are configured: camelCase to match
+    // ASP.NET Core's default HttpJsonOptions (PropertyNamingPolicy = CamelCase).
+    // JsonArray nodes pre-serialised here are written as-is by Results.Ok, bypassing
+    // the ASP.NET Core pipeline, so casing must be baked in at this stage.
     private static readonly JsonSerializerOptions _camelCaseSerializerOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
 
     // Unified collection pipeline: Serialize → ETag → Expand → Select.
-    // Serialises exactly once with _camelCaseSerializerOptions, then applies each stage in order.
+    // Serialises exactly once using the configured jsonOptions (falls back to camelCase
+    // when jsonOptions is null, matching ASP.NET Core's default naming policy).
     private static async Task<JsonArray> ApplyCollectionPipelineAsync(
         object[] originalItems,
         ODataQueryOptions options,
         IEntitySetEndpointSource source,
         IEntitySetEndpointSource requestSource,
+        JsonSerializerOptions? jsonOptions,
         CancellationToken ct)
     {
-        // Stage 1: Serialize once with camelCase options.
-        JsonArray json = JsonSerializer.SerializeToNode(originalItems, _camelCaseSerializerOptions)!.AsArray();
+        // Stage 1: Serialize once using the configured naming policy.
+        var serializerOptions = jsonOptions ?? _camelCaseSerializerOptions;
+        JsonArray json = JsonSerializer.SerializeToNode(originalItems, serializerOptions)!.AsArray();
 
         // Stage 2: Inject @odata.etag using the original (pre-expand) items for ETag computation.
         if (source.HasETag)
@@ -405,9 +409,12 @@ internal static class OhDataEndpointFactory
                         object? related = await navRoute.Handler(keyVal, ct);
                         if (json[i] is JsonObject obj)
                         {
-                            obj[propName] = related is null
+                            // Apply the naming policy so the expand key matches the parent's
+                            // property casing (e.g. "children" for camelCase, "Children" for PascalCase).
+                            string expandKey = serializerOptions.PropertyNamingPolicy?.ConvertName(propName) ?? propName;
+                            obj[expandKey] = related is null
                                 ? null
-                                : JsonSerializer.SerializeToNode(related, _camelCaseSerializerOptions);
+                                : JsonSerializer.SerializeToNode(related, serializerOptions);
                         }
                     }
                 }
@@ -479,7 +486,8 @@ internal static class OhDataEndpointFactory
     // an unknown property name.
     private static (Dictionary<string, object?>? Envelope, IResult? Error) BuildNavEnvelope(
         string baseUrl, string name, string key, string navPropertyName,
-        long? navCount, object[] itemArray, HttpContext ctx, Type? navItemType)
+        long? navCount, object[] itemArray, HttpContext ctx, Type? navItemType,
+        JsonSerializerOptions? jsonOptions)
     {
         // Apply $select post-processing for navigation results if requested.
         // We parse the $select query param directly (navigation routes don't go through
@@ -504,7 +512,8 @@ internal static class OhDataEndpointFactory
                 }
             }
 
-            var json = JsonSerializer.SerializeToNode(itemArray, _camelCaseSerializerOptions)!.AsArray();
+            var navSerializerOptions = jsonOptions ?? _camelCaseSerializerOptions;
+            var json = JsonSerializer.SerializeToNode(itemArray, navSerializerOptions)!.AsArray();
             foreach (JsonObject obj in json.OfType<JsonObject>())
             {
                 var toRemove = obj.Select(p => p.Key)
@@ -636,7 +645,7 @@ internal static class OhDataEndpointFactory
 
                     object[] items = queryable.ToArray();
 
-                    JsonArray finalItems = await ApplyCollectionPipelineAsync(items, options, source, s, ct);
+                    JsonArray finalItems = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, ct);
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
@@ -771,7 +780,7 @@ internal static class OhDataEndpointFactory
                         nextLink = BuildNextPageLink(ctx, token);
                     }
 
-                    JsonArray finalItems = await ApplyCollectionPipelineAsync(items, options, source, s, ct);
+                    JsonArray finalItems = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, ct);
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
@@ -827,7 +836,7 @@ internal static class OhDataEndpointFactory
                         var searchResults = await s.InvokeSearchAsync(searchTerm.ToString(), ct);
                         object[] searchItems = searchResults.ToArray();
 
-                        JsonArray searchFinal = await ApplyCollectionPipelineAsync(searchItems, options, source, s, ct);
+                        JsonArray searchFinal = await ApplyCollectionPipelineAsync(searchItems, options, source, s, jsonOptions, ct);
                         string searchBaseUrl = BuildBaseUrl(ctx, prefix);
                         var searchEnvelope = new Dictionary<string, object?>();
                         searchEnvelope["@odata.context"] = $"{searchBaseUrl}/$metadata#{name}";
@@ -842,7 +851,7 @@ internal static class OhDataEndpointFactory
                     var enumerable = result as IEnumerable<TModel> ?? Enumerable.Empty<TModel>();
                     var rawItems = enumerable.ToArray();
 
-                    JsonArray finalItems = await ApplyCollectionPipelineAsync(rawItems, options, source, s, ct);
+                    JsonArray finalItems = await ApplyCollectionPipelineAsync(rawItems, options, source, s, jsonOptions, ct);
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
@@ -1247,7 +1256,7 @@ internal static class OhDataEndpointFactory
 
                             object[] itemArray = items.ToArray();
                             // Batch 3: apply $select post-processing to navigation collection results
-                            var (navEnv, navEnvError) = BuildNavEnvelope(baseUrl, name, key, navPropertyName, navCount, itemArray, ctx, navItemType);
+                            var (navEnv, navEnvError) = BuildNavEnvelope(baseUrl, name, key, navPropertyName, navCount, itemArray, ctx, navItemType, jsonOptions);
                             if (navEnvError is not null) return navEnvError;
                             return Results.Ok(navEnv);
                         }
