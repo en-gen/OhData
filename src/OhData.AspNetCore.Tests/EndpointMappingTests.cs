@@ -1281,7 +1281,7 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ExpandableParentProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ExpandableParents?$expand=Children");
         var first = json.GetProperty("value")[0];
-        Assert.True(first.TryGetProperty("Children", out var children));
+        Assert.True(first.TryGetProperty("children", out var children));
         Assert.Equal(JsonValueKind.Array, children.ValueKind);
     }
 
@@ -1291,7 +1291,7 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ExpandableParentProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ExpandableParents?$expand=Children");
         var first = json.GetProperty("value")[0];
-        var children = first.GetProperty("Children");
+        var children = first.GetProperty("children");
         Assert.True(children.GetArrayLength() > 0);
     }
 
@@ -1571,7 +1571,7 @@ public class EndpointMappingTests
         var value = json.GetProperty("value");
         Assert.True(value.GetArrayLength() > 0);
         var first = value[0];
-        Assert.True(first.TryGetProperty("Children", out var children));
+        Assert.True(first.TryGetProperty("children", out var children));
         Assert.Equal(JsonValueKind.Array, children.ValueKind);
     }
 
@@ -1584,7 +1584,7 @@ public class EndpointMappingTests
         // Both parents should have their children expanded
         for (int i = 0; i < value.GetArrayLength(); i++)
         {
-            Assert.True(value[i].TryGetProperty("Children", out var children));
+            Assert.True(value[i].TryGetProperty("children", out var children));
             Assert.Equal(JsonValueKind.Array, children.ValueKind);
         }
     }
