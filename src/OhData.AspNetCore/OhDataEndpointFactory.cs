@@ -478,6 +478,18 @@ internal static class OhDataEndpointFactory
                 props.Add(psi.SelectedPath.FirstSegment.Identifier);
         }
 
+        // When only $expand (no $select) is used, AllSelected is false but SelectedItems
+        // has no PathSelectItems — only ExpandedNavigationSelectItems. An empty set would
+        // strip every property in Stage 4, so treat this as "keep all".
+        if (props.Count == 0) return null;
+
+        // Preserve expanded nav properties so they survive Stage 4 when $select and
+        // $expand are combined (e.g. $select=Name&$expand=Children keeps both).
+        foreach (var ensi in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
+        {
+            props.Add(ensi.PathToNavigationProperty.FirstSegment.Identifier);
+        }
+
         return props;
     }
 
