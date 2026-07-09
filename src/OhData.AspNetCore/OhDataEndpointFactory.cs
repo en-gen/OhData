@@ -478,10 +478,9 @@ internal static class OhDataEndpointFactory
 
         // Preserve expanded nav properties so they survive Stage 4 when $select and
         // $expand are combined (e.g. $select=Name&$expand=Children keeps both).
-        foreach (var item in clause.SelectedItems)
+        foreach (var ensi in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
         {
-            if (item is ExpandedNavigationSelectItem ensi)
-                props.Add(ensi.PathToNavigationProperty.FirstSegment.Identifier);
+            props.Add(ensi.PathToNavigationProperty.FirstSegment.Identifier);
         }
 
         return props;
