@@ -13,7 +13,7 @@ jobs:
       HUSKY: 0   # skip git hook installation in CI
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0  # GitVersion needs full history
 
