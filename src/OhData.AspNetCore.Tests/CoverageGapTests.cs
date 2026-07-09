@@ -546,7 +546,7 @@ public class CoverageGapTests
     public async Task ETag_IfMatch_Wildcard_AlwaysMatchesOnPatch()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagBodyProfile>());
-        var request = new HttpRequestMessage(HttpMethod.Patch, "/odata/ETagBodyWidgets(1)");
+        using var request = new HttpRequestMessage(HttpMethod.Patch, "/odata/ETagBodyWidgets(1)");
         request.Headers.TryAddWithoutValidation("If-Match", "*");
         request.Content = new StringContent("{\"name\":\"Patched\"}", Encoding.UTF8, "application/json");
         var response = await fx.Client.SendAsync(request);
@@ -559,7 +559,7 @@ public class CoverageGapTests
     public async Task GetById_IfNoneMatch_Wildcard_Returns304()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagWidgetProfile>());
-        var req = new HttpRequestMessage(HttpMethod.Get, "/odata/ETagWidgets(1)");
+        using var req = new HttpRequestMessage(HttpMethod.Get, "/odata/ETagWidgets(1)");
         req.Headers.TryAddWithoutValidation("If-None-Match", "*");
         var response = await fx.Client.SendAsync(req);
         Assert.Equal(HttpStatusCode.NotModified, response.StatusCode);
