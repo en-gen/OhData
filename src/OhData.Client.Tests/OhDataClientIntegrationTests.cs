@@ -44,6 +44,83 @@ public class ETagClientIntegrationTests : IAsyncDisposable
         Assert.Null(etag);
     }
 
+    // ── M-8: Conditional GET (If-None-Match) ────────────────────────────────────
+
+    [Fact]
+    public async Task GetIfChangedAsync_WithCurrentETag_Returns304AndNoEntity()
+    {
+        var (_, etag) = await Client.For<Widget>("ETagWidgets").Key(1).GetWithETagAsync();
+        Assert.NotNull(etag);
+
+        var (entity, returnedETag, notModified) = await Client.For<Widget>("ETagWidgets").Key(1)
+            .GetIfChangedAsync(ifNoneMatch: etag);
+
+        Assert.True(notModified);
+        Assert.Null(entity);
+        Assert.Equal(etag, returnedETag);
+    }
+
+    [Fact]
+    public async Task GetIfChangedAsync_WithStaleETag_ReturnsFreshEntityAndNotModifiedFalse()
+    {
+        var (entity, returnedETag, notModified) = await Client.For<Widget>("ETagWidgets").Key(1)
+            .GetIfChangedAsync(ifNoneMatch: "some-stale-etag-value");
+
+        Assert.False(notModified);
+        Assert.NotNull(entity);
+        Assert.Equal("Sprocket", entity!.Name);
+        Assert.NotNull(returnedETag);
+    }
+
+    [Fact]
+    public async Task GetIfChangedAsync_WithoutIfNoneMatch_BehavesLikeUnconditionalGet()
+    {
+        var (entity, etag, notModified) = await Client.For<Widget>("ETagWidgets").Key(1)
+            .GetIfChangedAsync();
+
+        Assert.False(notModified);
+        Assert.NotNull(entity);
+        Assert.NotNull(etag);
+    }
+
+    [Fact]
+    public async Task GetIfChangedAsync_MissingKey_ReturnsNotFoundTriple()
+    {
+        var (entity, etag, notModified) = await Client.For<Widget>("ETagWidgets").Key(999)
+            .GetIfChangedAsync(ifNoneMatch: "irrelevant-etag");
+
+        Assert.False(notModified);
+        Assert.Null(entity);
+        Assert.Null(etag);
+    }
+
+    [Fact]
+    public async Task GetIfChangedAsync_ETagFrom304Response_UsableAsIfMatchOnSubsequentWrite()
+    {
+        // Interaction with the existing write-side ifMatch parameters: the ETag returned
+        // from a 304 Not Modified response must be just as usable for optimistic
+        // concurrency as one returned from a normal 200 GET.
+        var (_, initialETag) = await Client.For<Widget>("ETagWidgets").Key(1).GetWithETagAsync();
+        Assert.NotNull(initialETag);
+
+        var (entity, notModifiedETag, notModified) = await Client.For<Widget>("ETagWidgets").Key(1)
+            .GetIfChangedAsync(ifNoneMatch: initialETag);
+        Assert.True(notModified);
+        Assert.Null(entity);
+        Assert.Equal(initialETag, notModifiedETag);
+
+        var updated = await Client.For<Widget>("ETagWidgets").Key(1)
+            .PutAsync(new Widget { Id = 1, Name = "UpdatedViaConditionalGetETag" }, ifMatch: notModifiedETag);
+        Assert.NotNull(updated);
+        Assert.Equal("UpdatedViaConditionalGetETag", updated!.Name);
+
+        // The old ETag is now stale — a second conditional GET with it must report a change.
+        var (changedEntity, _, stillNotModified) = await Client.For<Widget>("ETagWidgets").Key(1)
+            .GetIfChangedAsync(ifNoneMatch: notModifiedETag);
+        Assert.False(stillNotModified);
+        Assert.Equal("UpdatedViaConditionalGetETag", changedEntity!.Name);
+    }
+
     // ── M-8: ETag PUT ───────────────────────────────────────────────────────────
 
     [Fact]
@@ -295,6 +372,30 @@ public class OhDataClientIntegrationTests : IAsyncDisposable
     {
         var widget = await Client.For<Widget>().FirstOrDefaultAsync();
         Assert.NotNull(widget);
+    }
+
+    // ── L-12: streaming GET (HttpCompletionOption.ResponseHeadersRead) ─────────────
+    // GET now returns as soon as headers arrive instead of buffering the whole body
+    // up front. These tests confirm error-body reading still works end-to-end for
+    // both collection and single-entity GETs once the response is non-2xx.
+
+    [Fact]
+    public async Task ToListAsync_InvalidRawFilter_Throws400WithReadableErrorBody()
+    {
+        var ex = await Assert.ThrowsAsync<ODataClientException>(
+            () => Client.For<Widget>().Filter("Name eq (((").ToListAsync());
+        Assert.Equal(400, ex.StatusCode);
+        Assert.NotEmpty(ex.ODataErrorMessage);
+    }
+
+    [Fact]
+    public async Task GetAsync_ReadsFullEntityBody_AfterHeadersOnlyCompletion()
+    {
+        // A regular successful single-entity GET must still deserialize the full body
+        // even though only headers are guaranteed to have arrived when GetAsync returns.
+        var widget = await Client.For<Widget>().Key(1).GetAsync();
+        Assert.NotNull(widget);
+        Assert.Equal("Sprocket", widget!.Name);
     }
 
     [Fact]

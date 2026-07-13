@@ -184,8 +184,11 @@ internal sealed class FilterTranslator : ExpressionVisitor
         }
         else
         {
-            // Captured variable or outer-scope field — evaluate at translation time
-            object? value = Expression.Lambda<Func<object?>>(Expression.Convert(node, typeof(object))).Compile(preferInterpretation: true)();
+            // Captured variable or outer-scope field — evaluate at translation time.
+            // TryEvaluateAsObject resolves the common closure field/property-access case via
+            // direct reflection (no Expression.Compile() at all); it only falls back to
+            // compiling an interpreted lambda for expressions reflection can't walk.
+            object? value = TryEvaluateAsObject(node);
             _sb.Append(FormatLiteral(value));
         }
         return node;
