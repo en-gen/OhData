@@ -251,7 +251,7 @@ public class MetadataCsdlTests
             .FirstOrDefault(n => (string)n.Attribute("Name")! == "OptionalChild");
         Assert.NotNull(optionalNav);
         // Single-valued nav properties default Nullable="true" when omitted.
-        bool nullable = optionalNav!.Attribute("Nullable") is { } n ? (bool)n : true;
+        bool nullable = optionalNav!.Attribute("Nullable") is not { } n || (bool)n;
         Assert.True(nullable);
         Assert.DoesNotContain("Collection(", (string)optionalNav.Attribute("Type")!, StringComparison.Ordinal);
     }
