@@ -103,6 +103,26 @@ internal static class OhDataEndpointFactory
         ctx.Request.Headers.TryGetValue("Prefer", out var prefer) &&
         prefer.ToString().Contains("return=minimal", StringComparison.OrdinalIgnoreCase);
 
+    // BUG 1 fix: POST/PUT/PATCH bodies are read and deserialized manually (see below) rather
+    // than via a `TModel model` minimal-API parameter, so content-type negotiation must be done
+    // by hand too -- otherwise a mismatched Content-Type would either be silently ignored (we'd
+    // try to parse non-JSON as JSON) or, if left to ASP.NET Core's implicit binder/`.Accepts<T>()`
+    // metadata, would short-circuit with an empty 415 body before this OData error-formatting
+    // code ever runs. Media-type parameters (e.g. ";odata.metadata=full", ";charset=utf-8") are
+    // stripped before comparison since they don't affect whether the payload is JSON.
+    private static bool IsJsonContentType(HttpContext ctx)
+    {
+        string? contentType = ctx.Request.ContentType;
+        if (string.IsNullOrEmpty(contentType)) return false;
+        string mediaType = contentType.Split(';')[0].Trim();
+        return string.Equals(mediaType, "application/json", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static IResult UnsupportedMediaTypeError(HttpContext ctx) =>
+        ODataError(415, "UnsupportedMediaType",
+            $"The content type '{ctx.Request.ContentType ?? "(none)"}' is not supported. " +
+            "Use 'application/json'.");
+
     private static IEnumerable<string> ParseETagList(string raw)
     {
         // Split comma-separated ETags per RFC 7232 §3.1.
@@ -1028,8 +1048,23 @@ internal static class OhDataEndpointFactory
         {
             // If-None-Match on POST is not supported: the framework cannot extract the key from
             // the body without knowing the key property. Developers should handle this themselves.
-            var rb = entityGroup.MapPost("", async (TModel model, HttpContext ctx, CancellationToken ct) =>
+            var rb = entityGroup.MapPost("", async (HttpContext ctx, CancellationToken ct) =>
             {
+                if (!IsJsonContentType(ctx)) return UnsupportedMediaTypeError(ctx);
+
+                TModel? model;
+                try
+                {
+                    model = await JsonSerializer.DeserializeAsync<TModel>(ctx.Request.Body, jsonOptions, ct);
+                }
+                catch (JsonException ex)
+                {
+                    return ODataError(400, "InvalidBody", ex.Message);
+                }
+
+                if (model is null)
+                    return ODataError(400, "InvalidBody", "Request body is empty or could not be deserialized.");
+
                 var s = ResolveHandlers(ctx);
                 logger?.LogDebug("POST {Prefix}/{Name}", prefix, name);
                 object? result = await s.InvokePostAsync(model, ct);
@@ -1075,18 +1110,22 @@ internal static class OhDataEndpointFactory
                     return Results.Created(odataId, createdNode);
                 }
             });
-            rb.WithTags(name).Produces<TModel>(201).Produces(400);
+            rb.WithTags(name).Produces<TModel>(201).Produces(400).Produces(415);
         }
 
         if (source.HasPut)
         {
-            var rb = entityAuthGroup.MapPut($"/{name}({{key}})", async (string key, TModel model, HttpContext ctx, CancellationToken ct) =>
+            var rb = entityAuthGroup.MapPut($"/{name}({{key}})", async (string key, HttpContext ctx, CancellationToken ct) =>
             {
                 logger?.LogDebug("PUT {Prefix}/{Name}({Key})", prefix, name, SanitizeLogValue(key));
+                if (!IsJsonContentType(ctx)) return UnsupportedMediaTypeError(ctx);
                 try
                 {
                     var s = ResolveHandlers(ctx);
                     object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
+                    TModel? model = await JsonSerializer.DeserializeAsync<TModel>(ctx.Request.Body, jsonOptions, ct);
+                    if (model is null)
+                        return ODataError(400, "InvalidBody", "Request body is empty or could not be deserialized.");
                     string bodyKeyStr = s.InvokeGetKeyString(model);
                     string parsedKeyStr = string.Format(CultureInfo.InvariantCulture, "{0}", parsedKey);
                     if (!string.Equals(parsedKeyStr, bodyKeyStr, StringComparison.Ordinal))
@@ -1141,13 +1180,17 @@ internal static class OhDataEndpointFactory
                         return Results.Created(odataId, ODataEntityNode(ctx, prefix, $"{name}/$entity", result, jsonOptions, odataId: odataId, etag: putEtag));
                     return ODataEntityResult(ctx, prefix, name, result, jsonOptions, odataId: odataId, etag: putEtag);
                 }
+                catch (JsonException ex)
+                {
+                    return ODataError(400, "InvalidBody", ex.Message);
+                }
                 catch (FormatException ex)
                 {
                     logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
                     return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
                 }
             });
-            rb.WithTags(name).Produces<TModel>(200).Produces(400).Produces(404);
+            rb.WithTags(name).Produces<TModel>(200).Produces(400).Produces(404).Produces(415);
         }
 
         if (source.HasPatch)
@@ -1155,12 +1198,23 @@ internal static class OhDataEndpointFactory
             var rb = entityAuthGroup.MapMethods($"/{name}({{key}})", PatchMethod, async (string key, HttpContext ctx, CancellationToken ct) =>
             {
                 logger?.LogDebug("PATCH {Prefix}/{Name}({Key})", prefix, name, SanitizeLogValue(key));
+                if (!IsJsonContentType(ctx)) return UnsupportedMediaTypeError(ctx);
                 try
                 {
                     var s = ResolveHandlers(ctx);
                     object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
                     var body = await JsonSerializer.DeserializeAsync<JsonElement>(
                         ctx.Request.Body, jsonOptions, ct);
+
+                    // BUG 2 fix: a syntactically valid JSON payload that isn't a JSON object (array,
+                    // string, number, bool, null) would previously reach body.EnumerateObject() below,
+                    // which throws InvalidOperationException for any non-Object JsonValueKind. That
+                    // exception type isn't caught by this block's catch clauses, so it propagated as
+                    // an unhandled 500. Reject it here as a normal 400 OData error instead.
+                    if (body.ValueKind != JsonValueKind.Object)
+                    {
+                        return ODataError(400, "InvalidBody", "Request body must be a JSON object.");
+                    }
 
                     // Only validate key mismatch if the key property was explicitly present in the body.
                     // PATCH is a partial update -- the key may be omitted. URL key is authoritative.
@@ -1232,8 +1286,10 @@ internal static class OhDataEndpointFactory
                     return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
                 }
             });
-            rb.Accepts<TModel>("application/json");
-            rb.WithTags(name).Produces<TModel>(200).Produces(400).Produces(404);
+            // Note: no .Accepts<TModel>("application/json") here -- that metadata caused ASP.NET
+            // Core to reject non-JSON Content-Type requests with an empty 415 body before this
+            // handler's manual IsJsonContentType() check (and its OData error formatting) ran.
+            rb.WithTags(name).Produces<TModel>(200).Produces(400).Produces(404).Produces(415);
         }
 
         if (source.HasDelete)
