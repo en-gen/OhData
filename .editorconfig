@@ -40,6 +40,30 @@ dotnet_style_qualification_for_property = false:suggestion
 dotnet_style_qualification_for_method   = false:suggestion
 dotnet_style_qualification_for_event    = false:suggestion
 
+# ── Analyzer severity map ────────────────────────────────────────────────────
+#
+# TreatWarningsAsErrors=true promotes every warning to a build error. The rules
+# below are the intentional exceptions — diagnostics that are advisory in this
+# codebase but shouldn't break the build. Adjust here rather than adding NoWarn
+# per-project, so the policy is visible in one place.
+#
+# Production code (.cs in non-test/bench projects) uses the strict defaults
+# from TreatWarningsAsErrors + AnalysisLevel=latest-Recommended.
+
+# Test and benchmark projects: relax rules that are noise in test code
+[src/**/*Tests*/**/*.cs]
+# CS1591: missing XML doc comment — tests don't expose a public API
+dotnet_diagnostic.CS1591.severity = none
+# CA2000: dispose objects before losing scope — test HTTP content is
+# disposed by the framework on request teardown; flagging it is noise
+dotnet_diagnostic.CA2000.severity = suggestion
+# CA1707: identifiers should not contain underscores — test method names use_underscores
+dotnet_diagnostic.CA1707.severity = none
+
+[src/**/*Bench*/**/*.cs, src/**/*TestBench*/**/*.cs]
+dotnet_diagnostic.CS1591.severity = none
+dotnet_diagnostic.CA2000.severity = suggestion
+
 [*.{yml,yaml}]
 indent_size = 2
 
