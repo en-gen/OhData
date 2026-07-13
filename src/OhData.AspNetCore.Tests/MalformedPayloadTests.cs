@@ -97,8 +97,8 @@ public class MalformedPayloadTests
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
         string nested = string.Concat(Enumerable.Repeat("{\"a\":", 100)) + "1" + string.Concat(Enumerable.Repeat("}", 100));
-        var response = await fx.Client.PostAsync("/odata/MalformedWidgets",
-            new StringContent(nested, Encoding.UTF8, "application/json"));
+        using var content = new StringContent(nested, Encoding.UTF8, "application/json");
+        var response = await fx.Client.PostAsync("/odata/MalformedWidgets", content);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAssertingODataError();
