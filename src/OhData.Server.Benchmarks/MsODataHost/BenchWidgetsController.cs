@@ -1,6 +1,5 @@
 using System.Collections.Generic;
 using System.Linq;
-using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.OData.Deltas;
@@ -17,20 +16,17 @@ namespace OhData.Server.Benchmarks.MsODataHost;
 /// seeded store, writes return the would-be result without mutating it so every benchmark
 /// iteration sees the identical dataset.
 /// </summary>
-[Authorize]
 public sealed class BenchWidgetsController : ODataController
 {
     // One store per host process; seeded identically to the OhData host's store.
     private static readonly List<BenchWidget> Store = BenchmarkData.CreateWidgets();
 
-    [AllowAnonymous]
     [EnableQuery(PageSize = BenchmarkData.PageSize, MaxTop = BenchmarkData.PageSize)]
     public IActionResult Get()
     {
         return Ok(Store.AsQueryable());
     }
 
-    [AllowAnonymous]
     [EnableQuery]
     public IActionResult Get(int key)
     {

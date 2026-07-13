@@ -15,20 +15,26 @@ ODataController + `[EnableQuery]` pipeline in **all 11** scenarios:
 
 | Scenario | OhData Mean | OhData Alloc | MS OData Mean | MS OData Alloc | Speedup | Alloc ratio |
 |---|---:|---:|---:|---:|---:|---:|
-| GetAll page (100) | 981 µs | 124 KB | 2,847 µs | 781 KB | **2.9×** | 6.3× |
-| $filter | 2,203 µs | 138 KB | 3,940 µs | 825 KB | **1.8×** | 6.0× |
-| $orderby | 1,317 µs | 155 KB | 3,856 µs | 838 KB | **2.9×** | 5.4× |
-| $select | 1,047 µs | 253 KB | 2,102 µs | 339 KB | **2.0×** | 1.3× |
-| $top + $skip | 1,627 µs | 103 KB | 2,499 µs | 472 KB | **1.5×** | 4.6× |
-| $count=true (+$filter) | 3,805 µs | 157 KB | 5,538 µs | 842 KB | **1.5×** | 5.4× |
-| GetById | 57 µs | 16 KB | 129 µs | 48 KB | **2.3×** | 3.0× |
-| POST | 67 µs | 19 KB | 329 µs | 144 KB | **4.9×** | 7.7× |
-| PUT | 66 µs | 19 KB | 327 µs | 148 KB | **4.9×** | 7.7× |
-| PATCH | 68 µs | 19 KB | 343 µs | 137 KB | **5.0×** | 7.1× |
-| DELETE | 24 µs | 11 KB | 39 µs | 14 KB | **1.6×** | 1.3× |
+| GetAll page (100) | 763 µs | 124 KB | 2,821 µs | 781 KB | **3.7×** | 6.3× |
+| $filter | 1,778 µs | 138 KB | 3,393 µs | 824 KB | **1.9×** | 6.0× |
+| $orderby | 968 µs | 155 KB | 2,949 µs | 837 KB | **3.0×** | 5.4× |
+| $select | 878 µs | 253 KB | 1,858 µs | 339 KB | **2.1×** | 1.3× |
+| $top + $skip | 1,262 µs | 103 KB | 2,061 µs | 472 KB | **1.6×** | 4.6× |
+| $count=true (+$filter) | 2,831 µs | 157 KB | 4,740 µs | 842 KB | **1.7×** | 5.4× |
+| GetById | 37 µs | 16 KB | 112 µs | 48 KB | **3.0×** | 3.0× |
+| POST | 51 µs | 19 KB | 286 µs | 144 KB | **5.6×** | 7.7× |
+| PUT | 57 µs | 19 KB | 281 µs | 148 KB | **4.9×** | 7.7× |
+| PATCH | 53 µs | 19 KB | 325 µs | 137 KB | **6.2×** | 7.1× |
+| DELETE | 16 µs | 11 KB | 24 µs | 14 KB | **1.5×** | 1.3× |
 
-The biggest deltas are on writes (POST/PUT/PATCH ~5× — MS OData's OData-JSON input/output
-formatters and EDM-bound serialization dominate) and full-page reads (GetAllPage/OrderBy ~2.9× —
+> **Re-measured 2026-07-13** after removing a stray `[Authorize]` attribute from
+> `BenchWidgetsController` that broke the MS OData host's write endpoints in the committed
+> code (the originally published figures predated the attribute and were not reproducible
+> from the repo). Direction and rough magnitude are unchanged; the figures above are from
+> the current committed state and reproduce via the commands at the bottom of this page.
+
+The biggest deltas are on writes (POST/PUT/PATCH ~5-6× — MS OData's OData-JSON input/output
+formatters and EDM-bound serialization dominate) and full-page reads (GetAllPage/OrderBy ~3-3.7× —
 MS OData's ODataResourceSerializer per-entity envelope work vs OhData's System.Text.Json
 serialization).
 
@@ -46,30 +52,30 @@ IterationCount=20  WarmupCount=5
 
 | Method             | Categories | Mean        | Error      | StdDev     | Ratio | RatioSD | Gen0    | Gen1    | Allocated | Alloc Ratio |
 |------------------- |----------- |------------:|-----------:|-----------:|------:|--------:|--------:|--------:|----------:|------------:|
-| OhData_CountTrue   | CountTrue  | 3,804.75 μs | 225.944 μs | 251.137 μs |  1.00 |    0.09 |  7.8125 |       - | 157.09 KB |        1.00 |
-| MsOData_CountTrue  | CountTrue  | 5,538.03 μs | 551.152 μs | 565.992 μs |  1.46 |    0.17 | 31.2500 |       - | 841.64 KB |        5.36 |
-| OhData_Delete      | Delete     |    24.02 μs |   2.436 μs |   2.805 μs |  1.01 |    0.17 |  0.6104 |       - |  10.69 KB |        1.00 |
-| MsOData_Delete     | Delete     |    38.62 μs |   1.988 μs |   2.289 μs |  1.63 |    0.22 |  0.7324 |       - |  13.79 KB |        1.29 |
-| OhData_Filter      | Filter     | 2,202.69 μs | 107.154 μs | 119.102 μs |  1.00 |    0.08 |  7.8125 |  3.9063 | 138.31 KB |        1.00 |
-| MsOData_Filter     | Filter     | 3,939.51 μs | 144.318 μs | 141.739 μs |  1.79 |    0.11 | 31.2500 |       - | 824.91 KB |        5.96 |
-| OhData_GetAllPage  | GetAllPage |   980.68 μs |  59.074 μs |  65.661 μs |  1.00 |    0.10 |  5.8594 |  1.9531 | 123.74 KB |        1.00 |
-| MsOData_GetAllPage | GetAllPage | 2,846.72 μs | 224.493 μs | 258.527 μs |  2.92 |    0.33 | 46.8750 | 15.6250 | 780.71 KB |        6.31 |
-| OhData_GetById     | GetById    |    56.96 μs |   9.419 μs |  10.469 μs |  1.03 |    0.25 |  0.9766 |       - |  15.95 KB |        1.00 |
-| MsOData_GetById    | GetById    |   128.96 μs |   9.666 μs |   9.927 μs |  2.33 |    0.40 |  2.9297 |       - |  48.33 KB |        3.03 |
-| OhData_OrderBy     | OrderBy    | 1,317.10 μs |  40.729 μs |  43.579 μs |  1.00 |    0.05 |  7.8125 |  3.9063 | 155.48 KB |        1.00 |
-| MsOData_OrderBy    | OrderBy    | 3,856.49 μs | 229.954 μs | 264.816 μs |  2.93 |    0.22 | 46.8750 | 15.6250 | 837.74 KB |        5.39 |
-| OhData_Patch       | Patch      |    68.36 μs |   3.193 μs |   3.279 μs |  1.00 |    0.06 |  0.9766 |       - |  19.25 KB |        1.00 |
-| MsOData_Patch      | Patch      |   342.58 μs |  63.232 μs |  70.282 μs |  5.02 |    1.03 |  7.8125 |  0.9766 | 137.26 KB |        7.13 |
-| OhData_Post        | Post       |    66.86 μs |   3.542 μs |   3.637 μs |  1.00 |    0.07 |  0.9766 |       - |  18.62 KB |        1.00 |
-| MsOData_Post       | Post       |   328.83 μs |  62.556 μs |  69.531 μs |  4.93 |    1.05 |  8.7891 |  1.9531 | 143.58 KB |        7.71 |
-| OhData_Put         | Put        |    66.07 μs |   3.119 μs |   3.203 μs |  1.00 |    0.07 |  0.9766 |       - |  19.17 KB |        1.00 |
-| MsOData_Put        | Put        |   326.88 μs |  68.218 μs |  78.560 μs |  4.96 |    1.19 |  8.7891 |  0.9766 | 148.27 KB |        7.74 |
-| OhData_Select      | Select     | 1,046.65 μs |  39.404 μs |  43.798 μs |  1.00 |    0.06 | 13.6719 |  3.9063 | 252.67 KB |        1.00 |
-| MsOData_Select     | Select     | 2,101.56 μs | 232.826 μs | 258.786 μs |  2.01 |    0.26 | 15.6250 |  7.8125 | 339.17 KB |        1.34 |
-| OhData_TopSkip     | TopSkip    | 1,626.58 μs |  38.157 μs |  42.411 μs |  1.00 |    0.04 |  5.8594 |  1.9531 | 103.01 KB |        1.00 |
-| MsOData_TopSkip    | TopSkip    | 2,499.03 μs | 227.889 μs | 243.838 μs |  1.54 |    0.15 | 15.6250 |       - | 471.67 KB |        4.58 |
+| OhData_CountTrue   | CountTrue  | 2,830.62 μs |  58.959 μs |  57.906 μs |  1.00 |    0.03 |  7.8125 |  3.9063 | 156.64 KB |        1.00 |
+| MsOData_CountTrue  | CountTrue  | 4,740.09 μs | 238.258 μs | 274.378 μs |  1.68 |    0.10 | 46.8750 | 15.6250 | 841.55 KB |        5.37 |
+| OhData_Delete      | Delete     |    15.62 μs |   2.520 μs |   2.902 μs |  1.03 |    0.27 |  0.6104 |       - |  10.66 KB |        1.00 |
+| MsOData_Delete     | Delete     |    23.97 μs |   0.301 μs |   0.335 μs |  1.59 |    0.29 |  0.7324 |       - |  13.72 KB |        1.29 |
+| OhData_Filter      | Filter     | 1,777.54 μs | 205.552 μs | 236.714 μs |  1.02 |    0.18 |  7.8125 |  3.9063 | 138.44 KB |        1.00 |
+| MsOData_Filter     | Filter     | 3,393.47 μs | 270.389 μs | 311.380 μs |  1.94 |    0.28 | 46.8750 | 15.6250 | 823.91 KB |        5.95 |
+| OhData_GetAllPage  | GetAllPage |   762.96 μs |  60.572 μs |  67.325 μs |  1.01 |    0.12 |  5.8594 |  1.9531 | 123.85 KB |        1.00 |
+| MsOData_GetAllPage | GetAllPage | 2,820.89 μs | 389.254 μs | 432.654 μs |  3.72 |    0.63 | 46.8750 | 15.6250 | 781.21 KB |        6.31 |
+| OhData_GetById     | GetById    |    36.84 μs |   7.535 μs |   7.738 μs |  1.03 |    0.26 |  0.9766 |       - |  15.95 KB |        1.00 |
+| MsOData_GetById    | GetById    |   111.52 μs |   7.109 μs |   7.300 μs |  3.12 |    0.51 |  2.9297 |       - |  48.47 KB |        3.04 |
+| OhData_OrderBy     | OrderBy    |   967.65 μs |  18.200 μs |  17.875 μs |  1.00 |    0.03 |  7.8125 |  3.9063 | 155.33 KB |        1.00 |
+| MsOData_OrderBy    | OrderBy    | 2,949.10 μs | 322.721 μs | 345.308 μs |  3.05 |    0.35 | 46.8750 | 15.6250 | 837.49 KB |        5.39 |
+| OhData_Patch       | Patch      |    52.61 μs |   7.039 μs |   7.228 μs |  1.01 |    0.18 |  0.9766 |       - |  19.25 KB |        1.00 |
+| MsOData_Patch      | Patch      |   324.69 μs |  96.321 μs | 110.923 μs |  6.26 |    2.21 |  7.8125 |  0.9766 | 137.19 KB |        7.13 |
+| OhData_Post        | Post       |    51.26 μs |   7.991 μs |   8.206 μs |  1.02 |    0.20 |  0.9766 |       - |  18.62 KB |        1.00 |
+| MsOData_Post       | Post       |   285.62 μs |  65.121 μs |  72.381 μs |  5.67 |    1.56 |  8.7891 |  1.9531 | 143.66 KB |        7.72 |
+| OhData_Put         | Put        |    57.05 μs |   8.833 μs |   9.451 μs |  1.02 |    0.22 |  0.9766 |       - |  19.17 KB |        1.00 |
+| MsOData_Put        | Put        |   280.82 μs |  71.922 μs |  79.941 μs |  5.03 |    1.56 |  8.7891 |  1.9531 | 148.27 KB |        7.74 |
+| OhData_Select      | Select     |   877.91 μs |  85.806 μs |  98.814 μs |  1.01 |    0.15 | 13.6719 |  3.9063 | 252.78 KB |        1.00 |
+| MsOData_Select     | Select     | 1,858.28 μs | 141.321 μs | 151.212 μs |  2.14 |    0.28 | 15.6250 |  7.8125 | 339.05 KB |        1.34 |
+| OhData_TopSkip     | TopSkip    | 1,261.81 μs |  77.354 μs |  85.978 μs |  1.00 |    0.09 |  5.8594 |  1.9531 | 103.31 KB |        1.00 |
+| MsOData_TopSkip    | TopSkip    | 2,061.28 μs | 151.510 μs | 168.403 μs |  1.64 |    0.17 | 23.4375 |  7.8125 | 471.51 KB |        4.56 |
 
-Global total time: 00:05:31 (22 benchmarks). Smoke check (all 11 scenarios) passed before the run.
+Global total time: 00:05:08 (22 benchmarks). Smoke check (all 11 scenarios) passed before the run.
 
 ## Methodology
 
