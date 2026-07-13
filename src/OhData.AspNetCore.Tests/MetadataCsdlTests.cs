@@ -214,7 +214,7 @@ public class MetadataCsdlTests
         Assert.Equal(expectedEdmType, (string)prop!.Attribute("Type")!);
 
         // Nullable defaults to true when the attribute is omitted (OData CSDL spec).
-        bool actualNullable = prop.Attribute("Nullable") is { } n ? (bool)n : true;
+        bool actualNullable = prop.Attribute("Nullable") is not { } n || (bool)n;
         Assert.Equal(expectedNullable, actualNullable);
     }
 
