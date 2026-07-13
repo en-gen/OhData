@@ -165,7 +165,7 @@ public class AdversarialQueryOptionTests
         // Documented behavior: an invalid maxpagesize preference is ignored rather than rejected —
         // the server falls back to returning the full (unpaged) result set.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AdversarialQueryProfile>());
-        var request = new HttpRequestMessage(HttpMethod.Get, Url);
+        using var request = new HttpRequestMessage(HttpMethod.Get, Url);
         request.Headers.Add("Prefer", "maxpagesize=-1");
 
         var response = await fx.Client.SendAsync(request);
@@ -178,7 +178,7 @@ public class AdversarialQueryOptionTests
     public async Task Prefer_MaxPageSizeNonNumeric_IgnoredGracefully_Returns200WithFullResults()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AdversarialQueryProfile>());
-        var request = new HttpRequestMessage(HttpMethod.Get, Url);
+        using var request = new HttpRequestMessage(HttpMethod.Get, Url);
         request.Headers.Add("Prefer", "maxpagesize=notanumber");
 
         var response = await fx.Client.SendAsync(request);
