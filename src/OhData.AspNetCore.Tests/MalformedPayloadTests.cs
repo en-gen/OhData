@@ -184,8 +184,8 @@ public class MalformedPayloadTests
     public async Task Put_JsonArrayInsteadOfObject_Returns400WithODataErrorBody()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
-        var response = await fx.Client.PutAsync("/odata/MalformedWidgets(1)",
-            new StringContent("[1,2,3]", Encoding.UTF8, "application/json"));
+        using var content = new StringContent("[1,2,3]", Encoding.UTF8, "application/json");
+        var response = await fx.Client.PutAsync("/odata/MalformedWidgets(1)", content);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAssertingODataError();
@@ -197,8 +197,8 @@ public class MalformedPayloadTests
     public async Task Put_WrongTypedField_Returns400WithODataErrorBody()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
-        var response = await fx.Client.PutAsync("/odata/MalformedWidgets(1)",
-            new StringContent("{\"id\":\"notanint\",\"name\":\"x\"}", Encoding.UTF8, "application/json"));
+        using var content = new StringContent("{\"id\":\"notanint\",\"name\":\"x\"}", Encoding.UTF8, "application/json");
+        var response = await fx.Client.PutAsync("/odata/MalformedWidgets(1)", content);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAssertingODataError();
@@ -209,8 +209,8 @@ public class MalformedPayloadTests
     public async Task Put_UnknownExtraFields_AreIgnored_Returns200()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
-        var response = await fx.Client.PutAsync("/odata/MalformedWidgets(1)",
-            new StringContent("{\"id\":1,\"name\":\"Updated\",\"bogus\":123}", Encoding.UTF8, "application/json"));
+        using var content = new StringContent("{\"id\":1,\"name\":\"Updated\",\"bogus\":123}", Encoding.UTF8, "application/json");
+        var response = await fx.Client.PutAsync("/odata/MalformedWidgets(1)", content);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
@@ -218,8 +218,8 @@ public class MalformedPayloadTests
     public async Task Put_NullValueForNonNullableProperty_IsAccepted_Returns200()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
-        var response = await fx.Client.PutAsync("/odata/MalformedWidgets(1)",
-            new StringContent("{\"id\":1,\"name\":null}", Encoding.UTF8, "application/json"));
+        using var content = new StringContent("{\"id\":1,\"name\":null}", Encoding.UTF8, "application/json");
+        var response = await fx.Client.PutAsync("/odata/MalformedWidgets(1)", content);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
