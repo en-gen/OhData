@@ -125,8 +125,8 @@ public class MalformedPayloadTests
         // Current behavior: the framework does not enforce non-null / required-property validation
         // on write. Documented here so the contract is explicit rather than accidental.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
-        var response = await fx.Client.PostAsync("/odata/MalformedWidgets",
-            new StringContent("{\"name\":null}", Encoding.UTF8, "application/json"));
+        using var content = new StringContent("{\"name\":null}", Encoding.UTF8, "application/json");
+        var response = await fx.Client.PostAsync("/odata/MalformedWidgets", content);
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
     }
