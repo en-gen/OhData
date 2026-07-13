@@ -1,8 +1,10 @@
 using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
@@ -36,6 +38,35 @@ internal static class OhDataEndpointFactory
             .GetMethod(nameof(MapEntitySet), BindingFlags.NonPublic | BindingFlags.Static)!;
 
     private static readonly string[] PatchMethod = new[] { "PATCH" };
+
+    // V3: compiled key-accessor cache for $ref GET reference building. Keyed by (childType,
+    // propertyName) since a single navigation route may see multiple concrete child types
+    // (e.g. EF Core proxies). Expression.Compile() is expensive; caching avoids recompiling
+    // per request, mirroring the compiled-delegate cache pattern used for ETag/key-to-string
+    // in EntitySetProfile.
+    private static readonly ConcurrentDictionary<(Type ChildType, string PropertyName), Func<object, object?>>
+        s_navRefKeyAccessorCache = new();
+
+    private static Func<object, object?> GetOrCompileNavRefKeyAccessor(Type childType, string propertyName)
+    {
+        return s_navRefKeyAccessorCache.GetOrAdd((childType, propertyName), key =>
+        {
+            var (type, propName) = key;
+            PropertyInfo? prop = type.GetProperty(
+                propName, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+            if (prop is null)
+            {
+                // No matching property on this concrete type — always return null.
+                return static _ => null;
+            }
+
+            ParameterExpression param = Expression.Parameter(typeof(object), "obj");
+            UnaryExpression cast = Expression.Convert(param, type);
+            MemberExpression propAccess = Expression.Property(cast, prop);
+            UnaryExpression boxed = Expression.Convert(propAccess, typeof(object));
+            return Expression.Lambda<Func<object, object?>>(boxed, param).Compile();
+        });
+    }
 
     private static string SanitizeLogValue(string value) =>
         value.Replace("\r", "\\r", StringComparison.Ordinal)
@@ -1019,6 +1050,9 @@ internal static class OhDataEndpointFactory
                     ctx.Response.Headers.Location = odataId;
                     // §8.3.3: Content-Location on 204 mirrors the Location of the created entity.
                     ctx.Response.Headers["Content-Location"] = odataId;
+                    // V1/§8.3.4: OData-EntityId is REQUIRED on any 204 response that creates an
+                    // entity, since the client cannot recover the new entity's id from an empty body.
+                    ctx.Response.Headers["OData-EntityId"] = odataId;
                     ctx.Response.Headers["Preference-Applied"] = "return=minimal";
                     return Results.NoContent();
                 }
@@ -1082,7 +1116,14 @@ internal static class OhDataEndpointFactory
                     {
                         ctx.Response.Headers["Preference-Applied"] = "return=minimal";
                         if (wasCreated)
-                            ctx.Response.Headers.Location = $"{BuildBaseUrl(ctx, prefix)}/{name}({key})";
+                        {
+                            string upsertOdataId = $"{BuildBaseUrl(ctx, prefix)}/{name}({key})";
+                            ctx.Response.Headers.Location = upsertOdataId;
+                            // V1/§8.3.4: OData-EntityId is REQUIRED on the 204 response of an
+                            // upsert-PUT that created the entity. A plain update-PUT must NOT
+                            // carry this header — it only applies when a new entity was created.
+                            ctx.Response.Headers["OData-EntityId"] = upsertOdataId;
+                        }
                         return Results.NoContent();
                     }
 
@@ -1343,14 +1384,19 @@ internal static class OhDataEndpointFactory
                                 var refs = new List<Dictionary<string, string>>();
                                 if (children is System.Collections.IEnumerable childEnum)
                                 {
-                                    // Cache PropertyInfo outside the loop — all children share the same type.
-                                    PropertyInfo? cachedRefKeyProp = null;
+                                    // Cache the compiled accessor outside the loop — all children
+                                    // share the same concrete type in the common case.
+                                    Func<object, object?>? cachedAccessor = null;
+                                    Type? cachedChildType = null;
                                     foreach (object child in childEnum)
                                     {
-                                        cachedRefKeyProp ??= child.GetType().GetProperty(
-                                            refNavCapture.ChildKeyPropertyName,
-                                            BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
-                                        if (cachedRefKeyProp?.GetValue(child) is { } k)
+                                        Type childType = child.GetType();
+                                        if (cachedAccessor is null || childType != cachedChildType)
+                                        {
+                                            cachedAccessor = GetOrCompileNavRefKeyAccessor(childType, refNavCapture.ChildKeyPropertyName);
+                                            cachedChildType = childType;
+                                        }
+                                        if (cachedAccessor(child) is { } k)
                                         {
                                             string formattedKey = string.Format(CultureInfo.InvariantCulture, "{0}", k);
                                             refs.Add(new Dictionary<string, string>
@@ -1386,10 +1432,8 @@ internal static class OhDataEndpointFactory
                                 object? child = await requestNav.Handler(parsedKey!, ct);
                                 if (child is not null)
                                 {
-                                    var kProp = child.GetType().GetProperty(
-                                        refNavCapture.ChildKeyPropertyName,
-                                        BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
-                                    if (kProp?.GetValue(child) is { } k)
+                                    var accessor = GetOrCompileNavRefKeyAccessor(child.GetType(), refNavCapture.ChildKeyPropertyName);
+                                    if (accessor(child) is { } k)
                                     {
                                         string childKey = string.Format(CultureInfo.InvariantCulture, "{0}", k);
                                         return Results.Ok(new Dictionary<string, object?>
