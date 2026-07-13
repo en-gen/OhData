@@ -111,8 +111,8 @@ public class MalformedPayloadTests
         // Documented/expected behavior: unrecognized JSON properties are silently ignored by the
         // JSON deserializer rather than rejected.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
-        var response = await fx.Client.PostAsync("/odata/MalformedWidgets",
-            new StringContent("{\"name\":\"Extra\",\"totallyBogusField\":123}", Encoding.UTF8, "application/json"));
+        using var content = new StringContent("{\"name\":\"Extra\",\"totallyBogusField\":123}", Encoding.UTF8, "application/json");
+        var response = await fx.Client.PostAsync("/odata/MalformedWidgets", content);
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
