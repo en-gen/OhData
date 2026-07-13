@@ -76,7 +76,7 @@ public class FilterExpressionTests
     {
         await using TestFixture fx = await BuildAsync();
         int[] expected = QueryOptionData.Items
-            .Where(x => x.IsActive != true)
+            .Where(x => !x.IsActive)
             .Select(x => x.Id).ToArray();
         int[] actual = await GetIdsAsync(fx.Client, $"{Url}?$filter=not (IsActive eq true)");
         AssertSameIds(expected, actual);
