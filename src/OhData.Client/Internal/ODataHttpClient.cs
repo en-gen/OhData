@@ -31,7 +31,7 @@ internal sealed class ODataHttpClient
     internal async Task<List<T>> GetCollectionAsync<T>(string url, CancellationToken ct)
         where T : class
     {
-        using var response = await _http.GetAsync(url, ct);
+        using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
         await EnsureSuccessAsync(response, url, ct);
         var envelope = await response.Content
             .ReadFromJsonAsync<ODataCollectionResponse<T>>(_options.JsonOptions, ct);
@@ -41,7 +41,7 @@ internal sealed class ODataHttpClient
     internal async Task<ODataPage<T>> GetPageAsync<T>(string url, CancellationToken ct)
         where T : class
     {
-        using var response = await _http.GetAsync(url, ct);
+        using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
         await EnsureSuccessAsync(response, url, ct);
         var envelope = await response.Content
             .ReadFromJsonAsync<ODataCollectionResponse<T>>(_options.JsonOptions, ct);
@@ -62,7 +62,7 @@ internal sealed class ODataHttpClient
         where T : class
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, absoluteUrl);
-        using var response = await _http.SendAsync(request, ct);
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
         await EnsureSuccessAsync(response, absoluteUrl, ct);
         var envelope = await response.Content
             .ReadFromJsonAsync<ODataCollectionResponse<T>>(_options.JsonOptions, ct);
@@ -79,7 +79,7 @@ internal sealed class ODataHttpClient
     internal async Task<T?> GetSingleAsync<T>(string url, CancellationToken ct)
         where T : class
     {
-        using var response = await _http.GetAsync(url, ct);
+        using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
             if (_options.NotFoundBehavior == NotFoundBehavior.Throw)
@@ -95,7 +95,7 @@ internal sealed class ODataHttpClient
 
     internal async Task<long> GetCountAsync(string url, CancellationToken ct)
     {
-        using var response = await _http.GetAsync(url, ct);
+        using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
         await EnsureSuccessAsync(response, url, ct);
         string text = await response.Content.ReadAsStringAsync(ct);
         string trimmed = text.Trim();
@@ -191,7 +191,7 @@ internal sealed class ODataHttpClient
     internal async Task<(T? Entity, string? ETag)> GetSingleWithETagAsync<T>(string url, CancellationToken ct)
         where T : class
     {
-        using var response = await _http.GetAsync(url, ct);
+        using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
             if (_options.NotFoundBehavior == NotFoundBehavior.Throw)
@@ -203,6 +203,55 @@ internal sealed class ODataHttpClient
         T? entity = await response.Content.ReadFromJsonAsync<T>(_options.JsonOptions, ct);
         string? etag = response.Headers.ETag?.Tag?.Trim('"');
         return (entity, etag);
+    }
+
+    // ── GET single, conditional (If-None-Match) ─────────────────────────────────
+
+    /// <summary>
+    /// GET <c>/{EntitySet}(key)</c> with an optional <c>If-None-Match</c> request header for
+    /// conditional retrieval (RFC 7232 §3.2 / OData §8.2.5).
+    /// </summary>
+    /// <remarks>
+    /// <list type="bullet">
+    /// <item>Server confirms the cached copy is current (HTTP 304) → returns
+    ///       <c>(Entity: null, ETag: &lt;current&gt;, NotModified: true)</c>. No body is read.</item>
+    /// <item>Server returns a fresh representation (HTTP 200) → returns
+    ///       <c>(Entity: &lt;entity&gt;, ETag: &lt;current&gt;, NotModified: false)</c>.</item>
+    /// <item>Entity not found (HTTP 404) → returns <c>(null, null, false)</c>, or throws
+    ///       <see cref="ODataClientException"/> when <see cref="OhDataClientOptions.NotFoundBehavior"/>
+    ///       is <see cref="NotFoundBehavior.Throw"/> — same convention as <see cref="GetSingleAsync{T}"/>.</item>
+    /// </list>
+    /// When <paramref name="ifNoneMatch"/> is <see langword="null"/>, no conditional header is sent
+    /// and the call behaves like <see cref="GetSingleWithETagAsync{T}"/> (always <c>NotModified: false</c>).
+    /// </remarks>
+    internal async Task<(T? Entity, string? ETag, bool NotModified)> GetSingleIfChangedAsync<T>(
+        string url, string? ifNoneMatch, CancellationToken ct)
+        where T : class
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        if (ifNoneMatch is not null)
+            request.Headers.TryAddWithoutValidation("If-None-Match", ifNoneMatch);
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+
+        if (response.StatusCode == HttpStatusCode.NotModified)
+        {
+            string? currentETag = response.Headers.ETag?.Tag?.Trim('"');
+            return (null, currentETag, true);
+        }
+
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            if (_options.NotFoundBehavior == NotFoundBehavior.Throw)
+                throw await ODataClientException.FromResponseAsync(response, url, ct);
+            return (null, null, false);
+        }
+
+        await EnsureSuccessAsync(response, url, ct);
+        if (response.StatusCode == HttpStatusCode.NoContent) return (null, null, false);
+
+        T? entity = await response.Content.ReadFromJsonAsync<T>(_options.JsonOptions, ct);
+        string? etag = response.Headers.ETag?.Tag?.Trim('"');
+        return (entity, etag, false);
     }
 
     // ── Error handling ──────────────────────────────────────────────────────────

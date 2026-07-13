@@ -41,6 +41,33 @@ public sealed class KeyedEntitySetClient<T> where T : class
         => _http.GetSingleWithETagAsync<T>(_url, ct);
 
     /// <summary>
+    /// GET <c>/{EntitySet}(key)</c> with conditional retrieval via <c>If-None-Match</c>
+    /// (RFC 7232 §3.2 / OData §8.2.5).
+    /// </summary>
+    /// <param name="ifNoneMatch">
+    /// The ETag previously observed for this entity (e.g. from <see cref="GetWithETagAsync"/>
+    /// or a prior call to this method). When supplied, the server responds with HTTP 304 and
+    /// no body if the entity is unchanged. When <see langword="null"/>, no conditional header
+    /// is sent and the call behaves like <see cref="GetWithETagAsync"/>.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>
+    /// A tuple where <c>NotModified</c> is <see langword="true"/> when the server confirmed the
+    /// cached copy is still current (HTTP 304) — in that case <c>Entity</c> is <see langword="null"/>
+    /// and <c>ETag</c> echoes the server's current value. When <c>NotModified</c> is
+    /// <see langword="false"/>, <c>Entity</c> holds the fresh representation (or
+    /// <see langword="null"/> if the entity does not exist, per <see cref="NotFoundBehavior"/>)
+    /// and <c>ETag</c> is that entity's current ETag.
+    /// </returns>
+    /// <exception cref="ODataClientException">
+    /// Thrown with status 404 when the entity is not found and
+    /// <see cref="OhDataClientOptions.NotFoundBehavior"/> is <see cref="NotFoundBehavior.Throw"/>.
+    /// </exception>
+    public Task<(T? Entity, string? ETag, bool NotModified)> GetIfChangedAsync(
+        string? ifNoneMatch = null, CancellationToken ct = default)
+        => _http.GetSingleIfChangedAsync<T>(_url, ifNoneMatch, ct);
+
+    /// <summary>
     /// PUT <c>/{EntitySet}(key)</c> with a full entity replacement.
     /// Optionally supply an If-Match ETag for optimistic concurrency or set
     /// <paramref name="preferMinimal"/> to request a 204 No Content response.

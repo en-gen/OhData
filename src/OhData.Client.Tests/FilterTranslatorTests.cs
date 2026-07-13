@@ -109,6 +109,42 @@ public class FilterTranslatorTests
         Assert.Equal("Name eq 'Widget'", F<Item>(x => x.Name == name));
     }
 
+    // M-9 regression: captured-variable evaluation now goes through a reflection fast
+    // path (FilterTranslator.TryEvaluateAsObject) instead of unconditionally compiling a
+    // fresh lambda per variable. Two variables captured from different lexical scopes are
+    // merged by the C# compiler into a chained closure (DisplayClass -> DisplayClass), which
+    // exercises the "nested closure: recurse" branch of that fast path — verify it still
+    // resolves to the correct values.
+    [Fact]
+    public void CapturedVariables_FromNestedClosureScopes_ResolveCorrectly()
+    {
+        string outerName = "Sprocket";
+
+        System.Linq.Expressions.Expression<Func<Item, bool>> BuildPredicate()
+        {
+            decimal innerThreshold = 5m;
+            return x => x.Name == outerName && x.Price > innerThreshold;
+        }
+
+        var predicate = BuildPredicate();
+        Assert.Equal("(Name eq 'Sprocket') and (Price gt 5)", FilterTranslator.Translate(predicate));
+    }
+
+    // M-9 regression: a captured variable that is itself a field on a captured object
+    // (rather than a plain local) must still resolve via the reflection fast path.
+    [Fact]
+    public void CapturedVariable_FieldOnCapturedObject_ResolvesCorrectly()
+    {
+        var box = new StrongBox<decimal>(42m);
+        Assert.Equal("Price eq 42", F<Item>(x => x.Price == box.Value));
+    }
+
+    private sealed class StrongBox<T>
+    {
+        public readonly T Value;
+        public StrongBox(T value) => Value = value;
+    }
+
     // ── String.IsNullOrEmpty ────────────────────────────────────────────────────
 
     [Fact]
