@@ -141,7 +141,7 @@ public class FilterTranslatorTests
 
     private sealed class StrongBox<T>
     {
-        public T Value;
+        public readonly T Value;
         public StrongBox(T value) => Value = value;
     }
 
