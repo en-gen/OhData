@@ -63,6 +63,12 @@ builder.Services.AddSwaggerGen(c =>
 });
 ```
 
+Register `OhDataSwaggerOperationFilter` to have Swagger UI show `$filter`/`$orderby`/`$top`/`$skip`/`$select`/`$expand`/`$count`/`$search` as documented query parameters on each collection GET endpoint, driven by the per-entity-set capability flags (`FilterEnabled`, `OrderByEnabled`, etc.) and `MaxTop`:
+
+```csharp
+builder.Services.AddSwaggerGen(c => c.OperationFilter<OhDataSwaggerOperationFilter>());
+```
+
 ## Default (unnamed) registration
 
 Calling `AddOhData(...)` without a name uses the key `"__default__"` internally and coexists cleanly with named registrations:

@@ -55,6 +55,7 @@ This registers: `GET /odata/Orders({key})/Customer`
 - Returning `null` from the handler produces `404 Not Found`
 - Authorization from the parent profile's `RequireAuthorization()` / `RequireRoles()` is applied to navigation routes automatically
 - Navigation routes are tagged with the parent entity set name in OpenAPI/Swagger
+- For collection navigations, `$top`, `$skip`, `$count`, and `$select` are honored on the returned collection via ad-hoc in-memory `IEnumerable` operations (not pushed down to the handler or to SQL). `$orderby` is **not** applied - it is silently accepted and ignored (a no-op) rather than sorting or returning an error.
 
 ## `$expand`
 
@@ -66,7 +67,7 @@ GET /odata/Orders?$expand=Lines($select=ProductName,Quantity),Customer
 GET /odata/Orders(id)?$expand=Lines
 ```
 
-On the `GetQueryable` path with EF Core, `$expand` translates to `Include()` - the database join is performed in a single query. On the `GetAll` path, the framework calls the registered navigation handler for each entity (N+1).
+`$expand` does **not** translate to EF Core's `Include()`. Instead, for each requested navigation property, the framework calls the registered navigation route handler (the `getAll`/`get` delegate passed to `HasMany`/`HasOptional`/`HasRequired`) once per parent entity in the result set - an N+1 pattern. This is identical across all three collection GET paths (`GetQueryable`, `GetAll`, and the `IODataEntitySetEndpointSource` priority-1 path); none of them push the expand down into the underlying `IQueryable`/SQL query. A navigation property with no registered handler is silently skipped during expansion.
 
 ## Navigation routes vs `$expand` - when to use each
 
@@ -74,7 +75,7 @@ On the `GetQueryable` path with EF Core, `$expand` translates to `Include()` - t
 |---|---|---|
 | Returns related data as top-level response | ✅ | ❌ (embedded in parent) |
 | Supports filtering/ordering on related data | ❌ | ✅ (with nested options) |
-| SQL join on `GetQueryable` path | ❌ (separate query per request) | ✅ (EF Core `Include`) |
+| Single SQL join (vs. N+1 handler calls) | ❌ (separate query per request) | ❌ (also N+1 - see note above; not pushed down to SQL) |
 | Works without `$expand` support on client | ✅ | ❌ |
 
 The two approaches are complementary - declare both to support both access patterns.

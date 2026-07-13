@@ -7,8 +7,8 @@ OhData targets the [OData 4.0 specification](https://docs.oasis-open.org/odata/o
 | Feature | Section | Status | Notes |
 |---------|---------|--------|-------|
 | `OData-Version: 4.0` response header | §8.2.6 | ✅ | Added to all responses |
-| `OData-MaxVersion` request header support | §8.2.7 | ✅ | Request-only header; not sent in responses |
-| `Content-Type: application/json` | §8.2.1 | ✅ | All responses |
+| `OData-MaxVersion` request header | §8.2.7 | ⚠️ | Accepted but never read, parsed, or validated by the framework - a purely passive no-op, not "supported" processing. Also not echoed in responses. |
+| `Content-Type: application/json` | §8.2.1 | ✅ | All responses except `GET /$metadata`, which returns `application/xml` |
 | `$format` query option | §11.2.12 | ✅ | `json` and `application/json` accepted; others → 400 |
 | `Accept` header validation | §8.2.1 | ✅ | Non-JSON accept headers → 406 |
 
@@ -25,12 +25,12 @@ OhData targets the [OData 4.0 specification](https://docs.oasis-open.org/odata/o
 
 | Feature | Section | Status | Notes |
 |---------|---------|--------|-------|
-| `@odata.context` on all responses | §10 | ✅ | Collections, entities, errors, metadata |
+| `@odata.context` on data responses | §10 | ✅ | Collections, entities, and the service document. Not set on error responses; `GET /$metadata` is XML so the annotation doesn't apply there. |
 | `@odata.count` inline | §11.2.6.5 | ✅ | When `$count=true` |
 | `@odata.id` entity self-link | §4.5.8 | ✅ | On GET, POST, PUT, PATCH responses |
 | `@odata.etag` in body | §4.5.3 | ✅ | When ETags configured |
 | `@odata.nextLink` | §11.2.6.7 | ✅ | When page size equals `MaxTop` |
-| `@odata.context` on bound operations | §10 | ⚠️ | Not included on function/action responses |
+| `@odata.context` on bound operations | §10 | ✅ | Included when the function/action return type is the profile's model type or `IEnumerable<TModel>`; omitted for primitive/arbitrary return types |
 
 ## Collection queries
 
@@ -41,21 +41,21 @@ OhData targets the [OData 4.0 specification](https://docs.oasis-open.org/odata/o
 | `$top` | §11.2.6.3 | ✅ | `MaxTop` server-side cap enforced |
 | `$skip` | §11.2.6.4 | ✅ | |
 | `$count` (inline and standalone) | §11.2.6.5 | ✅ | |
-| `$search` | §11.2.6.6 | ✅ | Requires `Search` handler; 501 if unset |
+| `$search` | §11.2.6.6 | ✅ | Requires a `Search` handler; `400 Bad Request` (`UnsupportedQueryOption`) if unset |
 | `$select` | §11.2.4.1 | ✅ | JSON post-processing; SQL column projection not performed |
-| `$expand` | §11.2.4.2 | ✅ | EF Core `Include` on `GetQueryable` path |
-| `$skiptoken` (server-driven paging) | §11.2.6.7 | ✅ | Base64-encoded skip token |
+| `$expand` | §11.2.4.2 | ✅ | Generic navigation-delegate expansion (registered via `HasMany`/`HasOptional`/`HasRequired`); the same pipeline runs identically on the `GetQueryable`, `GetAll`, and Priority-1 `ODataQueryOptions` paths. No EF Core dependency - each expanded property is resolved by calling the registered navigation handler per entity. |
+| `$skiptoken` (server-driven paging) | §11.2.6.7 | ✅ | Base64-encoded raw skip offset (a 4-byte little-endian int) - not an opaque/obfuscated cursor. Predictable and forgeable by clients. |
 
 ## Entity operations
 
 | Feature | Section | Status | Notes |
 |---------|---------|--------|-------|
 | Get entity by key | §11.2.2 | ✅ | |
-| Create entity (POST) | §11.4.1 | ✅ | Returns `201 Created` + `Location` header |
+| Create entity (POST) | §11.4.1 | ✅ | Returns `201 Created` + `Location` header (also sets `Content-Location`, per §8.3.3) |
 | Update entity (PUT) | §11.4.3 | ✅ | Full replacement |
 | Update entity (PATCH) | §11.4.3 | ✅ | Partial update |
-| Delta PATCH | §11.4.3 | ✅ | Via `ODataEntitySetProfile.PatchDelta` |
-| Delete entity | §11.4.5 | ✅ | `false` return → 404 or 204 (configurable) |
+| Delta PATCH | §11.4.3 | ✅ | Via the base `EntitySetProfile.Patch` delegate - the framework builds a `Delta<TModel>` containing only the properties present in the request body and passes it to the handler, which typically calls `delta.Patch(existing)` |
+| Delete entity | §11.4.5 | ✅ | `Delete` returns `Task<bool>`; `false` → `404` or `204` depending on `IdempotentDelete` (defaults to `true`, i.e. `204`) |
 | Upsert via PUT | §11.4.4 | ✅ | `AllowUpsert = true` |
 | Key validation on PUT/PATCH | §11.4.3 | ✅ | URL key must match body key; 400 on mismatch |
 
@@ -86,7 +86,7 @@ OhData targets the [OData 4.0 specification](https://docs.oasis-open.org/odata/o
 |---------|---------|--------|-------|
 | `Prefer: return=minimal` | §8.2.8.7 | ✅ | POST/PUT/PATCH return 204; `Preference-Applied` set |
 | `Prefer: return=representation` | §8.2.8.7 | ✅ | `Preference-Applied` set in response |
-| `Prefer: maxpagesize` | §8.2.8.7 | ✅ | Used as `MaxTop` when no server cap set |
+| `Prefer: maxpagesize` | §8.2.8.7 | ✅ | Applied as the page size when `$top` is absent. **Unconditionally overrides a configured `MaxTop`** - there is no `Math.Min` against the server cap, so a client can request (and receive) a page larger than `MaxTop`. See Known Limitations. |
 
 ## Error responses
 
@@ -94,7 +94,7 @@ OhData targets the [OData 4.0 specification](https://docs.oasis-open.org/odata/o
 |---------|---------|--------|-------|
 | `error.code` and `error.message` | §9.3 | ✅ | All error responses |
 | `error.target` | §9.3 | ✅ | Set on key-mismatch and invalid-key errors |
-| `error.details` array | §9.3 | ✅ | Available in `ODataError` helper |
+| `error.details` array | §9.3 | ⚠️ | The internal `ODataError` helper accepts a `details` parameter and will serialize it, but no call site in the framework currently populates it - the array never appears in a real response today |
 
 ## Service document and metadata
 
@@ -112,8 +112,9 @@ OhData targets the [OData 4.0 specification](https://docs.oasis-open.org/odata/o
 | Feature | Notes |
 |---------|-------|
 | SQL column projection for `$select` | All columns fetched; `$select` trims response JSON only |
-| `@odata.context` on bound operation responses | Not included - return types are arbitrary |
+| `Prefer: maxpagesize` can exceed `MaxTop` | Client-requested page size unconditionally overrides a configured `MaxTop` cap with no ceiling enforced - a client can request an unbounded page. Worth hardening with a `Math.Min(preferredPageSize, source.MaxTop)` clamp if `MaxTop` is meant to be a hard server-side cap. |
 | ETag check atomicity | GET-then-write has a race window; use a database-level mechanism for true atomistic concurrency |
 | `If-None-Match` on POST | Not implemented; validate in the `Post` handler if needed |
-| `$compute` | Requires `Microsoft.AspNetCore.OData` v10+ (not yet available on net8.0) |
+| `$compute` | Unimplemented. `Microsoft.AspNetCore.OData` is pinned to `[9.4.*, 10)` on all target frameworks (including net10.0), which deliberately excludes the v10+ release that adds `$compute` support - the blocker is the package version pin, not the target framework. |
 | JSON batch requests | Not supported |
+| `error.details` array | Mechanism exists in the `ODataError` helper but is currently dead code - no call site populates it |
