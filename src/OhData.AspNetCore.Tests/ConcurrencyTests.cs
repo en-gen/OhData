@@ -317,7 +317,7 @@ public class ConcurrencyTests
 
         // 2. An intervening PUT with the (still current) etag succeeds and changes the resource,
         //    which makes the etag captured in step 1 stale.
-        var interveningReq = new HttpRequestMessage(HttpMethod.Put, "/odata/EtagSequenceWidgets(1)")
+        using var interveningReq = new HttpRequestMessage(HttpMethod.Put, "/odata/EtagSequenceWidgets(1)")
         {
             Content = JsonContent.Create(new Widget { Id = 1, Name = "Intervening" })
         };
@@ -328,7 +328,7 @@ public class ConcurrencyTests
         Assert.NotEqual(staleEtag, currentEtag);
 
         // 3. PUT using the now-stale etag from step 1 -> 412.
-        var staleReq = new HttpRequestMessage(HttpMethod.Put, "/odata/EtagSequenceWidgets(1)")
+        using var staleReq = new HttpRequestMessage(HttpMethod.Put, "/odata/EtagSequenceWidgets(1)")
         {
             Content = JsonContent.Create(new Widget { Id = 1, Name = "ShouldNotApply" })
         };
@@ -337,7 +337,7 @@ public class ConcurrencyTests
         Assert.Equal(HttpStatusCode.PreconditionFailed, staleResp.StatusCode);
 
         // 4. PUT using the current etag -> 2xx.
-        var currentReq = new HttpRequestMessage(HttpMethod.Put, "/odata/EtagSequenceWidgets(1)")
+        using var currentReq = new HttpRequestMessage(HttpMethod.Put, "/odata/EtagSequenceWidgets(1)")
         {
             Content = JsonContent.Create(new Widget { Id = 1, Name = "Applied" })
         };
