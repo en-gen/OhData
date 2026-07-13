@@ -94,7 +94,7 @@ OhData targets the [OData 4.0 specification](https://docs.oasis-open.org/odata/o
 
 | Feature | Section | Status | Notes |
 |---------|---------|--------|-------|
-| `error.code` and `error.message` | §9.3 | ✅ | All error responses |
+| `error.code` and `error.message` | §9.3 | ✅ | All error responses, including malformed/wrong-shaped POST, PUT, and PATCH request bodies and unsupported `Content-Type` values (400/415) - these read and deserialize the body manually rather than relying on ASP.NET Core's implicit body-binder, which used to short-circuit with an empty 400/415 body before this formatting code ran |
 | `error.target` | §9.3 | ✅ | Set on key-mismatch and invalid-key errors |
 | `error.details` array | §9.3 | ⚠️ | The internal `ODataError` helper accepts a `details` parameter and will serialize it, but no call site in the framework currently populates it - the array never appears in a real response today |
 

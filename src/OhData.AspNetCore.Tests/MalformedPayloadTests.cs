@@ -28,12 +28,7 @@ public class MalformedPayloadTests
 {
     // ── POST: malformed / adversarial bodies ──────────────────────────────────────
 
-    [Fact(Skip = "BUG: POST /Widgets with syntactically invalid JSON returns 400 with an EMPTY body " +
-                 "instead of the OData error envelope {\"error\":{...}}. Root cause: POST binds the " +
-                 "request body directly via a `TModel model` minimal-API parameter, so ASP.NET Core's " +
-                 "built-in JSON body binder rejects the request before OhData's error-formatting code " +
-                 "ever runs (contrast with PATCH, which manually deserializes and catches JsonException " +
-                 "to produce a proper OData error body). See PR body 'Product bugs found'.")]
+    [Fact]
     public async Task Post_SyntacticallyInvalidJson_Returns400WithODataErrorBody()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
@@ -51,8 +46,7 @@ public class MalformedPayloadTests
         Assert.Equal(HttpStatusCode.OK, followUp.StatusCode);
     }
 
-    [Fact(Skip = "BUG: POST /Widgets with an empty body returns 400 with an EMPTY body instead of the " +
-                 "OData error envelope. Same root cause as the invalid-JSON case above.")]
+    [Fact]
     public async Task Post_EmptyBody_Returns400WithODataErrorBody()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
@@ -64,8 +58,7 @@ public class MalformedPayloadTests
         Assert.True(json.TryGetProperty("error", out _));
     }
 
-    [Fact(Skip = "BUG: POST /Widgets with a JSON array instead of a JSON object returns 400 with an " +
-                 "EMPTY body instead of the OData error envelope. Same root cause as above.")]
+    [Fact]
     public async Task Post_JsonArrayInsteadOfObject_Returns400WithODataErrorBody()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
@@ -77,8 +70,7 @@ public class MalformedPayloadTests
         Assert.True(json.TryGetProperty("error", out _));
     }
 
-    [Fact(Skip = "BUG: POST /Widgets with a wrong-typed field (string where int expected) returns 400 " +
-                 "with an EMPTY body instead of the OData error envelope. Same root cause as above.")]
+    [Fact]
     public async Task Post_WrongTypedField_Returns400WithODataErrorBody()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
@@ -90,9 +82,7 @@ public class MalformedPayloadTests
         Assert.True(json.TryGetProperty("error", out _));
     }
 
-    [Fact(Skip = "BUG: POST /Widgets with ~100-level deeply nested JSON returns 400 with an EMPTY body " +
-                 "instead of the OData error envelope. Same root cause as above (contrast with PATCH, " +
-                 "which surfaces a proper OData 'InvalidBody' error for the same input).")]
+    [Fact]
     public async Task Post_DeeplyNestedJson_Returns400WithODataErrorBody()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
@@ -165,9 +155,7 @@ public class MalformedPayloadTests
 
     // ── PUT: malformed / adversarial bodies ────────────────────────────────────────
 
-    [Fact(Skip = "BUG: PUT /Widgets(1) with syntactically invalid JSON returns 400 with an EMPTY body " +
-                 "instead of the OData error envelope. Same root cause as the POST cases above — PUT " +
-                 "also binds the body via a `TModel model` minimal-API parameter.")]
+    [Fact]
     public async Task Put_SyntacticallyInvalidJson_Returns400WithODataErrorBody()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
@@ -179,8 +167,7 @@ public class MalformedPayloadTests
         Assert.True(json.TryGetProperty("error", out _));
     }
 
-    [Fact(Skip = "BUG: PUT /Widgets(1) with a JSON array instead of a JSON object returns 400 with an " +
-                 "EMPTY body instead of the OData error envelope. Same root cause as above.")]
+    [Fact]
     public async Task Put_JsonArrayInsteadOfObject_Returns400WithODataErrorBody()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
@@ -192,8 +179,7 @@ public class MalformedPayloadTests
         Assert.True(json.TryGetProperty("error", out _));
     }
 
-    [Fact(Skip = "BUG: PUT /Widgets(1) with a wrong-typed field returns 400 with an EMPTY body instead " +
-                 "of the OData error envelope. Same root cause as above.")]
+    [Fact]
     public async Task Put_WrongTypedField_Returns400WithODataErrorBody()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
@@ -253,15 +239,7 @@ public class MalformedPayloadTests
         Assert.True(json.TryGetProperty("error", out _));
     }
 
-    [Fact(Skip = "BUG: PATCH /Widgets(1) with a JSON array body throws an UNHANDLED " +
-                 "System.InvalidOperationException ('The requested operation requires an element of " +
-                 "type 'Object', but the target element has type 'Array'.') instead of returning a 400 " +
-                 "OData error. Root cause: the PATCH handler's try/catch only catches JsonException and " +
-                 "FormatException; a syntactically-valid-but-wrong-shaped JSON array passes JSON " +
-                 "parsing and then crashes on body.EnumerateObject() (JsonElement.EnumerateObject " +
-                 "throws InvalidOperationException for non-object JsonValueKind). With no exception " +
-                 "handling middleware configured, this manifests as an unhandled 500 in production. " +
-                 "See PR body 'Product bugs found'.")]
+    [Fact]
     public async Task Patch_JsonArrayInsteadOfObject_Returns400WithODataErrorBody()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
@@ -330,10 +308,7 @@ public class MalformedPayloadTests
 
     // ── Content-Type edge cases on writes ──────────────────────────────────────────
 
-    [Fact(Skip = "BUG: POST /Widgets with Content-Type: text/plain returns 415 with an EMPTY body " +
-                 "instead of an OData error envelope. Root cause: ASP.NET Core's minimal-API content " +
-                 "negotiation for the `TModel model` parameter rejects the request before OhData's " +
-                 "error-formatting code runs.")]
+    [Fact]
     public async Task Post_TextPlainContentType_Returns415WithODataErrorBody()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
@@ -400,11 +375,7 @@ public class MalformedPayloadTests
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
     }
 
-    [Fact(Skip = "BUG: PATCH /Widgets(1) with Content-Type: text/plain returns 415 with an EMPTY body " +
-                 "instead of an OData error envelope. Root cause: the route is annotated with " +
-                 "`.Accepts<TModel>(\"application/json\")`, so ASP.NET Core's content-type filter " +
-                 "rejects the request before the handler's manual JSON parsing (and its OData error " +
-                 "formatting) ever runs.")]
+    [Fact]
     public async Task Patch_TextPlainContentType_Returns415WithODataErrorBody()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
