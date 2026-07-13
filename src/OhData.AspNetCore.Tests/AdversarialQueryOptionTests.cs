@@ -192,7 +192,7 @@ public class AdversarialQueryOptionTests
     {
         // 2147483648 = int.MaxValue + 1.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AdversarialQueryProfile>());
-        var request = new HttpRequestMessage(HttpMethod.Get, Url);
+        using var request = new HttpRequestMessage(HttpMethod.Get, Url);
         request.Headers.Add("Prefer", "maxpagesize=2147483648");
 
         var response = await fx.Client.SendAsync(request);
