@@ -353,13 +353,13 @@ public class AuthorizationMatrixTests
             .AddProfile<AuthMatrixFullProfile>()
             .AddProfile<WidgetProfile>());
 
-        var request = new HttpRequestMessage(HttpMethod.Get, "/odata/AuthMatrixParents");
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/AuthMatrixParents");
         request.Headers.Add(HeaderAuthHandler.IdentityHeader, "carol");
         var protectedResponse = await fx.Client.SendAsync(request);
         Assert.Equal(HttpStatusCode.OK, protectedResponse.StatusCode);
 
         // Unprotected set is unaffected by the presence of auth headers.
-        var unprotectedRequest = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
+        using var unprotectedRequest = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
         unprotectedRequest.Headers.Add(HeaderAuthHandler.IdentityHeader, "carol");
         var unprotectedResponse = await fx.Client.SendAsync(unprotectedRequest);
         Assert.Equal(HttpStatusCode.OK, unprotectedResponse.StatusCode);
