@@ -159,7 +159,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// </summary>
     /// <remarks>
     /// Leaving this <c>null</c> (the default) means <c>$search</c> requests return
-    /// <c>501 Not Implemented</c>.
+    /// <c>400 Bad Request</c> with an <c>UnsupportedQueryOption</c> error.
     /// </remarks>
     protected Func<string, CancellationToken, Task<IEnumerable<TModel>>>? Search = null;
 

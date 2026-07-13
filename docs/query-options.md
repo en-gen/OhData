@@ -10,7 +10,7 @@ OhData supports the OData 4.0 system query options. Which ones are applied depen
 GetAll = (ct) => Task.FromResult<IEnumerable<Product>>(myList);
 ```
 
-Returns all items. The framework does **not** apply any query options to the returned collection - `$filter`, `$orderby`, `$skip`, and `$top` sent by the client are ignored. Use this when your data source is small and in-memory, or when you want complete control over what is returned.
+Returns all items. The framework does **not** apply `$filter`, `$orderby`, `$skip`, or `$top` to the returned collection - and it does not silently ignore them either. If the client sends any of these, the request is rejected with `400 Bad Request` (`UnsupportedQueryOption`). `$select`, `$expand`, `$count`, and `$search` (when a `Search` handler is configured) are still honored on this path. Use `GetAll` when your data source is small and in-memory, or when you want complete control over what is returned.
 
 ### `GetODataQueryable` - full OData pushdown (advanced)
 
@@ -163,7 +163,11 @@ builder.Services.AddOhData(o => o
     .AddProfile<ProductProfile>());
 ```
 
+**`MaxTop` defaults to `1000`** (`EntitySetDefaults.MaxTop`) when not overridden per-profile or globally - server-side paging is always active on the `GetQueryable`/Priority-1 paths, even if you never configure it explicitly.
+
 Requests with `$top` exceeding `MaxTop` receive `400 Bad Request`.
+
+> **Note:** `Prefer: maxpagesize` (see the [`Prefer` header docs](spec-compliance.md#prefer-header)) currently overrides `MaxTop` unconditionally when `$top` is absent, with no ceiling - a client can request a page larger than `MaxTop` via this header. Treat `MaxTop` as a soft default page size rather than a hard cap until this is hardened.
 
 ---
 
@@ -230,7 +234,9 @@ GET /odata/Orders?$expand=Lines($select=ProductName,Quantity)
 GET /odata/Orders?$expand=Lines,Customer
 ```
 
-On the `GetQueryable` path with EF Core, `$expand` calls `Include()` - the related data is loaded in the same query. Navigation properties must be declared in the profile:
+`$expand` does **not** use EF Core's `Include()` or push the join into SQL. Instead, for each requested navigation property the framework invokes the registered navigation route handler (the `getAll`/`get` delegate passed to `HasMany`/`HasOptional`/`HasRequired`) once per entity in the result set - an N+1 pattern. This is a generic mechanism with no EF Core dependency, and it behaves identically on the `GetQueryable`, `GetAll`, and Priority-1 (`IODataEntitySetEndpointSource`) paths. See [navigation-routing.md](navigation-routing.md) for details.
+
+Navigation properties must be declared in the profile:
 
 ```csharp
 public class OrderProfile : EntitySetProfile<Guid, Order>
@@ -239,12 +245,23 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
     {
         ExpandEnabled = true;
 
-        HasMany(x => x.Lines);       // declares in EDM for $expand
-        HasOptional(x => x.Customer);
+        HasMany(x => x.Lines,        // declares in EDM for $expand
+            getAll: (orderId, ct) => Task.FromResult<IEnumerable<OrderLine>>(
+                db.OrderLines.Where(l => l.OrderId == orderId).ToList()));
+        HasOptional(x => x.Customer,
+            get: (orderId, ct) => Task.FromResult(db.Customers.Find(orderId)));
 
         GetQueryable = (_) => Task.FromResult(db.Orders.AsQueryable());
     }
 }
+```
+
+`$expand` requires a navigation route handler (the same one used for the standalone `GET /Orders(id)/Lines` route) to be registered - a navigation property declared with `HasMany(x => x.Lines)` alone (no handler) is visible in `$metadata` but is silently skipped when a client tries to `$expand` it.
+
+Restrict which navigation properties may be expanded:
+
+```csharp
+ExpandProperties(x => x.Lines, x => x.Customer);
 ```
 
 To also expose navigation as a standalone HTTP route (`GET /Orders(id)/Lines`), provide a handler to `HasMany` - see [navigation-routing.md](navigation-routing.md).
@@ -266,7 +283,24 @@ Search = (term, ct) => Task.FromResult<IEnumerable<Product>>(
 GET /odata/Products?$search=widget
 ```
 
-Without a `Search` handler, `$search` requests return `501 Not Implemented`. The interpretation of the search term is entirely up to the handler.
+Without a `Search` handler, `$search` requests return `400 Bad Request` (`UnsupportedQueryOption`). The interpretation of the search term is entirely up to the handler.
+
+On the `GetQueryable` and `GetAll` paths, `$search` composes with the other query options: the handler's results become the base sequence, and `$filter`, `$orderby`, `$top`, and `$skip` are then applied on top of the search results (in that order).
+
+---
+
+## `$skiptoken` (server-driven paging)
+
+When a response includes `@odata.nextLink` (emitted once the page size reaches `MaxTop` or the client-requested `maxpagesize`), the link contains a `$skiptoken` value:
+
+```
+GET /odata/Products?$top=20
+→ "@odata.nextLink": "https://host/odata/Products?$top=20&$skiptoken=MjA="
+```
+
+**`$skiptoken` is a Base64-encoded raw 4-byte little-endian integer - the literal skip offset - not an opaque or cryptographically-protected cursor.** A client (or anyone who intercepts a link) can trivially decode, predict, or forge a token to jump to an arbitrary offset; it provides no more protection than sending `$skip` directly. Don't rely on it to gate access to specific pages or ranges of data - apply authorization/filtering in the handler itself if that matters.
+
+A malformed or corrupted `$skiptoken` (wrong length, invalid Base64) returns `400 Bad Request` (`InvalidSkipToken`). If both `$skip` and `$skiptoken` are present, `$skip` takes precedence.
 
 ---
 

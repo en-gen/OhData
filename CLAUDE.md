@@ -53,7 +53,7 @@ app.MapOhData()  →  returns RouteGroupBuilder
             POST   /{EntitySet}              (Post)
             PUT    /{EntitySet}({key})       (Put)
             PATCH  /{EntitySet}({key})       (Patch)
-            DELETE /{EntitySet}({key})       (Delete - returns Task<bool>; false→404)
+            DELETE /{EntitySet}({key})       (Delete - returns Task<bool>; false→404 or 204, per IdempotentDelete)
             GET    /{EntitySet}({key})/{nav} (navigation routes with handler)
             GET    /{EntitySet}/{FunctionName}  (bound functions, query-string params)
             POST   /{EntitySet}/{ActionName}    (bound actions, JSON body params)
@@ -73,7 +73,7 @@ app.MapOhData()  →  returns RouteGroupBuilder
 
 **`ODataException` from invalid query options returns 400.** All collection GET handlers wrap `ODataQueryOptions` construction in try/catch to return an OData error body instead of a 500.
 
-**`Delete` returns `Task<bool>`.** `false` → 404 OData error. No `KeyNotFoundException` idiom.
+**`Delete` returns `Task<bool>`.** `false` → 404 OData error **when `IdempotentDelete = false`**; the framework default is `IdempotentDelete = true`, under which `false` → 204 No Content instead. No `KeyNotFoundException` idiom.
 
 **ETags.** Set `GetETag = model => "..."` to opt in. Adds `ETag` response header to GET/POST/PUT/PATCH. Checks `If-Match` header on PUT/PATCH/DELETE; returns 412 on mismatch.
 
