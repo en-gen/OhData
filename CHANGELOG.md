@@ -17,6 +17,23 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `GET /{EntitySet}({key})/{Nav}/$ref` on a single-valued navigation now returns a populated
   `@odata.id` when `refTargetEntitySet` is configured, matching the existing collection-valued
   behavior (§11.4.6.1)
+- POST and PUT with a malformed, wrong-shaped, or non-JSON-object request body (invalid JSON,
+  empty body, JSON array, wrong-typed field, ~100-level-deep JSON) now return `400 Bad Request`
+  with the documented OData error envelope (`{"error":{"code":...,"message":...}}`, §9.4)
+  instead of an empty body. Root cause: POST/PUT bound the request body via a `TModel model`
+  minimal-API parameter, so ASP.NET Core's implicit JSON body binder rejected malformed input
+  before OhData's error-formatting code ran. POST/PUT now read and deserialize the body
+  manually, mirroring PATCH's existing approach
+- POST, PUT, and PATCH with an unsupported `Content-Type` (e.g. `text/plain`, `application/xml`,
+  or a missing header) now return `415 Unsupported Media Type` with the OData error envelope
+  instead of an empty body. PATCH's route previously carried an `.Accepts<TModel>("application/json")`
+  metadata declaration that made ASP.NET Core reject the request before the handler's own JSON
+  parsing (and error formatting) ran; content-type validation is now performed manually in all
+  three handlers
+- PATCH with a JSON array (or any non-object JSON value: string, number, bool, null) as the
+  request body no longer throws an unhandled `System.InvalidOperationException` from
+  `JsonElement.EnumerateObject()`. Non-object bodies now return `400 Bad Request` with an OData
+  error envelope
 
 ---
 
