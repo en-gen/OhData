@@ -353,12 +353,12 @@ public class ConcurrencyTests
             o => o.AddProfile<EtagSequenceProfile>(),
             configureServices: s => s.AddSingleton(new EtagSequenceStore()));
 
-        var req = new HttpRequestMessage(HttpMethod.Put, "/odata/EtagSequenceWidgets(1)")
+        using var req = new HttpRequestMessage(HttpMethod.Put, "/odata/EtagSequenceWidgets(1)")
         {
             Content = JsonContent.Create(new Widget { Id = 1, Name = "WildcardApplied" })
         };
         req.Headers.TryAddWithoutValidation("If-Match", "*");
-        var resp = await fx.Client.SendAsync(req);
+        using var resp = await fx.Client.SendAsync(req);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
     }
 
@@ -372,12 +372,12 @@ public class ConcurrencyTests
             o => o.AddProfile<EtagSequenceProfile>(),
             configureServices: s => s.AddSingleton(new EtagSequenceStore()));
 
-        var req = new HttpRequestMessage(HttpMethod.Put, "/odata/EtagSequenceWidgets(999)")
+        using var req = new HttpRequestMessage(HttpMethod.Put, "/odata/EtagSequenceWidgets(999)")
         {
             Content = JsonContent.Create(new Widget { Id = 999, Name = "Nope" })
         };
         req.Headers.TryAddWithoutValidation("If-Match", "*");
-        var resp = await fx.Client.SendAsync(req);
+        using var resp = await fx.Client.SendAsync(req);
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
 
