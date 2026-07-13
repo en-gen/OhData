@@ -31,6 +31,7 @@ OhData targets the [OData 4.0 specification](https://docs.oasis-open.org/odata/o
 | `@odata.etag` in body | §4.5.3 | ✅ | When ETags configured |
 | `@odata.nextLink` | §11.2.6.7 | ✅ | When page size equals `MaxTop` |
 | `@odata.context` on bound operations | §10 | ✅ | Included when the function/action return type is the profile's model type or `IEnumerable<TModel>`; omitted for primitive/arbitrary return types |
+| `OData-EntityId` response header | §8.3.4 | ✅ | On any `204 No Content` that creates/upserts an entity (POST/upsert-PUT with `Prefer: return=minimal`); omitted on a plain update-PUT 204 |
 
 ## Collection queries
 
@@ -40,7 +41,7 @@ OhData targets the [OData 4.0 specification](https://docs.oasis-open.org/odata/o
 | `$orderby` | §11.2.6.2 | ✅ | Multiple keys, asc/desc |
 | `$top` | §11.2.6.3 | ✅ | `MaxTop` server-side cap enforced |
 | `$skip` | §11.2.6.4 | ✅ | |
-| `$count` (inline and standalone) | §11.2.6.5 | ✅ | |
+| `$count` (inline and standalone) | §11.2.6.5 | ✅ | Reports the pre-paging total; on the `ODataEntitySetProfile` (`GetODataQueryable`) path a profile that applies its own `$top`/`$skip` must set `ODataQueryResult.TotalCount` or `@odata.count` falls back to the post-page item count |
 | `$search` | §11.2.6.6 | ✅ | Requires a `Search` handler; `400 Bad Request` (`UnsupportedQueryOption`) if unset |
 | `$select` | §11.2.4.1 | ✅ | JSON post-processing; SQL column projection not performed |
 | `$expand` | §11.2.4.2 | ✅ | Generic navigation-delegate expansion (registered via `HasMany`/`HasOptional`/`HasRequired`); the same pipeline runs identically on the `GetQueryable`, `GetAll`, and Priority-1 `ODataQueryOptions` paths. No EF Core dependency - each expanded property is resolved by calling the registered navigation handler per entity. |
@@ -66,6 +67,7 @@ OhData targets the [OData 4.0 specification](https://docs.oasis-open.org/odata/o
 | Navigation property routes | §11.2.3 | ✅ | `GET /Set({key})/Nav` |
 | Navigation `$count` | §11.2.3 | ✅ | `GET /Set({key})/Nav/$count` |
 | Navigation with `$select` | §11.2.3 | ✅ | |
+| `$ref` get link(s) | §11.4.6.1 | ✅ | `GET /Set({key})/Nav/$ref` returns populated `@odata.id` (collection or single) when `refTargetEntitySet` is configured on the navigation; otherwise an empty envelope |
 | `$ref` add link | §11.4.6.1 | ✅ | `POST /Set({key})/Nav/$ref` |
 | `$ref` remove link | §11.4.6.2 | ✅ | `DELETE /Set({key})/Nav/$ref` |
 

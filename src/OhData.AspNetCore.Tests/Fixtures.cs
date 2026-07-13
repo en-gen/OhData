@@ -858,6 +858,31 @@ internal class NavRefProfile : EntitySetProfile<int, Parent>
 }
 
 /// <summary>
+/// Profile for testing <c>GET /{EntitySet}({key})/{nav}/$ref</c> on a single-valued
+/// navigation with populated <c>@odata.id</c> when <c>refTargetEntitySet</c> is configured
+/// (V3, OData §11.4.6.1).
+/// </summary>
+internal class NavRefSingleProfile : EntitySetProfile<int, Parent>
+{
+    private static readonly List<Parent> _parents = new()
+    {
+        new() { Id = 1, Name = "Parent1", PrimaryChild = new Child { Id = 42, ParentId = 1, Name = "OnlyChild" } },
+    };
+
+    public NavRefSingleProfile() : base(x => x.Id)
+    {
+        EntitySetName = "NavRefSingleParents";
+        GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(p => p.Id == id));
+
+        HasOptional(
+            navigation: x => x.PrimaryChild!,
+            get: (parentId, ct) =>
+                Task.FromResult(_parents.FirstOrDefault(p => p.Id == parentId)?.PrimaryChild),
+            refTargetEntitySet: "Children");
+    }
+}
+
+/// <summary>
 /// Profile that demonstrates the new Patch delta semantics: the handler receives the
 /// pre-fetched entity with only request-body fields overwritten. No manual merge needed.
 /// </summary>
