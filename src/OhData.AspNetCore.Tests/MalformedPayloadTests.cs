@@ -232,8 +232,8 @@ public class MalformedPayloadTests
     public async Task Patch_SyntacticallyInvalidJson_Returns400WithODataErrorBody()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
-        var response = await fx.Client.PatchAsync("/odata/MalformedWidgets(1)",
-            new StringContent("{ broken json", Encoding.UTF8, "application/json"));
+        using var content = new StringContent("{ broken json", Encoding.UTF8, "application/json");
+        var response = await fx.Client.PatchAsync("/odata/MalformedWidgets(1)", content);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
