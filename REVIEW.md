@@ -10,61 +10,35 @@ Resolved items have been closed and removed. This file contains only open findin
 
 ### OData Spec Compliance
 
-#### H-1: `$count` on `GetODataQueryable` returns post-page count, not total
-
-`OhDataEndpointFactory.cs:588` -- When using the `IODataEntitySetEndpointSource` path (Priority 1), `$count=true` returns `items.Length` after the profile has already applied `$top/$skip`. OData **11.2.6.5** specifies that `@odata.count` represents the total matching entities before server-driven paging. The comment acknowledges this but the behavior is incorrect for any profile that applies `$top` inside `GetODataQueryable`.
-
-**Suggested fix:** Accept an optional `long? totalCount` return from the profile, or require profiles that apply their own paging to supply the pre-page count.
-
 #### M-1: `$expand` is N+1 per entity per navigation property
 
-`OhDataEndpointFactory.cs:480-496` -- `ApplyExpandAsync` iterates every item and calls `navRoute.Handler(keyVal, ct)` individually. For 100 items with 2 expanded properties, this is 200 sequential async calls. OData **11.2.4.2** allows `$expand`, and users will reasonably expect it to perform well.
+`OhDataEndpointFactory.cs` -- `ApplyExpandAsync` iterates every item and calls `navRoute.Handler(keyVal, ct)` individually. For 100 items with 2 expanded properties, this is 200 sequential async calls. OData **11.2.4.2** allows `$expand`, and users will reasonably expect it to perform well.
 
-**Suggested fix:** Consider a batch-aware expand callback signature (accepting `IEnumerable<TKey>` and returning a dictionary), or document the performance characteristics clearly.
+**Status:** Design adjudicated (additive `BatchHandler` on `NavigationRouteDefinition`, batch overloads on `HasMany`/`HasOptional`/`HasRequired`, auto-derived single-key handler). Implementation queued behind the malformed-payload fix PR.
 
-#### M-2: `GET $ref` endpoints return empty/minimal envelopes
+#### M-3: Navigation-route `$orderby` is silently ignored
 
-`OhDataEndpointFactory.cs:1227-1244` -- The `GET /{EntitySet}({key})/{nav}/$ref` route returns an envelope without actual `@odata.id` values because the related entity's key property is not available. This makes the endpoint non-compliant with OData **11.4.6.1** which expects reference links.
+On `GET /{Set}({key})/{nav}` collection routes, `$top`/`$skip`/`$count`/`$select` are honored but `$orderby` is accepted and silently dropped (no sort, no error). OData 4.0 Minimal conformance requires a service to parse the system query options it supports and either apply them or reject the request -- silently returning unsorted data misleads clients. Documented in `docs/navigation-routing.md`; either apply `$orderby` on the returned collection or return `400 UnsupportedQueryOption`.
 
-**Suggested fix:** Thread the navigation target's key property name through `NavigationRouteDefinition` so `$ref` can build actual `@odata.id` URLs.
+#### M-4: `Prefer: maxpagesize` overrides `MaxTop` with no ceiling
 
----
+A client-supplied `maxpagesize` unconditionally replaces the server's `MaxTop` cap when `$top` is absent, with no upper bound -- a client can request arbitrarily large pages, defeating the server-side paging protection (DoS exposure). Documented as a Known Limitation in `docs/query-options.md`; fix by capping the honored `maxpagesize` at `MaxTop`.
 
-### Public API Design
+### Spec deviations to fix or formally declare
 
-#### L-6: `BindFunction`/`BindAction` name comes from delegate method name
+#### L-13: `round()` uses banker's rounding
 
-When users pass lambdas, the function name is the compiler-generated closure method name (e.g. `<.ctor>b__0`). The workaround (use named methods) should be documented or validated at registration time.
+The `$filter` canonical function `round()` follows .NET's default `MidpointRounding.ToEven` (2.5 → 2), while OData-ABNF/Part 2 §5.1.1.9 specifies round-half-away-from-zero (2.5 → 3). Behavior is pinned by test `MathFn_Round_Double_UsesBankersRoundingOnMidpoint`. Either translate to away-from-zero rounding or declare the deviation in `docs/spec-compliance.md`.
 
-#### L-8: Pluralization is naive
+#### L-14: `BindFunction`/`BindAction` lambda rejection lacks a regression test
 
-`PluralizationHelper.Pluralize` handles common English patterns but fails on irregulars: `Person` -> `Persons` (not `People`), `Child` -> `Childs`. The escape hatch (`EntitySetName = "..."`) exists but this should be documented prominently.
+The startup validation rejecting compiler-generated delegate names (added in PR #66, `BoundOperationDefinition.From`) has no test exercising it. Add a test passing a lambda and asserting `InvalidOperationException`.
 
----
+### Design questions (owner decision, then close)
 
-## Client: OhData.Client
+#### Q-1: `$metadata` and service document are never auth-protected
 
-### API Design
-
-#### M-8: No ETag/concurrency support on the client
-
-`KeyedEntitySetClient<T>` exposes `GetWithETagAsync` to retrieve the ETag from GET responses, but there is no way to set `If-None-Match` headers. The server supports ETags for optimistic concurrency; the client can send `If-Match` on writes (PUT/PATCH/DELETE) via the `ifMatch` parameter, and `GetWithETagAsync` returns the ETag alongside the entity.
-
-**Remaining gap:** `If-None-Match` support for conditional GETs.
-
----
-
-### Performance and Memory
-
-#### M-9: `Expression.Compile()` on every captured variable in filter translation
-
-`FilterTranslator.cs:105` -- When a filter expression references a captured variable (e.g. `int minPrice = 10; .Filter(x => x.Price > minPrice)`), the translator evaluates it by compiling a fresh lambda: `Expression.Lambda<Func<object?>>(...).Compile()()`. This allocates a new delegate per variable per query with no caching.
-
-**Suggested fix:** Use `Expression.Lambda(...).Compile(preferInterpretation: true)()` for evaluation (uses the interpreter, cheaper than JIT compilation), or evaluate via the expression interpreter directly.
-
-#### L-12: No `HttpCompletionOption.ResponseHeadersRead`
-
-`ODataHttpClient` uses default `HttpCompletionOption.ResponseContentRead` for all GET requests, buffering the entire response body before deserialization begins. For large collections, streaming would reduce peak memory.
+Both are mapped before per-profile authorization is applied, so they remain anonymous even when every registered profile requires auth. Behavior is documented and pinned by tests in `AuthorizationMatrixTests`. Decide: intentional (metadata is public by design) or add an opt-in to protect them.
 
 ---
 
@@ -72,11 +46,13 @@ When users pass lambdas, the function name is the compiler-generated closure met
 
 | Sev | ID | Area | Finding |
 |-----|------|------|---------|
-| H | H-1 | Server/Spec | `$count` on `GetODataQueryable` returns post-page count |
-| M | M-1 | Server/Spec | `$expand` is N+1 |
-| M | M-2 | Server/Spec | `GET $ref` returns empty envelopes |
-| M | M-8 | Client/API | `If-None-Match` not supported |
-| M | M-9 | Client/Perf | `Expression.Compile()` per captured variable |
-| L | L-6 | Server/API | `BindFunction` lambda naming |
-| L | L-8 | Server/API | Naive pluralization |
-| L | L-12 | Client/Perf | No streaming HTTP reads |
+| M | M-1 | Server/Spec | `$expand` is N+1 (fix in flight) |
+| M | M-3 | Server/Spec | Nav-route `$orderby` silently ignored |
+| M | M-4 | Server/Hardening | `maxpagesize` bypasses `MaxTop` cap |
+| L | L-13 | Server/Spec | `round()` banker's rounding deviates from spec |
+| L | L-14 | Server/Test | No test for lambda rejection in bound operations |
+| Q | Q-1 | Server/Design | `$metadata`/service doc never auth-protected |
+
+## Resolved this cycle (removed per convention)
+
+H-1 ($count pre-page total -- `ODataQueryResult.TotalCount`), M-2 ($ref real `@odata.id` -- `ChildKeyPropertyName`, single-valued case completed in PR #115), M-8 (client `GetIfChangedAsync`/If-None-Match, PR #116), M-9 (captured-variable filter translation ~17.8x faster, PR #116), L-6 (lambda names rejected at startup, PR #66; test gap tracked as L-14), L-8 (pluralization escape hatch documented, PR #114), L-12 (streaming reads via `ResponseHeadersRead`, PR #116).
