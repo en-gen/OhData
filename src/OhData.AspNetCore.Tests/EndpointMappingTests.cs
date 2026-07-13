@@ -1173,7 +1173,7 @@ public class EndpointMappingTests
         // §8.3.4: a 204 response that creates an entity MUST carry OData-EntityId so the
         // client can recover the new entity's id from an empty body.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
-        var req = new HttpRequestMessage(HttpMethod.Post, "/odata/Widgets")
+        using var req = new HttpRequestMessage(HttpMethod.Post, "/odata/Widgets")
         {
             Content = JsonContent.Create(new Widget { Name = "X" })
         };
@@ -1191,7 +1191,7 @@ public class EndpointMappingTests
     {
         // Upsert-PUT that creates a new entity via 204 must also carry OData-EntityId.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<UpsertProfile>());
-        var req = new HttpRequestMessage(HttpMethod.Put, "/odata/UpsertWidgets(99)")
+        using var req = new HttpRequestMessage(HttpMethod.Put, "/odata/UpsertWidgets(99)")
         {
             Content = JsonContent.Create(new Widget { Id = 99, Name = "NewViaUpsert" })
         };
@@ -1209,7 +1209,7 @@ public class EndpointMappingTests
         // A plain update-PUT (no entity created) must NOT carry OData-EntityId — the
         // header is scoped to responses that create/upsert an entity (§8.3.4).
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<UpsertProfile>());
-        var req = new HttpRequestMessage(HttpMethod.Put, "/odata/UpsertWidgets(1)")
+        using var req = new HttpRequestMessage(HttpMethod.Put, "/odata/UpsertWidgets(1)")
         {
             Content = JsonContent.Create(new Widget { Id = 1, Name = "UpdatedExisting" })
         };
