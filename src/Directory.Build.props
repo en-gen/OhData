@@ -6,6 +6,14 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!--
+      When upgrading the .NET SDK, new analyzer rules may activate and become
+      build errors via TreatWarningsAsErrors. Add severity overrides for those
+      diagnostics in /.editorconfig (see the "Analyzer severity map" section)
+      rather than using NoWarn per-project or disabling rules globally.
+      For a full ruleset upgrade, set <AnalysisLevel>X.Y-Recommended</AnalysisLevel>
+      here, fix or suppress the new diagnostics, then remove this comment.
+    -->
   </PropertyGroup>
 
   <PropertyGroup>
