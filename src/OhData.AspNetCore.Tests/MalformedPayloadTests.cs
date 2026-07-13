@@ -69,8 +69,8 @@ public class MalformedPayloadTests
     public async Task Post_JsonArrayInsteadOfObject_Returns400WithODataErrorBody()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
-        var response = await fx.Client.PostAsync("/odata/MalformedWidgets",
-            new StringContent("[1,2,3]", Encoding.UTF8, "application/json"));
+        using var content = new StringContent("[1,2,3]", Encoding.UTF8, "application/json");
+        var response = await fx.Client.PostAsync("/odata/MalformedWidgets", content);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAssertingODataError();
