@@ -135,8 +135,8 @@ public class MalformedPayloadTests
     public async Task Post_DuplicateJsonKeys_LastValueWins_Returns201()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
-        var response = await fx.Client.PostAsync("/odata/MalformedWidgets",
-            new StringContent("{\"name\":\"first\",\"name\":\"second\"}", Encoding.UTF8, "application/json"));
+        using var content = new StringContent("{\"name\":\"first\",\"name\":\"second\"}", Encoding.UTF8, "application/json");
+        var response = await fx.Client.PostAsync("/odata/MalformedWidgets", content);
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
