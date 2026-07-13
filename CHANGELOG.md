@@ -9,6 +9,15 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `OData-EntityId` response header (§8.3.4) is now emitted on any `204 No Content` response
+  that creates or upserts an entity (POST/upsert-PUT with `Prefer: return=minimal`); a plain
+  update-PUT 204 does not carry it
+- `GET /{EntitySet}({key})/{Nav}/$ref` on a single-valued navigation now returns a populated
+  `@odata.id` when `refTargetEntitySet` is configured, matching the existing collection-valued
+  behavior (§11.4.6.1)
+
 ---
 
 ## [0.1.0] - 2026-06-11

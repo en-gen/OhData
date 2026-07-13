@@ -1165,6 +1165,60 @@ public class EndpointMappingTests
         Assert.NotEmpty(body);
     }
 
+    // ── V1/§8.3.4: OData-EntityId on 204 create/upsert ────────────────────────────
+
+    [Fact]
+    public async Task Post_PreferMinimal_HasODataEntityIdHeader()
+    {
+        // §8.3.4: a 204 response that creates an entity MUST carry OData-EntityId so the
+        // client can recover the new entity's id from an empty body.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var req = new HttpRequestMessage(HttpMethod.Post, "/odata/Widgets")
+        {
+            Content = JsonContent.Create(new Widget { Name = "X" })
+        };
+        req.Headers.TryAddWithoutValidation("Prefer", "return=minimal");
+        var resp = await fx.Client.SendAsync(req);
+        Assert.Equal(HttpStatusCode.NoContent, resp.StatusCode);
+        Assert.True(resp.Headers.TryGetValues("OData-EntityId", out var entityIdValues));
+        string? entityId = entityIdValues.Single();
+        Assert.NotNull(entityId);
+        Assert.Equal(resp.Headers.Location?.ToString(), entityId);
+    }
+
+    [Fact]
+    public async Task Put_AllowUpsert_PreferMinimal_NonExistingKey_HasODataEntityIdHeader()
+    {
+        // Upsert-PUT that creates a new entity via 204 must also carry OData-EntityId.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<UpsertProfile>());
+        var req = new HttpRequestMessage(HttpMethod.Put, "/odata/UpsertWidgets(99)")
+        {
+            Content = JsonContent.Create(new Widget { Id = 99, Name = "NewViaUpsert" })
+        };
+        req.Headers.TryAddWithoutValidation("Prefer", "return=minimal");
+        var resp = await fx.Client.SendAsync(req);
+        Assert.Equal(HttpStatusCode.NoContent, resp.StatusCode);
+        Assert.True(resp.Headers.TryGetValues("OData-EntityId", out var entityIdValues));
+        string? entityId = entityIdValues.Single();
+        Assert.Contains("UpsertWidgets(99)", entityId);
+    }
+
+    [Fact]
+    public async Task Put_AllowUpsert_PreferMinimal_ExistingKey_NoODataEntityIdHeader()
+    {
+        // A plain update-PUT (no entity created) must NOT carry OData-EntityId — the
+        // header is scoped to responses that create/upsert an entity (§8.3.4).
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<UpsertProfile>());
+        var req = new HttpRequestMessage(HttpMethod.Put, "/odata/UpsertWidgets(1)")
+        {
+            Content = JsonContent.Create(new Widget { Id = 1, Name = "UpdatedExisting" })
+        };
+        req.Headers.TryAddWithoutValidation("Prefer", "return=minimal");
+        var resp = await fx.Client.SendAsync(req);
+        Assert.Equal(HttpStatusCode.NoContent, resp.StatusCode);
+        Assert.False(resp.Headers.TryGetValues("OData-EntityId", out _));
+    }
+
     // ── Gap 5: @odata.id entity self-link ─────────────────────────────────────────
 
     [Fact]
@@ -1511,6 +1565,21 @@ public class EndpointMappingTests
         var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(json.TryGetProperty("value", out var value));
         Assert.Equal(0, value.GetArrayLength());
+    }
+
+    [Fact]
+    public async Task NavigationRef_Get_SingleValued_WithRefTargetEntitySet_ReturnsPopulatedId()
+    {
+        // V3: single-valued nav (PrimaryChild) with refTargetEntitySet="Children" configured —
+        // GET $ref must return a real @odata.id, not a context-only envelope (§11.4.6.1).
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavRefSingleProfile>());
+        var resp = await fx.Client.GetAsync("/odata/NavRefSingleParents(1)/PrimaryChild/$ref");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(json.TryGetProperty("@odata.id", out var odataId));
+        string? id = odataId.GetString();
+        Assert.NotNull(id);
+        Assert.Contains("Children(42)", id);
     }
 
     // ── Batch 2, Gap 7: Unbound functions and actions ─────────────────────────────
