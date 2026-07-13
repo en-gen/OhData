@@ -82,8 +82,8 @@ public class MalformedPayloadTests
     public async Task Post_WrongTypedField_Returns400WithODataErrorBody()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
-        var response = await fx.Client.PostAsync("/odata/MalformedWidgets",
-            new StringContent("{\"id\":\"notanint\",\"name\":\"x\"}", Encoding.UTF8, "application/json"));
+        using var content = new StringContent("{\"id\":\"notanint\",\"name\":\"x\"}", Encoding.UTF8, "application/json");
+        var response = await fx.Client.PostAsync("/odata/MalformedWidgets", content);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAssertingODataError();
