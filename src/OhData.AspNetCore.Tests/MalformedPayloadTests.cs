@@ -151,8 +151,8 @@ public class MalformedPayloadTests
         string bodyJson = JsonSerializer.Serialize(new { name = bigName });
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        var response = await fx.Client.PostAsync("/odata/MalformedWidgets",
-            new StringContent(bodyJson, Encoding.UTF8, "application/json"));
+        using var content = new StringContent(bodyJson, Encoding.UTF8, "application/json");
+        var response = await fx.Client.PostAsync("/odata/MalformedWidgets", content);
         sw.Stop();
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
