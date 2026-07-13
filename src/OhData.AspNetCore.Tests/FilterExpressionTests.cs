@@ -467,7 +467,7 @@ public class FilterExpressionTests
         // away-from-zero — so Weight 2.5 (Id 1) rounds to 2, joining 2.05→2, not 3.
         await using TestFixture fx = await BuildAsync();
         int[] expected = QueryOptionData.Items
-            .Where(x => Math.Round(x.Weight) == 3d)
+            .Where(x => Convert.ToInt32(Math.Round(x.Weight)) == 3)
             .Select(x => x.Id).ToArray();
         int[] actual = await GetIdsAsync(fx.Client, $"{Url}?$filter=round(Weight) eq 3.0");
         AssertSameIds(expected, actual);
