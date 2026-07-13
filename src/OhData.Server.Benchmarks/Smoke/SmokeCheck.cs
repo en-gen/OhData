@@ -199,7 +199,7 @@ internal static class SmokeCheck
         {
             return JsonNode.Parse(body)!;
         }
-        catch (Exception ex)
+        catch (System.Text.Json.JsonException ex)
         {
             throw new SmokeFailureException($"{what} returned unparseable JSON ({ex.Message}): {Truncate(body)}");
         }
