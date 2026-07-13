@@ -12,6 +12,23 @@ An OData API is fully derivable from three things:
 
 `EntitySetProfile<TKey, TModel>` declares all three. At startup, the framework reads these declarations and registers minimal API endpoints - no controllers, no per-request reflection.
 
+### Entity set naming
+
+The OData entity set name (used in routes and `$metadata`) defaults to a pluralized form of the model type name, computed by a small hand-rolled pluralization algorithm (consonant+`y` → `ies`; `s`/`sh`/`ch`/`x`/`z` → `+es`; otherwise `+s`). It is **not** backed by a library like Humanizer and does not know irregular plurals - `Person` becomes `Persons` (not `People`), `Child` becomes `Childs` (not `Children`), etc.
+
+If the default doesn't produce the name you want, override it explicitly in the profile constructor:
+
+```csharp
+public class PersonProfile : EntitySetProfile<int, Person>
+{
+    public PersonProfile() : base(x => x.Id)
+    {
+        EntitySetName = "People";   // escape hatch for irregular plurals
+        // ...
+    }
+}
+```
+
 ## Startup flow
 
 ```

@@ -11,7 +11,7 @@ Bound to the entity set, not to a specific entity instance.
 | Function | `GET /{EntitySet}/{FunctionName}?param=value` | GET |
 | Action | `POST /{EntitySet}/{ActionName}` | POST |
 
-Register with `BindFunction` / `BindAction` inside the profile constructor. The method name becomes the operation name:
+Register with `BindFunction` / `BindAction` inside the profile constructor. The method name becomes the operation name - **the handler must be a named method, not a lambda.** Passing a lambda (whose compiler-generated method name isn't a valid OData identifier) throws `InvalidOperationException` at startup:
 
 ```csharp
 public class ProductProfile : EntitySetProfile<int, Product>
@@ -109,7 +109,7 @@ Optional parameters and their defaults are reflected in `$metadata`.
 
 ## Return types
 
-Any return type is supported - the result is serialized as JSON. Wrap in `Task<T>` for async operations, or return `void`/`Task` for no-content responses:
+Any return type is supported - the result is serialized as JSON. Wrap in `Task<T>` for async operations, or return `void`/`Task` for no-content responses. `ValueTask` and `ValueTask<T>` are also supported alongside `Task`/`Task<T>` - the framework detects the return type via reflection at startup and dispatches accordingly:
 
 ```csharp
 // Returns a single entity
