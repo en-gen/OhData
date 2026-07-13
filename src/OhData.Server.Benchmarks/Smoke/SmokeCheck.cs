@@ -29,39 +29,34 @@ internal static class SmokeCheck
 
         var (ohApp, oh) = await BenchmarkHosts.StartOhDataAsync();
         var (msApp, ms) = await BenchmarkHosts.StartMsODataAsync();
-        try
-        {
-            int failures = 0;
-            foreach (var (name, check) in Checks())
-            {
-                try
-                {
-                    await check(oh, ms);
-                    Console.WriteLine($"  PASS  {name}");
-                }
-                catch (SmokeFailureException ex)
-                {
-                    failures++;
-                    Console.WriteLine($"  FAIL  {name}: {ex.Message}");
-                }
-            }
+        await using var ohAppScope = ohApp;
+        using var ohScope = oh;
+        await using var msAppScope = msApp;
+        using var msScope = ms;
 
-            if (failures > 0)
-            {
-                Console.WriteLine($"Smoke check FAILED ({failures} scenario(s)). Benchmarks will not run.");
-                return false;
-            }
-
-            Console.WriteLine("Smoke check passed: all scenarios semantically equivalent across hosts.");
-            return true;
-        }
-        finally
+        int failures = 0;
+        foreach (var (name, check) in Checks())
         {
-            oh.Dispose();
-            ms.Dispose();
-            await ohApp.DisposeAsync();
-            await msApp.DisposeAsync();
+            try
+            {
+                await check(oh, ms);
+                Console.WriteLine($"  PASS  {name}");
+            }
+            catch (SmokeFailureException ex)
+            {
+                failures++;
+                Console.WriteLine($"  FAIL  {name}: {ex.Message}");
+            }
         }
+
+        if (failures > 0)
+        {
+            Console.WriteLine($"Smoke check FAILED ({failures} scenario(s)). Benchmarks will not run.");
+            return false;
+        }
+
+        Console.WriteLine("Smoke check passed: all scenarios semantically equivalent across hosts.");
+        return true;
     }
 
     private static IEnumerable<(string Name, Func<HttpClient, HttpClient, Task> Check)> Checks()
