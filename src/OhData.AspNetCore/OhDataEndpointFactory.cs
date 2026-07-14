@@ -625,10 +625,8 @@ internal static class OhDataEndpointFactory
         IEnumerable<object> items, Type? navItemType, string orderByParam)
     {
         IOrderedEnumerable<object>? ordered = null;
-        foreach (string clause in orderByParam.Split(',').Select(c => c.Trim()))
+        foreach (string clause in orderByParam.Split(',').Select(c => c.Trim()).Where(c => c.Length != 0))
         {
-            if (clause.Length == 0) continue;
-
             string[] parts = clause.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             string propName = parts[0];
             bool descending = parts.Length > 1 && string.Equals(parts[1], "desc", StringComparison.OrdinalIgnoreCase);
