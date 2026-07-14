@@ -234,7 +234,17 @@ GET /odata/Orders?$expand=Lines($select=ProductName,Quantity)
 GET /odata/Orders?$expand=Lines,Customer
 ```
 
-`$expand` does **not** use EF Core's `Include()` or push the join into SQL. Instead, for each requested navigation property the framework invokes the registered navigation route handler (the `getAll`/`get` delegate passed to `HasMany`/`HasOptional`/`HasRequired`) once per entity in the result set - an N+1 pattern. This is a generic mechanism with no EF Core dependency, and it behaves identically on the `GetQueryable`, `GetAll`, and Priority-1 (`IODataEntitySetEndpointSource`) paths. See [navigation-routing.md](navigation-routing.md) for details.
+`$expand` does **not** use EF Core's `Include()` or push the join into SQL. Instead, for each requested navigation property the framework invokes a registered navigation route handler. This is a generic mechanism with no EF Core dependency, and it behaves identically on the `GetQueryable`, `GetAll`, and Priority-1 (`IODataEntitySetEndpointSource`) paths. See [navigation-routing.md](navigation-routing.md) for details.
+
+There are two ways to register the handler, and they have very different `$expand` performance:
+
+- **Per-entity (`getAll`/`get`)** - invoked once per parent entity per expanded property. For a
+  page of *N* items with *P* expanded properties, that's *N×P* sequential awaited calls (an N+1
+  query pattern when the handler hits a database). Simple to write; fine for small pages or
+  handlers with no per-call cost.
+- **Batch (`batchGetAll`/`batchGet`)** - invoked **once per expanded property per page**,
+  receiving every parent key on the page at once. *N×P* collapses to *P*. This is the
+  recommended form for EF Core-backed handlers.
 
 Navigation properties must be declared in the profile:
 
@@ -245,9 +255,14 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
     {
         ExpandEnabled = true;
 
-        HasMany(x => x.Lines,        // declares in EDM for $expand
-            getAll: (orderId, ct) => Task.FromResult<IEnumerable<OrderLine>>(
-                db.OrderLines.Where(l => l.OrderId == orderId).ToList()));
+        // Batch form: ONE query loads every order's lines for the whole page.
+        HasMany(x => x.Lines, batchGetAll: async (orderIds, ct) =>
+        {
+            var lines = await db.OrderLines.Where(l => orderIds.Contains(l.OrderId)).ToListAsync(ct);
+            return lines.ToLookup(l => l.OrderId);
+        });
+
+        // Per-entity form: one query PER order (N+1 under $expand).
         HasOptional(x => x.Customer,
             get: (orderId, ct) => Task.FromResult(db.Customers.Find(orderId)));
 
@@ -256,7 +271,11 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
 }
 ```
 
-`$expand` requires a navigation route handler (the same one used for the standalone `GET /Orders(id)/Lines` route) to be registered - a navigation property declared with `HasMany(x => x.Lines)` alone (no handler) is visible in `$metadata` but is silently skipped when a client tries to `$expand` it.
+`HasMany`'s batch overload returns an `ILookup<TKey, TNavigation>` (e.g. via `.ToLookup(...)`); `HasOptional`/`HasRequired`'s batch overloads return an `IReadOnlyDictionary<TKey, TNavigation?>`/`IReadOnlyDictionary<TKey, TNavigation>`. A parent key missing from the result is treated as "no children" (`[]`) for a collection nav, or "no related entity" (`null`) for a single-valued nav.
+
+Registering only the batch overload is enough - the framework auto-derives a single-key handler from it, so the standalone `GET /Orders(id)/Lines` route, nav `$count`, and `$ref` endpoints all keep working without writing a second handler. You may still register both explicitly (e.g. if the single-key path warrants a different query shape), in which case the per-entity handler you supply is used for those standalone routes and the batch handler is used only for `$expand`.
+
+`$expand` requires a navigation route handler (batch or per-entity - the same one used for the standalone `GET /Orders(id)/Lines` route) to be registered - a navigation property declared with `HasMany(x => x.Lines)` alone (no handler) is visible in `$metadata` but is silently skipped when a client tries to `$expand` it.
 
 Restrict which navigation properties may be expanded:
 

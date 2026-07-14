@@ -10,12 +10,6 @@ Resolved items have been closed and removed. This file contains only open findin
 
 ### OData Spec Compliance
 
-#### M-1: `$expand` is N+1 per entity per navigation property
-
-`OhDataEndpointFactory.cs` -- `ApplyExpandAsync` iterates every item and calls `navRoute.Handler(keyVal, ct)` individually. For 100 items with 2 expanded properties, this is 200 sequential async calls. OData **11.2.4.2** allows `$expand`, and users will reasonably expect it to perform well.
-
-**Status:** Design adjudicated (additive `BatchHandler` on `NavigationRouteDefinition`, batch overloads on `HasMany`/`HasOptional`/`HasRequired`, auto-derived single-key handler). Implementation queued behind the malformed-payload fix PR.
-
 #### M-3: Navigation-route `$orderby` is silently ignored
 
 On `GET /{Set}({key})/{nav}` collection routes, `$top`/`$skip`/`$count`/`$select` are honored but `$orderby` is accepted and silently dropped (no sort, no error). OData 4.0 Minimal conformance requires a service to parse the system query options it supports and either apply them or reject the request -- silently returning unsorted data misleads clients. Documented in `docs/navigation-routing.md`; either apply `$orderby` on the returned collection or return `400 UnsupportedQueryOption`.
@@ -46,7 +40,6 @@ Both are mapped before per-profile authorization is applied, so they remain anon
 
 | Sev | ID | Area | Finding |
 |-----|------|------|---------|
-| M | M-1 | Server/Spec | `$expand` is N+1 (fix in flight) |
 | M | M-3 | Server/Spec | Nav-route `$orderby` silently ignored |
 | M | M-4 | Server/Hardening | `maxpagesize` bypasses `MaxTop` cap |
 | L | L-13 | Server/Spec | `round()` banker's rounding deviates from spec |
@@ -55,4 +48,4 @@ Both are mapped before per-profile authorization is applied, so they remain anon
 
 ## Resolved this cycle (removed per convention)
 
-H-1 ($count pre-page total -- `ODataQueryResult.TotalCount`), M-2 ($ref real `@odata.id` -- `ChildKeyPropertyName`, single-valued case completed in PR #115), M-8 (client `GetIfChangedAsync`/If-None-Match, PR #116), M-9 (captured-variable filter translation ~17.8x faster, PR #116), L-6 (lambda names rejected at startup, PR #66; test gap tracked as L-14), L-8 (pluralization escape hatch documented, PR #114), L-12 (streaming reads via `ResponseHeadersRead`, PR #116).
+H-1 ($count pre-page total -- `ODataQueryResult.TotalCount`), M-1 ($expand N+1 -- batch-aware `BatchHandler` on `NavigationRouteDefinition` + `HasMany`/`HasOptional`/`HasRequired` batch overloads, collapsing N×P sequential handler calls to P), M-2 ($ref real `@odata.id` -- `ChildKeyPropertyName`, single-valued case completed in PR #115), M-8 (client `GetIfChangedAsync`/If-None-Match, PR #116), M-9 (captured-variable filter translation ~17.8x faster, PR #116), L-6 (lambda names rejected at startup, PR #66; test gap tracked as L-14), L-8 (pluralization escape hatch documented, PR #114), L-12 (streaming reads via `ResponseHeadersRead`, PR #116).

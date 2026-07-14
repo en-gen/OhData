@@ -980,3 +980,247 @@ internal class ETagExpandSelectProfile : EntitySetProfile<int, Parent>
     }
 }
 
+// ── Batch-aware $expand fixtures (REVIEW.md M-1) ──────────────────────────────
+
+/// <summary>
+/// Shared mutable call-counting state for batch-expand fixtures, registered as a DI
+/// singleton so tests can observe how many times a batch loader was invoked across a
+/// request, independent of the per-request scoped profile instance.
+/// </summary>
+internal class BatchCallCounter
+{
+    public int ChildrenCalls;
+    public int PrimaryChildCalls;
+    public readonly List<int> ChildrenKeyCounts = new();
+    public readonly List<int> PrimaryChildKeyCounts = new();
+}
+
+/// <summary>
+/// Profile for testing batch-aware <c>$expand</c> (M-1) on the <c>GetQueryable</c> path.
+/// 100 parents, two batch-loaded nav properties (<c>Children</c>, a collection nav via
+/// <c>HasMany</c>; <c>PrimaryChild</c>, a single-valued nav via <c>HasOptional</c>).
+/// Parent 1 has no children (lookup miss → []). Parent 2 has no primary child (map miss → null).
+/// </summary>
+internal class BatchExpandQueryableProfile : EntitySetProfile<int, Parent>
+{
+    private static readonly List<Parent> _parents = BuildParents();
+    private static readonly List<Child> _children = BuildChildren();
+
+    private static List<Parent> BuildParents()
+    {
+        var parents = new List<Parent>();
+        for (int i = 1; i <= 100; i++)
+        {
+            parents.Add(new Parent { Id = i, Name = $"P{i}" });
+        }
+        return parents;
+    }
+
+    private static List<Child> BuildChildren()
+    {
+        var children = new List<Child>();
+        // Parent 1 intentionally has zero children (lookup-miss coverage).
+        for (int i = 2; i <= 100; i++)
+        {
+            children.Add(new Child { Id = i * 10 + 1, ParentId = i, Name = $"C{i}-1" });
+            children.Add(new Child { Id = i * 10 + 2, ParentId = i, Name = $"C{i}-2" });
+        }
+        return children;
+    }
+
+    public BatchExpandQueryableProfile(BatchCallCounter counter) : base(x => x.Id)
+    {
+        EntitySetName = "BatchExpandParents";
+        ExpandEnabled = true;
+        SelectEnabled = true;
+
+        GetQueryable = (ct) => Task.FromResult(_parents.AsQueryable());
+        GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(p => p.Id == id));
+
+        HasMany(x => x.Children!, batchGetAll: (ids, ct) =>
+        {
+            counter.ChildrenCalls++;
+            counter.ChildrenKeyCounts.Add(ids.Count);
+            ILookup<int, Child> lookup = _children.Where(c => ids.Contains(c.ParentId)).ToLookup(c => c.ParentId);
+            return Task.FromResult(lookup);
+        });
+
+        HasOptional(x => x.PrimaryChild!, batchGet: (ids, ct) =>
+        {
+            counter.PrimaryChildCalls++;
+            counter.PrimaryChildKeyCounts.Add(ids.Count);
+            // Parent 2 is intentionally absent from the result (map-miss coverage);
+            // every other requested parent gets a primary child derived from its id.
+            IReadOnlyDictionary<int, Child?> map = ids
+                .Where(id => id != 2)
+                .ToDictionary(id => id, id => (Child?)new Child { Id = id * 100, ParentId = id, Name = $"Primary{id}" });
+            return Task.FromResult(map);
+        });
+    }
+}
+
+/// <summary>
+/// Profile for testing batch-aware <c>$expand</c> (M-1) on the <c>GetAll</c> path — proves the
+/// batch collection call-count fix applies regardless of which collection GET pipeline runs.
+/// </summary>
+internal class BatchExpandGetAllProfile : EntitySetProfile<int, Parent>
+{
+    private static readonly List<Parent> _parents = new()
+    {
+        new() { Id = 1, Name = "GA1" },
+        new() { Id = 2, Name = "GA2" },
+        new() { Id = 3, Name = "GA3" },
+    };
+    private static readonly List<Child> _children = new()
+    {
+        new() { Id = 1, ParentId = 1, Name = "GC1" },
+        new() { Id = 2, ParentId = 1, Name = "GC2" },
+        new() { Id = 3, ParentId = 3, Name = "GC3" },
+        // Parent 2 has no children — lookup miss.
+    };
+
+    public BatchExpandGetAllProfile(BatchCallCounter counter) : base(x => x.Id)
+    {
+        EntitySetName = "BatchExpandGetAllParents";
+        ExpandEnabled = true;
+
+        GetAll = (ct) => Task.FromResult<IEnumerable<Parent>>(_parents);
+
+        HasMany(x => x.Children!, batchGetAll: (ids, ct) =>
+        {
+            counter.ChildrenCalls++;
+            counter.ChildrenKeyCounts.Add(ids.Count);
+            ILookup<int, Child> lookup = _children.Where(c => ids.Contains(c.ParentId)).ToLookup(c => c.ParentId);
+            return Task.FromResult(lookup);
+        });
+    }
+}
+
+/// <summary>
+/// Profile for testing batch-aware <c>$expand</c> (M-1) on the Priority-1
+/// <see cref="ODataEntitySetProfile{TKey,TModel}"/> path (<c>GetODataQueryable</c>).
+/// </summary>
+internal class BatchExpandODataProfile : ODataEntitySetProfile<int, Parent>
+{
+    private static readonly List<Parent> _parents = new()
+    {
+        new() { Id = 1, Name = "OD1" },
+        new() { Id = 2, Name = "OD2" },
+    };
+    private static readonly List<Child> _children = new()
+    {
+        new() { Id = 1, ParentId = 1, Name = "ODC1" },
+        new() { Id = 2, ParentId = 2, Name = "ODC2" },
+    };
+
+    public BatchExpandODataProfile(BatchCallCounter counter) : base(x => x.Id)
+    {
+        EntitySetName = "BatchExpandODataParents";
+        ExpandEnabled = true;
+
+        GetODataQueryable = (options, ct) =>
+        {
+            var q = _parents.AsQueryable();
+            var applied = options.ApplyTo(q) as IQueryable<Parent> ?? q;
+            return Task.FromResult(new ODataQueryResult<Parent> { Items = applied });
+        };
+        GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(p => p.Id == id));
+
+        HasMany(x => x.Children!, batchGetAll: (ids, ct) =>
+        {
+            counter.ChildrenCalls++;
+            counter.ChildrenKeyCounts.Add(ids.Count);
+            ILookup<int, Child> lookup = _children.Where(c => ids.Contains(c.ParentId)).ToLookup(c => c.ParentId);
+            return Task.FromResult(lookup);
+        });
+    }
+}
+
+/// <summary>
+/// Profile that mixes a batch-loaded nav (<c>Children</c>) with a per-entity nav
+/// (<c>PrimaryChild</c>) so a single <c>$expand=Children,PrimaryChild</c> request exercises
+/// both code paths in the same pipeline pass.
+/// </summary>
+internal class MixedBatchExpandProfile : EntitySetProfile<int, Parent>
+{
+    private static readonly List<Parent> _parents = new()
+    {
+        new() { Id = 1, Name = "M1", PrimaryChild = new Child { Id = 101, ParentId = 1, Name = "MPC1" } },
+        new() { Id = 2, Name = "M2", PrimaryChild = new Child { Id = 102, ParentId = 2, Name = "MPC2" } },
+        new() { Id = 3, Name = "M3", PrimaryChild = new Child { Id = 103, ParentId = 3, Name = "MPC3" } },
+    };
+    private static readonly List<Child> _children = new()
+    {
+        new() { Id = 1, ParentId = 1, Name = "MC1" },
+        new() { Id = 2, ParentId = 2, Name = "MC2" },
+    };
+
+    public MixedBatchExpandProfile(BatchCallCounter counter) : base(x => x.Id)
+    {
+        EntitySetName = "MixedBatchExpandParents";
+        ExpandEnabled = true;
+
+        GetQueryable = (ct) => Task.FromResult(_parents.AsQueryable());
+        GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(p => p.Id == id));
+
+        // Batch path.
+        HasMany(x => x.Children!, batchGetAll: (ids, ct) =>
+        {
+            counter.ChildrenCalls++;
+            counter.ChildrenKeyCounts.Add(ids.Count);
+            ILookup<int, Child> lookup = _children.Where(c => ids.Contains(c.ParentId)).ToLookup(c => c.ParentId);
+            return Task.FromResult(lookup);
+        });
+
+        // Deliberately per-entity (non-batch) path.
+        HasOptional(x => x.PrimaryChild!, get: (parentId, ct) =>
+        {
+            counter.PrimaryChildCalls++;
+            return Task.FromResult(_parents.FirstOrDefault(p => p.Id == parentId)?.PrimaryChild);
+        }, refTargetEntitySet: null);
+    }
+}
+
+/// <summary>
+/// Profile that registers navigation properties using ONLY the batch overloads (no per-entity
+/// <c>get</c>/<c>getAll</c> handler). Proves the auto-derived <see cref="NavigationRouteDefinition.Handler"/>
+/// keeps the standalone <c>GET /{Set}({key})/{nav}</c> route, nav <c>$count</c>, and <c>$ref</c>
+/// working without the developer writing a second handler.
+/// </summary>
+internal class BatchOnlyNavProfile : EntitySetProfile<int, Parent>
+{
+    private static readonly List<Parent> _parents = new()
+    {
+        new() { Id = 1, Name = "BO1" },
+        new() { Id = 2, Name = "BO2" },
+    };
+    private static readonly List<Child> _children = new()
+    {
+        new() { Id = 10, ParentId = 1, Name = "BOC1" },
+        new() { Id = 11, ParentId = 1, Name = "BOC2" },
+    };
+
+    public BatchOnlyNavProfile() : base(x => x.Id)
+    {
+        EntitySetName = "BatchOnlyParents";
+        ExpandEnabled = true;
+
+        GetQueryable = (ct) => Task.FromResult(_parents.AsQueryable());
+        GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(p => p.Id == id));
+
+        HasMany(x => x.Children!, batchGetAll: (ids, ct) =>
+            Task.FromResult(_children.Where(c => ids.Contains(c.ParentId)).ToLookup(c => c.ParentId)));
+
+        HasOptional(
+            navigation: x => x.PrimaryChild!,
+            batchGet: (ids, ct) =>
+            {
+                IReadOnlyDictionary<int, Child?> map = _parents
+                    .Where(p => ids.Contains(p.Id))
+                    .ToDictionary(p => p.Id, p => (Child?)_children.FirstOrDefault(c => c.ParentId == p.Id));
+                return Task.FromResult(map);
+            },
+            refTargetEntitySet: "Children");
+    }
+}
+
