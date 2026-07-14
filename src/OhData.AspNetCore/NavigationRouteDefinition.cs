@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -61,4 +62,14 @@ internal sealed record NavigationRouteDefinition
     /// <c>$select</c> is not applied by the framework.
     /// </summary>
     public Type? NavItemType { get; init; }
+
+    /// <summary>
+    /// Optional batch loader used by <c>$expand</c> (OData §11.2.4.2). Given the full set of
+    /// parent keys on the current page, returns a map keyed by parent key whose value has the
+    /// SAME shape <see cref="Handler"/> would return: the related entity for single navigations,
+    /// or an <c>IEnumerable&lt;T&gt;</c> for collection navigations. Missing keys are treated as
+    /// null (single) / empty (collection). When <c>null</c>, the framework falls back to
+    /// invoking <see cref="Handler"/> once per parent entity per expanded property.
+    /// </summary>
+    public Func<IReadOnlyList<object>, CancellationToken, Task<IReadOnlyDictionary<object, object?>>>? BatchHandler { get; init; }
 }
