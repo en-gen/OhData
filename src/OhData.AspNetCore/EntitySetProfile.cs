@@ -106,6 +106,24 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected bool? PropertyAccessEnabled { get; init; }
 
     /// <summary>
+    /// Controls the midpoint-rounding behavior of the OData <c>round()</c> canonical function
+    /// (Part 2 §5.1.1.9) on the <c>GetQueryable</c> pushdown path. Inherits from
+    /// <c>EntitySetDefaults.RoundingMode</c> (default
+    /// <c>OhData.Abstractions.RoundingMode.SpecCompliant</c>) when <c>null</c>. See
+    /// <c>OhData.Abstractions.RoundingMode</c> for the EF Core provider-translation caveat that
+    /// motivates <c>OhData.Abstractions.RoundingMode.BankersRounding</c>.
+    /// <para>
+    /// Only reaches the base-class <c>GetQueryable</c> path (and its <c>$count</c> companion),
+    /// where the framework owns the <c>ApplyTo</c> call. On the Priority-1
+    /// <c>ODataEntitySetProfile.GetODataQueryable</c> path the profile calls <c>ApplyTo</c>
+    /// itself, so this setting does not automatically apply there — read the resolved value
+    /// yourself if you need the same rewrite in a custom <c>GetODataQueryable</c> handler.
+    /// </para>
+    /// </summary>
+    protected RoundingMode? RoundingMode { get; init; }
+    private RoundingMode _resolvedRoundingMode;
+
+    /// <summary>
     /// Controls whether <c>POST /{EntitySet}</c> passes nested navigation-property values
     /// through to the <see cref="Post"/> handler (deep insert, OData §11.4.2.2). Inherits from
     /// <see cref="EntitySetDefaults.AllowDeepInsert"/> (default <c>false</c>) when <c>null</c>.
@@ -399,6 +417,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _resolvedCountEnabled = CountEnabled ?? defaults.CountEnabled;
         _resolvedPropertyAccessEnabled = PropertyAccessEnabled ?? defaults.PropertyAccessEnabled;
         _resolvedAllowDeepInsert = AllowDeepInsert ?? defaults.AllowDeepInsert;
+        _resolvedRoundingMode = RoundingMode ?? defaults.RoundingMode;
         _structuralProperties = BuildStructuralProperties();
 
         AdvancedConfigure(entitySet);
@@ -1434,6 +1453,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     bool IEntitySetEndpointSource.ExpandEnabled => _resolvedExpandEnabled;
     bool IEntitySetEndpointSource.CountEnabled => _resolvedCountEnabled;
     bool IEntitySetEndpointSource.PropertyAccessEnabled => _resolvedPropertyAccessEnabled;
+    RoundingMode IEntitySetEndpointSource.RoundingMode => _resolvedRoundingMode;
     IReadOnlyList<StructuralPropertyInfo> IEntitySetEndpointSource.StructuralProperties =>
         _structuralProperties ??= BuildStructuralProperties();
     bool IEntitySetEndpointSource.AllowDeepInsert => _resolvedAllowDeepInsert;

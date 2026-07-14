@@ -125,6 +125,48 @@ FilterProperties(x => x.Price, x => x.Name, x => x.Category);
 FilterProperties("Price", "Name", "Category");
 ```
 
+### `round()` midpoint rounding
+
+OData Part 2 §5.1.1.9 specifies that the `round()` canonical function rounds a midpoint value
+*away from zero* (`2.5 → 3`, `-2.5 → -3`). Microsoft.OData's `ApplyTo` binder instead emits
+.NET's single-argument `Math.Round(double)`/`Math.Round(decimal)`, which default to
+*round-half-to-even* ("banker's rounding": `2.5 → 2`). On the `GetQueryable` path (and its
+`$count` companion), OhData rewrites those calls in the post-`ApplyTo` expression tree to the
+two-argument `Math.Round(value, MidpointRounding.AwayFromZero)` overload, so `round()` matches
+the spec by default:
+
+```
+GET /odata/Products?$filter=round(Price) eq 3
+```
+
+Control this via the `RoundingMode` setting (`RoundingMode.SpecCompliant`, the default, or
+`RoundingMode.BankersRounding`), inheriting from `EntitySetDefaults.RoundingMode` the same way
+`PropertyAccessEnabled`/`AllowDeepInsert` do:
+
+```csharp
+// Per profile - opt back into .NET's pre-fix banker's rounding:
+RoundingMode = RoundingMode.BankersRounding;
+
+// Or globally across all profiles in the registration:
+builder.Services.AddOhData(o => o
+    .WithDefaults(d => d.RoundingMode = RoundingMode.BankersRounding)
+    .AddProfile<ProductProfile>());
+```
+
+**Provider-translation caveat:** the two-argument `Math.Round(value, MidpointRounding)` overload
+is not translatable by every EF Core provider - a query using `round()` that worked before this
+fix may throw a translation exception against your provider. If that happens, set
+`RoundingMode = BankersRounding` on the affected profile (or globally) to fall back to the
+single-argument overload that provider could already translate; this restores the pre-fix
+(banker's rounding) behavior and documents the spec deviation locally. EF Core InMemory (used in
+this repo's test suite) is LINQ-to-Objects and is unaffected either way.
+
+**Coverage note:** this rewrite only reaches the base-class `GetQueryable` path, where the
+framework itself calls `ApplyTo`. On the Priority-1 `ODataEntitySetProfile.GetODataQueryable`
+path the profile calls `ApplyTo` itself inside its own handler, so `RoundingMode` does not
+automatically apply there - a profile using that path must apply the same rewrite itself if it
+wants spec-compliant `round()` semantics.
+
 ---
 
 ## `$orderby`

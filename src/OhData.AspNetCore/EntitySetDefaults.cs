@@ -91,4 +91,14 @@ public class EntitySetDefaults
     /// whole graph (e.g. a single EF Core <c>SaveChanges</c>).
     /// </summary>
     public bool AllowDeepInsert { get; set; }
+
+    /// <summary>
+    /// Midpoint-rounding behavior for the <c>round()</c> canonical function (OData Part 2
+    /// §5.1.1.9) on the <c>GetQueryable</c> pushdown path. Defaults to
+    /// <c>OhData.Abstractions.RoundingMode.SpecCompliant</c> (round-half-away-from-zero, e.g.
+    /// <c>2.5 → 3</c>) — see that type's XML doc for the EF Core provider-translation caveat
+    /// that motivates <c>OhData.Abstractions.RoundingMode.BankersRounding</c>.
+    /// Profile-level <c>RoundingMode</c> overrides this value.
+    /// </summary>
+    public RoundingMode RoundingMode { get; set; } = RoundingMode.SpecCompliant;
 }
