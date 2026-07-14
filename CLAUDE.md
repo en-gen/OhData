@@ -44,17 +44,27 @@ AddOhData(builder => builder.AddProfile<MyProfile>())
 app.MapOhData()  →  returns RouteGroupBuilder
     └─► OhDataEndpointFactory.MapAll()
         ├─► routes.MapGroup(prefix)  ← outer group for the whole OData surface
+        │      endpoint filters: OData-Version response header, OData-MaxVersion request-header
+        │      validation (§8.2.7 - rejects < 4.0 with 400), $format/Accept negotiation
         ├─► GET  ""              → service document
         ├─► GET  /$metadata      → CSDL XML
+        ├─► startup validation: throws InvalidOperationException if a structural property name
+        │      collides with an entity-level bound function name
         └─► per profile (only routes whose handler delegate is non-null):
             GET    /{EntitySet}              (GetAll or GetQueryable)
             GET    /{EntitySet}/$count
             GET    /{EntitySet}({key})       (GetById)
-            POST   /{EntitySet}              (Post)
+            POST   /{EntitySet}              (Post - deep insert / @odata.bind handling, see AllowDeepInsert below)
             PUT    /{EntitySet}({key})       (Put)
             PATCH  /{EntitySet}({key})       (Patch)
             DELETE /{EntitySet}({key})       (Delete - returns Task<bool>; false→404 or 204, per IdempotentDelete)
-            GET    /{EntitySet}({key})/{nav} (navigation routes with handler)
+            GET    /{EntitySet}({key})/{nav}          (navigation routes with handler, batch or per-entity)
+            GET    /{EntitySet}({key})/{nav}/$count   (collection-navigation count)
+            GET/POST/PUT/DELETE /{EntitySet}({key})/{nav}/$ref  (addRef/setRef/removeRef)
+            POST   /{EntitySet}({key})/{nav}          (HasMany `post` - create a related entity)
+            GET    /{EntitySet}({key})/{Property}          (structural property read - rides GetById, gated by PropertyAccessEnabled)
+            GET    /{EntitySet}({key})/{Property}/$value   (raw property value, same gate)
+            PUT/PATCH/DELETE /{EntitySet}({key})/{Property} (structural property write - rides Patch, gated by PropertyAccessEnabled)
             GET    /{EntitySet}/{FunctionName}  (bound functions, query-string params)
             POST   /{EntitySet}/{ActionName}    (bound actions, JSON body params)
             Each route gets .WithTags(EntitySetName) and .RequireAuthorization(...) if configured.
@@ -93,6 +103,14 @@ app.MapOhData()  →  returns RouteGroupBuilder
 
 **Profile types have no ASP.NET Core dependency.** Auth config is stored as plain `AuthorizationConfig` data; the factory applies `RequireAuthorization`. Keep it this way.
 
+**Property routes ride `GetById`/`Patch`; no new handler delegates.** `PropertyAccessEnabled` (profile-level `bool?`, inherits `EntitySetDefaults.PropertyAccessEnabled`, **default `true`**) gates `GET /{EntitySet}({key})/{Property}` and `/$value` (requires `GetById`) and `PUT`/`PATCH`/`DELETE /{EntitySet}({key})/{Property}` (requires `Patch`, built as a one-property `Delta<TModel>`). Structural properties are computed once at startup as every public readable CLR property minus every navigation property name, so property and navigation routes never collide by construction. The one remaining collision risk - an entity-level bound function sharing a name with a structural property - is caught by a startup validation pass in `app.MapOhData()` (`InvalidOperationException`), since two routes can't otherwise register the same `(template, method)` pair.
+
+**`AllowDeepInsert` controls what `Post` receives, not a new route.** Profile-level `bool?` (inherits `EntitySetDefaults.AllowDeepInsert`, **default `false`**), entity-level granularity only - no per-navigation opt-in. Default: nested navigation-property values (`HasMany`/`HasOptional`/`HasRequired`) that System.Text.Json already bound during deserialization are stripped (nulled) before `Post` runs. Opt-in (`true`): the full deserialized graph is passed through; the handler owns atomic persistence (the framework does not open a transaction). `@odata.bind` anywhere in a POST body is detected and rejected with `501 Not Implemented` regardless of `AllowDeepInsert` - it is not implemented at all.
+
+**Batch-aware `$expand` via an additive `BatchHandler`.** `HasMany`/`HasOptional`/`HasRequired` accept an optional `batchGetAll`/`batchGet` delegate (`IReadOnlyList<TKey> → ILookup<TKey,TNavigation>` or `IReadOnlyDictionary<TKey,TNavigation?>`) alongside the existing per-entity `getAll`/`get`. When present, `$expand` calls it once per expanded property per page instead of once per parent entity (collapsing N×P sequential calls to P). A per-entity `Handler` is auto-derived from the batch delegate by calling it with a single-key list, so the standalone nav-GET route, `$count`, and `$ref` keep working without a second handler. Falls back byte-identically to the per-entity path when no batch handler is registered.
+
+**POST/PUT/PATCH deserialize the request body by hand.** All three read and JSON-deserialize the body manually (rather than an ASP.NET Core minimal-API bound parameter) so malformed JSON, non-object bodies, and non-JSON `Content-Type` values return the OData error envelope (400/415) instead of ASP.NET Core's implicit binder short-circuiting with an empty body. This is also why PATCH's non-object-body case (JSON array/string/number/bool/null) is caught explicitly - `JsonElement.EnumerateObject()` throws `InvalidOperationException` for non-`Object` `ValueKind`, which is now caught and mapped to 400.
+
 ### Project layout
 
 | Project | Target | Role |
@@ -104,6 +122,7 @@ app.MapOhData()  →  returns RouteGroupBuilder
 | `OhData.AspNetCore.Tests` | net10.0 | xUnit integration tests using `WebApplicationFactory` via `TestHostBuilder` |
 | `OhData.Client.Tests` | net10.0 | xUnit tests for OhData.Client |
 | `OhData.Client.Benchmarks` | net10.0 | BenchmarkDotNet project for client library performance |
+| `OhData.Server.Benchmarks` | net10.0 | BenchmarkDotNet project comparing OhData's minimal-API pipeline against `Microsoft.AspNetCore.OData`'s `ODataController`+`[EnableQuery]` pipeline; report in `docs/server-comparison-report.md` |
 | `OhData.MicrosoftODataClient.Tests` | net10.0 | Compatibility tests against Microsoft.OData.Client |
 
 ### `InternalsVisibleTo`

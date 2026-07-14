@@ -211,4 +211,5 @@ route — the key is structurally immutable per §11.4.9.
 - **`PUT /{EntitySet}({key})/{Property}/$value`** (raw-value write) — only the enveloped
   `PUT .../{Property}` form (`{"value": ...}`) is supported. Raw `/$value` remains read-only.
 - **`POST` of a new related entity via a navigation property, and deep insert** — separate design
-  items, unrelated to property access.
+  items, unrelated to property access. See [navigation-routing.md](navigation-routing.md#creating-a-related-entity--post-parentskeychildren)
+  and [deep-insert.md](deep-insert.md) respectively.

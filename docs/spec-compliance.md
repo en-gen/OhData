@@ -2,6 +2,20 @@
 
 OhData targets the [OData 4.0 specification](https://docs.oasis-open.org/odata/odata/v4.0/odata-v4.0-part1-protocol.html). This page documents which sections are implemented and any known limitations.
 
+## Conformance posture
+
+OhData has not been run against an official OASIS conformance test suite - the table below is our
+own honest self-assessment against the four conformance tiers the protocol describes, derived from
+the row-by-row detail further down this page. Treat it as a map of "what to expect", not a
+certification claim.
+
+| Tier | Posture |
+|---|---|
+| **Minimal conformance** (read entities and collections, `$top`/`$skip`/`$orderby`/`$select`/`$count`, error format, content-type negotiation) | ✅ Met |
+| **Minimal-updatable** (create/update/delete entities, `$ref` link management) | ✅ Met |
+| **Intermediate conformance** (functions/actions, `$expand`, `$search`, batch requests, deep insert) | ⚠️ Substantially met, with named exceptions: **JSON batch requests are not supported** (see Known Limitations below); `@odata.bind` (link an existing entity inline during insert) returns `501 Not Implemented` rather than being honored; `PATCH` partial-merge on a complex property and raw `/$value` property *writes* are documented non-goals (see Individual property access below) |
+| **OData 4.01 / Advanced conformance** (`$compute`, aliases, cross joins, and other 4.01-only additions) | ❌ Not targeted - `$compute` is unimplemented because the pinned `Microsoft.AspNetCore.OData` package range predates 4.01 support (see Known Limitations); no other 4.01/Advanced feature is attempted |
+
 ## Protocol headers
 
 | Feature | Section | Status | Notes |
