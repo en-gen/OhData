@@ -318,8 +318,8 @@ public class PropertyWriteTests
     public async Task Put_TextPlainContentType_Returns415()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<PropertyWriteProfile>());
-        var response = await fx.Client.PutAsync("/odata/PropertyWriteItems(25)/Name",
-            new StringContent("{\"value\":\"X\"}", Encoding.UTF8, "text/plain"));
+        using var content = new StringContent("{\"value\":\"X\"}", Encoding.UTF8, "text/plain");
+        var response = await fx.Client.PutAsync("/odata/PropertyWriteItems(25)/Name", content);
         Assert.Equal(HttpStatusCode.UnsupportedMediaType, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(json.TryGetProperty("error", out _));
@@ -329,8 +329,8 @@ public class PropertyWriteTests
     public async Task Patch_TextPlainContentType_Returns415()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<PropertyWriteProfile>());
-        var response = await fx.Client.PatchAsync("/odata/PropertyWriteItems(26)/Name",
-            new StringContent("{\"value\":\"X\"}", Encoding.UTF8, "text/plain"));
+        using var content = new StringContent("{\"value\":\"X\"}", Encoding.UTF8, "text/plain");
+        var response = await fx.Client.PatchAsync("/odata/PropertyWriteItems(26)/Name", content);
         Assert.Equal(HttpStatusCode.UnsupportedMediaType, response.StatusCode);
     }
 
@@ -367,7 +367,7 @@ public class PropertyWriteTests
         var getResp = await fx.Client.GetAsync("/odata/ETagWidgets(1)");
         string etag = getResp.Headers.ETag!.Tag;
 
-        var request = new HttpRequestMessage(HttpMethod.Put, "/odata/ETagWidgets(1)/Name")
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/odata/ETagWidgets(1)/Name")
         {
             Content = JsonContent.Create(new { value = "Updated" })
         };
@@ -380,7 +380,7 @@ public class PropertyWriteTests
     public async Task Put_IfMatch_Mismatch_Returns412()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagWidgetProfile>());
-        var request = new HttpRequestMessage(HttpMethod.Put, "/odata/ETagWidgets(1)/Name")
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/odata/ETagWidgets(1)/Name")
         {
             Content = JsonContent.Create(new { value = "Updated" })
         };
