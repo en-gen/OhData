@@ -16,7 +16,7 @@
 
 	<ItemGroup>
 		<PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.*" />
-		<PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.*" />
+		<PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.8.0" />
 		<PackageReference Include="xunit" Version="2.*" />
 		<PackageReference Include="xunit.runner.visualstudio" Version="3.*">
 			<IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>

@@ -82,8 +82,11 @@ OhData targets the [OData 4.0 specification](https://docs.oasis-open.org/odata/o
 | Raw value of a null property | Part 2 §4.7 | ✅ | `404 Not Found` — the raw value does not exist |
 | Raw value of a complex property | Part 2 §4.7 | ✅ | `400 Bad Request` — no raw representation; use the non-`$value` envelope form instead |
 | Property-route/bound-function collision detection | — | ✅ | Startup validation (`app.MapOhData()`) throws `InvalidOperationException` if an entity-level bound function shares a name with a structural property |
-| Update individual property (`PUT`/`PATCH`) | §11.4.9.1/.2 | ❌ | Not yet implemented — planned follow-up PR; rides the existing `Patch` handler in the design |
-| Set property to null (`DELETE`) | §11.4.9.3 | ❌ | Not yet implemented — planned follow-up PR |
+| Update individual property (`PUT`/`PATCH`) | §11.4.9.1/.2 | ✅ | `PUT`/`PATCH /Set({key})/Prop` with body `{"value":...}` — rides the existing `Patch` handler (built as a one-property `Delta<TModel>`); registered when `PropertyAccessEnabled` and `Patch` are both configured. `PUT` full-replaces complex properties; `PATCH` on a complex property is documented non-support (`400`, see below) |
+| Set property to null (`DELETE`) | §11.4.9.3 | ✅ | `DELETE /Set({key})/Prop` — `204` on a nullable property, `400` on a non-nullable property |
+| Key property write | §11.4.9 | ✅ | `PUT`/`PATCH`/`DELETE` on the key property always `400 Bad Request` — the key is immutable |
+| `PATCH` (partial merge) on a complex property | §11.4.9.2 | ❌ | Documented non-support — `PUT` full-replacement is supported; merge is not. Returns `400 Bad Request` rather than a bare `405` |
+| `PUT /Set({key})/Prop/$value` (raw-value write) | §11.4.9.1.2 | ❌ | Not supported — raw `/$value` remains read-only; use the enveloped `PUT .../{Property}` form |
 
 ## Bound operations
 
