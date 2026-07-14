@@ -499,7 +499,7 @@ public class FilterExpressionTests
     {
         await using TestFixture fx = await BuildRoundingAsync();
         int[] expected = RoundingModeData.Items
-            .Where(x => x.Value == value)
+            .Where(x => Math.Abs(x.Value - value) < 1e-9)
             .Select(x => x.Id).ToArray();
         int[] actual = await GetIdsAsync(fx.Client, $"{RoundingUrl}?$filter=round(Value) eq {expectedRounded}");
         AssertSameIds(expected, actual);
@@ -533,7 +533,7 @@ public class FilterExpressionTests
         // Math.Round(double) semantics — round-half-to-even.
         await using TestFixture fx = await BuildRoundingAsync();
         int[] expected = RoundingModeData.Items
-            .Where(x => x.Value == value)
+            .Where(x => Math.Abs(x.Value - value) < 1e-9)
             .Select(x => x.Id).ToArray();
         int[] actual = await GetIdsAsync(fx.Client, $"{RoundingBankersUrl}?$filter=round(Value) eq {expectedRounded}");
         AssertSameIds(expected, actual);
