@@ -11,6 +11,21 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- POST to a collection navigation property — create a related entity (OData §11.4.2.1):
+  `HasMany` gains an optional `post` parameter,
+  `Func<TKey, TNavigation, CancellationToken, Task<TNavigation?>>`, that registers
+  `POST /{EntitySet}({key})/{Property}`. The request body is deserialized as the navigation's
+  item type and passed to `post` along with the parent key; the handler persists the child and
+  returns it (or `null` if the parent was not found, mapped to `404`). On success: `201 Created`
+  with the created child in the body, plus `@odata.id`/`Location` when `refTargetEntitySet` is
+  configured (reuses the same child-key detection `$ref` uses); `Prefer: return=minimal` → `204`
+  with `Preference-Applied`/`OData-EntityId` (mirrors the entity-level POST behavior). Malformed
+  or empty JSON body → `400`; non-JSON `Content-Type` → `415`. No `post` handler configured means
+  the route is not registered at all (handler-presence-drives-routes) — `POST` to that path
+  returns `405` since the `GET` nav route occupies the same template. New
+  `NavigationRouteDefinition.PostChild` (type-erased handler, following the existing
+  `Handler`/`BatchHandler` pattern). No EDM/`$metadata` change — the navigation property is
+  already declared via `HasMany`. See `docs/navigation-routing.md`.
 - Individual structural property read routes (OData §11.2.6, JSON format Part 2 §4.6-4.7):
   `GET /{EntitySet}({key})/{Property}` (property-value envelope; `204` when the value is `null`)
   and `GET /{EntitySet}({key})/{Property}/$value` (raw `text/plain`/`application/octet-stream`

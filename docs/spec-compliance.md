@@ -70,6 +70,7 @@ OhData targets the [OData 4.0 specification](https://docs.oasis-open.org/odata/o
 | `$ref` get link(s) | §11.4.6.1 | ✅ | `GET /Set({key})/Nav/$ref` returns populated `@odata.id` (collection or single) when `refTargetEntitySet` is configured on the navigation; otherwise an empty envelope |
 | `$ref` add link | §11.4.6.1 | ✅ | `POST /Set({key})/Nav/$ref` |
 | `$ref` remove link | §11.4.6.2 | ✅ | `DELETE /Set({key})/Nav/$ref` |
+| POST related entity via navigation | §11.4.2.1 | ✅ | `POST /Set({key})/Nav` — collection navigations only, via the `post` parameter on `HasMany`. `201 Created` (`Location`/`@odata.id` when `refTargetEntitySet` is configured); `Prefer: return=minimal` → `204` + `OData-EntityId`; handler returning `null` → `404` (parent not found); malformed body → `400`; non-JSON content type → `415`. No `post` handler → route not registered (`405` from the coexisting `GET` nav route) |
 
 ## Individual property access
 

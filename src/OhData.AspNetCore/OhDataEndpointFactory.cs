@@ -1650,6 +1650,107 @@ internal static class OhDataEndpointFactory
                     .Produces(204)
                     .Produces(400);
             }
+
+            // POST /{name}({key})/{nav} — create a new related entity (§11.4.2.1).
+            // Registered only when PostChild is present (handler-presence-drives-routes).
+            // Shares the /{name}({key})/{nav} template with the GET nav route above, but a
+            // distinct HTTP method, so the two coexist without collision.
+            if (nav.PostChild is not null)
+            {
+                string postNavPropertyName = navPropertyName;
+                Type postNavItemType = navItemType ?? typeof(object);
+                var postNavCapture = nav;
+                var postRb = entityAuthGroup.MapPost($"/{name}({{key}})/{postNavPropertyName}",
+                    async (string key, HttpContext ctx, CancellationToken ct) =>
+                    {
+                        if (!IsJsonContentType(ctx)) return UnsupportedMediaTypeError(ctx);
+
+                        object? parsedKey;
+                        try
+                        {
+                            parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
+                        }
+                        catch (FormatException ex)
+                        {
+                            logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
+                            return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                        }
+
+                        object? child;
+                        try
+                        {
+                            child = await JsonSerializer.DeserializeAsync(ctx.Request.Body, postNavItemType, jsonOptions, ct);
+                        }
+                        catch (JsonException ex)
+                        {
+                            return ODataError(400, "InvalidBody", ex.Message);
+                        }
+
+                        if (child is null)
+                            return ODataError(400, "InvalidBody", "Request body is empty or could not be deserialized.");
+
+                        var s = ResolveHandlers(ctx);
+                        var requestNav = s.NavigationRoutes.First(n => n.PropertyName == postNavPropertyName);
+                        logger?.LogDebug("POST {Prefix}/{Name}({Key})/{Nav}", prefix, name, SanitizeLogValue(key), postNavPropertyName);
+                        object? created = await requestNav.PostChild!(parsedKey!, child, ct);
+                        if (created is null)
+                            return ODataError(404, "NotFound", $"{name} with key '{key}' was not found.");
+
+                        // Build the Location/@odata.id from the created child's key when the
+                        // navigation was configured with refTargetEntitySet (reuses the same
+                        // ChildEntitySetName/ChildKeyPropertyName detection $ref relies on).
+                        string baseUrl = BuildBaseUrl(ctx, prefix);
+                        string? childOdataId = null;
+                        if (postNavCapture.ChildEntitySetName is not null && postNavCapture.ChildKeyPropertyName is not null)
+                        {
+                            var accessor = GetOrCompileNavRefKeyAccessor(created.GetType(), postNavCapture.ChildKeyPropertyName);
+                            if (accessor(created) is { } childKeyVal)
+                            {
+                                string formattedChildKey = string.Format(CultureInfo.InvariantCulture, "{0}", childKeyVal);
+                                childOdataId = $"{baseUrl}/{postNavCapture.ChildEntitySetName}({formattedChildKey})";
+                            }
+                        }
+
+                        // Prefer: return=minimal → 204 (mirrors the entity-level POST behaviour).
+                        // Location/OData-EntityId can only be set when childOdataId is computable.
+                        if (PrefersMinimal(ctx))
+                        {
+                            if (childOdataId is not null)
+                            {
+                                ctx.Response.Headers.Location = childOdataId;
+                                ctx.Response.Headers["Content-Location"] = childOdataId;
+                                ctx.Response.Headers["OData-EntityId"] = childOdataId;
+                            }
+                            ctx.Response.Headers["Preference-Applied"] = "return=minimal";
+                            return Results.NoContent();
+                        }
+
+                        if (childOdataId is not null)
+                            ctx.Response.Headers["Content-Location"] = childOdataId;
+
+                        if (ctx.Request.Headers.TryGetValue("Prefer", out var postNavPrefer)
+                            && postNavPrefer.ToString().Contains("return=representation", StringComparison.OrdinalIgnoreCase))
+                        {
+                            ctx.Response.Headers["Preference-Applied"] = "return=representation";
+                        }
+
+                        // When the target entity set is known, the context matches the child's
+                        // own entity set (as if fetched via GET /{ChildEntitySet}({key})); otherwise
+                        // fall back to a context scoped to the navigation path.
+                        string contextSegment = postNavCapture.ChildEntitySetName is not null
+                            ? $"{postNavCapture.ChildEntitySetName}/$entity"
+                            : $"{name}({key})/{postNavPropertyName}/$entity";
+                        var createdNode = ODataEntityNode(ctx, prefix, contextSegment, created, jsonOptions, odataId: childOdataId);
+                        return childOdataId is not null
+                            ? Results.Created(childOdataId, createdNode)
+                            : Results.Json(createdNode, statusCode: 201);
+                    })
+                    .WithTags(name)
+                    .Produces(201)
+                    .Produces(400)
+                    .Produces(404)
+                    .Produces(415);
+            }
         }
 
         // Individual structural property access (I-6, OData §11.2.6 / Part 2 §4.6-4.7).

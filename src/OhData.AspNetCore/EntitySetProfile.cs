@@ -865,6 +865,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
     /// <summary>
     /// Declares a collection navigation property in the EDM model without registering a GET route.
+    /// See the <c>getAll</c>/<c>post</c>/<c>addRef</c>/<c>removeRef</c> overload to also register
+    /// GET, POST-create (§11.4.2.1), or <c>$ref</c> routes.
     /// </summary>
     /// <typeparam name="TNavigation">The CLR type of the related entities.</typeparam>
     /// <param name="navigation">Expression selecting the collection navigation property.</param>
@@ -881,6 +883,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Declares a collection navigation property and registers a
     /// <c>GET /{EntitySet}({key})/{Property}</c> route backed by <paramref name="getAll"/>.
     /// Pass <c>null</c> for <paramref name="getAll"/> to declare the navigation in the EDM only.
+    /// To also register <c>POST /{EntitySet}({key})/{Property}</c> (create a related entity,
+    /// OData §11.4.2.1) or <c>$ref</c> link management, use the overload that accepts
+    /// <c>post</c>/<c>addRef</c>/<c>removeRef</c>.
     /// </summary>
     /// <typeparam name="TNavigation">The CLR type of the related entities.</typeparam>
     /// <param name="navigation">Expression selecting the collection navigation property.</param>
@@ -903,16 +908,26 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     }
 
     /// <summary>
-    /// Declares a collection navigation property with GET and optional <c>$ref</c> link-management
-    /// handlers (OData §11.4.6 — Managing Links Between Entities).
+    /// Declares a collection navigation property with GET, POST-create, and optional <c>$ref</c>
+    /// link-management handlers (OData §11.4.2.1 — Create a related entity;
+    /// §11.4.6 — Managing Links Between Entities).
     /// </summary>
     /// <typeparam name="TNavigation">The CLR type of the related entities.</typeparam>
     /// <param name="navigation">Expression selecting the collection navigation property.</param>
     /// <param name="getAll">Handler that loads all related entities for a given parent key. Pass <c>null</c> to omit the GET route.</param>
+    /// <param name="post">
+    /// Handler for <c>POST /{EntitySet}({key})/{Property}</c> (OData §11.4.2.1 — create a new
+    /// related entity). Receives the parent key and the deserialized child entity from the
+    /// request body; returns the created child (including any server-assigned values, e.g. its
+    /// key). Return <c>null</c> to indicate the parent was not found, producing a
+    /// <c>404 Not Found</c> response. Pass <c>null</c> (the default) to omit the route.
+    /// </param>
     /// <param name="refTargetEntitySet">
-    /// When set, the GET <c>$ref</c> handler returns populated <c>@odata.id</c> references.
-    /// The value should be the entity-set name of <typeparamref name="TNavigation"/> (e.g. <c>"Orders"</c>).
-    /// The child key property is detected automatically by convention (<c>Id</c> or <c>{TypeName}Id</c>).
+    /// When set, the GET <c>$ref</c> handler returns populated <c>@odata.id</c> references, and
+    /// the <c>POST</c>-create response's <c>Location</c>/<c>@odata.id</c> can be computed from the
+    /// created child's key. The value should be the entity-set name of
+    /// <typeparamref name="TNavigation"/> (e.g. <c>"Orders"</c>). The child key property is
+    /// detected automatically by convention (<c>Id</c> or <c>{TypeName}Id</c>).
     /// </param>
     /// <param name="addRef">
     /// Handler for <c>POST /{EntitySet}({key})/{Property}/$ref</c>. The second parameter is
@@ -925,13 +940,14 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected void HasMany<TNavigation>(
         Expression<Func<TModel, IEnumerable<TNavigation>>> navigation,
         Func<TKey, CancellationToken, Task<IEnumerable<TNavigation>>>? getAll,
+        Func<TKey, TNavigation, CancellationToken, Task<TNavigation?>>? post = null,
         string? refTargetEntitySet = null,
         Func<TKey, string, CancellationToken, Task>? addRef = null,
         Func<TKey, string, CancellationToken, Task>? removeRef = null)
         where TNavigation : class
     {
         HasMany(navigation);
-        if (getAll is null && addRef is null && removeRef is null && refTargetEntitySet is null) return;
+        if (getAll is null && post is null && addRef is null && removeRef is null && refTargetEntitySet is null) return;
         string propName = GetNavigationPropertyName(navigation.Body);
 
         string? childKeyPropName = DetectChildKeyProperty<TNavigation>(refTargetEntitySet);
@@ -944,6 +960,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
             Handler = getAll is not null
                 ? async (key, ct) => (object?)await getAll((TKey)key, ct)
                 : (_, _) => Task.FromResult<object?>(null),
+            PostChild = post is not null
+                ? async (key, child, ct) => (object?)await post((TKey)key, (TNavigation)child, ct)
+                : (Func<object, object, CancellationToken, Task<object?>>?)null,
             AddRef = addRef is not null
                 ? (key, relatedId, ct) => addRef((TKey)key, (string)relatedId, ct)
                 : (Func<object, object, CancellationToken, Task>?)null,
@@ -1021,6 +1040,12 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// grouped by parent key, e.g.
     /// <c>(ids, ct) =&gt; db.Children.Where(c =&gt; ids.Contains(c.ParentId)).ToLookupAsync(c =&gt; c.ParentId, ct)</c>.
     /// </param>
+    /// <remarks>
+    /// This overload does not accept a <c>post</c> handler, so it never registers
+    /// <c>POST /{EntitySet}({key})/{Property}</c> (OData §11.4.2.1). Use the
+    /// <c>getAll</c>/<c>post</c>/<c>addRef</c>/<c>removeRef</c> overload when POST-create or
+    /// <c>$ref</c> link management is also needed.
+    /// </remarks>
     protected void HasMany<TNavigation>(
         Expression<Func<TModel, IEnumerable<TNavigation>>> navigation,
         Func<IReadOnlyList<TKey>, CancellationToken, Task<ILookup<TKey, TNavigation>>> batchGetAll)

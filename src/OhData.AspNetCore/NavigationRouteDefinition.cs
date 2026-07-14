@@ -72,4 +72,15 @@ internal sealed record NavigationRouteDefinition
     /// invoking <see cref="Handler"/> once per parent entity per expanded property.
     /// </summary>
     public Func<IReadOnlyList<object>, CancellationToken, Task<IReadOnlyDictionary<object, object?>>>? BatchHandler { get; init; }
+
+    /// <summary>
+    /// Handler for <c>POST /{EntitySet}({key})/{Property}</c> — create a new related entity via
+    /// a collection navigation property (OData §11.4.2.1). Signature:
+    /// <c>(parentKey, childEntity, cancellationToken) → object?</c>. The second parameter is the
+    /// deserialized child entity from the request body, deserialized as <see cref="NavItemType"/>.
+    /// Return the created child (with any server-assigned values, e.g. its key). Returning
+    /// <c>null</c> means the parent was not found and produces a <c>404 Not Found</c> response.
+    /// <c>null</c> means the endpoint is not registered.
+    /// </summary>
+    public Func<object, object, CancellationToken, Task<object?>>? PostChild { get; init; }
 }
