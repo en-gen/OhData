@@ -606,12 +606,12 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         string keyPropertyName = GetNavigationPropertyName(_getKey.Body);
         var list = new List<StructuralPropertyInfo>();
 
-        foreach (var prop in typeof(TModel).GetProperties(BindingFlags.Public | BindingFlags.Instance))
+        foreach (var prop in typeof(TModel)
+            .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(prop => prop.CanRead)
+            .Where(prop => prop.GetIndexParameters().Length == 0) // skip indexers
+            .Where(prop => !_navigationPropertyNames.Contains(prop.Name)))
         {
-            if (!prop.CanRead) continue;
-            if (prop.GetIndexParameters().Length > 0) continue; // skip indexers
-            if (_navigationPropertyNames.Contains(prop.Name)) continue;
-
             list.Add(new StructuralPropertyInfo
             {
                 Name = prop.Name,
