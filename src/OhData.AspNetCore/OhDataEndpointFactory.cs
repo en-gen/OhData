@@ -615,6 +615,40 @@ internal static class OhDataEndpointFactory
         return props;
     }
 
+    // M-3: apply $orderby to a navigation collection's in-memory results. Consistent with how
+    // $top/$skip are already applied on this path (property-name based, not pushed down to the
+    // handler or to SQL). Supports multiple sort keys ("Prop1 asc,Prop2 desc") and is
+    // case-insensitive on the property name so it works the same whether the client sends the
+    // CLR (PascalCase) name or the camelCase name the response serializer emits. An unknown
+    // property name returns (null, 400 InvalidQueryOption), mirroring the $select validation below.
+    private static (IEnumerable<object>? Items, IResult? Error) ApplyNavOrderBy(
+        IEnumerable<object> items, Type? navItemType, string orderByParam)
+    {
+        IOrderedEnumerable<object>? ordered = null;
+        foreach (string clause in orderByParam.Split(',').Select(c => c.Trim()).Where(c => c.Length != 0))
+        {
+            string[] parts = clause.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            string propName = parts[0];
+            bool descending = parts.Length > 1 && string.Equals(parts[1], "desc", StringComparison.OrdinalIgnoreCase);
+
+            PropertyInfo? prop = navItemType?.GetProperty(
+                propName, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+            if (navItemType is not null && prop is null)
+            {
+                return (null, ODataError(400, "InvalidQueryOption",
+                    $"Property '{propName}' does not exist on type '{navItemType.Name}'."));
+            }
+
+            object? KeySelector(object item) => prop?.GetValue(item);
+
+            ordered = ordered is null
+                ? (descending ? items.OrderByDescending(KeySelector) : items.OrderBy(KeySelector))
+                : (descending ? ordered.ThenByDescending(KeySelector) : ordered.ThenBy(KeySelector));
+        }
+
+        return ((IEnumerable<object>?)ordered ?? items, null);
+    }
+
     // Batch 3: build the navigation collection envelope, applying $select if present.
     // Returns (envelope, null) on success or (null, errorResult) when $select contains
     // an unknown property name.
@@ -897,9 +931,15 @@ internal static class OhDataEndpointFactory
                     else if (effectiveSkip > 0)
                         filtered = filtered.Skip(effectiveSkip);
 
-                    // Batch 4: Prefer: maxpagesize=N — client-requested page limit (§8.2.8.3).
-                    // $top takes precedence; maxpagesize overrides source.MaxTop when $top is absent.
+                    // Batch 4 / M-4: Prefer: maxpagesize=N — client-requested page limit (§8.2.8.3).
+                    // $top takes precedence over maxpagesize. When $top is absent, maxpagesize is
+                    // capped at source.MaxTop rather than overriding it outright: MaxTop is a hard
+                    // server-side ceiling (DoS protection), and a client preference must not be able
+                    // to lift it. Per §8.2.8.7, Preference-Applied echoes the value the server actually
+                    // honored, not the value the client asked for, so a clamped response still reports
+                    // the true (smaller) page size rather than restating the client's request.
                     int? preferredPageSize = ParseMaxPageSize(ctx);
+                    int? appliedPageSize = null; // only meaningful when $top is absent
                     if (options.Top is not null)
                     {
                         if (source.MaxTop.HasValue && options.Top.Value > source.MaxTop.Value)
@@ -912,18 +952,23 @@ internal static class OhDataEndpointFactory
                     }
                     else
                     {
-                        int? pageLimit = preferredPageSize ?? source.MaxTop;
-                        if (pageLimit.HasValue)
-                            filtered = filtered.Take(pageLimit.Value);
+                        appliedPageSize = preferredPageSize.HasValue
+                            ? (source.MaxTop.HasValue
+                                ? Math.Min(preferredPageSize.Value, source.MaxTop.Value)
+                                : preferredPageSize.Value)
+                            : source.MaxTop;
+
+                        if (appliedPageSize.HasValue)
+                            filtered = filtered.Take(appliedPageSize.Value);
                         if (preferredPageSize.HasValue)
-                            ctx.Response.Headers["Preference-Applied"] = $"maxpagesize={preferredPageSize.Value}";
+                            ctx.Response.Headers["Preference-Applied"] = $"maxpagesize={appliedPageSize!.Value}";
                     }
 
                     var items = filtered.ToArray();
 
                     // Gap 3: compute nextLink when MaxTop (or preferred page size) is set and page is full
                     string? nextLink = null;
-                    int effectivePageSize = preferredPageSize ?? (source.MaxTop ?? 0);
+                    int effectivePageSize = appliedPageSize ?? 0;
                     if (effectivePageSize > 0 && items.Length == effectivePageSize && options.Top is null)
                     {
                         int nextSkip = effectiveSkip + items.Length;
@@ -1459,6 +1504,26 @@ internal static class OhDataEndpointFactory
             rb.WithTags(name).Produces(204).Produces(400).Produces(404);
         }
 
+        // Startup route-collision validation: POST /{name}({key})/{segment}.
+        // A navigation property registered with a `post` handler (PostChild) claims
+        // POST /{name}({key})/{nav.PropertyName} (creating a related entity, §11.4.2.1). An
+        // entity-level bound action claims POST /{name}({key})/{action.Name} for the same
+        // template shape. Unlike the structural-property-vs-bound-function check above (GET vs.
+        // GET), these are both POST, so a shared name is a genuine route collision that ASP.NET
+        // Core would only surface as an ambiguous-match failure at request time. Catch it at
+        // startup instead, matching the existing idiom.
+        foreach (var navWithPost in source.NavigationRoutes.Where(n => n.PostChild is not null))
+        {
+            foreach (var collidingAction in source.BoundActions.Where(a =>
+                a.IsEntityLevel && string.Equals(navWithPost.PropertyName, a.Name, StringComparison.Ordinal)))
+            {
+                throw new InvalidOperationException(
+                    $"Entity set '{name}': bound action '{collidingAction.Name}' conflicts with the " +
+                    $"POST handler of navigation property '{navWithPost.PropertyName}' on " +
+                    $"POST /{name}({{key}})/{collidingAction.Name}. Rename the bound action or the navigation property.");
+            }
+        }
+
         // Navigation property routes
         foreach (var nav in source.NavigationRoutes)
         {
@@ -1479,11 +1544,21 @@ internal static class OhDataEndpointFactory
                         if (navIsCollection)
                         {
                             string baseUrl = BuildBaseUrl(ctx, prefix);
-                            // Gap 5: apply $top/$skip/$count on navigation collection results
+                            // Gap 5: apply $orderby/$top/$skip/$count on navigation collection results
                             var rawColl = result as System.Collections.IEnumerable;
                             IEnumerable<object> items = rawColl is not null
                                 ? rawColl.Cast<object>()
                                 : new[] { result };
+
+                            // M-3: apply $orderby before $skip/$top, matching standard OData
+                            // system-query-option ordering (filter, orderby, skip, top).
+                            if (ctx.Request.Query.TryGetValue("$orderby", out var orderByStr)
+                                && !string.IsNullOrEmpty(orderByStr))
+                            {
+                                var (orderedItems, orderByError) = ApplyNavOrderBy(items, navItemType, orderByStr.ToString());
+                                if (orderByError is not null) return orderByError;
+                                items = orderedItems!;
+                            }
 
                             if (ctx.Request.Query.TryGetValue("$skip", out var skipStr)
                                 && int.TryParse(skipStr, out int skipVal) && skipVal > 0)

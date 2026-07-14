@@ -612,6 +612,48 @@ internal class NavQueryProfile : EntitySetProfile<int, Parent>
     }
 }
 
+internal class NavOrderChild
+{
+    public int Id { get; set; }
+    public int ParentId { get; set; }
+    public string Name { get; set; } = "";
+    public string Category { get; set; } = "";
+}
+
+internal class NavOrderParent
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public IEnumerable<NavOrderChild>? Children { get; set; }
+}
+
+/// <summary>Profile for testing M-3: $orderby on navigation collection routes.</summary>
+internal class NavOrderByProfile : EntitySetProfile<int, NavOrderParent>
+{
+    private static readonly List<NavOrderParent> _parents = new() { new() { Id = 1, Name = "Parent1" } };
+
+    // Deliberately unsorted, with duplicate Category values so a multi-key
+    // "$orderby=Category asc,Name desc" has a meaningful tie-break to exercise.
+    private static readonly List<NavOrderChild> _children = new()
+    {
+        new() { Id = 1, ParentId = 1, Name = "Charlie", Category = "B" },
+        new() { Id = 2, ParentId = 1, Name = "Alpha",   Category = "A" },
+        new() { Id = 3, ParentId = 1, Name = "Bravo",   Category = "B" },
+        new() { Id = 4, ParentId = 1, Name = "Delta",   Category = "A" },
+    };
+
+    public NavOrderByProfile() : base(x => x.Id)
+    {
+        EntitySetName = "NavOrderByParents";
+        GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(p => p.Id == id));
+
+        HasMany(
+            navigation: x => x.Children!,
+            getAll: (parentId, ct) =>
+                Task.FromResult<IEnumerable<NavOrderChild>>(_children.Where(c => c.ParentId == parentId)));
+    }
+}
+
 /// <summary>Profile for testing $expand on the GetAll path (Gap 8, batch 2).</summary>
 internal class ExpandableGetAllProfile : EntitySetProfile<int, Parent>
 {
