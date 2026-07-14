@@ -625,9 +625,8 @@ internal static class OhDataEndpointFactory
         IEnumerable<object> items, Type? navItemType, string orderByParam)
     {
         IOrderedEnumerable<object>? ordered = null;
-        foreach (string rawClause in orderByParam.Split(','))
+        foreach (string clause in orderByParam.Split(',').Select(c => c.Trim()))
         {
-            string clause = rawClause.Trim();
             if (clause.Length == 0) continue;
 
             string[] parts = clause.Split(' ', StringSplitOptions.RemoveEmptyEntries);
@@ -1517,15 +1516,13 @@ internal static class OhDataEndpointFactory
         // startup instead, matching the existing idiom.
         foreach (var navWithPost in source.NavigationRoutes.Where(n => n.PostChild is not null))
         {
-            foreach (var collidingAction in source.BoundActions.Where(a => a.IsEntityLevel))
+            foreach (var collidingAction in source.BoundActions.Where(a =>
+                a.IsEntityLevel && string.Equals(navWithPost.PropertyName, a.Name, StringComparison.Ordinal)))
             {
-                if (string.Equals(navWithPost.PropertyName, collidingAction.Name, StringComparison.Ordinal))
-                {
-                    throw new InvalidOperationException(
-                        $"Entity set '{name}': bound action '{collidingAction.Name}' conflicts with the " +
-                        $"POST handler of navigation property '{navWithPost.PropertyName}' on " +
-                        $"POST /{name}({{key}})/{collidingAction.Name}. Rename the bound action or the navigation property.");
-                }
+                throw new InvalidOperationException(
+                    $"Entity set '{name}': bound action '{collidingAction.Name}' conflicts with the " +
+                    $"POST handler of navigation property '{navWithPost.PropertyName}' on " +
+                    $"POST /{name}({{key}})/{collidingAction.Name}. Rename the bound action or the navigation property.");
             }
         }
 

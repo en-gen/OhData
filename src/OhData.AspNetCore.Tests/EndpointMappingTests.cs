@@ -2117,7 +2117,7 @@ public class EndpointMappingTests
     {
         // MaxTopProfile: MaxTop=5, 20 items. maxpagesize=3 < MaxTop=5 — honored in full.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MaxTopProfile>());
-        var request = new HttpRequestMessage(HttpMethod.Get, "/odata/MaxTopWidgets");
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/MaxTopWidgets");
         request.Headers.Add("Prefer", "maxpagesize=3");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -2133,7 +2133,7 @@ public class EndpointMappingTests
         // MaxTopProfile: MaxTop=5, 20 items. maxpagesize=10 > MaxTop=5 — clamped down to 5;
         // maxpagesize must not be able to lift the server's hard MaxTop ceiling (M-4/DoS hardening).
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MaxTopProfile>());
-        var request = new HttpRequestMessage(HttpMethod.Get, "/odata/MaxTopWidgets");
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/MaxTopWidgets");
         request.Headers.Add("Prefer", "maxpagesize=10");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
