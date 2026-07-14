@@ -56,10 +56,13 @@ internal sealed record BoundOperationDefinition
         if (method.Name.Contains('<') || method.Name.Contains('>'))
         {
             string kind = isAction ? "action" : "function";
+            string example = isAction
+                ? "BindAction(MyAction) where MyAction"
+                : "BindFunction(MyFunction) where MyFunction";
             throw new InvalidOperationException(
                 $"Cannot bind a compiler-generated method as an OData {kind}. " +
                 $"Use a named method instead of a lambda (detected name: '{method.Name}'). " +
-                $"Example: BindFunction(MyFunction) where MyFunction is a named method on the profile.");
+                $"Example: {example} is a named method on the profile.");
         }
 
         var allParams = method.GetParameters();
