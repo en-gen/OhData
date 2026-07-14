@@ -123,6 +123,31 @@ internal static class OhDataEndpointFactory
             $"The content type '{ctx.Request.ContentType ?? "(none)"}' is not supported. " +
             "Use 'application/json'.");
 
+    // Deep insert (§32/§11.4.2.2): `prop@odata.bind` (JSON format §8.5 — link to an *existing*
+    // entity instead of creating a new one) is documented non-support for 1.0.0. Detect the
+    // annotation anywhere in the POST body (top level or nested inside a deep-insert child) and
+    // reject explicitly rather than silently ignoring it, so a client relying on link-by-bind
+    // doesn't get a response that looks successful but didn't do what it asked for.
+    private static bool ContainsODataBindAnnotation(JsonElement element)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var prop in element.EnumerateObject())
+                {
+                    if (prop.Name.EndsWith("@odata.bind", StringComparison.Ordinal)) return true;
+                    if (ContainsODataBindAnnotation(prop.Value)) return true;
+                }
+                return false;
+            case JsonValueKind.Array:
+                return element.EnumerateArray()
+                    .Where(ContainsODataBindAnnotation)
+                    .Any();
+            default:
+                return false;
+        }
+    }
+
     private static IEnumerable<string> ParseETagList(string raw)
     {
         // Split comma-separated ETags per RFC 7232 §3.1.
@@ -1109,71 +1134,125 @@ internal static class OhDataEndpointFactory
 
         if (source.HasPost)
         {
+            // Deep insert (§32/§11.4.2.2): precomputed once at startup (not per-request) — the
+            // set of TModel navigation properties (declared via HasOptional/HasRequired/HasMany)
+            // that must be nulled out before invoking Post when AllowDeepInsert is disabled
+            // (the default). System.Text.Json already binds nested navigation values into these
+            // properties during deserialization; stripping them here is what keeps a Post
+            // handler that doesn't expect a graph from silently persisting only part of one.
+            // Properties without a public setter can't be deserialized into by STJ in the first
+            // place, so they're excluded — nothing to strip.
+            PropertyInfo[] deepInsertNavPropsToStrip = typeof(TModel)
+                .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                .Where(p => source.NavigationPropertyNames.Contains(p.Name) && p.SetMethod is not null)
+                .ToArray();
+
             // If-None-Match on POST is not supported: the framework cannot extract the key from
             // the body without knowing the key property. Developers should handle this themselves.
             var rb = entityGroup.MapPost("", async (HttpContext ctx, CancellationToken ct) =>
             {
                 if (!IsJsonContentType(ctx)) return UnsupportedMediaTypeError(ctx);
 
-                TModel? model;
+                JsonDocument document;
                 try
                 {
-                    model = await JsonSerializer.DeserializeAsync<TModel>(ctx.Request.Body, jsonOptions, ct);
+                    document = await JsonDocument.ParseAsync(ctx.Request.Body, cancellationToken: ct);
                 }
                 catch (JsonException ex)
                 {
                     return ODataError(400, "InvalidBody", ex.Message);
                 }
 
-                if (model is null)
-                    return ODataError(400, "InvalidBody", "Request body is empty or could not be deserialized.");
-
-                var s = ResolveHandlers(ctx);
-                logger?.LogDebug("POST {Prefix}/{Name}", prefix, name);
-                object? result = await s.InvokePostAsync(model, ct);
-                if (result is null) return ODataError(400, "BadRequest", "Post handler returned null.");
-                string? postEtag = null;
-                if (source.HasETag)
+                using (document)
                 {
-                    postEtag = s.InvokeGetETag(result);
-                    ctx.Response.Headers.ETag = $"\"{postEtag}\"";
-                }
-                string keyStr = s.InvokeGetKeyString(result);
-                string baseUrl = BuildBaseUrl(ctx, prefix);
-                string odataId = $"{baseUrl}/{name}({keyStr})";
-
-                // Gap 4: Prefer: return=minimal → 204 with Location header
-                if (PrefersMinimal(ctx))
-                {
-                    ctx.Response.Headers.Location = odataId;
-                    // §8.3.3: Content-Location on 204 mirrors the Location of the created entity.
-                    ctx.Response.Headers["Content-Location"] = odataId;
-                    // V1/§8.3.4: OData-EntityId is REQUIRED on any 204 response that creates an
-                    // entity, since the client cannot recover the new entity's id from an empty body.
-                    ctx.Response.Headers["OData-EntityId"] = odataId;
-                    ctx.Response.Headers["Preference-Applied"] = "return=minimal";
-                    return Results.NoContent();
-                }
-                else
-                {
-                    // §8.3.3: Content-Location points to the canonical URL of the created resource.
-                    ctx.Response.Headers["Content-Location"] = odataId;
-
-                    // §8.2.8.7: Prefer: return=representation — explicit opt-in; already the default behaviour.
-                    // Acknowledge the preference in the response header when present.
-                    if (ctx.Request.Headers.TryGetValue("Prefer", out var postPrefer)
-                        && postPrefer.ToString().Contains("return=representation", StringComparison.OrdinalIgnoreCase))
+                    // Deep insert (§32): `@odata.bind` (JSON §8.5 — link an existing entity) is
+                    // documented non-support for 1.0.0. Detect and reject explicitly rather than
+                    // silently ignoring it (which would look successful but not do what the
+                    // client asked for). Use the $ref endpoints to link existing entities.
+                    if (ContainsODataBindAnnotation(document.RootElement))
                     {
-                        ctx.Response.Headers["Preference-Applied"] = "return=representation";
+                        return ODataError(501, "NotImplemented",
+                            "'@odata.bind' is not supported for POST " + $"/{name}. Use the $ref " +
+                            "endpoints to link an existing entity, or enable AllowDeepInsert to " +
+                            "create nested related entities inline (OData §11.4.2.2).");
                     }
 
-                    // Gap 5: include @odata.id in POST response body
-                    // Gap 2: include @odata.etag in body
-                    var createdNode = ODataEntityNode(ctx, prefix, $"{name}/$entity", result, jsonOptions, odataId: odataId, etag: postEtag);
-                    return Results.Created(odataId, createdNode);
+                    TModel? model;
+                    try
+                    {
+                        model = document.RootElement.Deserialize<TModel>(jsonOptions);
+                    }
+                    catch (JsonException ex)
+                    {
+                        return ODataError(400, "InvalidBody", ex.Message);
+                    }
+
+                    if (model is null)
+                        return ODataError(400, "InvalidBody", "Request body is empty or could not be deserialized.");
+
+                    // Deep insert (§32): strip nested navigation values unless the profile opted
+                    // in via AllowDeepInsert. Nested values for non-navigation (plain) collection
+                    // properties are untouched — only CLR properties declared as navigations via
+                    // HasOptional/HasRequired/HasMany are stripped.
+                    if (!source.AllowDeepInsert)
+                    {
+                        foreach (var navProp in deepInsertNavPropsToStrip)
+                        {
+                            navProp.SetValue(model, null);
+                        }
+                    }
+
+                    var s = ResolveHandlers(ctx);
+                    logger?.LogDebug("POST {Prefix}/{Name}", prefix, name);
+                    object? result = await s.InvokePostAsync(model, ct);
+                    if (result is null) return ODataError(400, "BadRequest", "Post handler returned null.");
+                    string? postEtag = null;
+                    if (source.HasETag)
+                    {
+                        postEtag = s.InvokeGetETag(result);
+                        ctx.Response.Headers.ETag = $"\"{postEtag}\"";
+                    }
+                    string keyStr = s.InvokeGetKeyString(result);
+                    string baseUrl = BuildBaseUrl(ctx, prefix);
+                    string odataId = $"{baseUrl}/{name}({keyStr})";
+
+                    // Gap 4: Prefer: return=minimal → 204 with Location header
+                    if (PrefersMinimal(ctx))
+                    {
+                        ctx.Response.Headers.Location = odataId;
+                        // §8.3.3: Content-Location on 204 mirrors the Location of the created entity.
+                        ctx.Response.Headers["Content-Location"] = odataId;
+                        // V1/§8.3.4: OData-EntityId is REQUIRED on any 204 response that creates an
+                        // entity, since the client cannot recover the new entity's id from an empty body.
+                        ctx.Response.Headers["OData-EntityId"] = odataId;
+                        ctx.Response.Headers["Preference-Applied"] = "return=minimal";
+                        return Results.NoContent();
+                    }
+                    else
+                    {
+                        // §8.3.3: Content-Location points to the canonical URL of the created resource.
+                        ctx.Response.Headers["Content-Location"] = odataId;
+
+                        // §8.2.8.7: Prefer: return=representation — explicit opt-in; already the default behaviour.
+                        // Acknowledge the preference in the response header when present.
+                        if (ctx.Request.Headers.TryGetValue("Prefer", out var postPrefer)
+                            && postPrefer.ToString().Contains("return=representation", StringComparison.OrdinalIgnoreCase))
+                        {
+                            ctx.Response.Headers["Preference-Applied"] = "return=representation";
+                        }
+
+                        // Gap 5: include @odata.id in POST response body
+                        // Gap 2: include @odata.etag in body
+                        // Deep insert (§32): when AllowDeepInsert is true, `result` (the handler's
+                        // return value) may carry nested navigation values populated by the
+                        // handler — SerializeToNode below serializes them inline automatically,
+                        // satisfying §11.4.2.2's "return the created entity with related entities."
+                        var createdNode = ODataEntityNode(ctx, prefix, $"{name}/$entity", result, jsonOptions, odataId: odataId, etag: postEtag);
+                        return Results.Created(odataId, createdNode);
+                    }
                 }
             });
-            rb.WithTags(name).Produces<TModel>(201).Produces(400).Produces(415);
+            rb.WithTags(name).Produces<TModel>(201).Produces(400).Produces(415).Produces(501);
         }
 
         if (source.HasPut)

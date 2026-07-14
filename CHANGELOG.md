@@ -11,6 +11,23 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Deep insert — nested related entities in `POST /{EntitySet}` (OData §11.4.2.2): a new
+  `AllowDeepInsert` profile flag (`bool?`, inherits `EntitySetDefaults.AllowDeepInsert`, default
+  `false`, entity-level granularity — no per-navigation opt-in). Rides the existing `Post`
+  handler; no new route or handler delegate. **Default (`false`):** nested navigation-property
+  values (declared via `HasMany`/`HasOptional`/`HasRequired`, any overload) that System.Text.Json
+  already bound during deserialization are stripped (set to `null`) before `Post` is invoked —
+  both collection and single-valued navigations; nested values for non-navigation (plain)
+  collection properties are left untouched. **Opt-in (`true`):** the full deserialized graph is
+  passed to `Post` as-is; the handler owns atomic persistence of the whole graph (e.g. one EF Core
+  `SaveChanges`) — the framework does not open a transaction on the handler's behalf. The `201`
+  response echoes the handler's return value verbatim, so nested children serialize inline when
+  the handler populates them, satisfying §11.4.2.2's "return the created entity with related
+  entities." `prop@odata.bind` (JSON format §8.5 — link an existing entity instead of creating
+  one) is documented non-support: detected anywhere in the POST body (top level or nested) and
+  rejected with `501 Not Implemented` rather than silently ignored. New
+  `IEntitySetEndpointSource.AllowDeepInsert`/`NavigationPropertyNames` members. See
+  `docs/deep-insert.md`.
 - POST to a collection navigation property — create a related entity (OData §11.4.2.1):
   `HasMany` gains an optional `post` parameter,
   `Func<TKey, TNavigation, CancellationToken, Task<TNavigation?>>`, that registers

@@ -231,3 +231,8 @@ The `Location`/`@odata.id` are built the same way `$ref` builds populated refere
 
 Authorization is inherited from the parent profile's `RequireAuthorization()` / `RequireRoles()`,
 same as every other route on the entity set.
+
+> **POST-to-nav vs. deep insert:** the `post` handler above creates ONE related entity on an
+> already-existing parent (`POST /Orders(id)/Lines`). To create a parent **and** its related
+> entities in a single request (`POST /Orders` with a nested `lines` array in the body), see
+> [deep insert](deep-insert.md) (OData §11.4.2.2).
