@@ -172,7 +172,11 @@ public class ProductProfile : EntitySetProfile<int, Product>
 /// (REVIEW.md M-1 — see NavigationRouteDefinition.BatchHandler). Also demonstrates POST to a
 /// collection navigation property → POST /v2/Orders(id)/Notes, creating a new related entity
 /// (OData §11.4.2.1 — see NavigationRouteDefinition.PostChild), alongside the batch-loaded
-/// Lines navigation on the same profile.
+/// Lines navigation on the same profile. And demonstrates deep insert (OData §11.4.2.2):
+/// <c>AllowDeepInsert = true</c> lets <c>POST /v2/Orders</c> create an order together with its
+/// Lines in one request — <c>Post</c> below adds the whole graph (order + lines) to the
+/// DbContext and calls SaveChanges once, so EF Core's relationship fixup assigns each line's
+/// OrderId automatically from the tracked navigation.
 /// </summary>
 public class OrderProfile : EntitySetProfile<Guid, Order>
 {
@@ -182,6 +186,7 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
         OrderByEnabled = true;
         CountEnabled = true;
         ExpandEnabled = true;
+        AllowDeepInsert = true;
 
         // Registers: GET /Orders(id)/Lines (single-key route auto-derived from the batch
         // delegate below) AND makes GET /Orders?$expand=Lines load every order's lines with
