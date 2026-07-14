@@ -1725,7 +1725,7 @@ internal static class OhDataEndpointFactory
 
                 // GET /{name}({key})/{Property}/$value — raw value (Part 2 §4.7).
                 bool propIsComplex = propCapture.IsComplex;
-                var valueRb = entityAuthGroup.MapGet($"/{name}({{key}})/{propCapture.Name}/$value",
+                entityAuthGroup.MapGet($"/{name}({{key}})/{propCapture.Name}/$value",
                     async (string key, HttpContext ctx, CancellationToken ct) =>
                     {
                         // Complex-typed properties have no raw representation — a static
