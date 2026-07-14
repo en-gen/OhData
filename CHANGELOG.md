@@ -98,6 +98,22 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `Prefer: maxpagesize` (§8.2.8.3) is now capped at the entity set's `MaxTop`: the honored page
+  size is `min(maxpagesize, MaxTop)` rather than `maxpagesize` overriding `MaxTop` outright with no
+  ceiling. `Preference-Applied` reflects the page size actually honored (the clamped value) per
+  §8.2.8.7, not the value the client requested. Removes the "Known Limitation" documented in
+  `docs/query-options.md` (M-4)
+- `$orderby` on collection navigation routes (`GET /{Set}({key})/{Nav}`) is now applied in-memory
+  (ascending/descending, multiple sort keys) instead of being silently accepted and ignored. An
+  unknown property name returns `400 Bad Request` (`InvalidQueryOption`), matching the existing
+  `$select` validation on the same path. Applied before `$skip`/`$top`, per standard OData
+  system-query-option ordering. `docs/navigation-routing.md` updated (M-3)
+- Startup route-collision validation now also covers `POST /{EntitySet}({key})/{segment}`: a
+  navigation property with a `post` (create-related-entity) handler sharing a name with an
+  entity-level bound action would previously register two handlers for the same route template,
+  surfacing only as an ambiguous-match failure at request time. `app.MapOhData()` now throws
+  `InvalidOperationException` at startup instead, matching the existing structural-property/
+  bound-function collision guard
 - `OData-EntityId` response header (§8.3.4) is now emitted on any `204 No Content` response
   that creates or upserts an entity (POST/upsert-PUT with `Prefer: return=minimal`); a plain
   update-PUT 204 does not carry it
