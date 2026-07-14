@@ -51,8 +51,8 @@ public class ProductProfile : EntitySetProfile<int, Product>
         // IQueryable path: $filter/$orderby/$skip/$top push down to SQL via EF Core
         GetQueryable = (_) => Task.FromResult(db.Products.AsQueryable());
         GetById      = (id, ct) => db.Products.FindAsync(id, ct).AsTask();
-        Post         = (p, ct) => { db.Products.Add(p); return db.SaveChangesAsync(ct).ContinueWith(_ => (Product?)p); };
-        Put          = (id, p, ct) => { db.Products.Update(p); return db.SaveChangesAsync(ct).ContinueWith(_ => (Product?)p); };
+        Post         = (p, ct) => { db.Products.Add(p); return db.SaveChangesAsync(ct).ContinueWith(_ => (Product?)p, ct); };
+        Put          = (id, p, ct) => { db.Products.Update(p); return db.SaveChangesAsync(ct).ContinueWith(_ => p, ct); };
         Patch        = (id, delta, ct) => { var e = db.Products.Find(id); return Task.FromResult(e is null ? null : delta.Patch(e)); };
         Delete       = (id, ct) => { /* remove by id */ return Task.FromResult(true); };
     }
@@ -87,6 +87,23 @@ This produces:
 
 Only routes with a handler assigned are registered. Unassigned handlers produce no route.
 
+### Beyond the basics
+
+The rest of the surface rides other profile declarations - navigation properties (`HasMany`/`HasOptional`/`HasRequired`), `UseETag`, and `BindFunction`/`BindAction` - rather than the plain CRUD handlers above:
+
+| Method | Route | Registered by |
+|--------|-------|---------------|
+| `GET` | `/odata/Orders({key})/Lines` | `HasMany`/`HasOptional`/`HasRequired` with a `getAll`/`get`/`batchGetAll`/`batchGet` delegate |
+| `GET` | `/odata/Orders({key})/Lines/$count` | same, for collection navigations |
+| `POST` | `/odata/Orders({key})/Lines` | `HasMany` with a `post` delegate - creates a related entity |
+| `GET`/`POST`/`PUT`/`DELETE` | `/odata/Orders({key})/Lines/$ref` | `HasMany`/`HasOptional` with `addRef`/`setRef`/`removeRef` |
+| `GET` | `/odata/Products/{FunctionName}` | `BindFunction` (collection-bound) |
+| `POST` | `/odata/Products/{ActionName}` | `BindAction` (collection-bound) |
+| `GET` | `/odata/Products({key})/{FunctionName}` | `BindEntityFunction` |
+| `POST` | `/odata/Products({key})/{ActionName}` | `BindEntityAction` |
+
+See [docs/navigation-routing.md](docs/navigation-routing.md), [docs/property-access.md](docs/property-access.md), [docs/deep-insert.md](docs/deep-insert.md), and [docs/bound-operations.md](docs/bound-operations.md) for the full details behind each row.
+
 ---
 
 ## Client quick start
@@ -104,7 +121,7 @@ var page = await client.For<Product>()
     .ToPageAsync();     // returns ODataPage<Product> with Items, TotalCount, NextLink
 
 // Traverse all pages automatically via IAsyncEnumerable - follows @odata.nextLink
-await foreach (Product p in client.For<Product>().Filter(x => x.IsActive).ToAsyncEnumerable())
+await foreach (Product p in client.For<Product>().Filter(x => x.Price > 0).ToAsyncEnumerable())
 {
     Console.WriteLine(p.Name);
 }
@@ -113,8 +130,9 @@ await foreach (Product p in client.For<Product>().Filter(x => x.IsActive).ToAsyn
 Product? p = await client.For<Product>().Key(42).GetAsync();
 
 // Mutate
-var created = await client.For<Product>().InsertAsync(new Product { Name = "Cog", Price = 4.99m });
-var updated = await client.For<Product>().Key(created.Id).PutAsync(created with { Price = 5.49m });
+Product created = (await client.For<Product>().InsertAsync(new Product { Name = "Cog", Price = 4.99m }))!;
+var updated = await client.For<Product>().Key(created.Id)
+    .PutAsync(new Product { Id = created.Id, Name = created.Name, Price = 5.49m });
 await client.For<Product>().Key(42).PatchAsync(new { Price = 3.99m });
 await client.For<Product>().Key(42).DeleteAsync();
 ```
@@ -132,13 +150,34 @@ public class MyService(OhDataClient client) { ... }
 
 ---
 
+## Performance
+
+OhData's minimal-API pipeline was benchmarked head-to-head against `Microsoft.AspNetCore.OData`'s
+`ODataController` + `[EnableQuery]` pipeline over the full HTTP round-trip (routing → OData
+query-option processing → handler → serialization), same dataset, same requests, correctness
+verified before every run. OhData won all 11 scenarios - writes (POST/PUT/PATCH) came in roughly
+**5-6x faster** with up to **7.7x fewer allocations**; reads were **2-3.7x faster**. See
+[src/OhData.Server.Benchmarks/docs/server-comparison-report.md](src/OhData.Server.Benchmarks/docs/server-comparison-report.md)
+for the full methodology, numbers, and known asymmetries between the two pipelines.
+
+## Battle-testing
+
+887 automated tests protect the framework end to end: 639 in `OhData.AspNetCore.Tests` (server
+routing, query options, navigation, ETags, authorization, malformed-payload hardening), 218 in
+`OhData.Client.Tests`, and 30 in `OhData.MicrosoftODataClient.Tests` (compatibility against the
+official `Microsoft.OData.Client`). Run them yourself with the commands in
+[CLAUDE.md](CLAUDE.md#build--test).
+
+---
+
 ## Documentation
 
 | Topic | Guide |
 |-------|-------|
 | Query options (`$filter`, `$orderby`, `$select`, `$expand`, `$count`, `$search`) | [docs/query-options.md](docs/query-options.md) |
-| Navigation property routing and `$ref` | [docs/navigation-routing.md](docs/navigation-routing.md) |
-| Individual property access and `/$value` | [docs/property-access.md](docs/property-access.md) |
+| Navigation property routing, `$ref`, and POST-to-navigation | [docs/navigation-routing.md](docs/navigation-routing.md) |
+| Individual property access, reads/writes, and `/$value` | [docs/property-access.md](docs/property-access.md) |
+| Deep insert (nested related entities in POST) | [docs/deep-insert.md](docs/deep-insert.md) |
 | Bound functions and actions | [docs/bound-operations.md](docs/bound-operations.md) |
 | ETags and optimistic concurrency | [docs/etags.md](docs/etags.md) |
 | Authorization | [docs/authorization.md](docs/authorization.md) |

@@ -338,8 +338,43 @@ var (product, etag) = await client.For<Product>().Key(42).GetWithETagAsync();
 
 // Later — fail with 412 if another client modified the entity in between
 Product? updated = await client.For<Product>().Key(42)
-    .PutAsync(product! with { Price = 5.49m }, ifMatch: etag);
+    .PutAsync(new Product { Id = product!.Id, Name = product.Name, Price = 5.49m }, ifMatch: etag);
 ```
+
+### Conditional GET with If-None-Match
+
+`GetIfChangedAsync` sends a previously-observed ETag as `If-None-Match` (RFC 7232 §3.2 / OData
+§8.2.5) and distinguishes a server-confirmed `304 Not Modified` from a fresh `200 OK`
+representation, so you can skip re-deserializing data that hasn't changed:
+
+```csharp
+Task<(T? Entity, string? ETag, bool NotModified)> GetIfChangedAsync(
+    string? ifNoneMatch = null, CancellationToken ct = default);
+```
+
+```csharp
+var (product, etag, _) = await client.For<Product>().Key(42).GetIfChangedAsync();
+
+// ... later, using the previously-observed etag ...
+var (fresh, currentEtag, notModified) = await client.For<Product>().Key(42).GetIfChangedAsync(etag);
+
+if (notModified)
+{
+    // Server returned 304 - fresh is null, currentEtag echoes the server's current value.
+    // The cached `product` from the earlier call is still current.
+}
+else
+{
+    // Server returned 200 - fresh holds the up-to-date entity, currentEtag its new ETag.
+    product = fresh;
+}
+```
+
+Passing `ifNoneMatch: null` (the default) sends no conditional header and behaves like
+`GetWithETagAsync` — `NotModified` is always `false` in that case. When the entity does not exist,
+behavior matches `GetAsync`/`GetWithETagAsync`: returns `(null, null, false)`, or throws
+`ODataClientException` with status `404` when `OhDataClientOptions.NotFoundBehavior` is `Throw`.
+See [etags.md](etags.md#conditional-reads) for the server-side behavior this pairs with.
 
 ### Insert (POST)
 

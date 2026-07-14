@@ -48,23 +48,33 @@ app.MapOhData()
   └─► OhDataEndpointFactory.MapAll(routes, registration)
         │
         ├─ MapGroup(prefix) → RouteGroupBuilder
-        │    └─ endpoint filter: OData-Version header, $format, Accept validation
+        │    └─ endpoint filter: OData-Version header, OData-MaxVersion (§8.2.7), $format, Accept validation
         ├─ GET ""          → service document (JSON)
         ├─ GET /$metadata  → CSDL XML from IEdmModel
+        ├─ startup validation: throws InvalidOperationException if a structural property name
+        │    collides with an entity-level bound function name (see property routes below)
         └─ per profile: MakeGenericMethod(KeyType, ModelType).Invoke(MapEntitySet<TKey,TModel>)
               │
-              ├─ GET  /{name}               if HasGetQueryable or HasGetAll
-              ├─ GET  /{name}/$count        if HasGetQueryable or HasGetAll
-              ├─ GET  /{name}({key})        if HasGetById
-              ├─ POST /{name}               if HasPost
-              ├─ PUT  /{name}({key})        if HasPut
-              ├─ PATCH/{name}({key})        if HasPatch
-              ├─ DELETE/{name}({key})       if HasDelete
-              ├─ GET  /{name}({key})/{nav}  per navigation route with handler
-              ├─ GET  /{name}/{fn}          per collection-bound function
-              └─ POST /{name}/{action}      per collection-bound action
+              ├─ GET    /{name}                        if HasGetQueryable or HasGetAll
+              ├─ GET    /{name}/$count                 if HasGetQueryable or HasGetAll
+              ├─ GET    /{name}({key})                  if HasGetById
+              ├─ POST   /{name}                         if HasPost (deep insert / @odata.bind handling - see docs/deep-insert.md)
+              ├─ PUT    /{name}({key})                  if HasPut
+              ├─ PATCH  /{name}({key})                  if HasPatch
+              ├─ DELETE /{name}({key})                  if HasDelete
+              ├─ GET    /{name}({key})/{nav}            per navigation route with handler (batch or per-entity)
+              ├─ GET    /{name}({key})/{nav}/$count     per collection-navigation route with handler
+              ├─ GET/POST/PUT/DELETE /{name}({key})/{nav}/$ref   per navigation with addRef/setRef/removeRef
+              ├─ POST   /{name}({key})/{nav}            per HasMany with a `post` child-create delegate
+              ├─ GET    /{name}({key})/{prop}           per structural property if PropertyAccessEnabled and HasGetById
+              ├─ GET    /{name}({key})/{prop}/$value    per structural property, same gate
+              ├─ PUT/PATCH/DELETE /{name}({key})/{prop} per structural property if PropertyAccessEnabled and HasPatch
+              ├─ GET    /{name}/{fn}                    per collection-bound function
+              └─ POST   /{name}/{action}                per collection-bound action
                    (entity-bound ops follow the same pattern with key in the route)
 ```
+
+See [docs/navigation-routing.md](navigation-routing.md) for `$ref`/POST-to-navigation, [docs/property-access.md](property-access.md) for the structural property routes, and [docs/deep-insert.md](deep-insert.md) for `AllowDeepInsert`/`@odata.bind` behavior on the `POST` route.
 
 ## Type erasure via `IEntitySetEndpointSource`
 
