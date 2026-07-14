@@ -50,6 +50,36 @@ HasOptional(x => x.Customer,
 
 This registers: `GET /odata/Orders({key})/Customer`
 
+### Batch-loaded navigation routes
+
+`HasMany`, `HasOptional`, and `HasRequired` also accept a **batch** delegate instead of a
+per-entity one. It receives every requested parent key at once instead of a single key,
+which is what makes batch-aware `$expand` possible (see below):
+
+```csharp
+HasMany(x => x.Lines, batchGetAll: async (orderIds, ct) =>
+{
+    var lines = await db.OrderLines.Where(l => orderIds.Contains(l.OrderId)).ToListAsync(ct);
+    return lines.ToLookup(l => l.OrderId);        // ILookup<TKey, TNavigation>
+});
+
+HasOptional(x => x.Customer, batchGet: async (orderIds, ct) =>
+{
+    var customerIds = await db.Orders.Where(o => orderIds.Contains(o.Id))
+        .Select(o => new { o.Id, o.CustomerId }).ToListAsync(ct);
+    var customers = await db.Customers
+        .Where(c => customerIds.Select(x => x.CustomerId).Contains(c.Id)).ToDictionaryAsync(c => c.Id, ct);
+    return customerIds.ToDictionary(x => x.Id, x => (Customer?)customers.GetValueOrDefault(x.CustomerId));
+});
+```
+
+Registering only the batch overload is sufficient: the framework auto-derives a per-entity
+handler from it (by calling the batch delegate with a single-element key list), so
+`GET /Orders({key})/Lines`, nav `$count`, and `$ref` all keep working exactly as if you had
+written a separate per-entity handler. A parent key absent from the batch result is treated
+as "no children" (`[]`) for `HasMany`, or "no related entity" (`null`) for
+`HasOptional`/`HasRequired`.
+
 ## Navigation route behaviour
 
 - Returning `null` from the handler produces `404 Not Found`
@@ -67,7 +97,25 @@ GET /odata/Orders?$expand=Lines($select=ProductName,Quantity),Customer
 GET /odata/Orders(id)?$expand=Lines
 ```
 
-`$expand` does **not** translate to EF Core's `Include()`. Instead, for each requested navigation property, the framework calls the registered navigation route handler (the `getAll`/`get` delegate passed to `HasMany`/`HasOptional`/`HasRequired`) once per parent entity in the result set - an N+1 pattern. This is identical across all three collection GET paths (`GetQueryable`, `GetAll`, and the `IODataEntitySetEndpointSource` priority-1 path); none of them push the expand down into the underlying `IQueryable`/SQL query. A navigation property with no registered handler is silently skipped during expansion.
+`$expand` does **not** translate to EF Core's `Include()` - it's a post-processing step over the
+already-serialized parent page, driven by the same handler delegates used for navigation routes.
+None of the three collection GET paths (`GetQueryable`, `GetAll`, the `IODataEntitySetEndpointSource`
+priority-1 path) push the expand down into the underlying `IQueryable`/SQL query. A navigation
+property with no registered handler (batch or per-entity) is silently skipped during expansion.
+
+What differs is **how many times the handler is called**, and it depends on which overload you
+registered:
+
+- **Per-entity handler** (`getAll`/`get`) - called once per parent entity per expanded property:
+  *N×P* calls for a page of *N* items and *P* expanded properties (an N+1 pattern against a
+  database-backed handler).
+- **Batch handler** (`batchGetAll`/`batchGet`) - called once per expanded property for the whole
+  page: *P* calls total, regardless of *N*. Use this for EF Core-backed navigations; see
+  [query-options.md](query-options.md#expand) for a worked example and
+  [Batch-loaded navigation routes](#batch-loaded-navigation-routes) above for the API.
+
+Both forms produce byte-identical `$expand` output; batch registration only changes the number
+of handler invocations, not the response shape.
 
 ## Navigation routes vs `$expand` - when to use each
 
@@ -75,7 +123,7 @@ GET /odata/Orders(id)?$expand=Lines
 |---|---|---|
 | Returns related data as top-level response | ✅ | ❌ (embedded in parent) |
 | Supports filtering/ordering on related data | ❌ | ✅ (with nested options) |
-| Single SQL join (vs. N+1 handler calls) | ❌ (separate query per request) | ❌ (also N+1 - see note above; not pushed down to SQL) |
+| Single SQL join (vs. handler calls) | ❌ (separate query per request) | ❌ (not pushed down to SQL - see note above) — call count is *P* with a batch handler, *N×P* with a per-entity handler |
 | Works without `$expand` support on client | ✅ | ❌ |
 
 The two approaches are complementary - declare both to support both access patterns.

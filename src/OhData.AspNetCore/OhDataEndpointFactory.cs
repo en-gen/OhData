@@ -453,19 +453,54 @@ internal static class OhDataEndpointFactory
                         string.Equals(n.PropertyName, propName, StringComparison.OrdinalIgnoreCase));
                     if (navRoute is null) continue;
 
-                    for (int i = 0; i < originalItems.Length; i++)
-                    {
-                        if (cachedKeyProp?.GetValue(originalItems[i]) is not { } keyVal) continue;
+                    // Apply the naming policy so the expand key matches the parent's
+                    // property casing (e.g. "children" for camelCase, "Children" for PascalCase).
+                    string expandKey = serializerOptions.PropertyNamingPolicy?.ConvertName(propName) ?? propName;
 
-                        object? related = await navRoute.Handler(keyVal, ct);
-                        if (json[i] is JsonObject obj)
+                    if (navRoute.BatchHandler is not null)
+                    {
+                        // Batch path (M-1 fix): collect the page's parent keys once and invoke
+                        // the batch loader a single time for this property, instead of once per
+                        // parent entity. Reduces N×P sequential awaits to P.
+                        List<object> keys = new List<object>(originalItems.Length);
+                        object?[] keyByIndex = new object?[originalItems.Length];
+                        for (int i = 0; i < originalItems.Length; i++)
                         {
-                            // Apply the naming policy so the expand key matches the parent's
-                            // property casing (e.g. "children" for camelCase, "Children" for PascalCase).
-                            string expandKey = serializerOptions.PropertyNamingPolicy?.ConvertName(propName) ?? propName;
+                            object? keyVal = cachedKeyProp?.GetValue(originalItems[i]);
+                            keyByIndex[i] = keyVal;
+                            if (keyVal is not null) keys.Add(keyVal);
+                        }
+
+                        IReadOnlyDictionary<object, object?> map = await navRoute.BatchHandler(keys, ct);
+                        for (int i = 0; i < originalItems.Length; i++)
+                        {
+                            if (json[i] is not JsonObject obj) continue;
+                            // A missing key means "no children found" for a collection nav
+                            // (serializes to []) or "no related entity" for a single nav
+                            // (serializes to null) — same defaults the per-entity fallback
+                            // produces for an empty IEnumerable / null result.
+                            object? related = keyByIndex[i] is { } k && map.TryGetValue(k, out object? v)
+                                ? v
+                                : (navRoute.IsCollection ? Array.Empty<object>() : null);
                             obj[expandKey] = related is null
                                 ? null
                                 : JsonSerializer.SerializeToNode(related, serializerOptions);
+                        }
+                    }
+                    else
+                    {
+                        // Fallback: sequential per-entity handler calls (unchanged behavior).
+                        for (int i = 0; i < originalItems.Length; i++)
+                        {
+                            if (cachedKeyProp?.GetValue(originalItems[i]) is not { } keyVal) continue;
+
+                            object? related = await navRoute.Handler(keyVal, ct);
+                            if (json[i] is JsonObject obj)
+                            {
+                                obj[expandKey] = related is null
+                                    ? null
+                                    : JsonSerializer.SerializeToNode(related, serializerOptions);
+                            }
                         }
                     }
                 }

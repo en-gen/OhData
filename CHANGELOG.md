@@ -9,6 +9,20 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Batch-aware `$expand` navigation handlers (REVIEW.md M-1): `HasMany`, `HasOptional`, and
+  `HasRequired` now accept an additive `batchGetAll`/`batchGet` overload
+  (`Func<IReadOnlyList<TKey>, CancellationToken, Task<ILookup<TKey, TNavigation>>>` for
+  `HasMany`; `Func<IReadOnlyList<TKey>, CancellationToken, Task<IReadOnlyDictionary<TKey, TNavigation?>>>`
+  for `HasOptional`/`HasRequired`) alongside the existing per-entity `getAll`/`get` delegates.
+  When registered, `$expand` collects the page's parent keys and invokes the batch delegate
+  **once per expanded property per page** instead of once per parent entity, collapsing the
+  previous N×P sequential awaited handler calls to P. A per-entity `Handler` is auto-derived
+  from the batch delegate, so `GET /{EntitySet}({key})/{Nav}`, nav `$count`, and `$ref` keep
+  working without registering a second handler. Fully additive and opt-in - profiles that keep
+  using the per-entity overloads are unaffected (byte-identical fallback behavior)
+
 ### Fixed
 
 - `OData-EntityId` response header (§8.3.4) is now emitted on any `204 No Content` response

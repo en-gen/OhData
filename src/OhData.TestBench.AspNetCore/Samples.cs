@@ -153,7 +153,9 @@ public class ProductProfile : EntitySetProfile<int, Product>
 
 /// <summary>
 /// Order profile with navigation routing to order lines.
-/// Demonstrates: HasMany with route handler → GET /v2/Orders(id)/Lines
+/// Demonstrates: HasMany with a batch route handler → GET /v2/Orders(id)/Lines, and a
+/// single-query <c>$expand=Lines</c> instead of one SQL query per order in the page
+/// (REVIEW.md M-1 — see NavigationRouteDefinition.BatchHandler).
 /// </summary>
 public class OrderProfile : EntitySetProfile<Guid, Order>
 {
@@ -164,11 +166,17 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
         CountEnabled = true;
         ExpandEnabled = true;
 
-        // Registers: GET /Orders(id)/Lines
-        HasMany(x => x.Lines,
-            getAll: (orderId, _) =>
-                Task.FromResult<IEnumerable<OrderLine>>(
-                    db.OrderLines.Where(l => l.OrderId == orderId).ToList()));
+        // Registers: GET /Orders(id)/Lines (single-key route auto-derived from the batch
+        // delegate below) AND makes GET /Orders?$expand=Lines load every order's lines with
+        // ONE SQL query for the whole page instead of one query per order.
+        HasMany(x => x.Lines, batchGetAll: (orderIds, ct) =>
+        {
+            ILookup<Guid, OrderLine> lookup = db.OrderLines
+                .Where(l => orderIds.Contains(l.OrderId))
+                .AsEnumerable()
+                .ToLookup(l => l.OrderId);
+            return Task.FromResult(lookup);
+        });
 
         GetQueryable = (_) => Task.FromResult(db.Orders.AsQueryable());
 

@@ -913,6 +913,185 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     }
 
     /// <summary>
+    /// Declares a collection navigation property and registers a batch-loaded
+    /// <c>GET /{EntitySet}({key})/{Property}</c> route. Unlike the per-entity <c>getAll</c>
+    /// overload, <paramref name="batchGetAll"/> is invoked once per expanded property per page
+    /// during <c>$expand</c> (OData §11.2.4.2) instead of once per parent entity, eliminating
+    /// the N+1 query pattern for collection navigations. A per-entity handler is automatically
+    /// derived from <paramref name="batchGetAll"/>, so <c>GET /{EntitySet}({key})/{Property}</c>
+    /// and <c>/{Property}/$count</c> keep working without any extra registration.
+    /// </summary>
+    /// <typeparam name="TNavigation">The CLR type of the related entities.</typeparam>
+    /// <param name="navigation">Expression selecting the collection navigation property.</param>
+    /// <param name="batchGetAll">
+    /// Handler that loads all related entities for a set of parent keys in a single call,
+    /// grouped by parent key, e.g.
+    /// <c>(ids, ct) =&gt; db.Children.Where(c =&gt; ids.Contains(c.ParentId)).ToLookupAsync(c =&gt; c.ParentId, ct)</c>.
+    /// </param>
+    protected void HasMany<TNavigation>(
+        Expression<Func<TModel, IEnumerable<TNavigation>>> navigation,
+        Func<IReadOnlyList<TKey>, CancellationToken, Task<ILookup<TKey, TNavigation>>> batchGetAll)
+        where TNavigation : class
+    {
+        HasMany(navigation);
+        if (batchGetAll == null) throw new ArgumentNullException(nameof(batchGetAll));
+        string propName = GetNavigationPropertyName(navigation.Body);
+
+        Func<IReadOnlyList<object>, CancellationToken, Task<IReadOnlyDictionary<object, object?>>> batch =
+            async (keys, ct) =>
+            {
+                var typedKeys = new List<TKey>(keys.Count);
+                foreach (object k in keys) typedKeys.Add((TKey)k);
+                ILookup<TKey, TNavigation> lookup = await batchGetAll(typedKeys, ct);
+                var map = new Dictionary<object, object?>(keys.Count);
+                foreach (var group in lookup
+                    .Where(group => group.Key is not null)
+                    .Select(group => new { Key = (object)group.Key!, Items = group.ToList() }))
+                {
+                    map[group.Key] = group.Items;
+                }
+                return map;
+            };
+
+        _navRoutes.Add(new NavigationRouteDefinition
+        {
+            PropertyName = propName,
+            IsCollection = true,
+            NavItemType = typeof(TNavigation),
+            BatchHandler = batch,
+            Handler = async (key, ct) =>
+            {
+                IReadOnlyDictionary<object, object?> map = await batch(new[] { key }, ct);
+                return map.TryGetValue(key, out object? v) ? v : Array.Empty<TNavigation>();
+            },
+        });
+    }
+
+    /// <summary>
+    /// Declares an optional navigation property and registers a batch-loaded
+    /// <c>GET /{EntitySet}({key})/{Property}</c> route. Unlike the per-entity <c>get</c>
+    /// overload, <paramref name="batchGet"/> is invoked once per expanded property per page
+    /// during <c>$expand</c> (OData §11.2.4.2) instead of once per parent entity, eliminating
+    /// the N+1 query pattern. A per-entity handler is automatically derived from
+    /// <paramref name="batchGet"/>, so <c>GET /{EntitySet}({key})/{Property}</c> keeps working
+    /// without any extra registration.
+    /// </summary>
+    /// <typeparam name="TNavigation">The CLR type of the related entity.</typeparam>
+    /// <param name="navigation">Expression selecting the navigation property.</param>
+    /// <param name="batchGet">
+    /// Handler that loads the related entity for a set of parent keys in a single call. Parent
+    /// keys with no related entity should be absent from the result, or mapped to <c>null</c>.
+    /// </param>
+    /// <param name="refTargetEntitySet">
+    /// The entity-set name of the navigation target (e.g. <c>"Suppliers"</c>). When set,
+    /// <c>GET /$ref</c> returns an <c>@odata.id</c> link instead of an empty envelope.
+    /// The target key is detected by convention: tries <c>Id</c> then <c>{TypeName}Id</c>.
+    /// </param>
+    protected void HasOptional<TNavigation>(
+        Expression<Func<TModel, TNavigation>> navigation,
+        Func<IReadOnlyList<TKey>, CancellationToken, Task<IReadOnlyDictionary<TKey, TNavigation?>>> batchGet,
+        string? refTargetEntitySet = null)
+        where TNavigation : class
+    {
+        HasOptional(navigation);
+        if (batchGet == null) throw new ArgumentNullException(nameof(batchGet));
+        string propName = GetNavigationPropertyName(navigation.Body);
+        string? childKeyPropName = DetectChildKeyProperty<TNavigation>(refTargetEntitySet);
+
+        Func<IReadOnlyList<object>, CancellationToken, Task<IReadOnlyDictionary<object, object?>>> batch =
+            async (keys, ct) =>
+            {
+                var typedKeys = new List<TKey>(keys.Count);
+                foreach (object k in keys) typedKeys.Add((TKey)k);
+                IReadOnlyDictionary<TKey, TNavigation?> result = await batchGet(typedKeys, ct);
+                var map = new Dictionary<object, object?>(keys.Count);
+                foreach (var kvp in result
+                    .Where(kvp => kvp.Key is not null)
+                    .Select(kvp => new { Key = (object)kvp.Key!, kvp.Value }))
+                {
+                    map[kvp.Key] = kvp.Value;
+                }
+                return map;
+            };
+
+        _navRoutes.Add(new NavigationRouteDefinition
+        {
+            PropertyName = propName,
+            IsCollection = false,
+            BatchHandler = batch,
+            Handler = async (key, ct) =>
+            {
+                IReadOnlyDictionary<object, object?> map = await batch(new[] { key }, ct);
+                return map.TryGetValue(key, out object? v) ? v : null;
+            },
+            ChildEntitySetName = refTargetEntitySet,
+            ChildKeyPropertyName = childKeyPropName,
+        });
+    }
+
+    /// <summary>
+    /// Declares a required navigation property and registers a batch-loaded
+    /// <c>GET /{EntitySet}({key})/{Property}</c> route. Unlike the per-entity <c>get</c>
+    /// overload, <paramref name="batchGet"/> is invoked once per expanded property per page
+    /// during <c>$expand</c> (OData §11.2.4.2) instead of once per parent entity, eliminating
+    /// the N+1 query pattern. A per-entity handler is automatically derived from
+    /// <paramref name="batchGet"/>, so <c>GET /{EntitySet}({key})/{Property}</c> keeps working
+    /// without any extra registration.
+    /// </summary>
+    /// <typeparam name="TNavigation">The CLR type of the related entity.</typeparam>
+    /// <param name="navigation">Expression selecting the navigation property.</param>
+    /// <param name="batchGet">
+    /// Handler that loads the required related entity for a set of parent keys in a single
+    /// call. Parent keys missing from the result produce a <c>null</c> expanded value.
+    /// </param>
+    /// <param name="refTargetEntitySet">
+    /// The entity-set name of the navigation target (e.g. <c>"Suppliers"</c>). When set,
+    /// <c>GET /$ref</c> returns an <c>@odata.id</c> link instead of an empty envelope.
+    /// The target key is detected by convention: tries <c>Id</c> then <c>{TypeName}Id</c>.
+    /// </param>
+    protected void HasRequired<TNavigation>(
+        Expression<Func<TModel, TNavigation>> navigation,
+        Func<IReadOnlyList<TKey>, CancellationToken, Task<IReadOnlyDictionary<TKey, TNavigation>>> batchGet,
+        string? refTargetEntitySet = null)
+        where TNavigation : class
+    {
+        HasRequired(navigation);
+        if (batchGet == null) throw new ArgumentNullException(nameof(batchGet));
+        string propName = GetNavigationPropertyName(navigation.Body);
+        string? childKeyPropName = DetectChildKeyProperty<TNavigation>(refTargetEntitySet);
+
+        Func<IReadOnlyList<object>, CancellationToken, Task<IReadOnlyDictionary<object, object?>>> batch =
+            async (keys, ct) =>
+            {
+                var typedKeys = new List<TKey>(keys.Count);
+                foreach (object k in keys) typedKeys.Add((TKey)k);
+                IReadOnlyDictionary<TKey, TNavigation> result = await batchGet(typedKeys, ct);
+                var map = new Dictionary<object, object?>(keys.Count);
+                foreach (var kvp in result
+                    .Where(kvp => kvp.Key is not null)
+                    .Select(kvp => new { Key = (object)kvp.Key!, kvp.Value }))
+                {
+                    map[kvp.Key] = kvp.Value;
+                }
+                return map;
+            };
+
+        _navRoutes.Add(new NavigationRouteDefinition
+        {
+            PropertyName = propName,
+            IsCollection = false,
+            BatchHandler = batch,
+            Handler = async (key, ct) =>
+            {
+                IReadOnlyDictionary<object, object?> map = await batch(new[] { key }, ct);
+                return map.TryGetValue(key, out object? v) ? v : null;
+            },
+            ChildEntitySetName = refTargetEntitySet,
+            ChildKeyPropertyName = childKeyPropName,
+        });
+    }
+
+    /// <summary>
     /// Registers a collection-bound OData function: <c>GET /{EntitySet}/{MethodName}?param=value</c>
     /// (OData §11.5.3 — Invoking a Function). Parameters are read from the query string.
     /// The method name becomes the function name in the EDM.
