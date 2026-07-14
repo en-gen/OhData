@@ -168,6 +168,8 @@ public class QueryBehaviorTests
         var inner = Assert.IsType<InvalidOperationException>(ex.InnerException);
         Assert.Contains("lambda", inner.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("action", inner.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("BindAction", inner.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("BindFunction", inner.Message, StringComparison.Ordinal);
     }
 
     // ── M-5: Invalid maxpagesize values ──────────────────────────────────────────
