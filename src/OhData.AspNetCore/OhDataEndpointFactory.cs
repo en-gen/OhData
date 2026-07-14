@@ -1668,10 +1668,8 @@ internal static class OhDataEndpointFactory
                 }
             }
 
-            foreach (var prop in source.StructuralProperties)
+            foreach (var propCapture in source.StructuralProperties.Select(p => p))
             {
-                var propCapture = prop;
-
                 // GET /{name}({key})/{Property} — property-value envelope (§11.2.6).
                 entityAuthGroup.MapGet($"/{name}({{key}})/{propCapture.Name}",
                     async (string key, HttpContext ctx, CancellationToken ct) =>
