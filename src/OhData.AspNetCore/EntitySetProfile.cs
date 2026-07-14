@@ -946,7 +946,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
                 var map = new Dictionary<object, object?>(keys.Count);
                 foreach (var group in lookup.Where(group => group.Key is not null))
                 {
-                    map[group.Key] = group.ToList();
+                    if (group.Key is not { } groupKey) continue;
+                    map[groupKey] = group.ToList();
                 }
                 return map;
             };
@@ -1005,7 +1006,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
                 var map = new Dictionary<object, object?>(keys.Count);
                 foreach (var kvp in result.Where(kvp => kvp.Key is not null))
                 {
-                    map[kvp.Key] = kvp.Value;
+                    if (kvp.Key is not { } kvpKey) continue;
+                    map[kvpKey] = kvp.Value;
                 }
                 return map;
             };
@@ -1065,7 +1067,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
                 var map = new Dictionary<object, object?>(keys.Count);
                 foreach (var kvp in result.Where(kvp => kvp.Key is not null))
                 {
-                    map[kvp.Key] = kvp.Value;
+                    if (kvp.Key is not { } kvpKey) continue;
+                    map[kvpKey] = kvp.Value;
                 }
                 return map;
             };
