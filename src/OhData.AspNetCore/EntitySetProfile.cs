@@ -1006,8 +1006,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
                 var map = new Dictionary<object, object?>(keys.Count);
                 foreach (var kvp in result.Where(kvp => kvp.Key is not null))
                 {
-                    if (kvp.Key is not { } kvpKey) continue;
-                    map[kvpKey] = kvp.Value;
+                    map[kvp.Key] = kvp.Value;
                 }
                 return map;
             };
