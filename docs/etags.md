@@ -73,6 +73,11 @@ On `GET /{EntitySet}({key})`, if the request includes an `If-None-Match` header:
 
 This lets clients avoid re-downloading unchanged data.
 
+`If-None-Match` is also honored on [individual property reads](property-access.md#etags)
+(`GET /{EntitySet}({key})/{Property}`) when `UseETag` is configured - a match returns
+`304 Not Modified` with the same `ETag` header the entity-level `GET` would produce.
+`GET .../{Property}/$value` does not set or check an ETag.
+
 ## Client-side ETag support
 
 `OhData.Client` exposes ETag-aware methods on `KeyedEntitySetClient<T>`.
@@ -85,6 +90,25 @@ var (product, etag) = await client.For<Product>().Key(42).GetWithETagAsync();
 
 Returns a `(T? Entity, string? ETag)` tuple. `ETag` is the raw header value (double-quoted, e.g. `"dGVzdA=="`), or `null` if the server did not send an `ETag` header.
 
+### Conditional GET with `If-None-Match`
+
+`GetIfChangedAsync` sends a previously-observed ETag as `If-None-Match` and tells you whether the
+server confirmed `304 Not Modified` or returned a fresh representation - useful for cache
+invalidation without re-fetching and re-deserializing data you already have:
+
+```csharp
+var (product, etag, _) = await client.For<Product>().Key(42).GetIfChangedAsync();
+
+// ... later, using the cached etag ...
+var (fresh, currentEtag, notModified) = await client.For<Product>().Key(42).GetIfChangedAsync(etag);
+if (!notModified)
+{
+    product = fresh;   // server sent a new representation; currentEtag is its ETag
+}
+```
+
+See [client.md](client.md#conditional-get-with-if-none-match) for the full return-tuple semantics.
+
 ### Conditional write operations
 
 Pass the ETag as `ifMatch` to `PutAsync`, `PatchAsync`, or `DeleteAsync`. The server returns `412 Precondition Failed` if the entity has been modified since the ETag was fetched:
@@ -95,7 +119,7 @@ var (product, etag) = await client.For<Product>().Key(42).GetWithETagAsync();
 
 // Replace — fails with 412 if another client modified the entity
 Product? updated = await client.For<Product>().Key(42)
-    .PutAsync(product! with { Price = 9.99m }, ifMatch: etag);
+    .PutAsync(new Product { Id = product!.Id, Name = product.Name, Price = 9.99m }, ifMatch: etag);
 
 // Partial update
 Product? patched = await client.For<Product>().Key(42)
