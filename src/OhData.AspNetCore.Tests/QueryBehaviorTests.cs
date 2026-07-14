@@ -6,7 +6,11 @@ using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
 using OhData.Abstractions;
+using OhData.AspNetCore;
 using Xunit;
 
 namespace OhData.AspNetCore.Tests;
@@ -103,6 +107,67 @@ public class QueryBehaviorTests
             new StringContent("{}", System.Text.Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
         Assert.Equal("30/default", OptionalParamProfile.LastGreeting);
+    }
+
+    // ── L-14: BindFunction/BindAction reject compiler-generated (lambda) names ───
+
+    private class LambdaBoundFunctionProfile : EntitySetProfile<int, Widget>
+    {
+        public LambdaBoundFunctionProfile() : base(x => x.Id)
+        {
+            EntitySetName = "LambdaBoundFunctionWidgets";
+            // A lambda's compiler-generated method name (e.g. "<.ctor>b__2_0") is not a valid
+            // EDM/OData operation identifier — BoundOperationDefinition.From must reject it.
+            BindFunction((Func<Task<string>>)(() => Task.FromResult("x")));
+        }
+    }
+
+    private class LambdaBoundActionProfile : EntitySetProfile<int, Widget>
+    {
+        public LambdaBoundActionProfile() : base(x => x.Id)
+        {
+            EntitySetName = "LambdaBoundActionWidgets";
+            BindAction((Action)(() => { }));
+        }
+    }
+
+    [Fact]
+    public void BindFunction_Lambda_ThrowsAtMapOhData()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Services.AddLogging();
+        builder.Services.AddOhData(o => o.AddProfile<LambdaBoundFunctionProfile>());
+        var app = builder.Build();
+
+        // MapOhData() resolves the OhDataRegistration keyed singleton, which builds the EDM
+        // model (IVisitModelBuilder.VisitModelBuilder) for every registered profile. OhDataBuilder
+        // wraps any exception from that step in an outer InvalidOperationException naming the
+        // failing profile; the actual BoundOperationDefinition.From rejection is the InnerException.
+        var ex = Assert.Throws<InvalidOperationException>(() => app.MapOhData());
+        Assert.Contains("LambdaBoundFunctionProfile", ex.Message, StringComparison.Ordinal);
+
+        var inner = Assert.IsType<InvalidOperationException>(ex.InnerException);
+        Assert.Contains("lambda", inner.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("function", inner.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("BindFunction", inner.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BindAction_Lambda_ThrowsAtMapOhData()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Services.AddLogging();
+        builder.Services.AddOhData(o => o.AddProfile<LambdaBoundActionProfile>());
+        var app = builder.Build();
+
+        var ex = Assert.Throws<InvalidOperationException>(() => app.MapOhData());
+        Assert.Contains("LambdaBoundActionProfile", ex.Message, StringComparison.Ordinal);
+
+        var inner = Assert.IsType<InvalidOperationException>(ex.InnerException);
+        Assert.Contains("lambda", inner.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("action", inner.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     // ── M-5: Invalid maxpagesize values ──────────────────────────────────────────

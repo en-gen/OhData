@@ -167,7 +167,7 @@ builder.Services.AddOhData(o => o
 
 Requests with `$top` exceeding `MaxTop` receive `400 Bad Request`.
 
-> **Note:** `Prefer: maxpagesize` (see the [`Prefer` header docs](spec-compliance.md#prefer-header)) currently overrides `MaxTop` unconditionally when `$top` is absent, with no ceiling - a client can request a page larger than `MaxTop` via this header. Treat `MaxTop` as a soft default page size rather than a hard cap until this is hardened.
+`Prefer: maxpagesize` (see the [`Prefer` header docs](spec-compliance.md#prefer-header)) is capped at `MaxTop` when `$top` is absent: the honored page size is `min(maxpagesize, MaxTop)`. A client cannot use `maxpagesize` to request a page larger than `MaxTop` - it can only ask for a *smaller* page. `Preference-Applied` always echoes the page size actually honored (the clamped value), not the value the client asked for, per §8.2.8.7.
 
 ---
 

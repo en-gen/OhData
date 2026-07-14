@@ -71,3 +71,21 @@ app.MapOhData("v1").RequireAuthorization("V1Policy");
 ```
 
 Per-profile `RequireAuthorization()` applies in addition to any group-level requirement.
+
+## `$metadata` and the service document are always anonymous
+
+`GET /{prefix}` (the service document) and `GET /{prefix}/$metadata` are mapped before per-profile
+authorization is applied, so they remain reachable without authentication even when every
+registered profile requires auth. **This is intentional, by design** - it is not a gap to be
+closed:
+
+- OData tooling (client code generators, API explorers, `$metadata`-driven clients) expects to be
+  able to fetch the service document and metadata document anonymously to discover the shape of
+  the service before authenticating against individual entity sets.
+- Neither document exposes entity data - only the schema (entity sets, types, properties,
+  operations) that `$metadata` was designed to advertise.
+
+If your service's schema itself is sensitive and you need `$metadata`/the service document
+protected, that is not currently supported as a per-registration opt-in. This is a possible future
+feature; there is no workaround today beyond fronting the endpoints with your own middleware or
+reverse-proxy rule outside of OhData's routing.

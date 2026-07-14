@@ -8,7 +8,11 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
 using OhData.Abstractions;
+using OhData.AspNetCore;
 using Xunit;
 
 namespace OhData.AspNetCore.Tests;
@@ -495,5 +499,48 @@ public class NavigationPostTests
                 getAll: (parentId, ct) => Task.FromResult<IEnumerable<NavPostChild>>(Array.Empty<NavPostChild>()),
                 refTargetEntitySet: "NavPostMetadataChildren");
         }
+    }
+
+    // ── Startup collision validation: POST /{Set}({key})/{segment} ──────────────
+
+    /// <summary>
+    /// A collection navigation with a <c>post</c> handler ("Children" — claims
+    /// <c>POST /{key}/Children</c>) and an entity-level bound action deliberately named the same
+    /// ("Children" — also claims <c>POST /{key}/Children</c>). Used to test the startup
+    /// route-collision validation added alongside property routes: <c>app.MapOhData()</c> must
+    /// throw <see cref="InvalidOperationException"/> rather than let ASP.NET Core register two
+    /// handlers for the same (template, method) pair.
+    /// </summary>
+    private class NavPostActionCollisionProfile : EntitySetProfile<int, NavPostParent>
+    {
+        public NavPostActionCollisionProfile() : base(x => x.Id)
+        {
+            EntitySetName = "NavPostActionCollisionParents";
+            GetById = (id, ct) => Task.FromResult<NavPostParent?>(null);
+
+            HasMany(
+                navigation: x => x.Children!,
+                getAll: (parentId, ct) => Task.FromResult<IEnumerable<NavPostChild>>(Array.Empty<NavPostChild>()),
+                post: (parentId, child, ct) => Task.FromResult<NavPostChild?>(child));
+
+            BindEntityAction(Children);
+        }
+
+        // Method name "Children" intentionally collides with the nav property's POST route.
+        private void Children(int key) { }
+    }
+
+    [Fact]
+    public void PostChildCollision_WithEntityLevelBoundAction_ThrowsAtMapOhData()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Services.AddLogging();
+        builder.Services.AddOhData(o => o.AddProfile<NavPostActionCollisionProfile>());
+        var app = builder.Build();
+
+        var ex = Assert.Throws<InvalidOperationException>(() => app.MapOhData());
+        Assert.Contains("Children", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("NavPostActionCollisionParents", ex.Message, StringComparison.Ordinal);
     }
 }

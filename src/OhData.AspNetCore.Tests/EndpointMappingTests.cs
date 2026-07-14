@@ -1502,6 +1502,58 @@ public class EndpointMappingTests
         Assert.True(count.GetInt64() > 0);
     }
 
+    // ── M-3: $orderby on navigation collection routes ─────────────────────────────
+
+    [Fact]
+    public async Task NavigationCollection_OrderByAsc_SortsAscending()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavOrderByProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavOrderByParents(1)/Children?$orderby=Name");
+        string?[] names = json.GetProperty("value").EnumerateArray().Select(v => v.GetProperty("name").GetString()).ToArray();
+        Assert.Equal(new[] { "Alpha", "Bravo", "Charlie", "Delta" }, names);
+    }
+
+    [Fact]
+    public async Task NavigationCollection_OrderByDesc_SortsDescending()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavOrderByProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavOrderByParents(1)/Children?$orderby=Name desc");
+        string?[] names = json.GetProperty("value").EnumerateArray().Select(v => v.GetProperty("name").GetString()).ToArray();
+        Assert.Equal(new[] { "Delta", "Charlie", "Bravo", "Alpha" }, names);
+    }
+
+    [Fact]
+    public async Task NavigationCollection_OrderByMultiKey_SortsByBothKeys()
+    {
+        // Category asc, then Name desc within each category: A-group (Delta, Alpha), B-group (Charlie, Bravo).
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavOrderByProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>(
+            "/odata/NavOrderByParents(1)/Children?$orderby=Category asc,Name desc");
+        string?[] names = json.GetProperty("value").EnumerateArray().Select(v => v.GetProperty("name").GetString()).ToArray();
+        Assert.Equal(new[] { "Delta", "Alpha", "Charlie", "Bravo" }, names);
+    }
+
+    [Fact]
+    public async Task NavigationCollection_OrderByUnknownProperty_Returns400()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavOrderByProfile>());
+        var response = await fx.Client.GetAsync("/odata/NavOrderByParents(1)/Children?$orderby=NoSuchProperty");
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(json.TryGetProperty("error", out _));
+    }
+
+    [Fact]
+    public async Task NavigationCollection_OrderByCombinedWithTopSkip_AppliesOrderFirst()
+    {
+        // Ascending by Name: Alpha, Bravo, Charlie, Delta. $skip=1&$top=2 → Bravo, Charlie.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavOrderByProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>(
+            "/odata/NavOrderByParents(1)/Children?$orderby=Name&$skip=1&$top=2");
+        string?[] names = json.GetProperty("value").EnumerateArray().Select(v => v.GetProperty("name").GetString()).ToArray();
+        Assert.Equal(new[] { "Bravo", "Charlie" }, names);
+    }
+
     // ── Batch 2, Gap 6: $ref endpoints for navigation ─────────────────────────────
 
     [Fact]
@@ -2056,6 +2108,41 @@ public class EndpointMappingTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(3, json.GetProperty("value").GetArrayLength());
+    }
+
+    // ── M-4: Prefer: maxpagesize is capped at MaxTop ──────────────────────────
+
+    [Fact]
+    public async Task MaxPageSize_BelowMaxTop_IsHonoredAsRequested()
+    {
+        // MaxTopProfile: MaxTop=5, 20 items. maxpagesize=3 < MaxTop=5 — honored in full.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MaxTopProfile>());
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/MaxTopWidgets");
+        request.Headers.Add("Prefer", "maxpagesize=3");
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(3, json.GetProperty("value").GetArrayLength());
+        Assert.True(response.Headers.TryGetValues("Preference-Applied", out IEnumerable<string>? applied));
+        Assert.Contains(applied!, v => v.Contains("maxpagesize=3"));
+    }
+
+    [Fact]
+    public async Task MaxPageSize_AboveMaxTop_IsClampedToMaxTop()
+    {
+        // MaxTopProfile: MaxTop=5, 20 items. maxpagesize=10 > MaxTop=5 — clamped down to 5;
+        // maxpagesize must not be able to lift the server's hard MaxTop ceiling (M-4/DoS hardening).
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MaxTopProfile>());
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/MaxTopWidgets");
+        request.Headers.Add("Prefer", "maxpagesize=10");
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(5, json.GetProperty("value").GetArrayLength());
+        // Preference-Applied must reflect the value actually honored (5), not the requested 10.
+        Assert.True(response.Headers.TryGetValues("Preference-Applied", out IEnumerable<string>? applied));
+        Assert.Contains(applied!, v => v.Contains("maxpagesize=5"));
+        Assert.DoesNotContain(applied!, v => v.Contains("maxpagesize=10"));
     }
 
     // ── Batch 5: $format, Content-Location, @odata.count on GetAll ───────────
