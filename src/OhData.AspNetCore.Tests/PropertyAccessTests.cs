@@ -212,7 +212,7 @@ public class PropertyAccessTests
         Assert.Equal(HttpStatusCode.OK, first.StatusCode);
         Assert.NotNull(first.Headers.ETag);
 
-        var request = new HttpRequestMessage(HttpMethod.Get, "/odata/ETagWidgets(1)/Name");
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/ETagWidgets(1)/Name");
         request.Headers.TryAddWithoutValidation("If-None-Match", first.Headers.ETag!.Tag);
         var second = await fx.Client.SendAsync(request);
         Assert.Equal(HttpStatusCode.NotModified, second.StatusCode);
