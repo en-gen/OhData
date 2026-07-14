@@ -7,7 +7,7 @@ OhData targets the [OData 4.0 specification](https://docs.oasis-open.org/odata/o
 | Feature | Section | Status | Notes |
 |---------|---------|--------|-------|
 | `OData-Version: 4.0` response header | §8.2.6 | ✅ | Added to all responses |
-| `OData-MaxVersion` request header | §8.2.7 | ⚠️ | Accepted but never read, parsed, or validated by the framework - a purely passive no-op, not "supported" processing. Also not echoed in responses. |
+| `OData-MaxVersion` request header | §8.2.7 | ✅ | Parsed as `major.minor` (whitespace-tolerant); `4.0` or higher (`4.01`, `5.0`, ...) proceeds, a value below `4.0` or an unparseable value is rejected with `400 Bad Request` (`UnsupportedODataVersion`). Enforced at the OData route-group level, so it applies to the service document, `$metadata`, and every entity-set/bound-operation route. Never echoed in responses (request-only header). |
 | `Content-Type: application/json` | §8.2.1 | ✅ | All responses except `GET /$metadata`, which returns `application/xml` |
 | `$format` query option | §11.2.12 | ✅ | `json` and `application/json` accepted; others → 400 |
 | `Accept` header validation | §8.2.1 | ✅ | Non-JSON accept headers → 406 |
