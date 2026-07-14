@@ -47,6 +47,8 @@ internal interface IEntitySetEndpointSource
     bool SelectEnabled { get; }
     bool ExpandEnabled { get; }
     bool CountEnabled { get; }
+    bool PropertyAccessEnabled { get; }
+    IReadOnlyList<StructuralPropertyInfo> StructuralProperties { get; }
     string KeyPropertyName { get; }
     string InvokeGetKeyString(object model);
     bool IsAdvancedConfigureOverridden { get; }

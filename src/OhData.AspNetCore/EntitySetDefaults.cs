@@ -69,4 +69,15 @@ public class EntitySetDefaults
     /// Default <c>false</c> — PUT to a missing key returns 404.
     /// </summary>
     public bool AllowUpsert { get; set; } = false;
+
+    /// <summary>
+    /// Whether individual structural property access
+    /// (<c>GET /{EntitySet}({key})/{Property}</c> and <c>GET .../{Property}/$value</c>,
+    /// OData §11.2.6 / Part 2 §4.6-4.7) is enabled by default on all entity sets.
+    /// Defaults to <c>true</c> (spec-conformant out of the box). Property routes are only
+    /// registered when the profile also configures a <c>GetById</c> handler — this flag
+    /// alone does not create routes.
+    /// Profile-level <c>PropertyAccessEnabled</c> overrides this value.
+    /// </summary>
+    public bool PropertyAccessEnabled { get; set; } = true;
 }

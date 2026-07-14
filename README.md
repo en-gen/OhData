@@ -1,6 +1,6 @@
 # OhData
 
-Convention-based OData 4.0 server and typed client for ASP.NET Core. Define a profile class, assign handler delegates, and get a fully spec-compliant OData API - no controllers required. Consume it from .NET with a fluent, LINQ-native client.
+Convention-based OData 4.0 server and typed client for ASP.NET Core. Define a profile class, assign handler delegates, and get a spec-faithful OData API - no controllers required (see [docs/spec-compliance.md](docs/spec-compliance.md) for exactly what's covered). Consume it from .NET with a fluent, LINQ-native client.
 
 ## Getting Started
 
@@ -76,6 +76,8 @@ This produces:
 | `GET` | `/odata/Products` | `GetQueryable` - supports `$filter`, `$orderby`, `$skip`, `$top`, `$select`, `$count` |
 | `GET` | `/odata/Products/$count` | filtered row count |
 | `GET` | `/odata/Products({key})` | `GetById` |
+| `GET` | `/odata/Products({key})/Name` | individual property (OData envelope) - rides `GetById` |
+| `GET` | `/odata/Products({key})/Name/$value` | raw property value (`text/plain`) |
 | `POST` | `/odata/Products` | `Post` |
 | `PUT` | `/odata/Products({key})` | `Put` |
 | `PATCH` | `/odata/Products({key})` | `Patch` |
@@ -134,6 +136,7 @@ public class MyService(OhDataClient client) { ... }
 |-------|-------|
 | Query options (`$filter`, `$orderby`, `$select`, `$expand`, `$count`, `$search`) | [docs/query-options.md](docs/query-options.md) |
 | Navigation property routing and `$ref` | [docs/navigation-routing.md](docs/navigation-routing.md) |
+| Individual property access and `/$value` | [docs/property-access.md](docs/property-access.md) |
 | Bound functions and actions | [docs/bound-operations.md](docs/bound-operations.md) |
 | ETags and optimistic concurrency | [docs/etags.md](docs/etags.md) |
 | Authorization | [docs/authorization.md](docs/authorization.md) |
