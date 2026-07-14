@@ -71,6 +71,19 @@ OhData targets the [OData 4.0 specification](https://docs.oasis-open.org/odata/o
 | `$ref` add link | §11.4.6.1 | ✅ | `POST /Set({key})/Nav/$ref` |
 | `$ref` remove link | §11.4.6.2 | ✅ | `DELETE /Set({key})/Nav/$ref` |
 
+## Individual property access
+
+| Feature | Section | Status | Notes |
+|---------|---------|--------|-------|
+| Get individual property | §11.2.6 | ✅ | `GET /Set({key})/Prop` — rides the existing `GetById` handler; `PropertyAccessEnabled` (default `true`) gates it, requires `GetById` to be configured. Returns the `{"@odata.context":...,"value":...}` envelope |
+| Null property value | §11.2.6 | ✅ | `204 No Content` |
+| Get individual property raw value | Part 2 §4.6/4.7 | ✅ | `GET /Set({key})/Prop/$value` — `text/plain` for primitives (invariant culture), `application/octet-stream` for `byte[]` |
+| Raw value of a null property | Part 2 §4.7 | ✅ | `404 Not Found` — the raw value does not exist |
+| Raw value of a complex property | Part 2 §4.7 | ✅ | `400 Bad Request` — no raw representation; use the non-`$value` envelope form instead |
+| Property-route/bound-function collision detection | — | ✅ | Startup validation (`app.MapOhData()`) throws `InvalidOperationException` if an entity-level bound function shares a name with a structural property |
+| Update individual property (`PUT`/`PATCH`) | §11.4.9.1/.2 | ❌ | Not yet implemented — planned follow-up PR; rides the existing `Patch` handler in the design |
+| Set property to null (`DELETE`) | §11.4.9.3 | ❌ | Not yet implemented — planned follow-up PR |
+
 ## Bound operations
 
 | Feature | Section | Status | Notes |

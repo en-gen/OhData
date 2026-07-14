@@ -664,6 +664,23 @@ internal static class OhDataEndpointFactory
         JsonSerializerOptions? jsonOptions, string? odataId = null, string? etag = null) =>
         Results.Ok(ODataEntityNode(ctx, prefix, $"{name}/$entity", entity, jsonOptions, odataId: odataId, etag: etag));
 
+    // I-6: formats a primitive property value as its raw (unquoted, unwrapped) OData /$value
+    // representation (Part 2 §4.7), using invariant culture. bool is special-cased to lowercase
+    // "true"/"false" (bool.ToString() is not culture-sensitive and returns "True"/"False"), and
+    // date/time types use their ISO-8601 round-trip format ("O") rather than IFormattable's
+    // culture-general format, matching how System.Text.Json serializes these types in the JSON
+    // envelope so /Prop and /Prop/$value agree on representation.
+    private static string FormatRawValue(object value) => value switch
+    {
+        bool b => b ? "true" : "false",
+        DateTime dt => dt.ToString("o", CultureInfo.InvariantCulture),
+        DateTimeOffset dto => dto.ToString("o", CultureInfo.InvariantCulture),
+        DateOnly d => d.ToString("O", CultureInfo.InvariantCulture),
+        TimeOnly t => t.ToString("O", CultureInfo.InvariantCulture),
+        IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+        _ => value.ToString() ?? "",
+    };
+
     // Called via reflection with TKey/TModel resolved from the profile's runtime types.
     private static void MapEntitySet<TKey, TModel>(
         RouteGroupBuilder parentGroup,
@@ -1621,6 +1638,139 @@ internal static class OhDataEndpointFactory
                     .WithTags(name)
                     .Produces(204)
                     .Produces(400);
+            }
+        }
+
+        // Individual structural property access (I-6, OData §11.2.6 / Part 2 §4.6-4.7).
+        // Read-only in this PR: property WRITE (PUT/PATCH/DELETE) is deferred to a later PR.
+        // Rides the existing GetById handler — no new handler delegate. Registered only when
+        // PropertyAccessEnabled resolves true AND GetById is configured.
+        if (source.PropertyAccessEnabled && source.HasGetById)
+        {
+            // Startup route-collision validation (shared /{Set}({key})/{segment} space).
+            // Structural vs navigation is disjoint by construction: BuildStructuralProperties
+            // excludes every name recorded via HasOptional/HasRequired/HasMany, so a structural
+            // property and a navigation route can never claim the same GET template. The one
+            // real collision risk is an entity-level bound function (also GET, also scoped to
+            // /{name}({key})/{segment}) sharing a name with a structural property. $ref/$count/
+            // $value carry a reserved '$' sigil and can never collide with a bare property name.
+            // Entity-level bound actions are POST, so method disjointness rules them out here.
+            foreach (var collidingFn in source.BoundFunctions.Where(f => f.IsEntityLevel))
+            {
+                bool propertyNameCollision = source.StructuralProperties
+                    .Any(p => string.Equals(p.Name, collidingFn.Name, StringComparison.Ordinal));
+                if (propertyNameCollision)
+                {
+                    throw new InvalidOperationException(
+                        $"Entity set '{name}': bound function '{collidingFn.Name}' conflicts with " +
+                        $"structural property '{collidingFn.Name}' on GET /{name}({{key}})/{collidingFn.Name}. " +
+                        "Rename the bound function or the property.");
+                }
+            }
+
+            foreach (var prop in source.StructuralProperties)
+            {
+                var propCapture = prop;
+
+                // GET /{name}({key})/{Property} — property-value envelope (§11.2.6).
+                var propRb = entityAuthGroup.MapGet($"/{name}({{key}})/{propCapture.Name}",
+                    async (string key, HttpContext ctx, CancellationToken ct) =>
+                    {
+                        try
+                        {
+                            var s = ResolveHandlers(ctx);
+                            object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
+                            object? entity = await s.InvokeGetByIdAsync(parsedKey!, ct);
+                            if (entity is null)
+                                return ODataError(404, "NotFound", $"{name} with key '{key}' was not found.");
+
+                            string? etagValue = null;
+                            if (source.HasETag)
+                            {
+                                etagValue = s.InvokeGetETag(entity);
+                                ctx.Response.Headers.ETag = $"\"{etagValue}\"";
+
+                                if (ctx.Request.Headers.TryGetValue("If-None-Match", out var ifNoneMatch))
+                                {
+                                    var noneMatchList = ParseETagList(ifNoneMatch.ToString());
+                                    if (noneMatchList.Contains("*") || noneMatchList.Contains(etagValue))
+                                        return Results.StatusCode(304); // 304 Not Modified — no body
+                                }
+                            }
+
+                            var requestProp = s.StructuralProperties.First(p => p.Name == propCapture.Name);
+                            object? value = requestProp.Accessor(entity);
+
+                            // §11.2.6: a single-valued null property returns 204 No Content.
+                            if (value is null) return Results.NoContent();
+
+                            string baseUrl = BuildBaseUrl(ctx, prefix);
+                            var envelope = new Dictionary<string, object?>
+                            {
+                                ["@odata.context"] = $"{baseUrl}/$metadata#{name}({key})/{propCapture.Name}",
+                                ["value"] = value,
+                            };
+                            return Results.Ok(envelope);
+                        }
+                        catch (FormatException ex)
+                        {
+                            logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
+                            return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                        }
+                    })
+                    .WithTags(name)
+                    .Produces(200)
+                    .Produces(204)
+                    .Produces(404);
+
+                // GET /{name}({key})/{Property}/$value — raw value (Part 2 §4.7).
+                bool propIsComplex = propCapture.IsComplex;
+                var valueRb = entityAuthGroup.MapGet($"/{name}({{key}})/{propCapture.Name}/$value",
+                    async (string key, HttpContext ctx, CancellationToken ct) =>
+                    {
+                        // Complex-typed properties have no raw representation — a static
+                        // attribute of the property, checked before touching the data source.
+                        if (propIsComplex)
+                        {
+                            return ODataError(400, "BadRequest",
+                                $"Property '{propCapture.Name}' is a complex type and has no raw $value representation.",
+                                target: propCapture.Name);
+                        }
+
+                        try
+                        {
+                            var s = ResolveHandlers(ctx);
+                            object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
+                            object? entity = await s.InvokeGetByIdAsync(parsedKey!, ct);
+                            if (entity is null)
+                                return ODataError(404, "NotFound", $"{name} with key '{key}' was not found.");
+
+                            var requestProp = s.StructuralProperties.First(p => p.Name == propCapture.Name);
+                            object? value = requestProp.Accessor(entity);
+
+                            // Part 2 §4.7: the raw value of a null property does not exist.
+                            if (value is null)
+                            {
+                                return ODataError(404, "NotFound",
+                                    $"{name}({key})/{propCapture.Name} is null; its raw value does not exist.",
+                                    target: propCapture.Name);
+                            }
+
+                            if (value is byte[] bytes)
+                                return Results.Bytes(bytes, "application/octet-stream");
+
+                            return Results.Text(FormatRawValue(value), "text/plain");
+                        }
+                        catch (FormatException ex)
+                        {
+                            logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
+                            return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                        }
+                    })
+                    .WithTags(name)
+                    .Produces(200)
+                    .Produces(400)
+                    .Produces(404);
             }
         }
 

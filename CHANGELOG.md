@@ -11,6 +11,23 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Individual structural property read routes (OData §11.2.6, JSON format Part 2 §4.6-4.7):
+  `GET /{EntitySet}({key})/{Property}` (property-value envelope; `204` when the value is `null`)
+  and `GET /{EntitySet}({key})/{Property}/$value` (raw `text/plain`/`application/octet-stream`
+  value; `404` when the value is `null`; `400` for complex-typed properties, which have no raw
+  representation). Rides the existing `GetById` handler — no new handler delegate. Controlled by
+  a new `PropertyAccessEnabled` flag (profile-level, `bool?`, inherits
+  `EntitySetDefaults.PropertyAccessEnabled`, **default `true`**) and requires `GetById` to be
+  configured; routes are omitted otherwise. Structural properties are computed once at startup as
+  every public readable CLR property of the model minus every property declared as a navigation
+  via `HasMany`/`HasOptional`/`HasRequired`, so property and navigation routes never collide by
+  construction. Adds a startup route-collision validation pass: `app.MapOhData()` throws
+  `InvalidOperationException` if an entity-level bound function shares a name with a structural
+  property. ETags: when `UseETag` is configured, the property-read route sets the entity's `ETag`
+  header and honors `If-None-Match` (`304`); `/$value` omits the header. Property routes inherit
+  the entity set's authorization configuration. Property **write** (`PUT`/`PATCH`/`DELETE` on an
+  individual property) is a planned follow-up PR and is not included here — see
+  `docs/property-access.md`.
 - Batch-aware `$expand` navigation handlers (REVIEW.md M-1): `HasMany`, `HasOptional`, and
   `HasRequired` now accept an additive `batchGetAll`/`batchGet` overload
   (`Func<IReadOnlyList<TKey>, CancellationToken, Task<ILookup<TKey, TNavigation>>>` for

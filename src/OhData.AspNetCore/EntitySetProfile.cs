@@ -33,6 +33,29 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     // expensive (~100μs); caching avoids per-request compilation under scoped resolution.
     private static readonly ConcurrentDictionary<Type, Func<TModel, string>> s_keyToStringCache = new();
 
+    // Caches compiled structural-property accessor delegates keyed by property name. Shared
+    // across every concrete profile subclass that closes EntitySetProfile over the same TModel
+    // (the property set is a pure function of TModel, not of the subclass), so a single
+    // Expression.Compile() per property name suffices for the process lifetime.
+    private static readonly ConcurrentDictionary<string, Func<TModel, object?>> s_structuralAccessorCache = new();
+
+    // OData primitive CLR types (Part 3 §7.1 Edm primitive type mapping). Anything outside this
+    // set (after unwrapping Nullable<T>) is treated as "complex" for /$value purposes — it has
+    // no raw-value representation (OData Part 2 §4.7).
+    private static readonly HashSet<Type> s_primitiveClrTypes = new()
+    {
+        typeof(string), typeof(bool), typeof(byte), typeof(sbyte), typeof(short), typeof(ushort),
+        typeof(int), typeof(uint), typeof(long), typeof(ulong), typeof(float), typeof(double),
+        typeof(decimal), typeof(Guid), typeof(DateTime), typeof(DateTimeOffset), typeof(DateOnly),
+        typeof(TimeOnly), typeof(TimeSpan), typeof(char), typeof(byte[]),
+    };
+
+    // Names of properties declared as navigation properties via HasOptional/HasRequired/HasMany
+    // (any overload — all funnel through the single-argument base method). Structural properties
+    // are computed as "typeof(TModel) public readable properties minus this set", so structural
+    // and navigation routes are disjoint by construction (never both claim the same route).
+    private readonly HashSet<string> _navigationPropertyNames = new(StringComparer.Ordinal);
+
     private readonly Expression<Func<TModel, TKey>> _getKey;
 
     /// <summary>
@@ -71,6 +94,16 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Inherits from <see cref="EntitySetDefaults"/> when <c>null</c> (the default).
     /// </summary>
     protected bool? CountEnabled { get; init; }
+
+    /// <summary>
+    /// Controls whether individual structural property access is enabled on this entity set
+    /// (<c>GET /{EntitySet}({key})/{Property}</c> and <c>GET .../{Property}/$value</c>,
+    /// OData §11.2.6 / Part 2 §4.6-4.7). Inherits from <see cref="EntitySetDefaults"/>
+    /// (default <c>true</c>) when <c>null</c>. Property routes are registered only when this
+    /// resolves <c>true</c> AND <see cref="GetById"/> is configured — property reads ride the
+    /// existing <c>GetById</c> handler.
+    /// </summary>
+    protected bool? PropertyAccessEnabled { get; init; }
 
     private string[]? _selectProperties;
     private string[]? _expandProperties;
@@ -187,6 +220,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private bool _resolvedSelectEnabled;
     private bool _resolvedExpandEnabled;
     private bool _resolvedCountEnabled;
+    private bool _resolvedPropertyAccessEnabled;
+    private List<StructuralPropertyInfo>? _structuralProperties;
 
     /// <summary>
     /// When <c>true</c>, <c>DELETE</c> on a non-existent resource returns <c>204 No Content</c>
@@ -337,6 +372,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _resolvedSelectEnabled = SelectEnabled ?? defaults.SelectEnabled;
         _resolvedExpandEnabled = ExpandEnabled ?? defaults.ExpandEnabled;
         _resolvedCountEnabled = CountEnabled ?? defaults.CountEnabled;
+        _resolvedPropertyAccessEnabled = PropertyAccessEnabled ?? defaults.PropertyAccessEnabled;
+        _structuralProperties = BuildStructuralProperties();
 
         AdvancedConfigure(entitySet);
 
@@ -558,6 +595,59 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     }
 
     /// <summary>
+    /// Enumerates the public, readable, non-indexer instance properties of
+    /// <typeparamref name="TModel"/>, excluding any property declared as a navigation via
+    /// <c>HasOptional</c>, <c>HasRequired</c>, or <c>HasMany</c> (any overload). Runs once at
+    /// startup (called from <c>VisitModelBuilder</c>); compiled accessor delegates are cached
+    /// statically per property name so this never re-reflects per request.
+    /// </summary>
+    private List<StructuralPropertyInfo> BuildStructuralProperties()
+    {
+        string keyPropertyName = GetNavigationPropertyName(_getKey.Body);
+        var list = new List<StructuralPropertyInfo>();
+
+        foreach (var prop in typeof(TModel).GetProperties(BindingFlags.Public | BindingFlags.Instance))
+        {
+            if (!prop.CanRead) continue;
+            if (prop.GetIndexParameters().Length > 0) continue; // skip indexers
+            if (_navigationPropertyNames.Contains(prop.Name)) continue;
+
+            list.Add(new StructuralPropertyInfo
+            {
+                Name = prop.Name,
+                ClrType = prop.PropertyType,
+                IsKey = string.Equals(prop.Name, keyPropertyName, StringComparison.Ordinal),
+                IsNullable = IsNullableClrType(prop.PropertyType),
+                IsComplex = !IsPrimitiveODataClrType(prop.PropertyType),
+                Accessor = CompileStructuralAccessor(prop),
+            });
+        }
+
+        return list;
+    }
+
+    private static Func<object, object?> CompileStructuralAccessor(PropertyInfo prop)
+    {
+        Func<TModel, object?> typed = s_structuralAccessorCache.GetOrAdd(prop.Name, _ =>
+        {
+            ParameterExpression param = Expression.Parameter(typeof(TModel), "m");
+            MemberExpression propAccess = Expression.Property(param, prop);
+            UnaryExpression boxed = Expression.Convert(propAccess, typeof(object));
+            return Expression.Lambda<Func<TModel, object?>>(boxed, param).Compile();
+        });
+        return model => typed((TModel)model);
+    }
+
+    private static bool IsNullableClrType(Type type) =>
+        !type.IsValueType || Nullable.GetUnderlyingType(type) is not null;
+
+    private static bool IsPrimitiveODataClrType(Type type)
+    {
+        Type underlying = Nullable.GetUnderlyingType(type) ?? type;
+        return underlying.IsEnum || s_primitiveClrTypes.Contains(underlying);
+    }
+
+    /// <summary>
     /// Restricts the properties that may appear in <c>$filter</c> queries.
     /// Set using either this overload or the string overload, not both.
     /// Pass no arguments (or call with <c>null</c>) to allow all properties.
@@ -678,6 +768,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     {
         ThrowIfSealed();
         if (navigation == null) throw new ArgumentNullException(nameof(navigation));
+        _navigationPropertyNames.Add(GetNavigationPropertyName(navigation.Body));
         _configurators.Add(x => x.HasOptional(navigation));
     }
 
@@ -731,6 +822,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     {
         ThrowIfSealed();
         if (navigation == null) throw new ArgumentNullException(nameof(navigation));
+        _navigationPropertyNames.Add(GetNavigationPropertyName(navigation.Body));
         _configurators.Add(x => x.HasRequired(navigation));
     }
 
@@ -781,6 +873,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     {
         ThrowIfSealed();
         if (navigation == null) throw new ArgumentNullException(nameof(navigation));
+        _navigationPropertyNames.Add(GetNavigationPropertyName(navigation.Body));
         _configurators.Add(x => x.HasMany(navigation));
     }
 
@@ -1289,6 +1382,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     bool IEntitySetEndpointSource.SelectEnabled => _resolvedSelectEnabled;
     bool IEntitySetEndpointSource.ExpandEnabled => _resolvedExpandEnabled;
     bool IEntitySetEndpointSource.CountEnabled => _resolvedCountEnabled;
+    bool IEntitySetEndpointSource.PropertyAccessEnabled => _resolvedPropertyAccessEnabled;
+    IReadOnlyList<StructuralPropertyInfo> IEntitySetEndpointSource.StructuralProperties =>
+        _structuralProperties ??= BuildStructuralProperties();
     string IEntitySetEndpointSource.KeyPropertyName => GetNavigationPropertyName(_getKey.Body);
     bool IEntitySetEndpointSource.IsAdvancedConfigureOverridden => _isAdvancedConfigureOverridden;
 

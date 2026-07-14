@@ -1224,3 +1224,89 @@ internal class BatchOnlyNavProfile : EntitySetProfile<int, Parent>
     }
 }
 
+// ── Property-access (I-6) fixtures ─────────────────────────────────────────────
+
+/// <summary>Complex (non-primitive, non-navigation) sub-object used to test /$value's 400-on-complex path.</summary>
+internal class Dimensions
+{
+    public decimal Width { get; set; }
+    public decimal Height { get; set; }
+}
+
+internal class PropertyAccessItem
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public string? Description { get; set; }
+    public decimal Price { get; set; }
+    public DateTime ReleasedAt { get; set; }
+    public Dimensions? Size { get; set; }
+}
+
+/// <summary>
+/// Profile with GetById and a variety of structural property types (string, nullable string,
+/// decimal, DateTime, complex) — used to exercise individual property-read routes (I-6).
+/// PropertyAccessEnabled is left at its default (inherits true from EntitySetDefaults).
+/// </summary>
+internal class PropertyAccessProfile : EntitySetProfile<int, PropertyAccessItem>
+{
+    internal static readonly List<PropertyAccessItem> Store = new()
+    {
+        new()
+        {
+            Id = 1,
+            Name = "Widget",
+            Description = "A test widget",
+            Price = 9.99m,
+            ReleasedAt = new DateTime(2024, 1, 15, 0, 0, 0, DateTimeKind.Utc),
+            Size = new Dimensions { Width = 10.5m, Height = 3.2m },
+        },
+        new()
+        {
+            Id = 2,
+            Name = "Gadget",
+            Description = null,
+            Price = 19.99m,
+            ReleasedAt = new DateTime(2024, 6, 1, 0, 0, 0, DateTimeKind.Utc),
+            Size = null,
+        },
+    };
+
+    public PropertyAccessProfile() : base(x => x.Id)
+    {
+        EntitySetName = "PropertyAccessItems";
+        GetById = (id, ct) => Task.FromResult(Store.FirstOrDefault(x => x.Id == id));
+    }
+}
+
+/// <summary>Same shape as <see cref="PropertyAccessProfile"/> but with property access opted out.</summary>
+internal class PropertyAccessDisabledProfile : EntitySetProfile<int, PropertyAccessItem>
+{
+    public PropertyAccessDisabledProfile() : base(x => x.Id)
+    {
+        EntitySetName = "PropertyAccessDisabledItems";
+        PropertyAccessEnabled = false;
+        GetById = (id, ct) => Task.FromResult<PropertyAccessItem?>(
+            new PropertyAccessItem { Id = 1, Name = "X" });
+    }
+}
+
+/// <summary>
+/// Profile whose entity-level bound function is deliberately named the same as a structural
+/// property ("Name") on <see cref="Widget"/> — both would claim
+/// <c>GET /PropertyCollisionWidgets({key})/Name</c>. Used to test the startup route-collision
+/// validation (design §6): <c>app.MapOhData()</c> must throw <see cref="InvalidOperationException"/>.
+/// </summary>
+internal class PropertyCollisionProfile : EntitySetProfile<int, Widget>
+{
+    public PropertyCollisionProfile() : base(x => x.Id)
+    {
+        EntitySetName = "PropertyCollisionWidgets";
+        GetById = (id, ct) => Task.FromResult<Widget?>(new Widget { Id = 1, Name = "X" });
+        BindEntityFunction(Name);
+    }
+
+    // Method name "Name" intentionally collides with the Widget.Name structural property.
+    private Task<string> Name(int key) => Task.FromResult("collision");
+}
+
