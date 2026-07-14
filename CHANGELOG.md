@@ -28,6 +28,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the entity set's authorization configuration. Property **write** (`PUT`/`PATCH`/`DELETE` on an
   individual property) is a planned follow-up PR and is not included here — see
   `docs/property-access.md`.
+- `OData-MaxVersion` request-header validation (§8.2.7): a service must honor `OData-MaxVersion`
+  or reject the request. OhData now parses the header (`major.minor`, whitespace-tolerant) on
+  every route in the OData group - service document, `$metadata`, and all entity-set/bound-operation
+  routes. No header, or `4.0` and higher (`4.01`, `5.0`, ...), proceeds unconstrained; a value
+  below `4.0` or an unparseable value returns `400 Bad Request` with the standard OData error
+  envelope (`code: "UnsupportedODataVersion"`). The header is still never echoed in responses.
+  New `ODataMaxVersionFilter` endpoint filter, registered alongside the existing `OData-Version`/
+  `$format`/`Accept` group filter in `OhDataEndpointFactory.MapAll`
 - Batch-aware `$expand` navigation handlers (REVIEW.md M-1): `HasMany`, `HasOptional`, and
   `HasRequired` now accept an additive `batchGetAll`/`batchGet` overload
   (`Func<IReadOnlyList<TKey>, CancellationToken, Task<ILookup<TKey, TNavigation>>>` for
