@@ -26,6 +26,23 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `NavigationRouteDefinition.PostChild` (type-erased handler, following the existing
   `Handler`/`BatchHandler` pattern). No EDM/`$metadata` change — the navigation property is
   already declared via `HasMany`. See `docs/navigation-routing.md`.
+- Individual structural property write routes (OData §11.4.9.1/.2/.3, spec items #30/#31):
+  `PUT`/`PATCH /{EntitySet}({key})/{Property}` with body `{"value": <newValue>}` (`204` on
+  success) and `DELETE /{EntitySet}({key})/{Property}` (sets the property to `null`, `204` on
+  success). Rides the existing `Patch` handler — a single-property write is built as a
+  one-property `Delta<TModel>` and handed to `Patch`, which already owns fetch-existing → apply →
+  persist; no new handler delegate. Routes are registered only when `PropertyAccessEnabled`
+  resolves `true` AND `Patch` is configured (unlike property *read*, `GetById` is not required —
+  `Patch` does its own fetching). Validation: writing to the key property returns `400` (with
+  explicit stub routes so clients get a clean OData error instead of an unmatched-route response);
+  unknown property → `404`; malformed body (missing `value`, non-JSON-object, invalid JSON, wrong
+  type for the property) → `400`; entity not found (`Patch` returns `null`) → `404`; wrong
+  `Content-Type` → `415`; `DELETE` on a non-nullable property → `400`. Complex properties: `PUT`
+  performs a full replacement; `PATCH` on a complex property is documented non-support and returns
+  `400` (`code: "NotSupported"`) rather than attempting a merge. `If-Match`/ETag honored on all
+  three verbs via the existing `CheckETagAsync` helper (`412` on mismatch). Property-write routes
+  inherit the entity set's authorization, same as every other route. Raw-value write
+  (`PUT .../{Property}/$value`) remains out of scope — see `docs/property-access.md`.
 - Individual structural property read routes (OData §11.2.6, JSON format Part 2 §4.6-4.7):
   `GET /{EntitySet}({key})/{Property}` (property-value envelope; `204` when the value is `null`)
   and `GET /{EntitySet}({key})/{Property}/$value` (raw `text/plain`/`application/octet-stream`
@@ -41,8 +58,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   property. ETags: when `UseETag` is configured, the property-read route sets the entity's `ETag`
   header and honors `If-None-Match` (`304`); `/$value` omits the header. Property routes inherit
   the entity set's authorization configuration. Property **write** (`PUT`/`PATCH`/`DELETE` on an
-  individual property) is a planned follow-up PR and is not included here — see
-  `docs/property-access.md`.
+  individual property) is covered by the entry above.
 - `OData-MaxVersion` request-header validation (§8.2.7): a service must honor `OData-MaxVersion`
   or reject the request. OhData now parses the header (`major.minor`, whitespace-tolerant) on
   every route in the OData group - service document, `$metadata`, and all entity-set/bound-operation

@@ -1884,6 +1884,182 @@ internal static class OhDataEndpointFactory
             }
         }
 
+        // Individual structural property WRITE (#30 PUT/PATCH, #31 DELETE-to-null;
+        // OData §11.4.9.1/.2/.3). Rides the existing Patch handler — no new handler delegate.
+        // A single-property write is built as a one-property Delta<TModel> and handed to the
+        // profile's existing Patch handler, which already owns fetch-existing → apply → persist.
+        // Registered only when PropertyAccessEnabled resolves true AND Patch is configured
+        // (property writes are a read-modify-write over Patch's own fetch-for-merge story;
+        // unlike property READ, GetById is not required here — Patch does its own fetching).
+        if (source.PropertyAccessEnabled && source.HasPatch)
+        {
+            foreach (var propCapture in source.StructuralProperties)
+            {
+                string propName = propCapture.Name;
+                bool propIsNullable = propCapture.IsNullable;
+                bool propIsComplex = propCapture.IsComplex;
+                Type propClrType = propCapture.ClrType;
+
+                if (propCapture.IsKey)
+                {
+                    // §11.4.9: the key property is immutable. Register explicit 400-returning
+                    // stubs for PUT/PATCH/DELETE so clients get a clean OData error instead of
+                    // an unmatched-route 404 (no other route claims these key-scoped templates).
+                    IResult KeyImmutableError() => ODataError(400, "BadRequest",
+                        $"Property '{propName}' is the entity's key and cannot be modified.",
+                        target: propName);
+
+                    entityAuthGroup.MapPut($"/{name}({{key}})/{propName}", () => KeyImmutableError())
+                        .WithTags(name).Produces(400);
+                    entityAuthGroup.MapMethods($"/{name}({{key}})/{propName}", PatchMethod, () => KeyImmutableError())
+                        .WithTags(name).Produces(400);
+                    entityAuthGroup.MapDelete($"/{name}({{key}})/{propName}", () => KeyImmutableError())
+                        .WithTags(name).Produces(400);
+                    continue;
+                }
+
+                // Shared PUT/PATCH handler for a primitive property (PATCH on a primitive is
+                // semantically identical to PUT — there is no partial state to merge). For a
+                // complex property, PUT still performs a full replacement; PATCH (partial merge
+                // into an existing complex value) is not built for 1.0.0 — documented non-support,
+                // returns 400 rather than silently no-oping or guessing at a merge strategy.
+                async Task<IResult> HandleSetPropertyAsync(string key, HttpContext ctx, CancellationToken ct, bool isPatchVerb)
+                {
+                    if (!IsJsonContentType(ctx)) return UnsupportedMediaTypeError(ctx);
+
+                    if (isPatchVerb && propIsComplex)
+                    {
+                        return ODataError(400, "NotSupported",
+                            $"PATCH (partial merge) on complex property '{propName}' is not supported. " +
+                            "Use PUT to replace the entire complex value.", target: propName);
+                    }
+
+                    try
+                    {
+                        var s = ResolveHandlers(ctx);
+                        object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
+
+                        var etagCheck = await CheckETagAsync(source, s, ctx, parsedKey!, ct);
+                        if (etagCheck is not null) return etagCheck;
+
+                        JsonElement body;
+                        try
+                        {
+                            body = await JsonSerializer.DeserializeAsync<JsonElement>(ctx.Request.Body, cancellationToken: ct);
+                        }
+                        catch (JsonException ex)
+                        {
+                            return ODataError(400, "InvalidBody", ex.Message);
+                        }
+
+                        if (body.ValueKind != JsonValueKind.Object)
+                        {
+                            return ODataError(400, "InvalidBody",
+                                "Request body must be a JSON object with a 'value' member.", target: propName);
+                        }
+
+                        if (!TryGetJsonProperty(body, "value", out JsonElement valueEl))
+                        {
+                            return ODataError(400, "InvalidBody",
+                                "Request body must contain a 'value' member.", target: propName);
+                        }
+
+                        object? newValue;
+                        try
+                        {
+                            newValue = valueEl.ValueKind == JsonValueKind.Null
+                                ? null
+                                : valueEl.Deserialize(propClrType, jsonOptions);
+                        }
+                        catch (JsonException ex)
+                        {
+                            return ODataError(400, "InvalidBody",
+                                $"The 'value' member could not be converted to the property's type: {ex.Message}",
+                                target: propName);
+                        }
+
+                        if (newValue is null && !propIsNullable)
+                        {
+                            return ODataError(400, "BadRequest",
+                                $"Property '{propName}' is not nullable and cannot be set to null.", target: propName);
+                        }
+
+                        var delta = new Microsoft.AspNetCore.OData.Deltas.Delta<TModel>();
+                        if (!delta.TrySetPropertyValue(propName, newValue))
+                        {
+                            return ODataError(400, "InvalidBody",
+                                $"Could not set property '{propName}' to the supplied value.", target: propName);
+                        }
+
+                        object? result = await s.InvokePatchAsync(parsedKey!, delta, ct);
+                        if (result is null)
+                            return ODataError(404, "NotFound", $"{name} with key '{key}' was not found.");
+
+                        if (source.HasETag)
+                        {
+                            string writeEtag = s.InvokeGetETag(result);
+                            ctx.Response.Headers.ETag = $"\"{writeEtag}\"";
+                        }
+
+                        return Results.NoContent();
+                    }
+                    catch (FormatException ex)
+                    {
+                        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
+                        return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                    }
+                }
+
+                entityAuthGroup.MapPut($"/{name}({{key}})/{propName}",
+                    (string key, HttpContext ctx, CancellationToken ct) => HandleSetPropertyAsync(key, ctx, ct, isPatchVerb: false))
+                    .WithTags(name).Produces(204).Produces(400).Produces(404).Produces(412).Produces(415);
+
+                entityAuthGroup.MapMethods($"/{name}({{key}})/{propName}", PatchMethod,
+                    (string key, HttpContext ctx, CancellationToken ct) => HandleSetPropertyAsync(key, ctx, ct, isPatchVerb: true))
+                    .WithTags(name).Produces(204).Produces(400).Produces(404).Produces(412).Produces(415);
+
+                // DELETE — set the property to null (§11.4.9.3). Non-nullable is a structural
+                // (static, per-type) validation, checked before touching the data source at all —
+                // the same "cheap check first" pattern used for the key-immutable stub above.
+                entityAuthGroup.MapDelete($"/{name}({{key}})/{propName}", async (string key, HttpContext ctx, CancellationToken ct) =>
+                {
+                    if (!propIsNullable)
+                    {
+                        return ODataError(400, "BadRequest",
+                            $"Property '{propName}' is not nullable and cannot be set to null.", target: propName);
+                    }
+
+                    try
+                    {
+                        var s = ResolveHandlers(ctx);
+                        object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
+
+                        var etagCheck = await CheckETagAsync(source, s, ctx, parsedKey!, ct);
+                        if (etagCheck is not null) return etagCheck;
+
+                        var delta = new Microsoft.AspNetCore.OData.Deltas.Delta<TModel>();
+                        delta.TrySetPropertyValue(propName, null);
+                        object? result = await s.InvokePatchAsync(parsedKey!, delta, ct);
+                        if (result is null)
+                            return ODataError(404, "NotFound", $"{name} with key '{key}' was not found.");
+
+                        if (source.HasETag)
+                        {
+                            string deleteEtag = s.InvokeGetETag(result);
+                            ctx.Response.Headers.ETag = $"\"{deleteEtag}\"";
+                        }
+
+                        return Results.NoContent();
+                    }
+                    catch (FormatException ex)
+                    {
+                        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
+                        return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                    }
+                }).WithTags(name).Produces(204).Produces(400).Produces(404).Produces(412);
+            }
+        }
+
         // Bound functions — GET /{EntitySet}/{FunctionName}?param=value
         foreach (var fn in source.BoundFunctions.Where(f => !f.IsEntityLevel))
         {

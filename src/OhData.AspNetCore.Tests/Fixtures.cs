@@ -147,6 +147,13 @@ internal class AuthorizedWidgetProfile : EntitySetProfile<int, Widget>
 
         GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store);
         GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
+        Patch = (id, delta, ct) =>
+        {
+            var existing = _store.FirstOrDefault(w => w.Id == id);
+            if (existing is null) return Task.FromResult<Widget?>(null);
+            delta.Patch(existing);
+            return Task.FromResult<Widget?>(existing);
+        };
     }
 }
 
@@ -189,6 +196,13 @@ internal class ETagWidgetProfile : EntitySetProfile<int, Widget>
             return Task.FromResult(widget);
         };
         Delete = (id, ct) => Task.FromResult(_store.RemoveAll(w => w.Id == id) > 0);
+        Patch = (id, delta, ct) =>
+        {
+            var existing = _store.FirstOrDefault(w => w.Id == id);
+            if (existing is null) return Task.FromResult<Widget?>(null);
+            delta.Patch(existing);
+            return Task.FromResult<Widget?>(existing);
+        };
         UseETag(x => x.Name);
     }
 }
