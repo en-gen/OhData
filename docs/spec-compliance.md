@@ -59,6 +59,8 @@ OhData targets the [OData 4.0 specification](https://docs.oasis-open.org/odata/o
 | Delete entity | §11.4.5 | ✅ | `Delete` returns `Task<bool>`; `false` → `404` or `204` depending on `IdempotentDelete` (defaults to `true`, i.e. `204`) |
 | Upsert via PUT | §11.4.4 | ✅ | `AllowUpsert = true` |
 | Key validation on PUT/PATCH | §11.4.3 | ✅ | URL key must match body key; 400 on mismatch |
+| Deep insert (nested related entities in POST) | §11.4.2.2 | ✅ | `AllowDeepInsert = true` (profile-level, entity-level granularity — no per-navigation opt-in). Rides the existing `Post` handler; no new route/delegate. Default (`false`): nested navigation-property values are stripped (set to `null`) before `Post` is invoked. Opt-in (`true`): the full deserialized graph is passed to `Post`, which owns atomic persistence (e.g. one EF Core `SaveChanges`); the `201` response echoes the handler's return value, including populated nested navigation values. See `docs/deep-insert.md` |
+| `@odata.bind` (link existing entity during insert) | JSON format §8.5 | ❌ | Not implemented — detected anywhere in a POST body (top level or nested) and rejected with `501 Not Implemented` rather than silently ignored. Use `$ref` endpoints to link existing entities |
 
 ## Navigation and links
 

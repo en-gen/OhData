@@ -80,4 +80,15 @@ public class EntitySetDefaults
     /// Profile-level <c>PropertyAccessEnabled</c> overrides this value.
     /// </summary>
     public bool PropertyAccessEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Whether <c>POST /{EntitySet}</c> passes nested navigation-property values (a "deep
+    /// insert" graph, OData §11.4.2.2) through to the <c>Post</c> handler by default.
+    /// Defaults to <c>false</c>: nested navigation values are stripped before <c>Post</c> is
+    /// invoked, so a handler that doesn't expect a graph never silently persists only part of
+    /// it. Set to <c>true</c> to opt every entity set into deep insert, or override per profile
+    /// via <c>AllowDeepInsert</c>. When enabled, the handler owns atomic persistence of the
+    /// whole graph (e.g. a single EF Core <c>SaveChanges</c>).
+    /// </summary>
+    public bool AllowDeepInsert { get; set; }
 }

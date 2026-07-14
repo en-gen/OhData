@@ -49,6 +49,23 @@ internal interface IEntitySetEndpointSource
     bool CountEnabled { get; }
     bool PropertyAccessEnabled { get; }
     IReadOnlyList<StructuralPropertyInfo> StructuralProperties { get; }
+
+    /// <summary>
+    /// When <c>true</c>, <c>POST /{EntitySet}</c> passes the full deserialized request graph
+    /// (including nested navigation-property values) through to the <c>Post</c> handler, which
+    /// is contractually responsible for persisting it atomically (OData §11.4.2.2 — deep insert).
+    /// When <c>false</c> (the default), nested navigation-property values are stripped (set to
+    /// <c>null</c>) from the deserialized model before <c>Post</c> is invoked.
+    /// </summary>
+    bool AllowDeepInsert { get; }
+
+    /// <summary>
+    /// Names of every CLR property declared as a navigation property via
+    /// <c>HasOptional</c>/<c>HasRequired</c>/<c>HasMany</c> (any overload). Used by the POST
+    /// pipeline to strip nested navigation values when <see cref="AllowDeepInsert"/> is
+    /// <c>false</c>.
+    /// </summary>
+    IReadOnlyCollection<string> NavigationPropertyNames { get; }
     string KeyPropertyName { get; }
     string InvokeGetKeyString(object model);
     bool IsAdvancedConfigureOverridden { get; }

@@ -105,6 +105,31 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// </summary>
     protected bool? PropertyAccessEnabled { get; init; }
 
+    /// <summary>
+    /// Controls whether <c>POST /{EntitySet}</c> passes nested navigation-property values
+    /// through to the <see cref="Post"/> handler (deep insert, OData §11.4.2.2). Inherits from
+    /// <see cref="EntitySetDefaults.AllowDeepInsert"/> (default <c>false</c>) when <c>null</c>.
+    /// <para>
+    /// <c>false</c> (default): nested navigation values (single-valued or collection) are set
+    /// to <c>null</c> on the deserialized model before <see cref="Post"/> is invoked — a
+    /// <c>Post</c> handler that doesn't expect a graph never silently persists only part of it.
+    /// </para>
+    /// <para>
+    /// <c>true</c>: the full deserialized graph (parent + nested navigation values) is passed
+    /// to <see cref="Post"/> as-is. The handler is contractually responsible for persisting the
+    /// whole graph atomically (e.g. one EF Core <c>SaveChanges</c>) — the framework does not
+    /// open a transaction on the handler's behalf.
+    /// </para>
+    /// <para>
+    /// <c>prop@odata.bind</c> annotations (linking to an existing entity instead of creating a
+    /// new one, JSON format §8.5) are not supported in either mode: a request body containing
+    /// one is rejected with <c>501 Not Implemented</c>. Use the <c>$ref</c> endpoints to link
+    /// existing entities instead.
+    /// </para>
+    /// </summary>
+    protected bool? AllowDeepInsert { get; init; }
+    private bool _resolvedAllowDeepInsert;
+
     private string[]? _selectProperties;
     private string[]? _expandProperties;
     private string[]? _filterProperties;
@@ -373,6 +398,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _resolvedExpandEnabled = ExpandEnabled ?? defaults.ExpandEnabled;
         _resolvedCountEnabled = CountEnabled ?? defaults.CountEnabled;
         _resolvedPropertyAccessEnabled = PropertyAccessEnabled ?? defaults.PropertyAccessEnabled;
+        _resolvedAllowDeepInsert = AllowDeepInsert ?? defaults.AllowDeepInsert;
         _structuralProperties = BuildStructuralProperties();
 
         AdvancedConfigure(entitySet);
@@ -1410,6 +1436,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     bool IEntitySetEndpointSource.PropertyAccessEnabled => _resolvedPropertyAccessEnabled;
     IReadOnlyList<StructuralPropertyInfo> IEntitySetEndpointSource.StructuralProperties =>
         _structuralProperties ??= BuildStructuralProperties();
+    bool IEntitySetEndpointSource.AllowDeepInsert => _resolvedAllowDeepInsert;
+    IReadOnlyCollection<string> IEntitySetEndpointSource.NavigationPropertyNames => _navigationPropertyNames;
     string IEntitySetEndpointSource.KeyPropertyName => GetNavigationPropertyName(_getKey.Body);
     bool IEntitySetEndpointSource.IsAdvancedConfigureOverridden => _isAdvancedConfigureOverridden;
 
