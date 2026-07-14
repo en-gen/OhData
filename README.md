@@ -78,6 +78,8 @@ This produces:
 | `GET` | `/odata/Products({key})` | `GetById` |
 | `GET` | `/odata/Products({key})/Name` | individual property (OData envelope) - rides `GetById` |
 | `GET` | `/odata/Products({key})/Name/$value` | raw property value (`text/plain`) |
+| `PUT`/`PATCH` | `/odata/Products({key})/Name` | set an individual property (`{"value":...}`) - rides `Patch` |
+| `DELETE` | `/odata/Products({key})/Name` | set an individual property to `null` - rides `Patch` |
 | `POST` | `/odata/Products` | `Post` |
 | `PUT` | `/odata/Products({key})` | `Put` |
 | `PATCH` | `/odata/Products({key})` | `Patch` |
