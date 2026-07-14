@@ -24,6 +24,7 @@ public class Order
     public string CustomerName { get; set; } = "";
     public decimal Total { get; set; }
     public ICollection<OrderLine> Lines { get; set; } = new List<OrderLine>();
+    public ICollection<OrderNote> Notes { get; set; } = new List<OrderNote>();
 }
 
 public class OrderLine
@@ -33,6 +34,13 @@ public class OrderLine
     public string ProductName { get; set; } = "";
     public int Quantity { get; set; }
     public decimal UnitPrice { get; set; }
+}
+
+public class OrderNote
+{
+    public int Id { get; set; }
+    public Guid OrderId { get; set; }
+    public string Text { get; set; } = "";
 }
 
 public class Category
@@ -52,6 +60,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<Product> Products => Set<Product>();
     public DbSet<Order> Orders => Set<Order>();
     public DbSet<OrderLine> OrderLines => Set<OrderLine>();
+    public DbSet<OrderNote> OrderNotes => Set<OrderNote>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -59,6 +68,11 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .HasMany(o => o.Lines)
             .WithOne()
             .HasForeignKey(l => l.OrderId);
+
+        modelBuilder.Entity<Order>()
+            .HasMany(o => o.Notes)
+            .WithOne()
+            .HasForeignKey(n => n.OrderId);
     }
 }
 
@@ -152,10 +166,13 @@ public class ProductProfile : EntitySetProfile<int, Product>
 }
 
 /// <summary>
-/// Order profile with navigation routing to order lines.
+/// Order profile with navigation routing to order lines and order notes.
 /// Demonstrates: HasMany with a batch route handler → GET /v2/Orders(id)/Lines, and a
 /// single-query <c>$expand=Lines</c> instead of one SQL query per order in the page
-/// (REVIEW.md M-1 — see NavigationRouteDefinition.BatchHandler).
+/// (REVIEW.md M-1 — see NavigationRouteDefinition.BatchHandler). Also demonstrates POST to a
+/// collection navigation property → POST /v2/Orders(id)/Notes, creating a new related entity
+/// (OData §11.4.2.1 — see NavigationRouteDefinition.PostChild), alongside the batch-loaded
+/// Lines navigation on the same profile.
 /// </summary>
 public class OrderProfile : EntitySetProfile<Guid, Order>
 {
@@ -177,6 +194,23 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
                 .ToLookup(l => l.OrderId);
             return Task.FromResult(lookup);
         });
+
+        // Registers: GET /Orders(id)/Notes AND POST /Orders(id)/Notes (create a new note on an
+        // existing order, §11.4.2.1). refTargetEntitySet lets the framework compute a
+        // Location/@odata.id for the created note from its key, the same convention $ref uses.
+        HasMany(
+            navigation: x => x.Notes,
+            getAll: (orderId, ct) =>
+                Task.FromResult<IEnumerable<OrderNote>>(db.OrderNotes.Where(n => n.OrderId == orderId).ToList()),
+            post: (orderId, note, ct) =>
+            {
+                if (db.Orders.Find(orderId) is null) return Task.FromResult<OrderNote?>(null);
+                note.OrderId = orderId;
+                db.OrderNotes.Add(note);
+                db.SaveChanges();
+                return Task.FromResult<OrderNote?>(note);
+            },
+            refTargetEntitySet: "OrderNotes");
 
         GetQueryable = (_) => Task.FromResult(db.Orders.AsQueryable());
 

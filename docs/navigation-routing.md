@@ -178,3 +178,56 @@ The `addRef`/`setRef` handler receives the raw `@odata.id` string from the reque
 
 > **HTTP method note:** OData 4.0 §11.4.6 requires `POST /$ref` for collection navigations (adding a link)
 > and `PUT /$ref` for single-value navigations (replacing the link). OhData enforces this automatically.
+
+## Creating a related entity — `POST /Parents({key})/Children`
+
+For collection navigations, `HasMany` accepts a `post` handler that registers
+`POST /{EntitySet}({key})/{Property}` — creating a brand-new related entity, rather than linking
+to one that already exists (`$ref` above is for the latter; OData §11.4.2.1):
+
+```csharp
+HasMany(x => x.Lines,
+    getAll: (orderId, ct) =>
+        Task.FromResult<IEnumerable<OrderLine>>(db.OrderLines.Where(l => l.OrderId == orderId).ToList()),
+    post: async (orderId, line, ct) =>
+    {
+        if (!await db.Orders.AnyAsync(o => o.Id == orderId, ct)) return null; // parent not found → 404
+        line.OrderId = orderId;
+        db.OrderLines.Add(line);
+        await db.SaveChangesAsync(ct);
+        return line;
+    },
+    refTargetEntitySet: "OrderLines");
+```
+
+This registers: `POST /odata/Orders({key})/Lines`
+
+**Handler contract:**
+
+- The request body is deserialized as the navigation's item type (the same `TNavigation` used
+  by `getAll`) using the profile's configured JSON options.
+- The handler receives the parent key and the deserialized child; it is responsible for
+  assigning any server-side values (e.g. the foreign key, the child's own primary key) and
+  persisting the result.
+- Return the created child (with its final values) on success.
+- Return `null` to indicate the parent was not found — the framework maps this to
+  `404 Not Found`, mirroring how `GetById`/nav-GET handlers signal "not found."
+
+**Response semantics:**
+
+| Condition | Response |
+|-----------|----------|
+| Success, no `Prefer` header | `201 Created` with the created child in the body (`@odata.context`, and `@odata.id`/`Location` header when `refTargetEntitySet` is configured) |
+| Success, `refTargetEntitySet` not configured | `201 Created` with the created child in the body; no `Location`/`@odata.id` — the framework cannot compute a URL for the child without knowing its entity set and key property |
+| `Prefer: return=minimal` | `204 No Content` with `Preference-Applied: return=minimal`; `Location`/`OData-EntityId` headers are set only when `refTargetEntitySet` is configured |
+| Parent not found (handler returns `null`) | `404 Not Found` (OData error envelope) |
+| Malformed / empty JSON body | `400 Bad Request` (OData error envelope) |
+| Non-JSON `Content-Type` | `415 Unsupported Media Type` (OData error envelope) |
+| No `post` handler configured | The route is not registered at all — `POST` to the nav path returns `405 Method Not Allowed` (the `GET` nav route occupies the same template) |
+
+The `Location`/`@odata.id` are built the same way `$ref` builds populated references: from
+`refTargetEntitySet` plus the child's key property, detected by convention (`Id` or
+`{TypeName}Id`) — the same `ChildEntitySetName`/`ChildKeyPropertyName` machinery `$ref` uses.
+
+Authorization is inherited from the parent profile's `RequireAuthorization()` / `RequireRoles()`,
+same as every other route on the entity set.
