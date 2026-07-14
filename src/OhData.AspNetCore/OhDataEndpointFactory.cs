@@ -140,11 +140,9 @@ internal static class OhDataEndpointFactory
                 }
                 return false;
             case JsonValueKind.Array:
-                foreach (var item in element.EnumerateArray())
-                {
-                    if (ContainsODataBindAnnotation(item)) return true;
-                }
-                return false;
+                return element.EnumerateArray()
+                    .Where(ContainsODataBindAnnotation)
+                    .Any();
             default:
                 return false;
         }
