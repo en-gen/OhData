@@ -206,6 +206,17 @@ internal static class OhDataEndpointFactory
             return await next(ctx);
         });
 
+        // #5: Honor the OData-MaxVersion request header or reject the request (§8.2.7).
+        // Applies to every route under this group -- service document, $metadata, and all
+        // entity-set/bound-operation routes -- since a client capping its acceptable response
+        // version below what this service emits (4.0) cannot be honored anywhere in the surface.
+        group.AddEndpointFilter(async (ctx, next) =>
+        {
+            IResult? error = ODataMaxVersionFilter.Validate(ctx.HttpContext);
+            if (error is not null) return error;
+            return await next(ctx);
+        });
+
         // Pre-compute static responses that are determined at startup.
         string metadataXml = BuildMetadataXml(registration.EdmModel);
         var serviceDocEntitySets = registration.Profiles
@@ -342,7 +353,7 @@ internal static class OhDataEndpointFactory
         }
     }
 
-    private static IResult ODataError(
+    internal static IResult ODataError(
         int status, string code, string message,
         string? target = null,
         IReadOnlyList<ODataErrorDetail>? details = null)
