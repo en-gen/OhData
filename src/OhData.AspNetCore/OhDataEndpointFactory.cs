@@ -1673,7 +1673,7 @@ internal static class OhDataEndpointFactory
                 var propCapture = prop;
 
                 // GET /{name}({key})/{Property} — property-value envelope (§11.2.6).
-                var propRb = entityAuthGroup.MapGet($"/{name}({{key}})/{propCapture.Name}",
+                entityAuthGroup.MapGet($"/{name}({{key}})/{propCapture.Name}",
                     async (string key, HttpContext ctx, CancellationToken ct) =>
                     {
                         try
