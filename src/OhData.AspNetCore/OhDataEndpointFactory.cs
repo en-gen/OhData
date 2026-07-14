@@ -1660,7 +1660,7 @@ internal static class OhDataEndpointFactory
                 string postNavPropertyName = navPropertyName;
                 Type postNavItemType = navItemType ?? typeof(object);
                 var postNavCapture = nav;
-                var postRb = entityAuthGroup.MapPost($"/{name}({{key}})/{postNavPropertyName}",
+                entityAuthGroup.MapPost($"/{name}({{key}})/{postNavPropertyName}",
                     async (string key, HttpContext ctx, CancellationToken ct) =>
                     {
                         if (!IsJsonContentType(ctx)) return UnsupportedMediaTypeError(ctx);

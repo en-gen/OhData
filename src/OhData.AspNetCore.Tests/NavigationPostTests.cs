@@ -68,7 +68,7 @@ public class NavigationPostTests
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPostMinimalProfile>());
 
-        var request = new HttpRequestMessage(HttpMethod.Post, "/odata/NavPostMinimalParents(1)/Children")
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/odata/NavPostMinimalParents(1)/Children")
         {
             Content = JsonContent.Create(new { name = "NewChild" })
         };
@@ -200,7 +200,7 @@ public class NavigationPostTests
     {
         await using var fx = await HeaderAuthTestHost.BuildAsync(o => o.AddProfile<NavPostAuthProfile>());
 
-        var request = new HttpRequestMessage(HttpMethod.Post, "/odata/NavPostAuthParents(1)/Children")
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/odata/NavPostAuthParents(1)/Children")
         {
             Content = JsonContent.Create(new { name = "X" })
         };
