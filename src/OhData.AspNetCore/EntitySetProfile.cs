@@ -1064,9 +1064,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
                 foreach (object k in keys) typedKeys.Add((TKey)k);
                 IReadOnlyDictionary<TKey, TNavigation> result = await batchGet(typedKeys, ct);
                 var map = new Dictionary<object, object?>(keys.Count);
-                foreach (var kvp in result)
+                foreach (var kvp in result.Where(kvp => kvp.Key is not null))
                 {
-                    if (kvp.Key is null) continue;
                     map[kvp.Key] = kvp.Value;
                 }
                 return map;
