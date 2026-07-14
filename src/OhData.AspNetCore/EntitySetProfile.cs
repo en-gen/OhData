@@ -944,9 +944,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
                 foreach (object k in keys) typedKeys.Add((TKey)k);
                 ILookup<TKey, TNavigation> lookup = await batchGetAll(typedKeys, ct);
                 var map = new Dictionary<object, object?>(keys.Count);
-                foreach (var group in lookup)
+                foreach (var group in lookup.Where(group => group.Key is not null))
                 {
-                    if (group.Key is null) continue;
                     map[group.Key] = group.ToList();
                 }
                 return map;
