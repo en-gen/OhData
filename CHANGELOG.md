@@ -152,6 +152,32 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   request body no longer throws an unhandled `System.InvalidOperationException` from
   `JsonElement.EnumerateObject()`. Non-object bodies now return `400 Bad Request` with an OData
   error envelope
+- `GET /{EntitySet}({key})/{Nav}` on a single-valued navigation (`HasOptional`/`HasRequired`)
+  now carries `@odata.context` (JSON §4.5), matching the collection-valued branch, which already
+  did
+- `GET /{EntitySet}({key})/{Nav}/$count` on a missing parent now returns the OData error envelope
+  (`404`, §9.4) instead of an empty-body `404` — this was the sole remaining bare `Results.NotFound()`
+  in the endpoint factory
+- `$ref` response context URLs now use `#$ref` (single-valued) / `#Collection($ref)`
+  (collection-valued) per JSON Format §14 / Protocol §10.12, instead of a path-shaped context
+- `$select` now narrows the `@odata.context` URL to the projected form (`#Set(prop1,prop2)` for
+  collections, `#Set(prop1,prop2)/$entity` for a single entity, §10.7/§10.8), with properties
+  listed in the order the client requested them. Wired on all three collection-`GET` paths,
+  `GetById` (which also gained actual `$select` body filtering — previously the metadata declared
+  `SelectEnabled` but nothing enforced it), and navigation-collection routes
+- `If-Match` (including the `*` wildcard) against a resource that does not exist now returns
+  `412 Precondition Failed` instead of `404` (RFC 7232 §3.1 / §11.4.1.1) — the existence check
+  now happens before the wildcard short-circuit
+- `If-None-Match: *` on `PUT` is now honored as a create-guard (§11.4.4) when `AllowUpsert` is
+  enabled: `412 Precondition Failed` if the entity already exists, otherwise proceeds as an
+  insert. A no-op when the header is absent
+- `$top`/`$skip` with an invalid (non-numeric or negative) value on a navigation-collection route
+  (`GET /{Set}({key})/{Nav}`) now returns `400 Bad Request` (`InvalidQueryOption`) instead of being
+  silently ignored and returning the full, un-paged collection (Part 2 §5.1.6)
+- Bound function/action results that are a recognized Edm-primitive type (string, numeric types,
+  `bool`, `Guid`, date/time types, `byte[]`) now get the JSON §11 individual-value envelope
+  (`{"@odata.context":".../$metadata#Edm.<Type>","value":<primitive>}`) instead of a bare scalar
+  body. Model and collection-of-model results already carried context and are unchanged
 
 ---
 
