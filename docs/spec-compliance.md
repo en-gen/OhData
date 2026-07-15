@@ -52,6 +52,7 @@ certification claim.
 | Feature | Section | Status | Notes |
 |---------|---------|--------|-------|
 | `$filter` | §11.2.6.1 | ✅ | Comparison, logical, arithmetic, string functions |
+| `round()` midpoint rounding | Part 2 §5.1.1.9 | ✅ | Round-half-away-from-zero by default (spec-compliant, e.g. `2.5 → 3`, `-2.5 → -3`) via a post-`ApplyTo` expression rewrite on the `GetQueryable` path. Set profile/global `RoundingMode = BankersRounding` to restore .NET's default banker's rounding (`2.5 → 2`) - see Known Limitations for why that override exists, and `docs/query-options.md#round-midpoint-rounding` |
 | `$orderby` | §11.2.6.2 | ✅ | Multiple keys, asc/desc |
 | `$top` | §11.2.6.3 | ✅ | `MaxTop` server-side cap enforced |
 | `$skip` | §11.2.6.4 | ✅ | |
@@ -153,3 +154,5 @@ certification claim.
 | `$compute` | Unimplemented. `Microsoft.AspNetCore.OData` is pinned to `[9.4.*, 10)` on all target frameworks (including net10.0), which deliberately excludes the v10+ release that adds `$compute` support - the blocker is the package version pin, not the target framework. |
 | JSON batch requests | Not supported |
 | `error.details` array | Mechanism exists in the `ODataError` helper but is currently dead code - no call site populates it |
+| `round()` + `RoundingMode.SpecCompliant` may not translate on every EF Core provider | The spec-compliant rewrite emits `Math.Round(value, MidpointRounding.AwayFromZero)`, which not every EF Core provider can translate to SQL - a query using `round()` may throw a translation exception. Set `RoundingMode = BankersRounding` (per-profile or via `EntitySetDefaults`) to fall back to the single-argument `Math.Round` overload the provider could already translate, at the cost of reverting to banker's rounding on midpoints. |
+| Priority-1 `GetODataQueryable` path does not inherit `RoundingMode` | The profile calls `ApplyTo` itself on that path, so the framework's post-`ApplyTo` rounding rewrite never runs against it - `round()` keeps .NET's default banker's-rounding semantics there regardless of `RoundingMode`, unless the profile applies the same rewrite manually. |
