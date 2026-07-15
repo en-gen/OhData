@@ -9,6 +9,15 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+_Nothing yet._
+
+---
+
+## [1.0.0] - 2026-07-15
+
+First public release. Includes the initial framework feature set (drafted as an unpublished
+0.1.0 that never shipped) plus the full conformance, hardening, and performance train.
+
 ### Added
 
 - Deep insert — nested related entities in `POST /{EntitySet}` (OData §11.4.2.2): a new
@@ -197,11 +206,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `CLAUDE.md` and `docs/architecture.md`'s startup-validation description now also mentions the
   POST-nav/bound-action collision guard added in #133
 
----
-
-## [0.1.0] - 2026-06-11
-
-### Added
+### Added — initial framework (drafted as an unpublished 0.1.0; first shipped in 1.0.0)
 
 **Server (OhData.AspNetCore)**
 
@@ -265,7 +270,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - BenchmarkDotNet project for client library performance
 - Render deployment config for hosted test bench
 
-### Changed
+### Changed — initial framework
 
 - `Delete` handler returns `Task<bool>` - `false` produces a 404 OData error response
 - `$select` uses JsonNode post-processing (not `ISelectExpandWrapper`) to preserve
@@ -283,5 +288,5 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-[Unreleased]: https://github.com/en-gen/OhData/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/en-gen/OhData/releases/tag/v0.1.0
+[Unreleased]: https://github.com/en-gen/OhData/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/en-gen/OhData/releases/tag/v1.0.0
