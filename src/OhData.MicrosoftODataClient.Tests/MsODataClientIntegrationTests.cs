@@ -41,6 +41,10 @@ internal class WidgetDtoProfile : EntitySetProfile<int, WidgetDto>
     public WidgetDtoProfile() : base(x => x.Id)
     {
         IdempotentDelete = false;
+        FilterEnabled = true;
+        OrderByEnabled = true;
+        SelectEnabled = true;
+        CountEnabled = true;
 
         _store = new List<WidgetDto>
         {

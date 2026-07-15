@@ -35,6 +35,10 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
     public WidgetProfile() : base(x => x.Id)
     {
         IdempotentDelete = false;
+        FilterEnabled = true;
+        OrderByEnabled = true;
+        SelectEnabled = true;
+        CountEnabled = true;
 
         _store = new List<Widget>
         {

@@ -185,6 +185,7 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
         FilterEnabled = true;
         OrderByEnabled = true;
         CountEnabled = true;
+        SelectEnabled = true;
         ExpandEnabled = true;
         AllowDeepInsert = true;
 

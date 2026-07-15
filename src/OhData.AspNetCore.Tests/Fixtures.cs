@@ -27,6 +27,7 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
     {
         SelectEnabled = true;
         FilterEnabled = true;
+        CountEnabled = true;
 
         _store = new List<Widget>
         {
@@ -84,6 +85,7 @@ internal class QueryableWidgetProfile : EntitySetProfile<int, Widget>
         EntitySetName = "QueryableWidgets";
         SelectEnabled = true;
         FilterEnabled = true;
+        CountEnabled = true;
 
         _store = new List<Widget>
         {
@@ -558,6 +560,7 @@ internal class SearchableWidgetProfile : EntitySetProfile<int, Widget>
     public SearchableWidgetProfile() : base(x => x.Id)
     {
         EntitySetName = "SearchableWidgets";
+        CountEnabled = true;
         GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store);
         Search = (term, ct) =>
             Task.FromResult<IEnumerable<Widget>>(
@@ -830,6 +833,7 @@ internal class ETagCollectionProfile : EntitySetProfile<int, Widget>
     public ETagCollectionProfile() : base(x => x.Id)
     {
         EntitySetName = "ETagCollWidgets";
+        SelectEnabled = true;
         GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store);
         GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
         UseETag(x => x.Name);
