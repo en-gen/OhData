@@ -748,9 +748,8 @@ internal static class OhDataEndpointFactory
             // properties in the order the client asked for them.
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             selectedProps = new List<string>();
-            foreach (string raw in selectParam.ToString().Split(','))
+            foreach (string p in selectParam.ToString().Split(',').Select(raw => raw.Trim()))
             {
-                string p = raw.Trim();
                 if (p.Length == 0) continue;
                 if (seen.Add(p)) selectedProps.Add(p);
             }
