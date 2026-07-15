@@ -363,11 +363,12 @@ public class ConcurrencyTests
     }
 
     [Fact]
-    public async Task IfMatch_Wildcard_MissingEntity_Returns404()
+    public async Task IfMatch_Wildcard_MissingEntity_Returns412()
     {
-        // Wildcard bypasses the ETag precondition check itself (it always "matches"), so the
-        // resulting status code comes from the underlying Put handler, which reports "not found"
-        // for a key that was never seeded.
+        // m6: RFC 7232 §3.1 / Protocol §11.4.1.1 — If-Match (including the wildcard) fails with
+        // 412 Precondition Failed when no current representation exists. The existence check now
+        // happens before the wildcard short-circuit, so this must not fall through to the
+        // underlying Put handler's own "not found" -> 404.
         await using var fx = await TestHostBuilder.BuildAsync(
             o => o.AddProfile<EtagSequenceProfile>(),
             configureServices: s => s.AddSingleton(new EtagSequenceStore()));
@@ -378,7 +379,7 @@ public class ConcurrencyTests
         };
         req.Headers.TryAddWithoutValidation("If-Match", "*");
         using var resp = await fx.Client.SendAsync(req);
-        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.PreconditionFailed, resp.StatusCode);
     }
 
     // ── 4. Profile-scoped-service isolation under concurrency ──────────────────

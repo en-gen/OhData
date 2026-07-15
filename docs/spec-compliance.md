@@ -30,21 +30,23 @@ certification claim.
 
 | Feature | Section | Status | Notes |
 |---------|---------|--------|-------|
-| `If-Match` on PUT/PATCH/DELETE | §8.2.5 | ✅ | 412 on mismatch; `*` wildcard supported |
+| `If-Match` on PUT/PATCH/DELETE | §8.2.5 | ✅ | 412 on mismatch; `*` wildcard supported. `If-Match` (including `*`) against a resource that does not exist returns `412 Precondition Failed`, not `404` — the existence check happens before the wildcard short-circuit, per RFC 7232 §3.1 / §11.4.1.1 |
 | `If-Match` with multiple ETags | §8.2.5 | ✅ | Comma-separated list per RFC 7232 §3.1 |
 | `If-None-Match` on GET → 304 | §8.2.5 | ✅ | Returns 304 Not Modified when ETag matches |
+| `If-None-Match: *` on PUT (create-guard) | §11.4.4 | ✅ | When `AllowUpsert` is enabled: if the entity already exists → `412 Precondition Failed`; if not → proceeds as an insert. Requires `GetById` to check existence up front. A no-op when the header is absent or `AllowUpsert` is off |
 | Weak ETag prefix (`W/`) | §2.3 | ✅ | Stripped before comparison |
 
 ## Response annotations
 
 | Feature | Section | Status | Notes |
 |---------|---------|--------|-------|
-| `@odata.context` on data responses | §10 | ✅ | Collections, entities, and the service document. Not set on error responses; `GET /$metadata` is XML so the annotation doesn't apply there. |
+| `@odata.context` on data responses | §10 | ✅ | Collections, entities, the service document, and single-valued navigation results. Not set on error responses; `GET /$metadata` is XML so the annotation doesn't apply there. |
+| `@odata.context` projection suffix with `$select` | §10.7/§10.8 | ✅ | `$select` narrows the context URL to the projected form (`#Set(prop1,prop2)` for collections, `#Set(prop1,prop2)/$entity` for a single entity), listing properties in the order the client requested them. Wired on all three collection-GET paths, `GetById`, and navigation-collection routes; omitted (context unchanged) when no `$select` is present |
 | `@odata.count` inline | §11.2.6.5 | ✅ | When `$count=true` |
 | `@odata.id` entity self-link | §4.5.8 | ✅ | On GET, POST, PUT, PATCH responses |
 | `@odata.etag` in body | §4.5.3 | ✅ | When ETags configured |
 | `@odata.nextLink` | §11.2.6.7 | ✅ | When page size equals `MaxTop` |
-| `@odata.context` on bound operations | §10 | ✅ | Included when the function/action return type is the profile's model type or `IEnumerable<TModel>`; omitted for primitive/arbitrary return types |
+| `@odata.context` on bound operations | §10 | ✅ | Included when the function/action return type is the profile's model type or `IEnumerable<TModel>`. A recognized Edm-primitive return type (string, numeric types, `bool`, `Guid`, date/time types, `byte[]`) gets the JSON §11 individual-value envelope (`{"@odata.context":".../$metadata#Edm.<Type>","value":<primitive>}`); an arbitrary non-model, non-primitive return type is returned unwrapped |
 | `OData-EntityId` response header | §8.3.4 | ✅ | On any `204 No Content` that creates/upserts an entity (POST/upsert-PUT with `Prefer: return=minimal`); omitted on a plain update-PUT 204 |
 
 ## Collection queries
@@ -81,10 +83,11 @@ certification claim.
 
 | Feature | Section | Status | Notes |
 |---------|---------|--------|-------|
-| Navigation property routes | §11.2.3 | ✅ | `GET /Set({key})/Nav` |
-| Navigation `$count` | §11.2.3 | ✅ | `GET /Set({key})/Nav/$count` |
-| Navigation with `$select` | §11.2.3 | ✅ | |
-| `$ref` get link(s) | §11.4.6.1 | ✅ | `GET /Set({key})/Nav/$ref` returns populated `@odata.id` (collection or single) when `refTargetEntitySet` is configured on the navigation; otherwise an empty envelope |
+| Navigation property routes | §11.2.3 | ✅ | `GET /Set({key})/Nav`. Both the collection and single-valued (`HasOptional`/`HasRequired`) branches carry `@odata.context` (single-valued context: `#Set(key)/Nav/$entity`) |
+| Navigation `$count` | §11.2.3 | ✅ | `GET /Set({key})/Nav/$count`. A missing parent returns the OData error envelope (`404`), not an empty body |
+| Navigation with `$select` | §11.2.3 | ✅ | Collection navigation only; narrows the response body and the context URL's projection suffix (see `@odata.context` projection suffix above) |
+| Navigation `$top`/`$skip` validation | Part 2 §5.1.6 | ✅ | An invalid (non-numeric or negative) `$top`/`$skip` on a navigation-collection route returns `400 Bad Request` (`InvalidQueryOption`), matching the main collection route's validation, instead of being silently ignored and returning the full un-paged collection |
+| `$ref` get link(s) | §11.4.6.1 | ✅ | `GET /Set({key})/Nav/$ref` returns populated `@odata.id` (collection or single) when `refTargetEntitySet` is configured on the navigation; otherwise an empty envelope. Context URL is `#$ref` (single-valued) or `#Collection($ref)` (collection), per JSON Format §14 / Protocol §10.12 |
 | `$ref` add link | §11.4.6.1 | ✅ | `POST /Set({key})/Nav/$ref` |
 | `$ref` remove link | §11.4.6.2 | ✅ | `DELETE /Set({key})/Nav/$ref` |
 | POST related entity via navigation | §11.4.2.1 | ✅ | `POST /Set({key})/Nav` — collection navigations only, via the `post` parameter on `HasMany`. `201 Created` (`Location`/`@odata.id` when `refTargetEntitySet` is configured); `Prefer: return=minimal` → `204` + `OData-EntityId`; handler returning `null` → `404` (parent not found); malformed body → `400`; non-JSON content type → `415`. No `post` handler → route not registered (`405` from the coexisting `GET` nav route) |
@@ -149,7 +152,7 @@ certification claim.
 |---------|-------|
 | SQL column projection for `$select` | All columns fetched; `$select` trims response JSON only |
 | ETag check atomicity | GET-then-write has a race window; use a database-level mechanism for true atomistic concurrency |
-| `If-None-Match` on POST | Not implemented; validate in the `Post` handler if needed |
+| `If-None-Match` on POST | Not implemented; validate in the `Post` handler if needed. (`If-None-Match: *` on PUT *is* implemented as a create-guard — see Request conditional headers above.) |
 | `$compute` | Unimplemented. `Microsoft.AspNetCore.OData` is pinned to `[9.4.*, 10)` on all target frameworks (including net10.0), which deliberately excludes the v10+ release that adds `$compute` support - the blocker is the package version pin, not the target framework. |
 | JSON batch requests | Not supported |
 | `error.details` array | Mechanism exists in the `ODataError` helper but is currently dead code - no call site populates it |
