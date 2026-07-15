@@ -122,7 +122,7 @@ certification claim.
 |---------|---------|--------|-------|
 | `Prefer: return=minimal` | §8.2.8.7 | ✅ | POST/PUT/PATCH return 204; `Preference-Applied` set |
 | `Prefer: return=representation` | §8.2.8.7 | ✅ | `Preference-Applied` set in response |
-| `Prefer: maxpagesize` | §8.2.8.7 | ✅ | Applied as the page size when `$top` is absent. **Unconditionally overrides a configured `MaxTop`** - there is no `Math.Min` against the server cap, so a client can request (and receive) a page larger than `MaxTop`. See Known Limitations. |
+| `Prefer: maxpagesize` | §8.2.8.7 | ✅ | Applied as the page size when `$top` is absent, capped at `MaxTop`: the honored page size is `min(maxpagesize, MaxTop)`. `Preference-Applied` echoes the value actually applied, not the value the client requested. |
 
 ## Error responses
 
@@ -148,7 +148,6 @@ certification claim.
 | Feature | Notes |
 |---------|-------|
 | SQL column projection for `$select` | All columns fetched; `$select` trims response JSON only |
-| `Prefer: maxpagesize` can exceed `MaxTop` | Client-requested page size unconditionally overrides a configured `MaxTop` cap with no ceiling enforced - a client can request an unbounded page. Worth hardening with a `Math.Min(preferredPageSize, source.MaxTop)` clamp if `MaxTop` is meant to be a hard server-side cap. |
 | ETag check atomicity | GET-then-write has a race window; use a database-level mechanism for true atomistic concurrency |
 | `If-None-Match` on POST | Not implemented; validate in the `Post` handler if needed |
 | `$compute` | Unimplemented. `Microsoft.AspNetCore.OData` is pinned to `[9.4.*, 10)` on all target frameworks (including net10.0), which deliberately excludes the v10+ release that adds `$compute` support - the blocker is the package version pin, not the target framework. |
@@ -156,3 +155,13 @@ certification claim.
 | `error.details` array | Mechanism exists in the `ODataError` helper but is currently dead code - no call site populates it |
 | `round()` + `RoundingMode.SpecCompliant` may not translate on every EF Core provider | The spec-compliant rewrite emits `Math.Round(value, MidpointRounding.AwayFromZero)`, which not every EF Core provider can translate to SQL - a query using `round()` may throw a translation exception. Set `RoundingMode = BankersRounding` (per-profile or via `EntitySetDefaults`) to fall back to the single-argument `Math.Round` overload the provider could already translate, at the cost of reverting to banker's rounding on midpoints. |
 | Priority-1 `GetODataQueryable` path does not inherit `RoundingMode` | The profile calls `ApplyTo` itself on that path, so the framework's post-`ApplyTo` rounding rewrite never runs against it - `round()` keeps .NET's default banker's-rounding semantics there regardless of `RoundingMode`, unless the profile applies the same rewrite manually. |
+
+## Declared deviations
+
+These are intentional, permanent design choices rather than bugs to be fixed - the code will not
+change to "correct" them.
+
+| Deviation | Notes |
+|---|---|
+| Priority-1 `GetODataQueryable` paging metadata is the profile's contract | On the `ODataEntitySetProfile`/`IODataEntitySetEndpointSource` path, the profile applies `$top`/`$skip` itself and returns an `ODataQueryResult<TModel>`. The framework does not second-guess that result: if the profile omits `TotalCount`, `@odata.count` reflects only the returned page's item count (not the true total), and if the profile omits `NextLink`, no `@odata.nextLink` is emitted even when the page is full. Profiles using this path that support server-side paging must populate both explicitly - see `ODataQueryResult<TModel>.TotalCount`/`NextLink` in `src/OhData.AspNetCore/ODataQueryResult.cs`. |
+| Navigation-collection `@odata.context` uses the parent-path shape | `GET /{EntitySet}({key})/{Nav}` responses use `#{EntitySet}({key})/{Nav}` as the context fragment (the path that produced the result) rather than `#{TargetEntitySet}` (the target entity set's own name), even when the navigation's target entity set is independently addressable. This is a deliberate reading of §10.4 ("the context URL... identifies the type of the payload by ... the last segment of the request URL that identifies a type"), which permits the parent-relative form; it favors traceability back to the request over resolvability to the shortest canonical set name. |

@@ -52,7 +52,9 @@ app.MapOhData()
         ├─ GET ""          → service document (JSON)
         ├─ GET /$metadata  → CSDL XML from IEdmModel
         ├─ startup validation: throws InvalidOperationException if a structural property name
-        │    collides with an entity-level bound function name (see property routes below)
+        │    collides with an entity-level bound function name (see property routes below), or
+        │    if a navigation property's `post` handler collides with an entity-level bound
+        │    action name (both POST /{name}({key})/{segment})
         └─ per profile: MakeGenericMethod(KeyType, ModelType).Invoke(MapEntitySet<TKey,TModel>)
               │
               ├─ GET    /{name}                        if HasGetQueryable or HasGetAll
@@ -75,6 +77,26 @@ app.MapOhData()
 ```
 
 See [docs/navigation-routing.md](navigation-routing.md) for `$ref`/POST-to-navigation, [docs/property-access.md](property-access.md) for the structural property routes, and [docs/deep-insert.md](deep-insert.md) for `AllowDeepInsert`/`@odata.bind` behavior on the `POST` route.
+
+## Registering profiles
+
+`AddProfile<TProfile>()` registers a single profile type explicitly - this is the form shown in the README quick start. For larger codebases, `OhDataBuilder` also supports assembly scanning so you don't have to list every profile by hand:
+
+```csharp
+builder.Services.AddOhData(o => o
+    // Scan one or more assemblies for concrete EntitySetProfile<TKey,TModel> subclasses
+    .AddProfilesFrom(s => s
+        .InAssemblyOf<Program>()
+        .In(typeof(ExternalProfile).Assembly))
+
+    // Shorthand: scan just the assembly containing a given type
+    .AddProfilesFromAssemblyOf<Program>()
+
+    // Shorthand: scan one or more assemblies directly
+    .AddProfilesFromAssembly(typeof(Program).Assembly));
+```
+
+All three forms discover every concrete (non-abstract) `EntitySetProfile<TKey,TModel>` subclass in the scanned assemblies and register each one exactly as if it had been passed to `AddProfile<TProfile>()` individually - same `AddScoped` lifetime, same cross-registration duplicate-type guard. A type already registered (via an earlier `AddProfile<T>()` or a previous scan) is skipped rather than registered twice. `AddProfilesFromAssemblyOf<T>()` is equivalent to `AddProfilesFrom(s => s.InAssemblyOf<T>())`, and `AddProfilesFromAssembly(...)` is equivalent to `AddProfilesFrom(s => s.In(assemblies))`. These can be mixed freely with explicit `AddProfile<T>()` calls in the same builder.
 
 ## Type erasure via `IEntitySetEndpointSource`
 
