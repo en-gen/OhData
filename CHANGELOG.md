@@ -153,6 +153,24 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `JsonElement.EnumerateObject()`. Non-object bodies now return `400 Bad Request` with an OData
   error envelope
 
+### Docs
+
+- `docs/spec-compliance.md`'s `Prefer: maxpagesize` row and Known Limitations table corrected to
+  match the `Math.Min(maxpagesize, MaxTop)` clamp (they still described the pre-#133 unclamped
+  behavior); a new "Declared deviations" section documents the Priority-1
+  `GetODataQueryable`/`ODataQueryResult` paging-metadata contract and the parent-path
+  `@odata.context` shape on navigation-collection routes as permanent design choices
+- New "Unbound functions and actions" section in `docs/bound-operations.md` covering
+  `OhDataBuilder.AddFunction`/`AddAction`, previously undocumented despite being claimed ✅ in
+  `docs/spec-compliance.md`
+- New "Registering profiles" section in `docs/architecture.md` covering
+  `AddProfilesFrom`/`AddProfilesFromAssemblyOf`/`AddProfilesFromAssembly` assembly-scanning
+  registration
+- New `docs/deployment.md` documenting the repo's `Dockerfile` and `render.yaml`, linked from the
+  README documentation index
+- `CLAUDE.md` and `docs/architecture.md`'s startup-validation description now also mentions the
+  POST-nav/bound-action collision guard added in #133
+
 ---
 
 ## [0.1.0] - 2026-06-11

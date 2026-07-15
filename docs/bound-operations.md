@@ -129,3 +129,28 @@ Bound operations are registered in the EDM model and appear in `GET /$metadata`.
 ## Error handling
 
 Exceptions thrown from the handler propagate as `500 Internal Server Error`. To return OData error responses from within a handler, throw a structured exception or return an appropriate HTTP result - consider wrapping the operation in try/catch and returning `Results.Problem(...)` if granular error control is needed.
+
+## Unbound functions and actions
+
+`BindFunction`/`BindEntityFunction` and `BindAction`/`BindEntityAction` (above) are always attached to an entity set. OData also allows *unbound* functions and actions that live at the service root, with no entity set in the route at all. Register these on `OhDataBuilder` - inside the `AddOhData(...)` callback, not inside a profile:
+
+| Kind | Route | HTTP |
+|------|-------|------|
+| Unbound function | `GET /{prefix}/{Name}?param=value` | GET |
+| Unbound action | `POST /{prefix}/{Name}` | POST |
+
+```csharp
+builder.Services.AddOhData(o => o
+    .AddProfile<ProductProfile>()
+    .AddFunction((Func<string, Task<string>>)(name => Task.FromResult($"Hello, {name}!")), "Greet")
+    .AddAction((Func<int, int, Task<int>>)((a, b) => Task.FromResult(a + b)), "AddNumbers"));
+```
+
+```
+GET  /odata/Greet?name=World        → "Hello, World!"
+POST /odata/AddNumbers { "a": 3, "b": 4 }   → 7
+```
+
+`AddFunction(Delegate handler, string? name = null)` and `AddAction(Delegate handler, string? name = null)` take any delegate - unlike `BindFunction`/`BindAction`, a lambda is fine, since the route name is either taken from the delegate's method name or supplied explicitly via `name`. Pass `name` whenever the handler is a lambda (its compiler-generated method name isn't a usable route segment). Parameters, `CancellationToken` detection, optional-parameter defaults, and return-type handling all follow the same rules as bound functions/actions described above. Unbound operations are registered in the EDM as `FunctionImport`/`ActionImport` and appear in `GET /$metadata` and the service document.
+
+Assembly-scanning registration (`AddProfilesFrom`/`AddProfilesFromAssemblyOf`/`AddProfilesFromAssembly`) is documented in [docs/architecture.md](architecture.md#registering-profiles).

@@ -49,7 +49,9 @@ app.MapOhData()  →  returns RouteGroupBuilder
         ├─► GET  ""              → service document
         ├─► GET  /$metadata      → CSDL XML
         ├─► startup validation: throws InvalidOperationException if a structural property name
-        │      collides with an entity-level bound function name
+        │      collides with an entity-level bound function name, or if a navigation property's
+        │      `post` handler collides with an entity-level bound action name (both POST
+        │      /{EntitySet}({key})/{segment})
         └─► per profile (only routes whose handler delegate is non-null):
             GET    /{EntitySet}              (GetAll or GetQueryable)
             GET    /{EntitySet}/$count
