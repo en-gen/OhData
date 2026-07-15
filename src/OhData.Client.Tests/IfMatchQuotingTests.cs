@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Net;
 using System.Net.Http;
 using System.Text;
@@ -22,6 +23,8 @@ public class IfMatchQuotingTests
 {
     private sealed class CapturingHandler : HttpMessageHandler
     {
+        private readonly List<HttpResponseMessage> _responses = new List<HttpResponseMessage>();
+
         public HttpRequestMessage? LastRequest { get; private set; }
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
@@ -31,7 +34,18 @@ public class IfMatchQuotingTests
             {
                 Content = new StringContent("{\"id\":1,\"name\":\"Sprocket\"}", Encoding.UTF8, "application/json"),
             };
+            _responses.Add(response);
             return Task.FromResult(response);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                foreach (HttpResponseMessage response in _responses) response.Dispose();
+                _responses.Clear();
+            }
+            base.Dispose(disposing);
         }
     }
 
