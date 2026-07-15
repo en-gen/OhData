@@ -1253,11 +1253,17 @@ internal static class OhDataEndpointFactory
                     object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
 
                     // M3: parse $select so the projected context ("#Set(prop1,prop2)/$entity")
-                    // and the body it describes agree on shape.
-                    var options = new ODataQueryOptions<TModel>(cachedODataQueryContext, ctx.Request);
-                    List<string>? selectedProps = options.SelectExpand?.SelectExpandClause is not null
-                        ? ExtractSelectedProperties(options.SelectExpand.SelectExpandClause)
-                        : null;
+                    // and the body it describes agree on shape. Constructing ODataQueryOptions
+                    // costs a per-request parse, so skip it entirely unless $select is present —
+                    // GetById is the hottest route and the no-$select case must stay zero-cost.
+                    List<string>? selectedProps = null;
+                    if (ctx.Request.Query.ContainsKey("$select"))
+                    {
+                        var options = new ODataQueryOptions<TModel>(cachedODataQueryContext, ctx.Request);
+                        selectedProps = options.SelectExpand?.SelectExpandClause is not null
+                            ? ExtractSelectedProperties(options.SelectExpand.SelectExpandClause)
+                            : null;
+                    }
 
                     object? result = await s.InvokeGetByIdAsync(parsedKey!, ct);
                     string? etagValue = null;
