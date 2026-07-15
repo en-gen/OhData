@@ -185,3 +185,4 @@ official `Microsoft.OData.Client`). Run them yourself with the commands in
 | Client guide | [docs/client.md](docs/client.md) |
 | OData 4.0 spec compliance | [docs/spec-compliance.md](docs/spec-compliance.md) |
 | Framework architecture | [docs/architecture.md](docs/architecture.md) |
+| Migrating from Microsoft.AspNetCore.OData | [docs/migrating-from-microsoft-odata.md](docs/migrating-from-microsoft-odata.md) |
