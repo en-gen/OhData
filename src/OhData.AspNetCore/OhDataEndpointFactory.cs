@@ -173,6 +173,62 @@ internal static class OhDataEndpointFactory
         return int.TryParse(num, out int n) && n > 0 ? n : (int?)null;
     }
 
+    // round() spec compliance (OData Part 2 §5.1.1.9 — round-half-away-from-zero).
+    // Microsoft.OData's ApplyTo binder emits .NET's single-argument Math.Round(double)/
+    // Math.Round(decimal), which default to banker's rounding (round-half-to-even) and deviate
+    // from the spec on exact midpoints (2.5 -> 2, not 3). This visitor rewrites those call nodes
+    // in the post-ApplyTo expression tree to the two-argument
+    // Math.Round(value, MidpointRounding.AwayFromZero) overload. Only reaches the base-class
+    // GetQueryable path (and its $count companion) where the factory owns the ApplyTo call — see
+    // EntitySetProfile.RoundingMode's XML doc for why the Priority-1 ODataEntitySetProfile path
+    // isn't covered.
+    private static readonly MethodInfo s_mathRoundDouble =
+        typeof(Math).GetMethod(nameof(Math.Round), new[] { typeof(double) })!;
+    private static readonly MethodInfo s_mathRoundDecimal =
+        typeof(Math).GetMethod(nameof(Math.Round), new[] { typeof(decimal) })!;
+    private static readonly MethodInfo s_mathRoundDoubleAwayFromZero =
+        typeof(Math).GetMethod(nameof(Math.Round), new[] { typeof(double), typeof(MidpointRounding) })!;
+    private static readonly MethodInfo s_mathRoundDecimalAwayFromZero =
+        typeof(Math).GetMethod(nameof(Math.Round), new[] { typeof(decimal), typeof(MidpointRounding) })!;
+
+    private sealed class RoundAwayFromZeroVisitor : ExpressionVisitor
+    {
+        protected override Expression VisitMethodCall(MethodCallExpression node)
+        {
+            if (node.Method == s_mathRoundDouble)
+            {
+                Expression arg = Visit(node.Arguments[0]);
+                return Expression.Call(
+                    s_mathRoundDoubleAwayFromZero, arg, Expression.Constant(MidpointRounding.AwayFromZero));
+            }
+            if (node.Method == s_mathRoundDecimal)
+            {
+                Expression arg = Visit(node.Arguments[0]);
+                return Expression.Call(
+                    s_mathRoundDecimalAwayFromZero, arg, Expression.Constant(MidpointRounding.AwayFromZero));
+            }
+            return base.VisitMethodCall(node);
+        }
+    }
+
+    private static readonly RoundAwayFromZeroVisitor s_roundAwayFromZeroVisitor = new();
+
+    /// <summary>
+    /// Applies the round-half-away-from-zero rewrite to <paramref name="queryable"/> when
+    /// <paramref name="mode"/> resolves to <see cref="RoundingMode.SpecCompliant"/>.
+    /// A no-op (including for <see cref="RoundingMode.BankersRounding"/>) when the
+    /// expression tree contains no single-argument <c>Math.Round</c> calls, so it is safe to call
+    /// unconditionally on every collection query.
+    /// </summary>
+    private static IQueryable<TModel> ApplyRoundingMode<TModel>(IQueryable<TModel> queryable, RoundingMode mode)
+    {
+        if (mode == RoundingMode.BankersRounding) return queryable;
+        Expression rewritten = s_roundAwayFromZeroVisitor.Visit(queryable.Expression);
+        return ReferenceEquals(rewritten, queryable.Expression)
+            ? queryable
+            : queryable.Provider.CreateQuery<TModel>(rewritten);
+    }
+
     public static RouteGroupBuilder MapAll(IEndpointRouteBuilder routes, OhDataRegistration registration)
     {
         string prefix = registration.Prefix;
@@ -898,6 +954,7 @@ internal static class OhDataEndpointFactory
                         var countQ = options.Filter is not null
                             ? (IQueryable<TModel>)options.Filter.ApplyTo(queryable, cachedCountSettings)
                             : queryable;
+                        countQ = ApplyRoundingMode(countQ, source.RoundingMode);
                         odataCount = countQ.LongCount();
                     }
 
@@ -908,6 +965,10 @@ internal static class OhDataEndpointFactory
                         filtered = (IQueryable<TModel>)options.Filter.ApplyTo(filtered, cachedQuerySettings);
                     if (options.OrderBy is not null)
                         filtered = (IQueryable<TModel>)options.OrderBy.ApplyTo(filtered, cachedQuerySettings);
+                    // round() spec compliance (Part 2 §5.1.1.9): rewrite the Math.Round call nodes
+                    // ApplyTo just emitted into the away-from-zero overload, unless the profile
+                    // opted back into banker's rounding.
+                    filtered = ApplyRoundingMode(filtered, source.RoundingMode);
 
                     // Gap 3: $skiptoken → treat as $skip when no $skip is present
                     int? tokenSkip = null;
@@ -1099,6 +1160,7 @@ internal static class OhDataEndpointFactory
                         var filtered = options.Filter is not null
                             ? (IQueryable<TModel>)options.Filter.ApplyTo(q, cachedCountSettings)
                             : q;
+                        filtered = ApplyRoundingMode(filtered, source.RoundingMode);
                         return Results.Content(filtered.LongCount().ToString(), "text/plain");
                     }
                     if (options.Filter is not null)

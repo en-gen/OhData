@@ -460,19 +460,122 @@ public class FilterExpressionTests
     }
 
     [Fact]
-    public async Task MathFn_Round_Double_UsesBankersRoundingOnMidpoint()
+    public async Task MathFn_Round_Double_UsesAwayFromZeroRoundingOnMidpoint()
     {
-        // Documents actual semantics: round() on a double midpoint (2.5) rounds to the
-        // nearest even value (banker's rounding, .NET's Math.Round default), not
-        // away-from-zero — so Weight 2.5 (Id 1) rounds to 2, joining 2.05→2, not 3.
+        // OData Part 2 §5.1.1.9 specifies round-half-away-from-zero for round(), which is now
+        // the framework default: a double midpoint (2.5) rounds to 3, not 2 (banker's/.NET
+        // Math.Round default) — so Weight 2.5 (Id 1) joins the eq-3 group.
         await using TestFixture fx = await BuildAsync();
         int[] expected = QueryOptionData.Items
-            .Where(x => Convert.ToInt32(Math.Round(x.Weight)) == 3)
+            .Where(x => Convert.ToInt32(Math.Round(x.Weight, MidpointRounding.AwayFromZero)) == 3)
             .Select(x => x.Id).ToArray();
         int[] actual = await GetIdsAsync(fx.Client, $"{Url}?$filter=round(Weight) eq 3.0");
         AssertSameIds(expected, actual);
         Assert.NotEmpty(expected);
-        Assert.DoesNotContain(1, actual); // Weight 2.5 rounds to 2 (banker's rounding), not 3
+        Assert.Contains(1, actual); // Weight 2.5 rounds to 3 (away-from-zero), not 2 (banker's)
+    }
+
+    // ── 5b. round() midpoint semantics (RoundingMode setting) ──────────────────────
+    //
+    // Uses the dedicated RoundingModeItem/RoundingModeData fixture (see
+    // QueryOptionCoverageFixtures.cs) rather than QueryOptionData, since none of that dataset's
+    // Price/Weight values land on a midpoint where away-from-zero and banker's rounding actually
+    // disagree.
+
+    private const string RoundingUrl = "/odata/RoundingModeItems";
+    private const string RoundingBankersUrl = "/odata/RoundingModeBankersItems";
+
+    private static async Task<TestFixture> BuildRoundingAsync() =>
+        await TestHostBuilder.BuildAsync(o => o
+            .AddProfile<RoundingModeProfile>()
+            .AddProfile<RoundingModeBankersProfile>());
+
+    [Theory]
+    [InlineData(2.5, 3)]
+    [InlineData(-2.5, -3)]
+    [InlineData(4.5, 5)]
+    [InlineData(-4.5, -5)]
+    public async Task MathFn_Round_Double_SpecCompliantDefault_RoundsAwayFromZero(double value, int expectedRounded)
+    {
+        await using TestFixture fx = await BuildRoundingAsync();
+        int[] expected = RoundingModeData.Items
+            .Where(x => Math.Abs(x.Value - value) < 1e-9)
+            .Select(x => x.Id).ToArray();
+        int[] actual = await GetIdsAsync(fx.Client, $"{RoundingUrl}?$filter=round(Value) eq {expectedRounded}");
+        AssertSameIds(expected, actual);
+        Assert.NotEmpty(expected);
+    }
+
+    [Theory]
+    [InlineData(2.5, 3)]
+    [InlineData(-2.5, -3)]
+    [InlineData(4.5, 5)]
+    [InlineData(-4.5, -5)]
+    public async Task MathFn_Round_Decimal_SpecCompliantDefault_RoundsAwayFromZero(decimal value, int expectedRounded)
+    {
+        await using TestFixture fx = await BuildRoundingAsync();
+        int[] expected = RoundingModeData.Items
+            .Where(x => x.Amount == value)
+            .Select(x => x.Id).ToArray();
+        int[] actual = await GetIdsAsync(fx.Client, $"{RoundingUrl}?$filter=round(Amount) eq {expectedRounded}");
+        AssertSameIds(expected, actual);
+        Assert.NotEmpty(expected);
+    }
+
+    [Theory]
+    [InlineData(2.5, 2)]
+    [InlineData(-2.5, -2)]
+    [InlineData(4.5, 4)]
+    [InlineData(-4.5, -4)]
+    public async Task MathFn_Round_Double_BankersRoundingOverride_RoundsToEven(double value, int expectedRounded)
+    {
+        // RoundingMode = BankersRounding opts a profile back into .NET's default (pre-fix)
+        // Math.Round(double) semantics — round-half-to-even.
+        await using TestFixture fx = await BuildRoundingAsync();
+        int[] expected = RoundingModeData.Items
+            .Where(x => Math.Abs(x.Value - value) < 1e-9)
+            .Select(x => x.Id).ToArray();
+        int[] actual = await GetIdsAsync(fx.Client, $"{RoundingBankersUrl}?$filter=round(Value) eq {expectedRounded}");
+        AssertSameIds(expected, actual);
+        Assert.NotEmpty(expected);
+    }
+
+    [Theory]
+    [InlineData(2.5, 2)]
+    [InlineData(-2.5, -2)]
+    [InlineData(4.5, 4)]
+    [InlineData(-4.5, -4)]
+    public async Task MathFn_Round_Decimal_BankersRoundingOverride_RoundsToEven(decimal value, int expectedRounded)
+    {
+        await using TestFixture fx = await BuildRoundingAsync();
+        int[] expected = RoundingModeData.Items
+            .Where(x => x.Amount == value)
+            .Select(x => x.Id).ToArray();
+        int[] actual = await GetIdsAsync(fx.Client, $"{RoundingBankersUrl}?$filter=round(Amount) eq {expectedRounded}");
+        AssertSameIds(expected, actual);
+        Assert.NotEmpty(expected);
+    }
+
+    [Fact]
+    public async Task MathFn_Round_Regression_FloorAndCeilingUnaffected()
+    {
+        // floor()/ceiling() are untouched by the RoundingMode rewrite (it only targets
+        // single-argument Math.Round calls) - regression-check both still produce correct
+        // results on the same GetQueryable path.
+        await using TestFixture fx = await BuildAsync();
+        int[] expectedFloor = QueryOptionData.Items
+            .Where(x => Math.Floor(x.Price) == 15m)
+            .Select(x => x.Id).ToArray();
+        int[] actualFloor = await GetIdsAsync(fx.Client, $"{Url}?$filter=floor(Price) eq 15");
+        AssertSameIds(expectedFloor, actualFloor);
+        Assert.NotEmpty(expectedFloor);
+
+        int[] expectedCeiling = QueryOptionData.Items
+            .Where(x => Math.Ceiling(x.Price) == 23m)
+            .Select(x => x.Id).ToArray();
+        int[] actualCeiling = await GetIdsAsync(fx.Client, $"{Url}?$filter=ceiling(Price) eq 23");
+        AssertSameIds(expectedCeiling, actualCeiling);
+        Assert.NotEmpty(expectedCeiling);
     }
 
     // ── 6. any/all lambdas on a primitive collection navigation ────────────────

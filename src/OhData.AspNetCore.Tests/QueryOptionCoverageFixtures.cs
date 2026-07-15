@@ -124,3 +124,60 @@ internal class QueryOptionExpandProfile : EntitySetProfile<int, QueryOptionParen
                 Task.FromResult<IEnumerable<QueryOptionChild>>(_children.Where(c => c.ParentId == parentId)));
     }
 }
+
+// ── round() midpoint (RoundingMode) fixtures ───────────────────────────────────
+//
+// A dedicated dataset/profiles rather than reusing QueryOptionData.Items: none of the
+// existing Price/Weight values happen to land on a midpoint where round-half-away-from-zero
+// and round-half-to-even (banker's) actually disagree (see FilterExpressionTests for why -
+// e.g. 45.5 rounds to 46 either way since 46 is even). Two profiles expose the same data:
+// one at the framework default (RoundingMode.SpecCompliant) and one opted into
+// RoundingMode.BankersRounding, so both branches of the setting get end-to-end HTTP coverage.
+
+internal class RoundingModeItem
+{
+    public int Id { get; set; }
+    public double Value { get; set; }
+    public decimal Amount { get; set; }
+}
+
+internal static class RoundingModeData
+{
+    // Value/Amount pairs deliberately sit on integer midpoints where the two rounding modes
+    // disagree: away-from-zero rounds .5 away from zero unconditionally, banker's rounds to
+    // the nearest even integer. That happens whenever the integer part closer to zero is even
+    // (2.5, -2.5, 4.5, -4.5 below) - see FilterExpressionTests for the full explanation.
+    public static readonly List<RoundingModeItem> Items = new()
+    {
+        new() { Id = 1, Value = 2.5, Amount = 2.5m },
+        new() { Id = 2, Value = -2.5, Amount = -2.5m },
+        new() { Id = 3, Value = 4.5, Amount = 4.5m },
+        new() { Id = 4, Value = -4.5, Amount = -4.5m },
+    };
+}
+
+internal class RoundingModeProfile : EntitySetProfile<int, RoundingModeItem>
+{
+    public RoundingModeProfile() : base(x => x.Id)
+    {
+        EntitySetName = "RoundingModeItems";
+        FilterEnabled = true;
+        // RoundingMode left null -> inherits EntitySetDefaults.RoundingMode (SpecCompliant).
+
+        GetQueryable = (ct) => Task.FromResult(RoundingModeData.Items.AsQueryable());
+        GetById = (id, ct) => Task.FromResult(RoundingModeData.Items.FirstOrDefault(x => x.Id == id));
+    }
+}
+
+internal class RoundingModeBankersProfile : EntitySetProfile<int, RoundingModeItem>
+{
+    public RoundingModeBankersProfile() : base(x => x.Id)
+    {
+        EntitySetName = "RoundingModeBankersItems";
+        FilterEnabled = true;
+        RoundingMode = OhData.Abstractions.RoundingMode.BankersRounding;
+
+        GetQueryable = (ct) => Task.FromResult(RoundingModeData.Items.AsQueryable());
+        GetById = (id, ct) => Task.FromResult(RoundingModeData.Items.FirstOrDefault(x => x.Id == id));
+    }
+}

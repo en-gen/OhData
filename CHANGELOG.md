@@ -98,6 +98,21 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `round()` now follows OData's round-half-away-from-zero semantics (Part 2 §5.1.1.9) by default
+  instead of .NET's banker's rounding (round-half-to-even), e.g. `round(2.5)` now returns `3`, not
+  `2`, and `round(-2.5)` returns `-3`, not `-2`. Root cause: Microsoft.OData's `ApplyTo` binder
+  emits the single-argument `Math.Round(double)`/`Math.Round(decimal)` overload, which defaults to
+  banker's rounding. On the `GetQueryable` path (and its `$count` companion) OhData now rewrites
+  those call nodes in the post-`ApplyTo` expression tree into the two-argument
+  `Math.Round(value, MidpointRounding.AwayFromZero)` overload before the query is enumerated. New
+  `RoundingMode` setting (profile-level `RoundingMode?` enum — `SpecCompliant` default /
+  `BankersRounding` — inheriting `EntitySetDefaults.RoundingMode`), following the same
+  `PropertyAccessEnabled`/`AllowDeepInsert` wiring pattern. `BankersRounding` exists as an
+  escape hatch: the two-argument `Math.Round` overload the fix requires is not translatable by
+  every EF Core provider, so a profile that hits a translation failure can opt back into the
+  pre-fix (single-argument) behavior. Does **not** reach the Priority-1
+  `ODataEntitySetProfile.GetODataQueryable` path, where the profile calls `ApplyTo` itself — see
+  `docs/query-options.md#round-midpoint-rounding` and `docs/spec-compliance.md`
 - `Prefer: maxpagesize` (§8.2.8.3) is now capped at the entity set's `MaxTop`: the honored page
   size is `min(maxpagesize, MaxTop)` rather than `maxpagesize` overriding `MaxTop` outright with no
   ceiling. `Preference-Applied` reflects the page size actually honored (the clamped value) per
