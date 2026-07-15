@@ -747,13 +747,11 @@ internal static class OhDataEndpointFactory
             // M3: preserve request order (deduplicated) so the projected context URL lists
             // properties in the order the client asked for them.
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            selectedProps = new List<string>();
-            foreach (string p in selectParam.ToString().Split(',')
+            selectedProps = selectParam.ToString().Split(',')
                 .Select(raw => raw.Trim())
-                .Where(p => p.Length > 0))
-            {
-                if (seen.Add(p)) selectedProps.Add(p);
-            }
+                .Where(p => p.Length > 0)
+                .Where(p => seen.Add(p))
+                .ToList();
 
             // Validate each requested property exists on the nav item type.
             if (navItemType is not null)
