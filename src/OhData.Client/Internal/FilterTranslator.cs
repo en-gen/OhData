@@ -223,10 +223,11 @@ internal sealed class FilterTranslator : ExpressionVisitor
         // Date/time component accessors and string.Length → OData canonical functions
         // (year()/month()/day()/hour()/minute()/second()/length()), not nested property paths.
         // Without this, x.CreatedAt.Year emits "CreatedAt/Year" (a nonexistent navigation
-        // path) instead of "year(CreatedAt)".
+        // path) instead of "year(CreatedAt)". The cheap member-name/type check runs first so
+        // ordinary member accesses skip the path extraction entirely (perf-sensitive path).
         if (node.Expression is not null
-            && TryGetPropertyPath(node.Expression, out string? componentBasePath)
-            && TryGetTemporalFunctionName(node.Member.Name, node.Expression.Type, out string? functionName))
+            && TryGetTemporalFunctionName(node.Member.Name, node.Expression.Type, out string? functionName)
+            && TryGetPropertyPath(node.Expression, out string? componentBasePath))
         {
             _sb.Append(functionName);
             _sb.Append('(');
@@ -317,6 +318,16 @@ internal sealed class FilterTranslator : ExpressionVisitor
     /// <summary>Returns <see langword="true"/> if <paramref name="expr"/> contains a reference to any lambda parameter.</summary>
     private static bool ContainsParameterReference(Expression expr)
     {
+        // Fast path for the overwhelmingly common shape reaching this check: a plain
+        // member-access chain. A chain bottoming out at a ConstantExpression is a captured
+        // closure variable (no parameter); one bottoming out at a ParameterExpression is a
+        // range-variable reference. Only fall back to the allocating visitor walk for
+        // anything more exotic (method calls, conditionals, ...).
+        Expression? current = expr;
+        while (current is MemberExpression m) current = m.Expression;
+        if (current is null or ConstantExpression) return false;
+        if (current is ParameterExpression) return true;
+
         var finder = new ParameterReferenceFinder();
         finder.Visit(expr);
         return finder.Found;
