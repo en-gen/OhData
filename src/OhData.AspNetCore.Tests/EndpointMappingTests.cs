@@ -608,8 +608,11 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>(), configureServices: s => s.AddSingleton(new BoundOpsStore()));
         var response = await fx.Client.GetAsync("/odata/BoundWidgets/DoubleCount?factor=3");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        int count = await response.Content.ReadFromJsonAsync<int>();
-        Assert.Equal(6, count); // 2 items × factor 3
+        // m5: primitive bound-function results now carry the JSON §11 individual-value envelope.
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(json.TryGetProperty("@odata.context", out var context));
+        Assert.Contains("Edm.Int32", context.GetString());
+        Assert.Equal(6, json.GetProperty("value").GetInt32()); // 2 items × factor 3
     }
 
     [Fact]
@@ -704,8 +707,11 @@ public class EndpointMappingTests
         var id = Guid.NewGuid();
         var response = await fx.Client.GetAsync($"/odata/GuidFnWidgets/EchoGuid?id={id}");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        string? returned = await response.Content.ReadFromJsonAsync<string>();
-        Assert.Equal(id.ToString(), returned);
+        // m5: primitive bound-function results now carry the JSON §11 individual-value envelope.
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(json.TryGetProperty("@odata.context", out var context));
+        Assert.Contains("Edm.String", context.GetString());
+        Assert.Equal(id.ToString(), json.GetProperty("value").GetString());
     }
 
     // ── H2: void Task bound action returns 204 ────────────────────────────────
@@ -1293,8 +1299,11 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EntityBoundOpsProfile>(), configureServices: s => s.AddSingleton(new EntityBoundOpsStore()));
         var resp = await fx.Client.GetAsync("/odata/EntityBoundWidgets(1)/GetNameForKey");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-        string? name = await resp.Content.ReadFromJsonAsync<string>();
-        Assert.Equal("Alpha", name);
+        // m5: primitive bound-function results now carry the JSON §11 individual-value envelope.
+        var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(json.TryGetProperty("@odata.context", out var context));
+        Assert.Contains("Edm.String", context.GetString());
+        Assert.Equal("Alpha", json.GetProperty("value").GetString());
     }
 
     [Fact]

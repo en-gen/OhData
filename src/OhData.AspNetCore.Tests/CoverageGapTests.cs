@@ -656,8 +656,12 @@ public class CoverageGapTests
             configureServices: s => s.AddSingleton(new BoundOpsStore()));
         var response = await fx.Client.GetAsync("/odata/BoundWidgets/DoubleCount?factor=1");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        int val = await response.Content.ReadFromJsonAsync<int>();
-        Assert.Equal(2, val);
+        // m5: primitive bound-function results now carry the JSON §11 individual-value envelope
+        // ({"@odata.context":"...","value":<primitive>}) rather than a bare scalar body.
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(json.TryGetProperty("@odata.context", out var context));
+        Assert.Contains("Edm.Int32", context.GetString());
+        Assert.Equal(2, json.GetProperty("value").GetInt32());
     }
 
     // ── PUT with AllowUpsert — new key → 201 ──────────────────────────────────

@@ -480,11 +480,20 @@ internal static class OhDataEndpointFactory
         // RFC 7232 §3.1: If-Match may carry a comma-separated list of ETags.
         // The precondition is satisfied if the current ETag matches any one of them.
         var etagList = ParseETagList(ifMatch.ToString()).ToList();
-        if (etagList.Contains("*")) return null; // wildcard -- always matches
 
+        // m6: the existence check must happen before the wildcard short-circuit. Per
+        // RFC 7232 §3.1 / Protocol §11.4.1.1, If-Match -- including "*" -- fails with 412 when
+        // no current representation exists; it must NOT fall through to whatever 404 the
+        // caller's own "not found" handling would otherwise produce.
         object? current = await requestSource.InvokeGetByIdAsync(parsedKey!, ct);
         if (current is null)
-            return ODataError(404, "NotFound", "Resource not found.");
+        {
+            return ODataError(412, "PreconditionFailed",
+                "If-Match precondition failed: the resource does not exist.");
+        }
+
+        if (etagList.Contains("*")) return null; // wildcard -- matches any existing representation
+
         string currentETag = requestSource.InvokeGetETag(current);
         if (!etagList.Contains(currentETag))
             return ODataError(412, "PreconditionFailed", "The ETag does not match the current resource version.");
@@ -505,7 +514,7 @@ internal static class OhDataEndpointFactory
     // Unified collection pipeline: Serialize → ETag → Expand → Select.
     // Serialises exactly once using the configured jsonOptions (falls back to camelCase
     // when jsonOptions is null, matching ASP.NET Core's default naming policy).
-    private static async Task<JsonArray> ApplyCollectionPipelineAsync(
+    private static async Task<(JsonArray Items, List<string>? SelectedProps)> ApplyCollectionPipelineAsync(
         object[] originalItems,
         ODataQueryOptions options,
         IEntitySetEndpointSource source,
@@ -600,9 +609,10 @@ internal static class OhDataEndpointFactory
         }
 
         // Stage 4: Strip unselected properties (if $select requested).
+        List<string>? selectedProps = null;
         if (options.SelectExpand?.SelectExpandClause is not null)
         {
-            var selectedProps = ExtractSelectedProperties(options.SelectExpand.SelectExpandClause);
+            selectedProps = ExtractSelectedProperties(options.SelectExpand.SelectExpandClause);
             if (selectedProps is not null)
             {
                 foreach (JsonObject obj in json.OfType<JsonObject>())
@@ -617,7 +627,7 @@ internal static class OhDataEndpointFactory
             }
         }
 
-        return json;
+        return (json, selectedProps);
     }
 
     // Batch 4: Inject @odata.etag into a JsonArray using the original (pre-expand) items array
@@ -642,18 +652,25 @@ internal static class OhDataEndpointFactory
         return json;
     }
 
-    private static HashSet<string>? ExtractSelectedProperties(SelectExpandClause clause)
+    // M3: returns the client's $select (+ $expand) property list, in request order and
+    // de-duplicated, so both the Stage-4 body filter and the projected context URL
+    // ("#Set(prop1,prop2)", JSON §10.7/§10.8) agree on exactly which properties were selected
+    // and in what order. Ordinal-case as normalized by the Microsoft.OData parser (which
+    // resolves $select identifiers to the EDM property name regardless of the casing the
+    // client sent).
+    private static List<string>? ExtractSelectedProperties(SelectExpandClause clause)
     {
         if (clause.AllSelected) return null;
 
-        // The Microsoft.OData parser normalizes $select identifiers to the EDM property name
-        // (e.g. both "$select=name" and "$select=Name" resolve to identifier "Name").
-        // We use OrdinalIgnoreCase as a safety net for any serialization casing differences.
-        var props = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var props = new List<string>();
         foreach (var item in clause.SelectedItems)
         {
             if (item is PathSelectItem psi)
-                props.Add(psi.SelectedPath.FirstSegment.Identifier);
+            {
+                string id = psi.SelectedPath.FirstSegment.Identifier;
+                if (seen.Add(id)) props.Add(id);
+            }
         }
 
         // When only $expand (no $select) is used, AllSelected is false but SelectedItems
@@ -665,11 +682,18 @@ internal static class OhDataEndpointFactory
         // $expand are combined (e.g. $select=Name&$expand=Children keeps both).
         foreach (var ensi in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
         {
-            props.Add(ensi.PathToNavigationProperty.FirstSegment.Identifier);
+            string id = ensi.PathToNavigationProperty.FirstSegment.Identifier;
+            if (seen.Add(id)) props.Add(id);
         }
 
         return props;
     }
+
+    // M3: appends the OData JSON §10.7/§10.8 projection suffix to a context segment when a
+    // $select projection narrowed the response, e.g. "Widgets" -> "Widgets(Id,Name)". A no-op
+    // (segment returned unchanged) when no projection is in effect.
+    private static string AppendSelectSuffix(string segment, IReadOnlyList<string>? selectedProps) =>
+        selectedProps is { Count: > 0 } ? $"{segment}({string.Join(",", selectedProps)})" : segment;
 
     // M-3: apply $orderby to a navigation collection's in-memory results. Consistent with how
     // $top/$skip are already applied on this path (property-name based, not pushed down to the
@@ -717,11 +741,17 @@ internal static class OhDataEndpointFactory
         // We parse the $select query param directly (navigation routes don't go through
         // ODataQueryOptions) and filter the serialized items.
         object valueToReturn = itemArray;
+        List<string>? selectedProps = null;
         if (ctx.Request.Query.TryGetValue("$select", out var selectParam) && !string.IsNullOrEmpty(selectParam))
         {
-            var selectedProps = new HashSet<string>(
-                selectParam.ToString().Split(',').Select(p => p.Trim()),
-                StringComparer.OrdinalIgnoreCase);
+            // M3: preserve request order (deduplicated) so the projected context URL lists
+            // properties in the order the client asked for them.
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            selectedProps = selectParam.ToString().Split(',')
+                .Select(raw => raw.Trim())
+                .Where(p => p.Length > 0)
+                .Where(p => seen.Add(p))
+                .ToList();
 
             // Validate each requested property exists on the nav item type.
             if (navItemType is not null)
@@ -749,7 +779,10 @@ internal static class OhDataEndpointFactory
         }
 
         var envelope = new Dictionary<string, object?>();
-        envelope["@odata.context"] = $"{baseUrl}/$metadata#{name}({key})/{navPropertyName}";
+        // M3: append the projection suffix when $select narrowed the response (JSON §10.7).
+        // m10 (declared-not-fixed): the segment itself stays a path shape ("Set(key)/nav")
+        // rather than the target entity set — see docs/spec-compliance.md.
+        envelope["@odata.context"] = $"{baseUrl}/$metadata#{AppendSelectSuffix($"{name}({key})/{navPropertyName}", selectedProps)}";
         if (navCount.HasValue) envelope["@odata.count"] = navCount;
         envelope["value"] = valueToReturn;
         return (envelope, null);
@@ -787,8 +820,24 @@ internal static class OhDataEndpointFactory
 
     private static IResult ODataEntityResult(
         HttpContext ctx, string prefix, string name, object entity,
-        JsonSerializerOptions? jsonOptions, string? odataId = null, string? etag = null) =>
-        Results.Ok(ODataEntityNode(ctx, prefix, $"{name}/$entity", entity, jsonOptions, odataId: odataId, etag: etag));
+        JsonSerializerOptions? jsonOptions, string? odataId = null, string? etag = null,
+        IReadOnlyList<string>? selectedProps = null)
+    {
+        // M3: when $select projected the response, the context gains the projection suffix
+        // ("#Set(prop1,prop2)/$entity", JSON §10.8) and unselected properties are stripped
+        // from the body so the context and the payload agree on shape.
+        string contextSegment = $"{AppendSelectSuffix(name, selectedProps)}/$entity";
+        JsonObject node = ODataEntityNode(ctx, prefix, contextSegment, entity, jsonOptions, odataId: odataId, etag: etag);
+        if (selectedProps is { Count: > 0 })
+        {
+            var toRemove = node.Select(p => p.Key)
+                             .Where(k => !k.StartsWith("@", StringComparison.Ordinal) &&
+                                         !selectedProps.Contains(k, StringComparer.OrdinalIgnoreCase))
+                             .ToList();
+            foreach (string? key in toRemove) node.Remove(key);
+        }
+        return Results.Ok(node);
+    }
 
     // I-6: formats a primitive property value as its raw (unquoted, unwrapped) OData /$value
     // representation (Part 2 §4.7), using invariant culture. bool is special-cased to lowercase
@@ -886,11 +935,11 @@ internal static class OhDataEndpointFactory
 
                     object[] items = queryable.ToArray();
 
-                    JsonArray finalItems = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, ct);
+                    var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, ct);
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
-                    envelope["@odata.context"] = $"{baseUrl}/$metadata#{name}";
+                    envelope["@odata.context"] = $"{baseUrl}/$metadata#{AppendSelectSuffix(name, selectedProps)}";
                     // $count=true: prefer TotalCount if profile provided it (pre-paging), otherwise
                     // fall back to items.Length (post-paging).
                     if (options.Count?.Value == true)
@@ -1037,11 +1086,11 @@ internal static class OhDataEndpointFactory
                         nextLink = BuildNextPageLink(ctx, token);
                     }
 
-                    JsonArray finalItems = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, ct);
+                    var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, ct);
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
-                    envelope["@odata.context"] = $"{baseUrl}/$metadata#{name}";
+                    envelope["@odata.context"] = $"{baseUrl}/$metadata#{AppendSelectSuffix(name, selectedProps)}";
                     if (odataCount.HasValue) envelope["@odata.count"] = odataCount;
                     // Gap 3: add nextLink to envelope
                     if (nextLink is not null) envelope["@odata.nextLink"] = nextLink;
@@ -1093,10 +1142,10 @@ internal static class OhDataEndpointFactory
                         var searchResults = await s.InvokeSearchAsync(searchTerm.ToString(), ct);
                         object[] searchItems = searchResults.ToArray();
 
-                        JsonArray searchFinal = await ApplyCollectionPipelineAsync(searchItems, options, source, s, jsonOptions, ct);
+                        var (searchFinal, searchSelectedProps) = await ApplyCollectionPipelineAsync(searchItems, options, source, s, jsonOptions, ct);
                         string searchBaseUrl = BuildBaseUrl(ctx, prefix);
                         var searchEnvelope = new Dictionary<string, object?>();
-                        searchEnvelope["@odata.context"] = $"{searchBaseUrl}/$metadata#{name}";
+                        searchEnvelope["@odata.context"] = $"{searchBaseUrl}/$metadata#{AppendSelectSuffix(name, searchSelectedProps)}";
                         // Batch 5: include @odata.count for search results when $count=true is requested.
                         if (options.Count?.Value == true)
                             searchEnvelope["@odata.count"] = (long)searchItems.Length;
@@ -1108,11 +1157,11 @@ internal static class OhDataEndpointFactory
                     var enumerable = result as IEnumerable<TModel> ?? Enumerable.Empty<TModel>();
                     var rawItems = enumerable.ToArray();
 
-                    JsonArray finalItems = await ApplyCollectionPipelineAsync(rawItems, options, source, s, jsonOptions, ct);
+                    var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(rawItems, options, source, s, jsonOptions, ct);
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
-                    envelope["@odata.context"] = $"{baseUrl}/$metadata#{name}";
+                    envelope["@odata.context"] = $"{baseUrl}/$metadata#{AppendSelectSuffix(name, selectedProps)}";
                     // Batch 5: §11.2.6.5 — include @odata.count when $count=true is requested on GetAll path.
                     if (options.Count?.Value == true)
                         envelope["@odata.count"] = (long)rawItems.Length;
@@ -1200,6 +1249,20 @@ internal static class OhDataEndpointFactory
                 {
                     var s = ResolveHandlers(ctx);
                     object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
+
+                    // M3: parse $select so the projected context ("#Set(prop1,prop2)/$entity")
+                    // and the body it describes agree on shape. Constructing ODataQueryOptions
+                    // costs a per-request parse, so skip it entirely unless $select is present —
+                    // GetById is the hottest route and the no-$select case must stay zero-cost.
+                    List<string>? selectedProps = null;
+                    if (ctx.Request.Query.ContainsKey("$select"))
+                    {
+                        var options = new ODataQueryOptions<TModel>(cachedODataQueryContext, ctx.Request);
+                        selectedProps = options.SelectExpand?.SelectExpandClause is not null
+                            ? ExtractSelectedProperties(options.SelectExpand.SelectExpandClause)
+                            : null;
+                    }
+
                     object? result = await s.InvokeGetByIdAsync(parsedKey!, ct);
                     string? etagValue = null;
                     if (result is not null && source.HasETag)
@@ -1220,15 +1283,19 @@ internal static class OhDataEndpointFactory
                     // Gap 5: include @odata.id in single-entity response
                     // Gap 2: include @odata.etag in body
                     string odataId = $"{BuildBaseUrl(ctx, prefix)}/{name}({key})";
-                    return ODataEntityResult(ctx, prefix, name, result, jsonOptions, odataId: odataId, etag: etagValue);
+                    return ODataEntityResult(ctx, prefix, name, result, jsonOptions, odataId: odataId, etag: etagValue, selectedProps: selectedProps);
                 }
                 catch (FormatException ex)
                 {
                     logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
                     return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
                 }
+                catch (Microsoft.OData.ODataException ex)
+                {
+                    return ODataError(400, "InvalidQueryOption", ex.Message);
+                }
             });
-            rb.WithTags(name).Produces<TModel>(200).Produces(404)
+            rb.WithTags(name).Produces<TModel>(200).Produces(400).Produces(404)
               .WithMetadata(new OhDataQueryOptionsMetadata(
                   FilterEnabled: false,
                   OrderByEnabled: false,
@@ -1381,6 +1448,23 @@ internal static class OhDataEndpointFactory
                         return ODataError(400, "BadRequest", "Key in URL does not match key in request body.", target: "key");
                     var etagCheck = await CheckETagAsync(source, s, ctx, parsedKey!, ct);
                     if (etagCheck is not null) return etagCheck;
+
+                    // m7: If-None-Match: * is a create-guard (§11.4.4 / RFC 7232) — "only if no
+                    // current representation exists". Only meaningful when the profile supports
+                    // upsert (otherwise PUT already 404s on a missing key with no ambiguity) and
+                    // requires GetById to check existence before the write is attempted.
+                    if (source.AllowUpsert && source.HasGetById
+                        && ctx.Request.Headers.TryGetValue("If-None-Match", out var putIfNoneMatch)
+                        && ParseETagList(putIfNoneMatch.ToString()).Contains("*"))
+                    {
+                        object? existingForGuard = await s.InvokeGetByIdAsync(parsedKey!, ct);
+                        if (existingForGuard is not null)
+                        {
+                            return ODataError(412, "PreconditionFailed",
+                                "If-None-Match: * precondition failed: a resource already exists at this key.");
+                        }
+                    }
+
                     object? result = await s.InvokePutAsync(parsedKey!, model, ct);
 
                     // Gap 3: Upsert via PUT (§11.4.4) — create entity when result is null and AllowUpsert enabled
@@ -1622,10 +1706,17 @@ internal static class OhDataEndpointFactory
                                 items = orderedItems!;
                             }
 
-                            if (ctx.Request.Query.TryGetValue("$skip", out var skipStr)
-                                && int.TryParse(skipStr, out int skipVal) && skipVal > 0)
+                            // m8: an invalid (non-numeric or negative) $skip/$top must 400, not be
+                            // silently ignored (which would return the full, un-paged collection).
+                            // Consistent with the collection GET route's $top/$skip validation.
+                            if (ctx.Request.Query.TryGetValue("$skip", out var skipStr))
                             {
-                                items = items.Skip(skipVal);
+                                if (!int.TryParse(skipStr, out int skipVal) || skipVal < 0)
+                                {
+                                    return ODataError(400, "InvalidQueryOption",
+                                        $"The value of '$skip' ('{skipStr}') is invalid. It must be a non-negative integer.");
+                                }
+                                if (skipVal > 0) items = items.Skip(skipVal);
                             }
 
                             long? navCount = null;
@@ -1636,9 +1727,13 @@ internal static class OhDataEndpointFactory
                                 navCount = items.LongCount();
                             }
 
-                            if (ctx.Request.Query.TryGetValue("$top", out var topStr)
-                                && int.TryParse(topStr, out int topVal) && topVal >= 0)
+                            if (ctx.Request.Query.TryGetValue("$top", out var topStr))
                             {
+                                if (!int.TryParse(topStr, out int topVal) || topVal < 0)
+                                {
+                                    return ODataError(400, "InvalidQueryOption",
+                                        $"The value of '$top' ('{topStr}') is invalid. It must be a non-negative integer.");
+                                }
                                 items = items.Take(topVal);
                             }
 
@@ -1648,7 +1743,9 @@ internal static class OhDataEndpointFactory
                             if (navEnvError is not null) return navEnvError;
                             return Results.Ok(navEnv);
                         }
-                        return Results.Ok(result);
+                        // M1: single-valued navigation results must carry @odata.context too
+                        // (JSON §4.5), mirroring what the collection branch above already does.
+                        return Results.Ok(ODataEntityNode(ctx, prefix, $"{name}({key})/{navPropertyName}/$entity", result, jsonOptions));
                     }
                     catch (FormatException ex)
                     {
@@ -1673,7 +1770,10 @@ internal static class OhDataEndpointFactory
                             var requestNav = s.NavigationRoutes.First(n => n.PropertyName == navCountPropertyName);
                             object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
                             object? result = await requestNav.Handler(parsedKey!, ct);
-                            if (result is null) return Results.NotFound();
+                            // M4: every 4xx/5xx must carry the OData error envelope (§9.4) — this
+                            // was the sole bare Results.NotFound() in the file.
+                            if (result is null)
+                                return ODataError(404, "NotFound", $"{name}({key})/{navCountPropertyName} not found.");
                             var rawColl = result as System.Collections.IEnumerable;
                             long count;
                             if (rawColl is ICollection<object> objColl) count = objColl.Count;
@@ -1707,7 +1807,12 @@ internal static class OhDataEndpointFactory
                         var requestNav = s.NavigationRoutes.First(n => n.PropertyName == navRefPropertyName);
                         object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
                         string baseUrl = BuildBaseUrl(ctx, prefix);
-                        string context = $"{baseUrl}/$metadata#{name}({key})/{navRefPropertyName}/$ref";
+                        // M2: JSON Format §14 / Protocol §10.12 — an entity-reference response's
+                        // context is "#$ref" (single-valued) or "#Collection($ref)" (collection),
+                        // not a path shape.
+                        string context = navRefIsCollection
+                            ? $"{baseUrl}/$metadata#Collection($ref)"
+                            : $"{baseUrl}/$metadata#$ref";
 
                         if (navRefIsCollection)
                         {
@@ -2531,9 +2636,52 @@ internal static class OhDataEndpointFactory
             return ODataEntityResult(ctx, prefix, entitySetName, result, jsonOptions);
         }
 
+        // m5: primitive results get the JSON §11 individual-value envelope
+        // ({"@odata.context":"...#Edm.<Type>","value":<primitive>}). Only types this framework
+        // can confidently name as an Edm primitive are wrapped; anything else (a non-TModel
+        // complex/DTO type) falls through unwrapped rather than risk asserting a wrong Edm type.
+        Type underlyingResultType = Nullable.GetUnderlyingType(resultType) ?? resultType;
+        if (s_edmPrimitiveTypeNames.TryGetValue(underlyingResultType, out string? edmTypeName))
+        {
+            string primitiveBaseUrl = BuildBaseUrl(ctx, prefix);
+            return Results.Ok(new Dictionary<string, object?>
+            {
+                ["@odata.context"] = $"{primitiveBaseUrl}/$metadata#{edmTypeName}",
+                ["value"] = result
+            });
+        }
+
         // Primitive/other — no context wrapping
         return Results.Ok(result);
     }
+
+    // m5: CLR type -> Edm primitive type name, used to build the individual-value response
+    // envelope for bound operations that return a bare primitive (JSON §11). Deliberately not
+    // exhaustive of every Edm primitive kind — only the CLR types this framework's parameter/
+    // return-type conversion already supports elsewhere (see the query-string/JSON-body
+    // parameter converters above).
+    private static readonly Dictionary<Type, string> s_edmPrimitiveTypeNames = new()
+    {
+        [typeof(string)] = "Edm.String",
+        [typeof(bool)] = "Edm.Boolean",
+        [typeof(byte)] = "Edm.Byte",
+        [typeof(sbyte)] = "Edm.SByte",
+        [typeof(short)] = "Edm.Int16",
+        [typeof(int)] = "Edm.Int32",
+        [typeof(long)] = "Edm.Int64",
+        [typeof(float)] = "Edm.Single",
+        [typeof(double)] = "Edm.Double",
+        [typeof(decimal)] = "Edm.Decimal",
+        [typeof(Guid)] = "Edm.Guid",
+        // OData v4 has no "DateTime" primitive; both CLR DateTime and DateTimeOffset map to
+        // Edm.DateTimeOffset, matching FormatRawValue's ("o") treatment of the two types above.
+        [typeof(DateTime)] = "Edm.DateTimeOffset",
+        [typeof(DateTimeOffset)] = "Edm.DateTimeOffset",
+        [typeof(DateOnly)] = "Edm.Date",
+        [typeof(TimeOnly)] = "Edm.TimeOfDay",
+        [typeof(TimeSpan)] = "Edm.Duration",
+        [typeof(byte[])] = "Edm.Binary",
+    };
 
     private static bool TryGetJsonProperty(JsonElement obj, string name, out JsonElement value)
     {
