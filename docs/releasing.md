@@ -3,7 +3,36 @@
 The publish pipeline is [`.github/workflows/publish.yml`](../.github/workflows/publish.yml): it fires when a
 GitHub Release is **published**, validates the release tag against the GitVersion-computed version, builds,
 runs all three test suites, packs `EnGen.OhData.AspNetCore` and `EnGen.OhData.Client` (with `.snupkg`
-symbols), and pushes to nuget.org with `--skip-duplicate`.
+symbols), runs a package-quality gate, attests build provenance, and pushes to nuget.org with
+`--skip-duplicate`.
+
+## Deterministic builds
+
+`src/Directory.Build.props` sets `ContinuousIntegrationBuild=true` whenever `$(GITHUB_ACTIONS)` is `true`,
+so every CI build (not just the publish workflow) is deterministic — the same source and compiler version
+produce byte-identical assemblies. This is what lets SourceLink map a shipped PDB back to the exact commit.
+Local builds stay non-deterministic (faster incremental builds); nothing changes for day-to-day development.
+
+## Package quality gate
+
+After `Pack`, the workflow runs [Meziantou.Framework.NuGetPackageValidation.Tool](https://github.com/meziantou/Meziantou.Framework)
+against both `.nupkg` files:
+
+```bash
+dotnet tool install --global Meziantou.Framework.NuGetPackageValidation.Tool
+meziantou.validate-nuget-package ./nupkg/*.nupkg --excluded-rules IconMustBeSet
+```
+
+It checks description/author/license/repository/tags/readme are set, XML docs and symbols are present, and
+assemblies are optimized (Release, not Debug) — `IconMustBeSet` is excluded because a package icon is a
+deliberately deferred decision (see memory: 1.0.0 scope decisions), not an oversight. A non-zero exit fails
+the job.
+
+Also gated on `EnablePackageValidation=true` (set on both packable csprojs): MSBuild's own API/ABI compat
+checks, currently limited to cross-TFM (net8.0/net10.0) compatibility since there's no published baseline
+yet. **After 1.0.0 ships**, set `PackageValidationBaselineVersion=1.0.0` in both csprojs (see the comment
+already left next to `EnablePackageValidation` in each) so every later pack is diffed against the public
+1.0.0 API surface and breaking changes fail the build.
 
 ## One-time setup
 
@@ -44,11 +73,32 @@ reject the release.
 6. Verify: package pages render (README, license, version) at
    `https://www.nuget.org/packages/EnGen.OhData.AspNetCore` and `.../EnGen.OhData.Client`;
    `dotnet add package EnGen.OhData.AspNetCore` resolves the new version; symbols step through from
-   the NuGet symbol server.
+   the NuGet symbol server; and confirm build provenance with `gh attestation verify` (see below).
 7. Back-merge `main` into `develop` (GitFlow) so the tag is reachable and develop's computed version
    advances past the release.
 
-## Dry-run (no key required)
+## Rehearsal mode (no push, no key required)
+
+The workflow can be run manually without a release: **Actions > Publish to NuGet > Run workflow**. Leave
+`dry_run` at its default (`true`) to run everything through build, test, pack, the package-quality gate,
+and provenance attestation, then stop — no login, no push. Download the packed `.nupkg`/`.snupkg` from the
+run's **Artifacts** section to inspect them. There's no release tag on a manual run, so the tag-validation
+step is skipped automatically. Setting `dry_run` to `false` on a manual run pushes to nuget.org exactly
+like a real release — use this only if you intend to actually publish outside the normal Release flow.
+
+## Verifying build provenance
+
+Every pack (real release or rehearsal) is attested with `actions/attest-build-provenance`. Verify a
+downloaded package against the repo:
+
+```bash
+gh attestation verify EnGen.OhData.AspNetCore.X.Y.Z.nupkg --repo en-gen/OhData
+```
+
+A successful verification confirms the package bytes were produced by this workflow from a specific commit
+SHA on GitHub's infrastructure, not assembled or modified elsewhere.
+
+## Local dry-run (no key required)
 
 ```bash
 dotnet pack src/OhData.AspNetCore/OhData.AspNetCore.csproj -c Release -o ./nupkg-dry
@@ -57,4 +107,9 @@ dotnet pack src/OhData.Client/OhData.Client.csproj -c Release -o ./nupkg-dry
 
 GitVersion.MsBuild stamps the computed version (an explicit `-p:Version` is overridden at build time —
 expected). Inspect the `.nupkg` as a zip: both TFMs under `lib/`, XML docs beside each assembly,
-`README.md` at the package root.
+`README.md` at the package root. To also exercise the quality gate locally:
+
+```bash
+dotnet tool install --global Meziantou.Framework.NuGetPackageValidation.Tool
+meziantou.validate-nuget-package ./nupkg-dry/*.nupkg --excluded-rules IconMustBeSet
+```

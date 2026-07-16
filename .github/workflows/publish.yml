@@ -16,17 +16,42 @@ name: Publish to NuGet
 # version from the release branch name (release/X.Y.Z -> X.Y.Z on main) — a
 # direct develop->main merge computes the wrong version and the tag-validation
 # step below will reject the release.
+#
+# Rehearsal mode: this workflow can also be triggered manually (Actions >
+# Publish to NuGet > Run workflow) via workflow_dispatch. With the default
+# dry_run=true it runs everything through the package-quality gate and the
+# provenance attestation, uploads the packed .nupkg/.snupkg as a workflow
+# artifact, and stops — it never pushes. There is no release tag on a manual
+# run, so the tag-validation step is skipped for this trigger. Setting
+# dry_run=false on a manual run additionally pushes to nuget.org, same as a
+# real release.
+#
+# concurrency: only one publish (real or rehearsal) runs at a time; a second
+# run queues behind the first rather than racing it or cancelling it, since
+# cancelling mid-push could leave nuget.org partially updated.
 
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Pack + validate + attest without pushing"
+        type: boolean
+        default: true
+
+concurrency:
+  group: nuget-publish
+  cancel-in-progress: false
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
-      id-token: write   # OIDC token issuance for NuGet Trusted Publishing
+      id-token: write       # OIDC token issuance for NuGet Trusted Publishing
       contents: read
+      attestations: write   # actions/attest-build-provenance
     env:
       HUSKY: 0
 
@@ -50,7 +75,11 @@ jobs:
         id: gitversion
         uses: gittools/actions/gitversion/execute@v4
 
+      # Only meaningful for a real release, which carries a Git tag to check
+      # against. Manual (workflow_dispatch) rehearsal runs have no release
+      # tag at all, so this step is skipped for that trigger.
       - name: Validate release tag matches computed version
+        if: github.event_name == 'release'
         run: |
           COMPUTED="v${{ steps.gitversion.outputs.nuGetVersionV2 }}"
           RELEASE_TAG="${{ github.event.release.tag_name }}"
@@ -88,6 +117,35 @@ jobs:
             -p:Version="$VERSION" \
             -o ./nupkg
 
+      # Package quality gate: structural checks (description/license/repo/
+      # tags/readme/xmldoc/symbols/etc. all set, assemblies optimized) beyond
+      # what `dotnet pack` itself enforces. IconMustBeSet is excluded because
+      # a package icon is a deliberately deferred decision, not an oversight.
+      # Fails the job (non-zero exit) on any validation error.
+      - name: Install NuGet package validation tool
+        run: |
+          dotnet tool install --global Meziantou.Framework.NuGetPackageValidation.Tool
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+
+      - name: Validate package quality
+        run: meziantou.validate-nuget-package ./nupkg/*.nupkg --excluded-rules IconMustBeSet
+
+      # SLSA build provenance: attests these exact package bytes were built
+      # by this workflow run from this exact commit. Verifiable later with
+      # `gh attestation verify <nupkg> --repo en-gen/OhData`.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: ./nupkg/*.nupkg
+
+      # Every run — real or rehearsal — leaves the packed output inspectable
+      # as a workflow artifact, even when the push step below is skipped.
+      - name: Upload packages as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-packages
+          path: ./nupkg/
+
       # Temp keys from Trusted Publishing live 1 hour — log in right before pushing.
       - name: NuGet login (OIDC -> temp API key)
         uses: NuGet/login@v1
@@ -95,7 +153,11 @@ jobs:
         with:
           user: engenb
 
+      # Real releases always push. A manual run only pushes if dry_run is
+      # explicitly set to false — the default (true) is rehearsal-only and
+      # stops after the artifact upload above.
       - name: Push to NuGet
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'false')
         run: |
           dotnet nuget push "./nupkg/*.nupkg" \
             --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" \
