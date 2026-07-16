@@ -525,14 +525,13 @@ internal static class OhDataEndpointFactory
 
     private static IResult? CheckNavUnsupportedQueryOptions(HttpContext ctx)
     {
-        foreach (string option in s_navUnsupportedSystemOptions)
+        string? option = s_navUnsupportedSystemOptions
+            .FirstOrDefault(o => ctx.Request.Query.ContainsKey(o));
+        if (option is not null)
         {
-            if (ctx.Request.Query.ContainsKey(option))
-            {
-                return ODataError(400, "UnsupportedQueryOption",
-                    $"This navigation route does not support {option}. Supported query options " +
-                    "are $select, $orderby, $skip, $top, and $count.");
-            }
+            return ODataError(400, "UnsupportedQueryOption",
+                $"This navigation route does not support {option}. Supported query options " +
+                "are $select, $orderby, $skip, $top, and $count.");
         }
         return null;
     }
