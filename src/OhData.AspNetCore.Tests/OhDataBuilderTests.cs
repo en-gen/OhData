@@ -1,3 +1,5 @@
+using System;
+using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using OhData.AspNetCore;
 using Xunit;
@@ -122,4 +124,100 @@ public class OhDataBuilderTests
         Assert.Equal("/v2", v2.Prefix);
     }
 
+    // ── S5: startup validation — unbound operation route collisions ────────────────
+
+    private static Task<string> Echo(string name) => Task.FromResult(name);
+    private static Task<int> Add(int a, int b) => Task.FromResult(a + b);
+
+    [Fact]
+    public void Startup_UnboundFunction_CollidesWithEntitySetName_Throws()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddOhData(o => o
+            .AddProfile<WidgetProfile>() // EntitySetName = "Widgets", has GetAll (GET /Widgets)
+            .AddFunction((Func<string, Task<string>>)Echo, "Widgets")); // also GET /Widgets
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            services.BuildServiceProvider().GetRequiredService<OhDataRegistration>());
+        Assert.Contains("Widgets", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("function", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Startup_UnboundAction_CollidesWithEntitySetName_Throws()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddOhData(o => o
+            .AddProfile<WidgetProfile>() // EntitySetName = "Widgets", has Post (POST /Widgets)
+            .AddAction((Func<int, int, Task<int>>)Add, "Widgets")); // also POST /Widgets
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            services.BuildServiceProvider().GetRequiredService<OhDataRegistration>());
+        Assert.Contains("Widgets", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("action", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Startup_UnboundFunction_NoCollisionWithEntitySet_NoGetAll_DoesNotThrow()
+    {
+        // EmptyProfile has no GetAll/GetQueryable, so GET /EmptyWidgets is never registered —
+        // an unbound function of the same name is not a genuine route collision.
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddOhData(o => o
+            .AddProfile<EmptyProfile>() // EntitySetName = "EmptyWidgets"
+            .AddFunction((Func<string, Task<string>>)Echo, "EmptyWidgets"));
+
+        var registration = services.BuildServiceProvider().GetRequiredService<OhDataRegistration>();
+        Assert.Single(registration.UnboundOperations);
+    }
+
+    [Fact]
+    public void Startup_DuplicateUnboundFunctionName_Throws()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddOhData(o => o
+            .AddProfile<WidgetProfile>()
+            .AddFunction((Func<string, Task<string>>)Echo, "Greet")
+            .AddFunction((Func<string, Task<string>>)Echo, "Greet")); // duplicate function name
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            services.BuildServiceProvider().GetRequiredService<OhDataRegistration>());
+        Assert.Contains("Greet", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("duplicate", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Startup_DuplicateUnboundActionName_Throws()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddOhData(o => o
+            .AddProfile<WidgetProfile>()
+            .AddAction((Func<int, int, Task<int>>)Add, "Sum")
+            .AddAction((Func<int, int, Task<int>>)Add, "Sum")); // duplicate action name
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            services.BuildServiceProvider().GetRequiredService<OhDataRegistration>());
+        Assert.Contains("Sum", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("duplicate", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Startup_UnboundFunctionAndAction_SameName_DoesNotThrow()
+    {
+        // Different HTTP methods (GET vs. POST) -- not a genuine route collision.
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddOhData(o => o
+            .AddProfile<EmptyProfile>()
+            .AddFunction((Func<string, Task<string>>)Echo, "Widgets")
+            .AddAction((Func<int, int, Task<int>>)Add, "Widgets"));
+
+        var registration = services.BuildServiceProvider().GetRequiredService<OhDataRegistration>();
+        Assert.Equal(2, registration.UnboundOperations.Count);
+    }
 }

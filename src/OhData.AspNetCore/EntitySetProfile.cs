@@ -1298,7 +1298,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected void BindEntityFunction(Delegate handler)
     {
         ThrowIfSealed();
-        _entityFunctions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
+        if (handler is null) throw new ArgumentNullException(nameof(handler));
+        ValidateEntityBoundOperationSignature(handler, nameof(BindEntityFunction));
+        _entityFunctions.Add(handler);
     }
 
     /// <summary>
@@ -1315,7 +1317,42 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected void BindEntityAction(Delegate handler)
     {
         ThrowIfSealed();
-        _entityActions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
+        if (handler is null) throw new ArgumentNullException(nameof(handler));
+        ValidateEntityBoundOperationSignature(handler, nameof(BindEntityAction));
+        _entityActions.Add(handler);
+    }
+
+    // S6: entity-bound operations are invoked at request time by placing the parsed route key
+    // directly into args[0] (see OhDataEndpointFactory) -- the delegate's Parameters array
+    // (BoundOperationDefinition.From) strips only a trailing CancellationToken, so the leading
+    // key parameter is NOT excluded despite what earlier docs claimed. A zero-parameter handler
+    // (or one whose first parameter isn't TKey) previously registered fine and only failed at
+    // request time -- IndexOutOfRangeException for zero parameters, or a DynamicInvoke failure
+    // for a mismatched first-parameter type. Catch both at bind time instead.
+    private void ValidateEntityBoundOperationSignature(Delegate handler, string bindMethodName)
+    {
+        MethodInfo method = handler.Method;
+        ParameterInfo[] allParams = method.GetParameters();
+        bool hasTrailingCt = allParams.Length > 0 && allParams[^1].ParameterType == typeof(CancellationToken);
+        ParameterInfo[] visibleParams = hasTrailingCt ? allParams[..^1] : allParams;
+
+        if (visibleParams.Length == 0)
+        {
+            throw new InvalidOperationException(
+                $"{bindMethodName}('{method.Name}') on entity set '{EntitySetName}': the handler must " +
+                $"accept the entity key as its first parameter, but '{method.Name}' has no parameters " +
+                $"(besides an optional trailing CancellationToken). Expected signature: " +
+                $"'{method.Name}({typeof(TKey).Name} key, ...)'.");
+        }
+
+        if (visibleParams[0].ParameterType != typeof(TKey))
+        {
+            throw new InvalidOperationException(
+                $"{bindMethodName}('{method.Name}') on entity set '{EntitySetName}': the handler's first " +
+                $"parameter must be of type '{typeof(TKey).Name}' (the entity key), but " +
+                $"'{method.Name}' declares '{visibleParams[0].Name}' as '{visibleParams[0].ParameterType.Name}'. " +
+                $"Expected signature: '{method.Name}({typeof(TKey).Name} {visibleParams[0].Name}, ...)'.");
+        }
     }
 
     private static string GetNavigationPropertyName(Expression body)
@@ -1443,6 +1480,25 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     }
     string IEntitySetEndpointSource.InvokeGetKeyString(object model)
         => LazyInitializer.EnsureInitialized(ref _keyToString, CompileKeyToString)((TModel)model);
+
+    // S4 fix: a second compiled accessor, distinct from CompileKeyToString above. That one
+    // formats the key raw/unquoted (used only for PUT's body-vs-URL key equality check, which
+    // must compare against the equally-unquoted ODataKeyParser.Parse result). This one formats
+    // the key as a canonical, URL-safe OData key literal (quoted + percent-encoded for string
+    // keys) for embedding in entity-id URLs (POST 201 Location, OData-EntityId, @odata.id).
+    private static readonly ConcurrentDictionary<Type, Func<TModel, string>> s_keyToUrlCache = new();
+    private Func<TModel, string>? _keyToUrl;
+    private Func<TModel, string> CompileKeyToUrl()
+    {
+        return s_keyToUrlCache.GetOrAdd(GetType(), _ =>
+        {
+            var compiled = _getKey.Compile();
+            return model => OhData.AspNetCore.ODataEntityKeyUrlFormatter.Format(compiled(model)!);
+        });
+    }
+    string IEntitySetEndpointSource.InvokeGetKeyForUrl(object model)
+        => LazyInitializer.EnsureInitialized(ref _keyToUrl, CompileKeyToUrl)((TModel)model);
+
     int? IEntitySetEndpointSource.MaxTop => _resolvedMaxTop;
     bool IEntitySetEndpointSource.IdempotentDelete => _resolvedIdempotentDelete;
     bool IEntitySetEndpointSource.AllowUpsert => _resolvedAllowUpsert;

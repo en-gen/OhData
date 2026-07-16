@@ -201,6 +201,46 @@ public class EntitySetClientUrlTests
         Assert.Equal("Widgets(2024-06-01T12%3A00%3A00%2B05%3A30)", KeyUrl(dto));
     }
 
+    // S10/B3 fix: ODataKeyFormatter previously used a fixed "ss" (whole-seconds) format string
+    // for DateTime/DateTimeOffset keys, silently truncating any sub-second precision. A key
+    // formatted from an entity's actual (sub-second-precision) key value would then no longer
+    // match the entity it was formatted from, producing a spurious 404. Delegates to the same
+    // ODataDateTimeLiteralFormatter FilterTranslator uses, so precision is preserved (trimmed of
+    // trailing zeros) exactly as it already is for $filter literals.
+    [Fact]
+    public void Key_DateTime_Utc_PreservesFractionalSeconds()
+    {
+        var dt = new DateTime(2024, 6, 1, 12, 0, 0, 123, DateTimeKind.Utc).AddTicks(4567);
+        Assert.Equal("Widgets(2024-06-01T12%3A00%3A00.1234567Z)", KeyUrl(dt));
+    }
+
+    [Fact]
+    public void Key_DateTime_Utc_TrimsTrailingFractionalZeros()
+    {
+        // 12:00:00.500 -> trailing zeros in the 7-digit tick representation are trimmed to ".5".
+        var dt = new DateTime(2024, 6, 1, 12, 0, 0, 500, DateTimeKind.Utc);
+        Assert.Equal("Widgets(2024-06-01T12%3A00%3A00.5Z)", KeyUrl(dt));
+    }
+
+    [Fact]
+    public void Key_DateTimeOffset_WithOffset_PreservesFractionalSeconds()
+    {
+        var dto = new DateTimeOffset(2024, 6, 1, 12, 0, 0, 123, new TimeSpan(5, 30, 0));
+        Assert.Equal("Widgets(2024-06-01T12%3A00%3A00.123%2B05%3A30)", KeyUrl(dto));
+    }
+
+    [Fact]
+    public void Key_DateTime_And_FilterLiteral_FormatIdentically()
+    {
+        // The whole point of sharing ODataDateTimeLiteralFormatter: a key literal and a $filter
+        // literal for the same value must produce the same underlying literal text (both parsed
+        // the same way server-side), differing only in that the key literal is percent-encoded.
+        var dt = new DateTime(2024, 6, 1, 12, 0, 0, 123, DateTimeKind.Utc).AddTicks(4560);
+        string filterLiteral = OhData.Client.Internal.ODataDateTimeLiteralFormatter.FormatDateTime(dt);
+        string keyLiteral = Uri.UnescapeDataString(KeyUrl(dt))["Widgets(".Length..^1];
+        Assert.Equal(filterLiteral, keyLiteral);
+    }
+
     [Fact]
     public void Key_DateOnly()
     {

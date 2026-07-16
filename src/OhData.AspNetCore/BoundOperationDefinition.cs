@@ -22,8 +22,13 @@ internal sealed record BoundOperationDefinition
     public required bool IsAction { get; init; }
 
     /// <summary>
-    /// The visible OData parameters (all delegate parameters except <see cref="CancellationToken"/>
-    /// and, for entity-level operations, the leading key parameter).
+    /// The delegate's parameters, in declaration order, with a trailing <see cref="CancellationToken"/>
+    /// parameter (if present) excluded. For entity-level operations (<see cref="IsEntityLevel"/>),
+    /// the leading key parameter is <em>included</em> here at index 0 -- the framework validates at
+    /// bind time (<c>EntitySetProfile.BindEntityFunction</c>/<c>BindEntityAction</c>) that it is
+    /// present and typed as <c>TKey</c>, then supplies the parsed route key as <c>args[0]</c> at
+    /// request time. Only <c>Parameters[1..]</c> are exposed as OData query-string/JSON-body
+    /// parameters for entity-level operations.
     /// </summary>
     public required ParameterInfo[] Parameters { get; init; }
 

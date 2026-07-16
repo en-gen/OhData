@@ -69,6 +69,14 @@ internal interface IEntitySetEndpointSource
     IReadOnlyCollection<string> NavigationPropertyNames { get; }
     string KeyPropertyName { get; }
     string InvokeGetKeyString(object model);
+
+    /// <summary>
+    /// Formats the model's key as a canonical, URL-safe OData key literal for embedding inside
+    /// an entity-id URL segment (<c>{EntitySet}({key})</c>) -- e.g. quoted and percent-encoded
+    /// for string keys (Part 2 §4.3.1). Distinct from <see cref="InvokeGetKeyString"/>, which
+    /// returns the raw unquoted representation used for body-vs-URL key equality checks (PUT).
+    /// </summary>
+    string InvokeGetKeyForUrl(object model);
     bool IsAdvancedConfigureOverridden { get; }
 
     Task<object?> InvokeGetAllAsync(CancellationToken ct);

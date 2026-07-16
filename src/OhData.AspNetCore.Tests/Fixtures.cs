@@ -1370,3 +1370,56 @@ internal class PropertyCollisionProfile : EntitySetProfile<int, Widget>
     private Task<string> Name(int key) => Task.FromResult("collision");
 }
 
+/// <summary>
+/// Profile whose entity-bound function has zero parameters (besides the trailing
+/// CancellationToken), so there is nowhere to place the entity key. Used to test the S6
+/// startup validation: <c>BindEntityFunction</c> must throw <see cref="InvalidOperationException"/>
+/// rather than registering a route that fails with <c>IndexOutOfRangeException</c> at request time.
+/// </summary>
+internal class ZeroParamEntityFunctionProfile : EntitySetProfile<int, Widget>
+{
+    public ZeroParamEntityFunctionProfile() : base(x => x.Id)
+    {
+        EntitySetName = "ZeroParamFnWidgets";
+        GetById = (id, ct) => Task.FromResult<Widget?>(new Widget { Id = 1, Name = "X" });
+        BindEntityFunction(NoParams);
+    }
+
+    private Task<string> NoParams() => Task.FromResult("oops");
+}
+
+/// <summary>
+/// Profile whose entity-bound action has zero parameters. Same S6 validation as
+/// <see cref="ZeroParamEntityFunctionProfile"/>, for <c>BindEntityAction</c>.
+/// </summary>
+internal class ZeroParamEntityActionProfile : EntitySetProfile<int, Widget>
+{
+    public ZeroParamEntityActionProfile() : base(x => x.Id)
+    {
+        EntitySetName = "ZeroParamActionWidgets";
+        GetById = (id, ct) => Task.FromResult<Widget?>(new Widget { Id = 1, Name = "X" });
+        BindEntityAction(NoParams);
+    }
+
+    private Task NoParams() => Task.CompletedTask;
+}
+
+/// <summary>
+/// Profile whose entity-bound function's first parameter is the wrong type (<c>string</c>
+/// instead of the entity's <c>int</c> key). Used to test the S6 startup validation: the framework
+/// places the parsed route key into <c>args[0]</c> assuming it matches <c>TKey</c>, and
+/// <c>BindEntityFunction</c> must reject a mismatched first parameter at bind time.
+/// </summary>
+internal class WrongKeyTypeEntityFunctionProfile : EntitySetProfile<int, Widget>
+{
+    public WrongKeyTypeEntityFunctionProfile() : base(x => x.Id)
+    {
+        EntitySetName = "WrongKeyTypeFnWidgets";
+        GetById = (id, ct) => Task.FromResult<Widget?>(new Widget { Id = 1, Name = "X" });
+        BindEntityFunction(BadFirstParam);
+    }
+
+    // First parameter should be 'int' (TKey) but is 'string'.
+    private Task<string> BadFirstParam(string notTheKey) => Task.FromResult(notTheKey);
+}
+
