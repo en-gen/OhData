@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Linq.Expressions;
@@ -15,6 +16,23 @@ namespace OhData.Client.Internal;
 /// </summary>
 internal sealed class FilterTranslator : ExpressionVisitor
 {
+    /// <summary>
+    /// One entry per enclosing any()/all() scope, outermost first. Lets a nested sub-translator
+    /// resolve a reference to an ancestor lambda's range variable (or the root parameter) back to
+    /// its OData path prefix, even when the reference is several any()/all() levels removed.
+    /// </summary>
+    private readonly struct OuterScope
+    {
+        public OuterScope(ParameterExpression parameter, string pathPrefix)
+        {
+            Parameter = parameter;
+            PathPrefix = pathPrefix;
+        }
+
+        public ParameterExpression Parameter { get; }
+        public string PathPrefix { get; }
+    }
+
     private readonly StringBuilder _sb = new();
     private readonly ParameterExpression _parameter;
     private readonly JsonNamingPolicy? _namingPolicy;
@@ -23,17 +41,23 @@ internal sealed class FilterTranslator : ExpressionVisitor
     /// set to the range-variable name for sub-translators used in any()/all() predicates).
     /// </summary>
     private readonly string _parameterPrefix;
+    private readonly IReadOnlyList<OuterScope> _outerScopes;
 
-    private FilterTranslator(ParameterExpression parameter) : this(parameter, null, "") { }
+    private FilterTranslator(ParameterExpression parameter) : this(parameter, null, "", []) { }
 
     private FilterTranslator(ParameterExpression parameter, JsonNamingPolicy? namingPolicy)
-        : this(parameter, namingPolicy, "") { }
+        : this(parameter, namingPolicy, "", []) { }
 
-    private FilterTranslator(ParameterExpression parameter, JsonNamingPolicy? namingPolicy, string parameterPrefix)
+    private FilterTranslator(
+        ParameterExpression parameter,
+        JsonNamingPolicy? namingPolicy,
+        string parameterPrefix,
+        IReadOnlyList<OuterScope> outerScopes)
     {
         _parameter = parameter;
         _namingPolicy = namingPolicy;
         _parameterPrefix = parameterPrefix;
+        _outerScopes = outerScopes;
     }
 
     /// <summary>Translates <paramref name="predicate"/> to an OData filter string.</summary>
@@ -97,7 +121,7 @@ internal sealed class FilterTranslator : ExpressionVisitor
 
             if (leftEnum is not null && rightEnumIntValue is not null)
             {
-                Visit(node.Left);
+                VisitOperand(node.Left);
                 _sb.Append($" {op} ");
                 _sb.Append(FormatLiteral(Enum.ToObject(leftEnum, rightEnumIntValue)));
             }
@@ -105,16 +129,34 @@ internal sealed class FilterTranslator : ExpressionVisitor
             {
                 _sb.Append(FormatLiteral(Enum.ToObject(rightEnum, leftEnumIntValue)));
                 _sb.Append($" {op} ");
-                Visit(node.Right);
+                VisitOperand(node.Right);
             }
             else
             {
-                Visit(node.Left);
+                VisitOperand(node.Left);
                 _sb.Append($" {op} ");
-                Visit(node.Right);
+                VisitOperand(node.Right);
             }
         }
         return node;
+    }
+
+    /// <summary>
+    /// Visits a non-arithmetic comparison operand (eq/ne/gt/ge/lt/le), wrapping it in an
+    /// explicit extra pair of parens when it is itself a logical <c>and</c>/<c>or</c>
+    /// expression. Without this, an operand tree like <c>b == (x || y)</c> — where the
+    /// LINQ tree explicitly groups <c>x || y</c> as a single operand of <c>==</c> — would
+    /// emit <c>b eq (x) or (y)</c>: because <c>eq</c> binds tighter than <c>or</c> in OData
+    /// (Part 2 §5.1.1.1), a server parses that as <c>(b eq (x)) or (y)</c> — silently wrong.
+    /// Arithmetic operands (add/sub/mul/div/mod) do not need this: they already bind tighter
+    /// than every comparison operator, so no extra wrap changes their grouping.
+    /// </summary>
+    private void VisitOperand(Expression expr)
+    {
+        bool needsWrap = expr is BinaryExpression { NodeType: ExpressionType.AndAlso or ExpressionType.OrElse };
+        if (needsWrap) _sb.Append('(');
+        Visit(expr);
+        if (needsWrap) _sb.Append(')');
     }
 
     // ── Unary expressions ───────────────────────────────────────────────────────
@@ -178,9 +220,39 @@ internal sealed class FilterTranslator : ExpressionVisitor
             return node;
         }
 
+        // Date/time component accessors and string.Length → OData canonical functions
+        // (year()/month()/day()/hour()/minute()/second()/length()), not nested property paths.
+        // Without this, x.CreatedAt.Year emits "CreatedAt/Year" (a nonexistent navigation
+        // path) instead of "year(CreatedAt)". The cheap member-name/type check runs first so
+        // ordinary member accesses skip the path extraction entirely (perf-sensitive path).
+        if (node.Expression is not null
+            && TryGetTemporalFunctionName(node.Member.Name, node.Expression.Type, out string? functionName)
+            && TryGetPropertyPath(node.Expression, out string? componentBasePath))
+        {
+            _sb.Append(functionName);
+            _sb.Append('(');
+            _sb.Append(componentBasePath);
+            _sb.Append(')');
+            return node;
+        }
+
         if (TryGetPropertyPath(node, out string? path))
         {
             _sb.Append(path);
+        }
+        else if (ContainsParameterReference(node))
+        {
+            // The expression depends on a lambda range variable (this translator's own
+            // parameter or an outer any()/all() scope's) but isn't a plain property-access
+            // chain, so it cannot become an OData path — e.g. a member access on a ternary
+            // that itself reads an outer range variable. Silently falling back to a captured-
+            // value evaluation here would either throw-and-swallow to a bogus "null" literal
+            // (the original bug) or evaluate stale/wrong data. Fail loudly instead.
+            throw new NotSupportedException(
+                $"The expression '{node}' references a lambda range variable in a way that " +
+                "cannot be translated to an OData property path (for example, a member access " +
+                "on a conditional/computed expression). Rewrite the predicate to compare a " +
+                "direct property path, or supply a raw string $filter.");
         }
         else
         {
@@ -192,6 +264,84 @@ internal sealed class FilterTranslator : ExpressionVisitor
             _sb.Append(FormatLiteral(value));
         }
         return node;
+    }
+
+    // ── Parameter access (bare range variable, e.g. `t.Owner == x`) ────────────────
+
+    protected override Expression VisitParameter(ParameterExpression node)
+    {
+        if (TryGetPropertyPath(node, out string? path))
+        {
+            _sb.Append(path);
+            return node;
+        }
+
+        throw new NotSupportedException(
+            $"Reference to range variable '{node.Name}' could not be translated to an OData " +
+            "path. This typically means an entire entity/complex value is being compared " +
+            "rather than one of its properties, which OData $filter cannot express directly.");
+    }
+
+    /// <summary>
+    /// Returns the OData canonical temporal/string function name for a supported CLR
+    /// component-accessor member (<c>Year</c>/<c>Month</c>/<c>Day</c>/<c>Hour</c>/
+    /// <c>Minute</c>/<c>Second</c> on date/time types, <c>Length</c> on <see cref="string"/>).
+    /// </summary>
+    private static bool TryGetTemporalFunctionName(string memberName, Type declaringExpressionType, out string? functionName)
+    {
+        if (declaringExpressionType == typeof(string) && memberName == "Length")
+        {
+            functionName = "length";
+            return true;
+        }
+
+        bool isDateLike = declaringExpressionType == typeof(DateTime)
+            || declaringExpressionType == typeof(DateTimeOffset)
+            || declaringExpressionType == typeof(DateOnly);
+        bool isTimeLike = declaringExpressionType == typeof(DateTime)
+            || declaringExpressionType == typeof(DateTimeOffset)
+            || declaringExpressionType == typeof(TimeOnly);
+
+        functionName = memberName switch
+        {
+            "Year" when isDateLike => "year",
+            "Month" when isDateLike => "month",
+            "Day" when isDateLike => "day",
+            "Hour" when isTimeLike => "hour",
+            "Minute" when isTimeLike => "minute",
+            "Second" when isTimeLike => "second",
+            _ => null,
+        };
+        return functionName is not null;
+    }
+
+    /// <summary>Returns <see langword="true"/> if <paramref name="expr"/> contains a reference to any lambda parameter.</summary>
+    private static bool ContainsParameterReference(Expression expr)
+    {
+        // Fast path for the overwhelmingly common shape reaching this check: a plain
+        // member-access chain. A chain bottoming out at a ConstantExpression is a captured
+        // closure variable (no parameter); one bottoming out at a ParameterExpression is a
+        // range-variable reference. Only fall back to the allocating visitor walk for
+        // anything more exotic (method calls, conditionals, ...).
+        Expression? current = expr;
+        while (current is MemberExpression m) current = m.Expression;
+        if (current is null or ConstantExpression) return false;
+        if (current is ParameterExpression) return true;
+
+        var finder = new ParameterReferenceFinder();
+        finder.Visit(expr);
+        return finder.Found;
+    }
+
+    private sealed class ParameterReferenceFinder : ExpressionVisitor
+    {
+        public bool Found { get; private set; }
+
+        protected override Expression VisitParameter(ParameterExpression node)
+        {
+            Found = true;
+            return base.VisitParameter(node);
+        }
     }
 
     // ── Constants ───────────────────────────────────────────────────────────────
@@ -271,7 +421,20 @@ internal sealed class FilterTranslator : ExpressionVisitor
 
             // Build a sub-translator with the range variable as its parameter.
             // The parameterPrefix ensures "t/Name" is emitted instead of just "Name".
-            var subTranslator = new FilterTranslator(lambdaArg.Parameters[0], _namingPolicy, rangeVar);
+            //
+            // Extend the outer-scope chain with this translator's own parameter so the
+            // sub-translator can resolve references back to it (and to any ancestor beyond
+            // it) from inside the nested any()/all() predicate. The root translator's
+            // parameter has an empty _parameterPrefix (it needs none for self-reference —
+            // "Price gt 10" not "$it/Price gt 10") but must be addressed as "$it" — the
+            // OData implicit-iteration-variable name — when referenced from a nested lambda
+            // scope, since the range variable there shadows the unqualified form.
+            string outerRefName = _parameterPrefix.Length == 0 ? "$it" : _parameterPrefix;
+            var outerScopes = new List<OuterScope>(_outerScopes.Count + 1);
+            outerScopes.AddRange(_outerScopes);
+            outerScopes.Add(new OuterScope(_parameter, outerRefName));
+
+            var subTranslator = new FilterTranslator(lambdaArg.Parameters[0], _namingPolicy, rangeVar, outerScopes);
             subTranslator.Visit(lambdaArg.Body);
             string predicate = subTranslator._sb.ToString();
 
@@ -520,11 +683,28 @@ internal sealed class FilterTranslator : ExpressionVisitor
 
     private bool TryGetPropertyPath(Expression expr, out string path)
     {
-        if (expr is ParameterExpression p && p == _parameter)
+        if (expr is ParameterExpression p)
         {
-            // Return the parameter prefix (empty string for root, range-var name for sub-translators)
-            path = _parameterPrefix;
-            return true;
+            if (p == _parameter)
+            {
+                // Return the parameter prefix (empty string for root, range-var name for sub-translators)
+                path = _parameterPrefix;
+                return true;
+            }
+
+            // Reference to an ancestor any()/all() scope's range variable (or the root
+            // parameter, addressed as "$it") from within a nested lambda predicate.
+            foreach (OuterScope scope in _outerScopes)
+            {
+                if (p == scope.Parameter)
+                {
+                    path = scope.PathPrefix;
+                    return true;
+                }
+            }
+
+            path = "";
+            return false;
         }
 
         if (expr is MemberExpression member && TryGetPropertyPath(member.Expression!, out string? parent))
@@ -611,10 +791,27 @@ internal sealed class FilterTranslator : ExpressionVisitor
 
     private static string FormatDateTime(DateTime dt)
     {
-        // Always use the pattern WITHOUT "Z" so we can append the suffix after trimming.
-        string s = dt.ToString("yyyy-MM-ddTHH:mm:ss.fffffff", CultureInfo.InvariantCulture);
-        string suffix = dt.Kind == DateTimeKind.Utc ? "Z" : "";
-        return TrimFractionalZeros(s, suffix);
+        // The OData ABNF (Part 2 §5.1.1.9, dateTimeOffsetValue) requires an explicit "Z" or
+        // numeric offset on every DateTimeOffset literal. Emitting none (the previous
+        // behaviour for any non-Utc Kind) produces a literal the Microsoft URI parser — and
+        // therefore any OData 4.0 server, including OhData's own — rejects with 400.
+        //
+        //   Kind.Utc:         emit as-is with "Z".
+        //   Kind.Local:       convert to UTC first, then emit with "Z". A local wall-clock time
+        //                     (e.g. from DateTime.Now) is ambiguous off-machine — the timezone
+        //                     that produced it isn't part of the value — so the only literal
+        //                     that means the same instant everywhere is its UTC equivalent.
+        //                     Preserving the local offset would only be correct on the machine
+        //                     that captured the value and would silently drift under DST.
+        //   Kind.Unspecified: treated as UTC (not rejected). This matches the convention most
+        //                     ORMs/serializers use for "no timezone info" values (e.g.
+        //                     System.Text.Json's own DateTime round-tripping), and keeps the
+        //                     common case — comparing a DB column mapped to Kind.Unspecified but
+        //                     stored in UTC — working without forcing every caller to Kind-tag
+        //                     values. It is always spec-legal since a "Z" suffix is always emitted.
+        DateTime utc = dt.Kind == DateTimeKind.Local ? dt.ToUniversalTime() : dt;
+        string s = utc.ToString("yyyy-MM-ddTHH:mm:ss.fffffff", CultureInfo.InvariantCulture);
+        return TrimFractionalZeros(s, "Z");
     }
 
     private static string FormatDateTimeOffset(DateTimeOffset dto)

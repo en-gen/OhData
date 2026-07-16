@@ -135,7 +135,7 @@ internal sealed class ODataHttpClient
         using var content = JsonContent.Create(body, options: _options.JsonOptions);
         using var request = new HttpRequestMessage(HttpMethod.Put, url) { Content = content };
         if (ifMatch is not null)
-            request.Headers.TryAddWithoutValidation("If-Match", ifMatch);
+            request.Headers.TryAddWithoutValidation("If-Match", FormatEntityTag(ifMatch));
         if (preferMinimal)
             request.Headers.Add("Prefer", "return=minimal");
         using var response = await _http.SendAsync(request, ct);
@@ -158,7 +158,7 @@ internal sealed class ODataHttpClient
         using var content = JsonContent.Create(body, body.GetType(), options: _options.JsonOptions);
         using var request = new HttpRequestMessage(HttpMethod.Patch, url) { Content = content };
         if (ifMatch is not null)
-            request.Headers.TryAddWithoutValidation("If-Match", ifMatch);
+            request.Headers.TryAddWithoutValidation("If-Match", FormatEntityTag(ifMatch));
         if (preferMinimal)
             request.Headers.Add("Prefer", "return=minimal");
         using var response = await _http.SendAsync(request, ct);
@@ -178,7 +178,7 @@ internal sealed class ODataHttpClient
     {
         using var request = new HttpRequestMessage(HttpMethod.Delete, url);
         if (ifMatch is not null)
-            request.Headers.TryAddWithoutValidation("If-Match", ifMatch);
+            request.Headers.TryAddWithoutValidation("If-Match", FormatEntityTag(ifMatch));
         using var response = await _http.SendAsync(request, ct);
         await EnsureSuccessAsync(response, url, ct);
     }
@@ -230,7 +230,7 @@ internal sealed class ODataHttpClient
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         if (ifNoneMatch is not null)
-            request.Headers.TryAddWithoutValidation("If-None-Match", ifNoneMatch);
+            request.Headers.TryAddWithoutValidation("If-None-Match", FormatEntityTag(ifNoneMatch));
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
 
         if (response.StatusCode == HttpStatusCode.NotModified)
@@ -253,6 +253,37 @@ internal sealed class ODataHttpClient
         string? etag = response.Headers.ETag?.Tag?.Trim('"');
         return (entity, etag, false);
     }
+
+    // ── Entity-tag formatting ───────────────────────────────────────────────────
+
+    /// <summary>
+    /// Formats a caller-supplied ETag value as an RFC 7232 §2.3 entity-tag for use in an
+    /// <c>If-Match</c>/<c>If-None-Match</c> request header. <see cref="ODataHttpClient"/>'s own
+    /// GET-with-ETag methods (<see cref="GetSingleWithETagAsync{T}"/>,
+    /// <see cref="GetSingleIfChangedAsync{T}"/>) intentionally strip the surrounding quotes from
+    /// the value they return, so a caller round-tripping that value straight back into
+    /// <c>ifMatch</c>/<c>ifNoneMatch</c> hands us an unquoted opaque-tag string — RFC 7232
+    /// requires <c>entity-tag = [ weak ] DQUOTE *etagc DQUOTE</c>, and a strict server rejects
+    /// (or silently never matches) an unquoted value. Quote it here unless it is already a
+    /// quoted strong/weak tag or the wildcard <c>*</c>, so both "quoted" and "unquoted" callers
+    /// produce a spec-valid header without ever double-quoting.
+    /// </summary>
+    private static string FormatEntityTag(string etag)
+    {
+        if (etag.Length == 0 || etag == "*") return etag;
+
+        // Weak validator prefix (RFC 7232 §2.3): W/"..."
+        if (etag.StartsWith("W/", StringComparison.Ordinal))
+        {
+            string rest = etag[2..];
+            return "W/" + QuoteIfNeeded(rest);
+        }
+
+        return QuoteIfNeeded(etag);
+    }
+
+    private static string QuoteIfNeeded(string value) =>
+        value.Length >= 2 && value[0] == '"' && value[^1] == '"' ? value : $"\"{value}\"";
 
     // ── Error handling ──────────────────────────────────────────────────────────
 

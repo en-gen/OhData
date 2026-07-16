@@ -1,5 +1,6 @@
 using System;
 using System.Net.Http;
+using System.Text.Json;
 using Xunit;
 
 namespace OhData.Client.Tests;
@@ -51,22 +52,26 @@ public class EntitySetClientUrlTests
             "Widgets?$select=Id%2CName",
             Builder().Select("Id", "Name").BuildCollectionUrl());
 
+    // C6/S10 casing consistency: EntitySetClient's default JsonOptions.PropertyNamingPolicy is
+    // CamelCase (matching the OhData server's own JSON casing), and OrderBy/ThenBy now honor it
+    // like Filter and Select(expression) already did — previously OrderBy alone emitted
+    // PascalCase CLR member names regardless of the configured naming policy.
     [Fact]
     public void OrderBy_Ascending() =>
         Assert.Equal(
-            "Widgets?$orderby=Name",
+            "Widgets?$orderby=name",
             Builder().OrderBy(x => x.Name).BuildCollectionUrl());
 
     [Fact]
     public void OrderBy_Descending() =>
         Assert.Equal(
-            "Widgets?$orderby=Price%20desc",
+            "Widgets?$orderby=price%20desc",
             Builder().OrderByDescending(x => x.Price).BuildCollectionUrl());
 
     [Fact]
     public void ThenBy_AppendsToOrderBy() =>
         Assert.Equal(
-            "Widgets?$orderby=Name%2CPrice%20desc",
+            "Widgets?$orderby=name%2Cprice%20desc",
             Builder().OrderBy(x => x.Name).ThenByDescending(x => x.Price).BuildCollectionUrl());
 
     [Fact]
@@ -163,11 +168,22 @@ public class EntitySetClientUrlTests
         Assert.Equal("Widgets(2024-06-01T12%3A00%3A00Z)", KeyUrl(dt));
     }
 
+    // B3 (ODataKeyFormatter — same flaw as FilterTranslator): Unspecified is treated as UTC
+    // and always gets an explicit "Z", rather than the offset-less literal a strict OData
+    // URI parser rejects.
     [Fact]
-    public void Key_DateTime_Unspecified()
+    public void Key_DateTime_Unspecified_TreatedAsUtc()
     {
         var dt = new DateTime(2024, 6, 1, 12, 0, 0, DateTimeKind.Unspecified);
-        Assert.Equal("Widgets(2024-06-01T12%3A00%3A00)", KeyUrl(dt));
+        Assert.Equal("Widgets(2024-06-01T12%3A00%3A00Z)", KeyUrl(dt));
+    }
+
+    [Fact]
+    public void Key_DateTime_Local_ConvertsToUtc()
+    {
+        var local = new DateTime(2024, 6, 1, 12, 0, 0, DateTimeKind.Local);
+        string expected = $"Widgets({Uri.EscapeDataString(local.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss") + "Z")})";
+        Assert.Equal(expected, KeyUrl(local));
     }
 
     [Fact]
@@ -223,19 +239,19 @@ public class EntitySetClientUrlTests
     [Fact]
     public void OrderBy_NavigationPath_ProducesSlashSeparatedPath() =>
         Assert.Contains(
-            "$orderby=Category%2FName",
+            "$orderby=category%2Fname",
             ProductBuilder().OrderBy(x => x.Category.Name).BuildCollectionUrl());
 
     [Fact]
     public void OrderByDescending_NavigationPath() =>
         Assert.Contains(
-            "$orderby=Category%2FName%20desc",
+            "$orderby=category%2Fname%20desc",
             ProductBuilder().OrderByDescending(x => x.Category.Name).BuildCollectionUrl());
 
     [Fact]
     public void ThenBy_NavigationPath() =>
         Assert.Contains(
-            "$orderby=Name%2CCategory%2FName",
+            "$orderby=name%2Ccategory%2Fname",
             ProductBuilder().OrderBy(x => x.Name).ThenBy(x => x.Category.Name).BuildCollectionUrl());
 
     // ── M-9: Select with navigation path ────────────────────────────────────────
@@ -262,13 +278,13 @@ public class EntitySetClientUrlTests
     [Fact]
     public void Select_TwoDirectMemberExpressions_ProducesCorrectUrl() =>
         Assert.Equal(
-            "Widgets?$select=Id%2CName",
+            "Widgets?$select=id%2Cname",
             Builder().Select(x => x.Id, x => x.Name).BuildCollectionUrl());
 
     [Fact]
     public void Select_ThreeDirectMemberExpressions_ProducesCorrectUrl() =>
         Assert.Equal(
-            "Widgets?$select=Id%2CName%2CPrice",
+            "Widgets?$select=id%2Cname%2Cprice",
             Builder().Select(x => x.Id, x => x.Name, x => x.Price).BuildCollectionUrl());
 
     [Fact]
@@ -281,9 +297,12 @@ public class EntitySetClientUrlTests
     [Fact]
     public void Expand_TwoDirectMemberExpressions_ProducesCorrectUrl()
     {
-        // Product has Category; add a second nav property class for the test
+        // Product has Category; add a second nav property class for the test.
+        // Casing consistency: the typed-expression Expand overload now honors the naming
+        // policy like Filter/Select do — the raw-string Expand overload (see
+        // Expand_CalledTwice_AccumulatesNavigations below) intentionally does not.
         string url = ProductBuilder().Expand(x => x.Category).BuildCollectionUrl();
-        Assert.Equal("Products?$expand=Category", url);
+        Assert.Equal("Products?$expand=category", url);
     }
 
     [Fact]
@@ -384,6 +403,60 @@ public class EntitySetClientUrlTests
         Assert.Equal(
             Builder().Key("foo").BuildEntityUrl(),
             Builder().Key<string>("foo").BuildEntityUrl());
+
+    // ── S10: casing consistency across every query-option builder ──────────────
+    //
+    // Filter/Select(expr) already ran derived property names through the naming policy;
+    // OrderBy/ThenBy/Expand/Select(params expr[]) did not, so mixing options on the same
+    // query produced a URL with inconsistent casing (fine against OhData's case-insensitive
+    // resolver, but broken against a strict/case-sensitive OData 4.0 service). All five now
+    // go through the same `_options.JsonOptions.PropertyNamingPolicy` pipeline.
+
+    [Fact]
+    public void AllTypedOptionBuilders_AgreeOnCasing_WithDefaultCamelCasePolicy()
+    {
+        string url = Builder()
+            .Filter(x => x.Price > 1)
+            .Select(x => x.Name)
+            .OrderBy(x => x.Price)
+            .BuildCollectionUrl();
+
+        Assert.Contains("$filter=price%20gt%201", url);
+        Assert.Contains("$select=name", url);
+        Assert.Contains("$orderby=price", url);
+    }
+
+    [Fact]
+    public void AllTypedOptionBuilders_AgreeOnCasing_WithNullPolicy_EmitPascalCase()
+    {
+        var options = new OhDataClientOptions
+        {
+            JsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = null },
+        };
+        var client = new OhDataClient(
+            new HttpClient { BaseAddress = new Uri("http://localhost/") }, options);
+        var builder = client.For<Widget>("Widgets");
+
+        string url = builder
+            .Filter(x => x.Price > 1)
+            .Select(x => x.Name)
+            .OrderBy(x => x.Price)
+            .Expand(x => x.Name) // exercised purely for URL shape, not a real nav property
+            .BuildCollectionUrl();
+
+        Assert.Contains("$filter=Price%20gt%201", url);
+        Assert.Contains("$select=Name", url);
+        Assert.Contains("$orderby=Price", url);
+        Assert.Contains("$expand=Name", url);
+    }
+
+    [Fact]
+    public void Expand_RawStringOverload_UnaffectedByNamingPolicy_CallerSuppliesExactCasing() =>
+        // The string overloads intentionally bypass the naming policy — the caller passed an
+        // exact server-side name and the client must not rewrite it.
+        Assert.Contains(
+            "$expand=Category",
+            ProductBuilder().Expand("Category").BuildCollectionUrl());
 
     // ── Helper ──────────────────────────────────────────────────────────────────
 

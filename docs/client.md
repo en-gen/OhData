@@ -73,6 +73,8 @@ var cheap  = await base.Filter(x => x.Price < 10).ToListAsync();
 var pricey = await base.Filter(x => x.Price > 100).OrderBy(x => x.Name).ToListAsync();
 ```
 
+**Property-name casing.** Every typed (expression-based) builder — `Filter`, `Select`, `OrderBy`/`OrderByDescending`/`ThenBy`/`ThenByDescending`, and `Expand` — runs each property name through `OhDataClientOptions.JsonOptions.PropertyNamingPolicy` before emitting it. The default policy is camelCase (matching the OhData server's JSON casing), so `x => x.Price > 10` emits `$filter=price gt 10`. Set `PropertyNamingPolicy = null` to emit the CLR PascalCase names for servers with PascalCase metadata. The raw-string overloads (`Filter(string)`, `Select(params string[])`, `Expand(params string[])`) are never rewritten — those names are sent exactly as you typed them. For readability, the examples below show the CLR property names; with the default options they are emitted camelCase.
+
 ### `$filter`
 
 Filter with a LINQ predicate - translated to an OData `$filter` string at call time:
@@ -109,11 +111,27 @@ decimal min = 5m;
 | `.ToLower()`, `.ToUpper()` | `tolower(prop)`, `toupper(prop)` |
 | `.Trim()` | `trim(prop)` |
 | `string.IsNullOrEmpty(x.P)` | `(x.P eq null or x.P eq '')` |
+| `.Length` (string) | `length(prop)` |
+| `.Year` / `.Month` / `.Day` (DateTime, DateTimeOffset, DateOnly) | `year(prop)` / `month(prop)` / `day(prop)` |
+| `.Hour` / `.Minute` / `.Second` (DateTime, DateTimeOffset, TimeOnly) | `hour(prop)` / `minute(prop)` / `second(prop)` |
+| `.Any(t => ...)` / `.All(t => ...)` (collection property) | `prop/any(t: ...)` / `prop/all(t: ...)` |
+
+Inside an `Any`/`All` lambda you can reference the outer entity — the translator emits the
+OData implicit iteration variable `$it` for it:
+
+```csharp
+.Filter(x => x.Tags.Any(t => t.Name == x.Name))
+// → $filter=Tags/any(t: t/Name eq $it/Name)
+```
+
+Expressions that reference a lambda range variable in a way that has no OData path equivalent
+(e.g. a member access on a ternary) throw `NotSupportedException` at translation time rather
+than silently producing a wrong query.
 
 For unsupported patterns, pass a raw OData string:
 
 ```csharp
-.Filter("year(CreatedAt) eq 2024 and month(CreatedAt) ge 6")
+.Filter("round(Price) eq 5")
 ```
 
 ### `$select`
@@ -407,6 +425,11 @@ Optional parameters:
 | `ifMatch` | `string?` | If-Match ETag value. Returns `412 Precondition Failed` if the server's current ETag does not match. |
 | `preferMinimal` | `bool` | Send `Prefer: return=minimal`; server may respond with `204 No Content` (method returns `null`). |
 
+The `ifMatch`/`ifNoneMatch` values are normalised to RFC 7232 entity-tag syntax on the wire:
+an unquoted value (including the unquoted ETag that `GetWithETagAsync` returns) is wrapped in
+double quotes, an already-quoted or `W/`-prefixed value is left intact, and `*` passes through
+unchanged — so you can pass either form without double-quoting.
+
 ```csharp
 Product? updated = await client.For<Product>().Key(42)
     .PutAsync(product with { Price = 5.49m }, ifMatch: etag, preferMinimal: false);
@@ -480,10 +503,17 @@ The filter translator and key formatter handle these CLR types:
 | `decimal`, `float`, `double` | invariant-culture decimal | `Price gt 4.99` |
 | `bool` | `true` / `false` | `IsActive eq true` |
 | `Guid` | 36-char hex | `Id eq 3f2504e0-...` |
-| `DateTime` / `DateTimeOffset` | ISO 8601 | `CreatedAt gt 2024-01-01T00:00:00Z` |
+| `DateTime` / `DateTimeOffset` | ISO 8601, always with `Z` or an explicit offset | `CreatedAt gt 2024-01-01T00:00:00Z` |
 | `DateOnly` | `'yyyy-MM-dd'` | `Date eq 2024-06-15` |
 | `TimeOnly` | `'HH:mm:ss'` | `Time eq 09:30:00` |
-| `Enum` | underlying int | `Status eq 1` |
+| `Enum` | quoted member name | `Status eq 'Active'` |
+
+**`DateTime` kind semantics.** OData `Edm.DateTimeOffset` literals always require a `Z` or an
+explicit numeric offset, so the client never emits an offset-less value:
+`DateTimeKind.Utc` is emitted as-is with `Z`; `DateTimeKind.Local` (e.g. `DateTime.Now`) is
+converted to its UTC instant via `ToUniversalTime()`; `DateTimeKind.Unspecified` is treated as
+UTC. If your `Unspecified` values represent local wall-clock time, convert them yourself (or
+use `DateTimeOffset`, which always carries its own offset and passes through unchanged).
 
 ---
 

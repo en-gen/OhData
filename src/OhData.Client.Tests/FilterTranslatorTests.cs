@@ -35,6 +35,7 @@ public class FilterTranslatorTests
     {
         public string Name { get; set; } = "";
         public bool Active { get; set; }
+        public Item? Owner { get; set; }
     }
 
     private sealed class Sub { public string Code { get; set; } = ""; }
@@ -66,6 +67,42 @@ public class FilterTranslatorTests
     [Fact]
     public void Not() =>
         Assert.Equal("not (IsActive)", F<Item>(x => !x.IsActive));
+
+    // ── Precedence: comparison operators around explicit and/or grouping ───────
+    //
+    // OData binds "eq"/"ne"/"gt"/"ge"/"lt"/"le" tighter than "and"/"or" (Part 2 §5.1.1.1).
+    // When the LINQ expression tree explicitly groups an and/or expression as the *operand*
+    // of a comparison (e.g. `b == (x || y)`), that grouping must be preserved with an
+    // explicit extra pair of parens around the whole sub-expression — otherwise
+    // "b eq (x) or (y)" (each operand of "or" separately wrapped, but not "x or y" as a
+    // unit) is emitted, which a server parses as "(b eq (x)) or (y)": silently wrong.
+
+    [Fact]
+    public void Precedence_EqualityAroundOrElse_WrapsWholeRightOperand() =>
+        Assert.Equal(
+            "IsActive eq ((Price gt 5) or (Id eq 1))",
+            F<Item>(x => x.IsActive == (x.Price > 5 || x.Id == 1)));
+
+    [Fact]
+    public void Precedence_EqualityAroundAndAlso_WrapsWholeLeftOperand() =>
+        Assert.Equal(
+            "((Price gt 5) and (IsActive eq true)) eq IsActive",
+            F<Item>(x => (x.Price > 5 && x.IsActive == true) == x.IsActive));
+
+    [Fact]
+    public void Precedence_NotOfAndAlso_OrElse_NestedGroupingPreserved() =>
+        // !(a || b) && c  →  (not ((a) or (b))) and (c)
+        Assert.Equal(
+            "(not ((IsActive) or (Id eq 1))) and (Price gt 5)",
+            F<Item>(x => !(x.IsActive || x.Id == 1) && x.Price > 5));
+
+    [Fact]
+    public void Precedence_OrOfEqualityOperands_NoExtraWrapNeeded() =>
+        // `a eq b or c`: eq already binds tighter than or, so no *extra* wrap is required
+        // beyond the blanket and/or operand parens the translator already applies.
+        Assert.Equal(
+            "(Id eq 1) or (IsActive)",
+            F<Item>(x => x.Id == 1 || x.IsActive));
 
     // ── String methods ──────────────────────────────────────────────────────────
 
@@ -228,11 +265,35 @@ public class FilterTranslatorTests
         Assert.Equal("2024-06-01T12:00:00Z", FilterTranslator.FormatLiteral(dt));
     }
 
+    // B3: DateTimeKind.Unspecified is treated as UTC (not left offset-less). An offset-less
+    // literal violates the OData ABNF (dateTimeOffsetValue always requires "Z" or a numeric
+    // offset) and the Microsoft URI parser — and therefore OhData's own server — rejects it
+    // with 400. See FilterTranslator.FormatDateTime for the full rationale.
     [Fact]
-    public void FormatLiteral_DateTimeUnspecified()
+    public void FormatLiteral_DateTimeUnspecified_TreatedAsUtc()
     {
         var dt = new DateTime(2024, 6, 1, 12, 0, 0, DateTimeKind.Unspecified);
-        Assert.Equal("2024-06-01T12:00:00", FilterTranslator.FormatLiteral(dt));
+        Assert.Equal("2024-06-01T12:00:00Z", FilterTranslator.FormatLiteral(dt));
+    }
+
+    // B3: DateTimeKind.Local is converted to its UTC-equivalent instant before formatting,
+    // rather than emitting the wall-clock value with no offset (which is both spec-invalid
+    // and, if it were "fixed" by attaching the local machine's offset instead, ambiguous once
+    // the value leaves the machine that produced it / drifts under DST).
+    [Fact]
+    public void FormatLiteral_DateTimeLocal_ConvertsToUtc()
+    {
+        var local = new DateTime(2024, 6, 1, 12, 0, 0, DateTimeKind.Local);
+        DateTime expectedUtc = local.ToUniversalTime();
+        string expectedLiteral = expectedUtc.ToString("yyyy-MM-ddTHH:mm:ss") + "Z";
+
+        string literal = FilterTranslator.FormatLiteral(local);
+
+        // Computed independently of the test runner's local timezone offset: whatever that
+        // offset is, FormatLiteral must land on the same UTC instant DateTime.ToUniversalTime()
+        // would compute for it.
+        Assert.Equal(expectedLiteral, literal);
+        Assert.EndsWith("Z", literal);
     }
 
     [Fact]
@@ -298,11 +359,93 @@ public class FilterTranslatorTests
             "CreatedAt eq 2024-06-01T12:00:00Z",
             F<Item>(x => x.CreatedAt == new DateTime(2024, 6, 1, 12, 0, 0, DateTimeKind.Utc)));
 
+    // B3: Kind=Unspecified must still produce a spec-valid ("Z"-suffixed) literal, not the
+    // offset-less string the server previously rejected with 400.
+    [Fact]
+    public void Filter_DateTime_Unspecified_EmitsZSuffix()
+    {
+        string filter = F<Item>(x => x.CreatedAt == new DateTime(2024, 6, 1, 12, 0, 0, DateTimeKind.Unspecified));
+        Assert.Equal("CreatedAt eq 2024-06-01T12:00:00Z", filter);
+    }
+
+    // B3: Kind=Local (the Kind of DateTime.Now) must convert to UTC rather than emit a
+    // wall-clock value with no offset. This is the "bread-and-butter" repro from the review:
+    // x => x.CreatedAt > DateTime.Now used to produce an offset-less literal.
+    [Fact]
+    public void Filter_DateTime_Local_ConvertsToUtc()
+    {
+        var local = new DateTime(2024, 6, 1, 12, 0, 0, DateTimeKind.Local);
+        string expected = $"CreatedAt eq {local.ToUniversalTime():yyyy-MM-ddTHH:mm:ss}Z";
+
+        string filter = F<Item>(x => x.CreatedAt == local);
+
+        Assert.Equal(expected, filter);
+    }
+
     [Fact]
     public void Filter_DateTimeOffset_Utc() =>
         Assert.Equal(
             "UpdatedAt gt 2024-06-01T12:00:00Z",
             F<Item>(x => x.UpdatedAt > new DateTimeOffset(2024, 6, 1, 12, 0, 0, TimeSpan.Zero)));
+
+    // B3: DateTimeOffset already carries its own offset and must pass through unchanged
+    // (this path was already correct; guarding against regression from the DateTime-Kind fix).
+    [Fact]
+    public void Filter_DateTimeOffset_NonZeroOffset_PassesThroughUnchanged() =>
+        Assert.Equal(
+            "UpdatedAt eq 2024-06-01T12:00:00+05:30",
+            F<Item>(x => x.UpdatedAt == new DateTimeOffset(2024, 6, 1, 12, 0, 0, new TimeSpan(5, 30, 0))));
+
+    // ── Date/time component accessors and string.Length → canonical functions ─
+    //
+    // x.CreatedAt.Year used to translate to the nonsensical nested-property path
+    // "CreatedAt/Year" instead of the OData canonical function year(CreatedAt), producing a
+    // confusing 400 from any real server. Same for Month/Day/Hour/Minute/Second and
+    // string.Length vs. length().
+
+    [Fact]
+    public void Filter_DateTimeYear_TranslatesToYearFunction() =>
+        Assert.Equal("year(CreatedAt) eq 2024", F<Item>(x => x.CreatedAt.Year == 2024));
+
+    [Fact]
+    public void Filter_DateTimeMonth_TranslatesToMonthFunction() =>
+        Assert.Equal("month(CreatedAt) eq 6", F<Item>(x => x.CreatedAt.Month == 6));
+
+    [Fact]
+    public void Filter_DateTimeDay_TranslatesToDayFunction() =>
+        Assert.Equal("day(CreatedAt) eq 1", F<Item>(x => x.CreatedAt.Day == 1));
+
+    [Fact]
+    public void Filter_DateTimeHour_TranslatesToHourFunction() =>
+        Assert.Equal("hour(CreatedAt) eq 12", F<Item>(x => x.CreatedAt.Hour == 12));
+
+    [Fact]
+    public void Filter_DateTimeMinute_TranslatesToMinuteFunction() =>
+        Assert.Equal("minute(CreatedAt) eq 30", F<Item>(x => x.CreatedAt.Minute == 30));
+
+    [Fact]
+    public void Filter_DateTimeSecond_TranslatesToSecondFunction() =>
+        Assert.Equal("second(CreatedAt) eq 15", F<Item>(x => x.CreatedAt.Second == 15));
+
+    [Fact]
+    public void Filter_DateTimeOffsetYear_TranslatesToYearFunction() =>
+        Assert.Equal("year(UpdatedAt) eq 2024", F<Item>(x => x.UpdatedAt.Year == 2024));
+
+    [Fact]
+    public void Filter_DateOnlyYear_TranslatesToYearFunction() =>
+        Assert.Equal("year(Date) eq 2024", F<Item>(x => x.Date.Year == 2024));
+
+    [Fact]
+    public void Filter_TimeOnlyHour_TranslatesToHourFunction() =>
+        Assert.Equal("hour(Time) eq 8", F<Item>(x => x.Time.Hour == 8));
+
+    [Fact]
+    public void Filter_StringLength_TranslatesToLengthFunction() =>
+        Assert.Equal("length(Name) eq 5", F<Item>(x => x.Name.Length == 5));
+
+    [Fact]
+    public void Filter_StringLength_NavigationPath_TranslatesToLengthFunction() =>
+        Assert.Equal("length(Sub/Code) gt 3", F<Item>(x => x.Sub!.Code.Length > 3));
 
     // ── Filter expressions: numeric types ─────────────────────────────────────
 
@@ -369,6 +512,58 @@ public class FilterTranslatorTests
     public void Filter_Any_WithNoArg_Throws() =>
         Assert.Throws<NotSupportedException>(() =>
             F<Item>(x => x.Tags.Any()));
+
+    // ── B4: outer-lambda references inside Any/All ─────────────────────────────
+    //
+    // Referencing the outer range variable (or a property of it) from inside a nested
+    // any()/all() predicate used to fall through to a silent "null" literal (TryEvaluateAsObject
+    // swallowing the "unbound parameter" exception from trying to compile the outer parameter
+    // as a constant). That produced a syntactically valid but semantically wrong filter —
+    // silently wrong query results, the worst failure class. The outer parameter is addressed
+    // via the OData implicit iteration variable "$it" (Part 2 §5.1.1.10.1) since the range
+    // variable inside the lambda shadows the unqualified top-level reference.
+
+    [Fact]
+    public void Filter_Any_OuterProperty_TranslatesToItPath() =>
+        Assert.Equal(
+            "Tags/any(t: t/Name eq $it/Name)",
+            F<Item>(x => x.Tags.Any(t => t.Name == x.Name)));
+
+    [Fact]
+    public void Filter_All_OuterProperty_TranslatesToItPath() =>
+        Assert.Equal(
+            "Tags/all(t: t/Name eq $it/Name)",
+            F<Item>(x => x.Tags.All(t => t.Name == x.Name)));
+
+    [Fact]
+    public void Filter_Any_OuterScalarPropertyComparedAgainstConstant_StillWorks() =>
+        // Regression guard: an outer-scope reference combined with an ordinary constant
+        // comparison in the same predicate must not disturb either side's translation.
+        Assert.Equal(
+            "Tags/any(t: (t/Active eq true) and (t/Name eq $it/Name))",
+            F<Item>(x => x.Tags.Any(t => t.Active == true && t.Name == x.Name)));
+
+    [Fact]
+    public void Filter_Any_OuterRangeVariableItself_TranslatesToIt()
+    {
+        // The bare outer parameter (not one of its properties) referenced from inside the
+        // nested lambda — e.g. comparing a nav property back to the whole outer instance.
+        // FilterTranslator has no VisitParameter override prior to this fix, so a bare
+        // ParameterExpression silently produced no output at all.
+        string filter = F<Item>(x => x.Tags.Any(t => t.Owner == x));
+        Assert.Equal("Tags/any(t: t/Owner eq $it)", filter);
+    }
+
+    [Fact]
+    public void Filter_Any_GenuinelyUntranslatableOuterReference_Throws()
+    {
+        // A member access on a conditional expression that itself reads an outer-scope
+        // member: there is no OData path that can express a ternary, so this must fail loudly
+        // (NotSupportedException) rather than silently degrade to a "null" literal.
+        var ex = Assert.Throws<NotSupportedException>(() =>
+            F<Item>(x => x.Tags.Any(t => t.Name == (x.IsActive ? x.Sub : x.Sub)!.Code)));
+        Assert.Contains("cannot be translated", ex.Message);
+    }
 
     // ── M-11: Enumerable.Contains / in operator ────────────────────────────────
 
