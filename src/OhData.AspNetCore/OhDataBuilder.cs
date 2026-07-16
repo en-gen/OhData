@@ -314,6 +314,30 @@ public sealed class OhDataBuilder
                 }
             }
 
+            // NEW-1 fix: navigation-target types (e.g. Tag, OrderLine) that are reached only
+            // through a HasMany/HasOptional/HasRequired navigation -- never registered as their
+            // own EntitySetProfile -- otherwise end up with no ModelBoundQuerySettings
+            // annotation at all. Microsoft's model-bound validator (EdmHelpers.IsNotFilterable /
+            // IsNotSortable / IsNotSelectable in Microsoft.AspNetCore.OData) treats every
+            // property on an un-annotated type as NotFilterable/NotSortable/NotSelectable by
+            // default, which made every nav-path $filter/$orderby/$select (e.g.
+            // `tags/any(t: t/name eq 'X')`) 400 once ValidatePropertyAllowlists started calling
+            // Validate() unconditionally (#141). Nav-target types have no allowlist surface of
+            // their own -- only EntitySetProfile exposes FilterProperties/OrderByProperties/
+            // SelectProperties/ExpandProperties, and that's only for the profile's own root
+            // type -- so "fully permissive" is the only coherent semantics for them. Root
+            // profile types are deliberately left untouched: EntitySetProfile.VisitModelBuilder
+            // already called Filter(_filterProperties) etc. on them above, possibly with an
+            // allowlist, and that must survive unmodified for the root type's own $filter.
+            //
+            // This must run from ODataConventionModelBuilder.OnModelCreating, which fires after
+            // MapTypes() has discovered every reachable type (including nav targets) but before
+            // the base builder writes the model-bound annotations into the IEdmModel.
+            // StructuralTypes does NOT yet contain nav-target types at the point profiles finish
+            // visiting the builder above -- they're discovered lazily inside GetEdmModel().
+            var rootModelTypes = new HashSet<Type>(profiles.Select(p => p.ModelType));
+            modelBuilder.OnModelCreating = b => MarkNavigationTargetTypesFullyQueryable(b, rootModelTypes);
+
             var edmModel = modelBuilder.GetEdmModel();
             logger?.LogInformation(
                 "OhData: initialized {Count} entity set(s) [{Names}] at prefix '{Prefix}'",
@@ -332,6 +356,35 @@ public sealed class OhDataBuilder
         {
             _services.AddSingleton<OhDataRegistration>(sp =>
                 sp.GetRequiredKeyedService<OhDataRegistration>(OhDataDefaults.DefaultRegistrationName));
+        }
+    }
+
+    // Marks every structural type the builder discovered that is NOT one of the root profiles'
+    // own entity types (i.e. reached only via navigation) as fully filterable/sortable/
+    // selectable/expandable/countable. Filter()/OrderBy()/Select()/Expand()/Count() as seen on
+    // EntitySetProfile are convenience members of the *generic* StructuralTypeConfiguration
+    // <TStructuralType> wrapper (EntityTypeConfiguration<T>/ComplexTypeConfiguration<T>), which
+    // OhData never constructs for nav-target types. builder.StructuralTypes instead yields the
+    // plain, non-generic StructuralTypeConfiguration the convention builder itself allocated for
+    // every discovered type (see ODataModelBuilder.AddEntityType/AddComplexType) -- that base
+    // type has no Filter()/OrderBy()/etc. overloads at all, only the QueryConfiguration property
+    // those generic wrapper methods delegate to, so we call it directly instead.
+    private static void MarkNavigationTargetTypesFullyQueryable(
+        ODataModelBuilder builder, HashSet<Type> rootModelTypes)
+    {
+        foreach (StructuralTypeConfiguration stc in builder.StructuralTypes)
+        {
+            if (rootModelTypes.Contains(stc.ClrType)) continue;
+
+            var query = stc.QueryConfiguration;
+            query.SetFilter(properties: null, enableFilter: true);
+            query.SetOrderBy(properties: null, enableOrderBy: true);
+            query.SetSelect(properties: null, selectType: SelectExpandType.Allowed);
+            query.SetCount(enableCount: true);
+            // A generous (not unbounded) max expand depth, consistent with the other
+            // effectively-unlimited-but-not-infinite settings this framework uses elsewhere
+            // (e.g. MaxAnyAllExpressionDepth = 1000 in OhDataEndpointFactory).
+            query.SetExpand(properties: null, maxDepth: 1000, expandType: SelectExpandType.Allowed);
         }
     }
 
