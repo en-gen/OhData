@@ -10,7 +10,7 @@ OhData supports the OData 4.0 system query options. Which ones are applied depen
 GetAll = (ct) => Task.FromResult<IEnumerable<Product>>(myList);
 ```
 
-Returns all items. The framework does **not** apply `$filter`, `$orderby`, `$skip`, or `$top` to the returned collection - and it does not silently ignore them either. If the client sends any of these, the request is rejected with `400 Bad Request` (`UnsupportedQueryOption`). `$select`, `$expand`, `$count`, and `$search` (when a `Search` handler is configured) are still honored on this path. Use `GetAll` when your data source is small and in-memory, or when you want complete control over what is returned.
+Returns all items. The framework does **not** apply `$filter`, `$orderby`, `$skip`, or `$top` to the returned collection - and it does not silently ignore them either. If the client sends any of these, the request is rejected with `400 Bad Request` (`UnsupportedQueryOption`), regardless of the capability flags. `$select`, `$expand`, `$count`, and `$search` (when a `Search` handler is configured) are still honored on this path - but each is gated by its capability flag (`SelectEnabled`/`ExpandEnabled`/`CountEnabled`), exactly like the `GetQueryable` path: sending a disabled option returns `400` (`UnsupportedQueryOption`). Use `GetAll` when your data source is small and in-memory, or when you want complete control over what is returned.
 
 ### `GetODataQueryable` - full OData pushdown (advanced)
 
@@ -18,7 +18,7 @@ Returns all items. The framework does **not** apply `$filter`, `$orderby`, `$ski
 GetODataQueryable = (opts, ct) => ...
 ```
 
-The profile receives the raw `ODataQueryOptions<TModel>` and is responsible for applying them to the data source. Use this when:
+The profile receives the raw `ODataQueryOptions<TModel>` and is responsible for applying them to the data source. The capability flags and property allowlists are still enforced by the framework **before** the handler runs: a disabled option present in the request returns `400` (`UnsupportedQueryOption`) and a non-allowlisted property returns `400` (`InvalidQueryOption`) without invoking the handler. Use this when:
 
 - You need full control over how query options are translated (e.g. custom SQL, Dapper, a remote API).
 - You want to apply paging yourself and return the pre-paging total count alongside the results.
@@ -80,7 +80,9 @@ public class ProductProfile : EntitySetProfile<int, Product>
 }
 ```
 
-Any disabled capability returns `400 Bad Request` if the client sends that query option.
+Any disabled capability returns `400 Bad Request` (`UnsupportedQueryOption`, with a message naming the option and the flag that enables it) if the client sends that query option. **All capability flags default to `false`** (inheriting from `EntitySetDefaults`) - an entity set accepts no query options until you opt in.
+
+The single-entity route `GET /Products(1)` honors the same gates for the options it supports: `$select` requires `SelectEnabled` and `$expand` requires `ExpandEnabled`. When `ExpandEnabled` is on, `$expand` on the single-entity route inlines the requested navigation properties using the same navigation-route handlers (batch handlers included) as the collection route.
 
 ### Production pattern: `IDbContextFactory`
 
@@ -124,6 +126,9 @@ FilterProperties(x => x.Price, x => x.Name, x => x.Category);
 // or string overload:
 FilterProperties("Price", "Name", "Category");
 ```
+
+A `$filter` referencing a property outside the allowlist returns `400 Bad Request`
+(`InvalidQueryOption`, "The property 'X' cannot be used in the $filter query option.").
 
 ### `round()` midpoint rounding
 
@@ -183,6 +188,8 @@ Restrict which properties may be sorted on:
 OrderByProperties(x => x.Price, x => x.Name);
 ```
 
+Sorting on a property outside the allowlist returns `400 Bad Request` (`InvalidQueryOption`).
+
 ---
 
 ## `$top` and `$skip`
@@ -238,6 +245,11 @@ GET /odata/Products/$count
 GET /odata/Products/$count?$filter=Price gt 10
 ```
 
+Gating: the **inline** form (`$count=true`) is gated by `CountEnabled`. The **standalone**
+`/$count` route is always registered when a collection handler exists (it is an addressable
+resource, not a query option) - on that route only `$filter` is gated, by `FilterEnabled`
+(and the `FilterProperties` allowlist).
+
 Behaviour depends on the handler path:
 
 | Handler | `$count=true` behaviour |
@@ -264,6 +276,8 @@ Restrict which properties may be selected:
 SelectProperties(x => x.Id, x => x.Name, x => x.Price);
 ```
 
+Selecting a property outside the allowlist returns `400 Bad Request` (`InvalidQueryOption`).
+
 ---
 
 ## `$expand`
@@ -274,6 +288,7 @@ Enabled via `ExpandEnabled = true`. Embeds related entities inline in the parent
 GET /odata/Orders?$expand=Lines
 GET /odata/Orders?$expand=Lines($select=ProductName,Quantity)
 GET /odata/Orders?$expand=Lines,Customer
+GET /odata/Orders(3f2a...)?$expand=Lines        ← single-entity route too
 ```
 
 `$expand` does **not** use EF Core's `Include()` or push the join into SQL. Instead, for each requested navigation property the framework invokes a registered navigation route handler. This is a generic mechanism with no EF Core dependency, and it behaves identically on the `GetQueryable`, `GetAll`, and Priority-1 (`IODataEntitySetEndpointSource`) paths. See [navigation-routing.md](navigation-routing.md) for details.
@@ -325,6 +340,8 @@ Restrict which navigation properties may be expanded:
 ExpandProperties(x => x.Lines, x => x.Customer);
 ```
 
+Expanding a navigation property outside the allowlist returns `400 Bad Request` (`InvalidQueryOption`).
+
 To also expose navigation as a standalone HTTP route (`GET /Orders(id)/Lines`), provide a handler to `HasMany` - see [navigation-routing.md](navigation-routing.md).
 
 ---
@@ -367,8 +384,16 @@ A malformed or corrupted `$skiptoken` (wrong length, invalid Base64) returns `40
 
 ## Error responses
 
-Invalid query options return `400 Bad Request` with an OData error body:
+Invalid or disabled query options return `400 Bad Request` with an OData error body. A disabled
+capability flag produces `UnsupportedQueryOption`:
 
 ```json
-{ "error": { "code": "InvalidQueryOption", "message": "The query option '$filter' is not allowed." } }
+{ "error": { "code": "UnsupportedQueryOption", "message": "This resource does not support $filter. Set FilterEnabled = true on the profile (or the corresponding EntitySetDefaults property) to enable it." } }
+```
+
+A syntactically invalid option, an unknown property, or a property outside a configured
+allowlist produces `InvalidQueryOption`:
+
+```json
+{ "error": { "code": "InvalidQueryOption", "message": "The property 'Id' cannot be used in the $filter query option." } }
 ```

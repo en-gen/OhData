@@ -86,6 +86,7 @@ as "no children" (`[]`) for `HasMany`, or "no related entity" (`null`) for
 - Authorization from the parent profile's `RequireAuthorization()` / `RequireRoles()` is applied to navigation routes automatically
 - Navigation routes are tagged with the parent entity set name in OpenAPI/Swagger
 - For collection navigations, `$orderby`, `$top`, `$skip`, `$count`, and `$select` are honored on the returned collection via ad-hoc in-memory `IEnumerable`/`IEnumerable<T>.OrderBy` operations (not pushed down to the handler or to SQL). Options are applied in standard OData order: `$orderby`, then `$skip`, then `$top` (`$count` is captured after `$skip` but before `$top`, per spec - the count reflects the collection after skipping but before the page limit is applied). `$orderby` supports multiple sort keys (`Prop1 asc,Prop2 desc`) and is case-insensitive on the property name. An unknown property name in `$orderby` returns `400 Bad Request` (`InvalidQueryOption`), matching `$select`'s validation behavior.
+- Any other system query option (`$filter`, `$expand`, `$search`, `$apply`, `$compute`, `$skiptoken`, `$deltatoken`) is **not implemented on navigation routes** and returns `400 Bad Request` (`UnsupportedQueryOption`) rather than being silently ignored (OData 4.0 Minimal conformance item 7: parse the option or reject it). To filter related data, expose the child entity set with its own profile and query it directly.
 
 ## `$expand`
 

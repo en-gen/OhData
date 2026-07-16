@@ -17,6 +17,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.OData.Query;
 using Microsoft.AspNetCore.OData.Query.Wrapper;
+using Microsoft.AspNetCore.OData.Query.Validator;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -458,6 +459,111 @@ internal static class OhDataEndpointFactory
             404 => Results.NotFound(body),
             _ => Results.Json(body, statusCode: status)
         };
+    }
+
+    // B1 fix: capability-flag enforcement (Minimal item 7 — "parse the option or reject it").
+    // FilterEnabled/OrderByEnabled/SelectEnabled/ExpandEnabled/CountEnabled were previously
+    // decorative on the GetQueryable and Priority-1 collection paths: the flags only drove EDM
+    // model-bound capability annotations (Swagger/$metadata advertisement), never a runtime
+    // gate. This helper is the runtime gate: a disabled option present in the query string is
+    // rejected with a specific "UnsupportedQueryOption" error naming the option, mirroring the
+    // wording the GetAll path already uses for its own wholesale $filter/$orderby/$top/$skip
+    // rejection (it structurally cannot support those regardless of any flag).
+    private static IResult? CheckDisabledQueryOption(HttpContext ctx, string queryOptionName, bool enabled, string flagName)
+    {
+        if (enabled) return null;
+        if (!ctx.Request.Query.ContainsKey(queryOptionName)) return null;
+        return ODataError(400, "UnsupportedQueryOption",
+            $"This resource does not support {queryOptionName}. Set {flagName} = true on the " +
+            "profile (or the corresponding EntitySetDefaults property) to enable it.");
+    }
+
+    // Applies CheckDisabledQueryOption across the full $filter/$orderby/$select/$expand/$count
+    // set — the gate used by the GetQueryable and Priority-1 collection GET routes. $filter and
+    // $orderby are optionally skipped (checkFilterOrderBy: false) on paths that already reject
+    // them structurally regardless of the flag (the GetAll path, which has no ApplyTo pipeline).
+    private static IResult? CheckCollectionQueryOptionCapabilities(
+        HttpContext ctx, IEntitySetEndpointSource source, bool checkFilterOrderBy = true)
+    {
+        if (checkFilterOrderBy)
+        {
+            IResult? r = CheckDisabledQueryOption(ctx, "$filter", source.FilterEnabled, nameof(IEntitySetEndpointSource.FilterEnabled));
+            if (r is not null) return r;
+            r = CheckDisabledQueryOption(ctx, "$orderby", source.OrderByEnabled, nameof(IEntitySetEndpointSource.OrderByEnabled));
+            if (r is not null) return r;
+        }
+
+        IResult? sr = CheckDisabledQueryOption(ctx, "$select", source.SelectEnabled, nameof(IEntitySetEndpointSource.SelectEnabled));
+        if (sr is not null) return sr;
+        sr = CheckDisabledQueryOption(ctx, "$expand", source.ExpandEnabled, nameof(IEntitySetEndpointSource.ExpandEnabled));
+        if (sr is not null) return sr;
+        sr = CheckDisabledQueryOption(ctx, "$count", source.CountEnabled, nameof(IEntitySetEndpointSource.CountEnabled));
+        return sr;
+    }
+
+    // B1 fix (property allowlists): FilterProperties/OrderByProperties/SelectProperties/
+    // ExpandProperties are wired into the EDM at startup via EntityTypeConfiguration.Filter/
+    // .OrderBy/.Select/.Expand (EntitySetProfile.cs), which mark the non-allowlisted properties
+    // NotFilterable/NotSortable/NotSelectable/NotExpandable in the model. Those restrictions are
+    // only enforced when something calls ODataQueryOptions.Validate(...) — ApplyTo alone ignores
+    // them. This settings object is deliberately permissive on every OTHER axis
+    // (AllowedQueryOptions = All, no arithmetic/function/logical-operator restrictions, no node-
+    // count/expansion-depth ceiling) so Validate's only effect here is the per-property
+    // allowlist check the profile already declared. The coarse per-category enable/disable is
+    // handled separately by CheckCollectionQueryOptionCapabilities with its own
+    // "UnsupportedQueryOption" code and message; this only needs to surface *a* 400 (via the
+    // existing ODataException catch clauses), so Microsoft's default validator wording is fine.
+    // S1/B1 fix: system query options the navigation collection GET route does not implement.
+    // $select, $orderby, $skip, $top, and $count ARE implemented (parsed directly off the query
+    // string in the nav-route handler); everything else — most notably $filter — was previously
+    // ignored outright rather than rejected, so a client asking to filter a navigation collection
+    // silently got back the whole, unfiltered set (S1).
+    private static readonly string[] s_navUnsupportedSystemOptions =
+    {
+        "$filter", "$expand", "$search", "$apply", "$compute", "$skiptoken", "$deltatoken",
+    };
+
+    private static IResult? CheckNavUnsupportedQueryOptions(HttpContext ctx)
+    {
+        string? option = s_navUnsupportedSystemOptions
+            .FirstOrDefault(o => ctx.Request.Query.ContainsKey(o));
+        if (option is not null)
+        {
+            return ODataError(400, "UnsupportedQueryOption",
+                $"This navigation route does not support {option}. Supported query options " +
+                "are $select, $orderby, $skip, $top, and $count.");
+        }
+        return null;
+    }
+
+    private static readonly ODataValidationSettings s_propertyAllowlistValidationSettings = new()
+    {
+        AllowedQueryOptions = AllowedQueryOptions.All,
+        AllowedArithmeticOperators = AllowedArithmeticOperators.All,
+        AllowedFunctions = AllowedFunctions.AllFunctions,
+        AllowedLogicalOperators = AllowedLogicalOperators.All,
+        MaxExpansionDepth = 0, // 0 disables the expansion-depth check entirely (per XML doc).
+        MaxAnyAllExpressionDepth = 1000,
+        MaxNodeCount = 10000,
+        MaxOrderByNodeCount = 1000,
+    };
+
+    // Runs only the per-option validators that enforce the property allowlists
+    // (NotFilterable/NotSortable/NotSelectable/NotExpandable model-bound annotations written by
+    // FilterProperties/OrderByProperties/SelectProperties/ExpandProperties at EDM-build time).
+    // Deliberately NOT ODataQueryOptions.Validate(settings): the whole-options validator also
+    // runs the Top validator, and the mere presence of model-bound settings on the entity type
+    // (created as a side effect of entityType.Filter(...)/.Select(...) etc.) makes the
+    // model-bound MaxTop default to 0, which would reject every $top outright. $top/$skip/$count
+    // have their own dedicated enforcement in this file (source.MaxTop clamp, m8 negative-value
+    // 400s, CountEnabled gate), so only the three property-scoped validators run here. Throws
+    // Microsoft.OData.ODataException on violation, which each route's existing catch clause maps
+    // to a 400 OData error.
+    private static void ValidatePropertyAllowlists<TModel>(ODataQueryOptions<TModel> options)
+    {
+        options.Filter?.Validate(s_propertyAllowlistValidationSettings);
+        options.OrderBy?.Validate(s_propertyAllowlistValidationSettings);
+        options.SelectExpand?.Validate(s_propertyAllowlistValidationSettings);
     }
 
     /// <remarks>
@@ -925,9 +1031,17 @@ internal static class OhDataEndpointFactory
             {
                 try
                 {
+                    IResult? capabilityError = CheckCollectionQueryOptionCapabilities(ctx, source);
+                    if (capabilityError is not null) return capabilityError;
+
                     var s = ResolveHandlers(ctx);
                     var odataSrc = (IODataEntitySetEndpointSource)s;
                     var options = new ODataQueryOptions<TModel>(cachedODataQueryContext, ctx.Request);
+                    // B1 fix: enforce FilterProperties/OrderByProperties/SelectProperties/
+                    // ExpandProperties allowlists before handing options to the profile — the
+                    // profile's own ApplyTo call has no opportunity to reject a disallowed
+                    // property since it never calls Validate() itself.
+                    ValidatePropertyAllowlists(options);
                     var odataResult = await odataSrc.InvokeGetODataQueryableAsync(options, ct);
                     var queryable = odataResult.Items is IQueryable<TModel> typedQ
                         ? typedQ
@@ -975,11 +1089,17 @@ internal static class OhDataEndpointFactory
             {
                 try
                 {
+                    IResult? capabilityError = CheckCollectionQueryOptionCapabilities(ctx, source);
+                    if (capabilityError is not null) return capabilityError;
+
                     var s = ResolveHandlers(ctx);
                     var queryable = (IQueryable<TModel>)(await s.InvokeGetQueryableAsync(ct))
                                     .Cast<TModel>();
 
                     var options = new ODataQueryOptions<TModel>(cachedODataQueryContext, ctx.Request);
+                    // B1 fix: enforce FilterProperties/OrderByProperties/SelectProperties/
+                    // ExpandProperties allowlists before any ApplyTo call below.
+                    ValidatePropertyAllowlists(options);
 
                     // Gap 4: $search on GetQueryable path — delegate to the Search handler, then
                     // apply remaining OData query options on top of the in-memory result set.
@@ -1130,6 +1250,17 @@ internal static class OhDataEndpointFactory
                             "Configure GetQueryable to enable server-side query processing.");
                     }
 
+                    // B1 fix: the GetAll path routes $select/$expand/$count through the same
+                    // ApplyCollectionPipelineAsync used by GetQueryable (see below), so those
+                    // three options are functionally live here too and must respect their
+                    // capability flags exactly like the other collection paths. $filter/
+                    // $orderby/$top/$skip are excluded from this check — they are rejected
+                    // wholesale above regardless of flag state, since GetAll has no ApplyTo
+                    // pipeline to push them down to.
+                    IResult? capabilityError = CheckCollectionQueryOptionCapabilities(ctx, source, checkFilterOrderBy: false);
+                    if (capabilityError is not null) return capabilityError;
+                    ValidatePropertyAllowlists(options);
+
                     // Gap 4: $search on GetAll path
                     if (ctx.Request.Query.TryGetValue("$search", out var searchTerm))
                     {
@@ -1176,9 +1307,13 @@ internal static class OhDataEndpointFactory
               .WithMetadata(new OhDataQueryOptionsMetadata(
                   FilterEnabled: false,
                   OrderByEnabled: false,
-                  SelectEnabled: false,
-                  ExpandEnabled: false,
-                  CountEnabled: false,
+                  // B1 fix: $select/$expand/$count are functionally live on the GetAll path
+                  // (routed through ApplyCollectionPipelineAsync above) and now enforced by
+                  // CheckCollectionQueryOptionCapabilities, so the metadata should reflect the
+                  // profile's actual flags instead of hardcoding "unsupported".
+                  SelectEnabled: source.SelectEnabled,
+                  ExpandEnabled: source.ExpandEnabled,
+                  CountEnabled: source.CountEnabled,
                   SearchEnabled: source.HasSearch,
                   MaxTop: null));
         }
@@ -1191,8 +1326,17 @@ internal static class OhDataEndpointFactory
             {
                 try
                 {
+                    // B1 fix: $/count's own metadata advertises FilterEnabled: source.FilterEnabled
+                    // (the only query option this route actually applies), so enforce it — a
+                    // disabled $filter was previously applied unconditionally below.
+                    IResult? countCapabilityError = CheckDisabledQueryOption(
+                        ctx, "$filter", source.FilterEnabled, nameof(IEntitySetEndpointSource.FilterEnabled));
+                    if (countCapabilityError is not null) return countCapabilityError;
+
                     var s = ResolveHandlers(ctx);
                     var options = new ODataQueryOptions<TModel>(cachedODataQueryContext, ctx.Request);
+                    // B1 fix: enforce the FilterProperties allowlist here too.
+                    ValidatePropertyAllowlists(options);
 
                     if (s is IODataEntitySetEndpointSource odataCountSrc && odataCountSrc.HasGetODataQueryable)
                     {
@@ -1247,17 +1391,36 @@ internal static class OhDataEndpointFactory
                 logger?.LogDebug("GET {Prefix}/{Name}({Key})", prefix, name, SanitizeLogValue(key));
                 try
                 {
+                    // B1/S2 fix: $expand was previously advertised in this route's metadata
+                    // (ExpandEnabled: source.ExpandEnabled) but silently ignored — 200 with no
+                    // expansion, even for a nonexistent nav property. Enforce the flag like the
+                    // collection routes, then actually expand below via the same pipeline the
+                    // collection GET uses (batch-handler included), for context/serialization
+                    // parity between GET /{Set} and GET /{Set}({key}).
+                    bool hasSelect = ctx.Request.Query.ContainsKey("$select");
+                    bool hasExpand = ctx.Request.Query.ContainsKey("$expand");
+                    IResult? selectCapabilityError = CheckDisabledQueryOption(
+                        ctx, "$select", source.SelectEnabled, nameof(IEntitySetEndpointSource.SelectEnabled));
+                    if (selectCapabilityError is not null) return selectCapabilityError;
+                    IResult? expandCapabilityError = CheckDisabledQueryOption(
+                        ctx, "$expand", source.ExpandEnabled, nameof(IEntitySetEndpointSource.ExpandEnabled));
+                    if (expandCapabilityError is not null) return expandCapabilityError;
+
                     var s = ResolveHandlers(ctx);
                     object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
 
                     // M3: parse $select so the projected context ("#Set(prop1,prop2)/$entity")
                     // and the body it describes agree on shape. Constructing ODataQueryOptions
-                    // costs a per-request parse, so skip it entirely unless $select is present —
-                    // GetById is the hottest route and the no-$select case must stay zero-cost.
+                    // costs a per-request parse, so skip it entirely unless $select or $expand is
+                    // present — GetById is the hottest route and the no-option case must stay
+                    // zero-cost.
+                    ODataQueryOptions<TModel>? options = null;
                     List<string>? selectedProps = null;
-                    if (ctx.Request.Query.ContainsKey("$select"))
+                    if (hasSelect || hasExpand)
                     {
-                        var options = new ODataQueryOptions<TModel>(cachedODataQueryContext, ctx.Request);
+                        options = new ODataQueryOptions<TModel>(cachedODataQueryContext, ctx.Request);
+                        // B1 fix: enforce SelectProperties/ExpandProperties allowlists.
+                        ValidatePropertyAllowlists(options);
                         selectedProps = options.SelectExpand?.SelectExpandClause is not null
                             ? ExtractSelectedProperties(options.SelectExpand.SelectExpandClause)
                             : null;
@@ -1283,6 +1446,34 @@ internal static class OhDataEndpointFactory
                     // Gap 5: include @odata.id in single-entity response
                     // Gap 2: include @odata.etag in body
                     string odataId = $"{BuildBaseUrl(ctx, prefix)}/{name}({key})";
+
+                    if (hasExpand && options is not null)
+                    {
+                        // Reuse the collection pipeline (Serialize → ETag → Expand → Select) on a
+                        // single-element array so GetById gets the same expand/batch-handler/
+                        // select behavior as GET /{Set}, instead of a bespoke reimplementation.
+                        var (expandedItems, expandSelectedProps) =
+                            await ApplyCollectionPipelineAsync(new[] { result }, options, source, s, jsonOptions, ct);
+                        var entityBody = (JsonObject)expandedItems[0]!;
+
+                        // Rebuild with @odata.context/@odata.id first (JSON §4.5: annotations
+                        // precede the properties they describe). The pipeline's own ETag stage
+                        // already put @odata.etag ahead of the entity's properties, so this
+                        // preserves that ordering underneath context/id.
+                        var node = new JsonObject
+                        {
+                            ["@odata.context"] = JsonValue.Create(
+                                $"{BuildBaseUrl(ctx, prefix)}/$metadata#{AppendSelectSuffix(name, expandSelectedProps)}/$entity"),
+                            ["@odata.id"] = JsonValue.Create(odataId),
+                        };
+                        foreach (var prop in entityBody.ToList())
+                        {
+                            entityBody.Remove(prop.Key);
+                            node[prop.Key] = prop.Value;
+                        }
+                        return Results.Ok(node);
+                    }
+
                     return ODataEntityResult(ctx, prefix, name, result, jsonOptions, odataId: odataId, etag: etagValue, selectedProps: selectedProps);
                 }
                 catch (FormatException ex)
@@ -1681,6 +1872,14 @@ internal static class OhDataEndpointFactory
                 {
                     try
                     {
+                        // S1/B1 fix: this route parses $orderby/$skip/$top/$count/$select (below)
+                        // but previously ignored anything else — most notably $filter — silently,
+                        // returning 200 with the full unfiltered collection. That violates
+                        // Minimal item 7 ("parse the option or reject it"): reject up front
+                        // instead of quietly under-applying what the client asked for.
+                        IResult? navCapabilityError = CheckNavUnsupportedQueryOptions(ctx);
+                        if (navCapabilityError is not null) return navCapabilityError;
+
                         var s = ResolveHandlers(ctx);
                         var requestNav = s.NavigationRoutes.First(n => n.PropertyName == navPropertyName);
                         object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));

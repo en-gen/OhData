@@ -54,6 +54,8 @@ certification claim.
 | Feature | Section | Status | Notes |
 |---------|---------|--------|-------|
 | `$filter` | §11.2.6.1 | ✅ | Comparison, logical, arithmetic, string functions |
+| Capability-flag enforcement ("parse or reject") | §8.2.1 / Minimal item 7 | ✅ | `FilterEnabled`/`OrderByEnabled`/`SelectEnabled`/`ExpandEnabled`/`CountEnabled` are enforced at runtime on every collection GET path (`GetQueryable`, `GetAll`, Priority-1) and on `GetById` (`$select`/`$expand`): a disabled option present in the request returns `400` (`UnsupportedQueryOption`) instead of being applied or silently ignored |
+| Property allowlists | §11.2.6 (model-bound restrictions) | ✅ | `FilterProperties`/`OrderByProperties`/`SelectProperties`/`ExpandProperties` are enforced at runtime via the EDM's model-bound `NotFilterable`/`NotSortable`/`NotSelectable`/`NotExpandable` annotations: an option referencing a non-allowlisted property returns `400` (`InvalidQueryOption`) |
 | `round()` midpoint rounding | Part 2 §5.1.1.9 | ✅ | Round-half-away-from-zero by default (spec-compliant, e.g. `2.5 → 3`, `-2.5 → -3`) via a post-`ApplyTo` expression rewrite on the `GetQueryable` path. Set profile/global `RoundingMode = BankersRounding` to restore .NET's default banker's rounding (`2.5 → 2`) - see Known Limitations for why that override exists, and `docs/query-options.md#round-midpoint-rounding` |
 | `$orderby` | §11.2.6.2 | ✅ | Multiple keys, asc/desc |
 | `$top` | §11.2.6.3 | ✅ | `MaxTop` server-side cap enforced |
@@ -61,7 +63,7 @@ certification claim.
 | `$count` (inline and standalone) | §11.2.6.5 | ✅ | Reports the pre-paging total; on the `ODataEntitySetProfile` (`GetODataQueryable`) path a profile that applies its own `$top`/`$skip` must set `ODataQueryResult.TotalCount` or `@odata.count` falls back to the post-page item count |
 | `$search` | §11.2.6.6 | ✅ | Requires a `Search` handler; `400 Bad Request` (`UnsupportedQueryOption`) if unset |
 | `$select` | §11.2.4.1 | ✅ | JSON post-processing; SQL column projection not performed |
-| `$expand` | §11.2.4.2 | ✅ | Generic navigation-delegate expansion (registered via `HasMany`/`HasOptional`/`HasRequired`); the same pipeline runs identically on the `GetQueryable`, `GetAll`, and Priority-1 `ODataQueryOptions` paths. No EF Core dependency - each expanded property is resolved by calling the registered navigation handler per entity. |
+| `$expand` | §11.2.4.2 | ✅ | Generic navigation-delegate expansion (registered via `HasMany`/`HasOptional`/`HasRequired`); the same pipeline runs identically on the `GetQueryable`, `GetAll`, and Priority-1 `ODataQueryOptions` paths **and on the single-entity `GET /Set({key})` route** (batch handlers included). No EF Core dependency - each expanded property is resolved by calling the registered navigation handler per entity (or once per page via a batch handler). |
 | `$skiptoken` (server-driven paging) | §11.2.6.7 | ✅ | Base64-encoded raw skip offset (a 4-byte little-endian int) - not an opaque/obfuscated cursor. Predictable and forgeable by clients. |
 
 ## Entity operations
@@ -87,6 +89,7 @@ certification claim.
 | Navigation `$count` | §11.2.3 | ✅ | `GET /Set({key})/Nav/$count`. A missing parent returns the OData error envelope (`404`), not an empty body |
 | Navigation with `$select` | §11.2.3 | ✅ | Collection navigation only; narrows the response body and the context URL's projection suffix (see `@odata.context` projection suffix above) |
 | Navigation `$top`/`$skip` validation | Part 2 §5.1.6 | ✅ | An invalid (non-numeric or negative) `$top`/`$skip` on a navigation-collection route returns `400 Bad Request` (`InvalidQueryOption`), matching the main collection route's validation, instead of being silently ignored and returning the full un-paged collection |
+| Navigation unsupported-option rejection | Minimal item 7 | ✅ | `$filter`, `$expand`, `$search`, `$apply`, `$compute`, `$skiptoken`, `$deltatoken` on a navigation route return `400` (`UnsupportedQueryOption`) rather than being silently ignored — the route implements only `$select`/`$orderby`/`$skip`/`$top`/`$count` |
 | `$ref` get link(s) | §11.4.6.1 | ✅ | `GET /Set({key})/Nav/$ref` returns populated `@odata.id` (collection or single) when `refTargetEntitySet` is configured on the navigation; otherwise an empty envelope. Context URL is `#$ref` (single-valued) or `#Collection($ref)` (collection), per JSON Format §14 / Protocol §10.12 |
 | `$ref` add link | §11.4.6.1 | ✅ | `POST /Set({key})/Nav/$ref` |
 | `$ref` remove link | §11.4.6.2 | ✅ | `DELETE /Set({key})/Nav/$ref` |

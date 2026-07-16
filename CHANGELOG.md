@@ -9,7 +9,43 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-_Nothing yet._
+### Fixed
+
+- **BREAKING (behavior): query-option capability flags and property allowlists are now
+  enforced at runtime** (release audit B1; OData 4.0 Minimal conformance item 7 — "parse the
+  option or reject it"). Previously `FilterEnabled`/`OrderByEnabled`/`SelectEnabled`/
+  `ExpandEnabled`/`CountEnabled` and `FilterProperties`/`OrderByProperties`/`SelectProperties`/
+  `ExpandProperties` only wrote EDM/Swagger advertisement metadata — on the `GetQueryable` and
+  Priority-1 (`GetODataQueryable`) collection paths every option was applied regardless, so a
+  "disabled" `$filter` still filtered and a non-allowlisted property could still be probed via
+  `$filter`/`$orderby` (a data side channel for excluded columns). Now:
+  - Collection GET (`GetQueryable`, Priority-1, and `GetAll` for its live `$select`/`$expand`/
+    `$count` subset): a query option whose capability flag is disabled returns
+    `400 Bad Request` (`UnsupportedQueryOption`, message names the option and the flag).
+    Flags all default to `false` — **clients that previously sent (silently honored) options
+    against profiles that never opted in will now receive 400**; set the corresponding flag to
+    `true` to restore the old behavior, which is now advertised truthfully.
+  - Property allowlists are enforced via the EDM's model-bound
+    `NotFilterable`/`NotSortable`/`NotSelectable`/`NotExpandable` annotations
+    (`FilterQueryOption`/`OrderByQueryOption`/`SelectExpandQueryOption.Validate`): an option
+    referencing a non-allowlisted property returns `400` (`InvalidQueryOption`).
+  - Standalone `GET /{Set}/$count`: `$filter` is gated by `FilterEnabled` (its route metadata
+    already advertised exactly that) and the `FilterProperties` allowlist.
+  - Navigation collection routes: previously-ignored system query options (`$filter`,
+    `$expand`, `$search`, `$apply`, `$compute`, `$skiptoken`, `$deltatoken`) return `400`
+    (`UnsupportedQueryOption`) instead of silently returning the full, unfiltered collection
+    (release audit S1). `$select`/`$orderby`/`$skip`/`$top`/`$count` keep working as before.
+  - `GET /{Set}({key})`: `$select` and `$expand` are gated by `SelectEnabled`/`ExpandEnabled`
+    (the route's metadata always advertised them), and **`$expand` is now implemented on the
+    single-entity route** (release audit S2) — previously it was silently ignored. Expansion
+    reuses the collection pipeline (same serialization, `$select` interaction, and batch-handler
+    support), emitting the single-entity context (`#Set/$entity`, or the projected
+    `#Set(props)/$entity` form with `$select`).
+  - `GetAll` route metadata now reports the profile's actual
+    `SelectEnabled`/`ExpandEnabled`/`CountEnabled` flags instead of hardcoded `false`
+    (those options are live on that path).
+  Docs updated to match (`docs/query-options.md`, `docs/navigation-routing.md`,
+  `docs/spec-compliance.md`).
 
 ---
 
