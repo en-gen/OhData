@@ -268,7 +268,8 @@ internal static class OhDataEndpointFactory
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 groupLogger?.LogError(ex, "OhData: unhandled exception processing {Method} {Path}",
-                    ctx.HttpContext.Request.Method, ctx.HttpContext.Request.Path);
+                    SanitizeLogValue(ctx.HttpContext.Request.Method),
+                    SanitizeLogValue(ctx.HttpContext.Request.Path.ToString()));
                 return ODataError(500, "InternalServerError",
                     "An unexpected error occurred while processing the request.");
             }
