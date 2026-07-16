@@ -44,6 +44,7 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
         FilterEnabled = true;
         SelectEnabled = true;
         OrderByEnabled = true;
+        CountEnabled = true;
 
         GetQueryable = (ct) => Task.FromResult(_store.Items.AsQueryable());
         GetById = (id, ct) => Task.FromResult(_store.Items.FirstOrDefault(w => w.Id == id));
@@ -138,6 +139,7 @@ internal class PaginatedWidgetProfile : EntitySetProfile<int, Widget>
         MaxTop = 3;
         FilterEnabled = true;
         OrderByEnabled = true;
+        CountEnabled = true;
         GetQueryable = (ct) => Task.FromResult(_store.AsQueryable());
     }
 }
