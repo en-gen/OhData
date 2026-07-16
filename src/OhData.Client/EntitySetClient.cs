@@ -191,6 +191,15 @@ public sealed class EntitySetClient<T> where T : class
         });
     }
 
+    // NOTE ON CASING: OrderBy/ThenBy/Expand/Select(params Expression[]) below all derive
+    // property names from CLR reflection (member.Member.Name), same as Filter and the
+    // single-expression Select. All of them run each path segment through
+    // _options.JsonOptions.PropertyNamingPolicy (CamelCase by default, matching the OhData
+    // server's own JSON casing) so every query option is internally consistent. Only the
+    // raw-string overloads (Select(string[]), Expand(string[]), Filter(string)) are left
+    // untouched — the caller supplied those names explicitly and already knows the exact
+    // casing the target server expects.
+
     /// <summary>Limits the number of results returned.</summary>
     /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="count"/> is negative.</exception>
     public EntitySetClient<T> Top(int count)
@@ -393,7 +402,7 @@ public sealed class EntitySetClient<T> where T : class
     /// stripping boxing <c>Convert</c> wrappers that appear when the lambda
     /// returns <c>object?</c>.
     /// </summary>
-    private static string ExtractPath(Expression<Func<T, object?>> expr)
+    private string ExtractPath(Expression<Func<T, object?>> expr)
     {
         Expression body = expr.Body;
         while (body is UnaryExpression u
@@ -405,20 +414,24 @@ public sealed class EntitySetClient<T> where T : class
         return ExtractMemberPath(body, expr.Parameters[0]);
     }
 
-    private static string ExtractMemberPath(Expression expr, ParameterExpression param)
+    private string ExtractMemberPath(Expression expr, ParameterExpression param)
     {
         if (expr is MemberExpression member)
         {
+            string memberName = ApplyNamingPolicy(member.Member.Name);
+
             if (member.Expression is ParameterExpression p && p == param)
-                return member.Member.Name;
+                return memberName;
 
             if (member.Expression is not null)
-                return $"{ExtractMemberPath(member.Expression, param)}/{member.Member.Name}";
+                return $"{ExtractMemberPath(member.Expression, param)}/{memberName}";
         }
 
         throw new ArgumentException(
             $"Expected a property-access expression (e.g. x => x.Name), got: '{expr}'.");
     }
+
+    private string ApplyNamingPolicy(string name) => _options.JsonOptions.PropertyNamingPolicy?.ConvertName(name) ?? name;
 
     /// <summary>
     /// Extracts the name of a single direct member of <typeparamref name="T"/> from
@@ -427,7 +440,7 @@ public sealed class EntitySetClient<T> where T : class
     /// (e.g. <c>x => x.Category.Name</c>) rather than a direct access
     /// (e.g. <c>x => x.Id</c>).
     /// </summary>
-    private static string ExtractDirectMember(Expression<Func<T, object?>> expr, string errorMessage)
+    private string ExtractDirectMember(Expression<Func<T, object?>> expr, string errorMessage)
     {
         Expression body = expr.Body;
         while (body is UnaryExpression u
@@ -440,7 +453,7 @@ public sealed class EntitySetClient<T> where T : class
             && member.Expression is ParameterExpression p
             && p == expr.Parameters[0])
         {
-            return member.Member.Name;
+            return ApplyNamingPolicy(member.Member.Name);
         }
 
         throw new ArgumentException(errorMessage);

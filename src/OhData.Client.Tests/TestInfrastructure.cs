@@ -232,6 +232,74 @@ internal sealed class ETagClientTestFixture : IAsyncDisposable
 }
 
 /// <summary>
+/// Entity + profile used to verify the B3 fix (DateTimeKind handling in $filter literals)
+/// against a real OhData server end-to-end, not just at the translator-unit level.
+/// </summary>
+internal class TemporalWidget
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public DateTime CreatedAt { get; set; }
+}
+
+internal class TemporalWidgetProfile : EntitySetProfile<int, TemporalWidget>
+{
+    private static readonly List<TemporalWidget> _store = new()
+    {
+        new() { Id = 1, Name = "Old", CreatedAt = new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc) },
+        new() { Id = 2, Name = "New", CreatedAt = DateTime.UtcNow },
+    };
+
+    public TemporalWidgetProfile() : base(x => x.Id)
+    {
+        EntitySetName = "TemporalWidgets";
+        FilterEnabled = true;
+        GetQueryable = (ct) => Task.FromResult(_store.AsQueryable());
+    }
+}
+
+/// <summary>
+/// Fixture that registers <see cref="TemporalWidgetProfile"/> for live DateTimeKind
+/// $filter-literal verification (B3).
+/// </summary>
+internal sealed class TemporalClientTestFixture : IAsyncDisposable
+{
+    private readonly WebApplication _app;
+    public OhDataClient Client { get; }
+
+    private TemporalClientTestFixture(WebApplication app, string prefix)
+    {
+        _app = app;
+        HttpClient httpClient = ((IHost)app).GetTestClient();
+        httpClient.BaseAddress = new Uri(httpClient.BaseAddress!, prefix.Trim('/') + "/");
+        Client = new OhDataClient(httpClient);
+    }
+
+    public static async Task<TemporalClientTestFixture> BuildAsync(string prefix = "/odata")
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Services.AddLogging(b => b.ClearProviders());
+        builder.Services.AddOhData(o =>
+        {
+            o.WithPrefix(prefix);
+            o.AddProfile<TemporalWidgetProfile>();
+        });
+
+        var app = builder.Build();
+        app.MapOhData();
+        await app.StartAsync();
+        return new TemporalClientTestFixture(app, prefix);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        Client.Dispose();
+        await _app.DisposeAsync();
+    }
+}
+
+/// <summary>
 /// Fixture that registers <see cref="PaginatedWidgetProfile"/> for nextLink pagination tests.
 /// </summary>
 internal sealed class PaginatedClientTestFixture : IAsyncDisposable

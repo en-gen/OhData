@@ -29,9 +29,12 @@ internal static class ODataKeyFormatter
             Guid g => g.ToString(),
             bool b => b ? "true" : "false",
             char c => $"'{c}'",
-            DateTime dt => dt.Kind == DateTimeKind.Utc
-                                      ? dt.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture)
-                                      : dt.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture),
+            // Same rule as FilterTranslator.FormatDateTime: Edm.DateTimeOffset key literals
+            // require an explicit "Z"/offset designator per the OData ABNF, so Local is
+            // converted to its unambiguous UTC instant and Unspecified is treated as UTC
+            // rather than emitting an offset-less literal the server's URI parser rejects.
+            DateTime dt => (dt.Kind == DateTimeKind.Local ? dt.ToUniversalTime() : dt)
+                                      .ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture),
             DateTimeOffset dto => dto.Offset == TimeSpan.Zero
                                       ? dto.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture)
                                       : dto.ToString("yyyy-MM-ddTHH:mm:sszzz", CultureInfo.InvariantCulture),
