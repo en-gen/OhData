@@ -258,7 +258,7 @@ public class EntityIdUrlFormattingTests
         var postResp = await fx.Client.PostAsync("/odata/StringKeyItems", JsonBody(new { id = "it's", name = "X" }));
         Assert.Equal(HttpStatusCode.Created, postResp.StatusCode);
 
-        var patchReq = new HttpRequestMessage(HttpMethod.Patch, postResp.Headers.Location!.AbsoluteUri)
+        using var patchReq = new HttpRequestMessage(HttpMethod.Patch, postResp.Headers.Location!.AbsoluteUri)
         {
             Content = JsonBody(new { name = "Y" })
         };
