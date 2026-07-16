@@ -333,6 +333,16 @@ Key values are formatted as OData literals automatically:
 - `int`/`long` → `Products(42)`
 - `string` → `Products('value')`, single quotes escaped
 - `Guid` → `Products(3f2504e0-...)`
+- `DateTime`/`DateTimeOffset` → the same full-precision, `Z`/offset-suffixed literal `$filter`
+  uses (see [Literal type support](#literal-type-support) below) — a key built from an entity's
+  actual (sub-second-precision) key value now always round-trips back to the same entity instead
+  of being silently truncated to whole seconds
+
+An OhData server (from `1.0.0` on) builds its own response entity-id URLs
+(`Location`/`Content-Location`/`OData-EntityId`/`@odata.id`) the same way: string keys are
+single-quoted and percent-encoded, with embedded quotes doubled, so a `string`-keyed entity's
+`Location` header can always be fed straight back into `Key(...)`/parsed by
+`ODataKeyParser` without adjustment.
 
 A generic overload provides compile-time type safety for the key value:
 

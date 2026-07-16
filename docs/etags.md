@@ -48,11 +48,22 @@ The `@odata.etag` annotation is also included in the response body for each enti
 On `PUT`, `PATCH`, and `DELETE`, if the request includes an `If-Match` header:
 
 1. The framework fetches the current entity via `GetById`
-2. Computes the current ETag
-3. Checks whether it appears in the `If-Match` list (comma-separated ETags per RFC 7232)
-4. Returns `412 Precondition Failed` if no match; proceeds if matched
+2. If no entity exists at that key, returns `412 Precondition Failed` immediately (RFC 7232 §3.1 /
+   Protocol §11.4.1.1 - a missing resource never satisfies `If-Match`, not even `*`) - it does
+   **not** fall through to whatever `404` the operation would otherwise produce for a missing key
+3. Computes the current ETag
+4. Checks whether it appears in the `If-Match` list (comma-separated ETags per RFC 7232)
+5. Returns `412 Precondition Failed` if no match; proceeds if matched
 
-`If-Match: *` always passes (any current entity matches).
+`If-Match: *` matches any *existing* representation - it still fails with `412` (not `404`) when
+the resource does not exist.
+
+### `If-None-Match: *` as a create-guard on `PUT`
+
+When `AllowUpsert` is enabled, `PUT` also honors `If-None-Match: *` as a create-guard (§11.4.4):
+if the entity already exists at the target key, the request fails with `412 Precondition Failed`
+instead of overwriting it; otherwise the `PUT` proceeds as an insert. This is a no-op when the
+header is absent, and is independent of the `If-Match` handling above.
 
 ```http
 PUT /odata/Products(1)

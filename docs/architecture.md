@@ -48,13 +48,17 @@ app.MapOhData()
   └─► OhDataEndpointFactory.MapAll(routes, registration)
         │
         ├─ MapGroup(prefix) → RouteGroupBuilder
-        │    └─ endpoint filter: OData-Version header, OData-MaxVersion (§8.2.7), $format, Accept validation
+        │    └─ endpoint filters (outermost first): unhandled-exception → 500 OData envelope,
+        │         OData-Version header, OData-MaxVersion (§8.2.7), $format, Accept validation
         ├─ GET ""          → service document (JSON)
         ├─ GET /$metadata  → CSDL XML from IEdmModel
         ├─ startup validation: throws InvalidOperationException if a structural property name
-        │    collides with an entity-level bound function name (see property routes below), or
-        │    if a navigation property's `post` handler collides with an entity-level bound
-        │    action name (both POST /{name}({key})/{segment})
+        │    collides with an entity-level bound function name (see property routes below); if
+        │    a navigation property's `post` handler collides with an entity-level bound action
+        │    name (both POST /{name}({key})/{segment}); if an unbound function/action name
+        │    collides with another unbound operation or with an entity set's own collection
+        │    GET/POST route; or if a BindEntityFunction/BindEntityAction handler's first
+        │    parameter isn't the entity key (TKey)
         └─ per profile: MakeGenericMethod(KeyType, ModelType).Invoke(MapEntitySet<TKey,TModel>)
               │
               ├─ GET    /{name}                        if HasGetQueryable or HasGetAll
