@@ -119,8 +119,8 @@ certification claim.
 | Collection-bound actions | §11.5.4 | ✅ | `POST /Set/ActionName` (JSON body). Malformed/non-object/empty body → `400`; non-JSON `Content-Type` → `415` (only when the action has parameters — a parameterless action never reads the body) |
 | Entity-bound functions | §11.5.4 | ✅ | `GET /Set({key})/FunctionName?params` |
 | Entity-bound actions | §11.5.4 | ✅ | `POST /Set({key})/ActionName` (JSON body). Same body-shape/`Content-Type` guards as collection-bound actions |
-| Unbound functions | §11.5.3 | ✅ | `GET /FunctionName?params` |
-| Unbound actions | §11.5.4 | ✅ | `POST /ActionName`. Same body-shape/`Content-Type` guards as bound actions |
+| Unbound functions | §11.5.3 | ✅ | `GET /FunctionName?params`. Unlike the bound/entity-bound rows above, the result is returned as a bare JSON body with no `@odata.context`/individual-value envelope, even for a model or Edm-primitive result — see `docs/bound-operations.md#unbound-functions-and-actions` |
+| Unbound actions | §11.5.4 | ✅ | `POST /ActionName`. Same body-shape/`Content-Type` guards as bound actions; same unenveloped-response caveat as unbound functions above |
 
 ## `Prefer` header
 
@@ -162,6 +162,7 @@ certification claim.
 | `error.details` array | Mechanism exists in the `ODataError` helper but is currently dead code - no call site populates it |
 | `round()` + `RoundingMode.SpecCompliant` may not translate on every EF Core provider | The spec-compliant rewrite emits `Math.Round(value, MidpointRounding.AwayFromZero)`, which not every EF Core provider can translate to SQL - a query using `round()` may throw a translation exception. Set `RoundingMode = BankersRounding` (per-profile or via `EntitySetDefaults`) to fall back to the single-argument `Math.Round` overload the provider could already translate, at the cost of reverting to banker's rounding on midpoints. |
 | Priority-1 `GetODataQueryable` path does not inherit `RoundingMode` | The profile calls `ApplyTo` itself on that path, so the framework's post-`ApplyTo` rounding rewrite never runs against it - `round()` keeps .NET's default banker's-rounding semantics there regardless of `RoundingMode`, unless the profile applies the same rewrite manually. |
+| Unbound functions/actions have no per-operation auth, and no `@odata.context` envelope | `AddFunction`/`AddAction` are mapped on the same top-level route group as `$metadata`/the service document (no per-profile auth group to sit inside), so only group-level `MapOhData().RequireAuthorization()` can protect them - see `docs/authorization.md`. Their results are also always returned as a bare, unenveloped JSON body, unlike bound/entity-bound operations - see the "Bound operations" table above and `docs/bound-operations.md#unbound-functions-and-actions`. |
 
 ## Declared deviations
 

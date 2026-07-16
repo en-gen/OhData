@@ -128,7 +128,14 @@ Bound operations are registered in the EDM model and appear in `GET /$metadata`.
 
 ## Error handling
 
-Exceptions thrown from the handler propagate as `500 Internal Server Error`. To return OData error responses from within a handler, throw a structured exception or return an appropriate HTTP result - consider wrapping the operation in try/catch and returning `Results.Problem(...)` if granular error control is needed.
+An exception thrown from the handler propagates up to the group-level exception filter and comes
+back as a `500 Internal Server Error` with the standard OData error envelope
+(`code: "InternalServerError"`, a generic message - the exception's own message/stack trace is
+never echoed to the client, only logged). See
+[Error responses](spec-compliance.md#error-responses) ("Unhandled handler exceptions" row) for the
+full behavior. To return a more specific OData error from within a handler, catch the failure yourself
+and return `ODataError`-shaped `Results.Json(...)`/`Results.BadRequest(...)` (matching the
+`{"error":{"code":...,"message":...}}` shape), rather than relying on the generic 500 fallback.
 
 ## Unbound functions and actions
 
@@ -151,7 +158,19 @@ GET  /odata/Greet?name=World        → "Hello, World!"
 POST /odata/AddNumbers { "a": 3, "b": 4 }   → 7
 ```
 
-`AddFunction(Delegate handler, string? name = null)` and `AddAction(Delegate handler, string? name = null)` take any delegate - unlike `BindFunction`/`BindAction`, a lambda is fine, since the route name is either taken from the delegate's method name or supplied explicitly via `name`. Pass `name` whenever the handler is a lambda (its compiler-generated method name isn't a usable route segment). Parameters, `CancellationToken` detection, optional-parameter defaults, and return-type handling all follow the same rules as bound functions/actions described above. Unbound operations are registered in the EDM as `FunctionImport`/`ActionImport` and appear in `GET /$metadata` and the service document.
+`AddFunction(Delegate handler, string? name = null)` and `AddAction(Delegate handler, string? name = null)` take any delegate - unlike `BindFunction`/`BindAction`, a lambda is fine, since the route name is either taken from the delegate's method name or supplied explicitly via `name`. Pass `name` whenever the handler is a lambda (its compiler-generated method name isn't a usable route segment). Parameters, `CancellationToken` detection, optional-parameter defaults, and return-type *dispatch* (`Task`/`Task<T>`/`ValueTask`/`ValueTask<T>`/`void`) all follow the same rules as bound functions/actions described above.
+
+**Response shape is not the same, though.** Bound functions/actions (both collection- and
+entity-level) wrap their result per JSON §11: a `TModel` result gets the entity/collection
+`@odata.context` treatment described above, and a recognized Edm-primitive result (string, numeric
+types, `bool`, `Guid`, date/time types, `byte[]`) gets the individual-value envelope
+(`{"@odata.context":".../$metadata#Edm.<Type>","value":<primitive>}`). Unbound functions/actions
+do **not** get any of this: the handler's result is returned as a bare JSON body with no
+`@odata.context` and no `value` envelope, even for a `TModel` or primitive result (`result is not
+null ? Results.Ok(result) : Results.NoContent()`). This asymmetry is a known post-1.0 cleanup
+candidate, not a bug fix planned for this release — treat unbound-operation responses as
+unenveloped JSON when writing a client against them. Unbound operations are registered in the EDM
+as `FunctionImport`/`ActionImport` and appear in `GET /$metadata` and the service document.
 
 Assembly-scanning registration (`AddProfilesFrom`/`AddProfilesFromAssemblyOf`/`AddProfilesFromAssembly`) is documented in [docs/architecture.md](architecture.md#registering-profiles).
 

@@ -49,9 +49,12 @@ app.MapOhData()  →  returns RouteGroupBuilder
         ├─► GET  ""              → service document
         ├─► GET  /$metadata      → CSDL XML
         ├─► startup validation: throws InvalidOperationException if a structural property name
-        │      collides with an entity-level bound function name, or if a navigation property's
+        │      collides with an entity-level bound function name, if a navigation property's
         │      `post` handler collides with an entity-level bound action name (both POST
-        │      /{EntitySet}({key})/{segment})
+        │      /{EntitySet}({key})/{segment}), if an unbound function/action name collides with
+        │      another unbound operation or with an entity set's own collection GET/POST route,
+        │      or if a BindEntityFunction/BindEntityAction handler's first parameter isn't the
+        │      entity key (TKey)
         └─► per profile (only routes whose handler delegate is non-null):
             GET    /{EntitySet}              (GetAll or GetQueryable)
             GET    /{EntitySet}/$count
@@ -85,6 +88,10 @@ app.MapOhData()  →  returns RouteGroupBuilder
 
 **`ODataException` from invalid query options returns 400.** All collection GET handlers wrap `ODataQueryOptions` construction in try/catch to return an OData error body instead of a 500.
 
+**Query-capability flags and property allowlists are enforced at runtime, not just advertised.** `FilterEnabled`/`OrderByEnabled`/`SelectEnabled`/`ExpandEnabled`/`CountEnabled` (all default `false`) and `FilterProperties`/`OrderByProperties`/`SelectProperties`/`ExpandProperties` gate the `GetQueryable`, `GetAll`, and Priority-1 collection paths, plus `$select`/`$expand` on `GetById`: a disabled option in the request returns `400` (`UnsupportedQueryOption`); a non-allowlisted property returns `400` (`InvalidQueryOption`) via the EDM's model-bound `NotFilterable`/`NotSortable`/`NotSelectable`/`NotExpandable` annotations. `$expand` is also implemented on the single-entity `GetById` route (reuses the collection expansion pipeline). Navigation-collection routes reject unimplemented system query options (`$filter`, `$expand`, `$search`, `$apply`, `$compute`, `$skiptoken`, `$deltatoken`) with `400` rather than silently ignoring them.
+
+**Unhandled handler exceptions get the OData error envelope, not an empty 500.** A group-level endpoint filter (registered alongside the `OData-Version`/`OData-MaxVersion` filters in `OhDataEndpointFactory.MapAll`) catches any exception a handler throws - as opposed to an `ODataError` result a handler deliberately returns - and converts it into `500` + `{"error":{"code":"InternalServerError",...}}`, logging the real exception (never leaking its message/stack trace to the client). Does not catch `OperationCanceledException` (left to ASP.NET Core's own client-disconnect handling) or startup-time validation exceptions (`MapOhData()` throws those once, before any request is served).
+
 **`Delete` returns `Task<bool>`.** `false` → 404 OData error **when `IdempotentDelete = false`**; the framework default is `IdempotentDelete = true`, under which `false` → 204 No Content instead. No `KeyNotFoundException` idiom.
 
 **ETags.** Set `GetETag = model => "..."` to opt in. Adds `ETag` response header to GET/POST/PUT/PATCH. Checks `If-Match` header on PUT/PATCH/DELETE; returns 412 on mismatch.
@@ -110,6 +117,8 @@ app.MapOhData()  →  returns RouteGroupBuilder
 **`AllowDeepInsert` controls what `Post` receives, not a new route.** Profile-level `bool?` (inherits `EntitySetDefaults.AllowDeepInsert`, **default `false`**), entity-level granularity only - no per-navigation opt-in. Default: nested navigation-property values (`HasMany`/`HasOptional`/`HasRequired`) that System.Text.Json already bound during deserialization are stripped (nulled) before `Post` runs. Opt-in (`true`): the full deserialized graph is passed through; the handler owns atomic persistence (the framework does not open a transaction). `@odata.bind` anywhere in a POST body is detected and rejected with `501 Not Implemented` regardless of `AllowDeepInsert` - it is not implemented at all.
 
 **Batch-aware `$expand` via an additive `BatchHandler`.** `HasMany`/`HasOptional`/`HasRequired` accept an optional `batchGetAll`/`batchGet` delegate (`IReadOnlyList<TKey> → ILookup<TKey,TNavigation>` or `IReadOnlyDictionary<TKey,TNavigation?>`) alongside the existing per-entity `getAll`/`get`. When present, `$expand` calls it once per expanded property per page instead of once per parent entity (collapsing N×P sequential calls to P). A per-entity `Handler` is auto-derived from the batch delegate by calling it with a single-key list, so the standalone nav-GET route, `$count`, and `$ref` keep working without a second handler. Falls back byte-identically to the per-entity path when no batch handler is registered.
+
+**Entity-id URLs use a shared canonical key formatter.** `Location`/`Content-Location`/`OData-EntityId`/`@odata.id` values built from a CLR key (POST, and the parsed key on `GetById`/`PUT`/`PATCH`/`$ref`/nav-POST responses) go through `ODataEntityKeyUrlFormatter`, which single-quotes and percent-encodes string keys and doubles embedded quotes - the same escaping `ODataKeyParser` expects on the way back in. `int`/`Guid`/other non-string keys format unchanged.
 
 **POST/PUT/PATCH deserialize the request body by hand.** All three read and JSON-deserialize the body manually (rather than an ASP.NET Core minimal-API bound parameter) so malformed JSON, non-object bodies, and non-JSON `Content-Type` values return the OData error envelope (400/415) instead of ASP.NET Core's implicit binder short-circuiting with an empty body. This is also why PATCH's non-object-body case (JSON array/string/number/bool/null) is caught explicitly - `JsonElement.EnumerateObject()` throws `InvalidOperationException` for non-`Object` `ValueKind`, which is now caught and mapped to 400.
 
