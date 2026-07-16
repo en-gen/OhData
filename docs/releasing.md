@@ -73,7 +73,9 @@ reject the release.
 6. Verify: package pages render (README, license, version) at
    `https://www.nuget.org/packages/EnGen.OhData.AspNetCore` and `.../EnGen.OhData.Client`;
    `dotnet add package EnGen.OhData.AspNetCore` resolves the new version; symbols step through from
-   the NuGet symbol server; and confirm build provenance with `gh attestation verify` (see below).
+   the NuGet symbol server; the GitHub Release page shows 4 attached assets (both `.nupkg` and both
+   `.snupkg`, uploaded automatically by the workflow); and confirm build provenance with
+   `gh attestation verify` (see below).
 7. Back-merge `main` into `develop` (GitFlow) so the tag is reachable and develop's computed version
    advances past the release.
 
@@ -93,8 +95,10 @@ downloaded package against the repo:
 
 ```bash
 gh attestation verify EnGen.OhData.AspNetCore.X.Y.Z.nupkg --repo en-gen/OhData
+gh attestation verify EnGen.OhData.AspNetCore.X.Y.Z.snupkg --repo en-gen/OhData
 ```
 
+Symbols packages (`.snupkg`) are attested alongside the main packages — the same command verifies both.
 A successful verification confirms the package bytes were produced by this workflow from a specific commit
 SHA on GitHub's infrastructure, not assembled or modified elsewhere.
 

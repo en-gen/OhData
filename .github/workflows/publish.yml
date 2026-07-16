@@ -50,7 +50,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       id-token: write       # OIDC token issuance for NuGet Trusted Publishing
-      contents: read
+      contents: write     # release-asset upload (gh release upload) on real releases
       attestations: write   # actions/attest-build-provenance
     env:
       HUSKY: 0
@@ -136,7 +136,9 @@ jobs:
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v3
         with:
-          subject-path: ./nupkg/*.nupkg
+          subject-path: |
+            ./nupkg/*.nupkg
+            ./nupkg/*.snupkg
 
       # Every run — real or rehearsal — leaves the packed output inspectable
       # as a workflow artifact, even when the push step below is skipped.
@@ -167,3 +169,12 @@ jobs:
             --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" \
             --source https://api.nuget.org/v3/index.json \
             --skip-duplicate
+
+      # Attach the exact published bytes to the GitHub Release page so the
+      # Release, the git tag, the attestation, and nuget.org all reference
+      # the same artifacts. Requires contents: write.
+      - name: Attach packages to the GitHub Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" ./nupkg/*.nupkg ./nupkg/*.snupkg --clobber
