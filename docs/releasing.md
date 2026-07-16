@@ -7,13 +7,24 @@ symbols), and pushes to nuget.org with `--skip-duplicate`.
 
 ## One-time setup
 
-1. **NuGet API key** — create at <https://www.nuget.org/account/apikeys> with **Push** permission, scoped to
-   glob pattern `EnGen.OhData.*` (the PackageIds are `EnGen.OhData.AspNetCore` / `EnGen.OhData.Client`; a key
-   scoped to `OhData.*` cannot push them).
-2. **Repository secret** — Settings > Secrets and variables > Actions > New repository secret, name
-   `NUGET_API_KEY`, value = the key from step 1.
+Publishing uses **nuget.org Trusted Publishing** (OIDC) — no API key, no repository secret to store
+or rotate. The workflow exchanges a GitHub-signed OIDC token for a 1-hour API key at run time.
+
+1. **Trusted Publishing policy** — on nuget.org: username > Trusted Publishing > Create:
+   - Policy Name: anything (e.g. `OhData publish via GitHub Actions`)
+   - Package Owner: `engenb`
+   - Repository Owner: `en-gen`
+   - Repository: `OhData`
+   - Workflow File: `publish.yml` (file name only, no `.github/workflows/` path)
+   - Environment: leave blank (the workflow does not use GitHub environments)
+2. **Watch the policy status**: a new policy may show as *temporarily active* for 7 days. A successful
+   publish inside the window locks it permanently; if it lapses, restart the window from the UI.
 3. **Recommended:** reserve the `EnGen.` package ID prefix on nuget.org (Account > ID prefix reservation)
    for the verified-prefix checkmark and squatting protection.
+
+The workflow side is already wired: `permissions: id-token: write` on the publish job and a
+`NuGet/login@v1` step (user `engenb`) that runs immediately before the push, feeding
+`steps.nuget-login.outputs.NUGET_API_KEY` to `dotnet nuget push`.
 
 ## Release procedure (GitFlow + GitVersion)
 

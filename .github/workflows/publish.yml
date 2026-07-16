@@ -5,13 +5,12 @@ name: Publish to NuGet
 # targeting main with a tag like v0.1.0. The tag must match the GitVersion
 # computed version or the pack step will embed a mismatched version.
 #
-# Prerequisites (one-time setup):
-#   1. Create a NuGet API key at https://www.nuget.org/account/apikeys
-#      scoped to Glob pattern "EnGen.OhData.*" with Push permission
-#      (the PackageIds are EnGen.OhData.AspNetCore / EnGen.OhData.Client —
-#      a key scoped to "OhData.*" cannot push them).
-#   2. Add it to this repo: Settings > Secrets and variables > Actions > New secret
-#      Name: NUGET_API_KEY
+# Prerequisites (one-time setup): a nuget.org Trusted Publishing policy — no
+# API key or repository secret required. On nuget.org: username > Trusted
+# Publishing > Create, with Package Owner "engenb", Repository Owner "en-gen",
+# Repository "OhData", Workflow File "publish.yml", Environment blank.
+# The job exchanges a GitHub OIDC token for a 1-hour API key at run time
+# (NuGet/login), so the login step runs immediately before the push.
 #
 # Release procedure: see docs/releasing.md. Note that GitVersion computes the
 # version from the release branch name (release/X.Y.Z -> X.Y.Z on main) — a
@@ -25,6 +24,9 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # OIDC token issuance for NuGet Trusted Publishing
+      contents: read
     env:
       HUSKY: 0
 
@@ -86,13 +88,20 @@ jobs:
             -p:Version="$VERSION" \
             -o ./nupkg
 
+      # Temp keys from Trusted Publishing live 1 hour — log in right before pushing.
+      - name: NuGet login (OIDC -> temp API key)
+        uses: NuGet/login@v1
+        id: nuget-login
+        with:
+          user: engenb
+
       - name: Push to NuGet
         run: |
           dotnet nuget push "./nupkg/*.nupkg" \
-            --api-key "${{ secrets.NUGET_API_KEY }}" \
+            --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" \
             --source https://api.nuget.org/v3/index.json \
             --skip-duplicate
           dotnet nuget push "./nupkg/*.snupkg" \
-            --api-key "${{ secrets.NUGET_API_KEY }}" \
+            --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" \
             --source https://api.nuget.org/v3/index.json \
             --skip-duplicate
