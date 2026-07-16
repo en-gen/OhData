@@ -372,10 +372,9 @@ public sealed class OhDataBuilder
     private static void MarkNavigationTargetTypesFullyQueryable(
         ODataModelBuilder builder, HashSet<Type> rootModelTypes)
     {
-        foreach (StructuralTypeConfiguration stc in builder.StructuralTypes)
+        foreach (StructuralTypeConfiguration stc in builder.StructuralTypes
+            .Where(stc => !rootModelTypes.Contains(stc.ClrType)))
         {
-            if (rootModelTypes.Contains(stc.ClrType)) continue;
-
             var query = stc.QueryConfiguration;
             query.SetFilter(properties: null, enableFilter: true);
             query.SetOrderBy(properties: null, enableOrderBy: true);
