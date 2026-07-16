@@ -151,6 +151,7 @@ documented non-support for 1.0.0 — see below.
 |---|---|
 | Success | `204 No Content` |
 | Entity not found (`Patch` returns `null`) | `404 Not Found` |
+| Entity not found **and** `If-Match` header present | `412 Precondition Failed` (the ETag existence check runs before the write — see below) |
 | Target is the entity's key property | `400 Bad Request` (the key is immutable — §11.4.9) |
 | Unknown property name | `404 Not Found` (no route registered for that segment) |
 | Request body is not a JSON object, or missing the `value` member | `400 Bad Request` |
@@ -166,10 +167,20 @@ documented non-support for 1.0.0 — see below.
 |---|---|
 | Success | `204 No Content` |
 | Entity not found (`Patch` returns `null`) | `404 Not Found` |
+| Entity not found **and** `If-Match` header present | `412 Precondition Failed` (see below) |
 | Target is the entity's key property | `400 Bad Request` |
 | Property is not nullable | `400 Bad Request` — checked before touching the data source at all |
 | Unknown property name | `404 Not Found` |
 | `If-Match` set and doesn't match the current ETag | `412 Precondition Failed` |
+
+The `404`-vs-`412` precedence follows the same rule as entity-level writes (see
+[etags.md](etags.md#conditional-write-operations)): when `If-Match` is present, OhData checks for
+the entity's existence *before* attempting the write, so a missing entity with `If-Match` set —
+including `If-Match: *` — returns `412`, never `404`. Without an `If-Match` header, a missing
+entity returns the plain `404` from the property-write handler itself. This check only runs when
+`GetById` is also configured (`UseETag` + `Patch`-without-`GetById` profiles skip `If-Match`
+checking entirely on property-write routes, same as entity-level writes — see
+[etags.md](etags.md#conditional-write-operations)).
 
 All error responses use the standard OData error envelope: `{"error":{"code":...,"message":...,"target":...}}`.
 

@@ -9,16 +9,26 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Fixed
+Nothing yet.
 
-- **BREAKING (behavior): query-option capability flags and property allowlists are now
-  enforced at runtime** (release audit B1; OData 4.0 Minimal conformance item 7 — "parse the
-  option or reject it"). Previously `FilterEnabled`/`OrderByEnabled`/`SelectEnabled`/
-  `ExpandEnabled`/`CountEnabled` and `FilterProperties`/`OrderByProperties`/`SelectProperties`/
-  `ExpandProperties` only wrote EDM/Swagger advertisement metadata — on the `GetQueryable` and
-  Priority-1 (`GetODataQueryable`) collection paths every option was applied regardless, so a
-  "disabled" `$filter` still filtered and a non-allowlisted property could still be probed via
-  `$filter`/`$orderby` (a data side channel for excluded columns). Now:
+---
+
+## [1.0.0] - TBD
+
+First public release. Includes the initial framework feature set (drafted as an unpublished
+0.1.0 that never shipped) plus the full conformance, hardening, and performance train, plus a
+post-release-prep audit fix wave (below) found before the tag was actually cut.
+
+### Breaking
+
+- **Query-option capability flags and property allowlists are now enforced at runtime**
+  (release audit B1; OData 4.0 Minimal conformance item 7 — "parse the option or reject it").
+  Previously `FilterEnabled`/`OrderByEnabled`/`SelectEnabled`/`ExpandEnabled`/`CountEnabled` and
+  `FilterProperties`/`OrderByProperties`/`SelectProperties`/`ExpandProperties` only wrote EDM/
+  Swagger advertisement metadata — on the `GetQueryable` and Priority-1 (`GetODataQueryable`)
+  collection paths every option was applied regardless, so a "disabled" `$filter` still filtered
+  and a non-allowlisted property could still be probed via `$filter`/`$orderby` (a data side
+  channel for excluded columns). Now:
   - Collection GET (`GetQueryable`, Priority-1, and `GetAll` for its live `$select`/`$expand`/
     `$count` subset): a query option whose capability flag is disabled returns
     `400 Bad Request` (`UnsupportedQueryOption`, message names the option and the flag).
@@ -46,71 +56,6 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     (those options are live on that path).
   Docs updated to match (`docs/query-options.md`, `docs/navigation-routing.md`,
   `docs/spec-compliance.md`).
-
-- Empty, malformed, or non-object JSON bodies on four route families no longer return a raw,
-  envelope-less `500` (release audit B2). Entity-bound actions, collection-bound actions,
-  unbound actions, and `$ref` POST/PUT all read their request body by hand (needed for correct
-  `Content-Type`/malformed-body error formatting) but were missing the guards already applied to
-  POST/PUT/PATCH. `$ref` POST/PUT in particular had no guard at all — even an empty body 500'd.
-  All four now: reject a non-JSON `Content-Type` with `415`; reject malformed JSON and non-object
-  JSON (array/string/number/bool/null) with `400`; both as the standard OData error envelope.
-  Actions with zero parameters are unaffected — they never read the body.
-- Unhandled exceptions thrown by any handler — as opposed to an `ODataError` a handler
-  deliberately returns — no longer produce an empty, envelope-less `500` (release audit S7). A
-  new group-level endpoint filter, registered alongside the existing `OData-Version`/
-  `OData-MaxVersion` filters, catches any exception that reaches it and returns the standard
-  error envelope (`code: "InternalServerError"`, a generic message — never the exception's own
-  message or stack trace) while logging the real exception for operators to diagnose. Does not
-  affect routes that return an `ODataError` result (the normal case for every other 4xx/5xx in
-  this framework) or startup-time validation exceptions (those happen once, in `MapOhData()`,
-  before any request is served).
-- **Startup validation for unbound-operation route collisions** (release audit S5). An unbound
-  function/action (`AddFunction`/`AddAction`) sharing a name with another unbound operation of the
-  same kind, or with an entity set that registers the same `(route, HTTP method)` pair (a
-  collection `GET` for a function, `POST` for an action), previously registered without error and
-  only surfaced as an `AmbiguousMatchException` `500` the first time the route was hit — the
-  entire collection route was dead with zero startup diagnostics. `MapOhData()` (specifically,
-  resolving the `OhDataRegistration`) now throws `InvalidOperationException` naming the colliding
-  operation/entity-set and the shared route, matching the existing bound-operation collision-guard
-  idiom. Comparisons are case-insensitive, matching ASP.NET Core's default route-template matching.
-- **Startup validation for entity-bound operation signatures** (release audit S6).
-  `BindEntityFunction`/`BindEntityAction` now validate, at bind time, that the handler delegate
-  accepts the entity key as its first parameter (typed `TKey`, besides an optional trailing
-  `CancellationToken`). Previously a zero-parameter handler registered fine and 500'd at request
-  time with an uncaught `IndexOutOfRangeException` (the framework places the parsed route key into
-  `args[0]` unconditionally); a handler whose first parameter wasn't `TKey` likewise registered
-  fine and failed only at request time via a `DynamicInvoke` mismatch. Both now throw
-  `InvalidOperationException` at startup, naming the operation, its declaring entity set, and the
-  expected signature. Corrected a stale doc comment on `BoundOperationDefinition.Parameters` that
-  claimed the leading key parameter was excluded for entity-level operations — it isn't; only a
-  trailing `CancellationToken` is stripped.
-- **String-keyed entity-id URLs are now canonical OData key syntax** (release audit S4). Entity-id
-  URLs built from a CLR key value — `POST` `201` `Location`/`Content-Location`, `OData-EntityId`,
-  and `@odata.id` (on `POST`, and now also rebuilt from the parsed key on `GetById`/`PUT`/`PATCH`,
-  `$ref`, and nav-`POST` responses) — previously formatted string keys with plain
-  `string.Format(..., "{0}", key)`: no surrounding single quotes and no URL-encoding. A string key
-  containing a space, single quote, or unicode character produced an invalid or wrong URL (e.g.
-  `/Things(abc)` instead of `/Things('abc')`); embedded single quotes weren't doubled. A new
-  shared `ODataEntityKeyUrlFormatter` (mirroring the client's `ODataKeyFormatter`) now quotes and
-  percent-encodes string keys, doubling embedded single quotes consistently with
-  `ODataKeyParser`'s unescaping, so every entity-id URL the server emits round-trips back through
-  key parsing. `int`/`Guid`/other non-string keys are unaffected — formatting is unchanged.
-- **Client `ODataKeyFormatter` no longer truncates fractional seconds on `DateTime`/
-  `DateTimeOffset` keys** (flagged during the PR #140 filter-translation fix as a leftover; release
-  audit S10/B3). Previously formatted with a fixed whole-seconds (`"...ssZ"`/`"...sszzz"`) pattern,
-  silently dropping any sub-second precision — a key formatted from an entity's actual
-  (sub-second-precision) key value no longer matched the entity it was formatted from, producing a
-  spurious `404`. Now delegates to the same `ODataDateTimeLiteralFormatter` `FilterTranslator` uses
-  for `$filter` literals (full precision, trimmed of trailing zeros, `DateTimeKind`
-  normalization/`Z` suffix per PR #140's `FormatDateTime` semantics), so a key literal and a
-  `$filter` literal for the same value now format identically.
-
----
-
-## [1.0.0] - 2026-07-15
-
-First public release. Includes the initial framework feature set (drafted as an unpublished
-0.1.0 that never shipped) plus the full conformance, hardening, and performance train.
 
 ### Added
 
@@ -201,6 +146,85 @@ First public release. Includes the initial framework feature set (drafted as an 
 
 ### Fixed
 
+- Empty, malformed, or non-object JSON bodies on four route families no longer return a raw,
+  envelope-less `500` (release audit B2). Entity-bound actions, collection-bound actions,
+  unbound actions, and `$ref` POST/PUT all read their request body by hand (needed for correct
+  `Content-Type`/malformed-body error formatting) but were missing the guards already applied to
+  POST/PUT/PATCH. `$ref` POST/PUT in particular had no guard at all — even an empty body 500'd.
+  All four now: reject a non-JSON `Content-Type` with `415`; reject malformed JSON and non-object
+  JSON (array/string/number/bool/null) with `400`; both as the standard OData error envelope.
+  Actions with zero parameters are unaffected — they never read the body.
+- Unhandled exceptions thrown by any handler — as opposed to an `ODataError` a handler
+  deliberately returns — no longer produce an empty, envelope-less `500` (release audit S7). A
+  new group-level endpoint filter, registered alongside the existing `OData-Version`/
+  `OData-MaxVersion` filters, catches any exception that reaches it and returns the standard
+  error envelope (`code: "InternalServerError"`, a generic message — never the exception's own
+  message or stack trace) while logging the real exception for operators to diagnose. Does not
+  affect routes that return an `ODataError` result (the normal case for every other 4xx/5xx in
+  this framework) or startup-time validation exceptions (those happen once, in `MapOhData()`,
+  before any request is served).
+- **Startup validation for unbound-operation route collisions** (release audit S5). An unbound
+  function/action (`AddFunction`/`AddAction`) sharing a name with another unbound operation of the
+  same kind, or with an entity set that registers the same `(route, HTTP method)` pair (a
+  collection `GET` for a function, `POST` for an action), previously registered without error and
+  only surfaced as an `AmbiguousMatchException` `500` the first time the route was hit — the
+  entire collection route was dead with zero startup diagnostics. `MapOhData()` (specifically,
+  resolving the `OhDataRegistration`) now throws `InvalidOperationException` naming the colliding
+  operation/entity-set and the shared route, matching the existing bound-operation collision-guard
+  idiom. Comparisons are case-insensitive, matching ASP.NET Core's default route-template matching.
+- **Startup validation for entity-bound operation signatures** (release audit S6).
+  `BindEntityFunction`/`BindEntityAction` now validate, at bind time, that the handler delegate
+  accepts the entity key as its first parameter (typed `TKey`, besides an optional trailing
+  `CancellationToken`). Previously a zero-parameter handler registered fine and 500'd at request
+  time with an uncaught `IndexOutOfRangeException` (the framework places the parsed route key into
+  `args[0]` unconditionally); a handler whose first parameter wasn't `TKey` likewise registered
+  fine and failed only at request time via a `DynamicInvoke` mismatch. Both now throw
+  `InvalidOperationException` at startup, naming the operation, its declaring entity set, and the
+  expected signature. Corrected a stale doc comment on `BoundOperationDefinition.Parameters` that
+  claimed the leading key parameter was excluded for entity-level operations — it isn't; only a
+  trailing `CancellationToken` is stripped.
+- **String-keyed entity-id URLs are now canonical OData key syntax** (release audit S4). Entity-id
+  URLs built from a CLR key value — `POST` `201` `Location`/`Content-Location`, `OData-EntityId`,
+  and `@odata.id` (on `POST`, and now also rebuilt from the parsed key on `GetById`/`PUT`/`PATCH`,
+  `$ref`, and nav-`POST` responses) — previously formatted string keys with plain
+  `string.Format(..., "{0}", key)`: no surrounding single quotes and no URL-encoding. A string key
+  containing a space, single quote, or unicode character produced an invalid or wrong URL (e.g.
+  `/Things(abc)` instead of `/Things('abc')`); embedded single quotes weren't doubled. A new
+  shared `ODataEntityKeyUrlFormatter` (mirroring the client's `ODataKeyFormatter`) now quotes and
+  percent-encodes string keys, doubling embedded single quotes consistently with
+  `ODataKeyParser`'s unescaping, so every entity-id URL the server emits round-trips back through
+  key parsing. `int`/`Guid`/other non-string keys are unaffected — formatting is unchanged.
+- **Client `ODataKeyFormatter` no longer truncates fractional seconds on `DateTime`/
+  `DateTimeOffset` keys** (flagged during the PR #140 filter-translation fix as a leftover; release
+  audit S10/B3). Previously formatted with a fixed whole-seconds (`"...ssZ"`/`"...sszzz"`) pattern,
+  silently dropping any sub-second precision — a key formatted from an entity's actual
+  (sub-second-precision) key value no longer matched the entity it was formatted from, producing a
+  spurious `404`. Now delegates to the same `ODataDateTimeLiteralFormatter` `FilterTranslator` uses
+  for `$filter` literals (full precision, trimmed of trailing zeros, `DateTimeKind`
+  normalization/`Z` suffix per PR #140's `FormatDateTime` semantics), so a key literal and a
+  `$filter` literal for the same value now format identically.
+- **Client: `DateTime` with `Kind=Local`/`Unspecified` in `$filter` no longer emits an
+  offset-less literal the server rejects with 400** (release audit B3). `FilterTranslator`
+  previously appended a `Z` suffix only for `DateTimeKind.Utc`; `Local`/`Unspecified` values (e.g.
+  ordinary `DateTime.Now` comparisons) produced a bare literal
+  (`2026-07-15T08:53:09.5190818`) that the Microsoft URI parser — and therefore any OData 4.0
+  server, including OhData — rejects (Part 2 §5.1.1.9 requires an explicit `Z`/offset on every
+  `Edm.DateTimeOffset` literal). Both kinds now always emit a `Z` suffix: `Local` values are
+  converted to their UTC instant first (`ToUniversalTime()`); `Unspecified` values are treated as
+  already UTC and emitted as-is with `Z` (matching the convention most ORMs/serializers use for
+  "no timezone info" values, e.g. System.Text.Json's own `DateTime` round-tripping). `Utc` values
+  are unaffected. A new shared `ODataDateTimeLiteralFormatter` also preserves full sub-second
+  precision (trimmed of trailing zeros) instead of the previous whole-seconds truncation; see the
+  `ODataKeyFormatter` entry below. See `docs/client.md#literal-type-support` for the exact
+  per-`DateTimeKind` semantics.
+- **Client: referencing the outer lambda parameter inside `Any`/`All` no longer silently
+  translates to `null`** (release audit B4). `x => x.Tags.Any(t => t.Name == x.Name)` previously
+  produced `Tags/any(t: t/Name eq null)` — the sub-translator couldn't resolve the outer
+  parameter and fell through to a `null` literal, silently returning the wrong rows instead of
+  failing loudly. Outer-parameter references inside `Any`/`All` lambdas are now resolved against
+  the enclosing scope and translated to the correct nested-property path
+  (`Tags/any(t: t/Name eq Name)`); a reference that still can't be resolved throws
+  `NotSupportedException` instead of degrading to `null`.
 - `round()` now follows OData's round-half-away-from-zero semantics (Part 2 §5.1.1.9) by default
   instead of .NET's banker's rounding (round-half-to-even), e.g. `round(2.5)` now returns `3`, not
   `2`, and `round(-2.5)` returns `-3`, not `-2`. Root cause: Microsoft.OData's `ApplyTo` binder
@@ -299,6 +323,11 @@ First public release. Includes the initial framework feature set (drafted as an 
   README documentation index
 - `CLAUDE.md` and `docs/architecture.md`'s startup-validation description now also mentions the
   POST-nav/bound-action collision guard added in #133
+- README test counts corrected to the actual suite sizes (release audit B5); `docs/etags.md`,
+  `docs/bound-operations.md`, and `docs/property-access.md` corrected for the conditional-request
+  and error-envelope fixes above; `docs/authorization.md` reconciled on the `$metadata`/service-doc
+  anonymous-access story and documents the unbound-operation auth story; `docs/query-options.md`
+  and `docs/client.md` updated for the capability-enforcement and client-translation fixes above
 
 ### Added — initial framework (drafted as an unpublished 0.1.0; first shipped in 1.0.0)
 
@@ -382,5 +411,4 @@ First public release. Includes the initial framework feature set (drafted as an 
 
 ---
 
-[Unreleased]: https://github.com/en-gen/OhData/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/en-gen/OhData/releases/tag/v1.0.0
+[Unreleased]: https://github.com/en-gen/OhData/commits/develop
