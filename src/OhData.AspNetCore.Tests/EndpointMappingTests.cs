@@ -1,8 +1,10 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Threading.Tasks;
 using Microsoft.AspNetCore.OData.Query;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
@@ -1334,6 +1336,42 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EntityBoundOpsProfile>(), configureServices: s => s.AddSingleton(new EntityBoundOpsStore()));
         var resp = await fx.Client.GetAsync("/odata/EntityBoundWidgets(notanint)/GetNameForKey");
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    // ── S6: startup validation — entity-bound operation signature ─────────────────
+    // Previously a zero-parameter (or wrong-first-parameter-type) entity-bound function/action
+    // registered fine and only failed at request time (IndexOutOfRangeException / a
+    // DynamicInvoke failure), since the framework places the parsed route key into args[0]
+    // unconditionally. BindEntityFunction/BindEntityAction must now catch this at bind time.
+
+    [Fact]
+    public async Task EntityBoundFunction_ZeroParameters_ThrowsAtStartup()
+    {
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            TestHostBuilder.BuildAsync(o => o.AddProfile<ZeroParamEntityFunctionProfile>()));
+        Assert.Contains("BindEntityFunction", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("NoParams", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("ZeroParamFnWidgets", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task EntityBoundAction_ZeroParameters_ThrowsAtStartup()
+    {
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            TestHostBuilder.BuildAsync(o => o.AddProfile<ZeroParamEntityActionProfile>()));
+        Assert.Contains("BindEntityAction", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("NoParams", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("ZeroParamActionWidgets", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task EntityBoundFunction_WrongFirstParameterType_ThrowsAtStartup()
+    {
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            TestHostBuilder.BuildAsync(o => o.AddProfile<WrongKeyTypeEntityFunctionProfile>()));
+        Assert.Contains("BadFirstParam", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("Int32", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("String", ex.Message, StringComparison.Ordinal);
     }
 
     // ── Gap 8: $expand data loading ───────────────────────────────────────────────

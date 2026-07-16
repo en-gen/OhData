@@ -249,6 +249,45 @@ public sealed class OhDataBuilder
                     "Each entity set name must be unique within an OhData registration.");
             }
 
+            // Startup validation (S5): unbound-operation route collisions. An unbound function
+            // claims GET /{prefix}/{Name}; an unbound action claims POST /{prefix}/{Name}. Two
+            // unbound operations of the same kind sharing a name -- or an unbound operation
+            // sharing a name with an entity set that registers the same (route, HTTP method)
+            // pair (a collection GET for functions, POST for actions) -- would otherwise only
+            // surface as an AmbiguousMatchException at request time with zero startup
+            // diagnostics. Comparisons are case-insensitive (OrdinalIgnoreCase), matching
+            // ASP.NET Core's default route-template matching and the duplicate-entity-set-name
+            // check above.
+            var duplicateUnboundOps = capturedUnbound
+                .GroupBy(o => (NormalizedName: o.Name.ToUpperInvariant(), o.IsAction))
+                .FirstOrDefault(g => g.Count() > 1);
+            if (duplicateUnboundOps is not null)
+            {
+                string dupKind = duplicateUnboundOps.Key.IsAction ? "action" : "function";
+                string dupName = duplicateUnboundOps.First().Name;
+                throw new InvalidOperationException(
+                    $"OhData: duplicate unbound {dupKind} name '{dupName}'. Each unbound " +
+                    $"{dupKind} name must be unique within an OhData registration (route templates are " +
+                    "case-insensitive).");
+            }
+
+            foreach (var op in capturedUnbound)
+            {
+                var collidingProfile = profiles.FirstOrDefault(p =>
+                    string.Equals(p.EntitySetName, op.Name, StringComparison.OrdinalIgnoreCase)
+                    && (op.IsAction ? p.HasPost : (p.HasGetAll || p.HasGetQueryable)));
+                if (collidingProfile is not null)
+                {
+                    string opKind = op.IsAction ? "action" : "function";
+                    string httpMethod = op.IsAction ? "POST" : "GET";
+                    throw new InvalidOperationException(
+                        $"OhData: unbound {opKind} '{op.Name}' conflicts with entity set " +
+                        $"'{collidingProfile.EntitySetName}': both would register {httpMethod} /{op.Name} " +
+                        "(route templates are case-insensitive). Rename the unbound " +
+                        $"{opKind} (AddFunction/AddAction 'name' parameter) or the entity set.");
+                }
+            }
+
             // Gap 7: register unbound functions/actions in the EDM as FunctionImport/ActionImport
             // Must be done BEFORE GetEdmModel() so they appear in $metadata.
             foreach (var op in capturedUnbound)

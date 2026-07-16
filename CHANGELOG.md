@@ -64,6 +64,46 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   affect routes that return an `ODataError` result (the normal case for every other 4xx/5xx in
   this framework) or startup-time validation exceptions (those happen once, in `MapOhData()`,
   before any request is served).
+- **Startup validation for unbound-operation route collisions** (release audit S5). An unbound
+  function/action (`AddFunction`/`AddAction`) sharing a name with another unbound operation of the
+  same kind, or with an entity set that registers the same `(route, HTTP method)` pair (a
+  collection `GET` for a function, `POST` for an action), previously registered without error and
+  only surfaced as an `AmbiguousMatchException` `500` the first time the route was hit — the
+  entire collection route was dead with zero startup diagnostics. `MapOhData()` (specifically,
+  resolving the `OhDataRegistration`) now throws `InvalidOperationException` naming the colliding
+  operation/entity-set and the shared route, matching the existing bound-operation collision-guard
+  idiom. Comparisons are case-insensitive, matching ASP.NET Core's default route-template matching.
+- **Startup validation for entity-bound operation signatures** (release audit S6).
+  `BindEntityFunction`/`BindEntityAction` now validate, at bind time, that the handler delegate
+  accepts the entity key as its first parameter (typed `TKey`, besides an optional trailing
+  `CancellationToken`). Previously a zero-parameter handler registered fine and 500'd at request
+  time with an uncaught `IndexOutOfRangeException` (the framework places the parsed route key into
+  `args[0]` unconditionally); a handler whose first parameter wasn't `TKey` likewise registered
+  fine and failed only at request time via a `DynamicInvoke` mismatch. Both now throw
+  `InvalidOperationException` at startup, naming the operation, its declaring entity set, and the
+  expected signature. Corrected a stale doc comment on `BoundOperationDefinition.Parameters` that
+  claimed the leading key parameter was excluded for entity-level operations — it isn't; only a
+  trailing `CancellationToken` is stripped.
+- **String-keyed entity-id URLs are now canonical OData key syntax** (release audit S4). Entity-id
+  URLs built from a CLR key value — `POST` `201` `Location`/`Content-Location`, `OData-EntityId`,
+  and `@odata.id` (on `POST`, and now also rebuilt from the parsed key on `GetById`/`PUT`/`PATCH`,
+  `$ref`, and nav-`POST` responses) — previously formatted string keys with plain
+  `string.Format(..., "{0}", key)`: no surrounding single quotes and no URL-encoding. A string key
+  containing a space, single quote, or unicode character produced an invalid or wrong URL (e.g.
+  `/Things(abc)` instead of `/Things('abc')`); embedded single quotes weren't doubled. A new
+  shared `ODataEntityKeyUrlFormatter` (mirroring the client's `ODataKeyFormatter`) now quotes and
+  percent-encodes string keys, doubling embedded single quotes consistently with
+  `ODataKeyParser`'s unescaping, so every entity-id URL the server emits round-trips back through
+  key parsing. `int`/`Guid`/other non-string keys are unaffected — formatting is unchanged.
+- **Client `ODataKeyFormatter` no longer truncates fractional seconds on `DateTime`/
+  `DateTimeOffset` keys** (flagged during the PR #140 filter-translation fix as a leftover; release
+  audit S10/B3). Previously formatted with a fixed whole-seconds (`"...ssZ"`/`"...sszzz"`) pattern,
+  silently dropping any sub-second precision — a key formatted from an entity's actual
+  (sub-second-precision) key value no longer matched the entity it was formatted from, producing a
+  spurious `404`. Now delegates to the same `ODataDateTimeLiteralFormatter` `FilterTranslator` uses
+  for `$filter` literals (full precision, trimmed of trailing zeros, `DateTimeKind`
+  normalization/`Z` suffix per PR #140's `FormatDateTime` semantics), so a key literal and a
+  `$filter` literal for the same value now format identically.
 
 ---
 
