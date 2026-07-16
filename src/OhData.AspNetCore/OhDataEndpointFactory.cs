@@ -239,6 +239,41 @@ internal static class OhDataEndpointFactory
             .GetService<IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions>>()
             ?.Value?.SerializerOptions;
 
+        // Resolved once here (rather than down at the per-profile loop) so the group-level
+        // exception filter below can log through the same "OhData" category every other
+        // handler uses.
+        var loggerFactory = routes.ServiceProvider.GetService<ILoggerFactory>();
+        var groupLogger = loggerFactory?.CreateLogger("OhData");
+
+        // S7: a handler that throws (as opposed to returning an ODataError IResult, which every
+        // deliberate error path in this file does) previously escaped as an empty, envelope-less
+        // 500 -- no body, no logging, and the most common production failure mode (e.g. the
+        // database is down) shipped with unspecified, §9.4-violating behavior. This is the
+        // last-resort safety net: convert any exception that reaches here into the same OData
+        // error envelope every other error response uses, with a generic message -- never
+        // ex.Message or the stack trace, which could leak internal details (connection strings,
+        // type names, file paths) to the client -- and log the real exception so operators can
+        // actually diagnose the failure. Registered as the outermost group filter (added first)
+        // so it also covers exceptions thrown by the OData-Version/$format/Accept and
+        // OData-MaxVersion filters below, not just route handlers. Deliberately does not catch
+        // OperationCanceledException: a client-aborted request has no response to write and
+        // should be left to ASP.NET Core's own cancellation handling rather than have this filter
+        // try to produce a 500 for it.
+        group.AddEndpointFilter(async (ctx, next) =>
+        {
+            try
+            {
+                return await next(ctx);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                groupLogger?.LogError(ex, "OhData: unhandled exception processing {Method} {Path}",
+                    ctx.HttpContext.Request.Method, ctx.HttpContext.Request.Path);
+                return ODataError(500, "InternalServerError",
+                    "An unexpected error occurred while processing the request.");
+            }
+        });
+
         // Gap 1: Add OData-Version: 4.0 header to all responses (§8.2.6).
         // Batch 4: Return 406 Not Acceptable when the client cannot accept application/json (§8.2.3).
         // Batch 5: Validate $format query option (§11.2.12); it overrides the Accept header.
@@ -320,8 +355,7 @@ internal static class OhDataEndpointFactory
         group.MapGet("/$metadata", () => Results.Content(metadataXml, "application/xml"))
             .ExcludeFromDescription();
 
-        // Resolve logger from the original routes ServiceProvider (group doesn't expose it)
-        var loggerFactory = routes.ServiceProvider.GetService<ILoggerFactory>();
+        // loggerFactory resolved once at the top of this method (see groupLogger above).
 
         // One set of CRUD routes per registered profile
         foreach (var profile in registration.Profiles)
@@ -401,10 +435,25 @@ internal static class OhDataEndpointFactory
                     object?[] args = new object?[opCapture.Parameters.Length];
                     if (opCapture.Parameters.Length > 0)
                     {
+                        // B2 fix: mirrors the PATCH/property-write pattern -- a wrong Content-Type
+                        // gets a proper 415 envelope instead of either being silently parsed as
+                        // JSON anyway or short-circuited by the implicit binder with an empty body.
+                        if (!IsJsonContentType(ctx)) return UnsupportedMediaTypeError(ctx);
                         try
                         {
                             var body = await JsonSerializer.DeserializeAsync<JsonElement>(
                                 ctx.Request.Body, cancellationToken: ct);
+
+                            // B2 fix: a syntactically valid JSON payload that isn't a JSON object
+                            // (array, string, number, bool, null) would previously reach
+                            // TryGetJsonProperty -> JsonElement.EnumerateObject(), which throws
+                            // InvalidOperationException for any non-Object ValueKind -- an
+                            // uncaught 500. Reject it here as a normal 400 instead.
+                            if (body.ValueKind != JsonValueKind.Object)
+                            {
+                                return ODataError(400, "InvalidBody", "Request body must be a JSON object.");
+                            }
+
                             for (int i = 0; i < opCapture.Parameters.Length; i++)
                             {
                                 var param = opCapture.Parameters[i];
@@ -430,7 +479,7 @@ internal static class OhDataEndpointFactory
                     }
                     object? result = await opCapture.Invoke(args, ct);
                     return result is not null ? Results.Ok(result) : Results.NoContent();
-                }).Produces(200).Produces(204).Produces(400);
+                }).Produces(200).Produces(204).Produces(400).Produces(415);
             }
         }
     }
@@ -2106,12 +2155,38 @@ internal static class OhDataEndpointFactory
                 string addRefNavPropertyName = navRefPropertyName;
                 async Task<IResult> handleAddOrSetRef(string key, HttpContext ctx, CancellationToken ct)
                 {
+                    // B2 fix: mirrors the PATCH/property-write pattern -- reject a non-JSON
+                    // Content-Type with a proper 415 envelope before touching the body at all.
+                    if (!IsJsonContentType(ctx)) return UnsupportedMediaTypeError(ctx);
+
                     try
                     {
                         var s = ResolveHandlers(ctx);
                         var requestNav = s.NavigationRoutes.First(n => n.PropertyName == addRefNavPropertyName);
                         object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
-                        var body = await JsonSerializer.DeserializeAsync<JsonElement>(ctx.Request.Body, cancellationToken: ct);
+
+                        JsonElement body;
+                        try
+                        {
+                            body = await JsonSerializer.DeserializeAsync<JsonElement>(ctx.Request.Body, cancellationToken: ct);
+                        }
+                        catch (JsonException ex)
+                        {
+                            // B2 fix: malformed and empty JSON bodies previously had no catch
+                            // clause here at all -- JsonException (including the "no JSON tokens"
+                            // case for an empty body) propagated as an uncaught 500.
+                            return ODataError(400, "InvalidBody", ex.Message);
+                        }
+
+                        // B2 fix: a syntactically valid non-object JSON payload (array, string,
+                        // number, bool, null) would previously reach TryGetJsonProperty ->
+                        // JsonElement.EnumerateObject(), which throws InvalidOperationException
+                        // for any non-Object ValueKind -- another uncaught 500. Reject it here.
+                        if (body.ValueKind != JsonValueKind.Object)
+                        {
+                            return ODataError(400, "InvalidBody", "Request body must be a JSON object.");
+                        }
+
                         if (!TryGetJsonProperty(body, "@odata.id", out var odataIdEl))
                             return ODataError(400, "BadRequest", "Request body must contain '@odata.id'.");
                         string relatedId = odataIdEl.GetString() ?? "";
@@ -2130,14 +2205,16 @@ internal static class OhDataEndpointFactory
                     entityAuthGroup.MapPost($"/{name}({{key}})/{navRefPropertyName}/$ref", handleAddOrSetRef)
                         .WithTags(name)
                         .Produces(204)
-                        .Produces(400);
+                        .Produces(400)
+                        .Produces(415);
                 }
                 else
                 {
                     entityAuthGroup.MapPut($"/{name}({{key}})/{navRefPropertyName}/$ref", handleAddOrSetRef)
                         .WithTags(name)
                         .Produces(204)
-                        .Produces(400);
+                        .Produces(400)
+                        .Produces(415);
                 }
             }
 
@@ -2638,10 +2715,24 @@ internal static class OhDataEndpointFactory
                 object?[] args = new object?[actionCapture.Parameters.Length];
                 if (actionCapture.Parameters.Length > 0)
                 {
+                    // B2 fix: mirrors the PATCH/property-write pattern -- reject a non-JSON
+                    // Content-Type with a proper 415 envelope before touching the body at all.
+                    if (!IsJsonContentType(ctx)) return UnsupportedMediaTypeError(ctx);
                     try
                     {
                         var body = await JsonSerializer.DeserializeAsync<JsonElement>(
                             ctx.Request.Body, cancellationToken: ct);
+
+                        // B2 fix: a syntactically valid JSON payload that isn't a JSON object
+                        // (array, string, number, bool, null) would previously reach
+                        // TryGetJsonProperty -> JsonElement.EnumerateObject(), which throws
+                        // InvalidOperationException for any non-Object ValueKind -- an uncaught
+                        // 500. Reject it here as a normal 400 instead.
+                        if (body.ValueKind != JsonValueKind.Object)
+                        {
+                            return ODataError(400, "InvalidBody", "Request body must be a JSON object.");
+                        }
+
                         for (int i = 0; i < actionCapture.Parameters.Length; i++)
                         {
                             var param = actionCapture.Parameters[i];
@@ -2670,7 +2761,7 @@ internal static class OhDataEndpointFactory
                 if (result is null) return Results.NoContent();
                 // Gap 1: @odata.context on action results when return type matches TModel
                 return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions);
-            }).WithTags(name).Produces(200).Produces(204).Produces(400);
+            }).WithTags(name).Produces(200).Produces(204).Produces(400).Produces(415);
         }
 
         // Gap 7: Entity-level bound functions — GET /{name}({key})/{fn.Name}
@@ -2746,10 +2837,25 @@ internal static class OhDataEndpointFactory
                         args[0] = parsedKey;
                         if (actionCapture.Parameters.Length > 1)
                         {
+                            // B2 fix: mirrors the PATCH/property-write pattern -- reject a
+                            // non-JSON Content-Type with a proper 415 envelope before touching
+                            // the body at all.
+                            if (!IsJsonContentType(ctx)) return UnsupportedMediaTypeError(ctx);
                             try
                             {
                                 var body = await JsonSerializer.DeserializeAsync<JsonElement>(
                                     ctx.Request.Body, cancellationToken: ct);
+
+                                // B2 fix: a syntactically valid JSON payload that isn't a JSON
+                                // object (array, string, number, bool, null) would previously
+                                // reach TryGetJsonProperty -> JsonElement.EnumerateObject(), which
+                                // throws InvalidOperationException for any non-Object ValueKind --
+                                // an uncaught 500. Reject it here as a normal 400 instead.
+                                if (body.ValueKind != JsonValueKind.Object)
+                                {
+                                    return ODataError(400, "InvalidBody", "Request body must be a JSON object.");
+                                }
+
                                 for (int i = 1; i < actionCapture.Parameters.Length; i++)
                                 {
                                     var param = actionCapture.Parameters[i];
@@ -2784,7 +2890,7 @@ internal static class OhDataEndpointFactory
                         return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
                     }
                 })
-                .WithTags(name).Produces(200).Produces(204).Produces(400);
+                .WithTags(name).Produces(200).Produces(204).Produces(400).Produces(415);
         }
 
     }
