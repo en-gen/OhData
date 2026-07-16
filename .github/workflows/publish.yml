@@ -7,9 +7,16 @@ name: Publish to NuGet
 #
 # Prerequisites (one-time setup):
 #   1. Create a NuGet API key at https://www.nuget.org/account/apikeys
-#      scoped to Glob pattern "OhData.*" with Push permission.
+#      scoped to Glob pattern "EnGen.OhData.*" with Push permission
+#      (the PackageIds are EnGen.OhData.AspNetCore / EnGen.OhData.Client —
+#      a key scoped to "OhData.*" cannot push them).
 #   2. Add it to this repo: Settings > Secrets and variables > Actions > New secret
 #      Name: NUGET_API_KEY
+#
+# Release procedure: see docs/releasing.md. Note that GitVersion computes the
+# version from the release branch name (release/X.Y.Z -> X.Y.Z on main) — a
+# direct develop->main merge computes the wrong version and the tag-validation
+# step below will reject the release.
 
 on:
   release:
