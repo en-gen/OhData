@@ -44,7 +44,7 @@ Bound to a specific entity instance identified by key.
 | Function | `GET /{EntitySet}({key})/{FunctionName}?param=value` | GET |
 | Action | `POST /{EntitySet}({key})/{ActionName}` | POST |
 
-Register with `BindEntityFunction` / `BindEntityAction`. The handler's first parameter (after excluding `CancellationToken`) **must** be the entity key (`TKey`):
+Register with `BindEntityFunction` / `BindEntityAction`. The handler's first parameter (after excluding a trailing `CancellationToken`) **must** be the entity key (`TKey`) — this is validated at bind time: a handler with no parameters, or whose first parameter isn't `TKey`, throws `InvalidOperationException` naming the operation, its entity set, and the expected signature. (Before this validation existed, both cases registered without error and only failed at request time — a zero-parameter handler with an uncaught `IndexOutOfRangeException`, a wrong-first-parameter-type handler with a `DynamicInvoke` failure.)
 
 ```csharp
 public class OrderProfile : EntitySetProfile<Guid, Order>
@@ -154,3 +154,16 @@ POST /odata/AddNumbers { "a": 3, "b": 4 }   → 7
 `AddFunction(Delegate handler, string? name = null)` and `AddAction(Delegate handler, string? name = null)` take any delegate - unlike `BindFunction`/`BindAction`, a lambda is fine, since the route name is either taken from the delegate's method name or supplied explicitly via `name`. Pass `name` whenever the handler is a lambda (its compiler-generated method name isn't a usable route segment). Parameters, `CancellationToken` detection, optional-parameter defaults, and return-type handling all follow the same rules as bound functions/actions described above. Unbound operations are registered in the EDM as `FunctionImport`/`ActionImport` and appear in `GET /$metadata` and the service document.
 
 Assembly-scanning registration (`AddProfilesFrom`/`AddProfilesFromAssemblyOf`/`AddProfilesFromAssembly`) is documented in [docs/architecture.md](architecture.md#registering-profiles).
+
+## Route collisions
+
+Several distinct constructs can end up claiming the same `(route template, HTTP method)` pair. Since two endpoints can't otherwise register the same pair, every case below is caught by a startup validation pass — resolving the `OhDataRegistration` (which happens the first time `MapOhData()` runs) throws `InvalidOperationException` naming the conflicting pair, rather than deferring to an `AmbiguousMatchException` the first time a client hits the route:
+
+| Collision | Route shape | Guard |
+|---|---|---|
+| Unbound function vs. another unbound function/action of the same kind | `GET`/`POST /{prefix}/{Name}` | Duplicate unbound operation name (case-insensitive) within a registration. |
+| Unbound function/action vs. an entity set | `GET`/`POST /{prefix}/{Name}` vs. `GET`/`POST /{prefix}/{EntitySet}` | An unbound function's name matches an entity set with a registered collection `GET` (`GetAll`/`GetQueryable`); an unbound action's name matches an entity set with a registered `Post` (case-insensitive). |
+| Entity-level bound function vs. a structural property | `GET /{EntitySet}({key})/{Name}` | A bound function's name matches a structural (non-navigation) property name. |
+| Navigation property `post` handler vs. an entity-level bound action | `POST /{EntitySet}({key})/{Name}` | A navigation property configured with a `post` handler shares a name with an entity-level bound action. |
+
+Navigation vs. structural-property routes never collide by construction (structural properties are computed as "every public readable CLR property minus every declared navigation property name"), so there is no guard for that pairing.

@@ -1495,7 +1495,11 @@ internal static class OhDataEndpointFactory
                         return ODataError(404, "NotFound", $"{name} with key '{key}' was not found.");
                     // Gap 5: include @odata.id in single-entity response
                     // Gap 2: include @odata.etag in body
-                    string odataId = $"{BuildBaseUrl(ctx, prefix)}/{name}({key})";
+                    // S4 fix: rebuild the key literal from the parsed CLR key (canonical, quoted
+                    // + percent-encoded for string keys) rather than echoing the raw route
+                    // segment -- the latter may carry decoded-but-unescaped characters (routing
+                    // URL-decodes path segments before the handler sees them).
+                    string odataId = $"{BuildBaseUrl(ctx, prefix)}/{name}({ODataEntityKeyUrlFormatter.Format(parsedKey!)})";
 
                     if (hasExpand && options is not null)
                     {
@@ -1627,9 +1631,12 @@ internal static class OhDataEndpointFactory
                         postEtag = s.InvokeGetETag(result);
                         ctx.Response.Headers.ETag = $"\"{postEtag}\"";
                     }
-                    string keyStr = s.InvokeGetKeyString(result);
+                    // S4 fix: canonical, URL-safe key literal (quoted + percent-encoded for
+                    // string keys) -- not InvokeGetKeyString, which returns the raw/unquoted
+                    // form used elsewhere for body-vs-URL key equality comparisons.
+                    string keyForUrl = s.InvokeGetKeyForUrl(result);
                     string baseUrl = BuildBaseUrl(ctx, prefix);
-                    string odataId = $"{baseUrl}/{name}({keyStr})";
+                    string odataId = $"{baseUrl}/{name}({keyForUrl})";
 
                     // Gap 4: Prefer: return=minimal → 204 with Location header
                     if (PrefersMinimal(ctx))
@@ -1730,7 +1737,8 @@ internal static class OhDataEndpointFactory
                         ctx.Response.Headers["Preference-Applied"] = "return=minimal";
                         if (wasCreated)
                         {
-                            string upsertOdataId = $"{BuildBaseUrl(ctx, prefix)}/{name}({key})";
+                            // S4 fix: canonical, URL-safe key literal built from parsedKey (see GetById above).
+                            string upsertOdataId = $"{BuildBaseUrl(ctx, prefix)}/{name}({ODataEntityKeyUrlFormatter.Format(parsedKey!)})";
                             ctx.Response.Headers.Location = upsertOdataId;
                             // V1/§8.3.4: OData-EntityId is REQUIRED on the 204 response of an
                             // upsert-PUT that created the entity. A plain update-PUT must NOT
@@ -1749,7 +1757,8 @@ internal static class OhDataEndpointFactory
 
                     // Gap 5: include @odata.id in PUT response
                     // Gap 2: include @odata.etag in body
-                    string odataId = $"{BuildBaseUrl(ctx, prefix)}/{name}({key})";
+                    // S4 fix: canonical, URL-safe key literal built from parsedKey (see GetById above).
+                    string odataId = $"{BuildBaseUrl(ctx, prefix)}/{name}({ODataEntityKeyUrlFormatter.Format(parsedKey!)})";
                     if (wasCreated)
                         return Results.Created(odataId, ODataEntityNode(ctx, prefix, $"{name}/$entity", result, jsonOptions, odataId: odataId, etag: putEtag));
                     return ODataEntityResult(ctx, prefix, name, result, jsonOptions, odataId: odataId, etag: putEtag);
@@ -1847,7 +1856,8 @@ internal static class OhDataEndpointFactory
 
                     // Gap 5: include @odata.id in PATCH response
                     // Gap 2: include @odata.etag in body
-                    string odataId = $"{BuildBaseUrl(ctx, prefix)}/{name}({key})";
+                    // S4 fix: canonical, URL-safe key literal built from parsedKey (see GetById above).
+                    string odataId = $"{BuildBaseUrl(ctx, prefix)}/{name}({ODataEntityKeyUrlFormatter.Format(parsedKey!)})";
                     return ODataEntityResult(ctx, prefix, name, result, jsonOptions, odataId: odataId, etag: patchEtag);
                 }
                 catch (JsonException ex)
@@ -2087,7 +2097,8 @@ internal static class OhDataEndpointFactory
                                         }
                                         if (cachedAccessor(child) is { } k)
                                         {
-                                            string formattedKey = string.Format(CultureInfo.InvariantCulture, "{0}", k);
+                                            // S4 fix: canonical, URL-safe key literal (quoted + percent-encoded for string keys).
+                                            string formattedKey = ODataEntityKeyUrlFormatter.Format(k);
                                             refs.Add(new Dictionary<string, string>
                                             {
                                                 ["@odata.id"] = $"{baseUrl}/{refNavCapture.ChildEntitySetName}({formattedKey})"
@@ -2124,7 +2135,8 @@ internal static class OhDataEndpointFactory
                                     var accessor = GetOrCompileNavRefKeyAccessor(child.GetType(), refNavCapture.ChildKeyPropertyName);
                                     if (accessor(child) is { } k)
                                     {
-                                        string childKey = string.Format(CultureInfo.InvariantCulture, "{0}", k);
+                                        // S4 fix: canonical, URL-safe key literal (quoted + percent-encoded for string keys).
+                                        string childKey = ODataEntityKeyUrlFormatter.Format(k);
                                         return Results.Ok(new Dictionary<string, object?>
                                         {
                                             ["@odata.context"] = context,
@@ -2304,7 +2316,8 @@ internal static class OhDataEndpointFactory
                             var accessor = GetOrCompileNavRefKeyAccessor(created.GetType(), postNavCapture.ChildKeyPropertyName);
                             if (accessor(created) is { } childKeyVal)
                             {
-                                string formattedChildKey = string.Format(CultureInfo.InvariantCulture, "{0}", childKeyVal);
+                                // S4 fix: canonical, URL-safe key literal (quoted + percent-encoded for string keys).
+                                string formattedChildKey = ODataEntityKeyUrlFormatter.Format(childKeyVal);
                                 childOdataId = $"{baseUrl}/{postNavCapture.ChildEntitySetName}({formattedChildKey})";
                             }
                         }

@@ -29,15 +29,15 @@ internal static class ODataKeyFormatter
             Guid g => g.ToString(),
             bool b => b ? "true" : "false",
             char c => $"'{c}'",
-            // Same rule as FilterTranslator.FormatDateTime: Edm.DateTimeOffset key literals
-            // require an explicit "Z"/offset designator per the OData ABNF, so Local is
-            // converted to its unambiguous UTC instant and Unspecified is treated as UTC
-            // rather than emitting an offset-less literal the server's URI parser rejects.
-            DateTime dt => (dt.Kind == DateTimeKind.Local ? dt.ToUniversalTime() : dt)
-                                      .ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture),
-            DateTimeOffset dto => dto.Offset == TimeSpan.Zero
-                                      ? dto.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture)
-                                      : dto.ToString("yyyy-MM-ddTHH:mm:sszzz", CultureInfo.InvariantCulture),
+            // S10/B3 fix: previously formatted with a fixed "ss" (whole-seconds) pattern, which
+            // silently truncated any sub-second precision on the key value -- a DateTime/
+            // DateTimeOffset key with milliseconds/ticks would format to a *different* key than
+            // the one the entity was created with, producing spurious 404s on existing entities.
+            // Delegates to ODataDateTimeLiteralFormatter (shared with FilterTranslator) so full
+            // precision (trimmed of trailing zeros) and the Kind/offset handling stay identical
+            // between $filter literals and entity-id key literals for the same value.
+            DateTime dt => ODataDateTimeLiteralFormatter.FormatDateTime(dt),
+            DateTimeOffset dto => ODataDateTimeLiteralFormatter.FormatDateTimeOffset(dto),
             DateOnly d => d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             TimeOnly t => t.ToString("HH:mm:ss", CultureInfo.InvariantCulture),
             // All other numeric types: invariant culture, no quotes
