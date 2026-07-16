@@ -91,7 +91,7 @@ certification claim.
 | Navigation `$top`/`$skip` validation | Part 2 §5.1.6 | ✅ | An invalid (non-numeric or negative) `$top`/`$skip` on a navigation-collection route returns `400 Bad Request` (`InvalidQueryOption`), matching the main collection route's validation, instead of being silently ignored and returning the full un-paged collection |
 | Navigation unsupported-option rejection | Minimal item 7 | ✅ | `$filter`, `$expand`, `$search`, `$apply`, `$compute`, `$skiptoken`, `$deltatoken` on a navigation route return `400` (`UnsupportedQueryOption`) rather than being silently ignored — the route implements only `$select`/`$orderby`/`$skip`/`$top`/`$count` |
 | `$ref` get link(s) | §11.4.6.1 | ✅ | `GET /Set({key})/Nav/$ref` returns populated `@odata.id` (collection or single) when `refTargetEntitySet` is configured on the navigation; otherwise an empty envelope. Context URL is `#$ref` (single-valued) or `#Collection($ref)` (collection), per JSON Format §14 / Protocol §10.12 |
-| `$ref` add link | §11.4.6.1 | ✅ | `POST /Set({key})/Nav/$ref` |
+| `$ref` add link | §11.4.6.1 | ✅ | `POST /Set({key})/Nav/$ref` (collection navigations) / `PUT /Set({key})/Nav/$ref` (single-valued navigations). Malformed/non-object/empty body → `400`; non-JSON `Content-Type` → `415` |
 | `$ref` remove link | §11.4.6.2 | ✅ | `DELETE /Set({key})/Nav/$ref` |
 | POST related entity via navigation | §11.4.2.1 | ✅ | `POST /Set({key})/Nav` — collection navigations only, via the `post` parameter on `HasMany`. `201 Created` (`Location`/`@odata.id` when `refTargetEntitySet` is configured); `Prefer: return=minimal` → `204` + `OData-EntityId`; handler returning `null` → `404` (parent not found); malformed body → `400`; non-JSON content type → `415`. No `post` handler → route not registered (`405` from the coexisting `GET` nav route) |
 
@@ -116,11 +116,11 @@ certification claim.
 | Feature | Section | Status | Notes |
 |---------|---------|--------|-------|
 | Collection-bound functions | §11.5.3 | ✅ | `GET /Set/FunctionName?params` |
-| Collection-bound actions | §11.5.4 | ✅ | `POST /Set/ActionName` (JSON body) |
+| Collection-bound actions | §11.5.4 | ✅ | `POST /Set/ActionName` (JSON body). Malformed/non-object/empty body → `400`; non-JSON `Content-Type` → `415` (only when the action has parameters — a parameterless action never reads the body) |
 | Entity-bound functions | §11.5.4 | ✅ | `GET /Set({key})/FunctionName?params` |
-| Entity-bound actions | §11.5.4 | ✅ | `POST /Set({key})/ActionName` (JSON body) |
+| Entity-bound actions | §11.5.4 | ✅ | `POST /Set({key})/ActionName` (JSON body). Same body-shape/`Content-Type` guards as collection-bound actions |
 | Unbound functions | §11.5.3 | ✅ | `GET /FunctionName?params` |
-| Unbound actions | §11.5.4 | ✅ | `POST /ActionName` |
+| Unbound actions | §11.5.4 | ✅ | `POST /ActionName`. Same body-shape/`Content-Type` guards as bound actions |
 
 ## `Prefer` header
 
@@ -134,9 +134,10 @@ certification claim.
 
 | Feature | Section | Status | Notes |
 |---------|---------|--------|-------|
-| `error.code` and `error.message` | §9.3 | ✅ | All error responses, including malformed/wrong-shaped POST, PUT, and PATCH request bodies and unsupported `Content-Type` values (400/415) - these read and deserialize the body manually rather than relying on ASP.NET Core's implicit body-binder, which used to short-circuit with an empty 400/415 body before this formatting code ran |
+| `error.code` and `error.message` | §9.3 | ✅ | All error responses, including malformed/wrong-shaped POST, PUT, and PATCH request bodies and unsupported `Content-Type` values (400/415) - these read and deserialize the body manually rather than relying on ASP.NET Core's implicit body-binder, which used to short-circuit with an empty 400/415 body before this formatting code ran. The same manual-read/guard pattern also covers every route that reads a JSON body by hand: entity-bound actions, collection-bound actions, unbound actions, and `$ref` POST/PUT |
 | `error.target` | §9.3 | ✅ | Set on key-mismatch and invalid-key errors |
 | `error.details` array | §9.3 | ⚠️ | The internal `ODataError` helper accepts a `details` parameter and will serialize it, but no call site in the framework currently populates it - the array never appears in a real response today |
+| Unhandled handler exceptions | §9.4 | ✅ | A group-level endpoint filter wraps every route (added alongside the `OData-Version`/`OData-MaxVersion` filters) and converts any exception a handler throws — as opposed to an `ODataError` result a handler deliberately returns — into a `500` with the standard error envelope, `code: "InternalServerError"`, and a generic message. The real exception is logged (category `"OhData"`) but its message/stack trace is never included in the response body |
 
 ## Service document and metadata
 

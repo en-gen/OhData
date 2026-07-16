@@ -47,6 +47,24 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Docs updated to match (`docs/query-options.md`, `docs/navigation-routing.md`,
   `docs/spec-compliance.md`).
 
+- Empty, malformed, or non-object JSON bodies on four route families no longer return a raw,
+  envelope-less `500` (release audit B2). Entity-bound actions, collection-bound actions,
+  unbound actions, and `$ref` POST/PUT all read their request body by hand (needed for correct
+  `Content-Type`/malformed-body error formatting) but were missing the guards already applied to
+  POST/PUT/PATCH. `$ref` POST/PUT in particular had no guard at all — even an empty body 500'd.
+  All four now: reject a non-JSON `Content-Type` with `415`; reject malformed JSON and non-object
+  JSON (array/string/number/bool/null) with `400`; both as the standard OData error envelope.
+  Actions with zero parameters are unaffected — they never read the body.
+- Unhandled exceptions thrown by any handler — as opposed to an `ODataError` a handler
+  deliberately returns — no longer produce an empty, envelope-less `500` (release audit S7). A
+  new group-level endpoint filter, registered alongside the existing `OData-Version`/
+  `OData-MaxVersion` filters, catches any exception that reaches it and returns the standard
+  error envelope (`code: "InternalServerError"`, a generic message — never the exception's own
+  message or stack trace) while logging the real exception for operators to diagnose. Does not
+  affect routes that return an `ODataError` result (the normal case for every other 4xx/5xx in
+  this framework) or startup-time validation exceptions (those happen once, in `MapOhData()`,
+  before any request is served).
+
 ---
 
 ## [1.0.0] - 2026-07-15
