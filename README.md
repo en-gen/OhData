@@ -162,8 +162,8 @@ for the full methodology, numbers, and known asymmetries between the two pipelin
 
 ## Battle-testing
 
-1,065 automated tests protect the framework end to end: 770 in `OhData.AspNetCore.Tests` (server
-routing, query options, navigation, ETags, authorization, malformed-payload hardening), 265 in
+1,075 automated tests protect the framework end to end: 778 in `OhData.AspNetCore.Tests` (server
+routing, query options, navigation, ETags, authorization, malformed-payload hardening), 267 in
 `OhData.Client.Tests`, and 30 in `OhData.MicrosoftODataClient.Tests` (compatibility against the
 official `Microsoft.OData.Client`). Run them yourself with the commands in
 [CLAUDE.md](CLAUDE.md#build--test).
