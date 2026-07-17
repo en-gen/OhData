@@ -42,4 +42,4 @@ services:
 - `branch: develop` - the service tracks the `develop` branch; a push to `develop` triggers a new deploy.
 - `ASPNETCORE_ENVIRONMENT=Production` - suppresses developer-only behavior (e.g. detailed exception pages) in the deployed instance.
 
-To use it: connect the repo to Render as a Blueprint (New → Blueprint, point it at this repo), and Render provisions the `ohdata-testbench` service from `render.yaml` directly - no manual service configuration needed. This is a demo/reference deployment target, not a publishing mechanism for the NuGet packages themselves.
+To use it: connect the repo to Render as a Blueprint (New → Blueprint, point it at this repo), and Render provisions the `ohdata-testbench` service from `render.yaml` directly - no manual service configuration needed. This is a demo/reference deployment target, not a publishing mechanism for the NuGet packages themselves. The reference instance is live at <https://ohdata.onrender.com/>.
