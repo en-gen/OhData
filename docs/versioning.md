@@ -63,7 +63,11 @@ builder.Services.AddSwaggerGen(c =>
 });
 ```
 
-Register `OhDataSwaggerOperationFilter` to have Swagger UI show `$filter`/`$orderby`/`$top`/`$skip`/`$select`/`$expand`/`$count`/`$search` as documented query parameters on each collection GET endpoint, driven by the per-entity-set capability flags (`FilterEnabled`, `OrderByEnabled`, etc.) and `MaxTop`:
+Register `OhDataSwaggerOperationFilter` (from the [`EnGen.OhData.AspNetCore.Swashbuckle`](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.Swashbuckle) companion package — the core server package carries no Swashbuckle dependency) to have Swagger UI show `$filter`/`$orderby`/`$top`/`$skip`/`$select`/`$expand`/`$count`/`$search` as documented query parameters on each collection GET endpoint, driven by the per-entity-set capability flags (`FilterEnabled`, `OrderByEnabled`, etc.) and `MaxTop`:
+
+```
+dotnet add package EnGen.OhData.AspNetCore.Swashbuckle
+```
 
 ```csharp
 builder.Services.AddSwaggerGen(c => c.OperationFilter<OhDataSwaggerOperationFilter>());

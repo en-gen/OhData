@@ -126,6 +126,10 @@ jobs:
             --no-build -c Release \
             -p:Version="$VERSION" \
             -o ./nupkg
+          dotnet pack src/OhData.AspNetCore.Swashbuckle/OhData.AspNetCore.Swashbuckle.csproj \
+            --no-build -c Release \
+            -p:Version="$VERSION" \
+            -o ./nupkg
 
       # Package quality gate: structural checks (description/license/repo/
       # tags/readme/xmldoc/symbols/etc. all set, assemblies optimized) beyond
