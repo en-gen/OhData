@@ -18,8 +18,6 @@ dotnet add package EnGen.OhData.Client
 
 ## Packages
 
-Packages are published under the `EnGen.` org prefix (similar to how Newtonsoft.Json carries the author's name).
-
 | Package | NuGet | What it does |
 |---------|-------|--------------|
 | `EnGen.OhData.AspNetCore` | [![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore) | `EntitySetProfile<TKey,TModel>` base class, DI registration, endpoint factory, minimal API routes. Includes `AddOhDataVersion` / `MapOhDataVersion` versioning helpers and `ODataEntitySetProfile<TKey,TModel>` for full OData pushdown control. |
