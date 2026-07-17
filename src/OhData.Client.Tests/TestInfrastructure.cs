@@ -302,6 +302,83 @@ internal sealed class TemporalClientTestFixture : IAsyncDisposable
 }
 
 /// <summary>
+/// Entities + profile used to verify the NEW-1 fix (nav-path $filter rejected by the B1
+/// allowlist-validation plumbing) end-to-end via the real client's Any/All ($it) translation
+/// from PR #140, not just at the FilterTranslator-unit level.
+/// </summary>
+internal class TaggedItem
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public List<ItemTag> Tags { get; set; } = new();
+}
+
+internal class ItemTag
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+}
+
+internal class TaggedItemProfile : EntitySetProfile<int, TaggedItem>
+{
+    private static readonly List<TaggedItem> _store = new()
+    {
+        new() { Id = 1, Name = "Foo", Tags = new() { new() { Id = 1, Name = "Red" } } },
+        new() { Id = 2, Name = "Bar", Tags = new() { new() { Id = 2, Name = "Blue" } } },
+    };
+
+    public TaggedItemProfile() : base(x => x.Id)
+    {
+        EntitySetName = "TaggedItems";
+        FilterEnabled = true;
+        // Deliberately no FilterProperties allowlist -- the NEW-1 repro shape.
+        GetQueryable = (ct) => Task.FromResult(_store.AsQueryable());
+        HasMany(x => x.Tags);
+    }
+}
+
+/// <summary>
+/// Fixture that registers <see cref="TaggedItemProfile"/> for live nav-path Any/All $filter
+/// verification (NEW-1).
+/// </summary>
+internal sealed class TaggedItemClientTestFixture : IAsyncDisposable
+{
+    private readonly WebApplication _app;
+    public OhDataClient Client { get; }
+
+    private TaggedItemClientTestFixture(WebApplication app, string prefix)
+    {
+        _app = app;
+        HttpClient httpClient = ((IHost)app).GetTestClient();
+        httpClient.BaseAddress = new Uri(httpClient.BaseAddress!, prefix.Trim('/') + "/");
+        Client = new OhDataClient(httpClient);
+    }
+
+    public static async Task<TaggedItemClientTestFixture> BuildAsync(string prefix = "/odata")
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Services.AddLogging(b => b.ClearProviders());
+        builder.Services.AddOhData(o =>
+        {
+            o.WithPrefix(prefix);
+            o.AddProfile<TaggedItemProfile>();
+        });
+
+        var app = builder.Build();
+        app.MapOhData();
+        await app.StartAsync();
+        return new TaggedItemClientTestFixture(app, prefix);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        Client.Dispose();
+        await _app.DisposeAsync();
+    }
+}
+
+/// <summary>
 /// Fixture that registers <see cref="PaginatedWidgetProfile"/> for nextLink pagination tests.
 /// </summary>
 internal sealed class PaginatedClientTestFixture : IAsyncDisposable

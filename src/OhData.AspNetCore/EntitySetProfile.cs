@@ -439,8 +439,10 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
         if (SelectEnabled ?? defaults.SelectEnabled) entityType.Select(_selectProperties);
         if (ExpandEnabled ?? defaults.ExpandEnabled) entityType.Expand(_expandProperties);
-        if (FilterEnabled ?? defaults.FilterEnabled) entityType.Filter(_filterProperties);
-        if (OrderByEnabled ?? defaults.OrderByEnabled) entityType.OrderBy(_orderByProperties);
+        if (FilterEnabled ?? defaults.FilterEnabled)
+            entityType.Filter(MergeAllowlistWithNavigationProperties(_filterProperties));
+        if (OrderByEnabled ?? defaults.OrderByEnabled)
+            entityType.OrderBy(MergeAllowlistWithNavigationProperties(_orderByProperties));
         if (CountEnabled ?? defaults.CountEnabled) entityType.Count();
 
         entityType.HasKey(_getKey);
@@ -637,6 +639,32 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
                 "This profile has already been registered and cannot be modified. " +
                 "Configure the profile entirely within the constructor.");
         }
+    }
+
+    /// <summary>
+    /// Unions this entity's navigation property names into a configured
+    /// FilterProperties/OrderByProperties allowlist before it is handed to the model builder.
+    /// </summary>
+    /// <remarks>
+    /// FilterProperties/OrderByProperties are documented (and intended) to gate which
+    /// STRUCTURAL properties of this entity are usable in <c>$filter</c>/<c>$orderby</c> — not
+    /// which navigation properties can be traversed into. Navigation-target types have no
+    /// allowlist surface of their own in 1.0 (see
+    /// <c>OhDataBuilder.MarkNavigationTargetTypesFullyQueryable</c>), so a path like
+    /// <c>Tags/any(t: t/Name eq 'X')</c> should never be affected by this entity's own
+    /// allowlist. Microsoft's model-bound validator, however, treats a configured allowlist as
+    /// exhaustive for the WHOLE type it's attached to — including navigation properties — so
+    /// leaving navigation property names out of the array passed to <c>Filter()</c>/
+    /// <c>OrderBy()</c> would make the mere presence of a nav property in the path 400,
+    /// regardless of what's on the other side of it. Passing <c>null</c> through unchanged
+    /// preserves the "no allowlist configured" case, where <c>Filter()</c>/<c>OrderBy()</c>
+    /// with no properties already marks the whole type (all properties, structural and
+    /// navigation alike) permissive.
+    /// </remarks>
+    private string[]? MergeAllowlistWithNavigationProperties(string[]? allowlist)
+    {
+        if (allowlist is null || _navigationPropertyNames.Count == 0) return allowlist;
+        return allowlist.Union(_navigationPropertyNames, StringComparer.Ordinal).ToArray();
     }
 
     /// <summary>

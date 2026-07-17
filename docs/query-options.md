@@ -130,6 +130,12 @@ FilterProperties("Price", "Name", "Category");
 A `$filter` referencing a property outside the allowlist returns `400 Bad Request`
 (`InvalidQueryOption`, "The property 'X' cannot be used in the $filter query option.").
 
+`FilterProperties` restricts this entity's own structural properties only; it never restricts
+a path through a navigation property. `$filter=Lines/any(l: l/Quantity gt 1)` is unaffected by
+`Orders`' own `FilterProperties` allowlist (or the lack of one) because navigation-target types
+(`OrderLine` here) have no allowlist surface of their own - only `FilterProperties` on the
+navigated-to entity set's own profile (if it has one) governs its properties.
+
 ### `round()` midpoint rounding
 
 OData Part 2 §5.1.1.9 specifies that the `round()` canonical function rounds a midpoint value
@@ -189,6 +195,8 @@ OrderByProperties(x => x.Price, x => x.Name);
 ```
 
 Sorting on a property outside the allowlist returns `400 Bad Request` (`InvalidQueryOption`).
+As with `FilterProperties`, this only restricts the entity's own structural properties -
+`$orderby=Category/Name` (a path through a navigation property) is unaffected.
 
 ---
 
