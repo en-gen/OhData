@@ -10,6 +10,7 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web;
@@ -612,16 +613,16 @@ internal static class OhDataEndpointFactory
                     return result is not null ? Results.Ok(result) : Results.NoContent();
                 }).Produces(400).Produces(415);
                 AddUnboundOperationProduces(rb, opCapture);
-                // Leg 2: an action's parameters are deserialized by name out of a JSON body
-                // object (see the loop above), not a single bound CLR type, so there is no one
-                // "the" body type to hand to OhDataRequestBodyMetadata the way there is for an
-                // entity POST/PUT/PATCH. Document a generic object schema with a description
-                // that enumerates the parameter names/types instead.
+                // Leg 2: an action's parameters are deserialized by name out of a JSON body object
+                // (see the loop above), not a single bound CLR type. #184: synthesize a POCO whose
+                // properties are exactly those parameters so the OpenAPI body schema shows the real
+                // shape instead of an empty {}. The prose description is retained alongside it.
                 if (opCapture.Parameters.Length > 0)
                 {
                     rb.WithMetadata(new OhDataRequestBodyMetadata
                     {
-                        BodyType = typeof(object),
+                        BodyType = ActionBodySchemaTypeFactory.GetOrCreate(
+                            $"Unbound.{opCapture.Name}", opCapture.Parameters),
                         Description = "JSON object with the action's parameters: " +
                             string.Join(", ", opCapture.Parameters.Select(p => $"{p.Name} ({p.ParameterType.Name})")) + "."
                     });
@@ -923,9 +924,14 @@ internal static class OhDataEndpointFactory
                         string.Equals(n.PropertyName, propName, StringComparison.OrdinalIgnoreCase));
                     if (navRoute is null) continue;
 
-                    // Apply the naming policy so the expand key matches the parent's
-                    // property casing (e.g. "children" for camelCase, "Children" for PascalCase).
-                    string expandKey = serializerOptions.PropertyNamingPolicy?.ConvertName(propName) ?? propName;
+                    // Derive the expand key the same way the serializer named the parent's
+                    // property: honor a per-property [JsonPropertyName] rename first (#184), then
+                    // fall back to the naming policy (e.g. "children" for camelCase, "Children" for
+                    // PascalCase). Must agree with OmitUnexpandedNavigations' key so Stage 3.5 keeps
+                    // (not strips) the expansion this stage just injected.
+                    PropertyInfo? expandClrProp = source.ModelType.GetProperty(
+                        propName, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+                    string expandKey = ResolveNavigationJsonKey(propName, expandClrProp, serializerOptions);
 
                     if (navRoute.BatchHandler is not null)
                     {
@@ -985,7 +991,7 @@ internal static class OhDataEndpointFactory
         // pass removes each un-expanded navigation and recurses into the expanded ones so their
         // own un-expanded navigations are stripped too (face 3). Runs after Stage 3 so freshly
         // injected expansions are present, and before Stage 4 so $select still has final say.
-        OmitUnexpandedNavigations(json, rootEdmType, options.SelectExpand?.SelectExpandClause, serializerOptions);
+        OmitUnexpandedNavigations(json, rootEdmType, options.SelectExpand?.SelectExpandClause, source.ModelType, serializerOptions);
 
         // Stage 4: Strip unselected properties (if $select requested).
         List<string>? selectedProps = null;
@@ -1021,6 +1027,7 @@ internal static class OhDataEndpointFactory
         JsonNode? node,
         IEdmEntityType? edmType,
         SelectExpandClause? clause,
+        Type? clrType,
         JsonSerializerOptions? serializerOptions)
     {
         if (edmType is null) return;
@@ -1033,7 +1040,7 @@ internal static class OhDataEndpointFactory
         {
             foreach (JsonNode? element in array)
             {
-                OmitUnexpandedNavigations(element, edmType, clause, serializerOptions);
+                OmitUnexpandedNavigations(element, edmType, clause, clrType, serializerOptions);
             }
             return;
         }
@@ -1058,22 +1065,62 @@ internal static class OhDataEndpointFactory
         // branch is needed.
         foreach (IEdmNavigationProperty navProp in edmType.NavigationProperties())
         {
-            // Match on the serialised (e.g. camelCase) key using the same naming policy that
-            // produced the JSON, so PropertyNamingPolicy round-trips exactly.
-            string serializedKey = serializerOptions?.PropertyNamingPolicy?.ConvertName(navProp.Name) ?? navProp.Name;
+            // Match on the serialised key. #184: resolve the CLR property so a per-property
+            // [JsonPropertyName] rename is honored ahead of the naming policy — System.Text.Json
+            // writes a renamed nav under the attribute's exact name (it is NOT run through
+            // PropertyNamingPolicy), so keying off the policy-converted name alone would miss a
+            // renamed nav (leaking it inline) and a sibling $expand would write a second,
+            // differently-cased key. Falls back to the naming-policy name when unrenamed, so a
+            // symmetric JsonNamingPolicy (snake_case, etc.) still round-trips exactly.
+            PropertyInfo? clrNavProp = clrType?.GetProperty(
+                navProp.Name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+            string serializedKey = ResolveNavigationJsonKey(navProp.Name, clrNavProp, serializerOptions);
 
             if (expanded is not null && expanded.TryGetValue(navProp.Name, out SelectExpandClause? nested))
             {
                 // Recurse into the expanded value to strip ITS un-expanded navigations. obj[key]
                 // is null when the expanded single-valued nav had no related entity — the recursive
-                // call no-ops on a null node, so no separate presence check is needed.
-                OmitUnexpandedNavigations(obj[serializedKey], navProp.ToEntityType(), nested, serializerOptions);
+                // call no-ops on a null node, so no separate presence check is needed. The nested
+                // CLR type (element type for a collection nav) carries [JsonPropertyName] resolution
+                // one level deeper.
+                OmitUnexpandedNavigations(obj[serializedKey], navProp.ToEntityType(), nested,
+                    NavElementClrType(clrNavProp), serializerOptions);
             }
             else
             {
                 obj.Remove(serializedKey);
             }
         }
+    }
+
+    // #184: resolve the JSON key a navigation property serializes to. A per-property
+    // [System.Text.Json.Serialization.JsonPropertyName] rename wins (STJ emits it verbatim);
+    // otherwise the naming policy converts the CLR name (and a null policy leaves it unchanged).
+    private static string ResolveNavigationJsonKey(
+        string navClrName, PropertyInfo? clrNavProp, JsonSerializerOptions? serializerOptions)
+    {
+        JsonPropertyNameAttribute? rename = clrNavProp?.GetCustomAttribute<JsonPropertyNameAttribute>();
+        if (rename is not null) return rename.Name;
+        return serializerOptions?.PropertyNamingPolicy?.ConvertName(navClrName) ?? navClrName;
+    }
+
+    // #184: the CLR type carrying a navigation target's own properties — the element type for a
+    // collection navigation (List<T>/T[]/IEnumerable<T>), or the property type itself for a
+    // single-valued navigation — so nested [JsonPropertyName] resolution can recurse. Returns null
+    // when the CLR property is unknown (e.g. AdvancedConfigure EDM with no matching CLR member).
+    private static Type? NavElementClrType(PropertyInfo? clrNavProp)
+    {
+        if (clrNavProp is null) return null;
+        Type navType = clrNavProp.PropertyType;
+        if (navType == typeof(string)) return navType;
+        if (navType.IsArray) return navType.GetElementType();
+        foreach (Type iface in new[] { navType }
+            .Concat(navType.GetInterfaces())
+            .Where(iface => iface.IsGenericType && iface.GetGenericTypeDefinition() == typeof(IEnumerable<>)))
+        {
+            return iface.GetGenericArguments()[0];
+        }
+        return navType;
     }
 
     // Batch 4: Inject @odata.etag into a JsonArray using the original (pre-expand) items array
@@ -1191,7 +1238,9 @@ internal static class OhDataEndpointFactory
         // OData JSON §4.5.1 / §11.2.4.2 — matching a top-level collection GET of that type instead
         // of leaking each item's whole CLR graph. Runs before $select so projection has final say.
         var json = JsonSerializer.SerializeToNode(itemArray, navSerializerOptions)!.AsArray();
-        OmitUnexpandedNavigations(json, navElementEdmType, clause: null, navSerializerOptions);
+        // #184: navItemType is the CLR element type, so [JsonPropertyName] renames on its
+        // navigations are honored when computing which keys to omit.
+        OmitUnexpandedNavigations(json, navElementEdmType, clause: null, navItemType, navSerializerOptions);
 
         // Apply $select post-processing for navigation results if requested.
         // We parse the $select query param directly (navigation routes don't go through
@@ -1256,7 +1305,9 @@ internal static class OhDataEndpointFactory
         // $expand'd (there is no $expand here, so every declared navigation is stripped). Callers
         // that must keep the graph inline — deep-insert POST (§11.4.2.2) — pass no type and are
         // unaffected. See OmitUnexpandedNavigations for the spec citation.
-        OmitUnexpandedNavigations(serialized, omitNavsForType, clause: null, jsonOptions);
+        // #184: the concrete entity's CLR type carries [JsonPropertyName] renames on its
+        // navigations, so omission keys off the same names the serializer just wrote.
+        OmitUnexpandedNavigations(serialized, omitNavsForType, clause: null, entity.GetType(), jsonOptions);
 
         var node = new JsonObject
         {
@@ -1286,6 +1337,18 @@ internal static class OhDataEndpointFactory
         // M3: when $select projected the response, the context gains the projection suffix
         // ("#Set(prop1,prop2)/$entity", JSON §10.8) and unselected properties are stripped
         // from the body so the context and the payload agree on shape.
+        //
+        // #184 (decision: keep behavior, documented): when $select names a non-expanded
+        // navigation property (e.g. GET Set(key)?$select=cast, no $expand), that item stays in
+        // the projected context — the context URL MUST reflect the client's select list (OData
+        // JSON §10.8) — while the body carries no member for it: selecting an un-expanded nav
+        // selects its navigation *link*, and a convention-computable navigation link is omitted
+        // under the default odata.metadata=minimal (JSON §4.5.9 / §11.2.4.1). The result is a
+        // spec-defensible "content-less" entity (only @odata.* annotations) whose context still
+        // lists the selected nav. We deliberately do NOT drop the projection suffix (the rejected
+        // option (a)): doing so would emit "#Set/$entity", which claims the FULL entity was
+        // returned — strictly more misleading than the current, standards-accurate context — and
+        // would violate the §10.8 requirement that the context echo the select list verbatim.
         string contextSegment = $"{AppendSelectSuffix(name, selectedProps)}/$entity";
         JsonObject node = ODataEntityNode(ctx, prefix, contextSegment, entity, jsonOptions, odataId: odataId, etag: etag, omitNavsForType: omitNavsForType);
         if (selectedProps is { Count: > 0 })
@@ -2957,11 +3020,15 @@ internal static class OhDataEndpointFactory
                         $"Property '{propName}' is the entity's key and cannot be modified.",
                         target: propName);
 
-                    entityAuthGroup.MapPut($"/{name}({{key}})/{propName}", () => KeyImmutableError())
+                    // #184: the stub lambdas take (string key) — otherwise the generated operation
+                    // omits the {key} path-parameter declaration its sibling GET carries, producing
+                    // an OpenAPI document with an undeclared template variable (technically invalid).
+                    // The key is unused: the response is a fixed 400 regardless of its value.
+                    entityAuthGroup.MapPut($"/{name}({{key}})/{propName}", (string key) => KeyImmutableError())
                         .WithTags(name).Produces(400);
-                    entityAuthGroup.MapMethods($"/{name}({{key}})/{propName}", PatchMethod, () => KeyImmutableError())
+                    entityAuthGroup.MapMethods($"/{name}({{key}})/{propName}", PatchMethod, (string key) => KeyImmutableError())
                         .WithTags(name).Produces(400);
-                    entityAuthGroup.MapDelete($"/{name}({{key}})/{propName}", () => KeyImmutableError())
+                    entityAuthGroup.MapDelete($"/{name}({{key}})/{propName}", (string key) => KeyImmutableError())
                         .WithTags(name).Produces(400);
                     continue;
                 }
@@ -3226,13 +3293,14 @@ internal static class OhDataEndpointFactory
                 return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, s);
             }).WithTags(name).Produces(400).Produces(415);
             AddBoundOperationProduces<TModel>(rb, actionCapture);
-            // Leg 2: see the matching comment on the unbound-action branch of
-            // MapUnboundOperations for why this is a generic object schema rather than a typed one.
+            // Leg 2 / #184: synthesize a POCO body schema from the action's parameters (see the
+            // matching comment on the unbound-action branch of MapUnboundOperations).
             if (actionCapture.Parameters.Length > 0)
             {
                 rb.WithMetadata(new OhDataRequestBodyMetadata
                 {
-                    BodyType = typeof(object),
+                    BodyType = ActionBodySchemaTypeFactory.GetOrCreate(
+                        $"{name}.{actionCapture.Name}", actionCapture.Parameters),
                     Description = "JSON object with the action's parameters: " +
                         string.Join(", ", actionCapture.Parameters.Select(p => $"{p.Name} ({p.ParameterType.Name})")) + "."
                 });
@@ -3372,15 +3440,18 @@ internal static class OhDataEndpointFactory
                 })
                 .WithTags(name).Produces(400).Produces(415);
             AddBoundOperationProduces<TModel>(rb, actionCapture);
-            // Leg 2: entity-level Parameters[0] is the route key (see BoundOperationDefinition's
-            // XML doc), so only Parameters[1..] are body parameters here.
+            // Leg 2 / #184: entity-level Parameters[0] is the route key (see BoundOperationDefinition's
+            // XML doc), so only Parameters[1..] are body parameters — synthesize the POCO body schema
+            // from those, excluding the leading key.
             if (actionCapture.Parameters.Length > 1)
             {
+                ParameterInfo[] bodyParams = actionCapture.Parameters.Skip(1).ToArray();
                 rb.WithMetadata(new OhDataRequestBodyMetadata
                 {
-                    BodyType = typeof(object),
+                    BodyType = ActionBodySchemaTypeFactory.GetOrCreate(
+                        $"{name}.{actionCapture.Name}.Entity", bodyParams),
                     Description = "JSON object with the action's parameters: " +
-                        string.Join(", ", actionCapture.Parameters.Skip(1).Select(p => $"{p.Name} ({p.ParameterType.Name})")) + "."
+                        string.Join(", ", bodyParams.Select(p => $"{p.Name} ({p.ParameterType.Name})")) + "."
                 });
             }
         }
@@ -3432,7 +3503,7 @@ internal static class OhDataEndpointFactory
             {
                 InjectETagsIntoJsonArray(json, coll, source);
             }
-            OmitUnexpandedNavigations(json, rootEdmType, clause: null, serializerOptions);
+            OmitUnexpandedNavigations(json, rootEdmType, clause: null, modelType, serializerOptions);
 
             return Results.Ok(new Dictionary<string, object?>
             {

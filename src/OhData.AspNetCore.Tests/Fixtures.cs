@@ -1618,3 +1618,78 @@ internal class NavLeakFilmProfile : EntitySetProfile<int, NavLeakFilm>
     // Bound function returning a single entity of the set's own type.
     private Task<NavLeakFilm?> GetFeatured() => Task.FromResult(_films.FirstOrDefault());
 }
+
+
+// ── #184: [JsonPropertyName]-renamed navigation omission/expand fixtures ───────
+
+internal class RenamedNavActor
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+}
+
+internal class RenamedNavStudio
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+}
+
+/// <summary>
+/// #184 fixture. Both navigations carry a per-property <c>[JsonPropertyName]</c> rename, so
+/// System.Text.Json serialises them under keys ("starring", "producedBy") that the naming policy
+/// would never produce from the CLR names ("Cast", "Studio"). Before the fix, omission keyed off
+/// the policy-converted name and so left the renamed nav leaking inline, while <c>$expand</c> wrote
+/// a second, differently-cased key. The EDM (and hence <c>$expand</c>) still uses the CLR property
+/// name; only the JSON key is renamed.
+/// </summary>
+internal class RenamedNavMovie
+{
+    public int Id { get; set; }
+    public string Title { get; set; } = "";
+
+    [System.Text.Json.Serialization.JsonPropertyName("starring")]
+    public IEnumerable<RenamedNavActor>? Cast { get; set; } // collection nav, JSON key "starring"
+
+    [System.Text.Json.Serialization.JsonPropertyName("producedBy")]
+    public RenamedNavStudio? Studio { get; set; }           // single nav, JSON key "producedBy"
+}
+
+internal class RenamedNavMovieProfile : EntitySetProfile<int, RenamedNavMovie>
+{
+    private static readonly List<RenamedNavMovie> _movies = new()
+    {
+        new()
+        {
+            Id = 1,
+            Title = "Ascent",
+            Studio = new RenamedNavStudio { Id = 7, Name = "Skyline" },
+            Cast = new List<RenamedNavActor> { new() { Id = 100, Name = "Ada" }, new() { Id = 101, Name = "Ben" } },
+        },
+        new()
+        {
+            Id = 2,
+            Title = "Ballad",
+            Studio = new RenamedNavStudio { Id = 8, Name = "Harbor" },
+            Cast = new List<RenamedNavActor> { new() { Id = 102, Name = "Cy" } },
+        },
+    };
+
+    public RenamedNavMovieProfile() : base(x => x.Id)
+    {
+        EntitySetName = "RenamedNavMovies";
+        ExpandEnabled = true;
+
+        GetAll = (ct) => Task.FromResult<IEnumerable<RenamedNavMovie>>(_movies);
+        GetById = (id, ct) => Task.FromResult(_movies.FirstOrDefault(m => m.Id == id));
+
+        HasOptional(
+            navigation: x => x.Studio!,
+            get: (movieId, ct) => Task.FromResult(_movies.FirstOrDefault(m => m.Id == movieId)?.Studio),
+            refTargetEntitySet: null);
+
+        HasMany(
+            navigation: x => x.Cast!,
+            getAll: (movieId, ct) => Task.FromResult<IEnumerable<RenamedNavActor>>(
+                _movies.FirstOrDefault(m => m.Id == movieId)?.Cast ?? Enumerable.Empty<RenamedNavActor>()));
+    }
+}
