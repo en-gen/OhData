@@ -110,6 +110,10 @@ jobs:
             --no-build -c Release
           dotnet test src/OhData.MicrosoftODataClient.Tests/OhData.MicrosoftODataClient.Tests.csproj \
             --no-build -c Release
+          dotnet test src/OhData.AspNetCore.OpenApi.Tests/OhData.AspNetCore.OpenApi.Tests.csproj \
+            --no-build -c Release
+          dotnet test src/OhData.AspNetCore.NSwag.Tests/OhData.AspNetCore.NSwag.Tests.csproj \
+            --no-build -c Release
 
       - name: Pack
         run: |
@@ -127,6 +131,14 @@ jobs:
             -p:Version="$VERSION" \
             -o ./nupkg
           dotnet pack src/OhData.AspNetCore.Swashbuckle/OhData.AspNetCore.Swashbuckle.csproj \
+            --no-build -c Release \
+            -p:Version="$VERSION" \
+            -o ./nupkg
+          dotnet pack src/OhData.AspNetCore.OpenApi/OhData.AspNetCore.OpenApi.csproj \
+            --no-build -c Release \
+            -p:Version="$VERSION" \
+            -o ./nupkg
+          dotnet pack src/OhData.AspNetCore.NSwag/OhData.AspNetCore.NSwag.csproj \
             --no-build -c Release \
             -p:Version="$VERSION" \
             -o ./nupkg

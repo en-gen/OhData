@@ -9,7 +9,22 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- New `EnGen.OhData.AspNetCore.OpenApi` companion package: `OhDataOpenApiOperationTransformer`
+  (an `IOpenApiOperationTransformer` for the built-in `Microsoft.AspNetCore.OpenApi` pipeline,
+  net10.0) documents the OData query parameters on OhData endpoints, mirroring the Swashbuckle
+  filter's gating exactly. Register via
+  `AddOpenApi(o => o.AddOperationTransformer<OhDataOpenApiOperationTransformer>())`. Ships with
+  its own test suite and `docs/openapi.md`. Note: the package deliberately floors a direct
+  `Microsoft.OpenApi [2.7.5, 3)` dependency so consumers resolve above GHSA-v5pm-xwqc-g5wc
+  (upstream `Microsoft.AspNetCore.OpenApi` still floors at the vulnerable 2.0.0).
+- New `EnGen.OhData.AspNetCore.NSwag` companion package: `OhDataNSwagOperationProcessor`
+  (an NSwag `IOperationProcessor`, net8.0/net10.0) with the same documentation behavior. Register
+  via `AddOpenApiDocument(s => s.OperationProcessors.Add(new OhDataNSwagOperationProcessor()))`.
+  Ships with its own test suite and `docs/nswag.md`.
+- Both new test suites (25 tests) run in CI and in the publish gate; all five packages are packed
+  and published by the release workflow (10 release assets).
 
 ---
 
