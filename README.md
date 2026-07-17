@@ -2,6 +2,11 @@
 
 # OhData
 
+[![CI](https://github.com/en-gen/OhData/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/en-gen/OhData/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/en-gen/OhData/branch/develop/graph/badge.svg)](https://codecov.io/gh/en-gen/OhData)
+[![License: MIT](https://img.shields.io/github/license/en-gen/OhData)](LICENSE)
+[![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore?label=nuget)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore)
+
 Convention-based OData 4.0 server and typed client for ASP.NET Core. Define a profile class, assign handler delegates, and get a spec-faithful OData API - no controllers required (see [docs/spec-compliance.md](docs/spec-compliance.md) for exactly what's covered). Consume it from .NET with a fluent, LINQ-native client.
 
 ## Getting Started
