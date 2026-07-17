@@ -62,7 +62,7 @@ builder.Services.AddOhData(o => o
     .WithPrefix("/odata")
     .AddProfile<ProductProfile>()
     // or scan an assembly for every EntitySetProfile instead of listing each:
-    .AddProfilesFromAssemblyOf<Program>());
+    .AddProfilesFromAssembly(Assembly.GetExecutingAssembly()));
 
 // 4. Map endpoints after app.Build()
 app.MapOhData();
