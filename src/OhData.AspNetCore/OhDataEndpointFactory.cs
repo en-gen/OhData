@@ -900,14 +900,11 @@ internal static class OhDataEndpointFactory
         Dictionary<string, SelectExpandClause?>? expanded = null;
         if (clause is not null)
         {
-            foreach (SelectItem item in clause.SelectedItems)
+            foreach (ExpandedNavigationSelectItem expandItem in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
             {
-                if (item is ExpandedNavigationSelectItem expandItem)
-                {
-                    string navName = expandItem.PathToNavigationProperty.FirstSegment.Identifier;
-                    (expanded ??= new Dictionary<string, SelectExpandClause?>(StringComparer.OrdinalIgnoreCase))
-                        [navName] = expandItem.SelectAndExpand;
-                }
+                string navName = expandItem.PathToNavigationProperty.FirstSegment.Identifier;
+                (expanded ??= new Dictionary<string, SelectExpandClause?>(StringComparer.OrdinalIgnoreCase))
+                    [navName] = expandItem.SelectAndExpand;
             }
         }
 
