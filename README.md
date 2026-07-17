@@ -101,11 +101,11 @@ Each OpenAPI stack has an optional companion package that documents the OData qu
 endpoints, driven by each entity set's capability flags. Install the one matching your stack and
 register one line — the core package has no dependency on any OpenAPI stack:
 
-| Your stack | Package | Registration |
-|---|---|---|
-| `Microsoft.AspNetCore.OpenApi` (built-in `AddOpenApi`) | `EnGen.OhData.AspNetCore.OpenApi` | `builder.Services.AddOpenApi(o => o.AddOperationTransformer<OhDataOpenApiOperationTransformer>());` |
-| Swashbuckle | `EnGen.OhData.AspNetCore.Swashbuckle` | `builder.Services.AddSwaggerGen(c => c.OperationFilter<OhDataSwaggerOperationFilter>());` |
-| NSwag | `EnGen.OhData.AspNetCore.NSwag` | `builder.Services.AddOpenApiDocument(s => s.OperationProcessors.Add(new OhDataNSwagOperationProcessor()));` |
+| Package | Registration |
+|---|---|
+| `EnGen.OhData.AspNetCore.OpenApi` | `builder.Services.AddOpenApi(o => o.AddOperationTransformer<OhDataOpenApiOperationTransformer>());` |
+| `EnGen.OhData.AspNetCore.Swashbuckle` | `builder.Services.AddSwaggerGen(c => c.OperationFilter<OhDataSwaggerOperationFilter>());` |
+| `EnGen.OhData.AspNetCore.NSwag` | `builder.Services.AddOpenApiDocument(s => s.OperationProcessors.Add(new OhDataNSwagOperationProcessor()));` |
 
 See [docs/openapi.md](docs/openapi.md), [docs/nswag.md](docs/nswag.md), and
 [docs/versioning.md](docs/versioning.md) (Swashbuckle multi-doc setup) for details.
