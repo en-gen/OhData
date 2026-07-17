@@ -7,6 +7,8 @@
 
 Convention-based OData 4.0 server and typed client for ASP.NET Core. Define a profile class, assign handler delegates, and get a spec-faithful OData API - no controllers required (see [docs/spec-compliance.md](docs/spec-compliance.md) for exactly what's covered). Consume it from .NET with a fluent, LINQ-native client.
 
+**[▶ Try it live](https://ohdata.onrender.com/)** — an interactive API reference over a deployed OhData demo service. Fire real `$filter`/`$orderby`/`$expand` queries from the browser, or hit the raw [v1 service document](https://ohdata.onrender.com/v1) directly. (Free-tier hosting — the first load after a quiet spell takes a moment to wake up.)
+
 ## Getting Started
 
 Install the server package:
