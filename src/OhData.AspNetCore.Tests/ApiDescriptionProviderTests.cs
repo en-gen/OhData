@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc.ApiExplorer;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using OhData.Abstractions;
 using Xunit;
 
 namespace OhData.AspNetCore.Tests;
@@ -87,6 +88,32 @@ public class ApiDescriptionProviderTests
     }
 
     [Fact]
+    public async Task BoundFunction_GetsQueryParameterDescriptions_WithRequiredFlags()
+    {
+        // Issue #181: a bound function's query-string parameters must surface as query
+        // ApiParameterDescriptions (with correct Type/ModelMetadata and a required flag driven by
+        // whether the delegate parameter has a C# default), mirroring the body-parameter fix above.
+        var (app, provider) = await BuildAsync(o => o.AddProfile<FunctionParamProfile>());
+        await using var _ = app;
+
+        ApiDescription description = FindDescription(provider, "GET", "FnParamWidgets/TopRated");
+
+        ApiParameterDescription? term = description.ParameterDescriptions
+            .FirstOrDefault(p => p.Source == BindingSource.Query && p.Name == "term");
+        Assert.NotNull(term);
+        Assert.Equal(typeof(string), term!.Type);
+        Assert.NotNull(term.ModelMetadata);
+        Assert.True(term.IsRequired); // no C# default -> required
+
+        ApiParameterDescription? count = description.ParameterDescriptions
+            .FirstOrDefault(p => p.Source == BindingSource.Query && p.Name == "count");
+        Assert.NotNull(count);
+        Assert.Equal(typeof(int), count!.Type);
+        Assert.NotNull(count.ModelMetadata);
+        Assert.False(count.IsRequired); // count = 10 -> optional
+    }
+
+    [Fact]
     public async Task MultipleAddOhDataCalls_ProviderRegisteredOnce_StillWorks()
     {
         // Leg 2: OhDataApiDescriptionProvider is registered via TryAddEnumerable inside
@@ -120,5 +147,21 @@ public class ApiDescriptionProviderTests
         var provider = app.Services.GetRequiredService<IApiDescriptionGroupCollectionProvider>();
         ApiDescription description = FindDescription(provider, "POST", "Widgets");
         Assert.Contains(description.ParameterDescriptions, p => p.Source == BindingSource.Body);
+    }
+
+    // Issue #181 fixture: a collection-bound function with one required parameter (no C# default)
+    // and one optional parameter (with a default), so the query-parameter documentation and its
+    // required/optional flags can both be asserted.
+    private sealed class FunctionParamProfile : EntitySetProfile<int, Widget>
+    {
+        public FunctionParamProfile() : base(x => x.Id)
+        {
+            EntitySetName = "FnParamWidgets";
+            GetAll = (ct) => Task.FromResult<System.Collections.Generic.IEnumerable<Widget>>(System.Array.Empty<Widget>());
+            BindFunction(TopRated);
+        }
+
+        private Task<System.Collections.Generic.IEnumerable<Widget>> TopRated(string term, int count = 10) =>
+            Task.FromResult<System.Collections.Generic.IEnumerable<Widget>>(System.Array.Empty<Widget>());
     }
 }

@@ -87,6 +87,21 @@ public sealed class OhDataRequestBodyAndResponseTests
     }
 
     [Fact]
+    public async Task BoundFunction_HasQueryParameters_WithRequiredFlags()
+    {
+        // Issue #181: a function's query-string parameters must appear in the generated document
+        // (previously "parameters: []"), with the required flag reflecting the C# default value.
+        using JsonDocument doc = await BuildAndFetchAsync();
+        JsonElement op = GetOperation(doc, "/odata/WriteSurfaceParents/FindParents", "get");
+
+        JsonElement term = GetQueryParameter(op, "term");
+        Assert.True(IsRequired(term)); // no C# default -> required
+
+        JsonElement count = GetQueryParameter(op, "count");
+        Assert.False(IsRequired(count)); // count = 10 -> optional
+    }
+
+    [Fact]
     public async Task CollectionGet_HasTypedEnvelopeResponse_NotBareTwoHundred()
     {
         using JsonDocument doc = await BuildAndFetchAsync();
@@ -142,6 +157,27 @@ public sealed class OhDataRequestBodyAndResponseTests
 
     private static JsonElement RequestSchema(JsonElement requestBody) =>
         requestBody.GetProperty("content").GetProperty("application/json").GetProperty("schema");
+
+    /// <summary>Issue #181: finds a query parameter by name in an operation's parameters array.</summary>
+    private static JsonElement GetQueryParameter(JsonElement op, string name)
+    {
+        JsonElement parameters = op.GetProperty("parameters");
+        JsonElement match = parameters.EnumerateArray()
+            .Where(p => p.GetProperty("name").GetString() == name &&
+                        p.GetProperty("in").GetString() == "query")
+            .FirstOrDefault();
+        // FirstOrDefault() on a JsonElement sequence yields default(JsonElement) (ValueKind
+        // Undefined) when nothing matched.
+        if (match.ValueKind == JsonValueKind.Undefined)
+        {
+            throw new Xunit.Sdk.XunitException($"No query parameter '{name}'. Parameters: {parameters.GetRawText()}");
+        }
+        return match;
+    }
+
+    /// <summary>OpenAPI omits "required" (or sets it false) for optional parameters.</summary>
+    private static bool IsRequired(JsonElement parameter) =>
+        parameter.TryGetProperty("required", out JsonElement r) && r.GetBoolean();
 
     /// <summary>NSwag nests a response's schema under content/application/json/schema, same as OpenAPI 3.</summary>
     private static JsonElement ResolveMaybeContentSchema(JsonElement response) =>
@@ -217,9 +253,15 @@ public sealed class OhDataRequestBodyAndResponseTests
                 refTargetEntitySet: "WriteSurfaceChildren");
 
             BindAction(Rename);
+            BindFunction(FindParents);
         }
 
         private Task Rename(string newName) => Task.CompletedTask;
+
+        // Issue #181: collection-bound function with a required parameter (term, no default) and
+        // an optional one (count = 10) so both required/optional documentation can be asserted.
+        private Task<IEnumerable<Parent>> FindParents(string term, int count = 10) =>
+            Task.FromResult<IEnumerable<Parent>>(_parents);
     }
 
     private class WriteSurfaceQueryableProfile : EntitySetProfile<int, Parent>

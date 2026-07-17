@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Microsoft.AspNetCore.Mvc.ApiExplorer;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
@@ -31,6 +32,49 @@ public sealed class OhDataRequestBodyMetadata
 
     /// <summary>Human-readable description of the request body, surfaced in the generated docs.</summary>
     public required string Description { get; init; }
+}
+
+/// <summary>
+/// Describes a single query-string parameter of a bound/unbound OData <em>function</em>, for
+/// <see cref="OhDataApiDescriptionProvider"/> to turn into a query <see cref="ApiParameterDescription"/>.
+/// See <see cref="OhDataQueryParametersMetadata"/> (issue #181).
+/// </summary>
+public sealed class OhDataQueryParameter
+{
+    /// <summary>The parameter name, as it appears in the query string (e.g. <c>count</c>).</summary>
+    public required string Name { get; init; }
+
+    /// <summary>The parameter's CLR type, used to generate its JSON schema.</summary>
+    public required Type Type { get; init; }
+
+    /// <summary>
+    /// <c>true</c> when the delegate parameter has no C# default value (the caller must supply it);
+    /// <c>false</c> when it has one (e.g. <c>count = 10</c>), matching the runtime's
+    /// <c>ParameterInfo.HasDefaultValue</c>-driven required/optional handling.
+    /// </summary>
+    public required bool IsRequired { get; init; }
+}
+
+/// <summary>
+/// Plain marker metadata attached to OhData bound/unbound <em>function</em> routes (both
+/// collection-level <c>GET /{EntitySet}/{Name}?param=value</c> and entity-level
+/// <c>GET /{EntitySet}({key})/{Name}?param=value</c>, plus service-root unbound functions) to tell
+/// <see cref="OhDataApiDescriptionProvider"/> which query-string parameters to document for that
+/// route (issue #181).
+/// </summary>
+/// <remarks>
+/// Analogous to <see cref="OhDataRequestBodyMetadata"/> (which documents write/action request
+/// bodies): a function reads its parameters from the query string in a handler that takes only
+/// <c>(HttpContext, CancellationToken)</c> — no bound minimal-API parameters — so ApiExplorer sees
+/// no parameters for it at all and every generated OpenAPI document would otherwise render
+/// <c>parameters: []</c>, even though the parameters are real and honored at runtime. Like
+/// <see cref="OhDataRequestBodyMetadata"/>, this is an inert POCO implementing no ASP.NET Core
+/// routing interface; it is read purely for documentation, after dispatch has already run.
+/// </remarks>
+public sealed class OhDataQueryParametersMetadata
+{
+    /// <summary>The function's query-string parameters, in declaration order.</summary>
+    public required IReadOnlyList<OhDataQueryParameter> Parameters { get; init; }
 }
 
 /// <summary>
@@ -89,29 +133,73 @@ internal sealed class OhDataApiDescriptionProvider : IApiDescriptionProvider
     {
         foreach (var description in context.Results)
         {
-            var metadata = description.ActionDescriptor.EndpointMetadata?
-                .OfType<OhDataRequestBodyMetadata>()
-                .FirstOrDefault();
-            if (metadata is null) continue;
+            AddRequestBody(description);
+            AddFunctionQueryParameters(description);
+        }
+    }
 
-            // Defensive: don't add a second body parameter if one is already present for some
-            // reason (e.g. a future ASP.NET Core version starts inferring one on its own).
-            if (description.ParameterDescriptions.Any(p => p.Source == BindingSource.Body)) continue;
+    private static void AddRequestBody(ApiDescription description)
+    {
+        var metadata = description.ActionDescriptor.EndpointMetadata?
+            .OfType<OhDataRequestBodyMetadata>()
+            .FirstOrDefault();
+        if (metadata is null) return;
+
+        // Defensive: don't add a second body parameter if one is already present for some
+        // reason (e.g. a future ASP.NET Core version starts inferring one on its own).
+        if (description.ParameterDescriptions.Any(p => p.Source == BindingSource.Body)) return;
+
+        description.ParameterDescriptions.Add(new ApiParameterDescription
+        {
+            Name = "body",
+            Source = BindingSource.Body,
+            Type = metadata.BodyType,
+            ModelMetadata = s_modelMetadataProvider.GetMetadataForType(metadata.BodyType),
+            IsRequired = true,
+        });
+
+        if (!description.SupportedRequestFormats.Any(f =>
+                string.Equals(f.MediaType, "application/json", StringComparison.OrdinalIgnoreCase)))
+        {
+            description.SupportedRequestFormats.Add(new ApiRequestFormat { MediaType = "application/json" });
+        }
+    }
+
+    // Issue #181: bound/unbound *functions* read their parameters from the query string, but
+    // their handlers take only (HttpContext, CancellationToken) -- no bound minimal-API
+    // parameters -- so ApiExplorer sees no parameters for them and every generated OpenAPI
+    // document would render "parameters: []". (Actions get their body documented via
+    // OhDataRequestBodyMetadata above; functions got nothing -- the asymmetry this fixes.)
+    // Synthesize one query ApiParameterDescription per function parameter, which all three
+    // document stacks (Microsoft.AspNetCore.OpenApi, Swashbuckle, NSwag) then render natively.
+    private static void AddFunctionQueryParameters(ApiDescription description)
+    {
+        var metadata = description.ActionDescriptor.EndpointMetadata?
+            .OfType<OhDataQueryParametersMetadata>()
+            .FirstOrDefault();
+        if (metadata is null) return;
+
+        foreach (var parameter in metadata.Parameters)
+        {
+            // Defensive: skip a parameter already surfaced by the framework for this route (e.g.
+            // if a future ASP.NET Core version starts inferring query parameters on its own).
+            if (description.ParameterDescriptions.Any(p =>
+                    p.Source == BindingSource.Query &&
+                    string.Equals(p.Name, parameter.Name, StringComparison.Ordinal)))
+            {
+                continue;
+            }
 
             description.ParameterDescriptions.Add(new ApiParameterDescription
             {
-                Name = "body",
-                Source = BindingSource.Body,
-                Type = metadata.BodyType,
-                ModelMetadata = s_modelMetadataProvider.GetMetadataForType(metadata.BodyType),
-                IsRequired = true,
+                Name = parameter.Name,
+                Source = BindingSource.Query,
+                Type = parameter.Type,
+                // A real ModelMetadata is required, not just Type -- see the s_modelMetadataProvider
+                // comment above for why (Swashbuckle NREs on a null ModelMetadata).
+                ModelMetadata = s_modelMetadataProvider.GetMetadataForType(parameter.Type),
+                IsRequired = parameter.IsRequired,
             });
-
-            if (!description.SupportedRequestFormats.Any(f =>
-                    string.Equals(f.MediaType, "application/json", StringComparison.OrdinalIgnoreCase)))
-            {
-                description.SupportedRequestFormats.Add(new ApiRequestFormat { MediaType = "application/json" });
-            }
         }
     }
 }
