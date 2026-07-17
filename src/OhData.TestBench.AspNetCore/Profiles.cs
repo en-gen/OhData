@@ -94,12 +94,9 @@ internal static class MovieHandlers
         db.Movies.Add(movie);
         db.SaveChanges(); // assigns movie.Id
 
-        foreach (Actor stub in castStubs)
+        foreach (Actor stub in castStubs.Where(stub => db.Actors.Any(a => a.Id == stub.Id)))
         {
-            if (db.Actors.Any(a => a.Id == stub.Id))
-            {
-                db.MovieActors.Add(new MovieActor { MovieId = movie.Id, ActorId = stub.Id });
-            }
+            db.MovieActors.Add(new MovieActor { MovieId = movie.Id, ActorId = stub.Id });
         }
         db.SaveChanges();
         return Task.FromResult<Movie?>(movie);
