@@ -1,10 +1,10 @@
 <svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="OhData logo">
   <title>OhData</title>
-  <desc>A database cylinder shaped like a speech bubble saying "Oh", where the h doubles as an exclamation mark.</desc>
+  <desc>A database cylinder shaped like a speech bubble saying "oh", where the h doubles as an exclamation mark.</desc>
   <path d="M30 100 L10 122 L52 105 Z" fill="#15803D"/>
   <path d="M8 20 V96 a56 13 0 0 0 112 0 V20 a56 13 0 0 0 -112 0 Z" fill="#15803D"/>
   <ellipse cx="64" cy="20" rx="56" ry="13" fill="#22C55E"/>
-  <ellipse cx="40" cy="66" rx="13.5" ry="19" fill="none" stroke="#ffffff" stroke-width="10"/>
-  <path d="M72 47 v26 M72 73 c0 -16 21 -16 21 0 v14" fill="none" stroke="#ffffff" stroke-width="10" stroke-linecap="round"/>
-  <circle cx="72" cy="89" r="7" fill="#FDE047"/>
+  <circle cx="46" cy="72" r="14" fill="none" stroke="#ffffff" stroke-width="11"/>
+  <path d="M76 44 v29 M76 73 c0 -15 19 -15 19 0 v15" fill="none" stroke="#ffffff" stroke-width="11" stroke-linecap="round"/>
+  <circle cx="76" cy="90" r="7.5" fill="#FDE047"/>
 </svg>
