@@ -308,15 +308,37 @@ internal static class OhDataEndpointFactory
 
                 if (!formatAccepted)
                 {
-                    // §8.2.3: Reject Accept headers that don't include application/json or */*.
+                    // §8.2.3: Reject Accept headers that don't include a media type this route can
+                    // produce. Most routes produce application/json, but the raw-value routes are
+                    // exceptions (like $metadata's application/xml above): /$count returns the count
+                    // as text/plain (§11.2.6.5), and /{property}/$value returns the raw value as
+                    // text/plain for scalars or application/octet-stream for byte[] (§11.2.4.3), so
+                    // those segments accept the corresponding types too. A client (e.g. Swagger UI,
+                    // reading the content types those routes advertise in the OpenAPI document) that
+                    // asks for text/plain on /$count is making a valid request and must not get a 406.
                     string accept = ctx.HttpContext.Request.Headers.Accept.ToString();
                     if (!string.IsNullOrEmpty(accept)
                         && !accept.Contains("application/json", StringComparison.OrdinalIgnoreCase)
                         && !accept.Contains("*/*", StringComparison.OrdinalIgnoreCase))
                     {
-                        return ODataError(406, "NotAcceptable",
-                            "The server can only produce application/json responses. " +
-                            "Set Accept: application/json or omit the Accept header.");
+                        bool isCount = path.EndsWith("/$count", StringComparison.OrdinalIgnoreCase);
+                        bool isValue = path.EndsWith("/$value", StringComparison.OrdinalIgnoreCase);
+                        bool rawTextOk = (isCount || isValue)
+                            && accept.Contains("text/plain", StringComparison.OrdinalIgnoreCase);
+                        bool rawBinaryOk = isValue
+                            && accept.Contains("application/octet-stream", StringComparison.OrdinalIgnoreCase);
+
+                        if (!rawTextOk && !rawBinaryOk)
+                        {
+                            string producible = isValue
+                                ? "application/json, text/plain, or application/octet-stream"
+                                : isCount
+                                    ? "application/json or text/plain"
+                                    : "application/json";
+                            return ODataError(406, "NotAcceptable",
+                                $"The server can only produce {producible} responses for this resource. " +
+                                "Set a matching Accept header or omit it.");
+                        }
                     }
                 }
             }

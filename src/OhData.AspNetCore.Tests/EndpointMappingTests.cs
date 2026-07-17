@@ -2040,6 +2040,42 @@ public class EndpointMappingTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
+    [Fact]
+    public async Task Accept_TextPlain_OnCount_Returns200()
+    {
+        // /$count returns the count as text/plain, so a client asking for text/plain (as an
+        // OpenAPI-driven UI does, since the route advertises text/plain) must not be rejected.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets/$count");
+        request.Headers.Add("Accept", "text/plain");
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/plain", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
+    public async Task Accept_TextPlain_OnValue_Returns200()
+    {
+        // /{property}/$value returns the raw scalar value as text/plain — same exemption.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets(1)/Name/$value");
+        request.Headers.Add("Accept", "text/plain");
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/plain", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
+    public async Task Accept_TextXml_OnCount_Returns406()
+    {
+        // The text/plain exemption is narrow: a genuinely unsupported type on /$count still 406s.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets/$count");
+        request.Headers.Add("Accept", "text/xml");
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.NotAcceptable, response.StatusCode);
+    }
+
     // ── Batch 4: @odata.etag in collection responses ──────────────────────────
 
     [Fact]
