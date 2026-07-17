@@ -1039,10 +1039,11 @@ internal static class OhDataEndpointFactory
         Type navType = clrNavProp.PropertyType;
         if (navType == typeof(string)) return navType;
         if (navType.IsArray) return navType.GetElementType();
-        foreach (Type iface in new[] { navType }.Concat(navType.GetInterfaces()))
+        foreach (Type iface in new[] { navType }
+            .Concat(navType.GetInterfaces())
+            .Where(iface => iface.IsGenericType && iface.GetGenericTypeDefinition() == typeof(IEnumerable<>)))
         {
-            if (iface.IsGenericType && iface.GetGenericTypeDefinition() == typeof(IEnumerable<>))
-                return iface.GetGenericArguments()[0];
+            return iface.GetGenericArguments()[0];
         }
         return navType;
     }
