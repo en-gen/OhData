@@ -159,7 +159,7 @@ jobs:
       # by this workflow run from this exact commit. Verifiable later with
       # `gh attestation verify <nupkg> --repo en-gen/OhData`.
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             ./nupkg/*.nupkg
