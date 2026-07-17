@@ -187,3 +187,4 @@ official `Microsoft.OData.Client`). Run them yourself with the commands in
 | Framework architecture | [docs/architecture.md](docs/architecture.md) |
 | Migrating from Microsoft.AspNetCore.OData | [docs/migrating-from-microsoft-odata.md](docs/migrating-from-microsoft-odata.md) |
 | Deployment (Dockerfile, Render) | [docs/deployment.md](docs/deployment.md) |
+| Releasing to NuGet | [docs/releasing.md](docs/releasing.md) |

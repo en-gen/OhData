@@ -17,6 +17,19 @@
   </PropertyGroup>
 
   <PropertyGroup>
+    <!--
+      Deterministic builds in CI: byte-for-byte reproducible assembly output
+      from the same source + compiler version, which is what lets SourceLink
+      map a PDB back to the exact commit that produced it. Scoped to CI (via
+      the GITHUB_ACTIONS env var GitHub Actions sets on every run) rather
+      than globally, since deterministic builds embed the build path and
+      that's only worth trading incremental-build convenience for on a build
+      that's about to ship.
+    -->
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+  <PropertyGroup>
     <Authors>en-gen and contributors</Authors>
     <PackageProjectUrl>https://github.com/en-gen/OhData</PackageProjectUrl>
     <RepositoryUrl>https://github.com/en-gen/OhData</RepositoryUrl>
