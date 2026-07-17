@@ -13,6 +13,27 @@ Nothing yet.
 
 ---
 
+## [1.1.0] - 2026-07-17
+
+### Added
+
+- New `EnGen.OhData.AspNetCore.Swashbuckle` companion package containing
+  `OhDataSwaggerOperationFilter` (same `OhData.AspNetCore` namespace and class name — migrating is
+  a pure package-reference addition, no code changes). The filter documents the OData query
+  parameters on collection endpoints in Swagger, exactly as before.
+
+### Breaking
+
+- `OhDataSwaggerOperationFilter` moved out of `EnGen.OhData.AspNetCore` into the new
+  `EnGen.OhData.AspNetCore.Swashbuckle` package, removing the core package's
+  `Swashbuckle.AspNetCore.SwaggerGen` (and transitive `Microsoft.OpenApi`) dependency. The core
+  server package now works cleanly alongside `Microsoft.AspNetCore.OpenApi`, NSwag, any Swashbuckle
+  major, or no OpenAPI stack at all. If you registered the filter, add the companion package —
+  nothing else changes. Note: 1.0.0 was published and delisted the same day over this; 1.1.0 is the
+  effective first release, which is why this break ships in a minor version.
+
+---
+
 ## [1.0.0] - 2026-07-16
 
 First public release. Includes the initial framework feature set (drafted as an unpublished
@@ -432,4 +453,5 @@ post-release-prep audit fix wave (below) found before the tag was actually cut.
 ---
 
 [Unreleased]: https://github.com/en-gen/OhData/commits/develop
+[1.1.0]: https://github.com/en-gen/OhData/releases/tag/v1.1.0
 [1.0.0]: https://github.com/en-gen/OhData/releases/tag/v1.0.0
