@@ -93,6 +93,13 @@ everywhere. Four independent changes, all additive.
   slipped through). The filter now exempts `/$count` (`text/plain`) and `/$value` (`text/plain`,
   `application/octet-stream`), mirroring the existing `$metadata` exemption. The narrow exemption is
   preserved: a genuinely unsupported type (e.g. `text/xml`) on those routes still returns `406`.
+- **`$metadata` declared `encoding="utf-16"` while being served as UTF-8 (#180).** The CSDL was
+  written through a `StringWriter` (whose `Encoding` is the CLR string's native UTF-16), so
+  `XmlWriter` stamped `encoding="utf-16"` into the prolog, but the document went out as UTF-8 bytes
+  under a charset-less `application/xml` header. A strict XML consumer - notably OData codegen
+  clients that read `$metadata` - would decode the UTF-8 bytes as UTF-16 and fail. The CSDL is now
+  written as UTF-8 (prolog reads `encoding="utf-8"`) and served as `application/xml; charset=utf-8`,
+  so prolog, bytes, and header agree.
 
 ---
 

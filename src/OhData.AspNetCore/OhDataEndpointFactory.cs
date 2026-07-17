@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
@@ -73,10 +74,23 @@ internal static class OhDataEndpointFactory
         value.Replace("\r", "\\r", StringComparison.Ordinal)
              .Replace("\n", "\\n", StringComparison.Ordinal);
 
+    // A StringWriter reports UTF-16 as its Encoding (the CLR string's native encoding), which
+    // XmlWriter stamps into the CSDL prolog as encoding="utf-16". But the document is served as
+    // UTF-8 bytes (see the /$metadata route), so the prolog would contradict the wire encoding and
+    // a strict XML consumer (e.g. an OData codegen client) would try to decode UTF-8 as UTF-16 and
+    // fail (#180). Overriding Encoding to UTF-8 makes XmlWriter emit encoding="utf-8" so the prolog,
+    // the served bytes, and the response charset all agree.
+    private sealed class Utf8StringWriter : StringWriter
+    {
+        public Utf8StringWriter(StringBuilder sb) : base(sb) { }
+        public override Encoding Encoding => Encoding.UTF8;
+    }
+
     private static string BuildMetadataXml(IEdmModel model)
     {
         var sb = new StringBuilder();
-        using var xmlWriter = XmlWriter.Create(sb, new XmlWriterSettings { Indent = true });
+        using var stringWriter = new Utf8StringWriter(sb);
+        using var xmlWriter = XmlWriter.Create(stringWriter, new XmlWriterSettings { Indent = true });
         if (!CsdlWriter.TryWriteCsdl(model, xmlWriter, CsdlTarget.OData, out var errors))
         {
             throw new InvalidOperationException(
@@ -375,7 +389,7 @@ internal static class OhDataEndpointFactory
         }).ExcludeFromDescription();
 
         // $metadata -- CSDL XML describing the EDM model
-        group.MapGet("/$metadata", () => Results.Content(metadataXml, "application/xml"))
+        group.MapGet("/$metadata", () => Results.Content(metadataXml, "application/xml; charset=utf-8"))
             .ExcludeFromDescription();
 
         // loggerFactory resolved once at the top of this method (see groupLogger above).

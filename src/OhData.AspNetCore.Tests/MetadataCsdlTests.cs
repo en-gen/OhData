@@ -177,6 +177,30 @@ public class MetadataCsdlTests
         Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
     }
 
+    // #180: the CSDL prolog's declared encoding, the served bytes, and the response charset must
+    // all agree on UTF-8 — a mismatch (declaring utf-16 while serving utf-8 bytes) breaks strict
+    // XML consumers such as OData codegen clients.
+    [Fact]
+    public async Task Metadata_Encoding_PrologBytesAndCharsetAllUtf8()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<CsdlSpotCheckProfile>());
+        var response = await fx.Client.GetAsync("/odata/$metadata");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        // Response charset header
+        Assert.Equal("utf-8", response.Content.Headers.ContentType?.CharSet);
+
+        // Served bytes are valid single-byte UTF-8 with no UTF-16 BOM
+        byte[] bytes = await response.Content.ReadAsByteArrayAsync();
+        Assert.False(bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE, "must not be UTF-16 LE");
+        Assert.False(bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF, "must not be UTF-16 BE");
+
+        // Prolog declares utf-8, not utf-16
+        string xml = System.Text.Encoding.UTF8.GetString(bytes);
+        Assert.Contains("encoding=\"utf-8\"", xml, System.StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("utf-16", xml, System.StringComparison.OrdinalIgnoreCase);
+    }
+
     // ── EntityType: key + property types/nullability ──────────────────────────
 
     [Fact]
