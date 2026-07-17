@@ -23,6 +23,7 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Microsoft.Net.Http.Headers;
 using Microsoft.OData.Edm;
 using Microsoft.OData.Edm.Csdl;
 using Microsoft.OData.UriParser;
@@ -322,35 +323,42 @@ internal static class OhDataEndpointFactory
 
                 if (!formatAccepted)
                 {
-                    // §8.2.3: Reject Accept headers that don't include a media type this route can
-                    // produce. Most routes produce application/json, but the raw-value routes are
-                    // exceptions (like $metadata's application/xml above): /$count returns the count
-                    // as text/plain (§11.2.6.5), and /{property}/$value returns the raw value as
-                    // text/plain for scalars or application/octet-stream for byte[] (§11.2.4.3), so
-                    // those segments accept the corresponding types too. A client (e.g. Swagger UI,
-                    // reading the content types those routes advertise in the OpenAPI document) that
-                    // asks for text/plain on /$count is making a valid request and must not get a 406.
+                    // §8.2.3 / RFC 7231 §5.3.2 (issue #182): reject Accept headers that don't include
+                    // a media range this route can satisfy. Most routes produce application/json, but
+                    // the raw-value routes are exceptions (like $metadata's application/xml above):
+                    // /$count returns the count as text/plain (§11.2.6.5), and /{property}/$value
+                    // returns the raw value as text/plain for scalars or application/octet-stream for
+                    // byte[] (§11.2.4.3), so those segments can satisfy the corresponding types too.
+                    // A client (e.g. Swagger UI, reading the content types those routes advertise in
+                    // the OpenAPI document) that asks for text/plain on /$count is making a valid
+                    // request and must not get a 406. Negotiation goes through AcceptHeaderPermits,
+                    // which parses real media ranges and honors q-values rather than substring-scanning
+                    // the header — so "application/*" and "text/*" match the way RFC 7231 requires, and
+                    // "application/json;q=0" (meaning "not acceptable") correctly 406s.
                     string accept = ctx.HttpContext.Request.Headers.Accept.ToString();
-                    if (!string.IsNullOrEmpty(accept)
-                        && !accept.Contains("application/json", StringComparison.OrdinalIgnoreCase)
-                        && !accept.Contains("*/*", StringComparison.OrdinalIgnoreCase))
+                    if (!string.IsNullOrEmpty(accept))
                     {
                         bool isCount = path.EndsWith("/$count", StringComparison.OrdinalIgnoreCase);
                         bool isValue = path.EndsWith("/$value", StringComparison.OrdinalIgnoreCase);
-                        bool rawTextOk = (isCount || isValue)
-                            && accept.Contains("text/plain", StringComparison.OrdinalIgnoreCase);
-                        bool rawBinaryOk = isValue
-                            && accept.Contains("application/octet-stream", StringComparison.OrdinalIgnoreCase);
 
-                        if (!rawTextOk && !rawBinaryOk)
+                        // Producible sets are unchanged from the substring version — only the matching
+                        // rule changed. $value produces JSON, text/plain, or octet-stream; $count
+                        // produces JSON or text/plain; every other route produces JSON.
+                        string[] producible = isValue
+                            ? new[] { "application/json", "text/plain", "application/octet-stream" }
+                            : isCount
+                                ? new[] { "application/json", "text/plain" }
+                                : new[] { "application/json" };
+
+                        if (!AcceptHeaderPermits(accept, producible))
                         {
-                            string producible = isValue
+                            string producibleList = isValue
                                 ? "application/json, text/plain, or application/octet-stream"
                                 : isCount
                                     ? "application/json or text/plain"
                                     : "application/json";
                             return ODataError(406, "NotAcceptable",
-                                $"The server can only produce {producible} responses for this resource. " +
+                                $"The server can only produce {producibleList} responses for this resource. " +
                                 "Set a matching Accept header or omit it.");
                         }
                     }
@@ -646,6 +654,73 @@ internal static class OhDataEndpointFactory
             404 => Results.NotFound(body),
             _ => Results.Json(body, statusCode: status)
         };
+    }
+
+    // RFC 7231 §5.3.2 Accept negotiation (issue #182). Parses the Accept header into media
+    // ranges with q-values and returns true when at least one range with q>0 matches a media
+    // type this route can actually produce. Replaces the earlier substring scan, which mishandled
+    // media ranges ("application/*" wrongly 406'd a JSON route), sub-type wildcards ("text/*" on
+    // /$count) and q-values ("application/json;q=0" — which means "not acceptable" — wrongly 200'd).
+    //
+    // A media range's q-value applies to a candidate type via RFC 7231's specificity precedence:
+    // the most specific matching range wins (exact type/subtype > type/* > */*). So
+    // "application/json;q=0, application/*" excludes application/json even though "application/*"
+    // would otherwise allow it.
+    //
+    // The caller has already special-cased the absent/empty header ("no constraint" → 200) before
+    // reaching here, so a present-but-unparseable header is a genuinely malformed request: we treat
+    // it as not-acceptable (406) — the safe, spec-defensible choice, and one that leaves every
+    // existing well-formed-header test unchanged.
+    private static bool AcceptHeaderPermits(string acceptHeader, IReadOnlyList<string> producibleTypes)
+    {
+        if (!MediaTypeHeaderValue.TryParseList(new[] { acceptHeader }, out IList<MediaTypeHeaderValue>? ranges)
+            || ranges is null || ranges.Count == 0)
+        {
+            return false;
+        }
+
+        foreach (string producible in producibleTypes)
+        {
+            // Pick the most specific range matching this candidate; that range's q-value decides.
+            int bestSpecificity = -1;
+            double bestQuality = 0;
+            foreach (MediaTypeHeaderValue range in ranges)
+            {
+                int specificity = MediaRangeSpecificity(range, producible);
+                if (specificity < 0) continue; // this range does not match the candidate
+
+                double quality = range.Quality ?? 1.0; // absent q ⇒ 1.0 (RFC 7231 §5.3.1)
+                if (specificity > bestSpecificity
+                    || (specificity == bestSpecificity && quality > bestQuality))
+                {
+                    bestSpecificity = specificity;
+                    bestQuality = quality;
+                }
+            }
+
+            if (bestSpecificity >= 0 && bestQuality > 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // Returns how specifically an Accept media range matches a concrete "type/subtype" candidate:
+    // 2 = exact (application/json), 1 = subtype wildcard (application/*), 0 = full wildcard (*/*),
+    // -1 = no match. Higher wins under RFC 7231 §5.3.2 precedence.
+    private static int MediaRangeSpecificity(MediaTypeHeaderValue range, string producibleType)
+    {
+        int slash = producibleType.IndexOf('/');
+        string producibleMainType = producibleType.Substring(0, slash);
+        string producibleSubType = producibleType.Substring(slash + 1);
+
+        if (range.MatchesAllTypes) return 0;                                              // */*
+        if (!range.Type.Equals(producibleMainType, StringComparison.OrdinalIgnoreCase)) return -1;
+        if (range.MatchesAllSubTypes) return 1;                                           // type/*
+        if (!range.SubType.Equals(producibleSubType, StringComparison.OrdinalIgnoreCase)) return -1;
+        return 2;                                                                         // type/subtype
     }
 
     // B1 fix: capability-flag enforcement (Minimal item 7 — "parse the option or reject it").

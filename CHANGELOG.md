@@ -64,6 +64,19 @@ everywhere. Four independent changes, all additive.
 
 ### Fixed
 
+- **Accept negotiation now follows RFC 7231 §5.3.2 media ranges and q-values (#182).** The
+  group-level 406 filter matched the `Accept` header by substring (`accept.Contains("application/json")`
+  / `"text/plain"` / `"*/*"`), which mishandled three cases: a media range such as `application/*`
+  wrongly 406'd a JSON route (it matches `application/json`), `text/*` on `/$count` or
+  `/{property}/$value` wrongly 406'd (it matches `text/plain`), and `application/json;q=0` -
+  meaning "not acceptable" - wrongly returned `200`. The header is now parsed into media ranges via
+  `MediaTypeHeaderValue.TryParseList`, with each candidate type resolved against its most specific
+  matching range (exact `type/subtype` > `type/*` > `*/*`) and its q-value honored (absent q ⇒ 1.0,
+  q=0 ⇒ that range is unacceptable); a request is acceptable when at least one range with q>0 matches
+  a type the route can produce. Per-route producible sets are unchanged (`application/json`
+  everywhere; plus `text/plain` on `/$count`, plus `text/plain`/`application/octet-stream` on
+  `/$value`; `$metadata` stays exempt). An absent/empty `Accept` header still means "no constraint"
+  → `200`; a present-but-unparseable header is treated as not-acceptable (`406`).
 - **Bound/unbound function query parameters are now documented in OpenAPI (#181).** A function
   (`BindFunction`, e.g. `TopRated(int count = 10)`) reads its parameters from the query string, but
   its handler binds no minimal-API parameters, so ApiExplorer saw none of them and every generated
