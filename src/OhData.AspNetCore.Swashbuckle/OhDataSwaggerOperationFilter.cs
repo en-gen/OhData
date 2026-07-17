@@ -10,7 +10,8 @@ namespace OhData.AspNetCore;
 /// based on <see cref="OhDataQueryOptionsMetadata"/> attached to the endpoint.
 /// </summary>
 /// <remarks>
-/// Register via:
+/// Ships in the EnGen.OhData.AspNetCore.Swashbuckle package so the core server
+/// package carries no Swashbuckle dependency. Register via:
 /// <code>
 /// builder.Services.AddSwaggerGen(c =&gt; c.OperationFilter&lt;OhDataSwaggerOperationFilter&gt;());
 /// </code>

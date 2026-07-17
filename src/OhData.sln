@@ -25,6 +25,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OhData.MicrosoftODataClient
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OhData.Server.Benchmarks", "OhData.Server.Benchmarks\OhData.Server.Benchmarks.csproj", "{1D674CEC-A972-4931-BB33-C8DC710BF990}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OhData.AspNetCore.Swashbuckle", "OhData.AspNetCore.Swashbuckle\OhData.AspNetCore.Swashbuckle.csproj", "{26866FE0-0B1D-448B-BCF7-844846CA6DAB}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -143,6 +145,18 @@ Global
 		{1D674CEC-A972-4931-BB33-C8DC710BF990}.Release|x64.Build.0 = Release|Any CPU
 		{1D674CEC-A972-4931-BB33-C8DC710BF990}.Release|x86.ActiveCfg = Release|Any CPU
 		{1D674CEC-A972-4931-BB33-C8DC710BF990}.Release|x86.Build.0 = Release|Any CPU
+		{26866FE0-0B1D-448B-BCF7-844846CA6DAB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{26866FE0-0B1D-448B-BCF7-844846CA6DAB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{26866FE0-0B1D-448B-BCF7-844846CA6DAB}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{26866FE0-0B1D-448B-BCF7-844846CA6DAB}.Debug|x64.Build.0 = Debug|Any CPU
+		{26866FE0-0B1D-448B-BCF7-844846CA6DAB}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{26866FE0-0B1D-448B-BCF7-844846CA6DAB}.Debug|x86.Build.0 = Debug|Any CPU
+		{26866FE0-0B1D-448B-BCF7-844846CA6DAB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{26866FE0-0B1D-448B-BCF7-844846CA6DAB}.Release|Any CPU.Build.0 = Release|Any CPU
+		{26866FE0-0B1D-448B-BCF7-844846CA6DAB}.Release|x64.ActiveCfg = Release|Any CPU
+		{26866FE0-0B1D-448B-BCF7-844846CA6DAB}.Release|x64.Build.0 = Release|Any CPU
+		{26866FE0-0B1D-448B-BCF7-844846CA6DAB}.Release|x86.ActiveCfg = Release|Any CPU
+		{26866FE0-0B1D-448B-BCF7-844846CA6DAB}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
