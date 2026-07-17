@@ -33,7 +33,7 @@ public class NavigationOmissionTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<OmitNavMovieProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/OmitNavMovies");
         var value = json.GetProperty("value");
-        Assert.Equal(2, value.GetArrayLength());
+        Assert.Equal(3, value.GetArrayLength());
 
         foreach (var item in value.EnumerateArray())
         {
@@ -149,7 +149,23 @@ public class NavigationOmissionTests
 
         foreach (var studio in json.GetProperty("value").EnumerateArray().Select(item => item.GetProperty("studio")))
         {
+            if (studio.ValueKind == JsonValueKind.Null) continue; // a movie with no studio expands to null
             Assert.False(studio.TryGetProperty("movies", out _), "expanded studio's own un-expanded nav 'movies' must be omitted");
         }
+    }
+
+    // ── Expanded single-valued navigation with no related entity ──────────────────
+
+    [Fact]
+    public async Task GetById_ExpandSingle_NullRelated_YieldsNullWithoutThrowing()
+    {
+        // Movie 3 has no studio. Expanding it must produce "studio": null (an expanded single nav
+        // with no related entity is null, not omitted) and the recursive omission pass must no-op
+        // on the null node rather than throw (issue #176 — covers the null-node recursion path).
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<OmitNavMovieProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/OmitNavMovies(3)?$expand=Studio");
+
+        Assert.True(json.TryGetProperty("studio", out var studio), "expanded single nav must be present even when null");
+        Assert.Equal(JsonValueKind.Null, studio.ValueKind);
     }
 }

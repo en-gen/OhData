@@ -1496,6 +1496,13 @@ internal class OmitNavMovieProfile : EntitySetProfile<int, OmitMovie>
             Studio = MakeStudio(),
             Cast = new List<OmitActor>(), // empty collection → would leak as [] without the fix
         },
+        new()
+        {
+            Id = 3,
+            Title = "Crest",
+            Studio = null, // no related studio → $expand=Studio yields "studio": null
+            Cast = new List<OmitActor>(),
+        },
     };
 
     public OmitNavMovieProfile() : base(x => x.Id)

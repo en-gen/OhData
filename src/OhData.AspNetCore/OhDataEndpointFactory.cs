@@ -745,7 +745,7 @@ internal static class OhDataEndpointFactory
         IEntitySetEndpointSource source,
         IEntitySetEndpointSource requestSource,
         JsonSerializerOptions? jsonOptions,
-        IEdmStructuredType? rootEdmType,
+        IEdmEntityType? rootEdmType,
         CancellationToken ct)
     {
         // Stage 1: Serialize once using the configured naming policy.
@@ -876,23 +876,24 @@ internal static class OhDataEndpointFactory
     // structural properties and @odata.* annotations are left untouched by construction.
     private static void OmitUnexpandedNavigations(
         JsonNode? node,
-        IEdmStructuredType? edmType,
+        IEdmEntityType? edmType,
         SelectExpandClause? clause,
         JsonSerializerOptions? serializerOptions)
     {
-        if (edmType is null || node is null) return;
+        if (edmType is null) return;
 
+        // A JsonArray is a top-level collection or an expanded collection navigation — every
+        // element is an entity of the same type sharing the same $expand context. A JsonObject is
+        // a single entity. Anything else (null, i.e. an expanded single-valued navigation with no
+        // related entity, or a primitive) has no navigations to strip and is left as-is.
         if (node is JsonArray array)
         {
-            // Top-level collection, or an expanded collection navigation: each element is an
-            // entity of the same type and shares the same $expand context.
             foreach (JsonNode? element in array)
             {
                 OmitUnexpandedNavigations(element, edmType, clause, serializerOptions);
             }
             return;
         }
-
         if (node is not JsonObject obj) return;
 
         // Navigation name → its nested $expand clause, for the navigations expanded at THIS level.
@@ -908,11 +909,11 @@ internal static class OhDataEndpointFactory
             }
         }
 
-        IEnumerable<IEdmNavigationProperty> navProps = edmType is IEdmEntityType entityType
-            ? entityType.NavigationProperties()
-            : edmType.DeclaredNavigationProperties();
-
-        foreach (IEdmNavigationProperty navProp in navProps)
+        // NavigationProperties() (not DeclaredNavigationProperties()) so inherited navigations on a
+        // derived entity type are covered too. edmType is always an entity type here — the root is
+        // the entity set's type and recursion passes navProp.ToEntityType() — so no complex-type
+        // branch is needed.
+        foreach (IEdmNavigationProperty navProp in edmType.NavigationProperties())
         {
             // Match on the serialised (e.g. camelCase) key using the same naming policy that
             // produced the JSON, so PropertyNamingPolicy round-trips exactly.
@@ -920,10 +921,10 @@ internal static class OhDataEndpointFactory
 
             if (expanded is not null && expanded.TryGetValue(navProp.Name, out SelectExpandClause? nested))
             {
-                if (obj.TryGetPropertyValue(serializedKey, out JsonNode? child))
-                {
-                    OmitUnexpandedNavigations(child, navProp.ToEntityType(), nested, serializerOptions);
-                }
+                // Recurse into the expanded value to strip ITS un-expanded navigations. obj[key]
+                // is null when the expanded single-valued nav had no related entity — the recursive
+                // call no-ops on a null node, so no separate presence check is needed.
+                OmitUnexpandedNavigations(obj[serializedKey], navProp.ToEntityType(), nested, serializerOptions);
             }
             else
             {
@@ -1097,7 +1098,7 @@ internal static class OhDataEndpointFactory
     private static JsonObject ODataEntityNode(
         HttpContext ctx, string prefix, string contextSegment, object entity,
         JsonSerializerOptions? jsonOptions, string? odataId = null, string? etag = null,
-        IEdmStructuredType? omitNavsForType = null)
+        IEdmEntityType? omitNavsForType = null)
     {
         var serialized = JsonSerializer.SerializeToNode(entity, jsonOptions)!.AsObject();
         string baseUrl = BuildBaseUrl(ctx, prefix);
@@ -1131,7 +1132,7 @@ internal static class OhDataEndpointFactory
         HttpContext ctx, string prefix, string name, object entity,
         JsonSerializerOptions? jsonOptions, string? odataId = null, string? etag = null,
         IReadOnlyList<string>? selectedProps = null,
-        IEdmStructuredType? omitNavsForType = null)
+        IEdmEntityType? omitNavsForType = null)
     {
         // M3: when $select projected the response, the context gains the projection suffix
         // ("#Set(prop1,prop2)/$entity", JSON §10.8) and unselected properties are stripped
