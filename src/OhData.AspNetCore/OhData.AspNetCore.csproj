@@ -11,11 +11,12 @@
 		<NoWarn>$(NoWarn);AD0001</NoWarn>
 		<!--
 		  Package validation: catches breaking API/ABI changes and TFM-compat
-		  issues before they ship. No baseline yet since this is pre-1.0 (there
-		  is no published version to diff against) - it currently only runs
-		  compatible-framework and compatible-runtime checks across net8.0/net10.0.
-		  Once 1.0.0 ships, set PackageValidationBaselineVersion=1.0.0 here so
-		  every subsequent pack is diffed against the public 1.0.0 API surface.
+		  issues before they ship. No baseline yet: 1.0.0 was delisted hours
+		  after publish (OhDataSwaggerOperationFilter moved to the
+		  EnGen.OhData.AspNetCore.Swashbuckle companion package, an intentional
+		  API removal), so diffing against it would fail on that known break.
+		  Once 1.1.0 ships, set PackageValidationBaselineVersion=1.1.0 here so
+		  every subsequent pack is diffed against the public 1.1.0 API surface.
 		-->
 		<EnablePackageValidation>true</EnablePackageValidation>
 	</PropertyGroup>
@@ -27,7 +28,6 @@
 	<ItemGroup>
 		<PackageReference Include="Microsoft.AspNetCore.OData" Version="[9.4.*, 10)" />
 		<PackageReference Include="Microsoft.OData.ModelBuilder" Version="[2.*, 3)" />
-		<PackageReference Include="Swashbuckle.AspNetCore.SwaggerGen" Version="[10.*, 11)" />
 	</ItemGroup>
 
 	<ItemGroup>

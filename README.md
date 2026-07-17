@@ -18,12 +18,11 @@ dotnet add package EnGen.OhData.Client
 
 ## Packages
 
-Packages are published under the `EnGen.` org prefix (similar to how Newtonsoft.Json carries the author's name).
-
 | Package | NuGet | What it does |
 |---------|-------|--------------|
 | `EnGen.OhData.AspNetCore` | [![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore) | `EntitySetProfile<TKey,TModel>` base class, DI registration, endpoint factory, minimal API routes. Includes `AddOhDataVersion` / `MapOhDataVersion` versioning helpers and `ODataEntitySetProfile<TKey,TModel>` for full OData pushdown control. |
 | `EnGen.OhData.Client` | [![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.Client)](https://www.nuget.org/packages/EnGen.OhData.Client) | Typed .NET client. Fluent builder with LINQ-based `$filter`, `$select`, `$expand`, `$orderby`, and pagination. |
+| `EnGen.OhData.AspNetCore.Swashbuckle` | [![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore.Swashbuckle)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.Swashbuckle) | Optional Swashbuckle (Swagger) integration: `OhDataSwaggerOperationFilter` documents the OData query parameters on collection endpoints. Keeps the core package free of Swashbuckle dependencies. |
 
 ---
 
@@ -61,7 +60,10 @@ public class ProductProfile : EntitySetProfile<int, Product>
 // 3. Register in Program.cs
 builder.Services.AddOhData(o => o
     .WithPrefix("/odata")
-    .AddProfile<ProductProfile>());
+    .AddProfile<ProductProfile>()                              // list profiles explicitly
+    // ...or scan assemblies for every EntitySetProfile they contain:
+    .AddProfilesFromAssembly(Assembly.GetExecutingAssembly())  // by assembly instance
+    .AddProfilesFromAssemblyOf<ProductProfile>());             // by marker type
 
 // 4. Map endpoints after app.Build()
 app.MapOhData();
@@ -155,10 +157,29 @@ public class MyService(OhDataClient client) { ... }
 OhData's minimal-API pipeline was benchmarked head-to-head against `Microsoft.AspNetCore.OData`'s
 `ODataController` + `[EnableQuery]` pipeline over the full HTTP round-trip (routing → OData
 query-option processing → handler → serialization), same dataset, same requests, correctness
-verified before every run. OhData won all 11 scenarios - writes (POST/PUT/PATCH) came in roughly
-**5-6x faster** with up to **7.7x fewer allocations**; reads were **2-3.7x faster**. See
+verified before every run. OhData won all 11 scenarios:
+
+| Scenario | OhData | Microsoft.AspNetCore.OData | Speedup | Alloc ratio |
+|---|---:|---:|---:|---:|
+| GetAll page (100) | 763 µs | 2,821 µs | **3.7×** | 6.3× |
+| `$filter` | 1,778 µs | 3,393 µs | **1.9×** | 6.0× |
+| `$orderby` | 968 µs | 2,949 µs | **3.0×** | 5.4× |
+| `$select` | 878 µs | 1,858 µs | **2.1×** | 1.3× |
+| `$top` + `$skip` | 1,262 µs | 2,061 µs | **1.6×** | 4.6× |
+| `$count=true` (+`$filter`) | 2,831 µs | 4,740 µs | **1.7×** | 5.4× |
+| GetById | 37 µs | 112 µs | **3.0×** | 3.0× |
+| POST | 51 µs | 286 µs | **5.6×** | 7.7× |
+| PUT | 57 µs | 281 µs | **4.9×** | 7.7× |
+| PATCH | 53 µs | 325 µs | **6.2×** | 7.1× |
+| DELETE | 16 µs | 24 µs | **1.5×** | 1.3× |
+
+The biggest gaps are on writes (POST/PUT/PATCH, ~5-6× — MS OData's OData-JSON formatters and
+EDM-bound serialization dominate there) and full-page reads (~3-3.7×). "Alloc ratio" is how many
+times more memory the MS OData pipeline allocates per request. BenchmarkDotNet over in-process
+TestServer hosts, identical 1,000-entity dataset and byte-identical requests on both sides, with a
+correctness gate run before measurement; see
 [src/OhData.Server.Benchmarks/docs/server-comparison-report.md](src/OhData.Server.Benchmarks/docs/server-comparison-report.md)
-for the full methodology, numbers, and known asymmetries between the two pipelines.
+for the full methodology, raw output, and known asymmetries between the two pipelines.
 
 ## Battle-testing
 
