@@ -1524,3 +1524,97 @@ internal class OmitNavMovieProfile : EntitySetProfile<int, OmitMovie>
                 _movies.FirstOrDefault(m => m.Id == movieId)?.Cast ?? Enumerable.Empty<OmitActor>()));
     }
 }
+
+
+// ── #179: omission on nav-route and bound-op read paths ───────────────────────
+
+/// <summary>
+/// Navigation element/target type that carries its OWN navigation (<c>Films</c>). #176 only wired
+/// the omission into the top-level reads; #179 extends it to single-valued nav GET, nav-collection
+/// GET, and bound-operation results. On any of those, this back-reference must be omitted (OData
+/// JSON §4.5.1 / §11.2.4.2) so an entity's shape never depends on which route returned it.
+/// </summary>
+internal class NavLeakStudio
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public IEnumerable<NavLeakFilm>? Films { get; set; } // own nav — would leak on nav-route reads
+}
+
+internal class NavLeakFilm
+{
+    public int Id { get; set; }
+    public string Title { get; set; } = "";
+    public NavLeakStudio? Studio { get; set; }               // single-valued nav (target has own nav)
+    public IEnumerable<NavLeakStudio>? CoStudios { get; set; } // collection nav (element has own nav)
+}
+
+/// <summary>
+/// #179 regression fixture. Every film carries a fully populated <c>Studio</c> and <c>CoStudios</c>,
+/// and every studio carries a populated <c>Films</c> back-reference, so without the fix these
+/// navigations would serialise inline on the single-valued nav GET, the nav-collection GET, and the
+/// bound-operation results. <c>UseETag</c> is set so the bound-op paths are also asserted to inject
+/// <c>@odata.etag</c>, matching the normal collection/GetById paths.
+///
+/// Both bound operations that return the set's own entity type are FUNCTIONS: Microsoft.OData's
+/// <c>ActionConfiguration.Returns&lt;T&gt;</c> rejects an entity return type ("Use ReturnsFromEntitySet"),
+/// so a bound action can't declare one in the EDM. The single- and collection-of-TModel branches of
+/// <c>WrapBoundOpResult</c> are the same code regardless of function-vs-action caller, so the function
+/// coverage exercises them fully.
+/// </summary>
+internal class NavLeakFilmProfile : EntitySetProfile<int, NavLeakFilm>
+{
+    private static NavLeakStudio MakeStudio(int id, string name) => new()
+    {
+        Id = id,
+        Name = name,
+        // Populated back-reference: would leak as a nested "films" array without the #179 fix.
+        Films = new List<NavLeakFilm> { new() { Id = 1, Title = "Ascent" } },
+    };
+
+    private static readonly List<NavLeakFilm> _films = new()
+    {
+        new()
+        {
+            Id = 1,
+            Title = "Ascent",
+            Studio = MakeStudio(7, "Skyline"),
+            CoStudios = new List<NavLeakStudio> { MakeStudio(8, "Harbor"), MakeStudio(9, "Vista") },
+        },
+        new()
+        {
+            Id = 2,
+            Title = "Ballad",
+            Studio = MakeStudio(7, "Skyline"),
+            CoStudios = new List<NavLeakStudio> { MakeStudio(8, "Harbor") },
+        },
+    };
+
+    public NavLeakFilmProfile() : base(x => x.Id)
+    {
+        EntitySetName = "NavLeakFilms";
+        UseETag(x => x.Title);
+
+        GetAll = (ct) => Task.FromResult<IEnumerable<NavLeakFilm>>(_films);
+        GetById = (id, ct) => Task.FromResult(_films.FirstOrDefault(f => f.Id == id));
+
+        HasOptional(
+            navigation: x => x.Studio!,
+            get: (filmId, ct) => Task.FromResult(_films.FirstOrDefault(f => f.Id == filmId)?.Studio),
+            refTargetEntitySet: null);
+
+        HasMany(
+            navigation: x => x.CoStudios!,
+            getAll: (filmId, ct) => Task.FromResult<IEnumerable<NavLeakStudio>>(
+                _films.FirstOrDefault(f => f.Id == filmId)?.CoStudios ?? Enumerable.Empty<NavLeakStudio>()));
+
+        BindFunction(TopRated);    // collection of TModel — bound-op collection path
+        BindFunction(GetFeatured); // single TModel — bound-op single path
+    }
+
+    // Bound function returning a collection of the set's own type.
+    private Task<IEnumerable<NavLeakFilm>> TopRated() => Task.FromResult<IEnumerable<NavLeakFilm>>(_films);
+
+    // Bound function returning a single entity of the set's own type.
+    private Task<NavLeakFilm?> GetFeatured() => Task.FromResult(_films.FirstOrDefault());
+}
