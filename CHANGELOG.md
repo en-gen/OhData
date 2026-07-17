@@ -146,6 +146,26 @@ post-release-prep audit fix wave (below) found before the tag was actually cut.
 
 ### Fixed
 
+- **Regression: nav-path `$filter`/`$orderby` (e.g. `Tags/any(t: t/Name eq 'X')`,
+  `Category/Name`) incorrectly rejected with `400`**, introduced by the B1 property-allowlist
+  enforcement above. `ValidatePropertyAllowlists` ran `Validate()` unconditionally, but the
+  model-bound `Filterable`/`Sortable` annotations were only ever written for the profile's own
+  root entity type — navigation-target types (e.g. `Tag`, `OrderLine`) carried no annotation at
+  all, and Microsoft's model-bound validator treats an unannotated type's properties as
+  `NotFilterable`/`NotSortable` by default once *any* validation runs, regardless of the root's
+  own `FilterEnabled`/`OrderByEnabled` flags. Separately, when a root allowlist *was*
+  configured, the validator also required the navigation property itself (e.g. `Tags`) to be
+  present in the allowlist, so `FilterProperties(x => x.Name)` blocked `Tags/any(...)` even
+  though `Tags` was never meant to be gated by a *structural*-property allowlist. Fixed with two
+  changes: (1) `OhDataBuilder` now marks every navigation-target type the model discovers —
+  every structural type that isn't a root profile's own entity type — as fully
+  filterable/sortable/selectable/expandable/countable, since these types have no allowlist
+  surface of their own in 1.0; (2) `EntitySetProfile` now unions this entity's own navigation
+  property names into a configured `FilterProperties`/`OrderByProperties` allowlist before
+  handing it to the model builder, so a configured allowlist only ever restricts *structural*
+  properties, never navigation traversal. The root-type security property is unchanged: a
+  non-allowlisted *structural* property (e.g. `Id` when only `Name` is allowlisted) still
+  returns `400`.
 - Empty, malformed, or non-object JSON bodies on four route families no longer return a raw,
   envelope-less `500` (release audit B2). Entity-bound actions, collection-bound actions,
   unbound actions, and `$ref` POST/PUT all read their request body by hand (needed for correct

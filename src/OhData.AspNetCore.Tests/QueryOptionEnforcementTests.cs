@@ -308,6 +308,112 @@ public class QueryOptionEnforcementTests
         Assert.Contains("Secrets", message);
     }
 
+    // ── NEW-1 regression: nav-path $filter/$orderby must not be blocked by the B1 ──
+    // ── model-bound-validator plumbing when no allowlist is configured, and must ──
+    // ── stay unaffected by a ROOT allowlist that IS configured (root allowlists ──
+    // ── have no bearing on nav-target types, which have no allowlist surface of ──
+    // ── their own). See OhDataBuilder.MarkNavigationTargetTypesFullyQueryable.  ──
+
+    [Fact]
+    public async Task Filter_NavPathAny_NoAllowlist_Returns200()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPathFilterProfile>());
+        HttpResponseMessage response = await fx.Client.GetAsync(
+            "/odata/NavPathFilterParents?$filter=Tags/any(t: t/Name eq 'Red')");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        JsonElement values = json.GetProperty("value");
+        Assert.Equal(1, values.GetArrayLength());
+        Assert.Equal("Foo", values[0].GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public async Task Filter_NavPathAll_NoAllowlist_Returns200()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPathFilterProfile>());
+        HttpResponseMessage response = await fx.Client.GetAsync(
+            "/odata/NavPathFilterParents?$filter=Tags/all(t: t/Name ne 'Blue')");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        // Only "Foo" (Tags = [Red]) satisfies "every tag's Name != Blue"; "Bar" (Tags = [Blue]) does not.
+        Assert.Equal(1, json.GetProperty("value").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Filter_NavPathAny_OrdersLinesShape_NoAllowlist_Returns200()
+    {
+        // Mirrors the TestBench's Orders/Lines shape exactly (collection nav, numeric
+        // comparison) -- the precise repro reported against the TestBench for NEW-1.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPathOrderProfile>());
+        HttpResponseMessage response = await fx.Client.GetAsync(
+            "/odata/NavPathOrders?$filter=Lines/any(l: l/Quantity gt 1)");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        JsonElement values = json.GetProperty("value");
+        Assert.Equal(1, values.GetArrayLength());
+        Assert.Equal("Alice", values[0].GetProperty("customerName").GetString());
+    }
+
+    [Fact]
+    public async Task Filter_NavPathAny_WithRootAllowlist_Returns200()
+    {
+        // The root's FilterProperties(Name) allowlist must not leak onto the Tag type reached
+        // through the Tags navigation -- Tag has no allowlist semantics of its own in 1.0.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPathAllowlistProfile>());
+        HttpResponseMessage response = await fx.Client.GetAsync(
+            "/odata/NavPathAllowlistParents?$filter=Tags/any(t: t/Name eq 'Red')");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Filter_RootAllowlist_NonAllowlistedProperty_StillReturns400()
+    {
+        // Security-property regression guard for B1: making nav-target types fully permissive
+        // must NOT weaken the root allowlist itself -- a non-allowlisted root property is still
+        // rejected even though Tags/any(...) on the very same entity set is now allowed.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPathAllowlistProfile>());
+        HttpResponseMessage response = await fx.Client.GetAsync("/odata/NavPathAllowlistParents?$filter=Id eq 1");
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        string message = json.GetProperty("error").GetProperty("message").GetString()!;
+        Assert.Contains("Id", message);
+        Assert.Contains("$filter", message);
+    }
+
+    [Fact]
+    public async Task OrderBy_NavPathSingleValued_NoAllowlist_Returns200()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPathOrderByProfile>());
+        JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>(
+            "/odata/NavPathOrderByParents?$orderby=Category/Name");
+        JsonElement values = json.GetProperty("value");
+        Assert.Equal(2, values.GetArrayLength());
+        Assert.Equal("Bar", values[0].GetProperty("name").GetString());  // Category.Name "Alpha" < "Zeta"
+        Assert.Equal("Foo", values[1].GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public async Task OrderBy_NavPathSingleValued_WithRootAllowlist_Returns200()
+    {
+        // Same non-leak guarantee as the $filter case above, for $orderby's own allowlist.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPathOrderByAllowlistProfile>());
+        HttpResponseMessage response = await fx.Client.GetAsync(
+            "/odata/NavPathOrderByAllowlistParents?$orderby=Category/Name");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task OrderBy_RootAllowlist_NonAllowlistedProperty_StillReturns400()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPathOrderByAllowlistProfile>());
+        HttpResponseMessage response = await fx.Client.GetAsync("/odata/NavPathOrderByAllowlistParents?$orderby=Id");
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        string message = json.GetProperty("error").GetProperty("message").GetString()!;
+        Assert.Contains("Id", message);
+        Assert.Contains("$orderby", message);
+    }
+
     // ── Navigation route: $filter and other unimplemented options → 400 ──────────
 
     [Theory]
@@ -614,6 +720,140 @@ public class QueryOptionEnforcementTests
                     Interlocked.Increment(ref BatchCalls);
                     return Task.FromResult(Children.ToLookup(_ => parentIds[0]));
                 });
+        }
+    }
+
+    // ── NEW-1 fixtures: nav-path $filter/$orderby regression coverage ────────────
+
+    private class NavPathTag
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = "";
+    }
+
+    private class NavPathParent
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = "";
+        public List<NavPathTag> Tags { get; set; } = new();
+    }
+
+    /// <summary>Plain Parent/Tags fixture mirroring the Zorks/Tags repro from the evidence log,
+    /// FilterEnabled with deliberately no FilterProperties/OrderByProperties allowlist.</summary>
+    private class NavPathFilterProfile : EntitySetProfile<int, NavPathParent>
+    {
+        private static readonly List<NavPathParent> Store = new()
+        {
+            new() { Id = 1, Name = "Foo", Tags = new() { new() { Id = 1, Name = "Red" } } },
+            new() { Id = 2, Name = "Bar", Tags = new() { new() { Id = 2, Name = "Blue" } } },
+        };
+        public NavPathFilterProfile() : base(x => x.Id)
+        {
+            EntitySetName = "NavPathFilterParents";
+            FilterEnabled = true;
+            OrderByEnabled = true;
+            GetQueryable = (ct) => Task.FromResult(Store.AsQueryable());
+            HasMany(x => x.Tags);
+        }
+    }
+
+    /// <summary>Same shape, but with a root FilterProperties allowlist configured -- the nav
+    /// path through Tags must remain unaffected by it.</summary>
+    private class NavPathAllowlistProfile : EntitySetProfile<int, NavPathParent>
+    {
+        private static readonly List<NavPathParent> Store = new()
+        {
+            new() { Id = 1, Name = "Foo", Tags = new() { new() { Id = 1, Name = "Red" } } },
+            new() { Id = 2, Name = "Bar", Tags = new() { new() { Id = 2, Name = "Blue" } } },
+        };
+        public NavPathAllowlistProfile() : base(x => x.Id)
+        {
+            EntitySetName = "NavPathAllowlistParents";
+            FilterEnabled = true;
+            FilterProperties(x => x.Name);
+            GetQueryable = (ct) => Task.FromResult(Store.AsQueryable());
+            HasMany(x => x.Tags);
+        }
+    }
+
+    private class NavPathOrderLine
+    {
+        public int Id { get; set; }
+        public int Quantity { get; set; }
+    }
+
+    private class NavPathOrder
+    {
+        public int Id { get; set; }
+        public string CustomerName { get; set; } = "";
+        public List<NavPathOrderLine> Lines { get; set; } = new();
+    }
+
+    /// <summary>Mirrors the TestBench's Orders/Lines entity shape exactly (collection nav +
+    /// numeric comparison) -- the second repro reported for NEW-1.</summary>
+    private class NavPathOrderProfile : EntitySetProfile<int, NavPathOrder>
+    {
+        private static readonly List<NavPathOrder> Store = new()
+        {
+            new() { Id = 1, CustomerName = "Alice", Lines = new() { new() { Id = 1, Quantity = 2 } } },
+            new() { Id = 2, CustomerName = "Bob", Lines = new() { new() { Id = 2, Quantity = 1 } } },
+        };
+        public NavPathOrderProfile() : base(x => x.Id)
+        {
+            EntitySetName = "NavPathOrders";
+            FilterEnabled = true;
+            GetQueryable = (ct) => Task.FromResult(Store.AsQueryable());
+            HasMany(x => x.Lines);
+        }
+    }
+
+    private class NavPathCategory
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = "";
+    }
+
+    private class NavPathOrderByParent
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = "";
+        public NavPathCategory? Category { get; set; }
+    }
+
+    /// <summary>Single-valued nav (as opposed to the collection navs above) for the $orderby
+    /// nav-path case: `$orderby=Category/Name`, no allowlist configured.</summary>
+    private class NavPathOrderByProfile : EntitySetProfile<int, NavPathOrderByParent>
+    {
+        private static readonly List<NavPathOrderByParent> Store = new()
+        {
+            new() { Id = 1, Name = "Foo", Category = new() { Id = 1, Name = "Zeta" } },
+            new() { Id = 2, Name = "Bar", Category = new() { Id = 2, Name = "Alpha" } },
+        };
+        public NavPathOrderByProfile() : base(x => x.Id)
+        {
+            EntitySetName = "NavPathOrderByParents";
+            OrderByEnabled = true;
+            GetQueryable = (ct) => Task.FromResult(Store.AsQueryable());
+            HasOptional(x => x.Category!);
+        }
+    }
+
+    /// <summary>Same shape, but with a root OrderByProperties allowlist configured -- the nav
+    /// path through Category must remain unaffected by it.</summary>
+    private class NavPathOrderByAllowlistProfile : EntitySetProfile<int, NavPathOrderByParent>
+    {
+        private static readonly List<NavPathOrderByParent> Store = new()
+        {
+            new() { Id = 1, Name = "Foo", Category = new() { Id = 1, Name = "Zeta" } },
+            new() { Id = 2, Name = "Bar", Category = new() { Id = 2, Name = "Alpha" } },
+        };
+        public NavPathOrderByAllowlistProfile() : base(x => x.Id)
+        {
+            EntitySetName = "NavPathOrderByAllowlistParents";
+            OrderByEnabled = true;
+            OrderByProperties(x => x.Name);
+            GetQueryable = (ct) => Task.FromResult(Store.AsQueryable());
+            HasOptional(x => x.Category!);
         }
     }
 }
