@@ -9,7 +9,7 @@ Convention-based OData 4.0 server and typed client for ASP.NET Core. Define a pr
 
 **[▶ Try it live](https://ohdata.onrender.com/)** — fire real `$filter`/`$orderby`/`$expand` queries (writes too) at a deployed OhData demo service from an interactive API reference, or hit the raw [v1 service document](https://ohdata.onrender.com/v1) directly:
 
-[![Live demo — Scalar](https://img.shields.io/badge/live_demo-Scalar-1c1e24?logo=scalar&logoColor=white)](https://ohdata.onrender.com/scalar/v1)
+[![Live demo — Scalar](https://img.shields.io/badge/live_demo-Scalar-1A1A1A?logo=scalar&logoColor=white)](https://ohdata.onrender.com/scalar/v1)
 [![Live demo — Swagger UI](https://img.shields.io/badge/live_demo-Swagger_UI-85EA2D?logo=swagger&logoColor=black)](https://ohdata.onrender.com/swagger)
 
 (Free-tier hosting: the first load after a quiet spell takes a moment to wake up, and demo data is ephemeral — anything you write disappears whenever the instance recycles.)
