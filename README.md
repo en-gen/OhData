@@ -23,16 +23,12 @@ dotnet add package EnGen.OhData.Client
 
 ## Packages
 
-[![EnGen.OhData.AspNetCore](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore?label=EnGen.OhData.AspNetCore)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore)
-[![EnGen.OhData.Client](https://img.shields.io/nuget/v/EnGen.OhData.Client?label=EnGen.OhData.Client)](https://www.nuget.org/packages/EnGen.OhData.Client)
-
-The server framework and the typed LINQ client — see the quick starts below.
-
-[![EnGen.OhData.AspNetCore.Swashbuckle](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore.Swashbuckle?label=EnGen.OhData.AspNetCore.Swashbuckle)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.Swashbuckle)
-[![EnGen.OhData.AspNetCore.OpenApi](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore.OpenApi?label=EnGen.OhData.AspNetCore.OpenApi)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.OpenApi)
-[![EnGen.OhData.AspNetCore.NSwag](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore.NSwag?label=EnGen.OhData.AspNetCore.NSwag)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.NSwag)
-
-Optional API-documentation companions — each documents the OData query parameters (`$filter`, `$orderby`, `$top`, ...) on OhData endpoints in its respective OpenAPI stack (Swashbuckle, the built-in `Microsoft.AspNetCore.OpenApi`, or NSwag), driven by each entity set's capability flags. One line of registration per stack — see [OpenAPI / Swagger documentation](#openapi--swagger-documentation) below.
+- **[EnGen.OhData.AspNetCore](https://www.nuget.org/packages/EnGen.OhData.AspNetCore)** [![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore) — the server framework
+- **[EnGen.OhData.Client](https://www.nuget.org/packages/EnGen.OhData.Client)** [![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.Client)](https://www.nuget.org/packages/EnGen.OhData.Client) — the typed LINQ client
+- Optional API-documentation companions — each documents the OData query parameters (`$filter`, `$orderby`, `$top`, ...) in its respective OpenAPI stack with [one line of registration](#openapi--swagger-documentation):
+  - **[EnGen.OhData.AspNetCore.Swashbuckle](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.Swashbuckle)** [![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore.Swashbuckle)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.Swashbuckle)
+  - **[EnGen.OhData.AspNetCore.OpenApi](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.OpenApi)** [![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore.OpenApi)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.OpenApi)
+  - **[EnGen.OhData.AspNetCore.NSwag](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.NSwag)** [![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore.NSwag)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.NSwag)
 
 ---
 
