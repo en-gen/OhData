@@ -64,6 +64,19 @@ everywhere. Four independent changes, all additive.
 
 ### Fixed
 
+- **Un-expanded navigation properties are no longer emitted on read responses (#176).** OhData
+  serialised the full CLR entity graph, so a navigation that was not requested via `$expand` still
+  surfaced in the payload - a collection nav as `"cast": []`, a single-valued nav as
+  `"studio": null` - and an *expanded* entity even carried its own un-expanded navigations
+  (e.g. `?$expand=Studio` returned `"studio":{...,"movies":[]}`). OData JSON Format v4.01 §4.5.1 /
+  §11.2.4.2 require a non-expanded navigation to be OMITTED entirely, never rendered inline. A new
+  EDM-model-driven pass runs after expansion on `GetById` and collection GET (`GetAll`/`GetQueryable`
+  /Priority-1) and removes every navigation member not expanded at its own level, recursing into the
+  expanded ones so a related entity never leaks its own navigations. Expanded navigations remain
+  present and populated. **Response-shape change:** clients that relied on the empty `[]`/`null`
+  navigation placeholders will no longer receive those keys - request the navigation with `$expand`
+  to include it. Deep-insert `POST` responses are unaffected (they still echo the created graph per
+  §11.4.2.2).
 - `NoMaxTop_TopDescriptionHasNoCap` (NSwag doc-generation tests): a `GetAll` profile that left
   `MaxTop` at its `EntitySetDefaults`-provided default (`1000`) was previously documented as having
   no `$top` cap at all, because the `GetAll` route's `OhDataQueryOptionsMetadata` hardcoded
