@@ -13,6 +13,10 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.*" />
+    <PackageReference Include="coverlet.collector" Version="6.0.4">
+    	<IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
+    	<PrivateAssets>all</PrivateAssets>
+    </PackageReference>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
     <PackageReference Include="Microsoft.OData.Client" Version="8.*" />
     <PackageReference Include="Microsoft.OData.ModelBuilder" Version="2.*" />
