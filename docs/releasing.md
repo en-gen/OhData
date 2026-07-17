@@ -71,10 +71,11 @@ reject the release.
 5. The `Publish to NuGet` workflow runs automatically. If the tag-validation step fails, the tag does not
    match what GitVersion computed on `main` — do not force it; fix the branch topology.
 6. Verify: package pages render (README, license, version) at
-   `https://www.nuget.org/packages/EnGen.OhData.AspNetCore`, `.../EnGen.OhData.Client`, and
-   `.../EnGen.OhData.AspNetCore.Swashbuckle`;
+   `https://www.nuget.org/packages/EnGen.OhData.AspNetCore`, `.../EnGen.OhData.Client`,
+   `.../EnGen.OhData.AspNetCore.Swashbuckle`, `.../EnGen.OhData.AspNetCore.OpenApi`, and
+   `.../EnGen.OhData.AspNetCore.NSwag`;
    `dotnet add package EnGen.OhData.AspNetCore` resolves the new version; symbols step through from
-   the NuGet symbol server; the GitHub Release page shows 6 attached assets (a `.nupkg` and a
+   the NuGet symbol server; the GitHub Release page shows 10 attached assets (a `.nupkg` and a
    `.snupkg` per package, uploaded automatically by the workflow); and confirm build provenance with
    `gh attestation verify` (see below).
 7. Back-merge `main` into `develop` (GitFlow) so the tag is reachable and develop's computed version
