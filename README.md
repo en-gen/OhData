@@ -57,14 +57,11 @@ public class ProductProfile : EntitySetProfile<int, Product>
     }
 }
 
-// 3. Register in Program.cs - list profiles explicitly...
+// 3. Register in Program.cs
 builder.Services.AddOhData(o => o
     .WithPrefix("/odata")
-    .AddProfile<ProductProfile>());
-
-// ...or scan an assembly and register every EntitySetProfile it contains
-builder.Services.AddOhData(o => o
-    .WithPrefix("/odata")
+    .AddProfile<ProductProfile>()
+    // or scan an assembly for every EntitySetProfile instead of listing each:
     .AddProfilesFromAssemblyOf<Program>());
 
 // 4. Map endpoints after app.Build()
