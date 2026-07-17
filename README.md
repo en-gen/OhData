@@ -1,3 +1,5 @@
+<img src="assets/icon.svg" alt="OhData logo" width="110" align="right"/>
+
 # OhData
 
 Convention-based OData 4.0 server and typed client for ASP.NET Core. Define a profile class, assign handler delegates, and get a spec-faithful OData API - no controllers required (see [docs/spec-compliance.md](docs/spec-compliance.md) for exactly what's covered). Consume it from .NET with a fluent, LINQ-native client.

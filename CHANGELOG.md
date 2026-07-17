@@ -11,6 +11,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Project logo and package icon (`assets/icon.svg` + 128px `assets/icon.png`): a database cylinder
+  shaped as a speech bubble saying "Oh", with the h doubling as the exclamation mark. Embedded in
+  every package as `PackageIcon` via `Directory.Build.props`; shown in the README header; the
+  publish quality gate's `IconMustBeSet` exclusion is removed (all meziantou rules now run).
 - New `EnGen.OhData.AspNetCore.OpenApi` companion package: `OhDataOpenApiOperationTransformer`
   (an `IOpenApiOperationTransformer` for the built-in `Microsoft.AspNetCore.OpenApi` pipeline,
   net10.0) documents the OData query parameters on OhData endpoints, mirroring the Swashbuckle

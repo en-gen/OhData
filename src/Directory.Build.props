@@ -36,6 +36,7 @@
     <RepositoryType>git</RepositoryType>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageIcon>icon.png</PackageIcon>
     <PackageTags>odata;odata4;aspnetcore;rest;api</PackageTags>
     <PackageReleaseNotes>https://github.com/en-gen/OhData/blob/main/CHANGELOG.md</PackageReleaseNotes>
     <!-- Symbols: produces .snupkg for debugger step-in support -->
@@ -48,6 +49,7 @@
 
   <ItemGroup>
     <None Include="$(MSBuildThisFileDirectory)..\README.md" Pack="true" PackagePath="/" Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)..\assets\icon.png" Pack="true" PackagePath="/" Visible="false" />
   </ItemGroup>
 
   <ItemGroup>
