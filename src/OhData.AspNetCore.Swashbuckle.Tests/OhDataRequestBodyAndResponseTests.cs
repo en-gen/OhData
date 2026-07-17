@@ -163,15 +163,17 @@ public sealed class OhDataRequestBodyAndResponseTests
     private static JsonElement GetQueryParameter(JsonElement op, string name)
     {
         JsonElement parameters = op.GetProperty("parameters");
-        foreach (JsonElement p in parameters.EnumerateArray())
+        JsonElement match = parameters.EnumerateArray()
+            .Where(p => p.GetProperty("name").GetString() == name &&
+                        p.GetProperty("in").GetString() == "query")
+            .FirstOrDefault();
+        // FirstOrDefault() on a JsonElement sequence yields default(JsonElement) (ValueKind
+        // Undefined) when nothing matched.
+        if (match.ValueKind == JsonValueKind.Undefined)
         {
-            if (p.GetProperty("name").GetString() == name &&
-                p.GetProperty("in").GetString() == "query")
-            {
-                return p;
-            }
+            throw new Xunit.Sdk.XunitException($"No query parameter '{name}'. Parameters: {parameters.GetRawText()}");
         }
-        throw new Xunit.Sdk.XunitException($"No query parameter '{name}'. Parameters: {parameters.GetRawText()}");
+        return match;
     }
 
     /// <summary>OpenAPI omits "required" (or sets it false) for optional parameters.</summary>
