@@ -77,6 +77,16 @@ everywhere. Four independent changes, all additive.
   navigation placeholders will no longer receive those keys - request the navigation with `$expand`
   to include it. Deep-insert `POST` responses are unaffected (they still echo the created graph per
   §11.4.2.2).
+- **Un-expanded navigation omission now also covers nav-route and bound-operation reads (#179).**
+  The #176 fix wired the omission into only the top-level reads (collection GET, `GetById`); three
+  other serialization paths still emitted the full CLR graph, so an entity's shape depended on which
+  route returned it. Now all read paths run the same EDM-driven pass: the single-valued navigation
+  GET (`GET /Set(key)/{nav}`) strips the target entity type's own navigations; the navigation-collection
+  GET (`GET /Set(key)/{nav}`) strips each item's navigations using the nav element type; and bound
+  function/action results that return the entity set's own type (both the collection and single-entity
+  branches of `WrapBoundOpResult`) strip navigations and — matching the normal collection/`GetById`
+  paths — inject `@odata.etag` when `UseETag` is configured (previously dropped). Same spec basis as
+  #176 (OData JSON Format v4.01 §4.5.1 / §11.2.4.2); expanded navigations remain present and populated.
 - `NoMaxTop_TopDescriptionHasNoCap` (NSwag doc-generation tests): a `GetAll` profile that left
   `MaxTop` at its `EntitySetDefaults`-provided default (`1000`) was previously documented as having
   no `$top` cap at all, because the `GetAll` route's `OhDataQueryOptionsMetadata` hardcoded
