@@ -77,15 +77,16 @@ reject the release.
    the NuGet symbol server; the GitHub Release page shows 10 attached assets (a `.nupkg` and a
    `.snupkg` per package, uploaded automatically by the workflow); and confirm build provenance with
    `gh attestation verify` (see below).
-7. Back-merge `main` into `develop` (GitFlow) so the tag is reachable and develop's computed version
-   advances past the release. **Do this as a direct-pushed merge commit, not a PR**:
-   `git checkout develop && git pull --ff-only && git merge origin/main -m "chore: back-merge main after vX.Y.Z" && git push`.
-   A back-merge PR invites "Squash and merge", which severs the shared history between `main` and
-   `develop` — the next release PR then reports phantom conflicts on every file both branches touched
-   (this happened on both the 1.1.0 and 1.2.0 release PRs) and GitVersion loses the merge lineage it
-   uses to compute versions. The direct merge commit is the one sanctioned exception to the
-   feature-branches-only rule. Release PRs (`release/X.Y.Z` → `main`) must likewise be merged with a
-   merge commit, never squashed.
+7. Merge the release branch back into `develop` (canonical GitFlow: `release/X.Y.Z` is merge-committed
+   into **both** `main` and `develop`, then deleted). **Do this as a direct-pushed merge commit, not
+   a PR**:
+   `git checkout develop && git pull --ff-only && git merge origin/release/X.Y.Z -m "chore: merge release/X.Y.Z back into develop" && git push`.
+   Then delete the release branch (local and remote). A back-merge PR invites "Squash and merge",
+   which severs the shared history between `main` and `develop` — the next release PR then reports
+   phantom conflicts on every file both branches touched (this happened on both the 1.1.0 and 1.2.0
+   release PRs) and GitVersion loses the merge lineage it uses to compute versions. The direct merge
+   commit is the one sanctioned exception to the feature-branches-only rule. Release PRs
+   (`release/X.Y.Z` → `main`) must likewise be merged with a merge commit, never squashed.
 
 ## Rehearsal mode (no push, no key required)
 
