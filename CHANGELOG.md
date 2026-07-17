@@ -9,6 +9,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+Nothing yet.
+
+---
+
+## [1.2.0] - 2026-07-17
+
 ### Added
 
 - Project logo and package icon (`assets/icon.svg` + 128px `assets/icon.png`): a database cylinder
@@ -29,6 +35,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Ships with its own test suite and `docs/nswag.md`.
 - Both new test suites (25 tests) run in CI and in the publish gate; all five packages are packed
   and published by the release workflow (10 release assets).
+
+### Changed
+
+- `Microsoft.AspNetCore.OData` dependency floor raised from `[9.4.*, 10)` to `[9.5.*, 10)`
+  (full 1,100-test suite verified against 9.5.0).
+- Package validation now diffs `EnGen.OhData.AspNetCore`, `EnGen.OhData.Client`, and
+  `EnGen.OhData.AspNetCore.Swashbuckle` against the published 1.1.0 API surface
+  (`PackageValidationBaselineVersion=1.1.0`), so unintended breaking changes fail the build.
 
 ---
 
@@ -472,5 +486,6 @@ post-release-prep audit fix wave (below) found before the tag was actually cut.
 ---
 
 [Unreleased]: https://github.com/en-gen/OhData/commits/develop
+[1.2.0]: https://github.com/en-gen/OhData/releases/tag/v1.2.0
 [1.1.0]: https://github.com/en-gen/OhData/releases/tag/v1.1.0
 [1.0.0]: https://github.com/en-gen/OhData/releases/tag/v1.0.0
