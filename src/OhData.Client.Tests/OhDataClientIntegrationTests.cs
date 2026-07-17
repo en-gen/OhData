@@ -1,0 +1,721 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Net.Http;
+using System.Threading.Tasks;
+using Xunit;
+using OhData.Client;
+
+namespace OhData.Client.Tests;
+
+/// <summary>
+/// Integration tests for M-7 (NextLink), M-8 (ETag/If-Match), L-10 (Prefer return=minimal),
+/// and L-11 (SingleOrDefaultAsync).
+/// Each test class manages its own fixture so ETag store state is isolated.
+/// </summary>
+public class ETagClientIntegrationTests : IAsyncDisposable
+{
+    private readonly ETagClientTestFixture _fixture;
+    private OhDataClient Client => _fixture.Client;
+
+    public ETagClientIntegrationTests()
+    {
+        _fixture = ETagClientTestFixture.BuildAsync().GetAwaiter().GetResult();
+    }
+
+    public async ValueTask DisposeAsync() => await _fixture.DisposeAsync();
+
+    // ── M-8: ETag GET ───────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task GetWithETagAsync_ReturnsETagHeader()
+    {
+        var (entity, etag) = await Client.For<Widget>("ETagWidgets").Key(1).GetWithETagAsync();
+        Assert.NotNull(entity);
+        Assert.NotNull(etag);
+        Assert.NotEmpty(etag!);
+    }
+
+    [Fact]
+    public async Task GetWithETagAsync_MissingKey_ReturnsNullPair()
+    {
+        var (entity, etag) = await Client.For<Widget>("ETagWidgets").Key(999).GetWithETagAsync();
+        Assert.Null(entity);
+        Assert.Null(etag);
+    }
+
+    // ── M-8: Conditional GET (If-None-Match) ────────────────────────────────────
+
+    [Fact]
+    public async Task GetIfChangedAsync_WithCurrentETag_Returns304AndNoEntity()
+    {
+        var (_, etag) = await Client.For<Widget>("ETagWidgets").Key(1).GetWithETagAsync();
+        Assert.NotNull(etag);
+
+        var (entity, returnedETag, notModified) = await Client.For<Widget>("ETagWidgets").Key(1)
+            .GetIfChangedAsync(ifNoneMatch: etag);
+
+        Assert.True(notModified);
+        Assert.Null(entity);
+        Assert.Equal(etag, returnedETag);
+    }
+
+    [Fact]
+    public async Task GetIfChangedAsync_WithStaleETag_ReturnsFreshEntityAndNotModifiedFalse()
+    {
+        var (entity, returnedETag, notModified) = await Client.For<Widget>("ETagWidgets").Key(1)
+            .GetIfChangedAsync(ifNoneMatch: "some-stale-etag-value");
+
+        Assert.False(notModified);
+        Assert.NotNull(entity);
+        Assert.Equal("Sprocket", entity!.Name);
+        Assert.NotNull(returnedETag);
+    }
+
+    [Fact]
+    public async Task GetIfChangedAsync_WithoutIfNoneMatch_BehavesLikeUnconditionalGet()
+    {
+        var (entity, etag, notModified) = await Client.For<Widget>("ETagWidgets").Key(1)
+            .GetIfChangedAsync();
+
+        Assert.False(notModified);
+        Assert.NotNull(entity);
+        Assert.NotNull(etag);
+    }
+
+    [Fact]
+    public async Task GetIfChangedAsync_MissingKey_ReturnsNotFoundTriple()
+    {
+        var (entity, etag, notModified) = await Client.For<Widget>("ETagWidgets").Key(999)
+            .GetIfChangedAsync(ifNoneMatch: "irrelevant-etag");
+
+        Assert.False(notModified);
+        Assert.Null(entity);
+        Assert.Null(etag);
+    }
+
+    [Fact]
+    public async Task GetIfChangedAsync_ETagFrom304Response_UsableAsIfMatchOnSubsequentWrite()
+    {
+        // Interaction with the existing write-side ifMatch parameters: the ETag returned
+        // from a 304 Not Modified response must be just as usable for optimistic
+        // concurrency as one returned from a normal 200 GET.
+        var (_, initialETag) = await Client.For<Widget>("ETagWidgets").Key(1).GetWithETagAsync();
+        Assert.NotNull(initialETag);
+
+        var (entity, notModifiedETag, notModified) = await Client.For<Widget>("ETagWidgets").Key(1)
+            .GetIfChangedAsync(ifNoneMatch: initialETag);
+        Assert.True(notModified);
+        Assert.Null(entity);
+        Assert.Equal(initialETag, notModifiedETag);
+
+        var updated = await Client.For<Widget>("ETagWidgets").Key(1)
+            .PutAsync(new Widget { Id = 1, Name = "UpdatedViaConditionalGetETag" }, ifMatch: notModifiedETag);
+        Assert.NotNull(updated);
+        Assert.Equal("UpdatedViaConditionalGetETag", updated!.Name);
+
+        // The old ETag is now stale — a second conditional GET with it must report a change.
+        var (changedEntity, _, stillNotModified) = await Client.For<Widget>("ETagWidgets").Key(1)
+            .GetIfChangedAsync(ifNoneMatch: notModifiedETag);
+        Assert.False(stillNotModified);
+        Assert.Equal("UpdatedViaConditionalGetETag", changedEntity!.Name);
+    }
+
+    // ── M-8: ETag PUT ───────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task PutAsync_WithCorrectETag_Succeeds()
+    {
+        var (_, etag) = await Client.For<Widget>("ETagWidgets").Key(1).GetWithETagAsync();
+        Assert.NotNull(etag);
+
+        var updated = await Client.For<Widget>("ETagWidgets").Key(1)
+            .PutAsync(new Widget { Id = 1, Name = "Updated" }, ifMatch: etag);
+        Assert.NotNull(updated);
+        Assert.Equal("Updated", updated!.Name);
+    }
+
+    [Fact]
+    public async Task PutAsync_WithWrongETag_Throws412()
+    {
+        var ex = await Assert.ThrowsAsync<ODataClientException>(
+            () => Client.For<Widget>("ETagWidgets").Key(1)
+                .PutAsync(new Widget { Id = 1, Name = "BadUpdate" }, ifMatch: "wrongetag"));
+        Assert.Equal(412, ex.StatusCode);
+    }
+
+    // ── M-8: ETag DELETE ────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task DeleteAsync_WithCorrectETag_Succeeds()
+    {
+        // Insert a fresh widget so we don't interfere with other tests.
+        var created = await Client.For<Widget>("ETagWidgets")
+            .InsertAsync(new Widget { Name = "ToDeleteWithETag" });
+        Assert.NotNull(created);
+
+        var (_, etag) = await Client.For<Widget>("ETagWidgets").Key(created!.Id).GetWithETagAsync();
+        Assert.NotNull(etag);
+
+        await Client.For<Widget>("ETagWidgets").Key(created.Id).DeleteAsync(ifMatch: etag);
+
+        var after = await Client.For<Widget>("ETagWidgets").Key(created.Id).GetAsync();
+        Assert.Null(after);
+    }
+
+    [Fact]
+    public async Task DeleteAsync_WithWrongETag_Throws412()
+    {
+        var ex = await Assert.ThrowsAsync<ODataClientException>(
+            () => Client.For<Widget>("ETagWidgets").Key(1).DeleteAsync(ifMatch: "wrongetag"));
+        Assert.Equal(412, ex.StatusCode);
+    }
+
+    // ── L-10: Prefer return=minimal ──────────────────────────────────────────────
+
+    [Fact]
+    public async Task InsertAsync_PreferMinimal_Returns204AndNull()
+    {
+        var result = await Client.For<Widget>("ETagWidgets")
+            .InsertAsync(new Widget { Name = "MinimalInsert" }, preferMinimal: true);
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task PutAsync_PreferMinimal_Returns204AndNull()
+    {
+        var result = await Client.For<Widget>("ETagWidgets").Key(1)
+            .PutAsync(new Widget { Id = 1, Name = "MinimalPut" }, preferMinimal: true);
+        Assert.Null(result);
+    }
+}
+
+public class NextLinkIntegrationTests : IAsyncDisposable
+{
+    private readonly PaginatedClientTestFixture _fixture;
+    private OhDataClient Client => _fixture.Client;
+
+    public NextLinkIntegrationTests()
+    {
+        _fixture = PaginatedClientTestFixture.BuildAsync().GetAwaiter().GetResult();
+    }
+
+    public async ValueTask DisposeAsync() => await _fixture.DisposeAsync();
+
+    // ── M-7: NextLink ────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ToPageAsync_WithNextLink_NextLinkPopulated()
+    {
+        // PaginatedWidgetProfile has MaxTop=3 and 10 items.
+        // Calling ToPageAsync() without $top should get 3 items and a nextLink.
+        var page = await Client.For<Widget>("PaginatedWidgets").ToPageAsync();
+        Assert.Equal(3, page.Items.Count);
+        Assert.NotNull(page.NextLink);
+        Assert.NotEmpty(page.NextLink!);
+    }
+
+    [Fact]
+    public async Task ToPageAsync_LastPage_NextLinkIsNull()
+    {
+        // Skip past the last full page — fewer than MaxTop items remain, so no nextLink.
+        var page = await Client.For<Widget>("PaginatedWidgets").Skip(9).ToPageAsync();
+        Assert.Single(page.Items);
+        Assert.Null(page.NextLink);
+    }
+
+    // ── ToAsyncEnumerable ────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ToAsyncEnumerable_YieldsAllItemsAcrossPages()
+    {
+        // PaginatedWidgetProfile has MaxTop=3 and 10 items.
+        // ToAsyncEnumerable should follow all nextLinks and yield all 10 items.
+        var items = new List<Widget>();
+        await foreach (Widget w in Client.For<Widget>("PaginatedWidgets").ToAsyncEnumerable())
+            items.Add(w);
+
+        Assert.Equal(10, items.Count);
+    }
+
+    [Fact]
+    public async Task ToAsyncEnumerable_WithFilter_YieldsFilteredItems()
+    {
+        // Filter for widgets with Id <= 5 — should yield only 5 items across pages.
+        var items = new List<Widget>();
+        await foreach (Widget w in Client.For<Widget>("PaginatedWidgets")
+            .Filter(x => x.Id <= 5)
+            .ToAsyncEnumerable())
+        {
+            items.Add(w);
+        }
+
+        Assert.Equal(5, items.Count);
+        Assert.All(items, w => Assert.True(w.Id <= 5));
+    }
+
+    [Fact]
+    public async Task ToAsyncEnumerable_NoNextLink_ReturnsSinglePage()
+    {
+        // When the server returns fewer items than MaxTop, there is no nextLink.
+        // Requesting with $skip=8 leaves 2 items — no further pages.
+        var items = new List<Widget>();
+        await foreach (Widget w in Client.For<Widget>("PaginatedWidgets").Skip(8).ToAsyncEnumerable())
+        {
+            items.Add(w);
+        }
+        Assert.Equal(2, items.Count);
+    }
+
+    [Fact]
+    public async Task ToAsyncEnumerable_AllIdsPresent_NoDuplicates()
+    {
+        // Each item should appear exactly once across all pages.
+        var ids = new List<int>();
+        await foreach (Widget w in Client.For<Widget>("PaginatedWidgets").ToAsyncEnumerable())
+        {
+            ids.Add(w.Id);
+        }
+        Assert.Equal(10, ids.Distinct().Count());
+        Assert.Equal(Enumerable.Range(1, 10), ids.OrderBy(x => x));
+    }
+
+    [Fact]
+    public async Task ToListAsync_YieldsAllPages()
+    {
+        // Regression: ToListAsync should follow nextLinks after the refactor to use ToAsyncEnumerable.
+        var items = await Client.For<Widget>("PaginatedWidgets").ToListAsync();
+        Assert.Equal(10, items.Count);
+    }
+}
+
+public class SingleOrDefaultIntegrationTests : IAsyncDisposable
+{
+    private readonly ClientTestFixture _fixture;
+    private OhDataClient Client => _fixture.Client;
+
+    public SingleOrDefaultIntegrationTests()
+    {
+        _fixture = ClientTestFixture.BuildAsync().GetAwaiter().GetResult();
+    }
+
+    public async ValueTask DisposeAsync() => await _fixture.DisposeAsync();
+
+    // ── L-11: SingleOrDefaultAsync ───────────────────────────────────────────────
+
+    [Fact]
+    public async Task SingleOrDefaultAsync_OneMatch_ReturnsEntity()
+    {
+        var widget = await Client.For<Widget>()
+            .Filter(x => x.Name == "Sprocket")
+            .SingleOrDefaultAsync();
+        Assert.NotNull(widget);
+        Assert.Equal("Sprocket", widget!.Name);
+    }
+
+    [Fact]
+    public async Task SingleOrDefaultAsync_NoMatch_ReturnsNull()
+    {
+        var widget = await Client.For<Widget>()
+            .Filter(x => x.Name == "DoesNotExist")
+            .SingleOrDefaultAsync();
+        Assert.Null(widget);
+    }
+
+    [Fact]
+    public async Task SingleOrDefaultAsync_MultipleMatches_Throws()
+    {
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Client.For<Widget>().SingleOrDefaultAsync());
+    }
+}
+
+/// <summary>
+/// Integration tests: spins up a real OhData server via TestHost and exercises
+/// the full round-trip through OhDataClient → OData HTTP → server → deserialisation.
+/// </summary>
+public class OhDataClientIntegrationTests : IAsyncDisposable
+{
+    private readonly ClientTestFixture _fixture;
+    private OhDataClient Client => _fixture.Client;
+
+    public OhDataClientIntegrationTests()
+    {
+        _fixture = ClientTestFixture.BuildAsync().GetAwaiter().GetResult();
+    }
+
+    public async ValueTask DisposeAsync() => await _fixture.DisposeAsync();
+
+    // ── GET collection ──────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ToListAsync_ReturnsAllWidgets()
+    {
+        var widgets = await Client.For<Widget>().ToListAsync();
+        Assert.Equal(2, widgets.Count);
+        Assert.Contains(widgets, w => w.Name == "Sprocket");
+        Assert.Contains(widgets, w => w.Name == "Cog");
+    }
+
+    [Fact]
+    public async Task Filter_ByName_ReturnsMatchingWidget()
+    {
+        var widgets = await Client.For<Widget>()
+            .Filter(x => x.Name == "Sprocket")
+            .ToListAsync();
+        Assert.Single(widgets);
+        Assert.Equal("Sprocket", widgets[0].Name);
+    }
+
+    [Fact]
+    public async Task FirstOrDefaultAsync_ReturnsFirst()
+    {
+        var widget = await Client.For<Widget>().FirstOrDefaultAsync();
+        Assert.NotNull(widget);
+    }
+
+    // ── L-12: streaming GET (HttpCompletionOption.ResponseHeadersRead) ─────────────
+    // GET now returns as soon as headers arrive instead of buffering the whole body
+    // up front. These tests confirm error-body reading still works end-to-end for
+    // both collection and single-entity GETs once the response is non-2xx.
+
+    [Fact]
+    public async Task ToListAsync_InvalidRawFilter_Throws400WithReadableErrorBody()
+    {
+        var ex = await Assert.ThrowsAsync<ODataClientException>(
+            () => Client.For<Widget>().Filter("Name eq (((").ToListAsync());
+        Assert.Equal(400, ex.StatusCode);
+        Assert.NotEmpty(ex.ODataErrorMessage);
+    }
+
+    [Fact]
+    public async Task GetAsync_ReadsFullEntityBody_AfterHeadersOnlyCompletion()
+    {
+        // A regular successful single-entity GET must still deserialize the full body
+        // even though only headers are guaranteed to have arrived when GetAsync returns.
+        var widget = await Client.For<Widget>().Key(1).GetAsync();
+        Assert.NotNull(widget);
+        Assert.Equal("Sprocket", widget!.Name);
+    }
+
+    [Fact]
+    public async Task FirstOrDefaultAsync_NoMatch_ReturnsNull()
+    {
+        var widget = await Client.For<Widget>()
+            .Filter(x => x.Name == "DoesNotExist")
+            .FirstOrDefaultAsync();
+        Assert.Null(widget);
+    }
+
+    // ── GET $count ──────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task CountAsync_ReturnsTotal()
+    {
+        long count = await Client.For<Widget>().CountAsync();
+        Assert.Equal(2, count);
+    }
+
+    // ── GET single ──────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Key_GetAsync_ExistingKey_ReturnsWidget()
+    {
+        var widget = await Client.For<Widget>().Key(1).GetAsync();
+        Assert.NotNull(widget);
+        Assert.Equal(1, widget!.Id);
+        Assert.Equal("Sprocket", widget.Name);
+    }
+
+    [Fact]
+    public async Task Key_GetAsync_MissingKey_ReturnsNull()
+    {
+        var widget = await Client.For<Widget>().Key(999).GetAsync();
+        Assert.Null(widget);
+    }
+
+    // ── POST ────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task InsertAsync_ReturnsCreatedWidget()
+    {
+        var created = await Client.For<Widget>()
+            .InsertAsync(new Widget { Name = "NewWidget" });
+        Assert.NotNull(created);
+        Assert.True(created!.Id > 0);
+        Assert.Equal("NewWidget", created.Name);
+    }
+
+    // ── PUT ─────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task PutAsync_ReplacesWidget()
+    {
+        var updated = await Client.For<Widget>().Key(1)
+            .PutAsync(new Widget { Id = 1, Name = "Sprocket-Replaced" });
+        Assert.NotNull(updated);
+        Assert.Equal("Sprocket-Replaced", updated!.Name);
+    }
+
+    // ── PATCH ────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task PatchAsync_PartialUpdate()
+    {
+        var patched = await Client.For<Widget>().Key(2)
+            .PatchAsync(new { Name = "Cog-Patched" });
+        Assert.NotNull(patched);
+        Assert.Equal("Cog-Patched", patched!.Name);
+        Assert.Equal(2, patched!.Id);
+    }
+
+    // ── DELETE ──────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task DeleteAsync_ExistingKey_Succeeds()
+    {
+        var created = await Client.For<Widget>()
+            .InsertAsync(new Widget { Name = "ToDelete" });
+        Assert.NotNull(created);
+
+        await Client.For<Widget>().Key(created!.Id).DeleteAsync();
+
+        var after = await Client.For<Widget>().Key(created.Id).GetAsync();
+        Assert.Null(after);
+    }
+
+    // ── PUT/PATCH missing key ────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task PutAsync_MissingKey_ThrowsODataClientExceptionWith404()
+    {
+        var created = await Client.For<Widget>()
+            .InsertAsync(new Widget { Name = "ToDelete" });
+        Assert.NotNull(created);
+        await Client.For<Widget>().Key(created!.Id).DeleteAsync();
+
+        var ex = await Assert.ThrowsAsync<ODataClientException>(
+            () => Client.For<Widget>().Key(created.Id)
+                .PutAsync(new Widget { Id = created.Id, Name = "Ghost" }));
+        Assert.Equal(404, ex.StatusCode);
+    }
+
+    [Fact]
+    public async Task PatchAsync_MissingKey_ThrowsODataClientExceptionWith404()
+    {
+        var created = await Client.For<Widget>()
+            .InsertAsync(new Widget { Name = "ToDelete2" });
+        Assert.NotNull(created);
+        await Client.For<Widget>().Key(created!.Id).DeleteAsync();
+
+        var ex = await Assert.ThrowsAsync<ODataClientException>(
+            () => Client.For<Widget>().Key(created.Id)
+                .PatchAsync(new { Name = "Ghost" }));
+        Assert.Equal(404, ex.StatusCode);
+    }
+
+    // ── Error handling ───────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task DeleteAsync_MissingKey_ThrowsODataClientException()
+    {
+        var ex = await Assert.ThrowsAsync<ODataClientException>(
+            () => Client.For<Widget>().Key(99999).DeleteAsync());
+        Assert.Equal(404, ex.StatusCode);
+    }
+
+    // ── Entity set name convention ───────────────────────────────────────────────
+
+    [Fact]
+    public async Task For_UsesConventionalPluralisation()
+    {
+        // Widget → Widgets — server registers entity set as "Widgets"
+        var widgets = await Client.For<Widget>().ToListAsync();
+        Assert.Equal(2, widgets.Count);
+    }
+
+    // ── C6: ToPageAsync ──────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ToPageAsync_ReturnsBothItemsAndTotalCount()
+    {
+        var page = await Client.For<Widget>().ToPageAsync();
+        Assert.Equal(2, page.Items.Count);
+        Assert.Equal(2L, page.TotalCount);
+    }
+
+    [Fact]
+    public async Task ToPageAsync_WithTop_ItemsSubsetButCountIsTotal()
+    {
+        var page = await Client.For<Widget>().Top(1).ToPageAsync();
+        Assert.Single(page.Items);
+        // Total count reflects all matches, not the page size
+        Assert.Equal(2L, page.TotalCount);
+    }
+
+    [Fact]
+    public async Task IncludeCount_ToListAsync_DoesNotBreak()
+    {
+        // IncludeCount() affects URL but ToListAsync() only reads the value array —
+        // the presence of @odata.count in the response should not cause issues.
+        var items = await Client.For<Widget>().IncludeCount().ToListAsync();
+        Assert.Equal(2, items.Count);
+    }
+
+    // ── AnyAsync ─────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task AnyAsync_NonEmptyCollection_ReturnsTrue()
+    {
+        bool any = await Client.For<Widget>().AnyAsync();
+        Assert.True(any);
+    }
+
+    [Fact]
+    public async Task AnyAsync_NoMatch_ReturnsFalse()
+    {
+        bool any = await Client.For<Widget>()
+            .Filter(x => x.Name == "DoesNotExist")
+            .AnyAsync();
+        Assert.False(any);
+    }
+
+    // ── $orderby execution ───────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task OrderBy_Name_Ascending_ReturnsCogFirst()
+    {
+        var widgets = await Client.For<Widget>().OrderBy(x => x.Name).ToListAsync();
+        Assert.Equal(2, widgets.Count);
+        Assert.Equal("Cog", widgets[0].Name);
+        Assert.Equal("Sprocket", widgets[1].Name);
+    }
+
+    [Fact]
+    public async Task OrderByDescending_Name_ReturnsSprocketFirst()
+    {
+        var widgets = await Client.For<Widget>().OrderByDescending(x => x.Name).ToListAsync();
+        Assert.Equal(2, widgets.Count);
+        Assert.Equal("Sprocket", widgets[0].Name);
+        Assert.Equal("Cog", widgets[1].Name);
+    }
+
+    // ── $select execution ────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Select_SingleProperty_NonSelectedFieldIsDefault()
+    {
+        // $select=Name: server returns only the name field; Id deserialises as 0 (default).
+        var widgets = await Client.For<Widget>().Select(x => x.Name).ToListAsync();
+        Assert.Equal(2, widgets.Count);
+        Assert.All(widgets, w => Assert.Equal(0, w.Id));
+        Assert.Contains(widgets, w => w.Name == "Sprocket");
+        Assert.Contains(widgets, w => w.Name == "Cog");
+    }
+
+    [Fact]
+    public async Task Select_AllProperties_ReturnsFullEntities()
+    {
+        var widgets = await Client.For<Widget>().Select(x => new { x.Id, x.Name }).ToListAsync();
+        Assert.Equal(2, widgets.Count);
+        Assert.All(widgets, w => Assert.True(w.Id > 0));
+    }
+
+    // ── Argument validation ───────────────────────────────────────────────────────
+
+    [Fact]
+    public void OhDataClient_NullBaseAddress_ThrowsArgumentNullException()
+    {
+        Assert.Throws<ArgumentNullException>(() => new OhDataClient((string)null!));
+    }
+
+    [Fact]
+    public void OhDataClient_EmptyBaseAddress_ThrowsArgumentException()
+    {
+        Assert.Throws<ArgumentException>(() => new OhDataClient(""));
+    }
+
+    [Fact]
+    public void Top_Negative_ThrowsArgumentOutOfRangeException()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            Client.For<Widget>().Top(-1));
+    }
+
+    [Fact]
+    public void Skip_Negative_ThrowsArgumentOutOfRangeException()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            Client.For<Widget>().Skip(-1));
+    }
+
+    // ── ToArrayAsync ─────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ToArrayAsync_ReturnsArray()
+    {
+        Widget[] widgets = await Client.For<Widget>().ToArrayAsync();
+        Assert.Equal(2, widgets.Length);
+        Assert.Contains(widgets, w => w.Name == "Sprocket");
+        Assert.Contains(widgets, w => w.Name == "Cog");
+    }
+
+    // ── FirstAsync ───────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task FirstAsync_Throws_WhenEmpty()
+    {
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Client.For<Widget>()
+                .Filter(x => x.Name == "DoesNotExist")
+                .FirstAsync());
+    }
+
+    // ── SingleAsync ──────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task SingleAsync_Throws_WhenEmpty()
+    {
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Client.For<Widget>()
+                .Filter(x => x.Name == "DoesNotExist")
+                .SingleAsync());
+    }
+}
+
+public class NotFoundBehaviorTests : IAsyncDisposable
+{
+    private readonly ClientTestFixture _fixture;
+
+    public NotFoundBehaviorTests()
+    {
+        _fixture = ClientTestFixture.BuildAsync().GetAwaiter().GetResult();
+    }
+
+    public async ValueTask DisposeAsync() => await _fixture.DisposeAsync();
+
+    [Fact]
+    public async Task NotFoundBehavior_ReturnNull_ReturnsNull_OnMissingKey()
+    {
+        // Default behavior: GetAsync returns null on 404.
+        var client = new OhDataClient(_fixture.HttpClient, new OhDataClientOptions
+        {
+            NotFoundBehavior = NotFoundBehavior.ReturnNull
+        });
+        var widget = await client.For<Widget>().Key(999).GetAsync();
+        Assert.Null(widget);
+    }
+
+    [Fact]
+    public async Task NotFoundBehavior_Throw_ThrowsODataClientException_OnMissingKey()
+    {
+        // Opt-in behavior: GetAsync throws ODataClientException with 404 status.
+        var client = new OhDataClient(_fixture.HttpClient, new OhDataClientOptions
+        {
+            NotFoundBehavior = NotFoundBehavior.Throw
+        });
+        var ex = await Assert.ThrowsAsync<ODataClientException>(
+            () => client.For<Widget>().Key(999).GetAsync());
+        Assert.Equal(404, ex.StatusCode);
+    }
+}

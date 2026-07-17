@@ -1,0 +1,26 @@
+services:
+  testbench:
+    build:
+      context: ..
+      dockerfile: src/OhData.TestBench.AspNetCore/Dockerfile
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+    healthcheck:
+      # curl is available in mcr.microsoft.com/dotnet/aspnet; wget is not in the slim image
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  k6:
+    image: grafana/k6:latest
+    depends_on:
+      testbench:
+        condition: service_healthy
+    volumes:
+      - ./k6:/scripts
+      - ./k6/reports:/reports
+    command: run --out json=/reports/results.json /scripts/smoke.js
+    environment:
+      BASE_URL: http://testbench:8080

@@ -1,0 +1,25 @@
+services:
+  testbench:
+    build:
+      context: ..
+      dockerfile: src/OhData.TestBench.AspNetCore/Dockerfile
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+    healthcheck:
+      # curl is available in the aspnet base image used by the TestBench Dockerfile
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+
+  olingo:
+    build:
+      context: olingo
+      dockerfile: Dockerfile
+    depends_on:
+      testbench:
+        condition: service_healthy
+    environment:
+      # Points at the testbench service inside the compose network
+      ODATA_BASE_URL: http://testbench:8080

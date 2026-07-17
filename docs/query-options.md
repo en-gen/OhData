@@ -1,0 +1,407 @@
+# Query Options
+
+OhData supports the OData 4.0 system query options. Which ones are applied depends on the collection handler you choose for the entity set.
+
+## Handler paths
+
+### `GetAll` - simple in-memory path
+
+```csharp
+GetAll = (ct) => Task.FromResult<IEnumerable<Product>>(myList);
+```
+
+Returns all items. The framework does **not** apply `$filter`, `$orderby`, `$skip`, or `$top` to the returned collection - and it does not silently ignore them either. If the client sends any of these, the request is rejected with `400 Bad Request` (`UnsupportedQueryOption`), regardless of the capability flags. `$select`, `$expand`, `$count`, and `$search` (when a `Search` handler is configured) are still honored on this path - but each is gated by its capability flag (`SelectEnabled`/`ExpandEnabled`/`CountEnabled`), exactly like the `GetQueryable` path: sending a disabled option returns `400` (`UnsupportedQueryOption`). Use `GetAll` when your data source is small and in-memory, or when you want complete control over what is returned.
+
+### `GetODataQueryable` - full OData pushdown (advanced)
+
+```csharp
+GetODataQueryable = (opts, ct) => ...
+```
+
+The profile receives the raw `ODataQueryOptions<TModel>` and is responsible for applying them to the data source. The capability flags and property allowlists are still enforced by the framework **before** the handler runs: a disabled option present in the request returns `400` (`UnsupportedQueryOption`) and a non-allowlisted property returns `400` (`InvalidQueryOption`) without invoking the handler. Use this when:
+
+- You need full control over how query options are translated (e.g. custom SQL, Dapper, a remote API).
+- You want to apply paging yourself and return the pre-paging total count alongside the results.
+
+Return an `ODataQueryResult<TModel>` to supply paging metadata:
+
+```csharp
+GetODataQueryable = async (opts, ct) =>
+{
+    // Apply filtering, ordering, paging - however your data source requires.
+    var (items, totalCount) = await myDataSource.QueryAsync(opts, ct);
+
+    return new ODataQueryResult<TModel>
+    {
+        Items = items.AsQueryable(),
+        TotalCount = totalCount,   // pre-paging count; used for $count=true
+        NextLink = ...,            // optional; emitted as @odata.nextLink
+    };
+};
+```
+
+`ODataQueryResult<TModel>` properties:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `Items` | `IQueryable<TModel>` | The (paged) item sequence to materialise. |
+| `TotalCount` | `long?` | Pre-paging total count. Used as `@odata.count` in the response when `$count=true` is requested. Leave `null` to fall back to the length of `Items`. |
+| `NextLink` | `string?` | When set, emitted as `@odata.nextLink` in the response envelope, taking priority over any framework-computed next link. Use this for cursor- or token-based pagination. |
+
+The framework does not prescribe how `items` or `totalCount` are obtained. That is entirely up to the profile. Some data sources support retrieving both in a single operation (window functions, `COUNT(*) OVER()`); others require two separate requests. Either approach satisfies the contract — the framework only requires that `TotalCount` reflect the number of matching records **before** paging was applied.
+
+If `TotalCount` is not set and the client sends `$count=true`, the count in the response will reflect only the current page size, which is incorrect per the OData spec. Prefer always supplying `TotalCount` when using this handler.
+
+> **Note:** `GetODataQueryable` is available on `ODataEntitySetProfile<TKey, TModel>`, not the base `EntitySetProfile<TKey, TModel>`. It requires the `OhData.AspNetCore` package. An `IQueryable<TModel>` is implicitly convertible to `ODataQueryResult<TModel>` for backward compatibility with handlers that return a bare queryable.
+
+### `GetQueryable` - IQueryable with pushdown (recommended for databases)
+
+```csharp
+GetQueryable = (_) => Task.FromResult(db.Products.AsQueryable());
+```
+
+Returns a base `IQueryable<TModel>`. The framework applies `$filter`, `$orderby`, `$skip`, and `$top` via `ApplyTo(IQueryable)`. With EF Core these become SQL clauses - only matching rows are fetched.
+
+Enable the query capabilities you want to expose:
+
+```csharp
+public class ProductProfile : EntitySetProfile<int, Product>
+{
+    public ProductProfile(AppDbContext db) : base(x => x.Id)
+    {
+        FilterEnabled  = true;   // allow $filter
+        OrderByEnabled = true;   // allow $orderby
+        CountEnabled   = true;   // allow $count
+        SelectEnabled  = true;   // allow $select
+        ExpandEnabled  = true;   // allow $expand
+
+        GetQueryable = (_) => Task.FromResult(db.Products.AsQueryable());
+    }
+}
+```
+
+Any disabled capability returns `400 Bad Request` (`UnsupportedQueryOption`, with a message naming the option and the flag that enables it) if the client sends that query option. **All capability flags default to `false`** (inheriting from `EntitySetDefaults`) - an entity set accepts no query options until you opt in.
+
+The single-entity route `GET /Products(1)` honors the same gates for the options it supports: `$select` requires `SelectEnabled` and `$expand` requires `ExpandEnabled`. When `ExpandEnabled` is on, `$expand` on the single-entity route inlines the requested navigation properties using the same navigation-route handlers (batch handlers included) as the collection route.
+
+### Production pattern: `IDbContextFactory`
+
+Profiles are singletons, so a scoped `DbContext` cannot be injected directly. Use `IDbContextFactory<T>`:
+
+```csharp
+public class ProductProfile : EntitySetProfile<int, Product>
+{
+    public ProductProfile(IDbContextFactory<AppDbContext> factory) : base(x => x.Id)
+    {
+        FilterEnabled  = true;
+        OrderByEnabled = true;
+
+        GetQueryable = async (_) =>
+        {
+            var db = await factory.CreateDbContextAsync();
+            return db.Products.AsQueryable();
+        };
+    }
+}
+
+// Registration:
+builder.Services.AddDbContextFactory<AppDbContext>(o => o.UseSqlServer(connectionString));
+```
+
+---
+
+## `$filter`
+
+Enabled via `FilterEnabled = true`. Supports comparison operators (`eq`, `ne`, `gt`, `ge`, `lt`, `le`), logical operators (`and`, `or`, `not`), arithmetic, string functions (`contains`, `startswith`, `endswith`, `tolower`, `toupper`, `trim`), date functions, and more.
+
+```
+GET /odata/Products?$filter=Price gt 10 and contains(Name,'Widget')
+GET /odata/Products?$filter=year(CreatedAt) eq 2024
+```
+
+Restrict which properties may appear in `$filter`:
+
+```csharp
+FilterProperties(x => x.Price, x => x.Name, x => x.Category);
+// or string overload:
+FilterProperties("Price", "Name", "Category");
+```
+
+A `$filter` referencing a property outside the allowlist returns `400 Bad Request`
+(`InvalidQueryOption`, "The property 'X' cannot be used in the $filter query option.").
+
+`FilterProperties` restricts this entity's own structural properties only; it never restricts
+a path through a navigation property. `$filter=Lines/any(l: l/Quantity gt 1)` is unaffected by
+`Orders`' own `FilterProperties` allowlist (or the lack of one) because navigation-target types
+(`OrderLine` here) have no allowlist surface of their own - only `FilterProperties` on the
+navigated-to entity set's own profile (if it has one) governs its properties.
+
+### `round()` midpoint rounding
+
+OData Part 2 §5.1.1.9 specifies that the `round()` canonical function rounds a midpoint value
+*away from zero* (`2.5 → 3`, `-2.5 → -3`). Microsoft.OData's `ApplyTo` binder instead emits
+.NET's single-argument `Math.Round(double)`/`Math.Round(decimal)`, which default to
+*round-half-to-even* ("banker's rounding": `2.5 → 2`). On the `GetQueryable` path (and its
+`$count` companion), OhData rewrites those calls in the post-`ApplyTo` expression tree to the
+two-argument `Math.Round(value, MidpointRounding.AwayFromZero)` overload, so `round()` matches
+the spec by default:
+
+```
+GET /odata/Products?$filter=round(Price) eq 3
+```
+
+Control this via the `RoundingMode` setting (`RoundingMode.SpecCompliant`, the default, or
+`RoundingMode.BankersRounding`), inheriting from `EntitySetDefaults.RoundingMode` the same way
+`PropertyAccessEnabled`/`AllowDeepInsert` do:
+
+```csharp
+// Per profile - opt back into .NET's pre-fix banker's rounding:
+RoundingMode = RoundingMode.BankersRounding;
+
+// Or globally across all profiles in the registration:
+builder.Services.AddOhData(o => o
+    .WithDefaults(d => d.RoundingMode = RoundingMode.BankersRounding)
+    .AddProfile<ProductProfile>());
+```
+
+**Provider-translation caveat:** the two-argument `Math.Round(value, MidpointRounding)` overload
+is not translatable by every EF Core provider - a query using `round()` that worked before this
+fix may throw a translation exception against your provider. If that happens, set
+`RoundingMode = BankersRounding` on the affected profile (or globally) to fall back to the
+single-argument overload that provider could already translate; this restores the pre-fix
+(banker's rounding) behavior and documents the spec deviation locally. EF Core InMemory (used in
+this repo's test suite) is LINQ-to-Objects and is unaffected either way.
+
+**Coverage note:** this rewrite only reaches the base-class `GetQueryable` path, where the
+framework itself calls `ApplyTo`. On the Priority-1 `ODataEntitySetProfile.GetODataQueryable`
+path the profile calls `ApplyTo` itself inside its own handler, so `RoundingMode` does not
+automatically apply there - a profile using that path must apply the same rewrite itself if it
+wants spec-compliant `round()` semantics.
+
+---
+
+## `$orderby`
+
+Enabled via `OrderByEnabled = true`. Supports multiple sort keys, ascending (`asc`, default) and descending (`desc`).
+
+```
+GET /odata/Products?$orderby=Category asc,Price desc
+```
+
+Restrict which properties may be sorted on:
+
+```csharp
+OrderByProperties(x => x.Price, x => x.Name);
+```
+
+Sorting on a property outside the allowlist returns `400 Bad Request` (`InvalidQueryOption`).
+As with `FilterProperties`, this only restricts the entity's own structural properties -
+`$orderby=Category/Name` (a path through a navigation property) is unaffected.
+
+---
+
+## `$top` and `$skip`
+
+Limit and offset the result set. On the `GetQueryable` path these become SQL `LIMIT`/`OFFSET`.
+
+```
+GET /odata/Products?$top=20&$skip=40
+```
+
+Cap the maximum `$top` value server-side:
+
+```csharp
+// Per profile:
+MaxTop = 100;
+
+// Or globally across all profiles in the registration:
+builder.Services.AddOhData(o => o
+    .WithDefaults(d => d.MaxTop = 500)
+    .AddProfile<ProductProfile>());
+```
+
+**`MaxTop` defaults to `1000`** (`EntitySetDefaults.MaxTop`) when not overridden per-profile or globally - server-side paging is always active on the `GetQueryable`/Priority-1 paths, even if you never configure it explicitly.
+
+Requests with `$top` exceeding `MaxTop` receive `400 Bad Request`.
+
+`Prefer: maxpagesize` (see the [`Prefer` header docs](spec-compliance.md#prefer-header)) is capped at `MaxTop` when `$top` is absent: the honored page size is `min(maxpagesize, MaxTop)`. A client cannot use `maxpagesize` to request a page larger than `MaxTop` - it can only ask for a *smaller* page. `Preference-Applied` always echoes the page size actually honored (the clamped value), not the value the client asked for, per §8.2.8.7.
+
+---
+
+## `$count`
+
+Enabled via `CountEnabled = true`. Two forms:
+
+**Inline count** - embed the total (pre-pagination) count in the collection envelope:
+
+```
+GET /odata/Products?$count=true
+```
+
+```json
+{
+  "@odata.context": "https://host/odata/$metadata#Products",
+  "@odata.count": 1234,
+  "value": [...]
+}
+```
+
+**Standalone count** - returns a plain integer, `$filter` is applied if present:
+
+```
+GET /odata/Products/$count
+GET /odata/Products/$count?$filter=Price gt 10
+```
+
+Gating: the **inline** form (`$count=true`) is gated by `CountEnabled`. The **standalone**
+`/$count` route is always registered when a collection handler exists (it is an addressable
+resource, not a query option) - on that route only `$filter` is gated, by `FilterEnabled`
+(and the `FilterProperties` allowlist).
+
+Behaviour depends on the handler path:
+
+| Handler | `$count=true` behaviour |
+|---|---|
+| `GetODataQueryable` | Uses `TotalCount` from `ODataQueryResult<TModel>`. If not supplied, falls back to the current page size - **incorrect per spec**. Always set `TotalCount` on this path. |
+| `GetQueryable` | Framework runs a second `COUNT(*)` query against the `IQueryable` before paging is applied. |
+| `GetAll` | Full collection is enumerated and counted. |
+
+---
+
+## `$select`
+
+Enabled via `SelectEnabled = true`. Reduces the response payload to the specified properties:
+
+```
+GET /odata/Products?$select=Id,Name,Price
+```
+
+The framework fetches the full entity from the data source and removes unselected properties from the JSON response. SQL-level column projection is not currently performed.
+
+Restrict which properties may be selected:
+
+```csharp
+SelectProperties(x => x.Id, x => x.Name, x => x.Price);
+```
+
+Selecting a property outside the allowlist returns `400 Bad Request` (`InvalidQueryOption`).
+
+---
+
+## `$expand`
+
+Enabled via `ExpandEnabled = true`. Embeds related entities inline in the parent response:
+
+```
+GET /odata/Orders?$expand=Lines
+GET /odata/Orders?$expand=Lines($select=ProductName,Quantity)
+GET /odata/Orders?$expand=Lines,Customer
+GET /odata/Orders(3f2a...)?$expand=Lines        ← single-entity route too
+```
+
+`$expand` does **not** use EF Core's `Include()` or push the join into SQL. Instead, for each requested navigation property the framework invokes a registered navigation route handler. This is a generic mechanism with no EF Core dependency, and it behaves identically on the `GetQueryable`, `GetAll`, and Priority-1 (`IODataEntitySetEndpointSource`) paths. See [navigation-routing.md](navigation-routing.md) for details.
+
+There are two ways to register the handler, and they have very different `$expand` performance:
+
+- **Per-entity (`getAll`/`get`)** - invoked once per parent entity per expanded property. For a
+  page of *N* items with *P* expanded properties, that's *N×P* sequential awaited calls (an N+1
+  query pattern when the handler hits a database). Simple to write; fine for small pages or
+  handlers with no per-call cost.
+- **Batch (`batchGetAll`/`batchGet`)** - invoked **once per expanded property per page**,
+  receiving every parent key on the page at once. *N×P* collapses to *P*. This is the
+  recommended form for EF Core-backed handlers.
+
+Navigation properties must be declared in the profile:
+
+```csharp
+public class OrderProfile : EntitySetProfile<Guid, Order>
+{
+    public OrderProfile(AppDbContext db) : base(x => x.Id)
+    {
+        ExpandEnabled = true;
+
+        // Batch form: ONE query loads every order's lines for the whole page.
+        HasMany(x => x.Lines, batchGetAll: async (orderIds, ct) =>
+        {
+            var lines = await db.OrderLines.Where(l => orderIds.Contains(l.OrderId)).ToListAsync(ct);
+            return lines.ToLookup(l => l.OrderId);
+        });
+
+        // Per-entity form: one query PER order (N+1 under $expand).
+        HasOptional(x => x.Customer,
+            get: (orderId, ct) => Task.FromResult(db.Customers.Find(orderId)));
+
+        GetQueryable = (_) => Task.FromResult(db.Orders.AsQueryable());
+    }
+}
+```
+
+`HasMany`'s batch overload returns an `ILookup<TKey, TNavigation>` (e.g. via `.ToLookup(...)`); `HasOptional`/`HasRequired`'s batch overloads return an `IReadOnlyDictionary<TKey, TNavigation?>`/`IReadOnlyDictionary<TKey, TNavigation>`. A parent key missing from the result is treated as "no children" (`[]`) for a collection nav, or "no related entity" (`null`) for a single-valued nav.
+
+Registering only the batch overload is enough - the framework auto-derives a single-key handler from it, so the standalone `GET /Orders(id)/Lines` route, nav `$count`, and `$ref` endpoints all keep working without writing a second handler. You may still register both explicitly (e.g. if the single-key path warrants a different query shape), in which case the per-entity handler you supply is used for those standalone routes and the batch handler is used only for `$expand`.
+
+`$expand` requires a navigation route handler (batch or per-entity - the same one used for the standalone `GET /Orders(id)/Lines` route) to be registered - a navigation property declared with `HasMany(x => x.Lines)` alone (no handler) is visible in `$metadata` but is silently skipped when a client tries to `$expand` it.
+
+Restrict which navigation properties may be expanded:
+
+```csharp
+ExpandProperties(x => x.Lines, x => x.Customer);
+```
+
+Expanding a navigation property outside the allowlist returns `400 Bad Request` (`InvalidQueryOption`).
+
+To also expose navigation as a standalone HTTP route (`GET /Orders(id)/Lines`), provide a handler to `HasMany` - see [navigation-routing.md](navigation-routing.md).
+
+---
+
+## `$search`
+
+Register a `Search` handler to support free-text search:
+
+```csharp
+Search = (term, ct) => Task.FromResult<IEnumerable<Product>>(
+    db.Products
+      .Where(p => p.Name.Contains(term) || p.Description.Contains(term))
+      .ToList());
+```
+
+```
+GET /odata/Products?$search=widget
+```
+
+Without a `Search` handler, `$search` requests return `400 Bad Request` (`UnsupportedQueryOption`). The interpretation of the search term is entirely up to the handler.
+
+On the `GetQueryable` and `GetAll` paths, `$search` composes with the other query options: the handler's results become the base sequence, and `$filter`, `$orderby`, `$top`, and `$skip` are then applied on top of the search results (in that order).
+
+---
+
+## `$skiptoken` (server-driven paging)
+
+When a response includes `@odata.nextLink` (emitted once the page size reaches `MaxTop` or the client-requested `maxpagesize`), the link contains a `$skiptoken` value:
+
+```
+GET /odata/Products?$top=20
+→ "@odata.nextLink": "https://host/odata/Products?$top=20&$skiptoken=MjA="
+```
+
+**`$skiptoken` is a Base64-encoded raw 4-byte little-endian integer - the literal skip offset - not an opaque or cryptographically-protected cursor.** A client (or anyone who intercepts a link) can trivially decode, predict, or forge a token to jump to an arbitrary offset; it provides no more protection than sending `$skip` directly. Don't rely on it to gate access to specific pages or ranges of data - apply authorization/filtering in the handler itself if that matters.
+
+A malformed or corrupted `$skiptoken` (wrong length, invalid Base64) returns `400 Bad Request` (`InvalidSkipToken`). If both `$skip` and `$skiptoken` are present, `$skip` takes precedence.
+
+---
+
+## Error responses
+
+Invalid or disabled query options return `400 Bad Request` with an OData error body. A disabled
+capability flag produces `UnsupportedQueryOption`:
+
+```json
+{ "error": { "code": "UnsupportedQueryOption", "message": "This resource does not support $filter. Set FilterEnabled = true on the profile (or the corresponding EntitySetDefaults property) to enable it." } }
+```
+
+A syntactically invalid option, an unknown property, or a property outside a configured
+allowlist produces `InvalidQueryOption`:
+
+```json
+{ "error": { "code": "InvalidQueryOption", "message": "The property 'Id' cannot be used in the $filter query option." } }
+```

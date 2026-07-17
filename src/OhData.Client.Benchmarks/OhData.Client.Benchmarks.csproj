@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Benchmark projects do not require XML documentation comments -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" Version="0.15.*" />
+    <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.*" />
+    <PackageReference Include="Microsoft.OData.Client" Version="8.*" />
+    <PackageReference Include="Microsoft.OData.ModelBuilder" Version="2.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OhData.Client\OhData.Client.csproj" />
+    <ProjectReference Include="..\OhData.AspNetCore\OhData.AspNetCore.csproj" />
+  </ItemGroup>
+
+</Project>

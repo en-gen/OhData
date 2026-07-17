@@ -1,0 +1,35 @@
+workflow: GitFlow/v1
+mode: ContinuousDelivery
+assembly-versioning-scheme: MajorMinorPatch
+tag-prefix: v
+
+branches:
+  main:
+    regex: ^main$
+    is-release-branch: true
+    label: ''
+  develop:
+    regex: ^develop$
+    label: alpha
+    increment: Minor
+  feature:
+    regex: ^(story|feature)[/-]
+    label: '{BranchName}'
+    increment: Inherit
+  bugfix:
+    regex: ^bug[/-]
+    label: '{BranchName}'
+    increment: Patch
+  release:
+    regex: ^release[/-]
+    label: rc
+    increment: None
+    is-release-branch: true
+  hotfix:
+    regex: ^hotfix[/-]
+    label: hotfix
+    increment: Patch
+  pull-request:
+    regex: ^(pull|pr)[/-]
+    label: pr
+    increment: Inherit
