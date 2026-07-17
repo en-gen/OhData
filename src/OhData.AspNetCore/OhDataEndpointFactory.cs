@@ -805,7 +805,9 @@ internal static class OhDataEndpointFactory
         AllowedArithmeticOperators = AllowedArithmeticOperators.All,
         AllowedFunctions = AllowedFunctions.AllFunctions,
         AllowedLogicalOperators = AllowedLogicalOperators.All,
-        MaxExpansionDepth = 0, // 0 disables the expansion-depth check entirely (per XML doc).
+        MaxExpansionDepth = 0, // 0 disables the settings-level expansion-depth check entirely (per
+                               // XML doc); the model-bound Expand(maxDepth,...) config governs how
+                               // deep a nested $expand may go (raised for #183 — see EntitySetProfile).
         MaxAnyAllExpressionDepth = 1000,
         MaxNodeCount = 10000,
         MaxOrderByNodeCount = 1000,
@@ -890,6 +892,8 @@ internal static class OhDataEndpointFactory
         IEntitySetEndpointSource requestSource,
         JsonSerializerOptions? jsonOptions,
         IEdmEntityType? rootEdmType,
+        OhDataRegistration registration,
+        IServiceProvider requestServices,
         CancellationToken ct)
     {
         // Stage 1: Serialize once using the configured naming policy.
@@ -902,85 +906,32 @@ internal static class OhDataEndpointFactory
             InjectETagsIntoJsonArray(json, originalItems, requestSource);
         }
 
-        // Stage 3: Inject expanded nav properties (if $expand requested).
-        if (options.SelectExpand?.SelectExpandClause is not null)
+        // Stage 3: Inject expanded nav properties (if $expand requested), including NESTED
+        // $expand/$select clauses (issue #183, OData §11.2.4.2). Delegated to the recursive
+        // ExpandLevelAsync so a single, uniform routine handles the root level and every deeper
+        // level: $expand=Studio($expand=Movies) loads Movies on each expanded Studio, and nested
+        // $select inside an $expand projects the related entities. Root-level $select is still
+        // applied by Stage 4 below (it also needs to return the selected-property list for the
+        // projected context URL); ExpandLevelAsync applies each deeper level's own $select.
+        if (options.SelectExpand?.SelectExpandClause is { } rootClause &&
+            rootClause.SelectedItems.OfType<ExpandedNavigationSelectItem>().Any())
         {
-            var expandedProps = options.SelectExpand.SelectExpandClause.SelectedItems
-                .OfType<ExpandedNavigationSelectItem>()
-                .Select(e => e.PathToNavigationProperty.FirstSegment.Identifier)
-                .ToList();
-
-            if (expandedProps.Count > 0)
+            // Pair each root CLR entity with its serialised JsonObject (same index/order). The
+            // ETag reorder above replaces json[i] in place, so the parallelism still holds.
+            var rootItems = new List<object>(originalItems.Length);
+            var rootObjects = new List<JsonObject>(originalItems.Length);
+            for (int i = 0; i < originalItems.Length; i++)
             {
-                // Cache the key PropertyInfo once outside the inner loop (M-3 perf fix).
-                PropertyInfo? cachedKeyProp = originalItems.Length > 0
-                    ? originalItems[0].GetType().GetProperty(source.KeyPropertyName, BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance)
-                    : null;
-
-                foreach (string? propName in expandedProps)
+                if (json[i] is JsonObject o)
                 {
-                    // Use requestSource for nav route handlers — they capture scoped dependencies.
-                    var navRoute = requestSource.NavigationRoutes.FirstOrDefault(n =>
-                        string.Equals(n.PropertyName, propName, StringComparison.OrdinalIgnoreCase));
-                    if (navRoute is null) continue;
-
-                    // Derive the expand key the same way the serializer named the parent's
-                    // property: honor a per-property [JsonPropertyName] rename first (#184), then
-                    // fall back to the naming policy (e.g. "children" for camelCase, "Children" for
-                    // PascalCase). Must agree with OmitUnexpandedNavigations' key so Stage 3.5 keeps
-                    // (not strips) the expansion this stage just injected.
-                    PropertyInfo? expandClrProp = source.ModelType.GetProperty(
-                        propName, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
-                    string expandKey = ResolveNavigationJsonKey(propName, expandClrProp, serializerOptions);
-
-                    if (navRoute.BatchHandler is not null)
-                    {
-                        // Batch path (M-1 fix): collect the page's parent keys once and invoke
-                        // the batch loader a single time for this property, instead of once per
-                        // parent entity. Reduces N×P sequential awaits to P.
-                        List<object> keys = new List<object>(originalItems.Length);
-                        object?[] keyByIndex = new object?[originalItems.Length];
-                        for (int i = 0; i < originalItems.Length; i++)
-                        {
-                            object? keyVal = cachedKeyProp?.GetValue(originalItems[i]);
-                            keyByIndex[i] = keyVal;
-                            if (keyVal is not null) keys.Add(keyVal);
-                        }
-
-                        IReadOnlyDictionary<object, object?> map = await navRoute.BatchHandler(keys, ct);
-                        for (int i = 0; i < originalItems.Length; i++)
-                        {
-                            if (json[i] is not JsonObject obj) continue;
-                            // A missing key means "no children found" for a collection nav
-                            // (serializes to []) or "no related entity" for a single nav
-                            // (serializes to null) — same defaults the per-entity fallback
-                            // produces for an empty IEnumerable / null result.
-                            object? related = keyByIndex[i] is { } k && map.TryGetValue(k, out object? v)
-                                ? v
-                                : (navRoute.IsCollection ? Array.Empty<object>() : null);
-                            obj[expandKey] = related is null
-                                ? null
-                                : JsonSerializer.SerializeToNode(related, serializerOptions);
-                        }
-                    }
-                    else
-                    {
-                        // Fallback: sequential per-entity handler calls (unchanged behavior).
-                        for (int i = 0; i < originalItems.Length; i++)
-                        {
-                            if (cachedKeyProp?.GetValue(originalItems[i]) is not { } keyVal) continue;
-
-                            object? related = await navRoute.Handler(keyVal, ct);
-                            if (json[i] is JsonObject obj)
-                            {
-                                obj[expandKey] = related is null
-                                    ? null
-                                    : JsonSerializer.SerializeToNode(related, serializerOptions);
-                            }
-                        }
-                    }
+                    rootItems.Add(originalItems[i]);
+                    rootObjects.Add(o);
                 }
             }
+
+            await ExpandLevelAsync(
+                rootItems, rootObjects, rootClause, requestSource, rootEdmType,
+                registration, requestServices, serializerOptions, depth: 1, ct);
         }
 
         // Stage 3.5: Omit navigation properties that were not $expand'd (issue #176).
@@ -993,26 +944,228 @@ internal static class OhDataEndpointFactory
         // injected expansions are present, and before Stage 4 so $select still has final say.
         OmitUnexpandedNavigations(json, rootEdmType, options.SelectExpand?.SelectExpandClause, source.ModelType, serializerOptions);
 
-        // Stage 4: Strip unselected properties (if $select requested).
+        // Stage 4: Strip unselected properties at the ROOT level (if $select requested). Deeper
+        // levels have already had their own $select applied by ExpandLevelAsync in Stage 3.
         List<string>? selectedProps = null;
         if (options.SelectExpand?.SelectExpandClause is not null)
         {
             selectedProps = ExtractSelectedProperties(options.SelectExpand.SelectExpandClause);
             if (selectedProps is not null)
             {
-                foreach (JsonObject obj in json.OfType<JsonObject>())
-                {
-                    var toRemove = obj.Select(p => p.Key)
-                                     // OData annotations (e.g. @odata.etag) are metadata and must survive $select.
-                                     .Where(k => !k.StartsWith("@", StringComparison.Ordinal) &&
-                                                 !selectedProps.Contains(k, StringComparer.OrdinalIgnoreCase))
-                                     .ToList();
-                    foreach (string? key in toRemove) obj.Remove(key);
-                }
+                StripToSelectedProperties(json.OfType<JsonObject>(), selectedProps);
             }
         }
 
         return (json, selectedProps);
+    }
+
+    // Removes every property not in <paramref name="selectedProps"/> from each object, leaving
+    // OData annotations (keys starting with '@', e.g. @odata.etag) untouched — they are metadata
+    // and must survive $select. Shared by the root-level Stage-4 strip and the per-level nested
+    // $select strip in ExpandLevelAsync so casing and annotation handling stay identical.
+    private static void StripToSelectedProperties(IEnumerable<JsonObject> objects, List<string> selectedProps)
+    {
+        foreach (JsonObject obj in objects)
+        {
+            var toRemove = obj.Select(p => p.Key)
+                             .Where(k => !k.StartsWith("@", StringComparison.Ordinal) &&
+                                         !selectedProps.Contains(k, StringComparer.OrdinalIgnoreCase))
+                             .ToList();
+            foreach (string? key in toRemove) obj.Remove(key);
+        }
+    }
+
+    // Deepest nesting level ExpandLevelAsync will follow. The clause tree the OData parser builds
+    // is already finite (bounded by the depth the client actually wrote in $expand), so this is
+    // not needed for correctness on well-formed requests — it is a guard against a pathological /
+    // adversarial request that nests $expand extremely deep (§11.2.4.2 places no hard cap, and
+    // this framework disables Microsoft's MaxExpansionDepth validator). Beyond this depth the
+    // deeper related entities are simply not loaded.
+    internal const int MaxNestedExpandDepth = 12;
+
+    // Issue #183 / OData §11.2.4.2: recursively inject $expand'd navigation properties for one
+    // level of a page of entities, then descend into each expanded navigation's own nested
+    // $expand/$select clause. <paramref name="items"/> are the CLR entities at this level and
+    // <paramref name="jsonItems"/> their already-serialised JsonObjects (parallel, same order);
+    // mutations to jsonItems are what end up in the response. <paramref name="levelSource"/> is the
+    // request-scoped endpoint source whose NavigationRoutes cover this level's entity type, and
+    // <paramref name="levelEdmType"/> is that type in the EDM (used to resolve nested targets).
+    //
+    // Batching mirrors the top-level strategy per level: when a navigation exposes a BatchHandler
+    // it is invoked once for the whole flattened set of entities at this level; otherwise the
+    // per-entity Handler is called once per entity (N+1 within that one property). Nested levels
+    // flatten every related entity across the page into a single set before recursing, so a
+    // batch-capable navigation is still batched once per level rather than once per parent.
+    private static async Task ExpandLevelAsync(
+        IReadOnlyList<object> items,
+        IReadOnlyList<JsonObject> jsonItems,
+        SelectExpandClause clause,
+        IEntitySetEndpointSource levelSource,
+        IEdmEntityType? levelEdmType,
+        OhDataRegistration registration,
+        IServiceProvider requestServices,
+        JsonSerializerOptions serializerOptions,
+        int depth,
+        CancellationToken ct)
+    {
+        if (items.Count == 0 || depth > MaxNestedExpandDepth) return;
+
+        // Cache the key PropertyInfo once per level (M-3 perf parity with the old inline loop).
+        PropertyInfo? keyProp = items[0].GetType()
+            .GetProperty(levelSource.KeyPropertyName, BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance);
+
+        foreach (ExpandedNavigationSelectItem expandItem in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
+        {
+            string propName = expandItem.PathToNavigationProperty.FirstSegment.Identifier;
+            NavigationRouteDefinition? navRoute = levelSource.NavigationRoutes.FirstOrDefault(n =>
+                string.Equals(n.PropertyName, propName, StringComparison.OrdinalIgnoreCase));
+            if (navRoute is null) continue; // no handler registered for this navigation — cannot load it
+
+            // Derive the expand key the way the serializer named the parent's property: honor a
+            // per-property [JsonPropertyName] rename first (#184), then fall back to the naming
+            // policy ("children" for camelCase, "Children" for PascalCase). Resolved off the actual
+            // runtime entity type at this level. Must agree with OmitUnexpandedNavigations' key so
+            // Stage 3.5 keeps (not strips) the expansion this injects.
+            PropertyInfo? expandClrProp = items[0].GetType().GetProperty(
+                propName, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+            string expandKey = ResolveNavigationJsonKey(propName, expandClrProp, serializerOptions);
+
+            // Load the related entity/collection for every entity at this level, keeping the CLR
+            // results (relatedByIndex[i]) so deeper levels can read their keys.
+            object?[] relatedByIndex = new object?[items.Count];
+            if (navRoute.BatchHandler is not null)
+            {
+                var keys = new List<object>(items.Count);
+                object?[] keyByIndex = new object?[items.Count];
+                for (int i = 0; i < items.Count; i++)
+                {
+                    object? keyVal = keyProp?.GetValue(items[i]);
+                    keyByIndex[i] = keyVal;
+                    if (keyVal is not null) keys.Add(keyVal);
+                }
+
+                IReadOnlyDictionary<object, object?> map = await navRoute.BatchHandler(keys, ct);
+                for (int i = 0; i < items.Count; i++)
+                {
+                    // A missing key means "no children" (collection → []) or "no related entity"
+                    // (single → null), matching the per-entity fallback's empty/null defaults.
+                    relatedByIndex[i] = keyByIndex[i] is { } k && map.TryGetValue(k, out object? v)
+                        ? v
+                        : (navRoute.IsCollection ? Array.Empty<object>() : null);
+                }
+            }
+            else
+            {
+                for (int i = 0; i < items.Count; i++)
+                {
+                    relatedByIndex[i] = keyProp?.GetValue(items[i]) is { } keyVal
+                        ? await navRoute.Handler(keyVal, ct)
+                        : (navRoute.IsCollection ? Array.Empty<object>() : null);
+                }
+            }
+
+            // Inject the serialised related value onto each parent JsonObject.
+            for (int i = 0; i < items.Count; i++)
+            {
+                jsonItems[i][expandKey] = relatedByIndex[i] is null
+                    ? null
+                    : JsonSerializer.SerializeToNode(relatedByIndex[i], serializerOptions);
+            }
+
+            SelectExpandClause? nestedClause = expandItem.SelectAndExpand;
+            if (nestedClause is null) continue;
+
+            bool hasNestedExpand = nestedClause.SelectedItems.OfType<ExpandedNavigationSelectItem>().Any();
+            bool hasNestedSelect = !nestedClause.AllSelected;
+            if (!hasNestedExpand && !hasNestedSelect) continue;
+
+            // Flatten every related entity across the whole page into one (CLR, JsonObject) set so
+            // a deeper batch navigation is invoked once per level, and nested $select is applied to
+            // all of them in one pass.
+            var childItems = new List<object>();
+            var childObjects = new List<JsonObject>();
+            for (int i = 0; i < items.Count; i++)
+            {
+                object? related = relatedByIndex[i];
+                JsonNode? node = jsonItems[i][expandKey];
+                if (navRoute.IsCollection)
+                {
+                    if (related is System.Collections.IEnumerable seq && node is JsonArray arr)
+                    {
+                        int j = 0;
+                        foreach (object? elem in seq)
+                        {
+                            if (elem is not null && j < arr.Count && arr[j] is JsonObject childObj)
+                            {
+                                childItems.Add(elem);
+                                childObjects.Add(childObj);
+                            }
+                            j++;
+                        }
+                    }
+                }
+                else if (related is not null && node is JsonObject childObj)
+                {
+                    childItems.Add(related);
+                    childObjects.Add(childObj);
+                }
+            }
+
+            if (childItems.Count == 0) continue;
+
+            if (hasNestedExpand)
+            {
+                // Resolve the navigation target's entity set (its own NavigationRoutes drive the
+                // next level) and its request-scoped source (nav handlers may capture scoped
+                // dependencies such as a DbContext). Resolution is by EDM entity type rather than
+                // NavigationSource so it works whether or not an explicit nav-source binding exists.
+                IEdmEntityType? targetEdmType =
+                    (expandItem.PathToNavigationProperty.FirstSegment as NavigationPropertySegment)?.NavigationProperty?.ToEntityType();
+                IEntitySetEndpointSource? targetSource = ResolveRequestSourceForEdmType(targetEdmType, registration, requestServices);
+
+                if (targetSource is not null && targetEdmType is not null)
+                {
+                    await ExpandLevelAsync(
+                        childItems, childObjects, nestedClause, targetSource, targetEdmType,
+                        registration, requestServices, serializerOptions, depth + 1, ct);
+                }
+                // If the target set is not registered (no source), the deeper expansion cannot be
+                // loaded here; Stage 3.5's OmitUnexpandedNavigations still keeps the (empty) nav per
+                // the clause, mirroring the pre-#183 limitation for unregistered navigation targets.
+            }
+
+            // Apply this navigation's nested $select to the just-injected children (reuses the
+            // root-level strip so casing / annotation handling are identical). Runs after the
+            // deeper recursion so nested $expand keeps final say over what data is present, and
+            // ExtractSelectedProperties preserves expanded nav names so they survive projection.
+            if (hasNestedSelect)
+            {
+                List<string>? nestedSelected = ExtractSelectedProperties(nestedClause);
+                if (nestedSelected is not null) StripToSelectedProperties(childObjects, nestedSelected);
+            }
+        }
+    }
+
+    // Finds the request-scoped endpoint source for a navigation target EDM entity type by matching
+    // it to a registered profile's entity set, then resolving that profile from the request scope
+    // (profiles are registered AddScoped). Returns null when no profile owns an entity set of that
+    // type — e.g. a navigation whose target type is present in the model but not exposed as its own
+    // entity set — in which case nested expansion of that navigation is not possible.
+    private static IEntitySetEndpointSource? ResolveRequestSourceForEdmType(
+        IEdmEntityType? targetEdmType, OhDataRegistration registration, IServiceProvider requestServices)
+    {
+        if (targetEdmType is null) return null;
+        string targetName = targetEdmType.FullTypeName();
+        foreach (IEntitySetEndpointSource profile in registration.Profiles)
+        {
+            IEdmEntityType? setType = registration.EdmModel.EntityContainer?
+                .FindEntitySet(profile.EntitySetName)?.EntityType;
+            if (setType is not null && setType.FullTypeName() == targetName)
+            {
+                return requestServices.GetService(profile.GetType()) as IEntitySetEndpointSource;
+            }
+        }
+        return null;
     }
 
     // OData JSON Format v4.01 §4.5.1 / §11.2.4.2: a navigation property that was not requested
@@ -1020,9 +1173,12 @@ internal static class OhDataEndpointFactory
     // array or null. System.Text.Json has no notion of $expand and serialises the whole CLR
     // graph, so this pass walks the serialised JSON against the EDM model and removes every
     // navigation member that was not expanded at its own level, recursing into the expanded ones
-    // (with their nested $expand context) so a related entity never carries its own un-expanded
-    // navigations. Only members that the EDM declares as navigation properties are touched, so
-    // structural properties and @odata.* annotations are left untouched by construction.
+    // (following their nested $expand context) so a related entity never carries its own
+    // un-expanded navigations. It only OMITS; the actual data for each expanded navigation —
+    // including nested ones — is injected beforehand by ExpandLevelAsync (Stage 3, issue #183),
+    // so by the time this runs an expanded navigation already holds its loaded related entities.
+    // Only members that the EDM declares as navigation properties are touched, so structural
+    // properties and @odata.* annotations are left untouched by construction.
     private static void OmitUnexpandedNavigations(
         JsonNode? node,
         IEdmEntityType? edmType,
@@ -1471,7 +1627,7 @@ internal static class OhDataEndpointFactory
 
                     object[] items = queryable.ToArray();
 
-                    var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, rootEdmType, ct);
+                    var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
@@ -1640,7 +1796,7 @@ internal static class OhDataEndpointFactory
                         nextLink = BuildNextPageLink(ctx, token);
                     }
 
-                    var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, rootEdmType, ct);
+                    var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
@@ -1757,7 +1913,7 @@ internal static class OhDataEndpointFactory
                         object[] searchItems = searchResults.ToArray();
                         var (pagedSearchItems, searchPreTotal) = ApplyGetAllPaging(searchItems);
 
-                        var (searchFinal, searchSelectedProps) = await ApplyCollectionPipelineAsync(pagedSearchItems, options, source, s, jsonOptions, rootEdmType, ct);
+                        var (searchFinal, searchSelectedProps) = await ApplyCollectionPipelineAsync(pagedSearchItems, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
                         string searchBaseUrl = BuildBaseUrl(ctx, prefix);
                         var searchEnvelope = new Dictionary<string, object?>();
                         searchEnvelope["@odata.context"] = $"{searchBaseUrl}/$metadata#{AppendSelectSuffix(name, searchSelectedProps)}";
@@ -1774,7 +1930,7 @@ internal static class OhDataEndpointFactory
                     var rawItems = enumerable.ToArray();
                     var (pagedItems, preTotal) = ApplyGetAllPaging(rawItems);
 
-                    var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(pagedItems, options, source, s, jsonOptions, rootEdmType, ct);
+                    var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(pagedItems, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
@@ -1952,7 +2108,7 @@ internal static class OhDataEndpointFactory
                         // single-element array so GetById gets the same expand/batch-handler/
                         // select behavior as GET /{Set}, instead of a bespoke reimplementation.
                         var (expandedItems, expandSelectedProps) =
-                            await ApplyCollectionPipelineAsync(new[] { result }, options, source, s, jsonOptions, rootEdmType, ct);
+                            await ApplyCollectionPipelineAsync(new[] { result }, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
                         var entityBody = (JsonObject)expandedItems[0]!;
 
                         // Rebuild with @odata.context/@odata.id first (JSON §4.5: annotations
