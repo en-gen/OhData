@@ -27,11 +27,11 @@ It checks description/author/license/repository/tags/readme/icon are set, XML do
 and assemblies are optimized (Release, not Debug). All rules run — the package icon is `assets/icon.png`,
 embedded in every package via `Directory.Build.props`. A non-zero exit fails the job.
 
-Also gated on `EnablePackageValidation=true` (set on both packable csprojs): MSBuild's own API/ABI compat
-checks, currently limited to cross-TFM (net8.0/net10.0) compatibility since there's no published baseline
-yet. **After 1.0.0 ships**, set `PackageValidationBaselineVersion=1.0.0` in both csprojs (see the comment
-already left next to `EnablePackageValidation` in each) so every later pack is diffed against the public
-1.0.0 API surface and breaking changes fail the build.
+Also gated on `EnablePackageValidation=true` (set on every packable csproj): MSBuild's own API/ABI compat
+checks. The packages that have shipped also set `PackageValidationBaselineVersion` (currently `1.1.0` on
+AspNetCore/Client/Swashbuckle), so every pack is diffed against that published API surface and unintended
+breaking changes fail the build. **Bump the baseline as part of each release**, and add one to newly
+published packages after their first release.
 
 ## One-time setup
 
