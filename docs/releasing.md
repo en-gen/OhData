@@ -20,13 +20,12 @@ against both `.nupkg` files:
 
 ```bash
 dotnet tool install --global Meziantou.Framework.NuGetPackageValidation.Tool
-meziantou.validate-nuget-package ./nupkg/*.nupkg --excluded-rules IconMustBeSet
+meziantou.validate-nuget-package ./nupkg/*.nupkg
 ```
 
-It checks description/author/license/repository/tags/readme are set, XML docs and symbols are present, and
-assemblies are optimized (Release, not Debug) — `IconMustBeSet` is excluded because a package icon is a
-deliberately deferred decision (see memory: 1.0.0 scope decisions), not an oversight. A non-zero exit fails
-the job.
+It checks description/author/license/repository/tags/readme/icon are set, XML docs and symbols are present,
+and assemblies are optimized (Release, not Debug). All rules run — the package icon is `assets/icon.png`,
+embedded in every package via `Directory.Build.props`. A non-zero exit fails the job.
 
 Also gated on `EnablePackageValidation=true` (set on both packable csprojs): MSBuild's own API/ABI compat
 checks, currently limited to cross-TFM (net8.0/net10.0) compatibility since there's no published baseline
@@ -120,5 +119,5 @@ expected). Inspect the `.nupkg` as a zip: both TFMs under `lib/`, XML docs besid
 
 ```bash
 dotnet tool install --global Meziantou.Framework.NuGetPackageValidation.Tool
-meziantou.validate-nuget-package ./nupkg-dry/*.nupkg --excluded-rules IconMustBeSet
+meziantou.validate-nuget-package ./nupkg-dry/*.nupkg
 ```

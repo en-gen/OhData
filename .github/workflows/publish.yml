@@ -144,9 +144,8 @@ jobs:
             -o ./nupkg
 
       # Package quality gate: structural checks (description/license/repo/
-      # tags/readme/xmldoc/symbols/etc. all set, assemblies optimized) beyond
-      # what `dotnet pack` itself enforces. IconMustBeSet is excluded because
-      # a package icon is a deliberately deferred decision, not an oversight.
+      # tags/readme/icon/xmldoc/symbols/etc. all set, assemblies optimized)
+      # beyond what `dotnet pack` itself enforces.
       # Fails the job (non-zero exit) on any validation error.
       - name: Install NuGet package validation tool
         run: |
@@ -154,7 +153,7 @@ jobs:
           echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
 
       - name: Validate package quality
-        run: meziantou.validate-nuget-package ./nupkg/*.nupkg --excluded-rules IconMustBeSet
+        run: meziantou.validate-nuget-package ./nupkg/*.nupkg
 
       # SLSA build provenance: attests these exact package bytes were built
       # by this workflow run from this exact commit. Verifiable later with
