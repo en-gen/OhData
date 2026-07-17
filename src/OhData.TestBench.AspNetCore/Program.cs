@@ -63,8 +63,11 @@ app.UseForwardedHeaders(new ForwardedHeadersOptions
 app.UseSwagger(c => c.RouteTemplate = "/openapi/{documentName}.json");
 app.UseSwaggerUI(c =>
 {
-    c.SwaggerEndpoint("/openapi/v1.json", "v1");
+    // v2 (the full surface: Movies + Genres + Actors + Studios, with $expand/$ref) is listed
+    // first so it is the document Swagger UI selects by default. v1 remains available in the
+    // top-right doc dropdown as the deliberately-simpler contrast.
     c.SwaggerEndpoint("/openapi/v2.json", "v2");
+    c.SwaggerEndpoint("/openapi/v1.json", "v1");
 });
 
 // Scalar API reference at /scalar/{documentName} — uses /openapi/{documentName}.json by default
@@ -73,8 +76,9 @@ app.MapScalarApiReference();
 app.MapOhData("v1").WithGroupName("v1");
 app.MapOhData("v2").WithGroupName("v2");
 
-// Redirect root to Scalar v1 doc
-app.MapGet("/", () => Results.Redirect("/scalar/v1")).ExcludeFromDescription();
+// Redirect root to the Scalar v2 doc -- v2 is the full showcase (Actors, Studios, $expand,
+// $ref); visitors land there by default. /scalar/v1 stays reachable directly.
+app.MapGet("/", () => Results.Redirect("/scalar/v2")).ExcludeFromDescription();
 
 app.MapGet("/health", () => Results.Ok()).ExcludeFromDescription();
 
