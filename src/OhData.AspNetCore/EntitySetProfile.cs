@@ -438,7 +438,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         var entityType = entitySet.EntityType;
 
         if (SelectEnabled ?? defaults.SelectEnabled) entityType.Select(_selectProperties);
-        if (ExpandEnabled ?? defaults.ExpandEnabled) entityType.Expand(_expandProperties);
+        // Issue #183: pass an explicit max expansion depth so nested $expand
+        // (e.g. $expand=A($expand=B($expand=C))) is not rejected by the model-bound default of 2.
+        // The runtime recursion in OhDataEndpointFactory.ExpandLevelAsync bounds actual execution.
+        if (ExpandEnabled ?? defaults.ExpandEnabled)
+            entityType.Expand(OhData.AspNetCore.OhDataEndpointFactory.MaxNestedExpandDepth, _expandProperties!);
         if (FilterEnabled ?? defaults.FilterEnabled)
             entityType.Filter(MergeAllowlistWithNavigationProperties(_filterProperties));
         if (OrderByEnabled ?? defaults.OrderByEnabled)
