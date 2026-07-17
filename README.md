@@ -1,3 +1,5 @@
+<img src="assets/icon.svg" alt="OhData logo" width="110" align="right"/>
+
 # OhData
 
 Convention-based OData 4.0 server and typed client for ASP.NET Core. Define a profile class, assign handler delegates, and get a spec-faithful OData API - no controllers required (see [docs/spec-compliance.md](docs/spec-compliance.md) for exactly what's covered). Consume it from .NET with a fluent, LINQ-native client.
@@ -22,7 +24,9 @@ dotnet add package EnGen.OhData.Client
 |---------|-------|--------------|
 | `EnGen.OhData.AspNetCore` | [![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore) | `EntitySetProfile<TKey,TModel>` base class, DI registration, endpoint factory, minimal API routes. Includes `AddOhDataVersion` / `MapOhDataVersion` versioning helpers and `ODataEntitySetProfile<TKey,TModel>` for full OData pushdown control. |
 | `EnGen.OhData.Client` | [![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.Client)](https://www.nuget.org/packages/EnGen.OhData.Client) | Typed .NET client. Fluent builder with LINQ-based `$filter`, `$select`, `$expand`, `$orderby`, and pagination. |
-| `EnGen.OhData.AspNetCore.Swashbuckle` | [![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore.Swashbuckle)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.Swashbuckle) | Optional Swashbuckle (Swagger) integration: `OhDataSwaggerOperationFilter` documents the OData query parameters on collection endpoints. Keeps the core package free of Swashbuckle dependencies. |
+| `EnGen.OhData.AspNetCore.Swashbuckle` | [![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore.Swashbuckle)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.Swashbuckle) | Optional Swashbuckle (Swagger) integration: `OhDataSwaggerOperationFilter` documents the OData query parameters on OhData endpoints. |
+| `EnGen.OhData.AspNetCore.OpenApi` | [![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore.OpenApi)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.OpenApi) | Optional `Microsoft.AspNetCore.OpenApi` (built-in `AddOpenApi`) integration: `OhDataOpenApiOperationTransformer`, same documentation as the Swashbuckle filter. |
+| `EnGen.OhData.AspNetCore.NSwag` | [![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore.NSwag)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.NSwag) | Optional NSwag integration: `OhDataNSwagOperationProcessor`, same documentation as the Swashbuckle filter. |
 
 ---
 
@@ -88,6 +92,22 @@ This produces:
 | `DELETE` | `/odata/Products({key})` | `Delete` |
 
 Only routes with a handler assigned are registered. Unassigned handlers produce no route.
+
+### OpenAPI / Swagger documentation
+
+Each OpenAPI stack has an optional companion package that documents the OData query parameters
+(`$filter`, `$orderby`, `$top`, `$skip`, `$select`, `$expand`, `$count`, `$search`) on OhData
+endpoints, driven by each entity set's capability flags. Install the one matching your stack and
+register one line — the core package has no dependency on any OpenAPI stack:
+
+| Your stack | Package | Registration |
+|---|---|---|
+| `Microsoft.AspNetCore.OpenApi` (built-in `AddOpenApi`) | `EnGen.OhData.AspNetCore.OpenApi` | `builder.Services.AddOpenApi(o => o.AddOperationTransformer<OhDataOpenApiOperationTransformer>());` |
+| Swashbuckle | `EnGen.OhData.AspNetCore.Swashbuckle` | `builder.Services.AddSwaggerGen(c => c.OperationFilter<OhDataSwaggerOperationFilter>());` |
+| NSwag | `EnGen.OhData.AspNetCore.NSwag` | `builder.Services.AddOpenApiDocument(s => s.OperationProcessors.Add(new OhDataNSwagOperationProcessor()));` |
+
+See [docs/openapi.md](docs/openapi.md), [docs/nswag.md](docs/nswag.md), and
+[docs/versioning.md](docs/versioning.md) (Swashbuckle multi-doc setup) for details.
 
 ### Beyond the basics
 
@@ -183,11 +203,12 @@ for the full methodology, raw output, and known asymmetries between the two pipe
 
 ## Battle-testing
 
-1,075 automated tests protect the framework end to end: 778 in `OhData.AspNetCore.Tests` (server
+1,100 automated tests protect the framework end to end: 778 in `OhData.AspNetCore.Tests` (server
 routing, query options, navigation, ETags, authorization, malformed-payload hardening), 267 in
-`OhData.Client.Tests`, and 30 in `OhData.MicrosoftODataClient.Tests` (compatibility against the
-official `Microsoft.OData.Client`). Run them yourself with the commands in
-[CLAUDE.md](CLAUDE.md#build--test).
+`OhData.Client.Tests`, 30 in `OhData.MicrosoftODataClient.Tests` (compatibility against the
+official `Microsoft.OData.Client`), and 25 across the OpenAPI-integration suites
+(`OhData.AspNetCore.OpenApi.Tests`, `OhData.AspNetCore.NSwag.Tests`). Run them yourself with the
+commands in [CLAUDE.md](CLAUDE.md#build--test).
 
 ---
 
@@ -203,6 +224,8 @@ official `Microsoft.OData.Client`). Run them yourself with the commands in
 | ETags and optimistic concurrency | [docs/etags.md](docs/etags.md) |
 | Authorization | [docs/authorization.md](docs/authorization.md) |
 | API versioning | [docs/versioning.md](docs/versioning.md) |
+| OpenAPI (built-in `AddOpenApi`) integration | [docs/openapi.md](docs/openapi.md) |
+| NSwag integration | [docs/nswag.md](docs/nswag.md) |
 | Client guide | [docs/client.md](docs/client.md) |
 | OData 4.0 spec compliance | [docs/spec-compliance.md](docs/spec-compliance.md) |
 | Framework architecture | [docs/architecture.md](docs/architecture.md) |

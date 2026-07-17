@@ -2,9 +2,6 @@
 
 	<PropertyGroup>
 		<TargetFramework>net10.0</TargetFramework>
-		<ImplicitUsings>enable</ImplicitUsings>
-		<Nullable>enable</Nullable>
-		<LangVersion>latest</LangVersion>
 		<IsPackable>false</IsPackable>
 		<!-- Test projects do not require XML documentation comments -->
 		<NoWarn>$(NoWarn);CS1591</NoWarn>
@@ -15,18 +12,19 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.*" />
+		<PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="[10.*, 11)" />
+		<PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.*" />
 		<PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
 		<PackageReference Include="xunit" Version="2.*" />
 		<PackageReference Include="xunit.runner.visualstudio" Version="3.*">
 			<IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
 			<PrivateAssets>all</PrivateAssets>
 		</PackageReference>
-		<PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.*" />
 	</ItemGroup>
 
 	<ItemGroup>
 		<ProjectReference Include="..\OhData.AspNetCore\OhData.AspNetCore.csproj" />
+		<ProjectReference Include="..\OhData.AspNetCore.OpenApi\OhData.AspNetCore.OpenApi.csproj" />
 	</ItemGroup>
 
 </Project>
