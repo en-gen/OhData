@@ -15,7 +15,7 @@
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" Version="0.15.*" />
     <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.*" />
-    <PackageReference Include="Microsoft.AspNetCore.OData" Version="[9.4.*, 10)" />
+    <PackageReference Include="Microsoft.AspNetCore.OData" Version="[9.5.0, 10.0.0)" />
     <PackageReference Include="Microsoft.OData.ModelBuilder" Version="[2.*, 3)" />
   </ItemGroup>
 
