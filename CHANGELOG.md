@@ -82,6 +82,17 @@ everywhere. Four independent changes, all additive.
   no `$top` cap at all, because the `GetAll` route's `OhDataQueryOptionsMetadata` hardcoded
   `MaxTop: null` regardless of the profile's actual value (a pre-existing docs/behavior mismatch
   this program fixes as a side effect of implementing `$top` on `GetAll`).
+- **`406 Not Acceptable` on `/$count` and `/{property}/$value` when a client sends
+  `Accept: text/plain`.** The group-level Accept-negotiation filter only permitted
+  `application/json`/`*/*` (with a `$metadata`/`application/xml` exemption), but those two segments
+  actually return `text/plain` (and `$value` returns `application/octet-stream` for `byte[]`).
+  A client asking for the media type those routes *advertise in the OpenAPI document* — e.g.
+  Swagger UI hitting `/{Set}/$count` — was therefore rejected. This was latent until the typed
+  `$count`/`$value` response content types were corrected in the same Unreleased batch (before that,
+  the routes mislabeled themselves as `application/json`, so UIs sent `Accept: application/json` and
+  slipped through). The filter now exempts `/$count` (`text/plain`) and `/$value` (`text/plain`,
+  `application/octet-stream`), mirroring the existing `$metadata` exemption. The narrow exemption is
+  preserved: a genuinely unsupported type (e.g. `text/xml`) on those routes still returns `406`.
 
 ---
 
