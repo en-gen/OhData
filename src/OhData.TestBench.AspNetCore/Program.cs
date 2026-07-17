@@ -19,8 +19,8 @@ builder.Services.AddDbContext<AppDbContext>(
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
-    c.SwaggerDoc("v1", new() { Title = "OhData TestBench — v1", Version = "v1" });
-    c.SwaggerDoc("v2", new() { Title = "OhData TestBench — v2", Version = "v2" });
+    c.SwaggerDoc("v1", new() { Title = "OhData TestBench — Movies (v1)", Version = "v1" });
+    c.SwaggerDoc("v2", new() { Title = "OhData TestBench — Movies (v2)", Version = "v2" });
     // Route each endpoint to the doc matching its group name
     c.DocInclusionPredicate((docName, apiDesc) =>
         apiDesc.GroupName is null || apiDesc.GroupName == docName);
@@ -29,17 +29,23 @@ builder.Services.AddSwaggerGen(c =>
 
 // ── OhData versioned registrations ───────────────────────────────────────────
 //
-// v1: Products + Categories
-// v2: Products + Orders (with navigation routing for order lines) + Categories
+// v1: Movies + Genres           -- the simple surface: GetQueryable CRUD + ETags + bound
+//                                   operations on Movies, GetAll on Genres. AllowDeepInsert
+//                                   stays at its default (false), and Movie.Cast/Studio have no
+//                                   navigation handlers -- see MovieProfile's comments.
+// v2: Movies + Genres + Actors + Studios -- adds deep insert, batch-loaded $expand, and $ref
+//                                   link management on Movie's navigations, plus the Actor and
+//                                   Studio entity sets those navigations point at.
 //
 builder.Services.AddOhDataVersion("v1", "/v1", o =>
-    o.AddProfile<ProductProfile>()
-     .AddProfile<CategoryProfile>());
+    o.AddProfile<MovieProfile>()
+     .AddProfile<GenreProfile>());
 
 builder.Services.AddOhDataVersion("v2", "/v2", o =>
-    o.AddProfile<ProductProfileV2>()
-     .AddProfile<OrderProfile>()
-     .AddProfile<CategoryProfileV2>());
+    o.AddProfile<MovieProfileV2>()
+     .AddProfile<GenreProfileV2>()
+     .AddProfile<ActorProfile>()
+     .AddProfile<StudioProfile>());
 
 // ── App pipeline ──────────────────────────────────────────────────────────────
 var app = builder.Build();
