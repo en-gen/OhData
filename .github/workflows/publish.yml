@@ -1,0 +1,180 @@
+name: Publish to NuGet
+
+# Fires when a GitHub Release is published (drafted releases do not trigger this).
+# To publish: merge your release branch to main, then create a GitHub Release
+# targeting main with a tag like v0.1.0. The tag must match the GitVersion
+# computed version or the pack step will embed a mismatched version.
+#
+# Prerequisites (one-time setup): a nuget.org Trusted Publishing policy — no
+# API key or repository secret required. On nuget.org: username > Trusted
+# Publishing > Create, with Package Owner "engenb", Repository Owner "en-gen",
+# Repository "OhData", Workflow File "publish.yml", Environment blank.
+# The job exchanges a GitHub OIDC token for a 1-hour API key at run time
+# (NuGet/login), so the login step runs immediately before the push.
+#
+# Release procedure: see docs/releasing.md. Note that GitVersion computes the
+# version from the release branch name (release/X.Y.Z -> X.Y.Z on main) — a
+# direct develop->main merge computes the wrong version and the tag-validation
+# step below will reject the release.
+#
+# Rehearsal mode: this workflow can also be triggered manually (Actions >
+# Publish to NuGet > Run workflow) via workflow_dispatch. With the default
+# dry_run=true it runs everything through the package-quality gate and the
+# provenance attestation, uploads the packed .nupkg/.snupkg as a workflow
+# artifact, and stops — it never pushes. There is no release tag on a manual
+# run, so the tag-validation step is skipped for this trigger. Setting
+# dry_run=false on a manual run additionally pushes to nuget.org, same as a
+# real release.
+#
+# concurrency: only one publish (real or rehearsal) runs at a time; a second
+# run queues behind the first rather than racing it or cancelling it, since
+# cancelling mid-push could leave nuget.org partially updated.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Pack + validate + attest without pushing"
+        type: boolean
+        default: true
+
+concurrency:
+  group: nuget-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      id-token: write       # OIDC token issuance for NuGet Trusted Publishing
+      contents: write     # release-asset upload (gh release upload) on real releases
+      attestations: write   # actions/attest-build-provenance
+    env:
+      HUSKY: 0
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # GitVersion needs full history
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.x
+
+      # Compute the NuGet version from GitVersion and expose it as
+      # ${{ steps.gitversion.outputs.nuGetVersionV2 }} (e.g. "0.1.0" on main).
+      - name: Install GitVersion
+        uses: gittools/actions/gitversion/setup@v4
+        with:
+          versionSpec: '6.x'
+
+      - name: Compute version
+        id: gitversion
+        uses: gittools/actions/gitversion/execute@v4
+
+      # Only meaningful for a real release, which carries a Git tag to check
+      # against. Manual (workflow_dispatch) rehearsal runs have no release
+      # tag at all, so this step is skipped for that trigger.
+      - name: Validate release tag matches computed version
+        if: github.event_name == 'release'
+        run: |
+          COMPUTED="v${{ steps.gitversion.outputs.nuGetVersionV2 }}"
+          RELEASE_TAG="${{ github.event.release.tag_name }}"
+          if [ "$COMPUTED" != "$RELEASE_TAG" ]; then
+            echo "ERROR: Release tag '$RELEASE_TAG' does not match computed version '$COMPUTED'"
+            echo "Ensure the Git tag on the release matches the GitVersion-computed version."
+            exit 1
+          fi
+          echo "Tag validated: $RELEASE_TAG == $COMPUTED"
+
+      - name: Restore
+        run: dotnet restore src/OhData.sln
+
+      - name: Build
+        run: dotnet build src/OhData.sln --no-restore -c Release
+
+      - name: Test
+        run: |
+          dotnet test src/OhData.AspNetCore.Tests/OhData.AspNetCore.Tests.csproj \
+            --no-build -c Release
+          dotnet test src/OhData.Client.Tests/OhData.Client.Tests.csproj \
+            --no-build -c Release
+          dotnet test src/OhData.MicrosoftODataClient.Tests/OhData.MicrosoftODataClient.Tests.csproj \
+            --no-build -c Release
+
+      - name: Pack
+        run: |
+          VERSION="${{ steps.gitversion.outputs.nuGetVersionV2 }}"
+          dotnet pack src/OhData.AspNetCore/OhData.AspNetCore.csproj \
+            --no-build -c Release \
+            -p:Version="$VERSION" \
+            -o ./nupkg
+          dotnet pack src/OhData.Client/OhData.Client.csproj \
+            --no-build -c Release \
+            -p:Version="$VERSION" \
+            -o ./nupkg
+
+      # Package quality gate: structural checks (description/license/repo/
+      # tags/readme/xmldoc/symbols/etc. all set, assemblies optimized) beyond
+      # what `dotnet pack` itself enforces. IconMustBeSet is excluded because
+      # a package icon is a deliberately deferred decision, not an oversight.
+      # Fails the job (non-zero exit) on any validation error.
+      - name: Install NuGet package validation tool
+        run: |
+          dotnet tool install --global Meziantou.Framework.NuGetPackageValidation.Tool
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+
+      - name: Validate package quality
+        run: meziantou.validate-nuget-package ./nupkg/*.nupkg --excluded-rules IconMustBeSet
+
+      # SLSA build provenance: attests these exact package bytes were built
+      # by this workflow run from this exact commit. Verifiable later with
+      # `gh attestation verify <nupkg> --repo en-gen/OhData`.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            ./nupkg/*.nupkg
+            ./nupkg/*.snupkg
+
+      # Every run — real or rehearsal — leaves the packed output inspectable
+      # as a workflow artifact, even when the push step below is skipped.
+      - name: Upload packages as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-packages
+          path: ./nupkg/
+
+      # Temp keys from Trusted Publishing live 1 hour — log in right before pushing.
+      - name: NuGet login (OIDC -> temp API key)
+        uses: NuGet/login@v1
+        id: nuget-login
+        with:
+          user: engenb
+
+      # Real releases always push. A manual run only pushes if dry_run is
+      # explicitly set to false — the default (true) is rehearsal-only and
+      # stops after the artifact upload above.
+      - name: Push to NuGet
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'false')
+        run: |
+          dotnet nuget push "./nupkg/*.nupkg" \
+            --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+          dotnet nuget push "./nupkg/*.snupkg" \
+            --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+
+      # Attach the exact published bytes to the GitHub Release page so the
+      # Release, the git tag, the attestation, and nuget.org all reference
+      # the same artifacts. Requires contents: write.
+      - name: Attach packages to the GitHub Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" ./nupkg/*.nupkg ./nupkg/*.snupkg --clobber

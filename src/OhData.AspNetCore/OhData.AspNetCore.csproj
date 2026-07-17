@@ -1,14 +1,37 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
-		<TargetFramework>netstandard2.1</TargetFramework>
-		<ImplicitUsings>enable</ImplicitUsings>
-		<Nullable>enable</Nullable>
-		<LangVersion>latest</LangVersion>
+		<TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+		<PackageId>EnGen.OhData.AspNetCore</PackageId>
+		<Title>OhData for ASP.NET Core</Title>
+		<Description>Convention-based OData 4.0 server for ASP.NET Core minimal APIs. Turn declarative profile classes into registered OData endpoints at startup — no controllers required.</Description>
+		<Copyright>Copyright (c) en-gen and contributors</Copyright>
+		<PackageTags>odata;odata4;aspnetcore;minimal-api;rest;api;edm;csdl;entityset</PackageTags>
+		<!-- AD0001: RouteHandlerAnalyzer NullReferenceException — pre-existing analyzer bug, not our code -->
+		<NoWarn>$(NoWarn);AD0001</NoWarn>
+		<!--
+		  Package validation: catches breaking API/ABI changes and TFM-compat
+		  issues before they ship. No baseline yet since this is pre-1.0 (there
+		  is no published version to diff against) - it currently only runs
+		  compatible-framework and compatible-runtime checks across net8.0/net10.0.
+		  Once 1.0.0 ships, set PackageValidationBaselineVersion=1.0.0 here so
+		  every subsequent pack is diffed against the public 1.0.0 API surface.
+		-->
+		<EnablePackageValidation>true</EnablePackageValidation>
 	</PropertyGroup>
 
 	<ItemGroup>
-	  <ProjectReference Include="..\OhData.Abstractions\OhData.Abstractions.csproj" />
+		<FrameworkReference Include="Microsoft.AspNetCore.App" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<PackageReference Include="Microsoft.AspNetCore.OData" Version="[9.4.*, 10)" />
+		<PackageReference Include="Microsoft.OData.ModelBuilder" Version="[2.*, 3)" />
+		<PackageReference Include="Swashbuckle.AspNetCore.SwaggerGen" Version="[10.*, 11)" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<InternalsVisibleTo Include="OhData.AspNetCore.Tests" />
 	</ItemGroup>
 
 </Project>

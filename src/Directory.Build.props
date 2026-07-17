@@ -1,0 +1,57 @@
+<Project>
+  <PropertyGroup>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!--
+      When upgrading the .NET SDK, new analyzer rules may activate and become
+      build errors via TreatWarningsAsErrors. Add severity overrides for those
+      diagnostics in /.editorconfig (see the "Analyzer severity map" section)
+      rather than using NoWarn per-project or disabling rules globally.
+      For a full ruleset upgrade, set <AnalysisLevel>X.Y-Recommended</AnalysisLevel>
+      here, fix or suppress the new diagnostics, then remove this comment.
+    -->
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <!--
+      Deterministic builds in CI: byte-for-byte reproducible assembly output
+      from the same source + compiler version, which is what lets SourceLink
+      map a PDB back to the exact commit that produced it. Scoped to CI (via
+      the GITHUB_ACTIONS env var GitHub Actions sets on every run) rather
+      than globally, since deterministic builds embed the build path and
+      that's only worth trading incremental-build convenience for on a build
+      that's about to ship.
+    -->
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Authors>en-gen and contributors</Authors>
+    <PackageProjectUrl>https://github.com/en-gen/OhData</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/en-gen/OhData</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>odata;odata4;aspnetcore;rest;api</PackageTags>
+    <PackageReleaseNotes>https://github.com/en-gen/OhData/blob/main/CHANGELOG.md</PackageReleaseNotes>
+    <!-- Symbols: produces .snupkg for debugger step-in support -->
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <!-- Source Link: resolves debugger source to the exact GitHub commit -->
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)..\README.md" Pack="true" PackagePath="/" Visible="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="GitVersion.MsBuild" Version="6.8.2" PrivateAssets="All" />
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.*" PrivateAssets="All" />
+  </ItemGroup>
+</Project>

@@ -3,6 +3,10 @@
 ##
 ## Get latest from https://github.com/github/gitignore/blob/master/VisualStudio.gitignore
 
+# Claude Code worktree directories (git worktrees managed by Claude Code CLI)
+.claude/worktrees/
+.claire/
+
 # User-specific files
 *.rsuser
 *.suo
@@ -55,6 +59,9 @@ dlldata.c
 
 # Benchmark Results
 BenchmarkDotNet.Artifacts/
+benchmarks/**/*.log
+benchmarks/**/*.html
+benchmarks/**/*.csv
 
 # .NET Core
 project.lock.json
@@ -348,3 +355,7 @@ MigrationBackup/
 
 # Ionide (cross platform F# VS Code tools) working folder
 .ionide/
+
+# k6 generated reports (generated output; keep the directory itself)
+/k6/reports/*
+!/k6/reports/.gitkeep

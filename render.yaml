@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: ohdata-testbench
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    branch: develop
+    envVars:
+      - key: ASPNETCORE_ENVIRONMENT
+        value: Production
