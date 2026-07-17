@@ -1123,7 +1123,7 @@ internal static class OhDataEndpointFactory
                     (expandItem.PathToNavigationProperty.FirstSegment as NavigationPropertySegment)?.NavigationProperty?.ToEntityType();
                 IEntitySetEndpointSource? targetSource = ResolveRequestSourceForEdmType(targetEdmType, registration, requestServices);
 
-                if (targetSource is not null && targetEdmType is not null)
+                if (targetSource is not null)
                 {
                     await ExpandLevelAsync(
                         childItems, childObjects, nestedClause, targetSource, targetEdmType,
