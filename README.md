@@ -32,16 +32,10 @@ dotnet add package EnGen.OhData.Client
 Typed .NET client. Fluent builder with LINQ-based `$filter`, `$select`, `$expand`, `$orderby`, and pagination.
 
 [![EnGen.OhData.AspNetCore.Swashbuckle](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore.Swashbuckle?label=EnGen.OhData.AspNetCore.Swashbuckle)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.Swashbuckle)
-
-Optional Swashbuckle (Swagger) integration: `OhDataSwaggerOperationFilter` documents the OData query parameters on OhData endpoints.
-
 [![EnGen.OhData.AspNetCore.OpenApi](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore.OpenApi?label=EnGen.OhData.AspNetCore.OpenApi)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.OpenApi)
-
-Optional `Microsoft.AspNetCore.OpenApi` (built-in `AddOpenApi`) integration: `OhDataOpenApiOperationTransformer`, same documentation as the Swashbuckle filter.
-
 [![EnGen.OhData.AspNetCore.NSwag](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore.NSwag?label=EnGen.OhData.AspNetCore.NSwag)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.NSwag)
 
-Optional NSwag integration: `OhDataNSwagOperationProcessor`, same documentation as the Swashbuckle filter.
+Optional API-documentation companions — each documents the OData query parameters (`$filter`, `$orderby`, `$top`, ...) on OhData endpoints in its respective OpenAPI stack (Swashbuckle, the built-in `Microsoft.AspNetCore.OpenApi`, or NSwag), driven by each entity set's capability flags. One line of registration per stack — see [OpenAPI / Swagger documentation](#openapi--swagger-documentation) below.
 
 ---
 
