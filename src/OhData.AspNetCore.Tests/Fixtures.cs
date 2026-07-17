@@ -1438,3 +1438,89 @@ internal class WrongKeyTypeEntityFunctionProfile : EntitySetProfile<int, Widget>
     private Task<string> BadFirstParam(string notTheKey) => Task.FromResult(notTheKey);
 }
 
+
+// ── #176: un-expanded navigation omission fixtures ────────────────────────────
+
+internal class OmitActor
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+}
+
+/// <summary>
+/// Navigation target with its OWN navigation (<c>Movies</c>). When a movie's <c>Studio</c> is
+/// $expand'd, the studio must not carry this un-expanded back-reference (issue #176, face 3).
+/// </summary>
+internal class OmitStudio
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public IEnumerable<OmitMovie>? Movies { get; set; }
+}
+
+internal class OmitMovie
+{
+    public int Id { get; set; }
+    public string Title { get; set; } = "";
+    public OmitStudio? Studio { get; set; }            // single-valued nav (face 2)
+    public IEnumerable<OmitActor>? Cast { get; set; }  // collection nav (face 1)
+}
+
+/// <summary>
+/// #176 regression fixture. Every movie carries a fully populated <c>Studio</c> and <c>Cast</c>
+/// on the CLR object, so without the fix both navigations would serialise inline into every read
+/// response. The expanded studio itself carries <c>Movies</c>, exercising the nested-leak face.
+/// </summary>
+internal class OmitNavMovieProfile : EntitySetProfile<int, OmitMovie>
+{
+    private static OmitStudio MakeStudio() => new()
+    {
+        Id = 7,
+        Name = "Skyline",
+        Movies = new List<OmitMovie> { new() { Id = 1, Title = "Ascent" } },
+    };
+
+    private static readonly List<OmitMovie> _movies = new()
+    {
+        new()
+        {
+            Id = 1,
+            Title = "Ascent",
+            Studio = MakeStudio(),
+            Cast = new List<OmitActor> { new() { Id = 100, Name = "Ada" }, new() { Id = 101, Name = "Ben" } },
+        },
+        new()
+        {
+            Id = 2,
+            Title = "Ballad",
+            Studio = MakeStudio(),
+            Cast = new List<OmitActor>(), // empty collection → would leak as [] without the fix
+        },
+        new()
+        {
+            Id = 3,
+            Title = "Crest",
+            Studio = null, // no related studio → $expand=Studio yields "studio": null
+            Cast = new List<OmitActor>(),
+        },
+    };
+
+    public OmitNavMovieProfile() : base(x => x.Id)
+    {
+        EntitySetName = "OmitNavMovies";
+        ExpandEnabled = true;
+
+        GetAll = (ct) => Task.FromResult<IEnumerable<OmitMovie>>(_movies);
+        GetById = (id, ct) => Task.FromResult(_movies.FirstOrDefault(m => m.Id == id));
+
+        HasOptional(
+            navigation: x => x.Studio!,
+            get: (movieId, ct) => Task.FromResult(_movies.FirstOrDefault(m => m.Id == movieId)?.Studio),
+            refTargetEntitySet: null);
+
+        HasMany(
+            navigation: x => x.Cast!,
+            getAll: (movieId, ct) => Task.FromResult<IEnumerable<OmitActor>>(
+                _movies.FirstOrDefault(m => m.Id == movieId)?.Cast ?? Enumerable.Empty<OmitActor>()));
+    }
+}
