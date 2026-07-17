@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+		<PackageId>EnGen.OhData.AspNetCore.NSwag</PackageId>
+		<Title>OhData NSwag integration</Title>
+		<Description>NSwag integration for OhData: an IOperationProcessor that documents the OData query parameters ($filter, $orderby, $top, $skip, $select, $expand, $count, $search) on collection endpoints, driven by each entity set's capability flags.</Description>
+		<Copyright>Copyright (c) en-gen and contributors</Copyright>
+		<PackageTags>odata;odata4;aspnetcore;swagger;nswag;openapi</PackageTags>
+		<!--
+		  Keep the OhData.AspNetCore namespace: this mirrors the Swashbuckle
+		  companion package's RootNamespace trick, so consumers of either
+		  companion package see the operation type living alongside the rest
+		  of the OhData surface.
+		-->
+		<RootNamespace>OhData.AspNetCore</RootNamespace>
+		<EnablePackageValidation>true</EnablePackageValidation>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<FrameworkReference Include="Microsoft.AspNetCore.App" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\OhData.AspNetCore\OhData.AspNetCore.csproj" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<PackageReference Include="NSwag.Generation.AspNetCore" Version="[14.*, 15)" />
+	</ItemGroup>
+
+</Project>
