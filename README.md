@@ -7,7 +7,12 @@
 
 Convention-based OData 4.0 server and typed client for ASP.NET Core. Define a profile class, assign handler delegates, and get a spec-faithful OData API - no controllers required (see [docs/spec-compliance.md](docs/spec-compliance.md) for exactly what's covered). Consume it from .NET with a fluent, LINQ-native client.
 
-**[▶ Try it live](https://ohdata.onrender.com/)** — an interactive API reference ([Scalar](https://ohdata.onrender.com/scalar/v1), or classic [Swagger UI](https://ohdata.onrender.com/swagger)) over a deployed OhData demo service. Fire real `$filter`/`$orderby`/`$expand` queries from the browser — writes too — or hit the raw [v1 service document](https://ohdata.onrender.com/v1) directly. (Free-tier hosting: the first load after a quiet spell takes a moment to wake up, and demo data is ephemeral — anything you write disappears whenever the instance recycles.)
+**[▶ Try it live](https://ohdata.onrender.com/)** — fire real `$filter`/`$orderby`/`$expand` queries (writes too) at a deployed OhData demo service from an interactive API reference, or hit the raw [v1 service document](https://ohdata.onrender.com/v1) directly:
+
+[![Live demo — Scalar](https://img.shields.io/badge/live_demo-Scalar-1c1e24?logo=scalar&logoColor=white)](https://ohdata.onrender.com/scalar/v1)
+[![Live demo — Swagger UI](https://img.shields.io/badge/live_demo-Swagger_UI-85EA2D?logo=swagger&logoColor=black)](https://ohdata.onrender.com/swagger)
+
+(Free-tier hosting: the first load after a quiet spell takes a moment to wake up, and demo data is ephemeral — anything you write disappears whenever the instance recycles.)
 
 ## Getting Started
 
