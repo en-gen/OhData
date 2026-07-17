@@ -2023,7 +2023,7 @@ public class EndpointMappingTests
     public async Task Accept_TextHtml_Returns406()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
-        var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
         request.Headers.Add("Accept", "text/html");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
         Assert.Equal(HttpStatusCode.NotAcceptable, response.StatusCode);
@@ -2034,7 +2034,7 @@ public class EndpointMappingTests
     {
         // $metadata returns XML — should not be blocked by the 406 filter
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
-        var request = new HttpRequestMessage(HttpMethod.Get, "/odata/$metadata");
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/$metadata");
         request.Headers.Add("Accept", "application/xml");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -2046,7 +2046,7 @@ public class EndpointMappingTests
         // /$count returns the count as text/plain, so a client asking for text/plain (as an
         // OpenAPI-driven UI does, since the route advertises text/plain) must not be rejected.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
-        var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets/$count");
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets/$count");
         request.Headers.Add("Accept", "text/plain");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -2058,7 +2058,7 @@ public class EndpointMappingTests
     {
         // /{property}/$value returns the raw scalar value as text/plain — same exemption.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
-        var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets(1)/Name/$value");
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets(1)/Name/$value");
         request.Headers.Add("Accept", "text/plain");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
