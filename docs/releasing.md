@@ -78,7 +78,10 @@ reject the release.
    `.snupkg` per package, uploaded automatically by the workflow); and confirm build provenance with
    `gh attestation verify` (see below).
 7. Back-merge `main` into `develop` (GitFlow) so the tag is reachable and develop's computed version
-   advances past the release.
+   advances past the release. **Use a merge commit, not squash**: squashing the back-merge severs the
+   shared history between `main` and `develop`, so the next release PR reports conflicts on every
+   file both branches touched (this happened with the 1.1.0 release PR after the 1.0.0 back-merge
+   was squashed) and GitVersion loses the merge lineage it uses to compute versions.
 
 ## Rehearsal mode (no push, no key required)
 
