@@ -7,7 +7,7 @@
 
 Convention-based OData 4.0 server and typed client for ASP.NET Core. Define a profile class, assign handler delegates, and get a spec-faithful OData API - no controllers required (see [docs/spec-compliance.md](docs/spec-compliance.md) for exactly what's covered). Consume it from .NET with a fluent, LINQ-native client.
 
-**[▶ Try it live](https://ohdata.onrender.com/)** — fire real `$filter`/`$orderby`/`$expand` queries (writes too) at a deployed OhData demo service from an interactive API reference, or hit the raw [v1 service document](https://ohdata.onrender.com/v1) directly:
+Try it live — fire real `$filter`/`$orderby`/`$expand` queries (writes too) at a deployed OhData demo service from an interactive API reference, or hit the raw [v1 service document](https://ohdata.onrender.com/v1) directly:
 
 [![Scalar](https://img.shields.io/badge/Scalar-1A1A1A?logo=scalar&logoColor=white)](https://ohdata.onrender.com/scalar/v1)
 [![Swagger UI](https://img.shields.io/badge/Swagger_UI-85EA2D?logo=swagger&logoColor=black)](https://ohdata.onrender.com/swagger)
@@ -170,9 +170,10 @@ await client.For<Product>().Key(42).DeleteAsync();
 With `IHttpClientFactory`:
 
 ```csharp
-// Registration
-builder.Services.AddHttpClient<OhDataClient>(c => c.BaseAddress = new Uri("https://api.example.com/odata/"));
-builder.Services.AddTransient(sp => new OhDataClient(sp.GetRequiredService<HttpClient>()));
+// Registration - the typed-client overload configures the HttpClient and registers
+// OhDataClient to be constructed with it (OhDataClient has an HttpClient constructor).
+builder.Services.AddHttpClient<OhDataClient>(c =>
+    c.BaseAddress = new Uri("https://api.example.com/odata/"));
 
 // Injection
 public class MyService(OhDataClient client) { ... }
