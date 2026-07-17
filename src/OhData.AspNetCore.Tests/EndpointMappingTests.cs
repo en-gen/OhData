@@ -2076,6 +2076,138 @@ public class EndpointMappingTests
         Assert.Equal(HttpStatusCode.NotAcceptable, response.StatusCode);
     }
 
+    // ── #182: RFC 7231 §5.3.2 media-range + q-value Accept negotiation ─────────
+    // Before this fix the filter substring-scanned the Accept header, so it under-permitted
+    // media ranges ("application/*", "text/*") and over-permitted the "q=0" exclusion.
+
+    [Fact]
+    public async Task Accept_ApplicationWildcard_OnJsonRoute_Returns200()
+    {
+        // RFC 7231: "application/*" is a media range that matches application/json. Previously 406.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
+        request.Headers.Add("Accept", "application/*");
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Accept_TextWildcard_OnCount_Returns200()
+    {
+        // "text/*" matches text/plain, which /$count produces. Previously 406.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets/$count");
+        request.Headers.Add("Accept", "text/*");
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/plain", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
+    public async Task Accept_TextWildcard_OnValue_Returns200()
+    {
+        // "text/*" matches text/plain on /{property}/$value.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets(1)/Name/$value");
+        request.Headers.Add("Accept", "text/*");
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/plain", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
+    public async Task Accept_TextWildcard_OnJsonRoute_Returns406()
+    {
+        // "text/*" cannot match application/json, so a plain JSON collection still 406s.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
+        request.Headers.Add("Accept", "text/*");
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.NotAcceptable, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Accept_ApplicationJson_QualityZero_Returns406()
+    {
+        // q=0 means "not acceptable" — the client is explicitly refusing application/json.
+        // Previously the substring scan saw "application/json" and wrongly returned 200.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
+        request.Headers.Add("Accept", "application/json;q=0");
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.NotAcceptable, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Accept_FullWildcard_QualityZero_Returns406()
+    {
+        // "*/*;q=0" refuses everything.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
+        request.Headers.Add("Accept", "*/*;q=0");
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.NotAcceptable, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Accept_SpecificQualityZero_OverridesWildcard_Returns406()
+    {
+        // RFC 7231 §5.3.2 specificity: the exact "application/json;q=0" is more specific than
+        // "application/*", so JSON is excluded even though the wildcard would otherwise allow it.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
+        request.Headers.Add("Accept", "application/json;q=0, application/*");
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.NotAcceptable, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Accept_UnacceptablePreferred_JsonFallback_Returns200()
+    {
+        // A typical browser-style list: prefer text/html, fall back to JSON with a lower q.
+        // JSON still has q>0, so the request is acceptable.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
+        request.Headers.Add("Accept", "text/html;q=0.9, application/json;q=0.8");
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Accept_JsonExcluded_HtmlAllowed_Returns406()
+    {
+        // JSON explicitly excluded (q=0); the only positive range is text/html, which the JSON
+        // route cannot produce → 406.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
+        request.Headers.Add("Accept", "application/json;q=0, text/html");
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.NotAcceptable, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Accept_ApplicationJson_WithCharsetParameter_Returns200()
+    {
+        // Parameters on the media type (e.g. charset) must not defeat the exact match.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
+        request.Headers.Add("Accept", "application/json; charset=utf-8");
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Accept_ApplicationWildcard_OnMetadata_Returns200()
+    {
+        // $metadata is exempt from the JSON-only check and produces application/xml; "application/*"
+        // (and "*/*") must resolve to 200 there just as on any other route.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/$metadata");
+        request.Headers.Add("Accept", "application/*");
+        HttpResponseMessage response = await fx.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
     // ── Batch 4: @odata.etag in collection responses ──────────────────────────
 
     [Fact]
