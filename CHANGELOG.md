@@ -124,6 +124,38 @@ everywhere. Four independent changes, all additive.
   clients that read `$metadata` - would decode the UTF-8 bytes as UTF-16 and fail. The CSDL is now
   written as UTF-8 (prolog reads `encoding="utf-8"`) and served as `application/xml; charset=utf-8`,
   so prolog, bytes, and header agree.
+- **OpenAPI/omission edge-case polish (#184).** Four independent, low-severity fixes found in the
+  pre-1.3.0 release-gate pass:
+  - **`[JsonPropertyName]`-renamed navigations are now honored by omission and `$expand`.** The
+    un-expanded-navigation omission pass and the `$expand` key-injection both derived a navigation's
+    serialized JSON key from `PropertyNamingPolicy.ConvertName(navProp.Name)`, ignoring a per-property
+    `[System.Text.Json.Serialization.JsonPropertyName("…")]` rename. A renamed navigation therefore
+    leaked inline (omission looked for the policy-cased key and missed it), and `$expand` wrote a
+    second, differently-cased key. The serialized key is now resolved from the CLR property's
+    `[JsonPropertyName]` when present, falling back to the naming-policy name (so a symmetric
+    `JsonNamingPolicy` such as snake_case still round-trips). Same spec basis as #176/#179 (OData JSON
+    Format v4.01 §4.5.1 / §11.2.4.2).
+  - **Key-property write stubs now declare the `{key}` OpenAPI path parameter.** The immutable-key
+    `PUT`/`PATCH`/`DELETE /{Set}({key})/{KeyProperty}` stubs return a clean `400` but took no `key`
+    lambda parameter, so their generated operation omitted the `{key}` path-parameter declaration its
+    sibling `GET` carries — producing an OpenAPI document with an undeclared template variable. The
+    stubs now take `(string key)`; the `400` behavior is unchanged.
+  - **Action request-body schemas now expose their named parameters instead of an empty `{}`.**
+    Bound/unbound action bodies were documented with `OhDataRequestBodyMetadata.BodyType =
+    typeof(object)`, yielding a typeless schema whose parameters were conveyed only by the prose
+    description. The body type is now a per-action synthesized POCO whose public properties mirror the
+    action's parameters (each pinned with `[JsonPropertyName]` to the exact parameter name), so
+    Microsoft.AspNetCore.OpenApi, Swashbuckle, and NSwag all render the real body shape (e.g.
+    `{"rating": <number>}`). `CancellationToken` is excluded, and for entity-level actions the leading
+    key is excluded. The prose description is retained alongside the schema.
+  - **`$select=<nav>` (un-expanded) context URL — behavior kept, now documented and tested.**
+    `GET Set(key)?$select=cast` (a navigation, not `$expand`'d) returns a content-less entity (only
+    `@odata.*` annotations) whose `@odata.context` still lists `(cast)`. This is spec-defensible and
+    is kept deliberately: selecting an un-expanded navigation selects its navigation *link*, which the
+    default `odata.metadata=minimal` omits when convention-computable (OData JSON §4.5.9 / §11.2.4.1),
+    while the context URL MUST echo the client's select list (§10.8). Dropping the `(cast)` projection
+    (the rejected alternative) would emit `#Set/$entity`, falsely claiming the full entity was
+    returned — strictly more misleading. Documented in code with the spec basis and covered by a test.
 
 ---
 
