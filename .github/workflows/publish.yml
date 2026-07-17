@@ -65,7 +65,9 @@ jobs:
           dotnet-version: 10.x
 
       # Compute the NuGet version from GitVersion and expose it as
-      # ${{ steps.gitversion.outputs.nuGetVersionV2 }} (e.g. "0.1.0" on main).
+      # ${{ steps.gitversion.outputs.semVer }} (e.g. "1.0.0" on a tagged main).
+      # NOTE: GitVersion 6 removed the v5-era nuGetVersionV2 variable; semVer
+      # is the value NuGet package versions use (e.g. "0.1.0-alpha.163").
       - name: Install GitVersion
         uses: gittools/actions/gitversion/setup@v4
         with:
@@ -81,7 +83,11 @@ jobs:
       - name: Validate release tag matches computed version
         if: github.event_name == 'release'
         run: |
-          COMPUTED="v${{ steps.gitversion.outputs.nuGetVersionV2 }}"
+          COMPUTED="v${{ steps.gitversion.outputs.semVer }}"
+          if [ "$COMPUTED" = "v" ]; then
+            echo "ERROR: GitVersion semVer output is empty - check the gitversion step output names."
+            exit 1
+          fi
           RELEASE_TAG="${{ github.event.release.tag_name }}"
           if [ "$COMPUTED" != "$RELEASE_TAG" ]; then
             echo "ERROR: Release tag '$RELEASE_TAG' does not match computed version '$COMPUTED'"
@@ -107,7 +113,11 @@ jobs:
 
       - name: Pack
         run: |
-          VERSION="${{ steps.gitversion.outputs.nuGetVersionV2 }}"
+          VERSION="${{ steps.gitversion.outputs.semVer }}"
+          if [ -z "$VERSION" ]; then
+            echo "ERROR: GitVersion semVer output is empty - refusing to pack with no version."
+            exit 1
+          fi
           dotnet pack src/OhData.AspNetCore/OhData.AspNetCore.csproj \
             --no-build -c Release \
             -p:Version="$VERSION" \
