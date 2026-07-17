@@ -1,4 +1,4 @@
-# <img src="assets/icon.svg" alt="OhData logo" width="64"/> OhData
+# ![OhData logo](https://raw.githubusercontent.com/en-gen/OhData/main/assets/icon-64.png) OhData
 
 [![CI](https://github.com/en-gen/OhData/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/en-gen/OhData/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/en-gen/OhData/graph/badge.svg)](https://codecov.io/gh/en-gen/OhData)
@@ -25,9 +25,9 @@ dotnet add package EnGen.OhData.Client
 
 | Package | What it does |
 |---------|--------------|
-| **[EnGen.OhData.AspNetCore](https://www.nuget.org/packages/EnGen.OhData.AspNetCore)**<br/>[![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore) | The server framework. |
-| **[EnGen.OhData.Client](https://www.nuget.org/packages/EnGen.OhData.Client)**<br/>[![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.Client)](https://www.nuget.org/packages/EnGen.OhData.Client) | The typed LINQ client. |
-| **[EnGen.OhData.AspNetCore.Swashbuckle](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.Swashbuckle)**<br/>[![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore.Swashbuckle)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.Swashbuckle)<br/>**[EnGen.OhData.AspNetCore.OpenApi](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.OpenApi)**<br/>[![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore.OpenApi)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.OpenApi)<br/>**[EnGen.OhData.AspNetCore.NSwag](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.NSwag)**<br/>[![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore.NSwag)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.NSwag) | Optional API-documentation companions — each documents the OData query parameters (`$filter`, `$orderby`, `$top`, ...) in its respective OpenAPI stack with [one line of registration](#openapi--swagger-documentation). |
+| **[EnGen.OhData.AspNetCore](https://www.nuget.org/packages/EnGen.OhData.AspNetCore)** [![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore) | The server framework. |
+| **[EnGen.OhData.Client](https://www.nuget.org/packages/EnGen.OhData.Client)** [![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.Client)](https://www.nuget.org/packages/EnGen.OhData.Client) | The typed LINQ client. |
+| **[EnGen.OhData.AspNetCore.Swashbuckle](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.Swashbuckle)** [![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore.Swashbuckle)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.Swashbuckle) · **[EnGen.OhData.AspNetCore.OpenApi](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.OpenApi)** [![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore.OpenApi)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.OpenApi) · **[EnGen.OhData.AspNetCore.NSwag](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.NSwag)** [![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore.NSwag)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.NSwag) | Optional API-documentation companions — each documents the OData query parameters (`$filter`, `$orderby`, `$top`, ...) in its respective OpenAPI stack with [one line of registration](#openapi--swagger-documentation). |
 
 ---
 
