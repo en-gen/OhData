@@ -382,6 +382,59 @@ internal static class OhDataEndpointFactory
         return group;
     }
 
+    // Leg 3 (docs-fidelity): an unbound function/action's success response is the bare
+    // Invoke() result (no @odata.context envelope — see MapUnboundOperations below), so the
+    // most honest static schema available is the operation's own declared return type
+    // (UnboundOperationDefinition.ReturnType/ReturnsCollection, already unwrapped from
+    // Task&lt;T&gt;/ValueTask&lt;T&gt; and, for a collection return, down to its element type, at
+    // registration time). A void/Task-returning operation has no 200 response at all — every
+    // call to it produces 204 — so ReturnType is null there and only 204 is registered.
+    private static void AddUnboundOperationProduces(RouteHandlerBuilder rb, UnboundOperationDefinition op)
+    {
+        if (op.ReturnType is not null)
+        {
+            Type docType = op.ReturnsCollection
+                ? typeof(IEnumerable<>).MakeGenericType(op.ReturnType)
+                : op.ReturnType;
+            rb.Produces(200, docType, "application/json");
+        }
+        rb.Produces(204);
+    }
+
+    // Leg 3 (docs-fidelity): a bound function/action's success response goes through
+    // WrapBoundOpResult (see below), which chooses one of three shapes at runtime based on the
+    // operation's actual return value: an IEnumerable<TModel> result gets the collection
+    // envelope, a TModel result gets the single-entity envelope (documented as bare TModel,
+    // mirroring the GetById precedent), and anything else is returned largely as-is. Mirror
+    // that same dispatch here, using BoundOperationDefinition.ReturnType (the delegate's
+    // declared, Task/ValueTask-unwrapped return type, computed once at bind time) so the
+    // documented schema matches what WrapBoundOpResult will actually produce.
+    private static void AddBoundOperationProduces<TModel>(RouteHandlerBuilder rb, BoundOperationDefinition op)
+        where TModel : class
+    {
+        Type? returnType = op.ReturnType;
+        if (returnType is not null)
+        {
+            if (returnType == typeof(TModel))
+            {
+                rb.Produces<TModel>(200);
+            }
+            else if (returnType != typeof(string) &&
+                     typeof(System.Collections.IEnumerable).IsAssignableFrom(returnType) &&
+                     returnType.GetInterfaces().Concat(new[] { returnType })
+                         .Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IEnumerable<>)
+                                   && i.GetGenericArguments()[0] == typeof(TModel)))
+            {
+                rb.Produces<ODataCollectionResponse<TModel>>(200);
+            }
+            else
+            {
+                rb.Produces(200, returnType, "application/json");
+            }
+        }
+        rb.Produces(204);
+    }
+
     private static void MapUnboundOperations(
         RouteGroupBuilder group,
         IReadOnlyList<UnboundOperationDefinition> unboundOps,
@@ -393,7 +446,7 @@ internal static class OhDataEndpointFactory
             if (!op.IsAction)
             {
                 // Unbound function: GET /{prefix}/{FunctionName}?params
-                group.MapGet($"/{op.Name}", async (HttpContext ctx, CancellationToken ct) =>
+                var rb = group.MapGet($"/{op.Name}", async (HttpContext ctx, CancellationToken ct) =>
                 {
                     object?[] args = new object?[opCapture.Parameters.Length];
                     for (int i = 0; i < opCapture.Parameters.Length; i++)
@@ -426,12 +479,13 @@ internal static class OhDataEndpointFactory
                     }
                     object? result = await opCapture.Invoke(args, ct);
                     return result is not null ? Results.Ok(result) : Results.NoContent();
-                }).Produces(200).Produces(204).Produces(400);
+                }).Produces(400);
+                AddUnboundOperationProduces(rb, opCapture);
             }
             else
             {
                 // Unbound action: POST /{prefix}/{ActionName} with JSON body
-                group.MapPost($"/{op.Name}", async (HttpContext ctx, CancellationToken ct) =>
+                var rb = group.MapPost($"/{op.Name}", async (HttpContext ctx, CancellationToken ct) =>
                 {
                     object?[] args = new object?[opCapture.Parameters.Length];
                     if (opCapture.Parameters.Length > 0)
@@ -480,7 +534,22 @@ internal static class OhDataEndpointFactory
                     }
                     object? result = await opCapture.Invoke(args, ct);
                     return result is not null ? Results.Ok(result) : Results.NoContent();
-                }).Produces(200).Produces(204).Produces(400).Produces(415);
+                }).Produces(400).Produces(415);
+                AddUnboundOperationProduces(rb, opCapture);
+                // Leg 2: an action's parameters are deserialized by name out of a JSON body
+                // object (see the loop above), not a single bound CLR type, so there is no one
+                // "the" body type to hand to OhDataRequestBodyMetadata the way there is for an
+                // entity POST/PUT/PATCH. Document a generic object schema with a description
+                // that enumerates the parameter names/types instead.
+                if (opCapture.Parameters.Length > 0)
+                {
+                    rb.WithMetadata(new OhDataRequestBodyMetadata
+                    {
+                        BodyType = typeof(object),
+                        Description = "JSON object with the action's parameters: " +
+                            string.Join(", ", opCapture.Parameters.Select(p => $"{p.Name} ({p.ParameterType.Name})")) + "."
+                    });
+                }
             }
         }
     }
@@ -1122,7 +1191,19 @@ internal static class OhDataEndpointFactory
                 {
                     return ODataError(400, "InvalidQueryOption", ex.Message);
                 }
-            }).WithTags(name).Produces(200).Produces(400)
+            })
+              .WithSummary($"List {name} (queryable)")
+              .WithDescription(
+                  "Returns entities via a profile-supplied IQueryable that the framework applies " +
+                  "OData system query options to directly (Priority-1 read path). Live query " +
+                  "options: $top, $skip" +
+                  (source.FilterEnabled ? ", $filter" : "") +
+                  (source.OrderByEnabled ? ", $orderby" : "") +
+                  (source.SelectEnabled ? ", $select" : "") +
+                  (source.ExpandEnabled ? ", $expand" : "") +
+                  (source.CountEnabled ? ", $count" : "") +
+                  (source.HasSearch ? ", $search" : "") + ".")
+              .WithTags(name).Produces<ODataCollectionResponse<TModel>>(200).Produces(400)
               .WithMetadata(new OhDataQueryOptionsMetadata(
                   FilterEnabled: source.FilterEnabled,
                   OrderByEnabled: source.OrderByEnabled,
@@ -1271,7 +1352,19 @@ internal static class OhDataEndpointFactory
                 {
                     return ODataError(400, "InvalidQueryOption", ex.Message);
                 }
-            }).WithTags(name).Produces(200).Produces(400)
+            })
+              .WithSummary($"List {name} (queryable)")
+              .WithDescription(
+                  "Returns entities via a profile-supplied IQueryable that the framework applies " +
+                  "OData system query options to via ApplyTo (SQL pushdown for EF Core sources). " +
+                  "Live query options: $top, $skip" +
+                  (source.FilterEnabled ? ", $filter" : "") +
+                  (source.OrderByEnabled ? ", $orderby" : "") +
+                  (source.SelectEnabled ? ", $select" : "") +
+                  (source.ExpandEnabled ? ", $expand" : "") +
+                  (source.CountEnabled ? ", $count" : "") +
+                  (source.HasSearch ? ", $search" : "") + ".")
+              .WithTags(name).Produces<ODataCollectionResponse<TModel>>(200).Produces(400)
               .WithMetadata(new OhDataQueryOptionsMetadata(
                   FilterEnabled: source.FilterEnabled,
                   OrderByEnabled: source.OrderByEnabled,
@@ -1292,24 +1385,61 @@ internal static class OhDataEndpointFactory
 
                     var options = new ODataQueryOptions<TModel>(cachedODataQueryContext, ctx.Request);
 
-                    if (options.Filter is not null || options.OrderBy is not null
-                        || options.Top is not null || options.Skip is not null)
+                    // Leg 1 (docs-fidelity): $filter/$orderby remain structurally unsupported on
+                    // this path — GetAll has no ApplyTo/IQueryable pipeline to push them down to.
+                    // $top/$skip, by contrast, are pure post-materialization Skip()/Take() — the
+                    // same class of operation as the already-live $select/$expand/$count below —
+                    // so they are implemented rather than rejected. See docs/query-options.md.
+                    if (options.Filter is not null || options.OrderBy is not null)
                     {
                         return ODataError(400, "UnsupportedQueryOption",
-                            "This resource does not support $filter, $orderby, $top, or $skip. " +
+                            "This resource does not support $filter or $orderby. " +
                             "Configure GetQueryable to enable server-side query processing.");
+                    }
+
+                    // MaxTop caps an *explicit* $top exactly like the GetQueryable path (400
+                    // InvalidQueryOption when exceeded). Deliberately NOT mirrored from
+                    // GetQueryable: the implicit "MaxTop as default page size when $top is
+                    // absent" behavior, and Prefer: maxpagesize. Both exist on GetQueryable to
+                    // produce a bounded page *plus* an @odata.nextLink so the client can retrieve
+                    // the remainder. GetAll has no nextLink/$skiptoken continuation story, so
+                    // silently truncating an omitted $top to MaxTop would drop data with no way
+                    // to page to it — worse than today's behavior of returning everything. This
+                    // choice is documented in docs/query-options.md.
+                    if (options.Top is not null && source.MaxTop.HasValue && options.Top.Value > source.MaxTop.Value)
+                    {
+                        return ODataError(400, "InvalidQueryOption",
+                            $"The value of '$top' ({options.Top.Value}) exceeds the maximum allowed value ({source.MaxTop.Value}).");
                     }
 
                     // B1 fix: the GetAll path routes $select/$expand/$count through the same
                     // ApplyCollectionPipelineAsync used by GetQueryable (see below), so those
                     // three options are functionally live here too and must respect their
                     // capability flags exactly like the other collection paths. $filter/
-                    // $orderby/$top/$skip are excluded from this check — they are rejected
-                    // wholesale above regardless of flag state, since GetAll has no ApplyTo
-                    // pipeline to push them down to.
+                    // $orderby are excluded from this check — they are rejected wholesale
+                    // above regardless of flag state, since GetAll has no ApplyTo pipeline
+                    // to push them down to. $top/$skip need no flag: they are always live,
+                    // exactly like on the GetQueryable path.
                     IResult? capabilityError = CheckCollectionQueryOptionCapabilities(ctx, source, checkFilterOrderBy: false);
                     if (capabilityError is not null) return capabilityError;
                     ValidatePropertyAllowlists(options);
+
+                    // Leg 1: apply Skip($skip) then Take($top) against a materialized item array,
+                    // AFTER the handler call (GetAll or Search) below fills the array and BEFORE
+                    // $select/$expand serialization. @odata.count reflects the PRE-paging total
+                    // (§11.2.6.5 — @odata.count is unaffected by $top/$skip), so it is captured
+                    // from the array length before paging is applied.
+                    (object[] Paged, long PreTotal) ApplyGetAllPaging(object[] items)
+                    {
+                        long preTotal = items.Length;
+                        IEnumerable<object> seq = items;
+                        if (options.Skip is not null && options.Skip.Value > 0)
+                            seq = seq.Skip(options.Skip.Value);
+                        if (options.Top is not null)
+                            seq = seq.Take(options.Top.Value);
+                        object[] paged = ReferenceEquals(seq, items) ? items : seq.ToArray();
+                        return (paged, preTotal);
+                    }
 
                     // Gap 4: $search on GetAll path
                     if (ctx.Request.Query.TryGetValue("$search", out var searchTerm))
@@ -1322,14 +1452,16 @@ internal static class OhDataEndpointFactory
 
                         var searchResults = await s.InvokeSearchAsync(searchTerm.ToString(), ct);
                         object[] searchItems = searchResults.ToArray();
+                        var (pagedSearchItems, searchPreTotal) = ApplyGetAllPaging(searchItems);
 
-                        var (searchFinal, searchSelectedProps) = await ApplyCollectionPipelineAsync(searchItems, options, source, s, jsonOptions, ct);
+                        var (searchFinal, searchSelectedProps) = await ApplyCollectionPipelineAsync(pagedSearchItems, options, source, s, jsonOptions, ct);
                         string searchBaseUrl = BuildBaseUrl(ctx, prefix);
                         var searchEnvelope = new Dictionary<string, object?>();
                         searchEnvelope["@odata.context"] = $"{searchBaseUrl}/$metadata#{AppendSelectSuffix(name, searchSelectedProps)}";
-                        // Batch 5: include @odata.count for search results when $count=true is requested.
+                        // Batch 5: include @odata.count for search results when $count=true is
+                        // requested. Leg 1: reflects the pre-paging total, per §11.2.6.5.
                         if (options.Count?.Value == true)
-                            searchEnvelope["@odata.count"] = (long)searchItems.Length;
+                            searchEnvelope["@odata.count"] = searchPreTotal;
                         searchEnvelope["value"] = searchFinal;
                         return Results.Ok(searchEnvelope);
                     }
@@ -1337,15 +1469,17 @@ internal static class OhDataEndpointFactory
                     object? result = await s.InvokeGetAllAsync(ct);
                     var enumerable = result as IEnumerable<TModel> ?? Enumerable.Empty<TModel>();
                     var rawItems = enumerable.ToArray();
+                    var (pagedItems, preTotal) = ApplyGetAllPaging(rawItems);
 
-                    var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(rawItems, options, source, s, jsonOptions, ct);
+                    var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(pagedItems, options, source, s, jsonOptions, ct);
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
                     envelope["@odata.context"] = $"{baseUrl}/$metadata#{AppendSelectSuffix(name, selectedProps)}";
-                    // Batch 5: §11.2.6.5 — include @odata.count when $count=true is requested on GetAll path.
+                    // Batch 5 / Leg 1: §11.2.6.5 — include @odata.count when $count=true is
+                    // requested on the GetAll path, reflecting the pre-paging total.
                     if (options.Count?.Value == true)
-                        envelope["@odata.count"] = (long)rawItems.Length;
+                        envelope["@odata.count"] = preTotal;
                     envelope["value"] = finalItems;
                     return Results.Ok(envelope);
                 }
@@ -1353,7 +1487,13 @@ internal static class OhDataEndpointFactory
                 {
                     return ODataError(400, "InvalidQueryOption", ex.Message);
                 }
-            }).WithTags(name).Produces(200).Produces(400)
+            })
+              .WithSummary($"List {name} (simple read path)")
+              .WithDescription(
+                  "Returns the full result of the GetAll handler. $top, $skip, $select, $expand, " +
+                  "and $count are applied server-side, after materialization; $filter and " +
+                  "$orderby are not supported on this path — configure GetQueryable to enable them.")
+              .WithTags(name).Produces<ODataCollectionResponse<TModel>>(200).Produces(400)
               .WithMetadata(new OhDataQueryOptionsMetadata(
                   FilterEnabled: false,
                   OrderByEnabled: false,
@@ -1365,7 +1505,9 @@ internal static class OhDataEndpointFactory
                   ExpandEnabled: source.ExpandEnabled,
                   CountEnabled: source.CountEnabled,
                   SearchEnabled: source.HasSearch,
-                  MaxTop: null));
+                  // Leg 1: $top is now live on this path and capped by MaxTop exactly like
+                  // GetQueryable, so the doc metadata should advertise the same cap.
+                  MaxTop: source.MaxTop));
         }
 
         bool hasCountSource = (source is IODataEntitySetEndpointSource odsCheck && odsCheck.HasGetODataQueryable)
@@ -1423,7 +1565,7 @@ internal static class OhDataEndpointFactory
                 {
                     return ODataError(400, "InvalidQueryOption", ex.Message);
                 }
-            }).WithTags(name).Produces<long>(200).Produces(400)
+            }).WithTags(name).Produces<long>(200, "text/plain").Produces(400)
               .WithMetadata(new OhDataQueryOptionsMetadata(
                   FilterEnabled: source.FilterEnabled,
                   OrderByEnabled: false,
@@ -1674,7 +1816,12 @@ internal static class OhDataEndpointFactory
                     }
                 }
             });
-            rb.WithTags(name).Produces<TModel>(201).Produces(400).Produces(415).Produces(501);
+            rb.WithTags(name).Produces<TModel>(201).Produces(400).Produces(415).Produces(501)
+              .WithMetadata(new OhDataRequestBodyMetadata
+              {
+                  BodyType = typeof(TModel),
+                  Description = $"The {name} entity to create."
+              });
         }
 
         if (source.HasPut)
@@ -1773,7 +1920,12 @@ internal static class OhDataEndpointFactory
                     return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
                 }
             });
-            rb.WithTags(name).Produces<TModel>(200).Produces(400).Produces(404).Produces(415);
+            rb.WithTags(name).Produces<TModel>(200).Produces(400).Produces(404).Produces(415)
+              .WithMetadata(new OhDataRequestBodyMetadata
+              {
+                  BodyType = typeof(TModel),
+                  Description = $"The full {name} entity representation to replace the existing resource with."
+              });
         }
 
         if (source.HasPatch)
@@ -1873,7 +2025,14 @@ internal static class OhDataEndpointFactory
             // Note: no .Accepts<TModel>("application/json") here -- that metadata caused ASP.NET
             // Core to reject non-JSON Content-Type requests with an empty 415 body before this
             // handler's manual IsJsonContentType() check (and its OData error formatting) ran.
-            rb.WithTags(name).Produces<TModel>(200).Produces(400).Produces(404).Produces(415);
+            // Leg 2: OhDataRequestBodyMetadata documents the body instead, without triggering
+            // that short-circuit -- see its XML doc for why.
+            rb.WithTags(name).Produces<TModel>(200).Produces(400).Produces(404).Produces(415)
+              .WithMetadata(new OhDataRequestBodyMetadata
+              {
+                  BodyType = typeof(TModel),
+                  Description = $"A partial {name} representation. Only properties present in the JSON body are applied (partial-update semantics) -- omitted properties are left unchanged."
+              });
         }
 
         if (source.HasDelete)
@@ -2013,7 +2172,15 @@ internal static class OhDataEndpointFactory
                     }
                 })
                 .WithTags(name)
-                .Produces(200)
+                // Leg 3 (docs-fidelity): a collection-valued nav route returns the same
+                // @odata.context/value envelope shape as a top-level collection GET; a
+                // single-valued nav route returns the entity itself (mirrors GetById's
+                // TModel-only precedent above).
+                .Produces(200,
+                    navIsCollection
+                        ? typeof(ODataCollectionResponse<>).MakeGenericType(navItemType ?? typeof(object))
+                        : navItemType ?? typeof(object),
+                    "application/json")
                 .Produces(404);
 
             // Batch 3: GET /{name}({key})/{nav}/$count — standalone count for navigation collections (§11.2.3)
@@ -2047,7 +2214,7 @@ internal static class OhDataEndpointFactory
                         }
                     })
                     .WithTags(name)
-                    .Produces(200)
+                    .Produces<long>(200, "text/plain")
                     .Produces(404);
             }
 
@@ -2159,7 +2326,9 @@ internal static class OhDataEndpointFactory
                     }
                 })
                 .WithTags(name)
-                .Produces(200);
+                .Produces(200,
+                    navRefIsCollection ? typeof(ODataRefCollectionResponse) : typeof(ODataRefResponse),
+                    "application/json");
 
             // POST /{name}({key})/{nav}/$ref   — collection nav: add a link (§11.4.6.2)
             // PUT  /{name}({key})/{nav}/$ref   — single-value nav: set the link (§11.4.6.3)
@@ -2213,13 +2382,20 @@ internal static class OhDataEndpointFactory
                     }
                 }
 
+                var refBodyMetadata = new OhDataRequestBodyMetadata
+                {
+                    BodyType = typeof(ODataRefWriteRequest),
+                    Description = $"A reference to the entity to link as {navRefPropertyName}."
+                };
+
                 if (navRefIsCollection)
                 {
                     entityAuthGroup.MapPost($"/{name}({{key}})/{navRefPropertyName}/$ref", handleAddOrSetRef)
                         .WithTags(name)
                         .Produces(204)
                         .Produces(400)
-                        .Produces(415);
+                        .Produces(415)
+                        .WithMetadata(refBodyMetadata);
                 }
                 else
                 {
@@ -2227,7 +2403,8 @@ internal static class OhDataEndpointFactory
                         .WithTags(name)
                         .Produces(204)
                         .Produces(400)
-                        .Produces(415);
+                        .Produces(415)
+                        .WithMetadata(refBodyMetadata);
                 }
             }
 
@@ -2360,7 +2537,12 @@ internal static class OhDataEndpointFactory
                     .Produces(201)
                     .Produces(400)
                     .Produces(404)
-                    .Produces(415);
+                    .Produces(415)
+                    .WithMetadata(new OhDataRequestBodyMetadata
+                    {
+                        BodyType = postNavItemType,
+                        Description = $"The related {postNavPropertyName} entity to create."
+                    });
             }
         }
 
@@ -2440,7 +2622,7 @@ internal static class OhDataEndpointFactory
                         }
                     })
                     .WithTags(name)
-                    .Produces(200)
+                    .Produces(200, typeof(ODataPropertyResponse<>).MakeGenericType(propCapture.ClrType), "application/json")
                     .Produces(204)
                     .Produces(404);
 
@@ -2489,7 +2671,10 @@ internal static class OhDataEndpointFactory
                         }
                     })
                     .WithTags(name)
-                    .Produces(200)
+                    // Leg 3 (docs-fidelity): the raw $value body is either text/plain (every
+                    // scalar type, via FormatRawValue) or application/octet-stream (byte[]
+                    // properties only) — never JSON.
+                    .Produces<string>(200, "text/plain", "application/octet-stream")
                     .Produces(400)
                     .Produces(404);
             }
@@ -2621,13 +2806,21 @@ internal static class OhDataEndpointFactory
                     }
                 }
 
+                var propertyWriteBodyMetadata = new OhDataRequestBodyMetadata
+                {
+                    BodyType = typeof(ODataPropertyWriteRequest<>).MakeGenericType(propClrType),
+                    Description = $"The new value for '{propName}', wrapped in a 'value' member."
+                };
+
                 entityAuthGroup.MapPut($"/{name}({{key}})/{propName}",
                     (string key, HttpContext ctx, CancellationToken ct) => HandleSetPropertyAsync(key, ctx, ct, isPatchVerb: false))
-                    .WithTags(name).Produces(204).Produces(400).Produces(404).Produces(412).Produces(415);
+                    .WithTags(name).Produces(204).Produces(400).Produces(404).Produces(412).Produces(415)
+                    .WithMetadata(propertyWriteBodyMetadata);
 
                 entityAuthGroup.MapMethods($"/{name}({{key}})/{propName}", PatchMethod,
                     (string key, HttpContext ctx, CancellationToken ct) => HandleSetPropertyAsync(key, ctx, ct, isPatchVerb: true))
-                    .WithTags(name).Produces(204).Produces(400).Produces(404).Produces(412).Produces(415);
+                    .WithTags(name).Produces(204).Produces(400).Produces(404).Produces(412).Produces(415)
+                    .WithMetadata(propertyWriteBodyMetadata);
 
                 // DELETE — set the property to null (§11.4.9.3). Non-nullable is a structural
                 // (static, per-type) validation, checked before touching the data source at all —
@@ -2713,7 +2906,8 @@ internal static class OhDataEndpointFactory
                 if (result is null) return Results.NoContent();
                 // Gap 1: @odata.context on function results when return type matches TModel
                 return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions);
-            }).WithTags(name).Produces(200).Produces(204).Produces(400);
+            }).WithTags(name).Produces(400);
+            AddBoundOperationProduces<TModel>(rb, fnCapture);
         }
 
         // Bound actions — POST /{EntitySet}/{ActionName} with JSON body params
@@ -2775,7 +2969,19 @@ internal static class OhDataEndpointFactory
                 if (result is null) return Results.NoContent();
                 // Gap 1: @odata.context on action results when return type matches TModel
                 return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions);
-            }).WithTags(name).Produces(200).Produces(204).Produces(400).Produces(415);
+            }).WithTags(name).Produces(400).Produces(415);
+            AddBoundOperationProduces<TModel>(rb, actionCapture);
+            // Leg 2: see the matching comment on the unbound-action branch of
+            // MapUnboundOperations for why this is a generic object schema rather than a typed one.
+            if (actionCapture.Parameters.Length > 0)
+            {
+                rb.WithMetadata(new OhDataRequestBodyMetadata
+                {
+                    BodyType = typeof(object),
+                    Description = "JSON object with the action's parameters: " +
+                        string.Join(", ", actionCapture.Parameters.Select(p => $"{p.Name} ({p.ParameterType.Name})")) + "."
+                });
+            }
         }
 
         // Gap 7: Entity-level bound functions — GET /{name}({key})/{fn.Name}
@@ -2832,7 +3038,8 @@ internal static class OhDataEndpointFactory
                         return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
                     }
                 })
-                .WithTags(name).Produces(200).Produces(204).Produces(400);
+                .WithTags(name).Produces(400);
+            AddBoundOperationProduces<TModel>(rb, fnCapture);
         }
 
         // Gap 7: Entity-level bound actions — POST /{name}({key})/{action.Name}
@@ -2904,7 +3111,19 @@ internal static class OhDataEndpointFactory
                         return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
                     }
                 })
-                .WithTags(name).Produces(200).Produces(204).Produces(400).Produces(415);
+                .WithTags(name).Produces(400).Produces(415);
+            AddBoundOperationProduces<TModel>(rb, actionCapture);
+            // Leg 2: entity-level Parameters[0] is the route key (see BoundOperationDefinition's
+            // XML doc), so only Parameters[1..] are body parameters here.
+            if (actionCapture.Parameters.Length > 1)
+            {
+                rb.WithMetadata(new OhDataRequestBodyMetadata
+                {
+                    BodyType = typeof(object),
+                    Description = "JSON object with the action's parameters: " +
+                        string.Join(", ", actionCapture.Parameters.Skip(1).Select(p => $"{p.Name} ({p.ParameterType.Name})")) + "."
+                });
+            }
         }
 
     }

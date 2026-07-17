@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.AspNetCore.OpenApi;
 using Microsoft.OpenApi;
 
@@ -24,6 +25,38 @@ public sealed class OhDataOpenApiOperationTransformer : IOpenApiOperationTransfo
     /// <inheritdoc/>
     public Task TransformAsync(OpenApiOperation operation, OpenApiOperationTransformerContext context, CancellationToken cancellationToken)
     {
+        var endpointMetadata = context.Description.ActionDescriptor.EndpointMetadata;
+
+        // Leg 4 (docs-fidelity): Microsoft.AspNetCore.OpenApi already reads WithSummary()/
+        // WithDescription() natively, but this is applied explicitly too (guarded so it never
+        // overwrites a value already set) for symmetry with OhDataNSwagOperationProcessor/
+        // OhDataSwaggerOperationFilter, which need the explicit fallback -- see the comment there.
+        if (string.IsNullOrEmpty(operation.Summary))
+        {
+            string? summary = endpointMetadata.OfType<IEndpointSummaryMetadata>().LastOrDefault()?.Summary;
+            if (!string.IsNullOrEmpty(summary)) operation.Summary = summary;
+        }
+        if (string.IsNullOrEmpty(operation.Description))
+        {
+            string? description = endpointMetadata.OfType<IEndpointDescriptionMetadata>().LastOrDefault()?.Description;
+            if (!string.IsNullOrEmpty(description)) operation.Description = description;
+        }
+
+        // Leg 2 (docs-fidelity): OhDataApiDescriptionProvider (registered by AddOhData) already
+        // gave write routes a real request-body schema by the time operation transformers run --
+        // it augments the ApiDescription's ParameterDescriptions/SupportedRequestFormats, which
+        // the base document generator reads to build operation.RequestBody in the first place.
+        // ApiParameterDescription itself has no free-text description field, though, so the
+        // human-readable text from OhDataRequestBodyMetadata is applied here instead, directly
+        // onto the already-built RequestBody.
+        var bodyMetadata = context.Description.ActionDescriptor.EndpointMetadata
+            .OfType<OhDataRequestBodyMetadata>()
+            .FirstOrDefault();
+        if (bodyMetadata is not null && operation.RequestBody is not null)
+        {
+            operation.RequestBody.Description = bodyMetadata.Description;
+        }
+
         var metadata = context.Description.ActionDescriptor.EndpointMetadata
             .OfType<OhDataQueryOptionsMetadata>()
             .FirstOrDefault();

@@ -52,6 +52,10 @@ jobs:
             --no-build -c Release \
             --collect:"XPlat Code Coverage" \
             --results-directory ./coverage
+          dotnet test src/OhData.AspNetCore.Swashbuckle.Tests/OhData.AspNetCore.Swashbuckle.Tests.csproj \
+            --no-build -c Release \
+            --collect:"XPlat Code Coverage" \
+            --results-directory ./coverage
 
       - name: Pack (dry run)
         run: |

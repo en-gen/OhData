@@ -684,12 +684,16 @@ public class EndpointMappingTests
         Assert.Equal("UnsupportedQueryOption", json.GetProperty("error").GetProperty("code").GetString());
     }
 
+    // Leg 1 (docs-fidelity): $top/$skip are now implemented on the GetAll path (pure
+    // post-materialization Skip()/Take(), the same class of operation as the already-live
+    // $select/$expand/$count) instead of being rejected wholesale alongside $filter/$orderby.
+    // See GetAllTopSkipTests.cs for full coverage of the new behavior.
     [Fact]
-    public async Task GetAll_WithTop_Returns400()
+    public async Task GetAll_WithTop_Returns200()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/Widgets?$top=1");
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
     // ── H3: $count on GetAll rejects $filter ─────────────────────────────────

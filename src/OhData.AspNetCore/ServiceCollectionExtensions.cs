@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using Microsoft.AspNetCore.Mvc.ApiExplorer;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -42,6 +43,13 @@ public static class ServiceCollectionExtensions
         }
 
         services.TryAddSingleton<OhDataRegistrationCollection>();
+
+        // Leg 2 (docs-fidelity): registered once, idempotently, regardless of how many named
+        // OhData registrations the host app adds — TryAddEnumerable de-dupes by implementation
+        // type, so a second/third AddOhData call is a no-op here. See OhDataApiDescriptionProvider
+        // for why this lives in the ApiExplorer pipeline rather than as endpoint metadata alone.
+        services.TryAddEnumerable(
+            ServiceDescriptor.Singleton<IApiDescriptionProvider, OhDataApiDescriptionProvider>());
 
         var builder = new OhDataBuilder(services, name);
         configure(builder);
