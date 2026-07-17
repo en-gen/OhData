@@ -60,7 +60,7 @@ jobs:
         with:
           fetch-depth: 0   # GitVersion needs full history
 
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.x
 
@@ -110,6 +110,10 @@ jobs:
             --no-build -c Release
           dotnet test src/OhData.MicrosoftODataClient.Tests/OhData.MicrosoftODataClient.Tests.csproj \
             --no-build -c Release
+          dotnet test src/OhData.AspNetCore.OpenApi.Tests/OhData.AspNetCore.OpenApi.Tests.csproj \
+            --no-build -c Release
+          dotnet test src/OhData.AspNetCore.NSwag.Tests/OhData.AspNetCore.NSwag.Tests.csproj \
+            --no-build -c Release
 
       - name: Pack
         run: |
@@ -130,11 +134,18 @@ jobs:
             --no-build -c Release \
             -p:Version="$VERSION" \
             -o ./nupkg
+          dotnet pack src/OhData.AspNetCore.OpenApi/OhData.AspNetCore.OpenApi.csproj \
+            --no-build -c Release \
+            -p:Version="$VERSION" \
+            -o ./nupkg
+          dotnet pack src/OhData.AspNetCore.NSwag/OhData.AspNetCore.NSwag.csproj \
+            --no-build -c Release \
+            -p:Version="$VERSION" \
+            -o ./nupkg
 
       # Package quality gate: structural checks (description/license/repo/
-      # tags/readme/xmldoc/symbols/etc. all set, assemblies optimized) beyond
-      # what `dotnet pack` itself enforces. IconMustBeSet is excluded because
-      # a package icon is a deliberately deferred decision, not an oversight.
+      # tags/readme/icon/xmldoc/symbols/etc. all set, assemblies optimized)
+      # beyond what `dotnet pack` itself enforces.
       # Fails the job (non-zero exit) on any validation error.
       - name: Install NuGet package validation tool
         run: |
@@ -142,13 +153,13 @@ jobs:
           echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
 
       - name: Validate package quality
-        run: meziantou.validate-nuget-package ./nupkg/*.nupkg --excluded-rules IconMustBeSet
+        run: meziantou.validate-nuget-package ./nupkg/*.nupkg
 
       # SLSA build provenance: attests these exact package bytes were built
       # by this workflow run from this exact commit. Verifiable later with
       # `gh attestation verify <nupkg> --repo en-gen/OhData`.
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             ./nupkg/*.nupkg
@@ -157,7 +168,7 @@ jobs:
       # Every run — real or rehearsal — leaves the packed output inspectable
       # as a workflow artifact, even when the push step below is skipped.
       - name: Upload packages as workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nuget-packages
           path: ./nupkg/

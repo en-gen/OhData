@@ -20,19 +20,18 @@ against both `.nupkg` files:
 
 ```bash
 dotnet tool install --global Meziantou.Framework.NuGetPackageValidation.Tool
-meziantou.validate-nuget-package ./nupkg/*.nupkg --excluded-rules IconMustBeSet
+meziantou.validate-nuget-package ./nupkg/*.nupkg
 ```
 
-It checks description/author/license/repository/tags/readme are set, XML docs and symbols are present, and
-assemblies are optimized (Release, not Debug) — `IconMustBeSet` is excluded because a package icon is a
-deliberately deferred decision (see memory: 1.0.0 scope decisions), not an oversight. A non-zero exit fails
-the job.
+It checks description/author/license/repository/tags/readme/icon are set, XML docs and symbols are present,
+and assemblies are optimized (Release, not Debug). All rules run — the package icon is `assets/icon.png`,
+embedded in every package via `Directory.Build.props`. A non-zero exit fails the job.
 
-Also gated on `EnablePackageValidation=true` (set on both packable csprojs): MSBuild's own API/ABI compat
-checks, currently limited to cross-TFM (net8.0/net10.0) compatibility since there's no published baseline
-yet. **After 1.0.0 ships**, set `PackageValidationBaselineVersion=1.0.0` in both csprojs (see the comment
-already left next to `EnablePackageValidation` in each) so every later pack is diffed against the public
-1.0.0 API surface and breaking changes fail the build.
+Also gated on `EnablePackageValidation=true` (set on every packable csproj): MSBuild's own API/ABI compat
+checks. The packages that have shipped also set `PackageValidationBaselineVersion` (currently `1.1.0` on
+AspNetCore/Client/Swashbuckle), so every pack is diffed against that published API surface and unintended
+breaking changes fail the build. **Bump the baseline as part of each release**, and add one to newly
+published packages after their first release.
 
 ## One-time setup
 
@@ -71,17 +70,31 @@ reject the release.
 5. The `Publish to NuGet` workflow runs automatically. If the tag-validation step fails, the tag does not
    match what GitVersion computed on `main` — do not force it; fix the branch topology.
 6. Verify: package pages render (README, license, version) at
-   `https://www.nuget.org/packages/EnGen.OhData.AspNetCore`, `.../EnGen.OhData.Client`, and
-   `.../EnGen.OhData.AspNetCore.Swashbuckle`;
+   `https://www.nuget.org/packages/EnGen.OhData.AspNetCore`, `.../EnGen.OhData.Client`,
+   `.../EnGen.OhData.AspNetCore.Swashbuckle`, `.../EnGen.OhData.AspNetCore.OpenApi`, and
+   `.../EnGen.OhData.AspNetCore.NSwag`;
    `dotnet add package EnGen.OhData.AspNetCore` resolves the new version; symbols step through from
-   the NuGet symbol server; the GitHub Release page shows 6 attached assets (a `.nupkg` and a
+   the NuGet symbol server; the GitHub Release page shows 10 attached assets (a `.nupkg` and a
    `.snupkg` per package, uploaded automatically by the workflow); and confirm build provenance with
    `gh attestation verify` (see below).
-7. Back-merge `main` into `develop` (GitFlow) so the tag is reachable and develop's computed version
-   advances past the release. **Use a merge commit, not squash**: squashing the back-merge severs the
-   shared history between `main` and `develop`, so the next release PR reports conflicts on every
-   file both branches touched (this happened with the 1.1.0 release PR after the 1.0.0 back-merge
-   was squashed) and GitVersion loses the merge lineage it uses to compute versions.
+7. Close the release branch out into `develop`. The release branch is merge-committed into **both**
+   `main` (step 3's PR) and `develop`, with one intermediate sync — after the Release is published:
+   ```bash
+   # (a) sync main back into the release branch: picks up main's merge commit (which the vX.Y.Z
+   #     tag points at) and any hotfix that landed on main since the branch was cut. Usually an
+   #     empty no-op merge, but it makes main a full ancestor of develop and the tag reachable.
+   git checkout release/X.Y.Z && git pull --ff-only && git merge origin/main -m "chore: sync main into release/X.Y.Z" && git push
+   # (b) merge-commit the release branch into develop - direct push, never a PR
+   git checkout develop && git pull --ff-only && git merge origin/release/X.Y.Z -m "chore: merge release/X.Y.Z back into develop" && git push
+   # (c) delete the release branch (local and remote)
+   git branch -d release/X.Y.Z && git push origin --delete release/X.Y.Z
+   ```
+   Never use a PR for the develop side: a back-merge PR invites "Squash and merge", which severs the
+   shared history between `main` and `develop` — the next release PR then reports phantom conflicts
+   on every file both branches touched (this happened on both the 1.1.0 and 1.2.0 release PRs) and
+   GitVersion loses the merge lineage it uses to compute versions. The direct merge commit is the one
+   sanctioned exception to the feature-branches-only rule. Release PRs (`release/X.Y.Z` → `main`)
+   must likewise be merged with a merge commit, never squashed.
 
 ## Rehearsal mode (no push, no key required)
 
@@ -119,5 +132,5 @@ expected). Inspect the `.nupkg` as a zip: both TFMs under `lib/`, XML docs besid
 
 ```bash
 dotnet tool install --global Meziantou.Framework.NuGetPackageValidation.Tool
-meziantou.validate-nuget-package ./nupkg-dry/*.nupkg --excluded-rules IconMustBeSet
+meziantou.validate-nuget-package ./nupkg-dry/*.nupkg
 ```

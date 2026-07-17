@@ -14,8 +14,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.*" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
-    <PackageReference Include="Microsoft.OData.Client" Version="8.*" />
-    <PackageReference Include="Microsoft.OData.ModelBuilder" Version="2.*" />
+    <PackageReference Include="NSwag.AspNetCore" Version="[14.*, 15)" />
     <PackageReference Include="xunit" Version="2.*" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.*">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
@@ -25,7 +24,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\OhData.AspNetCore\OhData.AspNetCore.csproj" />
-    <ProjectReference Include="..\OhData.Client\OhData.Client.csproj" />
+    <ProjectReference Include="..\OhData.AspNetCore.NSwag\OhData.AspNetCore.NSwag.csproj" />
   </ItemGroup>
 
 </Project>

@@ -13,6 +13,39 @@ Nothing yet.
 
 ---
 
+## [1.2.0] - 2026-07-17
+
+### Added
+
+- Project logo and package icon (`assets/icon.svg` + 128px `assets/icon.png`): a database cylinder
+  shaped as a speech bubble saying "Oh", with the h doubling as the exclamation mark. Embedded in
+  every package as `PackageIcon` via `Directory.Build.props`; shown in the README header; the
+  publish quality gate's `IconMustBeSet` exclusion is removed (all meziantou rules now run).
+- New `EnGen.OhData.AspNetCore.OpenApi` companion package: `OhDataOpenApiOperationTransformer`
+  (an `IOpenApiOperationTransformer` for the built-in `Microsoft.AspNetCore.OpenApi` pipeline,
+  net10.0) documents the OData query parameters on OhData endpoints, mirroring the Swashbuckle
+  filter's gating exactly. Register via
+  `AddOpenApi(o => o.AddOperationTransformer<OhDataOpenApiOperationTransformer>())`. Ships with
+  its own test suite and `docs/openapi.md`. Note: the package deliberately floors a direct
+  `Microsoft.OpenApi [2.7.5, 3)` dependency so consumers resolve above GHSA-v5pm-xwqc-g5wc
+  (upstream `Microsoft.AspNetCore.OpenApi` still floors at the vulnerable 2.0.0).
+- New `EnGen.OhData.AspNetCore.NSwag` companion package: `OhDataNSwagOperationProcessor`
+  (an NSwag `IOperationProcessor`, net8.0/net10.0) with the same documentation behavior. Register
+  via `AddOpenApiDocument(s => s.OperationProcessors.Add(new OhDataNSwagOperationProcessor()))`.
+  Ships with its own test suite and `docs/nswag.md`.
+- Both new test suites (25 tests) run in CI and in the publish gate; all five packages are packed
+  and published by the release workflow (10 release assets).
+
+### Changed
+
+- `Microsoft.AspNetCore.OData` dependency floor raised from `[9.4.*, 10)` to `[9.5.*, 10)`
+  (full 1,100-test suite verified against 9.5.0).
+- Package validation now diffs `EnGen.OhData.AspNetCore`, `EnGen.OhData.Client`, and
+  `EnGen.OhData.AspNetCore.Swashbuckle` against the published 1.1.0 API surface
+  (`PackageValidationBaselineVersion=1.1.0`), so unintended breaking changes fail the build.
+
+---
+
 ## [1.1.0] - 2026-07-17
 
 ### Added
@@ -453,5 +486,6 @@ post-release-prep audit fix wave (below) found before the tag was actually cut.
 ---
 
 [Unreleased]: https://github.com/en-gen/OhData/commits/develop
+[1.2.0]: https://github.com/en-gen/OhData/releases/tag/v1.2.0
 [1.1.0]: https://github.com/en-gen/OhData/releases/tag/v1.1.0
 [1.0.0]: https://github.com/en-gen/OhData/releases/tag/v1.0.0
