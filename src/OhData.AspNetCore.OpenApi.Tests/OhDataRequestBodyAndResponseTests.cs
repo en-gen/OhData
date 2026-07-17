@@ -100,6 +100,20 @@ public sealed class OhDataRequestBodyAndResponseTests
     }
 
     [Fact]
+    public async Task BoundAction_RequestBodySchema_ExposesNamedParameters_NotEmptyObject()
+    {
+        // Issue #184, item 3: the action body schema is synthesized from the action's parameter
+        // list (Rename(string newName)), so it exposes a real "newName" property rather than the
+        // typeless {} that BodyType = typeof(object) previously produced.
+        using JsonDocument doc = await BuildAndFetchAsync();
+        JsonElement op = GetOperation(doc, "/odata/WriteSurfaceParents/Rename", "post");
+
+        JsonElement schema = RequestSchema(op.GetProperty("requestBody"));
+        Assert.True(SchemaHasProperty(doc, schema, "newName"),
+            "action body schema must expose the 'newName' parameter, not an empty object");
+    }
+
+    [Fact]
     public async Task BoundFunction_HasQueryParameters_WithRequiredFlags()
     {
         // Issue #181: a function's query-string parameters must appear in the generated document

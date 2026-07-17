@@ -136,6 +136,29 @@ public class ApiDescriptionProviderTests
             p => p.Source == BindingSource.Query && p.Name == "key");
     }
 
+    [Theory]
+    [InlineData("PUT")]
+    [InlineData("PATCH")]
+    [InlineData("DELETE")]
+    public async Task KeyWriteStub_DeclaresKeyPathParameter(string method)
+    {
+        // Issue #184, item 2: the immutable-key write stubs (PUT/PATCH/DELETE
+        // /{Set}({key})/{KeyProperty}) return a fixed 400 but previously took no `key` parameter,
+        // so their generated operation omitted the {key} path-parameter declaration its sibling GET
+        // carries — an OpenAPI document with an undeclared template variable is technically invalid.
+        // The stub lambdas now take (string key); assert the {key} path parameter is documented.
+        var (app, provider) = await BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var _ = app;
+
+        // Widget's key is Id, so the key-write route is /odata/Widgets({key})/Id.
+        ApiDescription description = FindDescription(provider, method, "Widgets({key})/Id");
+
+        ApiParameterDescription? keyParam = description.ParameterDescriptions
+            .FirstOrDefault(p => p.Source == BindingSource.Path && p.Name == "key");
+        Assert.NotNull(keyParam);
+        Assert.Equal(typeof(string), keyParam!.Type);
+    }
+
     [Fact]
     public async Task MultipleAddOhDataCalls_ProviderRegisteredOnce_StillWorks()
     {
