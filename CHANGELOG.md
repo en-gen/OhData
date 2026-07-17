@@ -9,8 +9,19 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-OpenAPI docs-fidelity: make the generated OpenAPI documentation and the live server agree
-everywhere. Four independent changes, all additive.
+## [1.3.0] - 2026-07-17
+
+Spec-correctness and OpenAPI docs-fidelity across the read and documentation paths. Every change is
+additive or a bug fix — no breaking API changes. Highlights: un-expanded navigation properties are
+now omitted on every read path (OData JSON Format v4.01 §4.5.1/§11.2.4.2); nested `$expand`/`$select`
+clauses are executed to arbitrary depth; `$metadata` is served as UTF-8 with a prolog, bytes, and
+charset that all agree; `Accept` negotiation follows RFC 7231 §5.3.2 media ranges and q-values; and
+the generated OpenAPI document now matches the live server (write-route request bodies, function
+query parameters, typed responses, and `$top`/`$skip` on the simple `GetAll` read path).
+
+**One response-shape change to be aware of:** clients that relied on the empty `[]`/`null`
+placeholders OhData previously emitted for un-requested navigation properties will no longer receive
+those keys — request the navigation with `$expand` to include it (see the #176 entry under Fixed).
 
 ### Added
 
@@ -665,7 +676,8 @@ post-release-prep audit fix wave (below) found before the tag was actually cut.
 
 ---
 
-[Unreleased]: https://github.com/en-gen/OhData/commits/develop
+[Unreleased]: https://github.com/en-gen/OhData/compare/v1.3.0...develop
+[1.3.0]: https://github.com/en-gen/OhData/releases/tag/v1.3.0
 [1.2.0]: https://github.com/en-gen/OhData/releases/tag/v1.2.0
 [1.1.0]: https://github.com/en-gen/OhData/releases/tag/v1.1.0
 [1.0.0]: https://github.com/en-gen/OhData/releases/tag/v1.0.0
