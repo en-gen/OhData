@@ -64,6 +64,20 @@ everywhere. Four independent changes, all additive.
 
 ### Fixed
 
+- **Bound/unbound function query parameters are now documented in OpenAPI (#181).** A function
+  (`BindFunction`, e.g. `TopRated(int count = 10)`) reads its parameters from the query string, but
+  its handler binds no minimal-API parameters, so ApiExplorer saw none of them and every generated
+  document listed `parameters: []` for the operation even though `?count=2` demonstrably worked.
+  Actions already got request-body documentation via `OhDataRequestBodyMetadata`; functions got
+  nothing. Fixed symmetrically: a new plain `OhDataQueryParametersMetadata` marker (carrying each
+  parameter's name, CLR type, and required/optional flag) is attached to every bound/unbound
+  function route, and `OhDataApiDescriptionProvider` turns it into one query `ApiParameterDescription`
+  per parameter (with a real `ModelMetadata`, `BindingSource.Query`, and `IsRequired` driven by
+  whether the delegate parameter has a C# default). A trailing `CancellationToken` is excluded, and
+  an entity-level function's leading key is skipped (it is already documented as a path parameter).
+  All three doc stacks (Microsoft.AspNetCore.OpenApi, Swashbuckle, NSwag) render it automatically;
+  no per-package configuration needed. New public documentation-only types: `OhDataQueryParameter`
+  and `OhDataQueryParametersMetadata`, in the core `EnGen.OhData.AspNetCore` package.
 - **Un-expanded navigation properties are no longer emitted on read responses (#176).** OhData
   serialised the full CLR entity graph, so a navigation that was not requested via `$expand` still
   surfaced in the payload - a collection nav as `"cast": []`, a single-valued nav as

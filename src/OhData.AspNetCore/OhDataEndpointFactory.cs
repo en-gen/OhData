@@ -471,6 +471,35 @@ internal static class OhDataEndpointFactory
         rb.Produces(204);
     }
 
+    // Issue #181: build the query-parameter documentation marker for a bound/unbound *function*.
+    // Each of these parameters is read from the query string at request time (see the function
+    // registration loops), but the handler binds no minimal-API parameters, so ApiExplorer would
+    // otherwise see none of them and the OpenAPI document would list "parameters: []". A trailing
+    // CancellationToken is already excluded from Parameters by BoundOperationDefinition.From /
+    // UnboundOperationDefinition.From. For entity-level functions the leading key parameter
+    // (Parameters[0]) is a route parameter already documented via BindingSource.Path, so it is
+    // skipped here. Returns null when there is nothing to document.
+    private static OhDataQueryParametersMetadata? BuildFunctionQueryParametersMetadata(
+        ParameterInfo[] parameters, bool skipKey)
+    {
+        int start = skipKey ? 1 : 0;
+        if (parameters.Length <= start) return null;
+
+        var list = new List<OhDataQueryParameter>(parameters.Length - start);
+        for (int i = start; i < parameters.Length; i++)
+        {
+            var p = parameters[i];
+            list.Add(new OhDataQueryParameter
+            {
+                Name = p.Name!,
+                Type = p.ParameterType,
+                IsRequired = !p.HasDefaultValue,
+            });
+        }
+
+        return new OhDataQueryParametersMetadata { Parameters = list };
+    }
+
     private static void MapUnboundOperations(
         RouteGroupBuilder group,
         IReadOnlyList<UnboundOperationDefinition> unboundOps,
@@ -517,6 +546,9 @@ internal static class OhDataEndpointFactory
                     return result is not null ? Results.Ok(result) : Results.NoContent();
                 }).Produces(400);
                 AddUnboundOperationProduces(rb, opCapture);
+                // Issue #181: document the function's query-string parameters.
+                var unboundFnQueryParams = BuildFunctionQueryParametersMetadata(opCapture.Parameters, skipKey: false);
+                if (unboundFnQueryParams is not null) rb.WithMetadata(unboundFnQueryParams);
             }
             else
             {
@@ -3035,6 +3067,9 @@ internal static class OhDataEndpointFactory
                 return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions);
             }).WithTags(name).Produces(400);
             AddBoundOperationProduces<TModel>(rb, fnCapture);
+            // Issue #181: document the function's query-string parameters.
+            var boundFnQueryParams = BuildFunctionQueryParametersMetadata(fnCapture.Parameters, skipKey: false);
+            if (boundFnQueryParams is not null) rb.WithMetadata(boundFnQueryParams);
         }
 
         // Bound actions — POST /{EntitySet}/{ActionName} with JSON body params
@@ -3167,6 +3202,10 @@ internal static class OhDataEndpointFactory
                 })
                 .WithTags(name).Produces(400);
             AddBoundOperationProduces<TModel>(rb, fnCapture);
+            // Issue #181: document the function's query-string parameters (skip the leading key,
+            // which is a route parameter already documented via BindingSource.Path).
+            var entityFnQueryParams = BuildFunctionQueryParametersMetadata(fnCapture.Parameters, skipKey: true);
+            if (entityFnQueryParams is not null) rb.WithMetadata(entityFnQueryParams);
         }
 
         // Gap 7: Entity-level bound actions — POST /{name}({key})/{action.Name}
