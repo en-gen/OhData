@@ -191,12 +191,10 @@ public sealed class OhDataOpenApiOperationTransformerTests
         var set = new HashSet<string>();
         if (operation.TryGetProperty("parameters", out JsonElement arr))
         {
-            foreach (JsonElement p in arr.EnumerateArray())
+            foreach (JsonElement p in arr.EnumerateArray()
+                .Where(p => p.TryGetProperty("in", out JsonElement inProp) && inProp.GetString() == "query"))
             {
-                if (p.TryGetProperty("in", out JsonElement inProp) && inProp.GetString() == "query")
-                {
-                    set.Add(p.GetProperty("name").GetString()!);
-                }
+                set.Add(p.GetProperty("name").GetString()!);
             }
         }
         return set;
