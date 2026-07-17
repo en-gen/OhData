@@ -57,10 +57,10 @@ public class ProductProfile : EntitySetProfile<int, Product>
     }
 }
 
-// 3. Register in Program.cs
+// 3. Register in Program.cs - explicitly, or let assembly scanning find every profile
 builder.Services.AddOhData(o => o
     .WithPrefix("/odata")
-    .AddProfile<ProductProfile>());
+    .AddProfile<ProductProfile>());              // or: .AddProfilesFromAssemblyOf<Program>()
 
 // 4. Map endpoints after app.Build()
 app.MapOhData();
