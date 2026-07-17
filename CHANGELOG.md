@@ -9,6 +9,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+Nothing yet.
+
+---
+
+## [1.1.0] - 2026-07-17
+
 ### Added
 
 - New `EnGen.OhData.AspNetCore.Swashbuckle` companion package containing
@@ -447,4 +453,5 @@ post-release-prep audit fix wave (below) found before the tag was actually cut.
 ---
 
 [Unreleased]: https://github.com/en-gen/OhData/commits/develop
+[1.1.0]: https://github.com/en-gen/OhData/releases/tag/v1.1.0
 [1.0.0]: https://github.com/en-gen/OhData/releases/tag/v1.0.0
