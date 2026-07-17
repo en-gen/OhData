@@ -13,7 +13,7 @@ Nothing yet.
 
 ---
 
-## [1.0.0] - TBD
+## [1.0.0] - 2026-07-16
 
 First public release. Includes the initial framework feature set (drafted as an unpublished
 0.1.0 that never shipped) plus the full conformance, hardening, and performance train, plus a
@@ -432,3 +432,4 @@ post-release-prep audit fix wave (below) found before the tag was actually cut.
 ---
 
 [Unreleased]: https://github.com/en-gen/OhData/commits/develop
+[1.0.0]: https://github.com/en-gen/OhData/releases/tag/v1.0.0
