@@ -1,4 +1,4 @@
-# ![OhData logo](https://raw.githubusercontent.com/en-gen/OhData/main/assets/icon-64.png) OhData
+# ![OhData logo](https://raw.githubusercontent.com/en-gen/OhData/develop/assets/icon-64.png) OhData
 
 [![CI](https://github.com/en-gen/OhData/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/en-gen/OhData/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/en-gen/OhData/graph/badge.svg)](https://codecov.io/gh/en-gen/OhData)
