@@ -745,6 +745,7 @@ internal static class OhDataEndpointFactory
         IEntitySetEndpointSource source,
         IEntitySetEndpointSource requestSource,
         JsonSerializerOptions? jsonOptions,
+        IEdmStructuredType? rootEdmType,
         CancellationToken ct)
     {
         // Stage 1: Serialize once using the configured naming policy.
@@ -833,6 +834,16 @@ internal static class OhDataEndpointFactory
             }
         }
 
+        // Stage 3.5: Omit navigation properties that were not $expand'd (issue #176).
+        // System.Text.Json serialises the entire CLR graph, so every declared navigation
+        // leaks into the payload — as [] (collection) or null (single) when unloaded, or with
+        // data when a sibling $expand pulled it in. OData JSON Format v4.01 §4.5.1 / §11.2.4.2
+        // require a non-expanded navigation to be OMITTED entirely, never emitted inline. This
+        // pass removes each un-expanded navigation and recurses into the expanded ones so their
+        // own un-expanded navigations are stripped too (face 3). Runs after Stage 3 so freshly
+        // injected expansions are present, and before Stage 4 so $select still has final say.
+        OmitUnexpandedNavigations(json, rootEdmType, options.SelectExpand?.SelectExpandClause, serializerOptions);
+
         // Stage 4: Strip unselected properties (if $select requested).
         List<string>? selectedProps = null;
         if (options.SelectExpand?.SelectExpandClause is not null)
@@ -853,6 +864,75 @@ internal static class OhDataEndpointFactory
         }
 
         return (json, selectedProps);
+    }
+
+    // OData JSON Format v4.01 §4.5.1 / §11.2.4.2: a navigation property that was not requested
+    // via $expand MUST NOT appear in the payload — it is never serialised inline as an empty
+    // array or null. System.Text.Json has no notion of $expand and serialises the whole CLR
+    // graph, so this pass walks the serialised JSON against the EDM model and removes every
+    // navigation member that was not expanded at its own level, recursing into the expanded ones
+    // (with their nested $expand context) so a related entity never carries its own un-expanded
+    // navigations. Only members that the EDM declares as navigation properties are touched, so
+    // structural properties and @odata.* annotations are left untouched by construction.
+    private static void OmitUnexpandedNavigations(
+        JsonNode? node,
+        IEdmStructuredType? edmType,
+        SelectExpandClause? clause,
+        JsonSerializerOptions? serializerOptions)
+    {
+        if (edmType is null || node is null) return;
+
+        if (node is JsonArray array)
+        {
+            // Top-level collection, or an expanded collection navigation: each element is an
+            // entity of the same type and shares the same $expand context.
+            foreach (JsonNode? element in array)
+            {
+                OmitUnexpandedNavigations(element, edmType, clause, serializerOptions);
+            }
+            return;
+        }
+
+        if (node is not JsonObject obj) return;
+
+        // Navigation name → its nested $expand clause, for the navigations expanded at THIS level.
+        // Presence means "keep and recurse"; absence means "remove".
+        Dictionary<string, SelectExpandClause?>? expanded = null;
+        if (clause is not null)
+        {
+            foreach (SelectItem item in clause.SelectedItems)
+            {
+                if (item is ExpandedNavigationSelectItem expandItem)
+                {
+                    string navName = expandItem.PathToNavigationProperty.FirstSegment.Identifier;
+                    (expanded ??= new Dictionary<string, SelectExpandClause?>(StringComparer.OrdinalIgnoreCase))
+                        [navName] = expandItem.SelectAndExpand;
+                }
+            }
+        }
+
+        IEnumerable<IEdmNavigationProperty> navProps = edmType is IEdmEntityType entityType
+            ? entityType.NavigationProperties()
+            : edmType.DeclaredNavigationProperties();
+
+        foreach (IEdmNavigationProperty navProp in navProps)
+        {
+            // Match on the serialised (e.g. camelCase) key using the same naming policy that
+            // produced the JSON, so PropertyNamingPolicy round-trips exactly.
+            string serializedKey = serializerOptions?.PropertyNamingPolicy?.ConvertName(navProp.Name) ?? navProp.Name;
+
+            if (expanded is not null && expanded.TryGetValue(navProp.Name, out SelectExpandClause? nested))
+            {
+                if (obj.TryGetPropertyValue(serializedKey, out JsonNode? child))
+                {
+                    OmitUnexpandedNavigations(child, navProp.ToEntityType(), nested, serializerOptions);
+                }
+            }
+            else
+            {
+                obj.Remove(serializedKey);
+            }
+        }
     }
 
     // Batch 4: Inject @odata.etag into a JsonArray using the original (pre-expand) items array
@@ -1019,10 +1099,17 @@ internal static class OhDataEndpointFactory
     // Build a new JsonObject with annotations first, then copy entity properties.
     private static JsonObject ODataEntityNode(
         HttpContext ctx, string prefix, string contextSegment, object entity,
-        JsonSerializerOptions? jsonOptions, string? odataId = null, string? etag = null)
+        JsonSerializerOptions? jsonOptions, string? odataId = null, string? etag = null,
+        IEdmStructuredType? omitNavsForType = null)
     {
         var serialized = JsonSerializer.SerializeToNode(entity, jsonOptions)!.AsObject();
         string baseUrl = BuildBaseUrl(ctx, prefix);
+
+        // #176: on single-entity read responses, omit navigation properties that were not
+        // $expand'd (there is no $expand here, so every declared navigation is stripped). Callers
+        // that must keep the graph inline — deep-insert POST (§11.4.2.2) — pass no type and are
+        // unaffected. See OmitUnexpandedNavigations for the spec citation.
+        OmitUnexpandedNavigations(serialized, omitNavsForType, clause: null, jsonOptions);
 
         var node = new JsonObject
         {
@@ -1046,13 +1133,14 @@ internal static class OhDataEndpointFactory
     private static IResult ODataEntityResult(
         HttpContext ctx, string prefix, string name, object entity,
         JsonSerializerOptions? jsonOptions, string? odataId = null, string? etag = null,
-        IReadOnlyList<string>? selectedProps = null)
+        IReadOnlyList<string>? selectedProps = null,
+        IEdmStructuredType? omitNavsForType = null)
     {
         // M3: when $select projected the response, the context gains the projection suffix
         // ("#Set(prop1,prop2)/$entity", JSON §10.8) and unselected properties are stripped
         // from the body so the context and the payload agree on shape.
         string contextSegment = $"{AppendSelectSuffix(name, selectedProps)}/$entity";
-        JsonObject node = ODataEntityNode(ctx, prefix, contextSegment, entity, jsonOptions, odataId: odataId, etag: etag);
+        JsonObject node = ODataEntityNode(ctx, prefix, contextSegment, entity, jsonOptions, odataId: odataId, etag: etag, omitNavsForType: omitNavsForType);
         if (selectedProps is { Count: > 0 })
         {
             var toRemove = node.Select(p => p.Key)
@@ -1106,6 +1194,11 @@ internal static class OhDataEndpointFactory
 
         string name = source.EntitySetName;
         string prefix = registration.Prefix;
+
+        // Resolve this entity set's EDM type once at startup. It drives the #176 strip that omits
+        // un-expanded navigation properties from read responses (never per-request EDM lookups).
+        IEdmEntityType? rootEdmType =
+            registration.EdmModel.EntityContainer?.FindEntitySet(name)?.EntityType;
 
         var logger = loggerFactory?.CreateLogger("OhData");
 
@@ -1168,7 +1261,7 @@ internal static class OhDataEndpointFactory
 
                     object[] items = queryable.ToArray();
 
-                    var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, ct);
+                    var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, rootEdmType, ct);
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
@@ -1337,7 +1430,7 @@ internal static class OhDataEndpointFactory
                         nextLink = BuildNextPageLink(ctx, token);
                     }
 
-                    var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, ct);
+                    var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, rootEdmType, ct);
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
@@ -1454,7 +1547,7 @@ internal static class OhDataEndpointFactory
                         object[] searchItems = searchResults.ToArray();
                         var (pagedSearchItems, searchPreTotal) = ApplyGetAllPaging(searchItems);
 
-                        var (searchFinal, searchSelectedProps) = await ApplyCollectionPipelineAsync(pagedSearchItems, options, source, s, jsonOptions, ct);
+                        var (searchFinal, searchSelectedProps) = await ApplyCollectionPipelineAsync(pagedSearchItems, options, source, s, jsonOptions, rootEdmType, ct);
                         string searchBaseUrl = BuildBaseUrl(ctx, prefix);
                         var searchEnvelope = new Dictionary<string, object?>();
                         searchEnvelope["@odata.context"] = $"{searchBaseUrl}/$metadata#{AppendSelectSuffix(name, searchSelectedProps)}";
@@ -1471,7 +1564,7 @@ internal static class OhDataEndpointFactory
                     var rawItems = enumerable.ToArray();
                     var (pagedItems, preTotal) = ApplyGetAllPaging(rawItems);
 
-                    var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(pagedItems, options, source, s, jsonOptions, ct);
+                    var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(pagedItems, options, source, s, jsonOptions, rootEdmType, ct);
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
@@ -1649,7 +1742,7 @@ internal static class OhDataEndpointFactory
                         // single-element array so GetById gets the same expand/batch-handler/
                         // select behavior as GET /{Set}, instead of a bespoke reimplementation.
                         var (expandedItems, expandSelectedProps) =
-                            await ApplyCollectionPipelineAsync(new[] { result }, options, source, s, jsonOptions, ct);
+                            await ApplyCollectionPipelineAsync(new[] { result }, options, source, s, jsonOptions, rootEdmType, ct);
                         var entityBody = (JsonObject)expandedItems[0]!;
 
                         // Rebuild with @odata.context/@odata.id first (JSON §4.5: annotations
@@ -1670,7 +1763,7 @@ internal static class OhDataEndpointFactory
                         return Results.Ok(node);
                     }
 
-                    return ODataEntityResult(ctx, prefix, name, result, jsonOptions, odataId: odataId, etag: etagValue, selectedProps: selectedProps);
+                    return ODataEntityResult(ctx, prefix, name, result, jsonOptions, odataId: odataId, etag: etagValue, selectedProps: selectedProps, omitNavsForType: rootEdmType);
                 }
                 catch (FormatException ex)
                 {
