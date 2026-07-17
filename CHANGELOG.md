@@ -77,6 +77,27 @@ everywhere. Four independent changes, all additive.
   everywhere; plus `text/plain` on `/$count`, plus `text/plain`/`application/octet-stream` on
   `/$value`; `$metadata` stays exempt). An absent/empty `Accept` header still means "no constraint"
   → `200`; a present-but-unparseable header is treated as not-acceptable (`406`).
+- **Nested `$expand` / `$select` clauses are now executed (#183).** A request such as
+  `GET /Movies(1)?$expand=Studio($expand=Movies)` previously returned the expanded studio with an
+  empty `"movies": []` - the second-level clause was parsed but never invoked against a handler, so
+  no data was loaded (and nested `$select` inside `$expand` was likewise ignored). Stage-3 expand
+  injection only ever iterated the *top-level* `ExpandedNavigationSelectItem`s. Expansion is now
+  recursive (OData JSON Format v4.01 §11.2.4.2): after injecting a navigation's related entities,
+  the framework resolves the navigation *target*'s own entity set from the EDM, loads its nested
+  `$expand`'d navigations one level deeper, and repeats for arbitrary depth
+  (`$expand=A($expand=B($expand=C))`). Each level honours its own nested `$select` projection, and a
+  nested navigation that is *not* expanded is still omitted (no regression of #176/#179). Batching is
+  preserved per level: a navigation exposing a `BatchHandler` is invoked once for the whole flattened
+  set of entities at that level (rather than once per parent), with the per-entity `Handler` used as
+  the fallback - so a fully batch-registered graph stays batched at every depth, while a per-entity
+  graph is loaded per related entity (N+1 within that one navigation, unchanged from the top-level
+  behaviour). A recursion guard (`MaxNestedExpandDepth = 12`) bounds pathological/adversarial nesting.
+  To let requests reach that depth, the model-bound `$expand` depth written at EDM-build time is
+  raised from Microsoft's default of 2 to the same guard value; the settings-level
+  `MaxExpansionDepth` check remains disabled. Fixes both collection GET and single-entity `GetById`
+  (which ride the same pipeline). Also corrects the `OmitUnexpandedNavigations` doc comment, which
+  described nested-clause expansion that did not previously happen. Applies to `GetAll`,
+  `GetQueryable`, and the Priority-1 `ODataQueryOptions` collection paths.
 - **Bound/unbound function query parameters are now documented in OpenAPI (#181).** A function
   (`BindFunction`, e.g. `TopRated(int count = 10)`) reads its parameters from the query string, but
   its handler binds no minimal-API parameters, so ApiExplorer saw none of them and every generated
