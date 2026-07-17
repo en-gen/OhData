@@ -9,7 +9,66 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Nothing yet.
+OpenAPI docs-fidelity: make the generated OpenAPI documentation and the live server agree
+everywhere. Four independent changes, all additive.
+
+### Added
+
+- **`$top`/`$skip` on the `GetAll` (simple/`IEnumerable`) collection read path.** Previously
+  rejected wholesale with `400 UnsupportedQueryOption` alongside `$filter`/`$orderby` - now applied
+  as a post-materialization `Skip()`/`Take()`, the same class of operation as the already-live
+  `$select`/`$expand`/`$count` on this path. `MaxTop` caps an explicit `$top` exactly like
+  `GetQueryable` does (`400 InvalidQueryOption` when exceeded); an *omitted* `$top` is deliberately
+  **not** implicitly capped to `MaxTop` the way `GetQueryable`'s is, since `GetAll` emits no
+  `@odata.nextLink`/`$skiptoken` continuation and truncating silently would drop data with no way
+  to retrieve the rest - see `docs/query-options.md` for the full rationale. `@odata.count`
+  continues to reflect the pre-paging total. `$filter`/`$orderby` remain rejected.
+- **Request-body documentation for write routes**, without attaching runtime `Accepts`/
+  `IAcceptsMetadata` (which would short-circuit this framework's manual JSON-content-type/body
+  handling and replace the OData error envelope with an empty 415 - see the comment near
+  `OhDataEndpointFactory`'s PATCH route). A new `OhDataApiDescriptionProvider`
+  (`IApiDescriptionProvider`, registered once idempotently inside `AddOhData`) reads a plain
+  `OhDataRequestBodyMetadata` marker attached to each write route (entity POST/PUT/PATCH, nav-POST,
+  property PUT/PATCH, `$ref` POST/PUT, bound/unbound actions) and adds the corresponding body
+  parameter/schema to the route's `ApiDescription`. Every OpenAPI document generator built on
+  ApiExplorer - Microsoft.AspNetCore.OpenApi, NSwag, and Swashbuckle - picks this up automatically;
+  no per-package configuration needed. New public documentation-only types:
+  `ODataPropertyWriteRequest<T>` (`{"value": ...}`) and `ODataRefWriteRequest`
+  (`{"@odata.id": "..."}`). Ships in the core `EnGen.OhData.AspNetCore` package.
+  Swashbuckle's `SwaggerGenerator` dereferences `ApiParameterDescription.ModelMetadata`
+  unconditionally when building a request body's schema and throws a `NullReferenceException` if
+  it's null (unlike Microsoft.AspNetCore.OpenApi/NSwag, which tolerate null and fall back to
+  `.Type`); `OhDataApiDescriptionProvider` supplies a real `ModelMetadata` via the framework's own
+  dependency-free `EmptyModelMetadataProvider` to avoid this.
+- **Typed responses on read routes.** Bare, schema-less `.Produces(200)` calls are replaced with
+  honest schemas across the board: collection GET (on `GetQueryable`, `GetAll`, and Priority-1) and
+  collection-navigation GET now document `ODataCollectionResponse<T>` (a new public DTO mirroring
+  the real `{"@odata.context", "@odata.count", "@odata.nextLink", "value"}` envelope - used for
+  documentation only, never for actual serialization); structural-property GET documents
+  `ODataPropertyResponse<T>`; navigation/entity `$ref` GET documents `ODataRefResponse`/
+  `ODataRefCollectionResponse`; bound/unbound function and action results document the operation's
+  actual declared return type (unwrapped from `Task<T>`/`ValueTask<T>`) instead of a bare `200`;
+  `$count` and `$value` routes now declare their real `text/plain`/`application/octet-stream`
+  content types instead of defaulting to `application/json`.
+- **Read-path summaries** on collection GET routes via `WithSummary()`/`WithDescription()`, so
+  generated docs make clear which read path backs an endpoint: `GetQueryable` → "List {Set}
+  (queryable)" naming the live query options; `GetAll` → "List {Set} (simple read path)" noting
+  that `$top`/`$skip`/`$select`/`$expand`/`$count` are applied server-side post-materialization
+  while `$filter`/`$orderby` are not supported. Microsoft.AspNetCore.OpenApi reads these natively;
+  the NSwag and Swashbuckle companion packages apply the same endpoint metadata explicitly, since
+  neither doc stack surfaces it by default.
+- New `OhData.AspNetCore.Swashbuckle.Tests` project (12 tests), matching the existing
+  `OhData.AspNetCore.OpenApi.Tests`/`OhData.AspNetCore.NSwag.Tests` structure, so the Swashbuckle
+  companion package now has direct test coverage against a real generated `swagger.json` (it
+  previously had none).
+
+### Fixed
+
+- `NoMaxTop_TopDescriptionHasNoCap` (NSwag doc-generation tests): a `GetAll` profile that left
+  `MaxTop` at its `EntitySetDefaults`-provided default (`1000`) was previously documented as having
+  no `$top` cap at all, because the `GetAll` route's `OhDataQueryOptionsMetadata` hardcoded
+  `MaxTop: null` regardless of the profile's actual value (a pre-existing docs/behavior mismatch
+  this program fixes as a side effect of implementing `$top` on `GetAll`).
 
 ---
 

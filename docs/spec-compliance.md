@@ -58,8 +58,8 @@ certification claim.
 | Property allowlists | §11.2.6 (model-bound restrictions) | ✅ | `FilterProperties`/`OrderByProperties`/`SelectProperties`/`ExpandProperties` are enforced at runtime via the EDM's model-bound `NotFilterable`/`NotSortable`/`NotSelectable`/`NotExpandable` annotations: an option referencing a non-allowlisted property returns `400` (`InvalidQueryOption`) |
 | `round()` midpoint rounding | Part 2 §5.1.1.9 | ✅ | Round-half-away-from-zero by default (spec-compliant, e.g. `2.5 → 3`, `-2.5 → -3`) via a post-`ApplyTo` expression rewrite on the `GetQueryable` path. Set profile/global `RoundingMode = BankersRounding` to restore .NET's default banker's rounding (`2.5 → 2`) - see Known Limitations for why that override exists, and `docs/query-options.md#round-midpoint-rounding` |
 | `$orderby` | §11.2.6.2 | ✅ | Multiple keys, asc/desc |
-| `$top` | §11.2.6.3 | ✅ | `MaxTop` server-side cap enforced |
-| `$skip` | §11.2.6.4 | ✅ | |
+| `$top` | §11.2.6.3 | ✅ | `MaxTop` server-side cap enforced on `GetQueryable`, `GetAll`, and Priority-1; `GetAll` applies it as a post-materialization `Take()` and does not implicitly default an omitted `$top` to `MaxTop` (see `docs/query-options.md`) |
+| `$skip` | §11.2.6.4 | ✅ | On `GetAll`, applied as a post-materialization `Skip()` |
 | `$count` (inline and standalone) | §11.2.6.5 | ✅ | Reports the pre-paging total; on the `ODataEntitySetProfile` (`GetODataQueryable`) path a profile that applies its own `$top`/`$skip` must set `ODataQueryResult.TotalCount` or `@odata.count` falls back to the post-page item count |
 | `$search` | §11.2.6.6 | ✅ | Requires a `Search` handler; `400 Bad Request` (`UnsupportedQueryOption`) if unset |
 | `$select` | §11.2.4.1 | ✅ | JSON post-processing; SQL column projection not performed |

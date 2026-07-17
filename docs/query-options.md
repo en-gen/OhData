@@ -10,7 +10,15 @@ OhData supports the OData 4.0 system query options. Which ones are applied depen
 GetAll = (ct) => Task.FromResult<IEnumerable<Product>>(myList);
 ```
 
-Returns all items. The framework does **not** apply `$filter`, `$orderby`, `$skip`, or `$top` to the returned collection - and it does not silently ignore them either. If the client sends any of these, the request is rejected with `400 Bad Request` (`UnsupportedQueryOption`), regardless of the capability flags. `$select`, `$expand`, `$count`, and `$search` (when a `Search` handler is configured) are still honored on this path - but each is gated by its capability flag (`SelectEnabled`/`ExpandEnabled`/`CountEnabled`), exactly like the `GetQueryable` path: sending a disabled option returns `400` (`UnsupportedQueryOption`). Use `GetAll` when your data source is small and in-memory, or when you want complete control over what is returned.
+Returns all items. The framework does **not** apply `$filter` or `$orderby` to the returned collection - and it does not silently ignore them either. If the client sends either of these, the request is rejected with `400 Bad Request` (`UnsupportedQueryOption`), regardless of the capability flags - `GetAll` has no `ApplyTo`/`IQueryable` pipeline to push them down to.
+
+`$top` and `$skip`, by contrast, **are** applied on this path: they are pure post-materialization `Skip()`/`Take()` calls against the array `GetAll` (or `Search`, when `$search` is also present) returned - the same class of operation as the already-live `$select`/`$expand`/`$count` below. `$select`, `$expand`, `$count`, `$top`, `$skip`, and `$search` (when a `Search` handler is configured) are all honored on this path - `$select`/`$expand`/`$count` are each gated by its capability flag (`SelectEnabled`/`ExpandEnabled`/`CountEnabled`), exactly like the `GetQueryable` path: sending a disabled option returns `400` (`UnsupportedQueryOption`). `$top`/`$skip` need no flag - they are always live, mirroring `GetQueryable`.
+
+`MaxTop` caps an **explicit** `$top` on this path exactly like it does on `GetQueryable`: a `$top` value greater than `MaxTop` returns `400 Bad Request` (`InvalidQueryOption`). What is deliberately **not** mirrored from `GetQueryable` is the implicit "apply `MaxTop` (or `Prefer: maxpagesize`) as the default page size when `$top` is absent" behavior, together with the `@odata.nextLink`/`Preference-Applied` machinery that goes with it. `GetQueryable` can offer that because it also emits `@odata.nextLink` (and honors `$skiptoken`) so the client can retrieve the rest of the set across subsequent requests. `GetAll` has no such continuation story - it emits no `@odata.nextLink` - so silently truncating an omitted `$top` to `MaxTop` would drop data with no way for the client to page to it, which is worse than today's "return everything" behavior. Omit `$top` on a `GetAll` route and you get the full set, however large; `Prefer: maxpagesize` is not honored on this path for the same reason.
+
+`@odata.count` (`$count=true`) reflects the **pre-paging** total on this path too, per §11.2.6.5 - it is computed from the full materialized array before `$skip`/`$top` are applied, not from the length of the returned page.
+
+Use `GetAll` when your data source is small and in-memory, or when you want complete control over what is returned.
 
 ### `GetODataQueryable` - full OData pushdown (advanced)
 
@@ -202,7 +210,7 @@ As with `FilterProperties`, this only restricts the entity's own structural prop
 
 ## `$top` and `$skip`
 
-Limit and offset the result set. On the `GetQueryable` path these become SQL `LIMIT`/`OFFSET`.
+Limit and offset the result set. On the `GetQueryable` path these become SQL `LIMIT`/`OFFSET`; on `GetAll` they are applied as an in-memory `Skip()`/`Take()` against the materialized collection, after `GetAll`/`Search` runs and before `$select`/`$expand` are applied to the page.
 
 ```
 GET /odata/Products?$top=20&$skip=40
@@ -220,11 +228,13 @@ builder.Services.AddOhData(o => o
     .AddProfile<ProductProfile>());
 ```
 
-**`MaxTop` defaults to `1000`** (`EntitySetDefaults.MaxTop`) when not overridden per-profile or globally - server-side paging is always active on the `GetQueryable`/Priority-1 paths, even if you never configure it explicitly.
+**`MaxTop` defaults to `1000`** (`EntitySetDefaults.MaxTop`) when not overridden per-profile or globally - server-side paging is always active on the `GetQueryable`/`GetAll`/Priority-1 paths, even if you never configure it explicitly.
 
-Requests with `$top` exceeding `MaxTop` receive `400 Bad Request`.
+Requests with `$top` exceeding `MaxTop` receive `400 Bad Request`, on every collection path (`GetQueryable`, `GetAll`, and Priority-1).
 
-`Prefer: maxpagesize` (see the [`Prefer` header docs](spec-compliance.md#prefer-header)) is capped at `MaxTop` when `$top` is absent: the honored page size is `min(maxpagesize, MaxTop)`. A client cannot use `maxpagesize` to request a page larger than `MaxTop` - it can only ask for a *smaller* page. `Preference-Applied` always echoes the page size actually honored (the clamped value), not the value the client asked for, per §8.2.8.7.
+On `GetQueryable`, an **omitted** `$top` also gets `MaxTop` (or a smaller `Prefer: maxpagesize`) applied implicitly as the default page size, and the response carries `@odata.nextLink` so the client can retrieve the rest. `Prefer: maxpagesize` (see the [`Prefer` header docs](spec-compliance.md#prefer-header)) is capped at `MaxTop` when `$top` is absent: the honored page size is `min(maxpagesize, MaxTop)`. A client cannot use `maxpagesize` to request a page larger than `MaxTop` - it can only ask for a *smaller* page. `Preference-Applied` always echoes the page size actually honored (the clamped value), not the value the client asked for, per §8.2.8.7.
+
+**`GetAll` does not mirror the "omitted `$top`" behavior above.** `MaxTop` only caps an explicit `$top` on this path; an omitted `$top` returns the full set, and `Prefer: maxpagesize` is not honored. `GetAll` never emits `@odata.nextLink` or accepts `$skiptoken`, so implicitly truncating an omitted `$top` to `MaxTop` would silently drop data with no way for the client to retrieve the remainder - see the `GetAll` section above for the full rationale.
 
 ---
 
@@ -371,7 +381,7 @@ GET /odata/Products?$search=widget
 
 Without a `Search` handler, `$search` requests return `400 Bad Request` (`UnsupportedQueryOption`). The interpretation of the search term is entirely up to the handler.
 
-On the `GetQueryable` and `GetAll` paths, `$search` composes with the other query options: the handler's results become the base sequence, and `$filter`, `$orderby`, `$top`, and `$skip` are then applied on top of the search results (in that order).
+On the `GetQueryable` path, `$search` composes with the other query options: the handler's results become the base sequence, and `$filter`, `$orderby`, `$top`, and `$skip` are then applied on top of the search results (in that order). On the `GetAll` path, `$search` composes the same way with the options `GetAll` supports: the handler's results become the base sequence, and `$top`/`$skip` are applied on top of them (`$filter`/`$orderby` remain unsupported on this path regardless of `$search`).
 
 ---
 

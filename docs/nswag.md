@@ -48,6 +48,20 @@ Routes with no `OhDataQueryOptionsMetadata` (non-OhData minimal API endpoints in
 
 Note that `OhDataQueryOptionsMetadata` is attached to more than the top-level collection GET route - it's also present on `GET /{EntitySet}/$count` and on the single-entity `GET /{EntitySet}({key})` route (which supports `$select`/`$expand` in its own right). Because the processor's `$top`/`$skip` guard only checks "is `OhDataQueryOptionsMetadata` present and is `$top` absent", both of those routes will also pick up `$top`/`$skip` parameters even though paging doesn't apply to them - this is intentional, existing behavior shared with the Swashbuckle filter, not something specific to the NSwag integration.
 
+## Request bodies, typed collection responses, and read-path summaries
+
+`OhDataApiDescriptionProvider` (registered by `AddOhData` in the core package - no NSwag-specific
+setup needed) gives write routes a real request-body schema, and collection GET routes document a
+typed `ODataCollectionResponse<T>` envelope instead of a bare `200`. See
+[openapi.md](openapi.md#request-bodies-on-write-routes) for the full description; it applies
+identically here since all three doc stacks read the same `ApiDescription`.
+
+One thing NSwag does *not* pick up automatically: `WithSummary()`/`WithDescription()` on
+collection GET routes (see [openapi.md](openapi.md#read-path-summaries)). `OhDataNSwagOperationProcessor`
+applies them explicitly from `IEndpointSummaryMetadata`/`IEndpointDescriptionMetadata` endpoint
+metadata, without overwriting a summary/description NSwag already populated from another source
+(e.g. XML doc comments).
+
 ## Versioned registrations
 
 For multiple `AddOhData`/`MapOhData` registrations, partition documents by NSwag document name the same way you would with Swashbuckle's `DocInclusionPredicate` - see [versioning.md](versioning.md) for the OhData side of setting `WithGroupName()` on the route group, and configure `AddOpenApiDocument` per document name / API group as usual for NSwag.

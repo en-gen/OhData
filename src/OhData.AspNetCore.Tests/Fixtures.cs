@@ -309,6 +309,21 @@ internal class MaxTopProfile : EntitySetProfile<int, Widget>
     }
 }
 
+/// <summary>Leg 1 (docs-fidelity): GetAll profile with a MaxTop cap, for $top/$skip tests.</summary>
+internal class GetAllMaxTopProfile : EntitySetProfile<int, Widget>
+{
+    private readonly List<Widget> _store = Enumerable.Range(1, 20)
+        .Select(i => new Widget { Id = i, Name = $"W{i}" }).ToList();
+
+    public GetAllMaxTopProfile() : base(x => x.Id)
+    {
+        EntitySetName = "GetAllMaxTopWidgets";
+        MaxTop = 5; // per-profile cap
+        CountEnabled = true;
+        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store);
+    }
+}
+
 /// <summary>Profile for testing role-based authorization (M9 — IReadOnlyList Roles path).</summary>
 internal class RoleAuthProfile : EntitySetProfile<int, Widget>
 {

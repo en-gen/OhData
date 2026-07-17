@@ -27,6 +27,7 @@ ignore:
   - "src/OhData.MicrosoftODataClient.Tests/**"
   - "src/OhData.AspNetCore.OpenApi.Tests/**"
   - "src/OhData.AspNetCore.NSwag.Tests/**"
+  - "src/OhData.AspNetCore.Swashbuckle.Tests/**"
   - "src/OhData.TestBench.AspNetCore/**"
   - "src/OhData.ClientTestBench.AspNetCore/**"
   - "src/OhData.Client.Benchmarks/**"
