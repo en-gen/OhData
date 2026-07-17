@@ -7,9 +7,9 @@
 
 Convention-based OData 4.0 server and typed client for ASP.NET Core. Define a profile class, assign handler delegates, and get a spec-faithful OData API - no controllers required (see [docs/spec-compliance.md](docs/spec-compliance.md) for exactly what's covered). Consume it from .NET with a fluent, LINQ-native client.
 
-Try it live — fire real `$filter`/`$orderby`/`$expand` queries (writes too) at a deployed OhData demo service from an interactive API reference, or hit the raw [v1 service document](https://ohdata.onrender.com/v1) directly:
+Try it live — fire real `$filter`/`$orderby`/`$expand` queries (writes too) at a deployed OhData demo service from an interactive API reference, or hit the raw [v2 service document](https://ohdata.onrender.com/v2) directly:
 
-[![Scalar](https://img.shields.io/badge/Scalar-1A1A1A?logo=scalar&logoColor=white)](https://ohdata.onrender.com/scalar/v1)
+[![Scalar](https://img.shields.io/badge/Scalar-1A1A1A?logo=scalar&logoColor=white)](https://ohdata.onrender.com/scalar/v2)
 [![Swagger UI](https://img.shields.io/badge/Swagger_UI-85EA2D?logo=swagger&logoColor=black)](https://ohdata.onrender.com/swagger)
 
 (Free-tier hosting: the first load after a quiet spell takes a moment to wake up, and demo data is ephemeral — anything you write disappears whenever the instance recycles.)
