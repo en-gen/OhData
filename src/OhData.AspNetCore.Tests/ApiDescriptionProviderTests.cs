@@ -114,6 +114,29 @@ public class ApiDescriptionProviderTests
     }
 
     [Fact]
+    public async Task EntityBoundFunction_DocumentsNonKeyQueryParameters_ButNotTheKey()
+    {
+        // Issue #181: an entity-bound function's leading key parameter is a route/path parameter
+        // (documented via BindingSource.Path), so only the parameters AFTER the key are added as
+        // query parameters. Exercises the skip-key branch of BuildFunctionQueryParametersMetadata.
+        var (app, provider) = await BuildAsync(o => o.AddProfile<FunctionParamProfile>());
+        await using var _ = app;
+
+        ApiDescription description = FindDescription(provider, "GET", "Describe");
+
+        ApiParameterDescription? suffix = description.ParameterDescriptions
+            .FirstOrDefault(p => p.Source == BindingSource.Query && p.Name == "suffix");
+        Assert.NotNull(suffix);
+        Assert.Equal(typeof(string), suffix!.Type);
+        Assert.NotNull(suffix.ModelMetadata);
+        Assert.True(suffix.IsRequired); // no C# default -> required
+
+        // The key must NOT be surfaced as a query parameter.
+        Assert.DoesNotContain(description.ParameterDescriptions,
+            p => p.Source == BindingSource.Query && p.Name == "key");
+    }
+
+    [Fact]
     public async Task MultipleAddOhDataCalls_ProviderRegisteredOnce_StillWorks()
     {
         // Leg 2: OhDataApiDescriptionProvider is registered via TryAddEnumerable inside
@@ -158,10 +181,16 @@ public class ApiDescriptionProviderTests
         {
             EntitySetName = "FnParamWidgets";
             GetAll = (ct) => Task.FromResult<System.Collections.Generic.IEnumerable<Widget>>(System.Array.Empty<Widget>());
+            GetById = (id, ct) => Task.FromResult<Widget?>(null);
             BindFunction(TopRated);
+            BindEntityFunction(Describe);
         }
 
         private Task<System.Collections.Generic.IEnumerable<Widget>> TopRated(string term, int count = 10) =>
             Task.FromResult<System.Collections.Generic.IEnumerable<Widget>>(System.Array.Empty<Widget>());
+
+        // Entity-bound function: first parameter is the entity key (a route/path parameter),
+        // followed by a real query parameter. Exercises the skip-key documentation path.
+        private Task<string> Describe(int key, string suffix) => Task.FromResult("");
     }
 }
