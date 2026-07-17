@@ -14,16 +14,6 @@
 		-->
 		<RootNamespace>OhData.AspNetCore</RootNamespace>
 		<EnablePackageValidation>true</EnablePackageValidation>
-		<!--
-		  Microsoft.AspNetCore.OpenApi 10.x depends on "Microsoft.OpenApi >= 2.0.0", which
-		  resolves to the exact 2.0.0 floor here and trips NU1903 (GHSA-v5pm-xwqc-g5wc) under
-		  this SDK's default "all" NuGetAuditMode, because that mode audits transitive
-		  packages too. Restoring the .NET 8-era "direct" mode (audit only directly
-		  referenced packages) avoids the error without adding an unwanted direct
-		  Microsoft.OpenApi package reference, which would otherwise show up as a third
-		  dependency in this package's nuspec alongside OhData.AspNetCore.
-		-->
-		<NuGetAuditMode>direct</NuGetAuditMode>
 	</PropertyGroup>
 
 	<ItemGroup>
@@ -36,6 +26,16 @@
 
 	<ItemGroup>
 		<PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="[10.*, 11)" />
+		<!--
+		  Deliberate direct reference: Microsoft.AspNetCore.OpenApi floors its
+		  Microsoft.OpenApi dependency at 2.0.0, which is vulnerable
+		  (GHSA-v5pm-xwqc-g5wc, patched in 2.7.5). Referencing the patched range
+		  directly floors OUR consumers at the safe version via this package's
+		  nuspec instead of suppressing the NU1903 audit and shipping the
+		  vulnerable resolution. Remove when Microsoft.AspNetCore.OpenApi raises
+		  its own floor past 2.7.4.
+		-->
+		<PackageReference Include="Microsoft.OpenApi" Version="[2.7.5, 3)" />
 	</ItemGroup>
 
 </Project>
