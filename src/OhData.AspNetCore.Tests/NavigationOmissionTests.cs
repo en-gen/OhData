@@ -147,9 +147,8 @@ public class NavigationOmissionTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<OmitNavMovieProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/OmitNavMovies?$expand=Studio");
 
-        foreach (var item in json.GetProperty("value").EnumerateArray())
+        foreach (var studio in json.GetProperty("value").EnumerateArray().Select(item => item.GetProperty("studio")))
         {
-            var studio = item.GetProperty("studio");
             Assert.False(studio.TryGetProperty("movies", out _), "expanded studio's own un-expanded nav 'movies' must be omitted");
         }
     }
