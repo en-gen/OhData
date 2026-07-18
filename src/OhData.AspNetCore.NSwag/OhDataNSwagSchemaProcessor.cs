@@ -64,10 +64,11 @@ public sealed class OhDataNSwagSchemaProcessor : ISchemaProcessor
             .OfType<PropertyInfo>()
             .Select(property => GetJsonPropertyName(property, context.Settings)))
         {
-            if (context.Schema.Properties.Remove(jsonName))
-            {
-                context.Schema.RequiredProperties.Remove(jsonName);
-            }
+            // Unconditional on both collections: removing a name Properties doesn't contain is a
+            // no-op, and a RequiredProperties entry without a matching property is invalid schema
+            // regardless, so there is nothing to guard.
+            context.Schema.Properties.Remove(jsonName);
+            context.Schema.RequiredProperties.Remove(jsonName);
         }
     }
 
