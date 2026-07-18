@@ -83,6 +83,18 @@ internal sealed class ResourceCrudProfile : ResProfileBase
     }
 }
 
+internal sealed class ResourceInvokeProfile : ResProfileBase
+{
+    public ResourceInvokeProfile()
+    {
+        EntitySetName = "ResInvoke";
+        BindEntityFunction(GetTag);
+        ConfigureAuthorization(a => a.Invoke(i => i.RequireResource()));
+    }
+
+    private Task<string> GetTag(int key) => Task.FromResult("tag");
+}
+
 internal sealed class ResourcePolicyProfile : ResProfileBase
 {
     public ResourcePolicyProfile()
@@ -237,6 +249,29 @@ public class PerOperationResourceAuthTests
         await using var fx = await ResourceAuthTestHost.BuildAsync(o => o.AddProfile<ResourceCrudProfile>());
         var resp = await fx.Client.SendAsync(Req(HttpMethod.Get, "/odata/ResItems(999)", "alice"));
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    // ── Bad key format on a resource-checked route → 400 (filter parse guard) ─
+
+    [Fact]
+    public async Task BadKeyFormat_Returns400()
+    {
+        await using var fx = await ResourceAuthTestHost.BuildAsync(o => o.AddProfile<ResourceCrudProfile>());
+        var resp = await fx.Client.SendAsync(Req(HttpMethod.Get, "/odata/ResItems(not-an-int)", "alice"));
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    // ── Entity-bound Invoke is resource-checked (built-in Invoke requirement) ─
+
+    [Theory]
+    [InlineData("alice", true)]
+    [InlineData("bob", false)]
+    public async Task EntityBoundInvoke_OwnerOnly(string identity, bool passes)
+    {
+        await using var fx = await ResourceAuthTestHost.BuildAsync(o => o.AddProfile<ResourceInvokeProfile>());
+        var resp = await fx.Client.SendAsync(Req(HttpMethod.Get, "/odata/ResInvoke(1)/GetTag", identity));
+        if (passes) Assert.True(Passed(resp.StatusCode), $"got {(int)resp.StatusCode}");
+        else Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
     }
 
     // ── Startup guard: resource write without GetById throws ────────────────
