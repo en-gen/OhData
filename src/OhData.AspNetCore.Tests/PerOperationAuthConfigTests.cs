@@ -142,7 +142,7 @@ public class PerOperationAuthConfigTests
             o => o.AddProfile<PolicyProfile>(),
             policies: p => p.AddPolicy("EditorsPolicy", b => b.RequireRole("editor")));
 
-        var req = new HttpRequestMessage(HttpMethod.Put, "/odata/PolSet(1)")
+        using var req = new HttpRequestMessage(HttpMethod.Put, "/odata/PolSet(1)")
         {
             Content = new StringContent("{\"id\":1,\"name\":\"U\"}", Encoding.UTF8, "application/json"),
         };
@@ -160,7 +160,7 @@ public class PerOperationAuthConfigTests
             o => o.AddProfile<PolicyProfile>(),
             policies: p => p.AddPolicy("EditorsPolicy", b => b.RequireRole("editor")));
 
-        var req = new HttpRequestMessage(HttpMethod.Put, "/odata/PolSet(1)")
+        using var req = new HttpRequestMessage(HttpMethod.Put, "/odata/PolSet(1)")
         {
             Content = new StringContent("{\"id\":1,\"name\":\"U\"}", Encoding.UTF8, "application/json"),
         };
@@ -191,7 +191,7 @@ public class PerOperationAuthConfigTests
     public async Task RequireRoleAndClaim_AreAndCombined(string identity, string roles, string claims, HttpStatusCode expected)
     {
         await using var fx = await PerOpAuthTestHost.BuildAsync(o => o.AddProfile<ClaimProfile>());
-        var req = new HttpRequestMessage(HttpMethod.Put, "/odata/ClaimSet(1)")
+        using var req = new HttpRequestMessage(HttpMethod.Put, "/odata/ClaimSet(1)")
         {
             Content = new StringContent("{\"id\":1,\"name\":\"U\"}", Encoding.UTF8, "application/json"),
         };
@@ -207,7 +207,7 @@ public class PerOperationAuthConfigTests
     public async Task RequireRoleAndClaim_BothSatisfied_Passes()
     {
         await using var fx = await PerOpAuthTestHost.BuildAsync(o => o.AddProfile<ClaimProfile>());
-        var req = new HttpRequestMessage(HttpMethod.Put, "/odata/ClaimSet(1)")
+        using var req = new HttpRequestMessage(HttpMethod.Put, "/odata/ClaimSet(1)")
         {
             Content = new StringContent("{\"id\":1,\"name\":\"U\"}", Encoding.UTF8, "application/json"),
         };

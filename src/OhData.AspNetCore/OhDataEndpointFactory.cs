@@ -1805,9 +1805,8 @@ internal static class OhDataEndpointFactory
             if (operationAuthRules is null) return null;
             OperationAuthRule? generic = null;
             OperationAuthRule? named = null;
-            foreach (var rule in operationAuthRules)
+            foreach (var rule in operationAuthRules.Where(rule => (rule.Operations & category) != 0))
             {
-                if ((rule.Operations & category) == 0) continue;
                 if (rule.BoundOperationName is null)
                 {
                     generic = rule; // last generic rule for this category wins
@@ -1842,10 +1841,9 @@ internal static class OhDataEndpointFactory
             }
 
             // Named policies apply as separate RequireAuthorization(name) calls (they stack → AND).
-            foreach (var req in rule.Requirements)
+            foreach (var req in rule.Requirements.Where(r => r.Kind == AuthRequirementKind.Policy))
             {
-                if (req.Kind == AuthRequirementKind.Policy)
-                    rb.RequireAuthorization(req.Name!);
+                rb.RequireAuthorization(req.Name!);
             }
 
             // Inline requirements (authenticated/role/claim) replay onto one AuthorizationPolicyBuilder.
