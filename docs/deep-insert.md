@@ -99,6 +99,34 @@ typically do after `SaveChanges`), those appear in the response body automatical
 with `Location`/`OData-EntityId`/`Preference-Applied` headers, no body. The handler still receives
 and persists the full graph — only the *response* is suppressed.
 
+## Limiting request-body size (#203)
+
+Deep-insert graphs are the largest bodies OhData typically accepts, so a request-body-size limit is
+the natural guard. Set `MaxRequestBodyBytes` — globally via `WithDefaults`, or per entity set on the
+profile (the profile value overrides the global default):
+
+```csharp
+builder.Services.AddOhData(o => o
+    .WithDefaults(d => d.MaxRequestBodyBytes = 1_000_000) // 1 MB app-wide default
+    .AddProfile<OrderProfile>());
+
+public class OrderProfile : EntitySetProfile<int, Order>
+{
+    public OrderProfile()
+    {
+        MaxRequestBodyBytes = 4_000_000; // this set accepts up to 4 MB (large deep-insert graphs)
+        // ...
+    }
+}
+```
+
+A write request (`POST`/`PUT`/`PATCH`, including navigation/`$ref`/property/action variants) whose
+body exceeds the limit is rejected with `413 Payload Too Large` and the OData error envelope, before
+the body is deserialized. Enforcement is twofold: an oversized `Content-Length` is rejected up front,
+and the per-request Kestrel `MaxRequestBodySize` is set so a chunked / no-`Content-Length` body is
+bounded during read (its overflow is mapped to the same `413`). The default is `null` — **no
+OhData-level limit**, leaving the host's Kestrel default (~30 MB) in effect.
+
 ## `@odata.bind` — not supported
 
 `prop@odata.bind` (JSON format §8.5 — link to an **existing** entity instead of creating a new

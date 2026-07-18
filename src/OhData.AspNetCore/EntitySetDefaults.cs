@@ -57,6 +57,28 @@ public class EntitySetDefaults
         }
     }
 
+    private long? _maxRequestBodyBytes;
+
+    /// <summary>
+    /// Default maximum request-body size, in bytes, for write operations (POST/PUT/PATCH and their
+    /// navigation/<c>$ref</c>/property/action variants) across all entity sets. <c>null</c> (the
+    /// default) applies no OhData-level limit — the host's Kestrel <c>MaxRequestBodySize</c> (~30 MB
+    /// by default) still applies. When set, a request whose body exceeds the limit is rejected with
+    /// <c>413 Payload Too Large</c> before the body is deserialized. Profile-level
+    /// <see cref="EntitySetProfile{TKey,TModel}.MaxRequestBodyBytes"/> overrides this value. Must be
+    /// a positive value or <c>null</c>.
+    /// </summary>
+    public long? MaxRequestBodyBytes
+    {
+        get => _maxRequestBodyBytes;
+        set
+        {
+            if (value is <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxRequestBodyBytes), value, "MaxRequestBodyBytes must be a positive value or null.");
+            _maxRequestBodyBytes = value;
+        }
+    }
+
     /// <summary>
     /// When <c>true</c> (the default), a <c>DELETE</c> on a non-existent resource returns
     /// <c>204 No Content</c> — idempotent per OData spec.
