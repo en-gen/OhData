@@ -11,6 +11,21 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Production hardening (milestone 1.4.0): safe-by-default limits across the read paths.
 
+### Changed
+
+- **The `GetAll` (simple/`IEnumerable`) read path now caps an omitted `$top` to `MaxTop` (#201).**
+  Previously, omitting `$top` on a `GetAll` route returned the **entire** backing collection, however
+  large — a deliberate decision at the time, because `GetAll` had no `@odata.nextLink` continuation
+  story. #195 established an offset-`$skip` continuation for a re-enumerable source, and `GetAll` is
+  re-enumerable, so that blocker is gone. An omitted `$top` is now capped to `MaxTop` (or a smaller
+  `Prefer: maxpagesize`, clamped and echoed via `Preference-Applied`) with a `$skip` `@odata.nextLink`
+  for the remainder — making all three collection read paths (`GetQueryable`, `GetAll`, Priority-1)
+  uniformly safe-by-default. **This is a response-shape change** for `GetAll` routes whose source
+  exceeds `MaxTop` (default `1000`): such a request now returns a bounded page plus `@odata.nextLink`
+  instead of the full set. Sources **under** `MaxTop` are unaffected (the page isn't full, so no
+  `nextLink` is emitted). **To opt out** and return the full set in one response, set `MaxTop = null`
+  on the profile. `@odata.count` continues to reflect the pre-paging total.
+
 ### Fixed
 
 - **The Priority-1 (`ODataEntitySetProfile` / `GetODataQueryable`) read path now enforces `MaxTop` (#195).**
