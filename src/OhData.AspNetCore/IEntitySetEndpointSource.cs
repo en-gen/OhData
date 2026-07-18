@@ -39,6 +39,7 @@ internal interface IEntitySetEndpointSource
     IReadOnlyList<BoundOperationDefinition> BoundActions { get; }
 
     int? MaxTop { get; }
+    long? MaxRequestBodyBytes { get; }
     bool IdempotentDelete { get; }
     bool AllowUpsert { get; }
     bool HasSearch { get; }

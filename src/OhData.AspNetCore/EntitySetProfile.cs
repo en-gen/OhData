@@ -258,6 +258,28 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         }
     }
     private int? _resolvedMaxTop;
+
+    private long? _maxRequestBodyBytes;
+
+    /// <summary>
+    /// Maximum request-body size, in bytes, for this entity set's write operations (POST/PUT/PATCH
+    /// and their navigation/<c>$ref</c>/property/action variants). A request whose body exceeds this
+    /// limit is rejected with <c>413 Payload Too Large</c> before deserialization. Inherits from
+    /// <see cref="EntitySetDefaults.MaxRequestBodyBytes"/> when <c>null</c>; when both are <c>null</c>
+    /// no OhData-level limit applies (the host's Kestrel <c>MaxRequestBodySize</c> still bounds it).
+    /// Must be a positive value.
+    /// </summary>
+    protected long? MaxRequestBodyBytes
+    {
+        get => _maxRequestBodyBytes;
+        init
+        {
+            if (value is <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxRequestBodyBytes), value, "MaxRequestBodyBytes must be a positive value or null.");
+            _maxRequestBodyBytes = value;
+        }
+    }
+    private long? _resolvedMaxRequestBodyBytes;
     private bool _resolvedFilterEnabled;
     private bool _resolvedOrderByEnabled;
     private bool _resolvedSelectEnabled;
@@ -408,6 +430,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         var entitySet = builder.EntitySet<TModel>(EntitySetName);
 
         _resolvedMaxTop = MaxTop ?? defaults.MaxTop;
+        _resolvedMaxRequestBodyBytes = MaxRequestBodyBytes ?? defaults.MaxRequestBodyBytes;
         _resolvedIdempotentDelete = IdempotentDelete ?? defaults.IdempotentDelete;
         _resolvedAllowUpsert = AllowUpsert ?? defaults.AllowUpsert;
         _resolvedFilterEnabled = FilterEnabled ?? defaults.FilterEnabled;
@@ -1532,6 +1555,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         => LazyInitializer.EnsureInitialized(ref _keyToUrl, CompileKeyToUrl)((TModel)model);
 
     int? IEntitySetEndpointSource.MaxTop => _resolvedMaxTop;
+    long? IEntitySetEndpointSource.MaxRequestBodyBytes => _resolvedMaxRequestBodyBytes;
     bool IEntitySetEndpointSource.IdempotentDelete => _resolvedIdempotentDelete;
     bool IEntitySetEndpointSource.AllowUpsert => _resolvedAllowUpsert;
     bool IEntitySetEndpointSource.HasSearch => Search is not null;
