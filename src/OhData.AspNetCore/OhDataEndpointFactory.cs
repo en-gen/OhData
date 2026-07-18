@@ -116,6 +116,18 @@ internal static class OhDataEndpointFactory
         return $"{req.Scheme}://{req.Host}{req.PathBase}{req.Path}?{query}";
     }
 
+    // #195: continuation link for the Priority-1 path, expressed as $skip rather than the opaque
+    // $skiptoken BuildNextPageLink emits. The Priority-1 profile re-applies the incoming
+    // ODataQueryOptions via ApplyTo, which honors $skip natively but has no handler for $skiptoken.
+    private static string BuildNextPageLinkWithSkip(HttpContext ctx, int skip)
+    {
+        var req = ctx.Request;
+        var query = HttpUtility.ParseQueryString(req.QueryString.ToString());
+        query.Remove("$skiptoken");
+        query["$skip"] = skip.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return $"{req.Scheme}://{req.Host}{req.PathBase}{req.Path}?{query}";
+    }
+
     private static bool PrefersMinimal(HttpContext ctx) =>
         ctx.Request.Headers.TryGetValue("Prefer", out var prefer) &&
         prefer.ToString().Contains("return=minimal", StringComparison.OrdinalIgnoreCase);
@@ -1620,12 +1632,61 @@ internal static class OhDataEndpointFactory
                     // profile's own ApplyTo call has no opportunity to reject a disallowed
                     // property since it never calls Validate() itself.
                     ValidatePropertyAllowlists(options);
+                    // #195: reject $top > MaxTop before invoking the profile. The Priority-1 path
+                    // delegates query application to the profile, so without this guard a client
+                    // could request an arbitrarily large page. Mirrors the Priority-2 path.
+                    if (options.Top is not null && source.MaxTop.HasValue &&
+                        options.Top.Value > source.MaxTop.Value)
+                    {
+                        return ODataError(400, "InvalidQueryOption",
+                            $"The value of '$top' ({options.Top.Value}) exceeds the maximum allowed value ({source.MaxTop.Value}).");
+                    }
+
                     var odataResult = await odataSrc.InvokeGetODataQueryableAsync(options, ct);
                     var queryable = odataResult.Items is IQueryable<TModel> typedQ
                         ? typedQ
                         : odataResult.Items.Cast<TModel>().AsQueryable();
 
+                    // #195: framework-side safety cap. The profile owns query application, but if it
+                    // does not page the result itself (no NextLink) and the client did not cap with
+                    // $top, bound the materialized set to MaxTop (or a smaller Prefer: maxpagesize)
+                    // and emit a continuation nextLink — so a Priority-1 profile can never be coerced
+                    // into returning an unbounded result set. When the profile supplies its own
+                    // NextLink it is trusted to have paged; when $top is present the client has capped
+                    // explicitly; neither case caps again.
+                    //
+                    // The continuation link uses $skip (not the opaque $skiptoken the Priority-2 path
+                    // emits): a Priority-1 profile applies the incoming ODataQueryOptions via ApplyTo,
+                    // which natively honors $skip but throws on a $skiptoken it has no handler for.
+                    // The profile applies $skip itself on the follow-up request; the framework then
+                    // only re-applies the Take cap on top.
+                    string? frameworkNextLink = null;
+                    int? appliedPageSize = null;
+                    if (odataResult.NextLink is null && options.Top is null)
+                    {
+                        int? preferredPageSize = ParseMaxPageSize(ctx);
+                        appliedPageSize = preferredPageSize.HasValue
+                            ? (source.MaxTop.HasValue
+                                ? Math.Min(preferredPageSize.Value, source.MaxTop.Value)
+                                : preferredPageSize.Value)
+                            : source.MaxTop;
+
+                        if (appliedPageSize.HasValue)
+                            queryable = queryable.Take(appliedPageSize.Value);
+                        if (preferredPageSize.HasValue)
+                            ctx.Response.Headers["Preference-Applied"] = $"maxpagesize={appliedPageSize!.Value}";
+                    }
+
                     object[] items = queryable.ToArray();
+
+                    // Emit a $skip continuation link when a full page was returned under the cap
+                    // (there may be more rows). The next offset is the profile-applied $skip on this
+                    // request plus the page just returned.
+                    if (appliedPageSize is int ps && ps > 0 && items.Length == ps)
+                    {
+                        int nextSkip = (options.Skip?.Value ?? 0) + items.Length;
+                        frameworkNextLink = BuildNextPageLinkWithSkip(ctx, nextSkip);
+                    }
 
                     var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
 
@@ -1638,10 +1699,11 @@ internal static class OhDataEndpointFactory
                     {
                         envelope["@odata.count"] = odataResult.TotalCount ?? (long)items.Length;
                     }
-                    // nextLink: prefer profile-provided next link over framework-computed.
-                    if (odataResult.NextLink is not null)
+                    // nextLink: prefer the profile's own link; otherwise the framework continuation.
+                    string? effectiveNextLink = odataResult.NextLink ?? frameworkNextLink;
+                    if (effectiveNextLink is not null)
                     {
-                        envelope["@odata.nextLink"] = odataResult.NextLink;
+                        envelope["@odata.nextLink"] = effectiveNextLink;
                     }
                     envelope["value"] = finalItems;
                     return Results.Ok(envelope);
