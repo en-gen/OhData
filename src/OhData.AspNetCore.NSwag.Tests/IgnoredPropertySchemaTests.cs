@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using OhData.Abstractions;
 using OhData.AspNetCore;
@@ -49,6 +50,20 @@ public sealed class IgnoredPropertySchemaTests
     }
 
     [Fact]
+    public async Task IgnoredProperty_WithJsonPropertyNameAttribute_OmittedUnderAttributeName()
+    {
+        // The ignored name is the CLR name (UnitMargin); [JsonPropertyName] renames the schema
+        // key to "marginPct" — the processor must resolve the attribute name to remove it.
+        using JsonDocument doc = await BuildAndFetchAsync();
+        JsonElement op = GetOperation(doc, "/odata/IgnoredSchemaRenameds", "post");
+
+        JsonElement schema = RequestSchema(op.GetProperty("requestBody"));
+        Assert.False(SchemaHasProperty(doc, schema, "marginPct"));
+        Assert.False(SchemaHasProperty(doc, schema, "unitMargin"));
+        Assert.True(SchemaHasProperty(doc, schema, "id"));
+    }
+
+    [Fact]
     public async Task ControlType_SameNamedProperty_IsKept()
     {
         // AuditEntry has its own CostBasis property that no profile ignores — suppression is
@@ -68,6 +83,7 @@ public sealed class IgnoredPropertySchemaTests
         {
             o.AddProfile<ProductProfile>();
             o.AddProfile<AuditEntryProfile>();
+            o.AddProfile<RenamedProfile>();
         });
         return await fx.GetDocumentAsync();
     }
@@ -144,6 +160,28 @@ public sealed class IgnoredPropertySchemaTests
             Ignore(x => x.CostBasis, x => x.InternalNotes);
             GetAll = (ct) => Task.FromResult<IEnumerable<Product>>(_store);
             Post = (p, ct) => { _store.Add(p); return Task.FromResult<Product?>(p); };
+        }
+    }
+
+    /// <summary>Carries an ignored property whose schema key is renamed by [JsonPropertyName].</summary>
+    private class Renamed
+    {
+        public int Id { get; set; }
+
+        [JsonPropertyName("marginPct")]
+        public decimal UnitMargin { get; set; }
+    }
+
+    private class RenamedProfile : EntitySetProfile<int, Renamed>
+    {
+        private readonly List<Renamed> _store = new() { new() { Id = 1, UnitMargin = 0.4m } };
+
+        public RenamedProfile() : base(x => x.Id)
+        {
+            EntitySetName = "IgnoredSchemaRenameds";
+            Ignore(x => x.UnitMargin);
+            GetAll = (ct) => Task.FromResult<IEnumerable<Renamed>>(_store);
+            Post = (r, ct) => { _store.Add(r); return Task.FromResult<Renamed?>(r); };
         }
     }
 
