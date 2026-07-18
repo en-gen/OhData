@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Linq;
 using System.Net;
+using System.Net.Http.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using OhData.Abstractions;
@@ -126,6 +127,91 @@ public class ObservabilityTests
         var resp = await fx.Client.GetAsync(Url);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
     }
+
+    [Fact]
+    public async Task Operation_IsClassified_PerRouteShape()
+    {
+        var ops = new List<string>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = s => s.Name == "OhData",
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+            ActivityStopped = a =>
+            {
+                if ((a.GetTagItem("odata.entity_set") as string) == "ObsRich")
+                {
+                    lock (ops) ops.Add((string)a.GetTagItem("odata.operation")!);
+                }
+            },
+        };
+        ActivitySource.AddActivityListener(listener);
+
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ObsRichProfile>());
+        await fx.Client.GetAsync("/odata/ObsRich(1)");                 // read-entity
+        await fx.Client.PostAsJsonAsync("/odata/ObsRich", new { name = "n" }); // create
+        await fx.Client.PutAsJsonAsync("/odata/ObsRich(1)", new { id = 1, name = "n" }); // update-entity
+        await fx.Client.PatchAsync("/odata/ObsRich(1)", JsonContent("{\"name\":\"n\"}"));  // update-entity
+        await fx.Client.DeleteAsync("/odata/ObsRich(1)");             // delete-entity
+        await fx.Client.GetAsync("/odata/ObsRich(1)/Children");        // read-navigation
+        await fx.Client.GetAsync("/odata/ObsRich/$count");            // read-count
+
+        Assert.Contains("read-entity", ops);
+        Assert.Contains("create", ops);
+        Assert.Contains("update-entity", ops);
+        Assert.Contains("delete-entity", ops);
+        Assert.Contains("read-navigation", ops);
+        Assert.Contains("read-count", ops);
+    }
+
+    [Fact]
+    public async Task Metadata_Operation_IsTagged()
+    {
+        var seen = new List<string>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = s => s.Name == "OhData",
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+            ActivityStopped = a =>
+            {
+                if ((a.GetTagItem("http.route") as string)?.EndsWith("/$metadata", StringComparison.Ordinal) == true)
+                {
+                    lock (seen) seen.Add((string)a.GetTagItem("odata.operation")!);
+                }
+            },
+        };
+        ActivitySource.AddActivityListener(listener);
+
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ObsWidgetProfile>());
+        await fx.Client.GetAsync("/odata/$metadata");
+        Assert.Contains("metadata", seen);
+    }
+
+    [Fact]
+    public async Task ServerError_SetsSpanStatusError()
+    {
+        Activity? errorActivity = null;
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = s => s.Name == "OhData",
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+            ActivityStopped = a =>
+            {
+                if ((a.GetTagItem("odata.entity_set") as string) == "ObsThrow") errorActivity = a;
+            },
+        };
+        ActivitySource.AddActivityListener(listener);
+
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ThrowingObsProfile>());
+        var resp = await fx.Client.GetAsync("/odata/ObsThrow");
+        Assert.Equal(HttpStatusCode.InternalServerError, resp.StatusCode);
+
+        Assert.NotNull(errorActivity);
+        Assert.Equal(ActivityStatusCode.Error, errorActivity!.Status);
+        Assert.Equal(500, errorActivity.GetTagItem("http.response.status_code"));
+    }
+
+    private static System.Net.Http.StringContent JsonContent(string s) =>
+        new(s, System.Text.Encoding.UTF8, "application/json");
 }
 
 internal class ObsWidgetProfile : EntitySetProfile<int, Widget>
@@ -134,5 +220,46 @@ internal class ObsWidgetProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "ObsWidgets";
         GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(Array.Empty<Widget>());
+    }
+}
+
+internal class ObsNode
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public IEnumerable<ObsNode>? Children { get; set; }
+}
+
+internal class ObsRichProfile : EntitySetProfile<int, ObsNode>
+{
+    private readonly List<ObsNode> _store = new() { new() { Id = 1, Name = "a" } };
+
+    public ObsRichProfile() : base(x => x.Id)
+    {
+        EntitySetName = "ObsRich";
+        CountEnabled = true;
+        GetAll = (ct) => Task.FromResult<IEnumerable<ObsNode>>(_store);
+        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(n => n.Id == id));
+        Post = (n, ct) => { n.Id = 99; _store.Add(n); return Task.FromResult<ObsNode?>(n); };
+        Put = (id, n, ct) => { n.Id = id; return Task.FromResult(n); };
+        Patch = (id, delta, ct) =>
+        {
+            var n = _store.FirstOrDefault(x => x.Id == id);
+            if (n is not null) delta.Patch(n);
+            return Task.FromResult(n);
+        };
+        Delete = (id, ct) => Task.FromResult(true);
+        HasMany(
+            navigation: x => x.Children!,
+            getAll: (id, ct) => Task.FromResult<IEnumerable<ObsNode>>(Array.Empty<ObsNode>()));
+    }
+}
+
+internal class ThrowingObsProfile : EntitySetProfile<int, Widget>
+{
+    public ThrowingObsProfile() : base(x => x.Id)
+    {
+        EntitySetName = "ObsThrow";
+        GetAll = (ct) => throw new System.InvalidOperationException("boom");
     }
 }
