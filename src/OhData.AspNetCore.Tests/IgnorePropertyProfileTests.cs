@@ -107,4 +107,68 @@ public class IgnorePropertyProfileTests
     {
         Assert.Throws<ArgumentException>(() => new NestedExpressionProfile());
     }
+
+    private sealed class NullArrayIgnoreProfile : EntitySetProfile<int, IgnProfileModel>
+    {
+        public NullArrayIgnoreProfile() : base(x => x.Id)
+        {
+            Ignore(null!);
+        }
+    }
+
+    [Fact]
+    public void Ignore_NullArray_ThrowsArgumentNullException()
+    {
+        Assert.Throws<ArgumentNullException>(() => new NullArrayIgnoreProfile());
+    }
+
+    private sealed class ComputedExpressionProfile : EntitySetProfile<int, IgnProfileModel>
+    {
+        public ComputedExpressionProfile() : base(x => x.Id)
+        {
+            Ignore(x => x.Id + 1);
+        }
+    }
+
+    [Fact]
+    public void Ignore_ComputedExpression_ThrowsArgumentException()
+    {
+        Assert.Throws<ArgumentException>(() => new ComputedExpressionProfile());
+    }
+
+    private sealed class FieldIgnoreProfile : EntitySetProfile<int, IgnFieldModel>
+    {
+        public FieldIgnoreProfile() : base(x => x.Id)
+        {
+            Ignore(x => x.Code);
+        }
+    }
+
+    [Fact]
+    public void Ignore_Field_ThrowsArgumentException()
+    {
+        var ex = Assert.Throws<ArgumentException>(() => new FieldIgnoreProfile());
+        Assert.Contains("field", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private sealed class LateIgnoreProfile : EntitySetProfile<int, IgnProfileModel>
+    {
+        public LateIgnoreProfile() : base(x => x.Id) { }
+        public void IgnoreLate() => Ignore(x => x.CostBasis);
+    }
+
+    [Fact]
+    public void Ignore_AfterSeal_ThrowsInvalidOperationException()
+    {
+        var profile = new LateIgnoreProfile();
+        ((IVisitModelBuilder)profile).VisitModelBuilder(
+            new Microsoft.OData.ModelBuilder.ODataConventionModelBuilder(), new EntitySetDefaults());
+        Assert.Throws<InvalidOperationException>(profile.IgnoreLate);
+    }
+}
+
+public sealed class IgnFieldModel
+{
+    public int Id { get; set; }
+    public string Code = "";
 }

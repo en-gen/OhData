@@ -536,15 +536,12 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
         // #226: a name that is both ignored and declared as a navigation is a config
         // contradiction. Checked here (not in Ignore()) so it is declaration-order-independent.
-        foreach (string ignored in _ignoredPropertyNames)
+        foreach (string ignored in _ignoredPropertyNames.Where(_navigationPropertyNames.Contains))
         {
-            if (_navigationPropertyNames.Contains(ignored))
-            {
-                throw new InvalidOperationException(
-                    $"Entity set '{EntitySetName}': property '{ignored}' is declared both as a " +
-                    "navigation property (HasMany/HasOptional/HasRequired) and in Ignore(). " +
-                    "Remove one of the declarations.");
-            }
+            throw new InvalidOperationException(
+                $"Entity set '{EntitySetName}': property '{ignored}' is declared both as a " +
+                "navigation property (HasMany/HasOptional/HasRequired) and in Ignore(). " +
+                "Remove one of the declarations.");
         }
 
         AdvancedConfigure(entitySet);

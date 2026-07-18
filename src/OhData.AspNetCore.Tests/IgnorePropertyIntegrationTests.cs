@@ -247,36 +247,38 @@ public class IgnorePropertyIntegrationTests : IAsyncLifetime
     public async Task Post_IgnoredMembersInBody_NotBound()
     {
         IgnProductProfile.LastPosted = null;
-        var body = new StringContent(
+        using var body = new StringContent(
             "{\"name\":\"New\",\"costBasis\":42.5,\"audit\":{\"createdBy\":\"attacker\"}}",
             Encoding.UTF8, "application/json");
         var resp = await _fx.Client.PostAsync("/odata/IgnProducts", body);
         Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
         Assert.NotNull(IgnProductProfile.LastPosted);
-        Assert.Equal("New", IgnProductProfile.LastPosted!.Name);
-        Assert.Equal(0m, IgnProductProfile.LastPosted.CostBasis);
-        Assert.Null(IgnProductProfile.LastPosted.Audit);
+        IgnProduct lastPosted = IgnProductProfile.LastPosted!;
+        Assert.Equal("New", lastPosted.Name);
+        Assert.Equal(0m, lastPosted.CostBasis);
+        Assert.Null(lastPosted.Audit);
     }
 
     [Fact]
     public async Task Put_IgnoredMembersInBody_NotBound()
     {
         IgnProductProfile.LastPut = null;
-        var body = new StringContent(
+        using var body = new StringContent(
             "{\"id\":1,\"name\":\"Renamed\",\"costBasis\":42.5}",
             Encoding.UTF8, "application/json");
         var resp = await _fx.Client.PutAsync("/odata/IgnProducts(1)", body);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         Assert.NotNull(IgnProductProfile.LastPut);
-        Assert.Equal("Renamed", IgnProductProfile.LastPut!.Name);
-        Assert.Equal(0m, IgnProductProfile.LastPut.CostBasis);
+        IgnProduct lastPut = IgnProductProfile.LastPut!;
+        Assert.Equal("Renamed", lastPut.Name);
+        Assert.Equal(0m, lastPut.CostBasis);
     }
 
     [Fact]
     public async Task Patch_IgnoredMemberInBody_NotInDelta()
     {
         IgnProductProfile.LastPatchChangedNames = null;
-        var body = new StringContent(
+        using var body = new StringContent(
             "{\"name\":\"Patched\",\"costBasis\":99.9}",
             Encoding.UTF8, "application/json");
         var resp = await _fx.Client.PatchAsync("/odata/IgnProducts(2)", body);
