@@ -106,6 +106,17 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected bool? PropertyAccessEnabled { get; init; }
 
     /// <summary>
+    /// Controls whether this entity set's structural property routes
+    /// (<c>GET /{EntitySet}({key})/{Property}</c>, <c>.../{Property}/$value</c>, and the
+    /// <c>PUT</c>/<c>PATCH</c>/<c>DELETE</c> property writes) appear in the generated API
+    /// documentation. Inherits from <see cref="EntitySetDefaults"/> (default <c>false</c>) when
+    /// <c>null</c>. Documentation-only: property routes remain live at runtime whenever
+    /// <see cref="PropertyAccessEnabled"/> resolves <c>true</c> and the required handler is
+    /// configured, regardless of this flag.
+    /// </summary>
+    protected bool? PropertyRouteDocsEnabled { get; init; }
+
+    /// <summary>
     /// Controls the midpoint-rounding behavior of the OData <c>round()</c> canonical function
     /// (Part 2 §5.1.1.9) on the <c>GetQueryable</c> pushdown path. Inherits from
     /// <c>EntitySetDefaults.RoundingMode</c> (default
@@ -348,6 +359,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private bool _resolvedExpandEnabled;
     private bool _resolvedCountEnabled;
     private bool _resolvedPropertyAccessEnabled;
+    private bool _resolvedPropertyRouteDocsEnabled;
     private List<StructuralPropertyInfo>? _structuralProperties;
 
     /// <summary>
@@ -505,6 +517,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _resolvedExpandEnabled = ExpandEnabled ?? defaults.ExpandEnabled;
         _resolvedCountEnabled = CountEnabled ?? defaults.CountEnabled;
         _resolvedPropertyAccessEnabled = PropertyAccessEnabled ?? defaults.PropertyAccessEnabled;
+        _resolvedPropertyRouteDocsEnabled = PropertyRouteDocsEnabled ?? defaults.PropertyRouteDocsEnabled;
         _resolvedAllowDeepInsert = AllowDeepInsert ?? defaults.AllowDeepInsert;
         _resolvedRoundingMode = RoundingMode ?? defaults.RoundingMode;
         _structuralProperties = BuildStructuralProperties();
@@ -1635,6 +1648,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     bool IEntitySetEndpointSource.ExpandEnabled => _resolvedExpandEnabled;
     bool IEntitySetEndpointSource.CountEnabled => _resolvedCountEnabled;
     bool IEntitySetEndpointSource.PropertyAccessEnabled => _resolvedPropertyAccessEnabled;
+    bool IEntitySetEndpointSource.PropertyRouteDocsEnabled => _resolvedPropertyRouteDocsEnabled;
     RoundingMode IEntitySetEndpointSource.RoundingMode => _resolvedRoundingMode;
     IReadOnlyList<StructuralPropertyInfo> IEntitySetEndpointSource.StructuralProperties =>
         _structuralProperties ??= BuildStructuralProperties();
