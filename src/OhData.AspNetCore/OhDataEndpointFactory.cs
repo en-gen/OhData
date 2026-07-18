@@ -17,6 +17,7 @@ using System.Web;
 using System.Xml;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.OData.Query;
 using Microsoft.AspNetCore.OData.Query.Wrapper;
 using Microsoft.AspNetCore.OData.Query.Validator;
@@ -32,6 +33,11 @@ using OhData.Abstractions;
 using OhData.Abstractions.AspNetCore.OData;
 
 namespace OhData.AspNetCore;
+
+// #203: per-entity-set write-body-size limit, attached as route-group endpoint metadata (see
+// MapEntitySet) and enforced by the group-level write-body-size filter in MapAll. Absent metadata
+// means "no OhData-level limit" — the host's Kestrel MaxRequestBodySize still applies.
+internal sealed record OhDataBodyLimitMetadata(long MaxBytes);
 
 internal static class OhDataEndpointFactory
 {
@@ -137,6 +143,11 @@ internal static class OhDataEndpointFactory
     // metadata, would short-circuit with an empty 415 body before this OData error-formatting
     // code ever runs. Media-type parameters (e.g. ";odata.metadata=full", ";charset=utf-8") are
     // stripped before comparison since they don't affect whether the payload is JSON.
+    // #203: the write methods that carry a request body OhData deserializes. DELETE is excluded
+    // (its $ref variant reads only a small link body and no body-size limit is meaningful there).
+    private static bool IsBodyBearingWriteMethod(string method) =>
+        HttpMethods.IsPost(method) || HttpMethods.IsPut(method) || HttpMethods.IsPatch(method);
+
     private static bool IsJsonContentType(HttpContext ctx)
     {
         string? contentType = ctx.Request.ContentType;
@@ -291,6 +302,14 @@ internal static class OhDataEndpointFactory
             {
                 return await next(ctx);
             }
+            // #203: Kestrel throws BadHttpRequestException (StatusCode 413) when a body without a
+            // usable Content-Length (e.g. chunked) exceeds the per-request MaxRequestBodySize set by
+            // the write-body-size filter below. Map it to the OData 413 envelope instead of a 500.
+            catch (BadHttpRequestException bhre) when (bhre.StatusCode == StatusCodes.Status413PayloadTooLarge)
+            {
+                return ODataError(413, "RequestEntityTooLarge",
+                    "The request body exceeds the maximum allowed size.");
+            }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 groupLogger?.LogError(ex, "OhData: unhandled exception processing {Method} {Path}",
@@ -299,6 +318,33 @@ internal static class OhDataEndpointFactory
                 return ODataError(500, "InternalServerError",
                     "An unexpected error occurred while processing the request.");
             }
+        });
+
+        // #203: enforce the per-entity-set write-body-size limit (attached as OhDataBodyLimitMetadata
+        // in MapEntitySet). Runs only for body-bearing write methods (POST/PUT/PATCH). Sets Kestrel's
+        // per-request MaxRequestBodySize — which bounds a chunked/no-Content-Length body during read
+        // (a resulting BadHttpRequestException is mapped to 413 by the filter above) — and
+        // fast-rejects an oversized Content-Length before the handler reads the body. Sits inside the
+        // exception filter above so its 413 mapping covers the streamed-body case.
+        group.AddEndpointFilter(async (ctx, next) =>
+        {
+            var http = ctx.HttpContext;
+            if (IsBodyBearingWriteMethod(http.Request.Method) &&
+                http.GetEndpoint()?.Metadata.GetMetadata<OhDataBodyLimitMetadata>() is { } limit)
+            {
+                IHttpMaxRequestBodySizeFeature? sizeFeature = http.Features.Get<IHttpMaxRequestBodySizeFeature>();
+                if (sizeFeature is { IsReadOnly: false })
+                {
+                    sizeFeature.MaxRequestBodySize = limit.MaxBytes;
+                }
+
+                if (http.Request.ContentLength is long len && len > limit.MaxBytes)
+                {
+                    return ODataError(413, "RequestEntityTooLarge",
+                        $"The request body ({len} bytes) exceeds the maximum allowed size ({limit.MaxBytes} bytes).");
+                }
+            }
+            return await next(ctx);
         });
 
         // Gap 1: Add OData-Version: 4.0 header to all responses (§8.2.6).
@@ -1621,6 +1667,15 @@ internal static class OhDataEndpointFactory
                 entityAuthGroup.RequireAuthorization(policy => policy.RequireRole(authConfig.Roles.ToArray()));
             if (authConfig.Policy is null && authConfig.Roles is null or { Count: 0 })
                 entityAuthGroup.RequireAuthorization();
+        }
+
+        // #203: attach this entity set's resolved write-body-size limit as endpoint metadata,
+        // enforced by the group-level filter in MapAll for write methods only. Attached to the
+        // auth group so it propagates to every route under this entity set (collection and
+        // key-based). Absent metadata means "no OhData-level limit" (Kestrel's global still applies).
+        if (source.MaxRequestBodyBytes is long maxBodyBytes)
+        {
+            entityAuthGroup.WithMetadata(new OhDataBodyLimitMetadata(maxBodyBytes));
         }
 
         // Collection-level routes use a sub-group so they can use the short "" template.

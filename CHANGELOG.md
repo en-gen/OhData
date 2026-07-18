@@ -11,6 +11,20 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Production hardening (milestone 1.4.0): safe-by-default limits across the read paths.
 
+### Added
+
+- **Configurable request-body-size limit for write operations (#203).** A new
+  `MaxRequestBodyBytes` (global via `WithDefaults`, or per entity set on the profile — the profile
+  value overrides the global default) rejects an oversized write body (`POST`/`PUT`/`PATCH` and their
+  navigation/`$ref`/property/action variants) with `413 Payload Too Large` and the OData error
+  envelope, **before** the body is deserialized. Enforcement is twofold: an oversized `Content-Length`
+  is rejected up front by a group-level filter, and the per-request Kestrel `MaxRequestBodySize` is
+  set so a chunked / no-`Content-Length` body is bounded during read (Kestrel's resulting
+  `BadHttpRequestException` is mapped to the same `413`). The limit is attached per entity set as
+  route-group endpoint metadata and enforced once in the group filter — no per-handler wiring.
+  **Default is `null`** (no OhData-level limit; the host's Kestrel default, ~30 MB, still applies), so
+  this is purely additive — opt in by setting a value. See `docs/deep-insert.md`.
+
 ### Changed
 
 - **The `GetAll` (simple/`IEnumerable`) read path now caps an omitted `$top` to `MaxTop` (#201).**
