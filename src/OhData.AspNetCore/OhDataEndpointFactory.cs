@@ -33,8 +33,6 @@ using OhData.Abstractions.AspNetCore.OData;
 
 namespace OhData.AspNetCore;
 
-internal readonly record struct ODataErrorDetail(string Code, string Message, string? Target = null);
-
 internal static class OhDataEndpointFactory
 {
     private static readonly MethodInfo _mapEntitySetMethod =
@@ -645,20 +643,10 @@ internal static class OhDataEndpointFactory
 
     internal static IResult ODataError(
         int status, string code, string message,
-        string? target = null,
-        IReadOnlyList<ODataErrorDetail>? details = null)
+        string? target = null)
     {
         var errorObj = new Dictionary<string, object?> { ["code"] = code, ["message"] = message };
         if (target is not null) errorObj["target"] = target;
-        if (details is { Count: > 0 })
-        {
-            errorObj["details"] = details.Select(d =>
-            {
-                var dd = new Dictionary<string, object?> { ["code"] = d.Code, ["message"] = d.Message };
-                if (d.Target is not null) dd["target"] = d.Target;
-                return (object)dd;
-            }).ToArray();
-        }
 
         var body = new Dictionary<string, object> { ["error"] = errorObj };
         return status switch
@@ -3110,9 +3098,12 @@ internal static class OhDataEndpointFactory
         }
 
         // Individual structural property access (I-6, OData §11.2.6 / Part 2 §4.6-4.7).
-        // Read-only in this PR: property WRITE (PUT/PATCH/DELETE) is deferred to a later PR.
-        // Rides the existing GetById handler — no new handler delegate. Registered only when
-        // PropertyAccessEnabled resolves true AND GetById is configured.
+        // This block registers property READ (GET /{Set}({key})/{Property} and its /$value),
+        // which rides the existing GetById handler — no new handler delegate. Property WRITE
+        // (PUT/PATCH/DELETE on /{Set}({key})/{Property}) is implemented further below, riding
+        // Patch as a one-property Delta; only raw /{Property}/$value *writes* remain unsupported
+        // (read-only). Registered only when PropertyAccessEnabled resolves true AND GetById is
+        // configured.
         if (source.PropertyAccessEnabled && source.HasGetById)
         {
             // Startup route-collision validation (shared /{Set}({key})/{segment} space).
