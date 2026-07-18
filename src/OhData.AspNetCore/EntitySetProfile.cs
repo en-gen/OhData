@@ -558,172 +558,18 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         var entityCollection = entityType.Collection;
 
         foreach (var method in _functions.Select(x => x.Method))
-        {
-            var entityFunction = entityCollection.Function(method.Name);
-
-            foreach (var param in method.GetParameters().Where(p => p.ParameterType != typeof(CancellationToken)))
-            {
-                var entityFunctionParam = entityFunction.Parameter(param.ParameterType, param.Name!);
-                if (param.IsOptional) entityFunctionParam.Optional();
-                if (param.HasDefaultValue)
-                {
-                    string defaultStr = param.DefaultValue is bool b ? (b ? "true" : "false") : $"{param.DefaultValue}";
-                    entityFunctionParam.HasDefaultValue(defaultStr);
-                }
-            }
-
-            // Determine return type: unwrap Task<T>/ValueTask<T> if needed
-            var rawReturn = method.ReturnType;
-            var returnType = rawReturn.IsGenericType && (rawReturn.GetGenericTypeDefinition() == typeof(Task<>) || rawReturn.GetGenericTypeDefinition() == typeof(ValueTask<>))
-                ? rawReturn.GetGenericArguments()[0]
-                : rawReturn == typeof(Task) || rawReturn == typeof(void) || rawReturn == typeof(ValueTask) ? null : rawReturn;
-
-            if (returnType is not null)
-            {
-                // FunctionConfiguration only exposes generic Returns<T>/ReturnsCollection<T>; call via reflection.
-                var collectionElement = GetCollectionElementType(returnType);
-                if (collectionElement is not null)
-                {
-                    typeof(FunctionConfiguration)
-                        .GetMethod(nameof(FunctionConfiguration.ReturnsCollection), Array.Empty<Type>())!
-                        .MakeGenericMethod(collectionElement)
-                        .Invoke(entityFunction, null);
-                }
-                else
-                {
-                    typeof(FunctionConfiguration)
-                        .GetMethod(nameof(FunctionConfiguration.Returns), Array.Empty<Type>())!
-                        .MakeGenericMethod(returnType)
-                        .Invoke(entityFunction, null);
-                }
-            }
-        }
+            RegisterEdmOperation(method, entityCollection.Function(method.Name), typeof(FunctionConfiguration), skipKeyParameter: false);
 
         foreach (var method in _actions.Select(x => x.Method))
-        {
-            var entityAction = entityCollection.Action(method.Name);
+            RegisterEdmOperation(method, entityCollection.Action(method.Name), typeof(ActionConfiguration), skipKeyParameter: false);
 
-            foreach (var param in method.GetParameters().Where(p => p.ParameterType != typeof(CancellationToken)))
-            {
-                var entityActionParam = entityAction.Parameter(param.ParameterType, param.Name!);
-                if (param.IsOptional) entityActionParam.Optional();
-                if (param.HasDefaultValue)
-                {
-                    string defaultStr = param.DefaultValue is bool b ? (b ? "true" : "false") : $"{param.DefaultValue}";
-                    entityActionParam.HasDefaultValue(defaultStr);
-                }
-            }
-
-            // Resolve return type for $metadata, mirroring the function logic above.
-            var rawActionReturn = method.ReturnType;
-            var actionReturnType = rawActionReturn.IsGenericType && (rawActionReturn.GetGenericTypeDefinition() == typeof(Task<>) || rawActionReturn.GetGenericTypeDefinition() == typeof(ValueTask<>))
-                ? rawActionReturn.GetGenericArguments()[0]
-                : rawActionReturn == typeof(Task) || rawActionReturn == typeof(void) || rawActionReturn == typeof(ValueTask) ? null : rawActionReturn;
-
-            if (actionReturnType is not null)
-            {
-                var collectionElement = GetCollectionElementType(actionReturnType);
-                if (collectionElement is not null)
-                {
-                    typeof(ActionConfiguration)
-                        .GetMethod(nameof(ActionConfiguration.ReturnsCollection), Array.Empty<Type>())!
-                        .MakeGenericMethod(collectionElement)
-                        .Invoke(entityAction, null);
-                }
-                else
-                {
-                    typeof(ActionConfiguration)
-                        .GetMethod(nameof(ActionConfiguration.Returns), Array.Empty<Type>())!
-                        .MakeGenericMethod(actionReturnType)
-                        .Invoke(entityAction, null);
-                }
-            }
-        }
-
-        // Gap 7: Register entity-level functions bound to the entity type (not collection)
+        // Gap 7: entity-level functions/actions bind to the entity type, not the collection. Their
+        // first parameter is the entity key (TKey) — skipped here, since it is not an OData parameter.
         foreach (var method in _entityFunctions.Select(x => x.Method))
-        {
-            // Skip the first parameter — it is the key (TKey), not an OData parameter
-            var entityFunction = entityType.Function(method.Name);
-            var allParams = method.GetParameters().Where(p => p.ParameterType != typeof(CancellationToken)).Skip(1);
+            RegisterEdmOperation(method, entityType.Function(method.Name), typeof(FunctionConfiguration), skipKeyParameter: true);
 
-            foreach (var param in allParams)
-            {
-                var entityFunctionParam = entityFunction.Parameter(param.ParameterType, param.Name!);
-                if (param.IsOptional) entityFunctionParam.Optional();
-                if (param.HasDefaultValue)
-                {
-                    string defaultStr = param.DefaultValue is bool b ? (b ? "true" : "false") : $"{param.DefaultValue}";
-                    entityFunctionParam.HasDefaultValue(defaultStr);
-                }
-            }
-
-            var rawReturn = method.ReturnType;
-            var returnType = rawReturn.IsGenericType && (rawReturn.GetGenericTypeDefinition() == typeof(Task<>) || rawReturn.GetGenericTypeDefinition() == typeof(ValueTask<>))
-                ? rawReturn.GetGenericArguments()[0]
-                : rawReturn == typeof(Task) || rawReturn == typeof(void) || rawReturn == typeof(ValueTask) ? null : rawReturn;
-
-            if (returnType is not null)
-            {
-                var collectionElement = GetCollectionElementType(returnType);
-                if (collectionElement is not null)
-                {
-                    typeof(FunctionConfiguration)
-                        .GetMethod(nameof(FunctionConfiguration.ReturnsCollection), Array.Empty<Type>())!
-                        .MakeGenericMethod(collectionElement)
-                        .Invoke(entityFunction, null);
-                }
-                else
-                {
-                    typeof(FunctionConfiguration)
-                        .GetMethod(nameof(FunctionConfiguration.Returns), Array.Empty<Type>())!
-                        .MakeGenericMethod(returnType)
-                        .Invoke(entityFunction, null);
-                }
-            }
-        }
-
-        // Gap 7: Register entity-level actions bound to the entity type (not collection)
         foreach (var method in _entityActions.Select(x => x.Method))
-        {
-            var entityAction = entityType.Action(method.Name);
-            var allParams = method.GetParameters().Where(p => p.ParameterType != typeof(CancellationToken)).Skip(1);
-
-            foreach (var param in allParams)
-            {
-                var entityActionParam = entityAction.Parameter(param.ParameterType, param.Name!);
-                if (param.IsOptional) entityActionParam.Optional();
-                if (param.HasDefaultValue)
-                {
-                    string defaultStr = param.DefaultValue is bool b ? (b ? "true" : "false") : $"{param.DefaultValue}";
-                    entityActionParam.HasDefaultValue(defaultStr);
-                }
-            }
-
-            var rawActionReturn = method.ReturnType;
-            var actionReturnType = rawActionReturn.IsGenericType && (rawActionReturn.GetGenericTypeDefinition() == typeof(Task<>) || rawActionReturn.GetGenericTypeDefinition() == typeof(ValueTask<>))
-                ? rawActionReturn.GetGenericArguments()[0]
-                : rawActionReturn == typeof(Task) || rawActionReturn == typeof(void) || rawActionReturn == typeof(ValueTask) ? null : rawActionReturn;
-
-            if (actionReturnType is not null)
-            {
-                var collectionElement = GetCollectionElementType(actionReturnType);
-                if (collectionElement is not null)
-                {
-                    typeof(ActionConfiguration)
-                        .GetMethod(nameof(ActionConfiguration.ReturnsCollection), Array.Empty<Type>())!
-                        .MakeGenericMethod(collectionElement)
-                        .Invoke(entityAction, null);
-                }
-                else
-                {
-                    typeof(ActionConfiguration)
-                        .GetMethod(nameof(ActionConfiguration.Returns), Array.Empty<Type>())!
-                        .MakeGenericMethod(actionReturnType)
-                        .Invoke(entityAction, null);
-                }
-            }
-        }
+            RegisterEdmOperation(method, entityType.Action(method.Name), typeof(ActionConfiguration), skipKeyParameter: true);
 
         _resolvedBoundFunctions = _functions.Select(d => BoundOperationDefinition.From(d, isAction: false))
             .Concat(_entityFunctions.Select(d => BoundOperationDefinition.From(d, isAction: false, isEntityLevel: true)))
@@ -1511,6 +1357,40 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         var idProp = typeof(TNavigation).GetProperty("Id", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase)
             ?? typeof(TNavigation).GetProperty(typeName + "Id", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
         return idProp?.Name;
+    }
+
+    // Registers a bound function/action in the EDM: declares its (non-CancellationToken) parameters
+    // and — via reflection, since the fluent API only exposes generic Returns<T>/ReturnsCollection<T>
+    // — its return type, unwrapping Task<T>/ValueTask<T> and treating void/Task/ValueTask as no return.
+    // `skipKeyParameter` drops the leading TKey parameter of entity-level operations.
+    private static void RegisterEdmOperation(
+        MethodInfo method, OperationConfiguration operation, Type configType, bool skipKeyParameter)
+    {
+        var parameters = method.GetParameters().Where(p => p.ParameterType != typeof(CancellationToken));
+        if (skipKeyParameter) parameters = parameters.Skip(1);
+
+        foreach (var param in parameters)
+        {
+            var opParam = operation.Parameter(param.ParameterType, param.Name!);
+            if (param.IsOptional) opParam.Optional();
+            if (param.HasDefaultValue)
+            {
+                string defaultStr = param.DefaultValue is bool b ? (b ? "true" : "false") : $"{param.DefaultValue}";
+                opParam.HasDefaultValue(defaultStr);
+            }
+        }
+
+        var rawReturn = method.ReturnType;
+        Type? returnType = AsyncDispatchHelper.IsVoidAsyncReturn(rawReturn)
+            ? null
+            : AsyncDispatchHelper.UnwrapAsyncReturn(rawReturn);
+        if (returnType is null) return;
+
+        var collectionElement = GetCollectionElementType(returnType);
+        string configMethod = collectionElement is not null ? "ReturnsCollection" : "Returns";
+        configType.GetMethod(configMethod, Array.Empty<Type>())!
+            .MakeGenericMethod(collectionElement ?? returnType)
+            .Invoke(operation, null);
     }
 
     private static Type? GetCollectionElementType(Type type)

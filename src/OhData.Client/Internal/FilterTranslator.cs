@@ -43,8 +43,6 @@ internal sealed class FilterTranslator : ExpressionVisitor
     private readonly string _parameterPrefix;
     private readonly IReadOnlyList<OuterScope> _outerScopes;
 
-    private FilterTranslator(ParameterExpression parameter) : this(parameter, null, "", []) { }
-
     private FilterTranslator(ParameterExpression parameter, JsonNamingPolicy? namingPolicy)
         : this(parameter, namingPolicy, "", []) { }
 
