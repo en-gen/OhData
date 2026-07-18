@@ -88,6 +88,23 @@ public class ExtractNamesValidationTests
         Assert.Contains("Nested access", ex.Message);
     }
 
+    private sealed class ComputedSelectorProfile : EntitySetProfile<int, ExtNamesModel>
+    {
+        public ComputedSelectorProfile() : base(x => x.Id)
+        {
+            // Not a member access at all after Convert-stripping (BinaryExpression) — covers
+            // the first arm of GetDirectMember's compound check via the allowlist path.
+            OrderByProperties(x => x.Id + 1);
+        }
+    }
+
+    [Fact]
+    public void OrderByProperties_ComputedExpression_ThrowsArgumentException()
+    {
+        var ex = Assert.Throws<ArgumentException>(() => new ComputedSelectorProfile());
+        Assert.Contains("direct property access", ex.Message);
+    }
+
     private sealed class ValidSelectorsProfile : EntitySetProfile<int, ExtNamesModel>
     {
         public ValidSelectorsProfile() : base(x => x.Id)
