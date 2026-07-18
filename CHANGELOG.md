@@ -13,6 +13,14 @@ Production hardening (milestone 1.4.0): safe-by-default limits across the read p
 
 ### Added
 
+- **Property exclusion via `Ignore()` (#226).** `EntitySetProfile.Ignore(x => x.Property)` excludes
+  model properties from the whole OData surface — `$metadata`, query options, property routes,
+  response bodies, and request binding (POST/PUT via serializer options, PATCH via an explicit
+  delta-builder filter) — without touching the CLR type. Wire suppression uses one derived
+  per-registration `JsonSerializerOptions` with a `JsonTypeInfoResolver` modifier (A/B-benchmarked
+  on the issue; zero cost when unused, *faster* than baseline when used). Startup validation
+  rejects ignoring the key, ignore/navigation conflicts (either declaration order), and
+  same-model-type profiles with mismatched ignore sets.
 - **Per-operation authorization (#199).** A profile can now authorize each operation category
   independently via `ConfigureAuthorization(auth => …)`, replacing the all-or-nothing profile-wide
   model for sets that need it. Categories are `Read`, `Create`, `Update`, `Delete`, and `Invoke`

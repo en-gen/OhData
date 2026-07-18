@@ -134,6 +134,10 @@ The rest of the surface rides other profile declarations - navigation properties
 
 See [docs/navigation-routing.md](docs/navigation-routing.md), [docs/property-access.md](docs/property-access.md), [docs/deep-insert.md](docs/deep-insert.md), and [docs/bound-operations.md](docs/bound-operations.md) for the full details behind each row.
 
+And to *shrink* the surface instead of growing it: `Ignore(x => x.CostBasis)` hides a property
+from `$metadata`, query options, routes, and every request/response body — without touching the
+CLR model. See [docs/ignoring-properties.md](docs/ignoring-properties.md).
+
 ### Authorization
 
 OhData rides ASP.NET Core's own authentication and authorization - there's no OhData-specific auth system. Protect a whole entity set with one call:

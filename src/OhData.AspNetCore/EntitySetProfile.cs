@@ -56,6 +56,17 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     // and navigation routes are disjoint by construction (never both claim the same route).
     private readonly HashSet<string> _navigationPropertyNames = new(StringComparer.Ordinal);
 
+    // Names of properties excluded from the OData surface via Ignore() (#226). Structural
+    // properties, the EDM, response serialization, and request binding all consult this set.
+    private readonly HashSet<string> _ignoredPropertyNames = new(StringComparer.Ordinal);
+
+    // The open generic StructuralTypeConfiguration<TModel>.Ignore<TProperty>(...) definition,
+    // closed per ignored property with its real CLR type (see Ignore below).
+    private static readonly MethodInfo s_edmIgnoreMethodDefinition =
+        typeof(StructuralTypeConfiguration<TModel>)
+            .GetMethods(BindingFlags.Public | BindingFlags.Instance)
+            .Single(m => m.Name == "Ignore" && m.IsGenericMethodDefinition);
+
     private readonly Expression<Func<TModel, TKey>> _getKey;
 
     /// <summary>
@@ -523,6 +534,16 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _resolvedRoundingMode = RoundingMode ?? defaults.RoundingMode;
         _structuralProperties = BuildStructuralProperties();
 
+        // #226: a name that is both ignored and declared as a navigation is a config
+        // contradiction. Checked here (not in Ignore()) so it is declaration-order-independent.
+        foreach (string ignored in _ignoredPropertyNames.Where(_navigationPropertyNames.Contains))
+        {
+            throw new InvalidOperationException(
+                $"Entity set '{EntitySetName}': property '{ignored}' is declared both as a " +
+                "navigation property (HasMany/HasOptional/HasRequired) and in Ignore(). " +
+                "Remove one of the declarations.");
+        }
+
         AdvancedConfigure(entitySet);
 
         // eject if AdvancedConfigure was overridden
@@ -636,7 +657,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
             .Where(prop => prop.CanRead)
             .Where(prop => prop.GetIndexParameters().Length == 0) // skip indexers
-            .Where(prop => !_navigationPropertyNames.Contains(prop.Name)))
+            .Where(prop => !_navigationPropertyNames.Contains(prop.Name))
+            .Where(prop => !_ignoredPropertyNames.Contains(prop.Name))) // #226
         {
             list.Add(new StructuralPropertyInfo
             {
@@ -751,6 +773,84 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected void ExpandProperties(params string[]? properties)
     {
         _expandProperties = properties;
+    }
+
+    /// <summary>
+    /// Excludes one or more model properties from the entire OData surface (#226): they are
+    /// omitted from <c>$metadata</c>, rejected in <c>$select</c>/<c>$filter</c>/<c>$orderby</c>/
+    /// <c>$expand</c> (as unknown properties), get no property routes, are omitted from every
+    /// response body, and are not bound from POST/PUT/PATCH request bodies. Handlers still see
+    /// the full CLR model — only the OData-exposed surface hides ignored properties.
+    /// <para>
+    /// Multiple calls accumulate. The key property cannot be ignored. A property declared as a
+    /// navigation (<c>HasMany</c>/<c>HasOptional</c>/<c>HasRequired</c>) cannot also be ignored —
+    /// that combination fails at startup.
+    /// </para>
+    /// </summary>
+    /// <param name="properties">
+    /// One or more direct property-access selectors, e.g. <c>x =&gt; x.InternalNotes</c>.
+    /// At least one selector is required.
+    /// </param>
+    protected void Ignore(params Expression<Func<TModel, object?>>[] properties)
+    {
+        ThrowIfSealed();
+        if (properties is null) throw new ArgumentNullException(nameof(properties));
+        if (properties.Length == 0)
+            throw new ArgumentException("At least one property selector is required.", nameof(properties));
+
+        string keyPropertyName = GetNavigationPropertyName(_getKey.Body);
+        for (int i = 0; i < properties.Length; i++)
+        {
+            // Stricter than ExtractNames: the member must be a DIRECT property of TModel
+            // (member.Expression is the lambda parameter). ExtractNames accepts any member
+            // access after Convert-stripping, so x => x.Name.Length would slip through it
+            // as "Length" — a name that isn't a TModel property at all.
+            Expression body = properties[i].Body;
+            if (body is UnaryExpression unary &&
+                (unary.NodeType == ExpressionType.Convert || unary.NodeType == ExpressionType.ConvertChecked))
+            {
+                body = unary.Operand;
+            }
+
+            if (body is not MemberExpression member || member.Expression is not ParameterExpression)
+            {
+                throw new ArgumentException(
+                    $"Expression at index {i} must be a direct property access on the model " +
+                    "(e.g. x => x.Name). Nested access such as x => x.Category.Name is not supported.",
+                    nameof(properties));
+            }
+
+            string name = member.Member.Name;
+            if (string.Equals(name, keyPropertyName, StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    $"The key property '{name}' cannot be ignored — the key is required for " +
+                    "routing, entity-id URLs, and $metadata.", nameof(properties));
+            }
+
+            if (member.Member is not PropertyInfo clrProperty)
+            {
+                throw new ArgumentException(
+                    $"'{name}' is not a property of {typeof(TModel).Name} — fields cannot be ignored.",
+                    nameof(properties));
+            }
+
+            if (!_ignoredPropertyNames.Add(name)) continue; // duplicate — already configured
+
+            // EDM removal rides the configurator pipeline, so it is auto-ejected when
+            // AdvancedConfigure is overridden (rows 1-2 of the spec's suppression table) while
+            // runtime suppression (routes, wire, PATCH) still applies. ModelBuilder's
+            // PropertySelectorVisitor rejects the boxing Convert node an
+            // Expression<Func<TModel, object?>> carries for value-typed properties
+            // ("Unsupported Expression NodeType"), so rebuild an unboxed, strongly-typed
+            // selector and invoke Ignore<TProperty> with the property's real CLR type.
+            ParameterExpression p = Expression.Parameter(typeof(TModel), "x");
+            LambdaExpression typedSelector = Expression.Lambda(
+                typeof(Func<,>).MakeGenericType(typeof(TModel), clrProperty.PropertyType),
+                Expression.Property(p, clrProperty), p);
+            MethodInfo edmIgnore = s_edmIgnoreMethodDefinition.MakeGenericMethod(clrProperty.PropertyType);
+            _configurators.Add(cfg => edmIgnore.Invoke(cfg, new object[] { typedSelector }));
+        }
     }
 
     /// <summary>
@@ -1585,6 +1685,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _structuralProperties ??= BuildStructuralProperties();
     bool IEntitySetEndpointSource.AllowDeepInsert => _resolvedAllowDeepInsert;
     IReadOnlyCollection<string> IEntitySetEndpointSource.NavigationPropertyNames => _navigationPropertyNames;
+    IReadOnlyCollection<string> IEntitySetEndpointSource.IgnoredPropertyNames => _ignoredPropertyNames;
     string IEntitySetEndpointSource.KeyPropertyName => GetNavigationPropertyName(_getKey.Body);
     bool IEntitySetEndpointSource.IsAdvancedConfigureOverridden => _isAdvancedConfigureOverridden;
 

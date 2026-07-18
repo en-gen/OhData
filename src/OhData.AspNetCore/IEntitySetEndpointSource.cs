@@ -80,6 +80,15 @@ internal interface IEntitySetEndpointSource
     /// <c>false</c>.
     /// </summary>
     IReadOnlyCollection<string> NavigationPropertyNames { get; }
+
+    /// <summary>
+    /// Names of CLR properties excluded from the OData surface via
+    /// <c>EntitySetProfile.Ignore(...)</c> (#226). Empty when the profile ignores nothing.
+    /// Drives structural-route exclusion, the registration-wide serializer-options derivation,
+    /// and the PATCH delta-builder filter.
+    /// </summary>
+    IReadOnlyCollection<string> IgnoredPropertyNames { get; }
+
     string KeyPropertyName { get; }
     string InvokeGetKeyString(object model);
 

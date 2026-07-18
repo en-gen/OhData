@@ -348,6 +348,15 @@ internal static class OhDataEndpointFactory
             .GetService<IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions>>()
             ?.Value?.SerializerOptions;
 
+        // #226: registration-wide ignored-property suppression. Validates same-model-type
+        // conflicts, then — only when at least one profile declares ignores — derives a single
+        // options instance whose resolver modifier removes the ignored members. When no profile
+        // ignores anything the original options are threaded through unchanged (zero delta).
+        var ignoredByType = IgnoredPropertyJsonOptions.BuildIgnoredPropertyMap(registration.Profiles);
+        JsonSerializerOptions? effectiveJsonOptions = ignoredByType.Count == 0
+            ? startupJsonOptions
+            : IgnoredPropertyJsonOptions.Build(startupJsonOptions ?? _camelCaseSerializerOptions, ignoredByType);
+
         // Resolved once here (rather than down at the per-profile loop) so the group-level
         // exception filter below can log through the same "OhData" category every other
         // handler uses.
@@ -586,7 +595,7 @@ internal static class OhDataEndpointFactory
             {
                 _mapEntitySetMethod
                     .MakeGenericMethod(profile.KeyType, profile.ModelType)
-                    .Invoke(null, new object?[] { group, profile, registration, loggerFactory, startupJsonOptions });
+                    .Invoke(null, new object?[] { group, profile, registration, loggerFactory, effectiveJsonOptions });
             }
             catch (System.Reflection.TargetInvocationException tie) when (tie.InnerException is not null)
             {
@@ -598,7 +607,7 @@ internal static class OhDataEndpointFactory
         }
 
         // Gap 7: Unbound functions/actions — registered once at service root level (§11.5.1)
-        MapUnboundOperations(group, registration.UnboundOperations, startupJsonOptions);
+        MapUnboundOperations(group, registration.UnboundOperations, effectiveJsonOptions);
 
         return group;
     }
@@ -2914,7 +2923,10 @@ internal static class OhDataEndpointFactory
                     {
                         var clrProp = typeof(TModel).GetProperty(prop.Name,
                             BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance);
-                        if (clrProp is not null)
+                        // #226: ignored properties get the same silent-skip as unknown members.
+                        // This loop resolves members via CLR reflection (not the EDM), so EDM
+                        // removal alone would not stop an ignored member from binding here.
+                        if (clrProp is not null && !source.IgnoredPropertyNames.Contains(clrProp.Name))
                         {
                             object? value = prop.Value.Deserialize(clrProp.PropertyType, jsonOptions);
                             patchDelta.TrySetPropertyValue(clrProp.Name, value);
