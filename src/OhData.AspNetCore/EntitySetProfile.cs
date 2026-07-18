@@ -453,6 +453,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private bool _authRequired;
     private string? _authPolicy;
     private IReadOnlyList<string>? _authRoles;
+    private List<OperationAuthRule>? _operationAuthRules;
     private bool _isAdvancedConfigureOverridden;
 
     private readonly ICollection<Action<EntityTypeConfiguration<TModel>>> _configurators;
@@ -1528,6 +1529,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected void RequireAuthorization()
     {
         ThrowIfSealed();
+        ThrowIfOperationAuthConfigured();
         if (_authRequired)
         {
             throw new InvalidOperationException(
@@ -1546,6 +1548,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected void RequireAuthorization(string policy)
     {
         ThrowIfSealed();
+        ThrowIfOperationAuthConfigured();
         if (_authPolicy is not null)
         {
             throw new InvalidOperationException(
@@ -1564,6 +1567,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected void RequireRoles(params string[] roles)
     {
         ThrowIfSealed();
+        ThrowIfOperationAuthConfigured();
         if (roles.Length == 0)
             throw new ArgumentException("At least one role must be specified.", nameof(roles));
         if (_authRoles is not null)
@@ -1574,6 +1578,52 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
         _authRoles = Array.AsReadOnly(roles);
         _authRequired = true;
+    }
+
+    /// <summary>
+    /// Declares per-operation authorization (#199) using a fluent builder whose per-category lambdas
+    /// mirror <c>AuthorizationPolicyBuilder</c>. Requirements within a category combine with AND;
+    /// later category rules win on overlap. Cannot be combined with the profile-wide
+    /// <see cref="RequireAuthorization()"/>/<see cref="RequireRoles"/> methods — choose one model.
+    /// </summary>
+    /// <example>
+    /// <code>
+    /// ConfigureAuthorization(auth =&gt; auth
+    ///     .Read(r =&gt; r.AllowAnonymous())
+    ///     .Writes(w =&gt; w.RequirePolicy("Editors"))
+    ///     .Delete(d =&gt; d.RequireRole("Admin")));
+    /// </code>
+    /// </example>
+    protected void ConfigureAuthorization(Action<IAuthorizationRuleBuilder> configure)
+    {
+        ThrowIfSealed();
+        if (configure is null)
+            throw new ArgumentNullException(nameof(configure));
+        if (_operationAuthRules is not null)
+        {
+            throw new InvalidOperationException(
+                "ConfigureAuthorization has already been called on this profile. Call it only once.");
+        }
+        if (_authRequired)
+        {
+            throw new InvalidOperationException(
+                "ConfigureAuthorization cannot be combined with RequireAuthorization()/RequireRoles(). " +
+                "Use one authorization model.");
+        }
+
+        var builder = new AuthorizationRuleBuilder();
+        configure(builder);
+        _operationAuthRules = builder.Rules.ToList();
+    }
+
+    private void ThrowIfOperationAuthConfigured()
+    {
+        if (_operationAuthRules is not null)
+        {
+            throw new InvalidOperationException(
+                "RequireAuthorization()/RequireRoles() cannot be combined with ConfigureAuthorization(). " +
+                "Use one authorization model.");
+        }
     }
 
     // ── IEntitySetEndpointSource ─────────────────────────────────────────────
@@ -1592,6 +1642,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     bool IEntitySetEndpointSource.HasETag => _getETag is not null;
     AuthorizationConfig? IEntitySetEndpointSource.Authorization =>
         _authRequired ? new AuthorizationConfig(true, _authPolicy, _authRoles) : null;
+    IReadOnlyList<OperationAuthRule>? IEntitySetEndpointSource.OperationAuthorization => _operationAuthRules;
     IReadOnlyList<NavigationRouteDefinition> IEntitySetEndpointSource.NavigationRoutes => _navRoutes;
     IReadOnlyList<BoundOperationDefinition> IEntitySetEndpointSource.BoundFunctions =>
         _resolvedBoundFunctions ??= _functions.Select(d => BoundOperationDefinition.From(d, isAction: false))

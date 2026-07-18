@@ -34,6 +34,13 @@ internal interface IEntitySetEndpointSource
 
     AuthorizationConfig? Authorization { get; }
 
+    /// <summary>
+    /// Per-operation authorization rules declared via <c>ConfigureAuthorization(...)</c> (#199), or
+    /// <c>null</c> when the profile uses the legacy profile-wide <see cref="Authorization"/> model.
+    /// When non-null, the factory applies auth per-route rather than to a single all-operations group.
+    /// </summary>
+    IReadOnlyList<OperationAuthRule>? OperationAuthorization { get; }
+
     IReadOnlyList<NavigationRouteDefinition> NavigationRoutes { get; }
     IReadOnlyList<BoundOperationDefinition> BoundFunctions { get; }
     IReadOnlyList<BoundOperationDefinition> BoundActions { get; }

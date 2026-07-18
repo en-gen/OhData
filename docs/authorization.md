@@ -50,9 +50,77 @@ public class ProductProfile : EntitySetProfile<int, Product>
 
 ## Scope
 
-Authorization applies to **all operations** on the entity set - GET, POST, PUT, PATCH, DELETE, navigation routes, and bound operations all get the same requirement. Per-operation granularity is not supported.
+`RequireAuthorization()`/`RequireRoles()` apply to **all operations** on the entity set - GET, POST, PUT, PATCH, DELETE, navigation routes, and bound operations all get the same requirement. This is the simplest model and remains the default.
 
-If you need some operations open and others protected, split them across two profiles with different entity set names that delegate to the same underlying service.
+For per-operation granularity (reads open, writes gated; deletes admin-only; etc.), use `ConfigureAuthorization(...)` instead - see the next section.
+
+## Per-operation authorization
+
+`ConfigureAuthorization(auth => …)` authorizes each operation **category** independently:
+
+```csharp
+public class OrderProfile : EntitySetProfile<int, Order>
+{
+    public OrderProfile() : base(x => x.Id)
+    {
+        ConfigureAuthorization(auth => auth
+            .Read(r   => r.AllowAnonymous())                     // catalog reads are public
+            .Create(c => c.RequirePolicy("Editors"))
+            .Update(u => u.RequireRole("Editors")                // requirements combine with AND,
+                          .RequireClaim("dept", "sales"))        //   like AuthorizationPolicyBuilder
+            .Delete(d => d.RequireRole("Admin"))
+            .Invoke("Approve", i => i.RequirePolicy("Approvers")) // one named bound operation
+            .Invoke(i => i.RequireAuthenticatedUser()));         // all other bound operations
+
+        GetAll = ct => ...;
+        // ...
+    }
+}
+```
+
+**Categories** (an `OhDataOperation` maps every route to exactly one):
+
+| Category | Routes |
+|---|---|
+| `Read` | collection/by-id/navigation/property GETs, `$count`, `$value`, `$ref` GET |
+| `Create` | `POST` to the collection; `POST` to a collection navigation |
+| `Update` | `PUT`/`PATCH` on an entity, property, or navigation; adding/setting a link (`POST`/`PUT` `$ref`); **and** the mutations that leave the row intact — clearing a property (`DELETE …/{Property}`) and removing a link (`DELETE …/$ref`) |
+| `Delete` | `DELETE` that removes a whole entity |
+| `Invoke` | bound function/action invocation |
+
+Selectors: `.Read(...)`, `.Create(...)`, `.Update(...)`, `.Delete(...)`, `.Writes(...)` (= create+update+delete), `.All(...)` (every category), `.Invoke(...)` (all bound ops), and `.Invoke("Name", ...)` (one named bound operation, which takes precedence over a generic `.Invoke(...)`). Later category rules win on overlap.
+
+**Per-category requirements** mirror `AuthorizationPolicyBuilder` and combine with **AND**:
+
+| Method | Meaning |
+|---|---|
+| `.RequireAuthenticatedUser()` | any authenticated identity |
+| `.RequireRole("A", "B")` | at least one of the roles (OR within; AND across requirements) |
+| `.RequireClaim("type", "v1", "v2")` | a claim of `type`, optionally restricted to the given values |
+| `.RequirePolicy("Name")` | a named ASP.NET Core policy (registered via `AddAuthorization`) |
+| `.AllowAnonymous()` | explicitly anonymous — **exclusive**, cannot be combined with any `Require*` |
+
+### Defaults and composition with group-level auth
+
+- A category with **no rule** emits nothing, so it **inherits** any group-level
+  `MapOhData().RequireAuthorization()` - and is anonymous when there is none. This matches
+  ASP.NET Core's "anonymous unless you say otherwise" posture and keeps global auth composable.
+- An explicit `.AllowAnonymous()` **overrides** a group-level requirement for that category (it is the
+  standard `AllowAnonymousAttribute`).
+- `$metadata`, the service document, and unbound functions/actions are **not** entity-set-scoped, so
+  `ConfigureAuthorization` does not reach them; protect them with group-level auth (see below), same as
+  the legacy model.
+
+### One model per profile
+
+`ConfigureAuthorization(...)` and the legacy `RequireAuthorization()`/`RequireRoles()` are mutually
+exclusive on a single profile - calling both throws `InvalidOperationException` at startup. Choose one.
+
+### Fallback
+
+If two entity sets need entirely separate surfaces (not just different requirements per verb), you can
+still split them across two profiles with different entity set names that delegate to the same
+underlying service.
 
 ## Response behaviour
 

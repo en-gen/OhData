@@ -16,6 +16,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Web;
 using System.Xml;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
@@ -1792,10 +1793,95 @@ internal static class OhDataEndpointFactory
         // #202: per-entity-set complexity-guard settings (expansion depth + node counts).
         var cachedValidationSettings = BuildValidationSettings(source);
 
+        // #199 Layer C: per-operation authorization. When the profile declared
+        // ConfigureAuthorization(...), resolve the effective rule per route category and apply it to
+        // that route's own handler builder — not a shared group, because the MapGroup slash rule
+        // forbids per-category sub-groups for key-based routes. When null, the legacy single-group
+        // auth applied above (entityAuthGroup) governs instead and these helpers are no-ops.
+        IReadOnlyList<OperationAuthRule>? operationAuthRules = source.OperationAuthorization;
+
+        OperationAuthRule? ResolveOperationRule(OhDataOperation category, string? boundOperationName)
+        {
+            if (operationAuthRules is null) return null;
+            OperationAuthRule? generic = null;
+            OperationAuthRule? named = null;
+            foreach (var rule in operationAuthRules.Where(rule => (rule.Operations & category) != 0))
+            {
+                if (rule.BoundOperationName is null)
+                {
+                    generic = rule; // last generic rule for this category wins
+                }
+                else if (boundOperationName is not null &&
+                         string.Equals(rule.BoundOperationName, boundOperationName, StringComparison.Ordinal))
+                {
+                    named = rule; // a name-specific rule (Invoke("Name", …)) wins over a generic one
+                }
+            }
+            return named ?? generic;
+        }
+
+        void ApplyOperationAuth(IEndpointConventionBuilder rb, OhDataOperation category, string? boundOperationName = null)
+        {
+            if (operationAuthRules is null) return; // legacy group-auth path governs instead
+            OperationAuthRule? rule = ResolveOperationRule(category, boundOperationName);
+            if (rule is null) return; // no rule → inherit any group/global auth (anonymous if none)
+            if (rule.AllowAnonymous)
+            {
+                rb.AllowAnonymous();
+                return;
+            }
+
+            // #199 PR1 (Layer C only): resource-based authorization (.RequireResource) is not yet
+            // enforced — fail loud at startup rather than silently leaving a route open. The Layer B
+            // PR replaces this guard with the AuthorizeAsync invocation at the entity-load points.
+            if (rule.Requirements.Any(r => r.Kind == AuthRequirementKind.Resource))
+            {
+                throw new InvalidOperationException(
+                    $"Entity set '{name}': .RequireResource() (resource-based authorization) is not available in this build.");
+            }
+
+            // Named policies apply as separate RequireAuthorization(name) calls (they stack → AND).
+            foreach (var req in rule.Requirements.Where(r => r.Kind == AuthRequirementKind.Policy))
+            {
+                rb.RequireAuthorization(req.Name!);
+            }
+
+            // Inline requirements (authenticated/role/claim) replay onto one AuthorizationPolicyBuilder.
+            var inlineRequirements = rule.Requirements
+                .Where(r => r.Kind is AuthRequirementKind.AuthenticatedUser
+                                   or AuthRequirementKind.Role
+                                   or AuthRequirementKind.Claim)
+                .ToList();
+            if (inlineRequirements.Count > 0)
+            {
+                rb.RequireAuthorization(policy =>
+                {
+                    foreach (var req in inlineRequirements)
+                    {
+                        switch (req.Kind)
+                        {
+                            case AuthRequirementKind.AuthenticatedUser:
+                                policy.RequireAuthenticatedUser();
+                                break;
+                            case AuthRequirementKind.Role:
+                                policy.RequireRole(req.Values!.ToArray());
+                                break;
+                            case AuthRequirementKind.Claim:
+                                if (req.Values is { Count: > 0 })
+                                    policy.RequireClaim(req.Name!, req.Values);
+                                else
+                                    policy.RequireClaim(req.Name!);
+                                break;
+                        }
+                    }
+                });
+            }
+        }
+
         // Priority 1: ODataEntitySetProfile with direct ODataQueryOptions handler
         if (source is IODataEntitySetEndpointSource odataSource && odataSource.HasGetODataQueryable)
         {
-            entityGroup.MapGet("", async (HttpContext ctx, CancellationToken ct) =>
+            var collReadP1Rb = entityGroup.MapGet("", async (HttpContext ctx, CancellationToken ct) =>
             {
                 try
                 {
@@ -1911,11 +1997,12 @@ internal static class OhDataEndpointFactory
                   CountEnabled: source.CountEnabled,
                   SearchEnabled: source.HasSearch,
                   MaxTop: source.MaxTop));
+            ApplyOperationAuth(collReadP1Rb, OhDataOperation.Read);
         }
         // Priority 2: base GetQueryable (IQueryable without ODataQueryOptions)
         else if (source.HasGetQueryable)
         {
-            entityGroup.MapGet("", async (HttpContext ctx, CancellationToken ct) =>
+            var collReadP2Rb = entityGroup.MapGet("", async (HttpContext ctx, CancellationToken ct) =>
             {
                 try
                 {
@@ -2072,10 +2159,11 @@ internal static class OhDataEndpointFactory
                   CountEnabled: source.CountEnabled,
                   SearchEnabled: source.HasSearch,
                   MaxTop: source.MaxTop));
+            ApplyOperationAuth(collReadP2Rb, OhDataOperation.Read);
         }
         else if (source.HasGetAll)
         {
-            entityGroup.MapGet("", async (HttpContext ctx, CancellationToken ct) =>
+            var collReadAllRb = entityGroup.MapGet("", async (HttpContext ctx, CancellationToken ct) =>
             {
                 try
                 {
@@ -2242,13 +2330,14 @@ internal static class OhDataEndpointFactory
                   // Leg 1: $top is now live on this path and capped by MaxTop exactly like
                   // GetQueryable, so the doc metadata should advertise the same cap.
                   MaxTop: source.MaxTop));
+            ApplyOperationAuth(collReadAllRb, OhDataOperation.Read);
         }
 
         bool hasCountSource = (source is IODataEntitySetEndpointSource odsCheck && odsCheck.HasGetODataQueryable)
             || source.HasGetQueryable || source.HasGetAll;
         if (hasCountSource)
         {
-            entityGroup.MapGet("/$count", async (HttpContext ctx, CancellationToken ct) =>
+            var countCollRb = entityGroup.MapGet("/$count", async (HttpContext ctx, CancellationToken ct) =>
             {
                 try
                 {
@@ -2308,6 +2397,7 @@ internal static class OhDataEndpointFactory
                   CountEnabled: true,
                   SearchEnabled: false,
                   MaxTop: null));
+            ApplyOperationAuth(countCollRb, OhDataOperation.Read);
         }
 
         if (source.HasGetById)
@@ -2425,6 +2515,7 @@ internal static class OhDataEndpointFactory
                   CountEnabled: false,
                   SearchEnabled: false,
                   MaxTop: null));
+            ApplyOperationAuth(rb, OhDataOperation.Read);
         }
 
         if (source.HasPost)
@@ -2556,6 +2647,7 @@ internal static class OhDataEndpointFactory
                   BodyType = typeof(TModel),
                   Description = $"The {name} entity to create."
               });
+            ApplyOperationAuth(rb, OhDataOperation.Create);
         }
 
         if (source.HasPut)
@@ -2660,6 +2752,7 @@ internal static class OhDataEndpointFactory
                   BodyType = typeof(TModel),
                   Description = $"The full {name} entity representation to replace the existing resource with."
               });
+            ApplyOperationAuth(rb, OhDataOperation.Update);
         }
 
         if (source.HasPatch)
@@ -2767,6 +2860,7 @@ internal static class OhDataEndpointFactory
                   BodyType = typeof(TModel),
                   Description = $"A partial {name} representation. Only properties present in the JSON body are applied (partial-update semantics) -- omitted properties are left unchanged."
               });
+            ApplyOperationAuth(rb, OhDataOperation.Update);
         }
 
         if (source.HasDelete)
@@ -2792,6 +2886,7 @@ internal static class OhDataEndpointFactory
                 }
             });
             rb.WithTags(name).Produces(204).Produces(400).Produces(404);
+            ApplyOperationAuth(rb, OhDataOperation.Delete);
         }
 
         // Startup route-collision validation: POST /{name}({key})/{segment}.
@@ -2928,6 +3023,7 @@ internal static class OhDataEndpointFactory
                         : navItemType ?? typeof(object),
                     "application/json")
                 .Produces(404);
+            ApplyOperationAuth(rb, OhDataOperation.Read);
 
             // Batch 3: GET /{name}({key})/{nav}/$count — standalone count for navigation collections (§11.2.3)
             if (navIsCollection)
@@ -2962,6 +3058,7 @@ internal static class OhDataEndpointFactory
                     .WithTags(name)
                     .Produces<long>(200, "text/plain")
                     .Produces(404);
+                ApplyOperationAuth(countRb, OhDataOperation.Read);
             }
 
             // Gap 6: $ref endpoints for navigation (§11.4.6)
@@ -3075,6 +3172,7 @@ internal static class OhDataEndpointFactory
                 .Produces(200,
                     navRefIsCollection ? typeof(ODataRefCollectionResponse) : typeof(ODataRefResponse),
                     "application/json");
+            ApplyOperationAuth(refGetRb, OhDataOperation.Read);
 
             // POST /{name}({key})/{nav}/$ref   — collection nav: add a link (§11.4.6.2)
             // PUT  /{name}({key})/{nav}/$ref   — single-value nav: set the link (§11.4.6.3)
@@ -3136,21 +3234,23 @@ internal static class OhDataEndpointFactory
 
                 if (navRefIsCollection)
                 {
-                    entityAuthGroup.MapPost($"/{name}({{key}})/{navRefPropertyName}/$ref", handleAddOrSetRef)
+                    var refAddRb = entityAuthGroup.MapPost($"/{name}({{key}})/{navRefPropertyName}/$ref", handleAddOrSetRef)
                         .WithTags(name)
                         .Produces(204)
                         .Produces(400)
                         .Produces(415)
                         .WithMetadata(refBodyMetadata);
+                    ApplyOperationAuth(refAddRb, OhDataOperation.Update);
                 }
                 else
                 {
-                    entityAuthGroup.MapPut($"/{name}({{key}})/{navRefPropertyName}/$ref", handleAddOrSetRef)
+                    var refSetRb = entityAuthGroup.MapPut($"/{name}({{key}})/{navRefPropertyName}/$ref", handleAddOrSetRef)
                         .WithTags(name)
                         .Produces(204)
                         .Produces(400)
                         .Produces(415)
                         .WithMetadata(refBodyMetadata);
+                    ApplyOperationAuth(refSetRb, OhDataOperation.Update);
                 }
             }
 
@@ -3182,6 +3282,7 @@ internal static class OhDataEndpointFactory
                     .WithTags(name)
                     .Produces(204)
                     .Produces(400);
+                ApplyOperationAuth(refDeleteRb, OhDataOperation.Update);
             }
 
             // POST /{name}({key})/{nav} — create a new related entity (§11.4.2.1).
@@ -3193,7 +3294,7 @@ internal static class OhDataEndpointFactory
                 string postNavPropertyName = navPropertyName;
                 Type postNavItemType = navItemType ?? typeof(object);
                 var postNavCapture = nav;
-                entityAuthGroup.MapPost($"/{name}({{key}})/{postNavPropertyName}",
+                var navPostRb = entityAuthGroup.MapPost($"/{name}({{key}})/{postNavPropertyName}",
                     async (string key, HttpContext ctx, CancellationToken ct) =>
                     {
                         if (!IsJsonContentType(ctx)) return UnsupportedMediaTypeError(ctx);
@@ -3289,6 +3390,7 @@ internal static class OhDataEndpointFactory
                         BodyType = postNavItemType,
                         Description = $"The related {postNavPropertyName} entity to create."
                     });
+                ApplyOperationAuth(navPostRb, OhDataOperation.Create);
             }
         }
 
@@ -3335,7 +3437,7 @@ internal static class OhDataEndpointFactory
             foreach (var propCapture in source.StructuralProperties)
             {
                 // GET /{name}({key})/{Property} — property-value envelope (§11.2.6).
-                DocProp(entityAuthGroup.MapGet($"/{name}({{key}})/{propCapture.Name}",
+                var propGetRb = DocProp(entityAuthGroup.MapGet($"/{name}({{key}})/{propCapture.Name}",
                     async (string key, HttpContext ctx, CancellationToken ct) =>
                     {
                         try
@@ -3384,10 +3486,11 @@ internal static class OhDataEndpointFactory
                     .Produces(200, typeof(ODataPropertyResponse<>).MakeGenericType(propCapture.ClrType), "application/json")
                     .Produces(204)
                     .Produces(404));
+                ApplyOperationAuth(propGetRb, OhDataOperation.Read);
 
                 // GET /{name}({key})/{Property}/$value — raw value (Part 2 §4.7).
                 bool propIsComplex = propCapture.IsComplex;
-                DocProp(entityAuthGroup.MapGet($"/{name}({{key}})/{propCapture.Name}/$value",
+                var propValueRb = DocProp(entityAuthGroup.MapGet($"/{name}({{key}})/{propCapture.Name}/$value",
                     async (string key, HttpContext ctx, CancellationToken ct) =>
                     {
                         // Complex-typed properties have no raw representation — a static
@@ -3436,6 +3539,7 @@ internal static class OhDataEndpointFactory
                     .Produces<string>(200, "text/plain", "application/octet-stream")
                     .Produces(400)
                     .Produces(404));
+                ApplyOperationAuth(propValueRb, OhDataOperation.Read);
             }
         }
 
@@ -3468,12 +3572,15 @@ internal static class OhDataEndpointFactory
                     // omits the {key} path-parameter declaration its sibling GET carries, producing
                     // an OpenAPI document with an undeclared template variable (technically invalid).
                     // The key is unused: the response is a fixed 400 regardless of its value.
-                    DocProp(entityAuthGroup.MapPut($"/{name}({{key}})/{propName}", (string key) => KeyImmutableError())
+                    var propKeyPutRb = DocProp(entityAuthGroup.MapPut($"/{name}({{key}})/{propName}", (string key) => KeyImmutableError())
                         .WithTags(name).Produces(400));
-                    DocProp(entityAuthGroup.MapMethods($"/{name}({{key}})/{propName}", PatchMethod, (string key) => KeyImmutableError())
+                    ApplyOperationAuth(propKeyPutRb, OhDataOperation.Update);
+                    var propKeyPatchRb = DocProp(entityAuthGroup.MapMethods($"/{name}({{key}})/{propName}", PatchMethod, (string key) => KeyImmutableError())
                         .WithTags(name).Produces(400));
-                    DocProp(entityAuthGroup.MapDelete($"/{name}({{key}})/{propName}", (string key) => KeyImmutableError())
+                    ApplyOperationAuth(propKeyPatchRb, OhDataOperation.Update);
+                    var propKeyDeleteRb = DocProp(entityAuthGroup.MapDelete($"/{name}({{key}})/{propName}", (string key) => KeyImmutableError())
                         .WithTags(name).Produces(400));
+                    ApplyOperationAuth(propKeyDeleteRb, OhDataOperation.Update);
                     continue;
                 }
 
@@ -3575,20 +3682,22 @@ internal static class OhDataEndpointFactory
                     Description = $"The new value for '{propName}', wrapped in a 'value' member."
                 };
 
-                DocProp(entityAuthGroup.MapPut($"/{name}({{key}})/{propName}",
+                var propPutRb = DocProp(entityAuthGroup.MapPut($"/{name}({{key}})/{propName}",
                     (string key, HttpContext ctx, CancellationToken ct) => HandleSetPropertyAsync(key, ctx, ct, isPatchVerb: false))
                     .WithTags(name).Produces(204).Produces(400).Produces(404).Produces(412).Produces(415)
                     .WithMetadata(propertyWriteBodyMetadata));
+                ApplyOperationAuth(propPutRb, OhDataOperation.Update);
 
-                DocProp(entityAuthGroup.MapMethods($"/{name}({{key}})/{propName}", PatchMethod,
+                var propPatchRb = DocProp(entityAuthGroup.MapMethods($"/{name}({{key}})/{propName}", PatchMethod,
                     (string key, HttpContext ctx, CancellationToken ct) => HandleSetPropertyAsync(key, ctx, ct, isPatchVerb: true))
                     .WithTags(name).Produces(204).Produces(400).Produces(404).Produces(412).Produces(415)
                     .WithMetadata(propertyWriteBodyMetadata));
+                ApplyOperationAuth(propPatchRb, OhDataOperation.Update);
 
                 // DELETE — set the property to null (§11.4.9.3). Non-nullable is a structural
                 // (static, per-type) validation, checked before touching the data source at all —
                 // the same "cheap check first" pattern used for the key-immutable stub above.
-                DocProp(entityAuthGroup.MapDelete($"/{name}({{key}})/{propName}", async (string key, HttpContext ctx, CancellationToken ct) =>
+                var propDeleteRb = DocProp(entityAuthGroup.MapDelete($"/{name}({{key}})/{propName}", async (string key, HttpContext ctx, CancellationToken ct) =>
                 {
                     if (!propIsNullable)
                     {
@@ -3624,6 +3733,7 @@ internal static class OhDataEndpointFactory
                         return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
                     }
                 }).WithTags(name).Produces(204).Produces(400).Produces(404).Produces(412));
+                ApplyOperationAuth(propDeleteRb, OhDataOperation.Update);
             }
         }
 
@@ -3674,6 +3784,7 @@ internal static class OhDataEndpointFactory
             // Issue #181: document the function's query-string parameters.
             var boundFnQueryParams = BuildFunctionQueryParametersMetadata(fnCapture.Parameters, skipKey: false);
             if (boundFnQueryParams is not null) rb.WithMetadata(boundFnQueryParams);
+            ApplyOperationAuth(rb, OhDataOperation.Invoke, fnCapture.Name);
         }
 
         // Bound actions — POST /{EntitySet}/{ActionName} with JSON body params
@@ -3749,6 +3860,7 @@ internal static class OhDataEndpointFactory
                         string.Join(", ", actionCapture.Parameters.Select(p => $"{p.Name} ({p.ParameterType.Name})")) + "."
                 });
             }
+            ApplyOperationAuth(rb, OhDataOperation.Invoke, actionCapture.Name);
         }
 
         // Gap 7: Entity-level bound functions — GET /{name}({key})/{fn.Name}
@@ -3811,6 +3923,7 @@ internal static class OhDataEndpointFactory
             // which is a route parameter already documented via BindingSource.Path).
             var entityFnQueryParams = BuildFunctionQueryParametersMetadata(fnCapture.Parameters, skipKey: true);
             if (entityFnQueryParams is not null) rb.WithMetadata(entityFnQueryParams);
+            ApplyOperationAuth(rb, OhDataOperation.Invoke, fnCapture.Name);
         }
 
         // Gap 7: Entity-level bound actions — POST /{name}({key})/{action.Name}
@@ -3898,6 +4011,7 @@ internal static class OhDataEndpointFactory
                         string.Join(", ", bodyParams.Select(p => $"{p.Name} ({p.ParameterType.Name})")) + "."
                 });
             }
+            ApplyOperationAuth(rb, OhDataOperation.Invoke, actionCapture.Name);
         }
 
     }
