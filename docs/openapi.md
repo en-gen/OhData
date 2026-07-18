@@ -66,6 +66,16 @@ the parameter names and CLR types listed in the body's description (an action's 
 deserialized by name out of one JSON object, not bound to a single CLR type, so there is no single
 schema to generate).
 
+## Property routes omitted by default
+
+Individual structural-property routes — `GET /{Set}({key})/{Property}`, its `/$value` variant, and
+the `PUT`/`PATCH`/`DELETE` property writes — are **excluded from the generated document by
+default**. They number up to four per property, per entity set, and would otherwise dominate the
+docs. This is applied at the ApiExplorer level (`ExcludeFromDescription`), so it covers this
+package, Swashbuckle, and NSwag identically, and it does not affect runtime behavior — the routes
+stay fully functional. Opt them back in per profile or server-wide via `PropertyRouteDocsEnabled`;
+see [property-access.md](property-access.md#api-documentation-visibility).
+
 ## Typed collection responses
 
 Collection GET routes (on `GetQueryable`, `GetAll`, and Priority-1) and collection-valued
