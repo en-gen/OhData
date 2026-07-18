@@ -59,11 +59,11 @@ public sealed class OhDataNSwagSchemaProcessor : ISchemaProcessor
             return;
         }
 
-        foreach (PropertyInfo property in ignored
+        foreach (string jsonName in ignored
             .Select(clrName => modelType.GetProperty(clrName))
-            .OfType<PropertyInfo>())
+            .OfType<PropertyInfo>()
+            .Select(property => GetJsonPropertyName(property, context.Settings)))
         {
-            string jsonName = GetJsonPropertyName(property, context.Settings);
             if (context.Schema.Properties.Remove(jsonName))
             {
                 context.Schema.RequiredProperties.Remove(jsonName);
