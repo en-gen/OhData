@@ -13,6 +13,21 @@ Production hardening (milestone 1.4.0): safe-by-default limits across the read p
 
 ### Added
 
+- **Tunable query-complexity guards; the `$expand`-depth guard is now enforced (#202).** The
+  settings-level expansion-depth validator was hardcoded to `0` (disabled), so a `$expand` nesting
+  deeper than the framework could satisfy was silently truncated rather than rejected. Four limits are
+  now configurable — globally via `WithDefaults`, or per entity set on the profile (profile overrides
+  global): `MaxExpansionDepth` (default **12**, the framework's internal nested-expand cap — now
+  **enforced**: a `$expand` nesting deeper than the limit returns `400` instead of a silently-truncated
+  result), plus `MaxFilterNodeCount` (default `10000`), `MaxOrderByNodeCount` (default `1000`), and
+  `MaxAnyAllExpressionDepth` (default `1000`). The node-count defaults are unchanged from what was
+  already applied — they were previously hardcoded and are now lowerable to harden against expensive
+  `$filter`/`$orderby` expressions. Enforced uniformly on all three collection read paths
+  (`GetQueryable`, `GetAll`, Priority-1) via the shared property-allowlist validation. **Behavior
+  change:** a request nesting `$expand` deeper than `MaxExpansionDepth` (default 12) now returns `400`
+  where it previously returned a partial (truncated) `200`; no realistic request nested that deep,
+  since the framework never expanded past its internal cap. Values above 12 are bounded by that
+  internal cap; the intended use is to *lower* the limit.
 - **Configurable request-body-size limit for write operations (#203).** A new
   `MaxRequestBodyBytes` (global via `WithDefaults`, or per entity set on the profile — the profile
   value overrides the global default) rejects an oversized write body (`POST`/`PUT`/`PATCH` and their

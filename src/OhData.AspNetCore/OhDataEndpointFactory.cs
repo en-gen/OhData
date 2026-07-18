@@ -875,18 +875,23 @@ internal static class OhDataEndpointFactory
         return null;
     }
 
-    private static readonly ODataValidationSettings s_propertyAllowlistValidationSettings = new()
+    // #202: per-entity-set validation settings, built once per set from the source's resolved
+    // complexity limits (MaxExpansionDepth default 12, node counts 10000/1000/1000 as before) so an
+    // implementor can tighten them per profile or globally via WithDefaults. AllowedQueryOptions=All
+    // etc. is retained so the only checks these run are the per-property allowlist annotations and
+    // the complexity ceilings — $top/$skip/$count keep their own dedicated enforcement (see the
+    // ValidatePropertyAllowlists remark). MaxExpansionDepth is now enforced (was hardcoded 0/disabled):
+    // a $expand nesting deeper than the limit is rejected with 400 rather than silently truncated.
+    private static ODataValidationSettings BuildValidationSettings(IEntitySetEndpointSource source) => new()
     {
         AllowedQueryOptions = AllowedQueryOptions.All,
         AllowedArithmeticOperators = AllowedArithmeticOperators.All,
         AllowedFunctions = AllowedFunctions.AllFunctions,
         AllowedLogicalOperators = AllowedLogicalOperators.All,
-        MaxExpansionDepth = 0, // 0 disables the settings-level expansion-depth check entirely (per
-                               // XML doc); the model-bound Expand(maxDepth,...) config governs how
-                               // deep a nested $expand may go (raised for #183 — see EntitySetProfile).
-        MaxAnyAllExpressionDepth = 1000,
-        MaxNodeCount = 10000,
-        MaxOrderByNodeCount = 1000,
+        MaxExpansionDepth = source.MaxExpansionDepth,
+        MaxAnyAllExpressionDepth = source.MaxAnyAllExpressionDepth,
+        MaxNodeCount = source.MaxFilterNodeCount,
+        MaxOrderByNodeCount = source.MaxOrderByNodeCount,
     };
 
     // Runs only the per-option validators that enforce the property allowlists
@@ -900,11 +905,11 @@ internal static class OhDataEndpointFactory
     // 400s, CountEnabled gate), so only the three property-scoped validators run here. Throws
     // Microsoft.OData.ODataException on violation, which each route's existing catch clause maps
     // to a 400 OData error.
-    private static void ValidatePropertyAllowlists<TModel>(ODataQueryOptions<TModel> options)
+    private static void ValidatePropertyAllowlists<TModel>(ODataQueryOptions<TModel> options, ODataValidationSettings settings)
     {
-        options.Filter?.Validate(s_propertyAllowlistValidationSettings);
-        options.OrderBy?.Validate(s_propertyAllowlistValidationSettings);
-        options.SelectExpand?.Validate(s_propertyAllowlistValidationSettings);
+        options.Filter?.Validate(settings);
+        options.OrderBy?.Validate(settings);
+        options.SelectExpand?.Validate(settings);
     }
 
     /// <remarks>
@@ -1686,6 +1691,8 @@ internal static class OhDataEndpointFactory
         var cachedODataQueryContext = new ODataQueryContext(registration.EdmModel, typeof(TModel), null);
         var cachedCountSettings = new ODataQuerySettings();
         var cachedQuerySettings = new ODataQuerySettings { PageSize = source.MaxTop };
+        // #202: per-entity-set complexity-guard settings (expansion depth + node counts).
+        var cachedValidationSettings = BuildValidationSettings(source);
 
         // Priority 1: ODataEntitySetProfile with direct ODataQueryOptions handler
         if (source is IODataEntitySetEndpointSource odataSource && odataSource.HasGetODataQueryable)
@@ -1704,7 +1711,7 @@ internal static class OhDataEndpointFactory
                     // ExpandProperties allowlists before handing options to the profile — the
                     // profile's own ApplyTo call has no opportunity to reject a disallowed
                     // property since it never calls Validate() itself.
-                    ValidatePropertyAllowlists(options);
+                    ValidatePropertyAllowlists(options, cachedValidationSettings);
                     // #195: reject $top > MaxTop before invoking the profile. The Priority-1 path
                     // delegates query application to the profile, so without this guard a client
                     // could request an arbitrarily large page. Mirrors the Priority-2 path.
@@ -1824,7 +1831,7 @@ internal static class OhDataEndpointFactory
                     var options = new ODataQueryOptions<TModel>(cachedODataQueryContext, ctx.Request);
                     // B1 fix: enforce FilterProperties/OrderByProperties/SelectProperties/
                     // ExpandProperties allowlists before any ApplyTo call below.
-                    ValidatePropertyAllowlists(options);
+                    ValidatePropertyAllowlists(options, cachedValidationSettings);
 
                     // Gap 4: $search on GetQueryable path — delegate to the Search handler, then
                     // apply remaining OData query options on top of the in-memory result set.
@@ -2009,7 +2016,7 @@ internal static class OhDataEndpointFactory
                     // exactly like on the GetQueryable path.
                     IResult? capabilityError = CheckCollectionQueryOptionCapabilities(ctx, source, checkFilterOrderBy: false);
                     if (capabilityError is not null) return capabilityError;
-                    ValidatePropertyAllowlists(options);
+                    ValidatePropertyAllowlists(options, cachedValidationSettings);
 
                     // Post-materialization paging for GetAll, applied AFTER the handler call (GetAll
                     // or Search) fills the array and BEFORE $select/$expand serialization.
@@ -2157,7 +2164,7 @@ internal static class OhDataEndpointFactory
                     var s = ResolveHandlers(ctx);
                     var options = new ODataQueryOptions<TModel>(cachedODataQueryContext, ctx.Request);
                     // B1 fix: enforce the FilterProperties allowlist here too.
-                    ValidatePropertyAllowlists(options);
+                    ValidatePropertyAllowlists(options, cachedValidationSettings);
 
                     if (s is IODataEntitySetEndpointSource odataCountSrc && odataCountSrc.HasGetODataQueryable)
                     {
@@ -2241,7 +2248,7 @@ internal static class OhDataEndpointFactory
                     {
                         options = new ODataQueryOptions<TModel>(cachedODataQueryContext, ctx.Request);
                         // B1 fix: enforce SelectProperties/ExpandProperties allowlists.
-                        ValidatePropertyAllowlists(options);
+                        ValidatePropertyAllowlists(options, cachedValidationSettings);
                         selectedProps = options.SelectExpand?.SelectExpandClause is not null
                             ? ExtractSelectedProperties(options.SelectExpand.SelectExpandClause)
                             : null;
