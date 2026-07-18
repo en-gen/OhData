@@ -25,6 +25,9 @@ builder.Services.AddSwaggerGen(c =>
     c.DocInclusionPredicate((docName, apiDesc) =>
         apiDesc.GroupName is null || apiDesc.GroupName == docName);
     c.OperationFilter<OhDataSwaggerOperationFilter>();
+    // #228: keeps generated schemas honest for profiles that use Ignore(...) — a no-op while no
+    // TestBench profile ignores anything, but registered here to demonstrate the recommended setup.
+    c.SchemaFilter<OhDataSwaggerSchemaFilter>();
 });
 
 // ── OhData versioned registrations ───────────────────────────────────────────

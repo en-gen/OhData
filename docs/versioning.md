@@ -70,8 +70,17 @@ dotnet add package EnGen.OhData.AspNetCore.Swashbuckle
 ```
 
 ```csharp
-builder.Services.AddSwaggerGen(c => c.OperationFilter<OhDataSwaggerOperationFilter>());
+builder.Services.AddSwaggerGen(c =>
+{
+    c.OperationFilter<OhDataSwaggerOperationFilter>();
+    c.SchemaFilter<OhDataSwaggerSchemaFilter>();
+});
 ```
+
+`OhDataSwaggerSchemaFilter` (same package) omits properties excluded via
+`EntitySetProfile.Ignore(...)` from generated schemas, so documents match the real wire shape —
+see [ignoring-properties.md](ignoring-properties.md#openapi--swagger-documents). Each filter is
+independent; register only the one you need, or both.
 
 Write routes get a real request-body schema and collection GET routes get a typed
 `ODataCollectionResponse<T>` response automatically, via `OhDataApiDescriptionProvider` in the

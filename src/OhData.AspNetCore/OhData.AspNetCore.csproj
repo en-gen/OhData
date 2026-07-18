@@ -29,6 +29,14 @@
 
 	<ItemGroup>
 		<InternalsVisibleTo Include="OhData.AspNetCore.Tests" />
+		<!--
+		  #228: the OpenAPI companion packages read the internal per-profile
+		  IgnoredPropertyNames (via IgnoredPropertyDocsMap) so generated schemas
+		  omit Ignore()d properties, matching the real wire shape.
+		-->
+		<InternalsVisibleTo Include="OhData.AspNetCore.OpenApi" />
+		<InternalsVisibleTo Include="OhData.AspNetCore.NSwag" />
+		<InternalsVisibleTo Include="OhData.AspNetCore.Swashbuckle" />
 	</ItemGroup>
 
 </Project>
