@@ -102,6 +102,19 @@ public class PerOperationAuthConfigTests
     public void RequireThenAllowAnonymous_ThrowsInConstructor() =>
         Assert.Throws<InvalidOperationException>(() => new RequireThenAnonProfile());
 
+    private sealed class NullConfigureProfile : PerOpProfileBase
+    {
+        public NullConfigureProfile()
+        {
+            EntitySetName = "NullC";
+            ConfigureAuthorization(null!);
+        }
+    }
+
+    [Fact]
+    public void NullConfigure_ThrowsInConstructor() =>
+        Assert.Throws<ArgumentNullException>(() => new NullConfigureProfile());
+
     // ── PR1 guard: .RequireResource() is not enforced yet → throws at startup ─
 
     private sealed class ResourceProfile : PerOpProfileBase
@@ -218,6 +231,38 @@ public class PerOperationAuthConfigTests
         var resp = await fx.Client.SendAsync(req);
         Assert.NotEqual(HttpStatusCode.Unauthorized, resp.StatusCode);
         Assert.NotEqual(HttpStatusCode.Forbidden, resp.StatusCode);
+    }
+
+    // RequireClaim with no accepted values → the claim must merely be present (any value).
+    private sealed class ClaimPresenceProfile : PerOpProfileBase
+    {
+        public ClaimPresenceProfile()
+        {
+            EntitySetName = "ClaimPresence";
+            ConfigureAuthorization(a => a
+                .Read(r => r.AllowAnonymous())
+                .Update(u => u.RequireClaim("scope")));
+        }
+    }
+
+    [Theory]
+    [InlineData("scope=anything", false)] // claim present (any value) → passes
+    [InlineData("other=x", true)]         // claim absent → 403
+    public async Task RequireClaim_NoValues_ChecksPresenceOnly(string claims, bool forbidden)
+    {
+        await using var fx = await PerOpAuthTestHost.BuildAsync(o => o.AddProfile<ClaimPresenceProfile>());
+        using var req = new HttpRequestMessage(HttpMethod.Put, "/odata/ClaimPresence(1)")
+        {
+            Content = new StringContent("{\"id\":1,\"name\":\"U\"}", Encoding.UTF8, "application/json"),
+        };
+        req.Headers.Add(PerOpAuthHandler.IdentityHeader, "u");
+        req.Headers.Add(PerOpAuthHandler.ClaimsHeader, claims);
+
+        var resp = await fx.Client.SendAsync(req);
+        if (forbidden)
+            Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+        else
+            Assert.NotEqual(HttpStatusCode.Forbidden, resp.StatusCode);
     }
 
     // ── Composition with group-level (global) auth ───────────────────────────
