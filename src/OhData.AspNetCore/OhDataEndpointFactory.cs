@@ -2923,7 +2923,10 @@ internal static class OhDataEndpointFactory
                     {
                         var clrProp = typeof(TModel).GetProperty(prop.Name,
                             BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance);
-                        if (clrProp is not null)
+                        // #226: ignored properties get the same silent-skip as unknown members.
+                        // This loop resolves members via CLR reflection (not the EDM), so EDM
+                        // removal alone would not stop an ignored member from binding here.
+                        if (clrProp is not null && !source.IgnoredPropertyNames.Contains(clrProp.Name))
                         {
                             object? value = prop.Value.Deserialize(clrProp.PropertyType, jsonOptions);
                             patchDelta.TrySetPropertyValue(clrProp.Name, value);
