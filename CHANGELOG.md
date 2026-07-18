@@ -9,6 +9,25 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+Production hardening (milestone 1.4.0): safe-by-default limits across the read paths.
+
+### Fixed
+
+- **The Priority-1 (`ODataEntitySetProfile` / `GetODataQueryable`) read path now enforces `MaxTop` (#195).**
+  This path delegates query application to the profile's own `ApplyTo`, and the framework previously
+  materialized whatever came back with `queryable.ToArray()` — so a client that omitted `$top` (or sent
+  `$top` larger than `MaxTop`) could force the server to return the entire backing collection. The
+  headline `MaxTop = 1000` default was silently inert here; it was only advertised in OpenAPI metadata.
+  Now, consistent with the `GetQueryable` path: an oversized `$top` is rejected with `400`
+  (`InvalidQueryOption`); an omitted `$top` is capped to `MaxTop` (or a smaller `Prefer: maxpagesize`,
+  which is clamped so it can never lift the ceiling and is echoed via `Preference-Applied`); and a
+  continuation `@odata.nextLink` is emitted when a full page is returned. The continuation link uses
+  `$skip` rather than the opaque `$skiptoken` the `GetQueryable` path emits, because a Priority-1
+  profile re-applies the incoming `ODataQueryOptions` via `ApplyTo`, which honors `$skip` natively but
+  has no handler for `$skiptoken`. A profile that sets `ODataQueryResult.NextLink` itself is trusted to
+  be paging on its own terms and the framework does not cap or override it. `@odata.count` remains the
+  profile's responsibility (set `ODataQueryResult.TotalCount` for an accurate pre-paging total).
+
 ## [1.3.0] - 2026-07-17
 
 Spec-correctness and OpenAPI docs-fidelity across the read and documentation paths. Every change is
