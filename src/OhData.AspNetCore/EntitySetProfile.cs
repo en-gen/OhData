@@ -280,6 +280,68 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         }
     }
     private long? _resolvedMaxRequestBodyBytes;
+
+    private int? _maxExpansionDepth;
+    private int? _maxFilterNodeCount;
+    private int? _maxOrderByNodeCount;
+    private int? _maxAnyAllExpressionDepth;
+
+    /// <summary>#202: maximum nested <c>$expand</c> depth for this set (400 beyond it). Inherits
+    /// <see cref="EntitySetDefaults.MaxExpansionDepth"/> (default 12) when null. Must be positive.</summary>
+    protected int? MaxExpansionDepth
+    {
+        get => _maxExpansionDepth;
+        init
+        {
+            if (value is <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxExpansionDepth), value, "MaxExpansionDepth must be a positive integer.");
+            _maxExpansionDepth = value;
+        }
+    }
+
+    /// <summary>#202: maximum <c>$filter</c> node count for this set. Inherits
+    /// <see cref="EntitySetDefaults.MaxFilterNodeCount"/> (default 10000) when null. Must be positive.</summary>
+    protected int? MaxFilterNodeCount
+    {
+        get => _maxFilterNodeCount;
+        init
+        {
+            if (value is <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxFilterNodeCount), value, "MaxFilterNodeCount must be a positive integer.");
+            _maxFilterNodeCount = value;
+        }
+    }
+
+    /// <summary>#202: maximum <c>$orderby</c> node count for this set. Inherits
+    /// <see cref="EntitySetDefaults.MaxOrderByNodeCount"/> (default 1000) when null. Must be positive.</summary>
+    protected int? MaxOrderByNodeCount
+    {
+        get => _maxOrderByNodeCount;
+        init
+        {
+            if (value is <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxOrderByNodeCount), value, "MaxOrderByNodeCount must be a positive integer.");
+            _maxOrderByNodeCount = value;
+        }
+    }
+
+    /// <summary>#202: maximum <c>any()</c>/<c>all()</c> lambda nesting depth in a <c>$filter</c> for
+    /// this set. Inherits <see cref="EntitySetDefaults.MaxAnyAllExpressionDepth"/> (default 1000) when
+    /// null. Must be positive.</summary>
+    protected int? MaxAnyAllExpressionDepth
+    {
+        get => _maxAnyAllExpressionDepth;
+        init
+        {
+            if (value is <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxAnyAllExpressionDepth), value, "MaxAnyAllExpressionDepth must be a positive integer.");
+            _maxAnyAllExpressionDepth = value;
+        }
+    }
+    private int _resolvedMaxExpansionDepth;
+    private int _resolvedMaxFilterNodeCount;
+    private int _resolvedMaxOrderByNodeCount;
+    private int _resolvedMaxAnyAllExpressionDepth;
     private bool _resolvedFilterEnabled;
     private bool _resolvedOrderByEnabled;
     private bool _resolvedSelectEnabled;
@@ -431,6 +493,10 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
         _resolvedMaxTop = MaxTop ?? defaults.MaxTop;
         _resolvedMaxRequestBodyBytes = MaxRequestBodyBytes ?? defaults.MaxRequestBodyBytes;
+        _resolvedMaxExpansionDepth = MaxExpansionDepth ?? defaults.MaxExpansionDepth;
+        _resolvedMaxFilterNodeCount = MaxFilterNodeCount ?? defaults.MaxFilterNodeCount;
+        _resolvedMaxOrderByNodeCount = MaxOrderByNodeCount ?? defaults.MaxOrderByNodeCount;
+        _resolvedMaxAnyAllExpressionDepth = MaxAnyAllExpressionDepth ?? defaults.MaxAnyAllExpressionDepth;
         _resolvedIdempotentDelete = IdempotentDelete ?? defaults.IdempotentDelete;
         _resolvedAllowUpsert = AllowUpsert ?? defaults.AllowUpsert;
         _resolvedFilterEnabled = FilterEnabled ?? defaults.FilterEnabled;
@@ -1556,6 +1622,10 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
     int? IEntitySetEndpointSource.MaxTop => _resolvedMaxTop;
     long? IEntitySetEndpointSource.MaxRequestBodyBytes => _resolvedMaxRequestBodyBytes;
+    int IEntitySetEndpointSource.MaxExpansionDepth => _resolvedMaxExpansionDepth;
+    int IEntitySetEndpointSource.MaxFilterNodeCount => _resolvedMaxFilterNodeCount;
+    int IEntitySetEndpointSource.MaxOrderByNodeCount => _resolvedMaxOrderByNodeCount;
+    int IEntitySetEndpointSource.MaxAnyAllExpressionDepth => _resolvedMaxAnyAllExpressionDepth;
     bool IEntitySetEndpointSource.IdempotentDelete => _resolvedIdempotentDelete;
     bool IEntitySetEndpointSource.AllowUpsert => _resolvedAllowUpsert;
     bool IEntitySetEndpointSource.HasSearch => Search is not null;

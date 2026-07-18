@@ -40,6 +40,10 @@ internal interface IEntitySetEndpointSource
 
     int? MaxTop { get; }
     long? MaxRequestBodyBytes { get; }
+    int MaxExpansionDepth { get; }
+    int MaxFilterNodeCount { get; }
+    int MaxOrderByNodeCount { get; }
+    int MaxAnyAllExpressionDepth { get; }
     bool IdempotentDelete { get; }
     bool AllowUpsert { get; }
     bool HasSearch { get; }

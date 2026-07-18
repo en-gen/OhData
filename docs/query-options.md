@@ -366,6 +366,32 @@ To also expose navigation as a standalone HTTP route (`GET /Orders(id)/Lines`), 
 
 ---
 
+## Complexity limits (#202)
+
+Four ceilings bound how expensive a single request's query options may be. Each is configurable globally via `WithDefaults` or per entity set on the profile (the profile value overrides the global default); a request that exceeds a limit is rejected with `400` before any handler runs. They apply on all three collection read paths (`GetQueryable`, `GetAll`, Priority-1).
+
+| Limit | Default | Bounds |
+|---|---|---|
+| `MaxExpansionDepth` | `12` | Nesting depth of `$expand`. **Enforced** as of #202 — a deeper `$expand` returns `400` rather than a silently-truncated result. `12` is the framework's internal nested-expand ceiling, so the intended use is to *lower* this to harden; raising it above 12 has no effect. |
+| `MaxFilterNodeCount` | `10000` | Number of nodes in a `$filter` expression tree. |
+| `MaxOrderByNodeCount` | `1000` | Number of nodes in an `$orderby`. |
+| `MaxAnyAllExpressionDepth` | `1000` | Nesting depth of `any()`/`all()` lambdas in a `$filter`. |
+
+```csharp
+builder.Services.AddOhData(o => o
+    .WithDefaults(d => { d.MaxExpansionDepth = 3; d.MaxFilterNodeCount = 200; })
+    .AddProfile<OrderProfile>());
+
+public class OrderProfile : EntitySetProfile<int, Order>
+{
+    public OrderProfile() { MaxExpansionDepth = 5; /* this set allows deeper expands than the default */ }
+}
+```
+
+The node-count defaults are unchanged from what OhData already applied (they were previously hardcoded); #202 makes them lowerable. Note that `$top`/`$skip` are governed separately by `MaxTop` (see above), not by these node counts.
+
+---
+
 ## `$search`
 
 Register a `Search` handler to support free-text search:

@@ -79,6 +79,77 @@ public class EntitySetDefaults
         }
     }
 
+    private int _maxExpansionDepth = 12;
+    private int _maxFilterNodeCount = 10000;
+    private int _maxOrderByNodeCount = 1000;
+    private int _maxAnyAllExpressionDepth = 1000;
+
+    /// <summary>
+    /// #202: maximum nested <c>$expand</c> depth accepted on the collection read paths. A request
+    /// nesting deeper is rejected with <c>400</c> before any handler runs. Defaults to <c>12</c>
+    /// (the framework's internal nested-expand cap), so a request nesting deeper than the framework
+    /// could ever satisfy is now an explicit error instead of a silently-truncated result. Lower it
+    /// to harden against deep-graph queries; must be a positive integer. Profile-level
+    /// <see cref="EntitySetProfile{TKey,TModel}.MaxExpansionDepth"/> overrides this value.
+    /// </summary>
+    public int MaxExpansionDepth
+    {
+        get => _maxExpansionDepth;
+        set
+        {
+            if (value <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxExpansionDepth), value, "MaxExpansionDepth must be a positive integer.");
+            _maxExpansionDepth = value;
+        }
+    }
+
+    /// <summary>
+    /// #202: maximum node count in a <c>$filter</c> expression tree (OData's
+    /// <c>MaxNodeCount</c>). Defaults to <c>10000</c>. Lower it to reject pathologically large
+    /// filter expressions sooner. Must be a positive integer. Profile-level override available.
+    /// </summary>
+    public int MaxFilterNodeCount
+    {
+        get => _maxFilterNodeCount;
+        set
+        {
+            if (value <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxFilterNodeCount), value, "MaxFilterNodeCount must be a positive integer.");
+            _maxFilterNodeCount = value;
+        }
+    }
+
+    /// <summary>
+    /// #202: maximum node count in an <c>$orderby</c> expression. Defaults to <c>1000</c>. Must be a
+    /// positive integer. Profile-level override available.
+    /// </summary>
+    public int MaxOrderByNodeCount
+    {
+        get => _maxOrderByNodeCount;
+        set
+        {
+            if (value <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxOrderByNodeCount), value, "MaxOrderByNodeCount must be a positive integer.");
+            _maxOrderByNodeCount = value;
+        }
+    }
+
+    /// <summary>
+    /// #202: maximum nesting depth of <c>any()</c>/<c>all()</c> lambda expressions in a
+    /// <c>$filter</c>. Defaults to <c>1000</c>. Must be a positive integer. Profile-level override
+    /// available.
+    /// </summary>
+    public int MaxAnyAllExpressionDepth
+    {
+        get => _maxAnyAllExpressionDepth;
+        set
+        {
+            if (value <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxAnyAllExpressionDepth), value, "MaxAnyAllExpressionDepth must be a positive integer.");
+            _maxAnyAllExpressionDepth = value;
+        }
+    }
+
     /// <summary>
     /// When <c>true</c> (the default), a <c>DELETE</c> on a non-existent resource returns
     /// <c>204 No Content</c> — idempotent per OData spec.
