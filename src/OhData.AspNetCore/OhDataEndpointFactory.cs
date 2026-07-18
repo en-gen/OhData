@@ -114,6 +114,14 @@ internal static class OhDataEndpointFactory
     private static string BuildBaseUrl(HttpContext ctx, string prefix) =>
         $"{ctx.Request.Scheme}://{ctx.Request.Host}{ctx.Request.PathBase}{prefix}";
 
+    // Canonical entity-id URL: {base}/{set}({key}), with the key formatted URL-safely (single-quoted
+    // + percent-encoded for string keys) exactly as ODataKeyParser expects to read it back in.
+    private static string BuildEntityId(string baseUrl, string setName, object key) =>
+        $"{baseUrl}/{setName}({ODataEntityKeyUrlFormatter.Format(key)})";
+
+    private static string BuildEntityId(HttpContext ctx, string prefix, string setName, object key) =>
+        BuildEntityId(BuildBaseUrl(ctx, prefix), setName, key);
+
     private static string BuildNextPageLink(HttpContext ctx, string skiptoken)
     {
         var req = ctx.Request;
@@ -138,6 +146,18 @@ internal static class OhDataEndpointFactory
     private static bool PrefersMinimal(HttpContext ctx) =>
         ctx.Request.Headers.TryGetValue("Prefer", out var prefer) &&
         prefer.ToString().Contains("return=minimal", StringComparison.OrdinalIgnoreCase);
+
+    // §8.2.8.7: Prefer: return=representation is an explicit opt-in for behaviour that is already
+    // OhData's default (write handlers return the representation). Acknowledge it in the response
+    // header when the client asked — the symmetric counterpart to PrefersMinimal above.
+    private static void EchoReturnRepresentationPreference(HttpContext ctx)
+    {
+        if (ctx.Request.Headers.TryGetValue("Prefer", out var prefer)
+            && prefer.ToString().Contains("return=representation", StringComparison.OrdinalIgnoreCase))
+        {
+            ctx.Response.Headers["Preference-Applied"] = "return=representation";
+        }
+    }
 
     // BUG 1 fix: POST/PUT/PATCH bodies are read and deserialized manually (see below) rather
     // than via a `TModel model` minimal-API parameter, so content-type negotiation must be done
@@ -800,6 +820,15 @@ internal static class OhDataEndpointFactory
             404 => Results.NotFound(body),
             _ => Results.Json(body, statusCode: status)
         };
+    }
+
+    // Every keyed route peels off the FormatException that ODataKeyParser.Parse throws on an
+    // unparseable key and maps it to the same 400 envelope. `withTarget` preserves the existing
+    // split: entity-addressed routes point `target` at "key"; navigation routes omit it.
+    private static IResult BadKeyError(ILogger? logger, Exception ex, string key, string name, bool withTarget = true)
+    {
+        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
+        return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: withTarget ? "key" : null);
     }
 
     // RFC 7231 §5.3.2 Accept negotiation (issue #182). Parses the Accept header into media
@@ -2465,7 +2494,7 @@ internal static class OhDataEndpointFactory
                     // + percent-encoded for string keys) rather than echoing the raw route
                     // segment -- the latter may carry decoded-but-unescaped characters (routing
                     // URL-decodes path segments before the handler sees them).
-                    string odataId = $"{BuildBaseUrl(ctx, prefix)}/{name}({ODataEntityKeyUrlFormatter.Format(parsedKey!)})";
+                    string odataId = BuildEntityId(ctx, prefix, name, parsedKey!);
 
                     if (hasExpand && options is not null)
                     {
@@ -2498,8 +2527,7 @@ internal static class OhDataEndpointFactory
                 }
                 catch (FormatException ex)
                 {
-                    logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                    return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                    return BadKeyError(logger, ex, key, name);
                 }
                 catch (Microsoft.OData.ODataException ex)
                 {
@@ -2622,13 +2650,7 @@ internal static class OhDataEndpointFactory
                         // §8.3.3: Content-Location points to the canonical URL of the created resource.
                         ctx.Response.Headers["Content-Location"] = odataId;
 
-                        // §8.2.8.7: Prefer: return=representation — explicit opt-in; already the default behaviour.
-                        // Acknowledge the preference in the response header when present.
-                        if (ctx.Request.Headers.TryGetValue("Prefer", out var postPrefer)
-                            && postPrefer.ToString().Contains("return=representation", StringComparison.OrdinalIgnoreCase))
-                        {
-                            ctx.Response.Headers["Preference-Applied"] = "return=representation";
-                        }
+                        EchoReturnRepresentationPreference(ctx);
 
                         // Gap 5: include @odata.id in POST response body
                         // Gap 2: include @odata.etag in body
@@ -2711,7 +2733,7 @@ internal static class OhDataEndpointFactory
                         if (wasCreated)
                         {
                             // S4 fix: canonical, URL-safe key literal built from parsedKey (see GetById above).
-                            string upsertOdataId = $"{BuildBaseUrl(ctx, prefix)}/{name}({ODataEntityKeyUrlFormatter.Format(parsedKey!)})";
+                            string upsertOdataId = BuildEntityId(ctx, prefix, name, parsedKey!);
                             ctx.Response.Headers.Location = upsertOdataId;
                             // V1/§8.3.4: OData-EntityId is REQUIRED on the 204 response of an
                             // upsert-PUT that created the entity. A plain update-PUT must NOT
@@ -2721,17 +2743,12 @@ internal static class OhDataEndpointFactory
                         return Results.NoContent();
                     }
 
-                    // §8.2.8.7: Prefer: return=representation — explicit opt-in; already the default behaviour.
-                    if (ctx.Request.Headers.TryGetValue("Prefer", out var putPrefer)
-                        && putPrefer.ToString().Contains("return=representation", StringComparison.OrdinalIgnoreCase))
-                    {
-                        ctx.Response.Headers["Preference-Applied"] = "return=representation";
-                    }
+                    EchoReturnRepresentationPreference(ctx);
 
                     // Gap 5: include @odata.id in PUT response
                     // Gap 2: include @odata.etag in body
                     // S4 fix: canonical, URL-safe key literal built from parsedKey (see GetById above).
-                    string odataId = $"{BuildBaseUrl(ctx, prefix)}/{name}({ODataEntityKeyUrlFormatter.Format(parsedKey!)})";
+                    string odataId = BuildEntityId(ctx, prefix, name, parsedKey!);
                     if (wasCreated)
                         return Results.Created(odataId, ODataEntityNode(ctx, prefix, $"{name}/$entity", result, jsonOptions, odataId: odataId, etag: putEtag));
                     return ODataEntityResult(ctx, prefix, name, result, jsonOptions, odataId: odataId, etag: putEtag);
@@ -2742,8 +2759,7 @@ internal static class OhDataEndpointFactory
                 }
                 catch (FormatException ex)
                 {
-                    logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                    return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                    return BadKeyError(logger, ex, key, name);
                 }
             });
             rb.WithTags(name).Produces<TModel>(200).Produces(400).Produces(404).Produces(415)
@@ -2826,17 +2842,12 @@ internal static class OhDataEndpointFactory
                         return Results.NoContent();
                     }
 
-                    // §8.2.8.7: Prefer: return=representation -- explicit opt-in; already the default behaviour.
-                    if (ctx.Request.Headers.TryGetValue("Prefer", out var patchPrefer)
-                        && patchPrefer.ToString().Contains("return=representation", StringComparison.OrdinalIgnoreCase))
-                    {
-                        ctx.Response.Headers["Preference-Applied"] = "return=representation";
-                    }
+                    EchoReturnRepresentationPreference(ctx);
 
                     // Gap 5: include @odata.id in PATCH response
                     // Gap 2: include @odata.etag in body
                     // S4 fix: canonical, URL-safe key literal built from parsedKey (see GetById above).
-                    string odataId = $"{BuildBaseUrl(ctx, prefix)}/{name}({ODataEntityKeyUrlFormatter.Format(parsedKey!)})";
+                    string odataId = BuildEntityId(ctx, prefix, name, parsedKey!);
                     return ODataEntityResult(ctx, prefix, name, result, jsonOptions, odataId: odataId, etag: patchEtag);
                 }
                 catch (JsonException ex)
@@ -2845,8 +2856,7 @@ internal static class OhDataEndpointFactory
                 }
                 catch (FormatException ex)
                 {
-                    logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                    return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                    return BadKeyError(logger, ex, key, name);
                 }
             });
             // Note: no .Accepts<TModel>("application/json") here -- that metadata caused ASP.NET
@@ -2881,8 +2891,7 @@ internal static class OhDataEndpointFactory
                 }
                 catch (FormatException ex)
                 {
-                    logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                    return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                    return BadKeyError(logger, ex, key, name);
                 }
             });
             rb.WithTags(name).Produces(204).Produces(400).Produces(404);
@@ -3008,8 +3017,7 @@ internal static class OhDataEndpointFactory
                     }
                     catch (FormatException ex)
                     {
-                        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                        return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'");
+                        return BadKeyError(logger, ex, key, name, withTarget: false);
                     }
                 })
                 .WithTags(name)
@@ -3051,8 +3059,7 @@ internal static class OhDataEndpointFactory
                         }
                         catch (FormatException ex)
                         {
-                            logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                            return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'");
+                            return BadKeyError(logger, ex, key, name, withTarget: false);
                         }
                     })
                     .WithTags(name)
@@ -3107,11 +3114,9 @@ internal static class OhDataEndpointFactory
                                         }
                                         if (cachedAccessor(child) is { } k)
                                         {
-                                            // S4 fix: canonical, URL-safe key literal (quoted + percent-encoded for string keys).
-                                            string formattedKey = ODataEntityKeyUrlFormatter.Format(k);
                                             refs.Add(new Dictionary<string, string>
                                             {
-                                                ["@odata.id"] = $"{baseUrl}/{refNavCapture.ChildEntitySetName}({formattedKey})"
+                                                ["@odata.id"] = BuildEntityId(baseUrl, refNavCapture.ChildEntitySetName, k)
                                             });
                                         }
                                     }
@@ -3145,12 +3150,10 @@ internal static class OhDataEndpointFactory
                                     var accessor = GetOrCompileNavRefKeyAccessor(child.GetType(), refNavCapture.ChildKeyPropertyName);
                                     if (accessor(child) is { } k)
                                     {
-                                        // S4 fix: canonical, URL-safe key literal (quoted + percent-encoded for string keys).
-                                        string childKey = ODataEntityKeyUrlFormatter.Format(k);
                                         return Results.Ok(new Dictionary<string, object?>
                                         {
                                             ["@odata.context"] = context,
-                                            ["@odata.id"] = $"{baseUrl}/{refNavCapture.ChildEntitySetName}({childKey})"
+                                            ["@odata.id"] = BuildEntityId(baseUrl, refNavCapture.ChildEntitySetName, k)
                                         });
                                     }
                                 }
@@ -3164,8 +3167,7 @@ internal static class OhDataEndpointFactory
                     }
                     catch (FormatException ex)
                     {
-                        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                        return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'");
+                        return BadKeyError(logger, ex, key, name, withTarget: false);
                     }
                 })
                 .WithTags(name)
@@ -3221,8 +3223,7 @@ internal static class OhDataEndpointFactory
                     }
                     catch (FormatException ex)
                     {
-                        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                        return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'");
+                        return BadKeyError(logger, ex, key, name, withTarget: false);
                     }
                 }
 
@@ -3275,8 +3276,7 @@ internal static class OhDataEndpointFactory
                         }
                         catch (FormatException ex)
                         {
-                            logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                            return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'");
+                            return BadKeyError(logger, ex, key, name, withTarget: false);
                         }
                     })
                     .WithTags(name)
@@ -3306,8 +3306,7 @@ internal static class OhDataEndpointFactory
                         }
                         catch (FormatException ex)
                         {
-                            logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                            return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                            return BadKeyError(logger, ex, key, name);
                         }
 
                         object? child;
@@ -3340,9 +3339,7 @@ internal static class OhDataEndpointFactory
                             var accessor = GetOrCompileNavRefKeyAccessor(created.GetType(), postNavCapture.ChildKeyPropertyName);
                             if (accessor(created) is { } childKeyVal)
                             {
-                                // S4 fix: canonical, URL-safe key literal (quoted + percent-encoded for string keys).
-                                string formattedChildKey = ODataEntityKeyUrlFormatter.Format(childKeyVal);
-                                childOdataId = $"{baseUrl}/{postNavCapture.ChildEntitySetName}({formattedChildKey})";
+                                childOdataId = BuildEntityId(baseUrl, postNavCapture.ChildEntitySetName, childKeyVal);
                             }
                         }
 
@@ -3363,11 +3360,7 @@ internal static class OhDataEndpointFactory
                         if (childOdataId is not null)
                             ctx.Response.Headers["Content-Location"] = childOdataId;
 
-                        if (ctx.Request.Headers.TryGetValue("Prefer", out var postNavPrefer)
-                            && postNavPrefer.ToString().Contains("return=representation", StringComparison.OrdinalIgnoreCase))
-                        {
-                            ctx.Response.Headers["Preference-Applied"] = "return=representation";
-                        }
+                        EchoReturnRepresentationPreference(ctx);
 
                         // When the target entity set is known, the context matches the child's
                         // own entity set (as if fetched via GET /{ChildEntitySet}({key})); otherwise
@@ -3478,8 +3471,7 @@ internal static class OhDataEndpointFactory
                         }
                         catch (FormatException ex)
                         {
-                            logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                            return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                            return BadKeyError(logger, ex, key, name);
                         }
                     })
                     .WithTags(name)
@@ -3528,8 +3520,7 @@ internal static class OhDataEndpointFactory
                         }
                         catch (FormatException ex)
                         {
-                            logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                            return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                            return BadKeyError(logger, ex, key, name);
                         }
                     })
                     .WithTags(name)
@@ -3671,8 +3662,7 @@ internal static class OhDataEndpointFactory
                     }
                     catch (FormatException ex)
                     {
-                        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                        return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                        return BadKeyError(logger, ex, key, name);
                     }
                 }
 
@@ -3729,8 +3719,7 @@ internal static class OhDataEndpointFactory
                     }
                     catch (FormatException ex)
                     {
-                        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                        return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                        return BadKeyError(logger, ex, key, name);
                     }
                 }).WithTags(name).Produces(204).Produces(400).Produces(404).Produces(412));
                 ApplyOperationAuth(propDeleteRb, OhDataOperation.Update);
@@ -3913,8 +3902,7 @@ internal static class OhDataEndpointFactory
                     }
                     catch (FormatException ex)
                     {
-                        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                        return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                        return BadKeyError(logger, ex, key, name);
                     }
                 })
                 .WithTags(name).Produces(400);
@@ -3991,8 +3979,7 @@ internal static class OhDataEndpointFactory
                     }
                     catch (FormatException ex)
                     {
-                        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                        return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                        return BadKeyError(logger, ex, key, name);
                     }
                 })
                 .WithTags(name).Produces(400).Produces(415);

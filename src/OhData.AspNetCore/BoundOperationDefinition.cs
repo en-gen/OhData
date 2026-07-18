@@ -80,33 +80,16 @@ internal sealed record BoundOperationDefinition
                 $"Example: {example} is a named method on the profile.");
         }
 
-        var allParams = method.GetParameters();
-        bool hasCt = allParams.Length > 0
-            && allParams[^1].ParameterType == typeof(CancellationToken);
-        var visibleParams = hasCt ? allParams[..^1] : allParams;
+        var (hasCt, visibleParams) = AsyncDispatchHelper.SplitCancellationToken(method.GetParameters());
 
         var returnType = method.ReturnType;
-        bool isVoidReturn = returnType == typeof(void)
-            || returnType == typeof(Task)
-            || returnType == typeof(ValueTask);
+        bool isVoidReturn = AsyncDispatchHelper.IsVoidAsyncReturn(returnType);
 
         // Cache the Result property accessor for Task<T>/ValueTask<T> at registration time
         // rather than using reflection per invocation.
-        PropertyInfo? resultProp = null;
-        if (!isVoidReturn && returnType.IsGenericType)
-        {
-            var genDef = returnType.GetGenericTypeDefinition();
-            if (genDef == typeof(Task<>))
-                resultProp = returnType.GetProperty("Result");
-            else if (genDef == typeof(ValueTask<>))
-                resultProp = typeof(Task<>).MakeGenericType(returnType.GetGenericArguments()[0]).GetProperty("Result");
-        }
+        PropertyInfo? resultProp = AsyncDispatchHelper.GetAsyncResultAccessor(returnType);
 
-        Type? docReturnType = isVoidReturn ? null
-            : returnType.IsGenericType &&
-              (returnType.GetGenericTypeDefinition() == typeof(Task<>) || returnType.GetGenericTypeDefinition() == typeof(ValueTask<>))
-                ? returnType.GetGenericArguments()[0]
-                : returnType;
+        Type? docReturnType = isVoidReturn ? null : AsyncDispatchHelper.UnwrapAsyncReturn(returnType);
 
         return new BoundOperationDefinition
         {
