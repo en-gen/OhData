@@ -147,7 +147,13 @@ public class ApiDescriptionProviderTests
         // so their generated operation omitted the {key} path-parameter declaration its sibling GET
         // carries — an OpenAPI document with an undeclared template variable is technically invalid.
         // The stub lambdas now take (string key); assert the {key} path parameter is documented.
-        var (app, provider) = await BuildAsync(o => o.AddProfile<WidgetProfile>());
+        // #221: property routes (including the key-write stubs) are omitted from docs by default,
+        // so opt in here — this test is specifically about their documented representation.
+        var (app, provider) = await BuildAsync(o =>
+        {
+            o.WithDefaults(d => d.PropertyRouteDocsEnabled = true);
+            o.AddProfile<WidgetProfile>();
+        });
         await using var _ = app;
 
         // Widget's key is Id, so the key-write route is /odata/Widgets({key})/Id.
@@ -193,6 +199,110 @@ public class ApiDescriptionProviderTests
         var provider = app.Services.GetRequiredService<IApiDescriptionGroupCollectionProvider>();
         ApiDescription description = FindDescription(provider, "POST", "Widgets");
         Assert.Contains(description.ParameterDescriptions, p => p.Source == BindingSource.Body);
+    }
+
+    private static bool HasDescription(
+        IApiDescriptionGroupCollectionProvider provider, string method, string relativePathContains) =>
+        provider.ApiDescriptionGroups.Items
+            .SelectMany(g => g.Items)
+            .Any(d => string.Equals(d.HttpMethod, method, System.StringComparison.OrdinalIgnoreCase)
+                      && (d.RelativePath ?? "").Contains(relativePathContains));
+
+    [Fact]
+    public async Task PropertyRoutes_OmittedFromDocs_ByDefault()
+    {
+        // #221: the four property routes per structural property (GET value, GET /$value,
+        // PUT/PATCH/DELETE writes) plus the key-immutable stub writes are numerous and, by
+        // default, excluded from the generated API docs via ExcludeFromDescription. Widget's
+        // only non-key structural property is Name.
+        var (app, provider) = await BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var _ = app;
+
+        // Non-key property read routes are absent.
+        Assert.False(HasDescription(provider, "GET", "Widgets({key})/Name"));
+        Assert.False(HasDescription(provider, "GET", "Widgets({key})/Name/$value"));
+        // Non-key property write routes are absent.
+        Assert.False(HasDescription(provider, "PUT", "Widgets({key})/Name"));
+        Assert.False(HasDescription(provider, "PATCH", "Widgets({key})/Name"));
+        Assert.False(HasDescription(provider, "DELETE", "Widgets({key})/Name"));
+        // Key-immutable stub writes are absent too.
+        Assert.False(HasDescription(provider, "PUT", "Widgets({key})/Id"));
+        Assert.False(HasDescription(provider, "PATCH", "Widgets({key})/Id"));
+        Assert.False(HasDescription(provider, "DELETE", "Widgets({key})/Id"));
+
+        // The primary CRUD surface is still documented.
+        Assert.True(HasDescription(provider, "GET", "Widgets"));
+        Assert.True(HasDescription(provider, "POST", "Widgets"));
+        Assert.True(HasDescription(provider, "PATCH", "Widgets({key})"));
+    }
+
+    [Fact]
+    public async Task PropertyRoutes_Documented_WhenEnabledViaDefaults()
+    {
+        // #221: opt in server-wide via WithDefaults — all property routes appear in the docs.
+        var (app, provider) = await BuildAsync(o =>
+        {
+            o.WithDefaults(d => d.PropertyRouteDocsEnabled = true);
+            o.AddProfile<WidgetProfile>();
+        });
+        await using var _ = app;
+
+        Assert.True(HasDescription(provider, "GET", "Widgets({key})/Name"));
+        Assert.True(HasDescription(provider, "GET", "Widgets({key})/Name/$value"));
+        Assert.True(HasDescription(provider, "PUT", "Widgets({key})/Name"));
+        Assert.True(HasDescription(provider, "PATCH", "Widgets({key})/Name"));
+        Assert.True(HasDescription(provider, "DELETE", "Widgets({key})/Name"));
+    }
+
+    [Fact]
+    public async Task PropertyRoutes_Documented_WhenEnabledPerProfile()
+    {
+        // #221: opt in per-profile — the profile-level flag overrides the default-false.
+        var (app, provider) = await BuildAsync(o => o.AddProfile<PropertyDocsWidgetProfile>());
+        await using var _ = app;
+
+        Assert.True(HasDescription(provider, "GET", "PropDocWidgets({key})/Name"));
+        Assert.True(HasDescription(provider, "GET", "PropDocWidgets({key})/Name/$value"));
+        Assert.True(HasDescription(provider, "PUT", "PropDocWidgets({key})/Name"));
+    }
+
+    [Fact]
+    public async Task PropertyRoutes_OmittedPerProfile_OverridesEnabledDefault()
+    {
+        // #221: profile-level false overrides a WithDefaults true, in the other direction.
+        var (app, provider) = await BuildAsync(o =>
+        {
+            o.WithDefaults(d => d.PropertyRouteDocsEnabled = true);
+            o.AddProfile<NoPropertyDocsWidgetProfile>();
+        });
+        await using var _ = app;
+
+        Assert.False(HasDescription(provider, "GET", "NoPropDocWidgets({key})/Name"));
+        Assert.False(HasDescription(provider, "GET", "NoPropDocWidgets({key})/Name/$value"));
+        Assert.False(HasDescription(provider, "PUT", "NoPropDocWidgets({key})/Name"));
+    }
+
+    // #221 fixtures: exercise the per-profile PropertyRouteDocsEnabled override in both directions.
+    private sealed class PropertyDocsWidgetProfile : EntitySetProfile<int, Widget>
+    {
+        public PropertyDocsWidgetProfile() : base(x => x.Id)
+        {
+            EntitySetName = "PropDocWidgets";
+            PropertyRouteDocsEnabled = true;
+            GetById = (id, ct) => Task.FromResult<Widget?>(null);
+            Patch = (id, delta, ct) => Task.FromResult<Widget?>(null);
+        }
+    }
+
+    private sealed class NoPropertyDocsWidgetProfile : EntitySetProfile<int, Widget>
+    {
+        public NoPropertyDocsWidgetProfile() : base(x => x.Id)
+        {
+            EntitySetName = "NoPropDocWidgets";
+            PropertyRouteDocsEnabled = false;
+            GetById = (id, ct) => Task.FromResult<Widget?>(null);
+            Patch = (id, delta, ct) => Task.FromResult<Widget?>(null);
+        }
     }
 
     // Issue #181 fixture: a collection-bound function with one required parameter (no C# default)

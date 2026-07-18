@@ -51,6 +51,18 @@ Production hardening (milestone 1.4.0): safe-by-default limits across the read p
   route-group endpoint metadata and enforced once in the group filter — no per-handler wiring.
   **Default is `null`** (no OhData-level limit; the host's Kestrel default, ~30 MB, still applies), so
   this is purely additive — opt in by setting a value. See `docs/deep-insert.md`.
+- **Structural-property routes are omitted from generated API docs by default (#221).** The property
+  routes — `GET /{Set}({key})/{Property}`, its `/$value` variant, and the `PUT`/`PATCH`/`DELETE`
+  property writes (including the immutable-key stubs) — number up to four per property, per entity
+  set, and would otherwise dominate a Swagger/OpenAPI document. They are now excluded from
+  ApiExplorer (`ExcludeFromDescription`) by default, which covers all three doc stacks
+  (Microsoft.AspNetCore.OpenApi, Swashbuckle, NSwag) at once. A new `PropertyRouteDocsEnabled`
+  (global via `WithDefaults`, or per entity set on the profile — the profile value overrides the
+  global default, **default `false`**) opts them back into the docs. **Documentation-only:** the
+  routes remain fully functional at runtime regardless of this flag; only their visibility in the
+  generated document changes. **Docs-output change:** consumers who relied on property routes
+  appearing in the generated OpenAPI document must set `PropertyRouteDocsEnabled = true` to keep
+  them. See `docs/property-access.md`.
 
 ### Changed
 

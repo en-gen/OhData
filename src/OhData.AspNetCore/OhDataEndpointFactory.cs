@@ -3292,6 +3292,16 @@ internal static class OhDataEndpointFactory
             }
         }
 
+        // #221: property routes are numerous (four per structural property, per entity set) and,
+        // by default, omitted from the generated API docs via ExcludeFromDescription — leaving the
+        // primary CRUD/nav/bound-operation surface legible. They stay fully live at runtime
+        // regardless; DocProp only affects ApiExplorer enumeration (the shared upstream for
+        // Microsoft.AspNetCore.OpenApi, Swashbuckle, and NSwag). Opt back in via
+        // PropertyRouteDocsEnabled (server-wide default or per-profile). DocProp is the identity
+        // when docs are enabled, so it composes cleanly onto each route's fluent chain.
+        RouteHandlerBuilder DocProp(RouteHandlerBuilder b) =>
+            source.PropertyRouteDocsEnabled ? b : b.ExcludeFromDescription();
+
         // Individual structural property access (I-6, OData §11.2.6 / Part 2 §4.6-4.7).
         // This block registers property READ (GET /{Set}({key})/{Property} and its /$value),
         // which rides the existing GetById handler — no new handler delegate. Property WRITE
@@ -3325,7 +3335,7 @@ internal static class OhDataEndpointFactory
             foreach (var propCapture in source.StructuralProperties)
             {
                 // GET /{name}({key})/{Property} — property-value envelope (§11.2.6).
-                entityAuthGroup.MapGet($"/{name}({{key}})/{propCapture.Name}",
+                DocProp(entityAuthGroup.MapGet($"/{name}({{key}})/{propCapture.Name}",
                     async (string key, HttpContext ctx, CancellationToken ct) =>
                     {
                         try
@@ -3373,11 +3383,11 @@ internal static class OhDataEndpointFactory
                     .WithTags(name)
                     .Produces(200, typeof(ODataPropertyResponse<>).MakeGenericType(propCapture.ClrType), "application/json")
                     .Produces(204)
-                    .Produces(404);
+                    .Produces(404));
 
                 // GET /{name}({key})/{Property}/$value — raw value (Part 2 §4.7).
                 bool propIsComplex = propCapture.IsComplex;
-                entityAuthGroup.MapGet($"/{name}({{key}})/{propCapture.Name}/$value",
+                DocProp(entityAuthGroup.MapGet($"/{name}({{key}})/{propCapture.Name}/$value",
                     async (string key, HttpContext ctx, CancellationToken ct) =>
                     {
                         // Complex-typed properties have no raw representation — a static
@@ -3425,7 +3435,7 @@ internal static class OhDataEndpointFactory
                     // properties only) — never JSON.
                     .Produces<string>(200, "text/plain", "application/octet-stream")
                     .Produces(400)
-                    .Produces(404);
+                    .Produces(404));
             }
         }
 
@@ -3458,12 +3468,12 @@ internal static class OhDataEndpointFactory
                     // omits the {key} path-parameter declaration its sibling GET carries, producing
                     // an OpenAPI document with an undeclared template variable (technically invalid).
                     // The key is unused: the response is a fixed 400 regardless of its value.
-                    entityAuthGroup.MapPut($"/{name}({{key}})/{propName}", (string key) => KeyImmutableError())
-                        .WithTags(name).Produces(400);
-                    entityAuthGroup.MapMethods($"/{name}({{key}})/{propName}", PatchMethod, (string key) => KeyImmutableError())
-                        .WithTags(name).Produces(400);
-                    entityAuthGroup.MapDelete($"/{name}({{key}})/{propName}", (string key) => KeyImmutableError())
-                        .WithTags(name).Produces(400);
+                    DocProp(entityAuthGroup.MapPut($"/{name}({{key}})/{propName}", (string key) => KeyImmutableError())
+                        .WithTags(name).Produces(400));
+                    DocProp(entityAuthGroup.MapMethods($"/{name}({{key}})/{propName}", PatchMethod, (string key) => KeyImmutableError())
+                        .WithTags(name).Produces(400));
+                    DocProp(entityAuthGroup.MapDelete($"/{name}({{key}})/{propName}", (string key) => KeyImmutableError())
+                        .WithTags(name).Produces(400));
                     continue;
                 }
 
@@ -3565,20 +3575,20 @@ internal static class OhDataEndpointFactory
                     Description = $"The new value for '{propName}', wrapped in a 'value' member."
                 };
 
-                entityAuthGroup.MapPut($"/{name}({{key}})/{propName}",
+                DocProp(entityAuthGroup.MapPut($"/{name}({{key}})/{propName}",
                     (string key, HttpContext ctx, CancellationToken ct) => HandleSetPropertyAsync(key, ctx, ct, isPatchVerb: false))
                     .WithTags(name).Produces(204).Produces(400).Produces(404).Produces(412).Produces(415)
-                    .WithMetadata(propertyWriteBodyMetadata);
+                    .WithMetadata(propertyWriteBodyMetadata));
 
-                entityAuthGroup.MapMethods($"/{name}({{key}})/{propName}", PatchMethod,
+                DocProp(entityAuthGroup.MapMethods($"/{name}({{key}})/{propName}", PatchMethod,
                     (string key, HttpContext ctx, CancellationToken ct) => HandleSetPropertyAsync(key, ctx, ct, isPatchVerb: true))
                     .WithTags(name).Produces(204).Produces(400).Produces(404).Produces(412).Produces(415)
-                    .WithMetadata(propertyWriteBodyMetadata);
+                    .WithMetadata(propertyWriteBodyMetadata));
 
                 // DELETE — set the property to null (§11.4.9.3). Non-nullable is a structural
                 // (static, per-type) validation, checked before touching the data source at all —
                 // the same "cheap check first" pattern used for the key-immutable stub above.
-                entityAuthGroup.MapDelete($"/{name}({{key}})/{propName}", async (string key, HttpContext ctx, CancellationToken ct) =>
+                DocProp(entityAuthGroup.MapDelete($"/{name}({{key}})/{propName}", async (string key, HttpContext ctx, CancellationToken ct) =>
                 {
                     if (!propIsNullable)
                     {
@@ -3613,7 +3623,7 @@ internal static class OhDataEndpointFactory
                         logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
                         return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
                     }
-                }).WithTags(name).Produces(204).Produces(400).Produces(404).Produces(412);
+                }).WithTags(name).Produces(204).Produces(400).Produces(404).Produces(412));
             }
         }
 

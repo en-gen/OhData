@@ -53,6 +53,7 @@ internal interface IEntitySetEndpointSource
     bool ExpandEnabled { get; }
     bool CountEnabled { get; }
     bool PropertyAccessEnabled { get; }
+    bool PropertyRouteDocsEnabled { get; }
     RoundingMode RoundingMode { get; }
     IReadOnlyList<StructuralPropertyInfo> StructuralProperties { get; }
 

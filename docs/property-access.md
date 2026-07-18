@@ -50,6 +50,35 @@ builder.WithDefaults(d => d.PropertyAccessEnabled = false);
 
 If a profile does not configure `GetById`, no property routes are registered regardless of `PropertyAccessEnabled`.
 
+## API documentation visibility
+
+Property routes are numerous — up to four per structural property, per entity set (the two
+reads, plus `PUT`/`PATCH`/`DELETE`) — and would otherwise dominate a generated Swagger/OpenAPI
+document, drowning the primary CRUD, navigation, and bound-operation surface. So they are
+**omitted from the generated API docs by default**, while remaining fully live at runtime.
+
+This is documentation-only: the routes still respond exactly as described on this page whether or
+not they appear in the docs. The default only changes what ASP.NET Core's ApiExplorer enumerates
+(via `ExcludeFromDescription`), which is the shared upstream for every doc stack —
+Microsoft.AspNetCore.OpenApi, Swashbuckle, and NSwag alike — so one setting covers all three.
+
+To include property routes in the generated docs, set `PropertyRouteDocsEnabled`:
+
+```csharp
+// Per profile:
+protected bool? PropertyRouteDocsEnabled { get; init; } = true;
+
+// Or server-wide:
+builder.WithDefaults(d => d.PropertyRouteDocsEnabled = true);
+```
+
+`PropertyRouteDocsEnabled` resolves the same way as the other capability flags — a `null`
+profile-level value inherits the server default (`EntitySetDefaults.PropertyRouteDocsEnabled`,
+default `false`). The flag only has an effect when property routes are actually registered (i.e.
+`PropertyAccessEnabled` resolves `true` and the required handler is configured); otherwise there
+is nothing to document and it is inert. It covers all property routes together — reads, writes,
+and the immutable-key stubs.
+
 ## Response shape
 
 `GET /{EntitySet}({key})/{Property}`:

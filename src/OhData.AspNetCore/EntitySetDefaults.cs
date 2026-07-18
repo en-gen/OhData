@@ -175,6 +175,21 @@ public class EntitySetDefaults
     public bool PropertyAccessEnabled { get; set; } = true;
 
     /// <summary>
+    /// Whether individual structural property routes appear in the generated API documentation
+    /// (Swagger/OpenAPI): the two property reads
+    /// (<c>GET /{EntitySet}({key})/{Property}</c> and <c>.../{Property}/$value</c>) and the
+    /// property writes (<c>PUT</c>/<c>PATCH</c>/<c>DELETE /{EntitySet}({key})/{Property}</c>,
+    /// including the immutable-key stubs). Defaults to <c>false</c>: these routes number four per
+    /// property, per entity set, and would otherwise dominate the docs. They remain fully
+    /// functional at runtime regardless of this flag — it only controls documentation visibility
+    /// (via <c>ExcludeFromDescription</c>), and only matters when the routes are actually
+    /// registered (i.e. <see cref="PropertyAccessEnabled"/> resolves <c>true</c> and the required
+    /// handler is configured). Set to <c>true</c> to include them. Profile-level
+    /// <c>PropertyRouteDocsEnabled</c> overrides this value.
+    /// </summary>
+    public bool PropertyRouteDocsEnabled { get; set; } = false;
+
+    /// <summary>
     /// Whether <c>POST /{EntitySet}</c> passes nested navigation-property values (a "deep
     /// insert" graph, OData §11.4.2.2) through to the <c>Post</c> handler by default.
     /// Defaults to <c>false</c>: nested navigation values are stripped before <c>Post</c> is

@@ -265,6 +265,9 @@ public sealed class OhDataRequestBodyAndResponseTests
         public WriteSurfaceProfile() : base(x => x.Id)
         {
             EntitySetName = "WriteSurfaceParents";
+            // #221: property routes are omitted from docs by default; this fixture asserts the
+            // documented property-write body schema, so opt them into the generated document.
+            PropertyRouteDocsEnabled = true;
 
             GetAll = (ct) => Task.FromResult<IEnumerable<Parent>>(_parents);
             GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(p => p.Id == id));
