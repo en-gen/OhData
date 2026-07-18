@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using OhData.Abstractions;
 
 namespace OhData.AspNetCore;
@@ -37,9 +38,9 @@ internal static class IgnoredPropertyDocsMap
         Dictionary<Type, IReadOnlySet<string>>? result = null;
         foreach (OhDataRegistration registration in registrations.All)
         {
-            foreach (IEntitySetEndpointSource profile in registration.Profiles)
+            foreach (IEntitySetEndpointSource profile in registration.Profiles
+                .Where(static p => p.IgnoredPropertyNames.Count != 0))
             {
-                if (profile.IgnoredPropertyNames.Count == 0) continue;
                 result ??= new Dictionary<Type, IReadOnlySet<string>>();
                 if (result.TryGetValue(profile.ModelType, out IReadOnlySet<string>? existing))
                 {

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.OpenApi;
 using Swashbuckle.AspNetCore.SwaggerGen;
@@ -71,13 +72,11 @@ public sealed class OhDataSwaggerSchemaFilter : ISchemaFilter
         DataContract contract = _dataContractResolver.GetDataContractForType(context.Type);
         if (contract.ObjectProperties is null) return;
 
-        foreach (DataProperty property in contract.ObjectProperties)
+        foreach (DataProperty property in contract.ObjectProperties
+            .Where(p => p.MemberInfo is not null && ignored.Contains(p.MemberInfo.Name)))
         {
-            if (property.MemberInfo is not null && ignored.Contains(property.MemberInfo.Name))
-            {
-                concreteSchema.Properties?.Remove(property.Name);
-                concreteSchema.Required?.Remove(property.Name);
-            }
+            concreteSchema.Properties?.Remove(property.Name);
+            concreteSchema.Required?.Remove(property.Name);
         }
     }
 }

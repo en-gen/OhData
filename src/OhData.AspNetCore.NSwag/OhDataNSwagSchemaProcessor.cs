@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -58,11 +59,10 @@ public sealed class OhDataNSwagSchemaProcessor : ISchemaProcessor
             return;
         }
 
-        foreach (string clrName in ignored)
+        foreach (PropertyInfo property in ignored
+            .Select(clrName => modelType.GetProperty(clrName))
+            .OfType<PropertyInfo>())
         {
-            PropertyInfo? property = modelType.GetProperty(clrName);
-            if (property is null) continue;
-
             string jsonName = GetJsonPropertyName(property, context.Settings);
             if (context.Schema.Properties.Remove(jsonName))
             {

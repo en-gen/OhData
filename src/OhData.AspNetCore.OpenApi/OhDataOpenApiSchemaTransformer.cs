@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Text.Json.Serialization.Metadata;
 using System.Threading;
@@ -50,13 +51,11 @@ public sealed class OhDataOpenApiSchemaTransformer : IOpenApiSchemaTransformer
         // serializer's naming policy ("costBasis"). JsonTypeInfo carries both sides of that
         // mapping: JsonPropertyInfo.Name is the resolved JSON name and AttributeProvider is the
         // originating CLR member, so matching here is immune to the configured naming policy.
-        foreach (JsonPropertyInfo property in context.JsonTypeInfo.Properties)
+        foreach (JsonPropertyInfo property in context.JsonTypeInfo.Properties
+            .Where(p => p.AttributeProvider is PropertyInfo clrProperty && ignored.Contains(clrProperty.Name)))
         {
-            if (property.AttributeProvider is PropertyInfo clrProperty && ignored.Contains(clrProperty.Name))
-            {
-                schema.Properties?.Remove(property.Name);
-                schema.Required?.Remove(property.Name);
-            }
+            schema.Properties?.Remove(property.Name);
+            schema.Required?.Remove(property.Name);
         }
 
         return Task.CompletedTask;
