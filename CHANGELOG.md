@@ -13,6 +13,21 @@ Production hardening (milestone 1.4.0): safe-by-default limits across the read p
 
 ### Added
 
+- **Per-operation authorization (#199).** A profile can now authorize each operation category
+  independently via `ConfigureAuthorization(auth => …)`, replacing the all-or-nothing profile-wide
+  model for sets that need it. Categories are `Read`, `Create`, `Update`, `Delete`, and `Invoke`
+  (bound operations), with `Writes()`/`All()` conveniences and `Invoke("Name", …)` for a single bound
+  operation. Each category takes a nested lambda that **mirrors `AuthorizationPolicyBuilder`** —
+  `RequireAuthenticatedUser()`, `RequireRole(...)`, `RequireClaim(...)`, `RequirePolicy(...)` accumulate
+  and combine with AND — plus the exclusive `AllowAnonymous()`. Requirements are stored as plain data
+  (policy/role/claim *names*), so profiles stay free of ASP.NET Core types; the factory applies them
+  **per route** (`RequireAuthorization`/`AllowAnonymous`), so a global
+  `MapOhData().RequireAuthorization()` composes as before and an unspecified category inherits it
+  (anonymous when there is none). `$metadata`, the service document, and unbound operations remain
+  group-level-only. The legacy `RequireAuthorization()`/`RequireRoles()` model is unchanged and still
+  the default; combining it with `ConfigureAuthorization(...)` on one profile throws at startup. See
+  `docs/authorization.md`. *(Resource-based / instance-level checks — `.RequireResource()` — are a
+  follow-up; declaring one currently throws at startup.)*
 - **Observability: distributed-tracing spans and metrics (#200).** OhData now emits telemetry via
   the BCL `System.Diagnostics` primitives — an `ActivitySource` and a `Meter`, both named `OhData` —
   with **no `OpenTelemetry.*` package dependency** taken by the library; consumers opt in from their
