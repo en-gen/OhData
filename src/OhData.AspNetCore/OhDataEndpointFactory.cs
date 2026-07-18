@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -18,6 +19,7 @@ using System.Xml;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.AspNetCore.OData.Query;
 using Microsoft.AspNetCore.OData.Query.Wrapper;
 using Microsoft.AspNetCore.OData.Query.Validator;
@@ -147,6 +149,54 @@ internal static class OhDataEndpointFactory
     // (its $ref variant reads only a small link body and no body-size limit is meaningful there).
     private static bool IsBodyBearingWriteMethod(string method) =>
         HttpMethods.IsPost(method) || HttpMethods.IsPut(method) || HttpMethods.IsPatch(method);
+
+    // #200: derive the telemetry dimensions from the matched endpoint. entitySet comes from the
+    // route's WithTags(name) metadata; route is the raw template (the precise identity, mirroring
+    // ASP.NET Core's http.route); operation is a coarse method/shape label for convenient grouping.
+    private static (string? entitySet, string? route, string operation) DescribeOhDataEndpoint(HttpContext http)
+    {
+        Endpoint? endpoint = http.GetEndpoint();
+        string? route = (endpoint as RouteEndpoint)?.RoutePattern.RawText;
+        string? entitySet = endpoint?.Metadata.GetMetadata<ITagsMetadata>()?.Tags is { Count: > 0 } tags
+            ? tags[0]
+            : null;
+        return (entitySet, route, ClassifyOperation(http.Request.Method, route));
+    }
+
+    private static string ClassifyOperation(string method, string? route)
+    {
+        route ??= "";
+        if (route.EndsWith("/$metadata", StringComparison.Ordinal)) return "metadata";
+        if (route.EndsWith("/$count", StringComparison.Ordinal)) return "read-count";
+        if (route.EndsWith("/$value", StringComparison.Ordinal)) return "read-value";
+        if (route.EndsWith("/$ref", StringComparison.Ordinal))
+            return HttpMethods.IsGet(method) ? "read-ref" : HttpMethods.IsDelete(method) ? "delete-ref" : "write-ref";
+
+        int keyEnd = route.IndexOf("({key})", StringComparison.Ordinal);
+        bool hasKey = keyEnd >= 0;
+        if (hasKey && route.IndexOf('/', keyEnd) >= 0) // a segment after the key → navigation/property
+        {
+            return method switch
+            {
+                _ when HttpMethods.IsGet(method) => "read-navigation",
+                _ when HttpMethods.IsPost(method) => "create-navigation",
+                _ when HttpMethods.IsDelete(method) => "delete-navigation",
+                _ => "update-navigation",
+            };
+        }
+        if (hasKey)
+        {
+            return method switch
+            {
+                _ when HttpMethods.IsGet(method) => "read-entity",
+                _ when HttpMethods.IsPut(method) || HttpMethods.IsPatch(method) => "update-entity",
+                _ when HttpMethods.IsDelete(method) => "delete-entity",
+                _ => "entity",
+            };
+        }
+        // no key: collection routes plus bound/unbound operations (the http.route tag disambiguates).
+        return HttpMethods.IsGet(method) ? "read-collection" : HttpMethods.IsPost(method) ? "create" : "collection";
+    }
 
     private static bool IsJsonContentType(HttpContext ctx)
     {
@@ -281,6 +331,54 @@ internal static class OhDataEndpointFactory
         // handler uses.
         var loggerFactory = routes.ServiceProvider.GetService<ILoggerFactory>();
         var groupLogger = loggerFactory?.CreateLogger("OhData");
+
+        // #200: observability. The outermost group filter opens an ActivitySource span per OData
+        // request and records the request-duration histogram + active-request up/down counter (both
+        // on the "OhData" Meter). Added first so it wraps every other filter and the handler; the
+        // final HTTP status is read via Response.OnCompleted (an endpoint filter cannot see it after
+        // next() because the IResult executes later). Near-free when no OTel listener is attached:
+        // StartActivity returns null and the instruments no-op.
+        group.AddEndpointFilter(async (ctx, next) =>
+        {
+            HttpContext http = ctx.HttpContext;
+            (string? entitySet, string? route, string operation) = DescribeOhDataEndpoint(http);
+
+            Activity? activity = OhDataDiagnostics.ActivitySource.StartActivity(
+                $"{http.Request.Method} {route ?? http.Request.Path.ToString()}", ActivityKind.Server);
+            if (activity is not null)
+            {
+                if (entitySet is not null) activity.SetTag("odata.entity_set", entitySet);
+                if (route is not null) activity.SetTag("http.route", route);
+                activity.SetTag("odata.operation", operation);
+                activity.SetTag("http.request.method", http.Request.Method);
+            }
+
+            long startTs = Stopwatch.GetTimestamp();
+            var activeTags = new TagList { { "odata.entity_set", entitySet }, { "odata.operation", operation } };
+            OhDataDiagnostics.ActiveRequests.Add(1, activeTags);
+
+            http.Response.OnCompleted(() =>
+            {
+                int status = http.Response.StatusCode;
+                double seconds = Stopwatch.GetElapsedTime(startTs).TotalSeconds;
+                OhDataDiagnostics.RequestDuration.Record(seconds, new TagList
+                {
+                    { "odata.entity_set", entitySet },
+                    { "odata.operation", operation },
+                    { "http.response.status_code", status },
+                });
+                OhDataDiagnostics.ActiveRequests.Add(-1, activeTags);
+                if (activity is not null)
+                {
+                    activity.SetTag("http.response.status_code", status);
+                    if (status >= 500) activity.SetStatus(ActivityStatusCode.Error);
+                    activity.Dispose();
+                }
+                return Task.CompletedTask;
+            });
+
+            return await next(ctx);
+        });
 
         // S7: a handler that throws (as opposed to returning an ODataError IResult, which every
         // deliberate error path in this file does) previously escaped as an empty, envelope-less

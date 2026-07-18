@@ -13,6 +13,18 @@ Production hardening (milestone 1.4.0): safe-by-default limits across the read p
 
 ### Added
 
+- **Observability: distributed-tracing spans and metrics (#200).** OhData now emits telemetry via
+  the BCL `System.Diagnostics` primitives — an `ActivitySource` and a `Meter`, both named `OhData` —
+  with **no `OpenTelemetry.*` package dependency** taken by the library; consumers opt in from their
+  own OpenTelemetry pipeline (`.AddSource("OhData")` / `.AddMeter("OhData")`), and the instrumentation
+  is near-free when nothing is listening. One span per request (child of the ASP.NET Core request
+  activity), named `{method} {route}` and tagged with `odata.entity_set`, `http.route`,
+  `odata.operation` (a coarse method/shape label), `http.request.method`, and `http.response.status_code`
+  (span status set to `Error` on `5xx`). Two metrics on the `OhData` meter:
+  `ohdata.server.request.duration` (histogram, seconds) and `ohdata.server.active_requests`
+  (up/down counter), tagged by entity set / operation / status. The `http.*` server tags aren't
+  duplicated (ASP.NET Core already emits them). See `docs/observability.md`. A per-response
+  result-size histogram is a planned follow-up.
 - **Tunable query-complexity guards; the `$expand`-depth guard is now enforced (#202).** The
   settings-level expansion-depth validator was hardcoded to `0` (disabled), so a `$expand` nesting
   deeper than the framework could satisfy was silently truncated rather than rejected. Four limits are
