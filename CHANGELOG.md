@@ -27,6 +27,15 @@ Production hardening (milestone 1.4.0): safe-by-default limits across the read p
   has no handler for `$skiptoken`. A profile that sets `ODataQueryResult.NextLink` itself is trusted to
   be paging on its own terms and the framework does not cap or override it. `@odata.count` remains the
   profile's responsibility (set `ODataQueryResult.TotalCount` for an accurate pre-paging total).
+- **The main collection GET routes now reject unimplemented system query options (#196).** `$apply`,
+  `$compute`, `$index`, and `$deltatoken` were parsed and then **silently ignored** on the main
+  collection route, so `GET /Widgets?$apply=...` returned `200` with the option quietly dropped — while
+  the navigation-collection route already rejected the same options with `400`. Ignoring a known query
+  option violates OData Minimal-conformance item 7 ("the service MUST parse the option or reject the
+  request"). These four options now return `400 UnsupportedQueryOption` uniformly across all three
+  collection read paths (`GetAll`, `GetQueryable`, and Priority-1 `GetODataQueryable`), via the shared
+  capability gate. Implemented and capability-gated options are unaffected (`$filter`/`$orderby`/
+  `$select`/`$expand`/`$count`/`$top`/`$skip`/`$search`/`$skiptoken`).
 
 ## [1.3.0] - 2026-07-17
 

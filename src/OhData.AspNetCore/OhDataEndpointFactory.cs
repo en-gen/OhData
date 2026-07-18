@@ -760,6 +760,11 @@ internal static class OhDataEndpointFactory
     private static IResult? CheckCollectionQueryOptionCapabilities(
         HttpContext ctx, IEntitySetEndpointSource source, bool checkFilterOrderBy = true)
     {
+        // #196: reject system options this framework does not implement at all, rather than
+        // ignoring them silently (Minimal-conformance item 7 — "parse the option or reject it").
+        IResult? unimplemented = CheckUnimplementedCollectionQueryOptions(ctx);
+        if (unimplemented is not null) return unimplemented;
+
         if (checkFilterOrderBy)
         {
             IResult? r = CheckDisabledQueryOption(ctx, "$filter", source.FilterEnabled, nameof(IEntitySetEndpointSource.FilterEnabled));
@@ -797,6 +802,31 @@ internal static class OhDataEndpointFactory
     {
         "$filter", "$expand", "$search", "$apply", "$compute", "$skiptoken", "$deltatoken",
     };
+
+    // #196: system query options the *main* collection GET routes do not implement at all — as
+    // opposed to the capability-gated $filter/$orderby/$select/$expand/$count (handled by
+    // CheckCollectionQueryOptionCapabilities) or the implemented $top/$skip/$search/$skiptoken.
+    // These were previously ignored silently on the main route even though the navigation route
+    // already rejected them. $apply/$compute are unimplemented aggregation options ($compute is
+    // 4.01-only and blocked by the pinned OData package range); $index is a 4.01 ordered-insert
+    // option; $deltatoken belongs to delta/change-tracking. Ignoring a known option violates
+    // Minimal-conformance item 7 ("parse the option or reject the request").
+    private static readonly string[] s_collectionUnimplementedSystemOptions =
+    {
+        "$apply", "$compute", "$index", "$deltatoken",
+    };
+
+    private static IResult? CheckUnimplementedCollectionQueryOptions(HttpContext ctx)
+    {
+        string? option = s_collectionUnimplementedSystemOptions
+            .FirstOrDefault(o => ctx.Request.Query.ContainsKey(o));
+        if (option is not null)
+        {
+            return ODataError(400, "UnsupportedQueryOption",
+                $"The query option '{option}' is not supported.");
+        }
+        return null;
+    }
 
     private static IResult? CheckNavUnsupportedQueryOptions(HttpContext ctx)
     {
