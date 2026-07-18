@@ -1993,8 +1993,8 @@ internal static class OhDataEndpointFactory
                                 : source.MaxTop;
                             if (appliedPageSize.HasValue)
                                 seq = seq.Take(appliedPageSize.Value);
-                            if (preferredPageSize.HasValue && appliedPageSize.HasValue)
-                                ctx.Response.Headers["Preference-Applied"] = $"maxpagesize={appliedPageSize.Value}";
+                            if (preferredPageSize.HasValue)
+                                ctx.Response.Headers["Preference-Applied"] = $"maxpagesize={appliedPageSize!.Value}";
                         }
 
                         object[] paged = ReferenceEquals(seq, items) ? items : seq.ToArray();
