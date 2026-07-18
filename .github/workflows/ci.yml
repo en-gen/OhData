@@ -42,12 +42,19 @@ jobs:
             --results-directory ./coverage
           dotnet test src/OhData.MicrosoftODataClient.Tests/OhData.MicrosoftODataClient.Tests.csproj \
             --no-build -c Release \
+            --collect:"XPlat Code Coverage" \
             --results-directory ./coverage
           dotnet test src/OhData.AspNetCore.OpenApi.Tests/OhData.AspNetCore.OpenApi.Tests.csproj \
             --no-build -c Release \
+            --collect:"XPlat Code Coverage" \
             --results-directory ./coverage
           dotnet test src/OhData.AspNetCore.NSwag.Tests/OhData.AspNetCore.NSwag.Tests.csproj \
             --no-build -c Release \
+            --collect:"XPlat Code Coverage" \
+            --results-directory ./coverage
+          dotnet test src/OhData.AspNetCore.Swashbuckle.Tests/OhData.AspNetCore.Swashbuckle.Tests.csproj \
+            --no-build -c Release \
+            --collect:"XPlat Code Coverage" \
             --results-directory ./coverage
 
       - name: Pack (dry run)

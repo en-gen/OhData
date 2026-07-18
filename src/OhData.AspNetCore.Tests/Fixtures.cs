@@ -309,6 +309,21 @@ internal class MaxTopProfile : EntitySetProfile<int, Widget>
     }
 }
 
+/// <summary>Leg 1 (docs-fidelity): GetAll profile with a MaxTop cap, for $top/$skip tests.</summary>
+internal class GetAllMaxTopProfile : EntitySetProfile<int, Widget>
+{
+    private readonly List<Widget> _store = Enumerable.Range(1, 20)
+        .Select(i => new Widget { Id = i, Name = $"W{i}" }).ToList();
+
+    public GetAllMaxTopProfile() : base(x => x.Id)
+    {
+        EntitySetName = "GetAllMaxTopWidgets";
+        MaxTop = 5; // per-profile cap
+        CountEnabled = true;
+        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store);
+    }
+}
+
 /// <summary>Profile for testing role-based authorization (M9 — IReadOnlyList Roles path).</summary>
 internal class RoleAuthProfile : EntitySetProfile<int, Widget>
 {
@@ -1423,3 +1438,258 @@ internal class WrongKeyTypeEntityFunctionProfile : EntitySetProfile<int, Widget>
     private Task<string> BadFirstParam(string notTheKey) => Task.FromResult(notTheKey);
 }
 
+
+// ── #176: un-expanded navigation omission fixtures ────────────────────────────
+
+internal class OmitActor
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+}
+
+/// <summary>
+/// Navigation target with its OWN navigation (<c>Movies</c>). When a movie's <c>Studio</c> is
+/// $expand'd, the studio must not carry this un-expanded back-reference (issue #176, face 3).
+/// </summary>
+internal class OmitStudio
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public IEnumerable<OmitMovie>? Movies { get; set; }
+}
+
+internal class OmitMovie
+{
+    public int Id { get; set; }
+    public string Title { get; set; } = "";
+    public OmitStudio? Studio { get; set; }            // single-valued nav (face 2)
+    public IEnumerable<OmitActor>? Cast { get; set; }  // collection nav (face 1)
+}
+
+/// <summary>
+/// #176 regression fixture. Every movie carries a fully populated <c>Studio</c> and <c>Cast</c>
+/// on the CLR object, so without the fix both navigations would serialise inline into every read
+/// response. The expanded studio itself carries <c>Movies</c>, exercising the nested-leak face.
+/// </summary>
+internal class OmitNavMovieProfile : EntitySetProfile<int, OmitMovie>
+{
+    private static OmitStudio MakeStudio() => new()
+    {
+        Id = 7,
+        Name = "Skyline",
+        Movies = new List<OmitMovie> { new() { Id = 1, Title = "Ascent" } },
+    };
+
+    private static readonly List<OmitMovie> _movies = new()
+    {
+        new()
+        {
+            Id = 1,
+            Title = "Ascent",
+            Studio = MakeStudio(),
+            Cast = new List<OmitActor> { new() { Id = 100, Name = "Ada" }, new() { Id = 101, Name = "Ben" } },
+        },
+        new()
+        {
+            Id = 2,
+            Title = "Ballad",
+            Studio = MakeStudio(),
+            Cast = new List<OmitActor>(), // empty collection → would leak as [] without the fix
+        },
+        new()
+        {
+            Id = 3,
+            Title = "Crest",
+            Studio = null, // no related studio → $expand=Studio yields "studio": null
+            Cast = new List<OmitActor>(),
+        },
+    };
+
+    public OmitNavMovieProfile() : base(x => x.Id)
+    {
+        EntitySetName = "OmitNavMovies";
+        ExpandEnabled = true;
+
+        GetAll = (ct) => Task.FromResult<IEnumerable<OmitMovie>>(_movies);
+        GetById = (id, ct) => Task.FromResult(_movies.FirstOrDefault(m => m.Id == id));
+
+        HasOptional(
+            navigation: x => x.Studio!,
+            get: (movieId, ct) => Task.FromResult(_movies.FirstOrDefault(m => m.Id == movieId)?.Studio),
+            refTargetEntitySet: null);
+
+        HasMany(
+            navigation: x => x.Cast!,
+            getAll: (movieId, ct) => Task.FromResult<IEnumerable<OmitActor>>(
+                _movies.FirstOrDefault(m => m.Id == movieId)?.Cast ?? Enumerable.Empty<OmitActor>()));
+    }
+}
+
+
+// ── #179: omission on nav-route and bound-op read paths ───────────────────────
+
+/// <summary>
+/// Navigation element/target type that carries its OWN navigation (<c>Films</c>). #176 only wired
+/// the omission into the top-level reads; #179 extends it to single-valued nav GET, nav-collection
+/// GET, and bound-operation results. On any of those, this back-reference must be omitted (OData
+/// JSON §4.5.1 / §11.2.4.2) so an entity's shape never depends on which route returned it.
+/// </summary>
+internal class NavLeakStudio
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public IEnumerable<NavLeakFilm>? Films { get; set; } // own nav — would leak on nav-route reads
+}
+
+internal class NavLeakFilm
+{
+    public int Id { get; set; }
+    public string Title { get; set; } = "";
+    public NavLeakStudio? Studio { get; set; }               // single-valued nav (target has own nav)
+    public IEnumerable<NavLeakStudio>? CoStudios { get; set; } // collection nav (element has own nav)
+}
+
+/// <summary>
+/// #179 regression fixture. Every film carries a fully populated <c>Studio</c> and <c>CoStudios</c>,
+/// and every studio carries a populated <c>Films</c> back-reference, so without the fix these
+/// navigations would serialise inline on the single-valued nav GET, the nav-collection GET, and the
+/// bound-operation results. <c>UseETag</c> is set so the bound-op paths are also asserted to inject
+/// <c>@odata.etag</c>, matching the normal collection/GetById paths.
+///
+/// Both bound operations that return the set's own entity type are FUNCTIONS: Microsoft.OData's
+/// <c>ActionConfiguration.Returns&lt;T&gt;</c> rejects an entity return type ("Use ReturnsFromEntitySet"),
+/// so a bound action can't declare one in the EDM. The single- and collection-of-TModel branches of
+/// <c>WrapBoundOpResult</c> are the same code regardless of function-vs-action caller, so the function
+/// coverage exercises them fully.
+/// </summary>
+internal class NavLeakFilmProfile : EntitySetProfile<int, NavLeakFilm>
+{
+    private static NavLeakStudio MakeStudio(int id, string name) => new()
+    {
+        Id = id,
+        Name = name,
+        // Populated back-reference: would leak as a nested "films" array without the #179 fix.
+        Films = new List<NavLeakFilm> { new() { Id = 1, Title = "Ascent" } },
+    };
+
+    private static readonly List<NavLeakFilm> _films = new()
+    {
+        new()
+        {
+            Id = 1,
+            Title = "Ascent",
+            Studio = MakeStudio(7, "Skyline"),
+            CoStudios = new List<NavLeakStudio> { MakeStudio(8, "Harbor"), MakeStudio(9, "Vista") },
+        },
+        new()
+        {
+            Id = 2,
+            Title = "Ballad",
+            Studio = MakeStudio(7, "Skyline"),
+            CoStudios = new List<NavLeakStudio> { MakeStudio(8, "Harbor") },
+        },
+    };
+
+    public NavLeakFilmProfile() : base(x => x.Id)
+    {
+        EntitySetName = "NavLeakFilms";
+        UseETag(x => x.Title);
+
+        GetAll = (ct) => Task.FromResult<IEnumerable<NavLeakFilm>>(_films);
+        GetById = (id, ct) => Task.FromResult(_films.FirstOrDefault(f => f.Id == id));
+
+        HasOptional(
+            navigation: x => x.Studio!,
+            get: (filmId, ct) => Task.FromResult(_films.FirstOrDefault(f => f.Id == filmId)?.Studio),
+            refTargetEntitySet: null);
+
+        HasMany(
+            navigation: x => x.CoStudios!,
+            getAll: (filmId, ct) => Task.FromResult<IEnumerable<NavLeakStudio>>(
+                _films.FirstOrDefault(f => f.Id == filmId)?.CoStudios ?? Enumerable.Empty<NavLeakStudio>()));
+
+        BindFunction(TopRated);    // collection of TModel — bound-op collection path
+        BindFunction(GetFeatured); // single TModel — bound-op single path
+    }
+
+    // Bound function returning a collection of the set's own type.
+    private Task<IEnumerable<NavLeakFilm>> TopRated() => Task.FromResult<IEnumerable<NavLeakFilm>>(_films);
+
+    // Bound function returning a single entity of the set's own type.
+    private Task<NavLeakFilm?> GetFeatured() => Task.FromResult(_films.FirstOrDefault());
+}
+
+
+// ── #184: [JsonPropertyName]-renamed navigation omission/expand fixtures ───────
+
+internal class RenamedNavActor
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+}
+
+internal class RenamedNavStudio
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+}
+
+/// <summary>
+/// #184 fixture. Both navigations carry a per-property <c>[JsonPropertyName]</c> rename, so
+/// System.Text.Json serialises them under keys ("starring", "producedBy") that the naming policy
+/// would never produce from the CLR names ("Cast", "Studio"). Before the fix, omission keyed off
+/// the policy-converted name and so left the renamed nav leaking inline, while <c>$expand</c> wrote
+/// a second, differently-cased key. The EDM (and hence <c>$expand</c>) still uses the CLR property
+/// name; only the JSON key is renamed.
+/// </summary>
+internal class RenamedNavMovie
+{
+    public int Id { get; set; }
+    public string Title { get; set; } = "";
+
+    [System.Text.Json.Serialization.JsonPropertyName("starring")]
+    public IEnumerable<RenamedNavActor>? Cast { get; set; } // collection nav, JSON key "starring"
+
+    [System.Text.Json.Serialization.JsonPropertyName("producedBy")]
+    public RenamedNavStudio? Studio { get; set; }           // single nav, JSON key "producedBy"
+}
+
+internal class RenamedNavMovieProfile : EntitySetProfile<int, RenamedNavMovie>
+{
+    private static readonly List<RenamedNavMovie> _movies = new()
+    {
+        new()
+        {
+            Id = 1,
+            Title = "Ascent",
+            Studio = new RenamedNavStudio { Id = 7, Name = "Skyline" },
+            Cast = new List<RenamedNavActor> { new() { Id = 100, Name = "Ada" }, new() { Id = 101, Name = "Ben" } },
+        },
+        new()
+        {
+            Id = 2,
+            Title = "Ballad",
+            Studio = new RenamedNavStudio { Id = 8, Name = "Harbor" },
+            Cast = new List<RenamedNavActor> { new() { Id = 102, Name = "Cy" } },
+        },
+    };
+
+    public RenamedNavMovieProfile() : base(x => x.Id)
+    {
+        EntitySetName = "RenamedNavMovies";
+        ExpandEnabled = true;
+
+        GetAll = (ct) => Task.FromResult<IEnumerable<RenamedNavMovie>>(_movies);
+        GetById = (id, ct) => Task.FromResult(_movies.FirstOrDefault(m => m.Id == id));
+
+        HasOptional(
+            navigation: x => x.Studio!,
+            get: (movieId, ct) => Task.FromResult(_movies.FirstOrDefault(m => m.Id == movieId)?.Studio),
+            refTargetEntitySet: null);
+
+        HasMany(
+            navigation: x => x.Cast!,
+            getAll: (movieId, ct) => Task.FromResult<IEnumerable<RenamedNavActor>>(
+                _movies.FirstOrDefault(m => m.Id == movieId)?.Cast ?? Enumerable.Empty<RenamedNavActor>()));
+    }
+}

@@ -1,14 +1,34 @@
+# Codecov configuration. Coverage is collected by coverlet.collector in the five
+# test projects (ci.yml "Test with coverage") and uploaded by codecov-action.
+# Only the shipped libraries count toward the number on the badge.
+#
+# Status checks are informational for now: coverage uploads were broken until
+# 2026-07 (no coverlet.collector -> zero reports), so there is no trustworthy
+# baseline yet. Once a few develop runs establish the real number, set explicit
+# targets here and drop `informational`.
+
 coverage:
   status:
     project:
       default:
-        target: 80%
-        threshold: 1%
+        informational: true
     patch:
       default:
-        target: 80%
+        informational: true
 
 comment:
   layout: "reach,diff,flags,files"
   behavior: default
   require_changes: false
+
+ignore:
+  - "src/OhData.AspNetCore.Tests/**"
+  - "src/OhData.Client.Tests/**"
+  - "src/OhData.MicrosoftODataClient.Tests/**"
+  - "src/OhData.AspNetCore.OpenApi.Tests/**"
+  - "src/OhData.AspNetCore.NSwag.Tests/**"
+  - "src/OhData.AspNetCore.Swashbuckle.Tests/**"
+  - "src/OhData.TestBench.AspNetCore/**"
+  - "src/OhData.ClientTestBench.AspNetCore/**"
+  - "src/OhData.Client.Benchmarks/**"
+  - "src/OhData.Server.Benchmarks/**"

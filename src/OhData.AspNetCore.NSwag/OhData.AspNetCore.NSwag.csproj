@@ -15,6 +15,7 @@
 		-->
 		<RootNamespace>OhData.AspNetCore</RootNamespace>
 		<EnablePackageValidation>true</EnablePackageValidation>
+		<PackageValidationBaselineVersion>1.2.0</PackageValidationBaselineVersion>
 	</PropertyGroup>
 
 	<ItemGroup>

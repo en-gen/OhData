@@ -73,6 +73,13 @@ dotnet add package EnGen.OhData.AspNetCore.Swashbuckle
 builder.Services.AddSwaggerGen(c => c.OperationFilter<OhDataSwaggerOperationFilter>());
 ```
 
+Write routes get a real request-body schema and collection GET routes get a typed
+`ODataCollectionResponse<T>` response automatically, via `OhDataApiDescriptionProvider` in the
+core package - no Swashbuckle-specific setup needed beyond `AddSwaggerGen` itself. See
+[openapi.md](openapi.md#request-bodies-on-write-routes) for details (applies identically to
+Swashbuckle). `WithSummary()`/`WithDescription()` on collection GET routes are applied by
+`OhDataSwaggerOperationFilter` explicitly - see [openapi.md](openapi.md#read-path-summaries).
+
 ## Default (unnamed) registration
 
 Calling `AddOhData(...)` without a name uses the key `"__default__"` internally and coexists cleanly with named registrations:

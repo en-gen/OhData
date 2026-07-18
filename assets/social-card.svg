@@ -1,0 +1,18 @@
+<svg width="1280" height="640" viewBox="0 0 1280 640" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1280" height="640" fill="#FFFFFF"/>
+  <rect y="620" width="1280" height="20" fill="#15803D"/>
+  <g transform="translate(100,116) scale(3.2)">
+    <path d="M30 100 L10 122 L52 105 Z" fill="#15803D"/>
+    <path d="M8 20 V96 a56 13 0 0 0 112 0 V20 a56 13 0 0 0 -112 0 Z" fill="#15803D"/>
+    <ellipse cx="64" cy="20" rx="56" ry="13" fill="#22C55E"/>
+    <circle cx="46" cy="72" r="14" fill="none" stroke="#ffffff" stroke-width="11"/>
+    <path d="M76 44 v29 M76 73 c0 -15 19 -15 19 0 v15" fill="none" stroke="#ffffff" stroke-width="11" stroke-linecap="round"/>
+    <circle cx="76" cy="90" r="7.5" fill="#FDE047"/>
+  </g>
+  <text x="560" y="252" font-family="Segoe UI, Arial, sans-serif" font-size="118" font-weight="700" fill="#1F2937">OhData</text>
+  <text x="564" y="324" font-family="Segoe UI, Arial, sans-serif" font-size="38" fill="#4B5563">Convention-based OData 4.0 for</text>
+  <text x="564" y="374" font-family="Segoe UI, Arial, sans-serif" font-size="38" fill="#4B5563">ASP.NET Core minimal APIs</text>
+  <text x="564" y="454" font-family="Segoe UI, Arial, sans-serif" font-size="40" font-weight="700" fill="#15803D">2&#8211;6&#215; faster than</text>
+  <text x="564" y="506" font-family="Segoe UI, Arial, sans-serif" font-size="40" font-weight="700" fill="#15803D">Microsoft.AspNetCore.OData</text>
+  <text x="564" y="574" font-family="Segoe UI, Arial, sans-serif" font-size="30" fill="#6B7280">no controllers &#183; typed LINQ client &#183; 1,100 tests &#183; MIT</text>
+</svg>

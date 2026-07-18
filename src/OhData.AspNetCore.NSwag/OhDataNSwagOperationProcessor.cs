@@ -1,4 +1,5 @@
 using System.Linq;
+using Microsoft.AspNetCore.Http.Metadata;
 using NJsonSchema;
 using NSwag;
 using NSwag.Generation.AspNetCore;
@@ -28,13 +29,42 @@ public sealed class OhDataNSwagOperationProcessor : IOperationProcessor
             return true;
         }
 
+        var operation = context.OperationDescription.Operation;
+        var endpointMetadata = aspNetCoreContext.ApiDescription.ActionDescriptor.EndpointMetadata;
+
+        // Leg 4 (docs-fidelity): WithSummary()/WithDescription() attach IEndpointSummaryMetadata/
+        // IEndpointDescriptionMetadata to the endpoint (the same mechanism Microsoft.AspNetCore.OpenApi
+        // reads natively). NSwag's own document generator does not surface these by default, so
+        // they are applied here explicitly rather than relying on undocumented per-generator
+        // behavior. A no-op when neither is present, and never overwrites a summary/description
+        // NSwag already populated from another source (e.g. XML doc comments).
+        if (string.IsNullOrEmpty(operation.Summary))
+        {
+            string? summary = endpointMetadata.OfType<IEndpointSummaryMetadata>().LastOrDefault()?.Summary;
+            if (!string.IsNullOrEmpty(summary)) operation.Summary = summary;
+        }
+        if (string.IsNullOrEmpty(operation.Description))
+        {
+            string? description = endpointMetadata.OfType<IEndpointDescriptionMetadata>().LastOrDefault()?.Description;
+            if (!string.IsNullOrEmpty(description)) operation.Description = description;
+        }
+
+        // Leg 2 (docs-fidelity): see the matching comment in OhDataOpenApiOperationTransformer
+        // for why this only sets the description text — the schema itself was already built by
+        // NSwag from the ApiParameterDescription OhDataApiDescriptionProvider added.
+        var bodyMetadata = aspNetCoreContext.ApiDescription.ActionDescriptor.EndpointMetadata
+            .OfType<OhDataRequestBodyMetadata>()
+            .FirstOrDefault();
+        if (bodyMetadata is not null && operation.RequestBody is not null)
+        {
+            operation.RequestBody.Description = bodyMetadata.Description;
+        }
+
         var metadata = aspNetCoreContext.ApiDescription.ActionDescriptor.EndpointMetadata
             .OfType<OhDataQueryOptionsMetadata>()
             .FirstOrDefault();
 
         if (metadata is null) { return true; }
-
-        var operation = context.OperationDescription.Operation;
 
         // Always add $top and $skip for paged collection endpoints
         if (operation.Parameters.All(p => p.Name != "$top"))

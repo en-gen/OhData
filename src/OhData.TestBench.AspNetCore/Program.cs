@@ -19,8 +19,8 @@ builder.Services.AddDbContext<AppDbContext>(
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
-    c.SwaggerDoc("v1", new() { Title = "OhData TestBench — v1", Version = "v1" });
-    c.SwaggerDoc("v2", new() { Title = "OhData TestBench — v2", Version = "v2" });
+    c.SwaggerDoc("v1", new() { Title = "OhData TestBench — Movies (v1)", Version = "v1" });
+    c.SwaggerDoc("v2", new() { Title = "OhData TestBench — Movies (v2)", Version = "v2" });
     // Route each endpoint to the doc matching its group name
     c.DocInclusionPredicate((docName, apiDesc) =>
         apiDesc.GroupName is null || apiDesc.GroupName == docName);
@@ -29,17 +29,23 @@ builder.Services.AddSwaggerGen(c =>
 
 // ── OhData versioned registrations ───────────────────────────────────────────
 //
-// v1: Products + Categories
-// v2: Products + Orders (with navigation routing for order lines) + Categories
+// v1: Movies + Genres           -- the simple surface: GetQueryable CRUD + ETags + bound
+//                                   operations on Movies, GetAll on Genres. AllowDeepInsert
+//                                   stays at its default (false), and Movie.Cast/Studio have no
+//                                   navigation handlers -- see MovieProfile's comments.
+// v2: Movies + Genres + Actors + Studios -- adds deep insert, batch-loaded $expand, and $ref
+//                                   link management on Movie's navigations, plus the Actor and
+//                                   Studio entity sets those navigations point at.
 //
 builder.Services.AddOhDataVersion("v1", "/v1", o =>
-    o.AddProfile<ProductProfile>()
-     .AddProfile<CategoryProfile>());
+    o.AddProfile<MovieProfile>()
+     .AddProfile<GenreProfile>());
 
 builder.Services.AddOhDataVersion("v2", "/v2", o =>
-    o.AddProfile<ProductProfileV2>()
-     .AddProfile<OrderProfile>()
-     .AddProfile<CategoryProfileV2>());
+    o.AddProfile<MovieProfileV2>()
+     .AddProfile<GenreProfileV2>()
+     .AddProfile<ActorProfile>()
+     .AddProfile<StudioProfile>());
 
 // ── App pipeline ──────────────────────────────────────────────────────────────
 var app = builder.Build();
@@ -57,8 +63,11 @@ app.UseForwardedHeaders(new ForwardedHeadersOptions
 app.UseSwagger(c => c.RouteTemplate = "/openapi/{documentName}.json");
 app.UseSwaggerUI(c =>
 {
-    c.SwaggerEndpoint("/openapi/v1.json", "v1");
+    // v2 (the full surface: Movies + Genres + Actors + Studios, with $expand/$ref) is listed
+    // first so it is the document Swagger UI selects by default. v1 remains available in the
+    // top-right doc dropdown as the deliberately-simpler contrast.
     c.SwaggerEndpoint("/openapi/v2.json", "v2");
+    c.SwaggerEndpoint("/openapi/v1.json", "v1");
 });
 
 // Scalar API reference at /scalar/{documentName} — uses /openapi/{documentName}.json by default
@@ -67,8 +76,9 @@ app.MapScalarApiReference();
 app.MapOhData("v1").WithGroupName("v1");
 app.MapOhData("v2").WithGroupName("v2");
 
-// Redirect root to Scalar v1 doc
-app.MapGet("/", () => Results.Redirect("/scalar/v1")).ExcludeFromDescription();
+// Redirect root to the Scalar v2 doc -- v2 is the full showcase (Actors, Studios, $expand,
+// $ref); visitors land there by default. /scalar/v1 stays reachable directly.
+app.MapGet("/", () => Results.Redirect("/scalar/v2")).ExcludeFromDescription();
 
 app.MapGet("/health", () => Results.Ok()).ExcludeFromDescription();
 
