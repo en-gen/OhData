@@ -32,7 +32,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
 }
 ```
 
-Property routes ride the existing `GetById` handler — there is no separate delegate to write. A route is registered for every public, readable, non-indexer CLR property of the model **except** properties declared as navigations via `HasMany`/`HasOptional`/`HasRequired`.
+Property routes ride the existing `GetById` handler — there is no separate delegate to write. A route is registered for every public, readable, non-indexer CLR property of the model **except** properties declared as navigations via `HasMany`/`HasOptional`/`HasRequired`. Properties excluded via `Ignore(...)` also get no property routes — see [ignoring-properties.md](ignoring-properties.md).
 
 To opt a single entity set out:
 
