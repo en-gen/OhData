@@ -73,6 +73,32 @@ public class RequestBodySizeLimitTests
     }
 
     [Fact]
+    public async Task Read_OnLimitedSet_NotAffected()
+    {
+        // The limit filter only applies to body-bearing write methods; a GET to a limited set
+        // passes straight through (covers the non-write branch of the filter).
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BodyLimitProfile>());
+        var resp = await fx.Client.GetAsync($"{LimitedUrl}(1)");
+        // GetById returns null → 404, but crucially not 413 and not short-circuited by the filter.
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Defaults_NonPositiveMaxRequestBodyBytes_Throws(long value)
+    {
+        Assert.Throws<System.ArgumentOutOfRangeException>(
+            () => new EntitySetDefaults { MaxRequestBodyBytes = value });
+    }
+
+    [Fact]
+    public void Profile_NonPositiveMaxRequestBodyBytes_ThrowsAtConstruction()
+    {
+        Assert.Throws<System.ArgumentOutOfRangeException>(() => new InvalidBodyLimitProfile());
+    }
+
+    [Fact]
     public async Task ProfileLimit_OverridesGlobalDefault()
     {
         // Global default is tiny (50), but the profile raises its own limit to 200, so a ~150-byte
@@ -109,5 +135,15 @@ internal class BodyLimitProfile : EntitySetProfile<int, Widget>
             delta.Patch(w);
             return Task.FromResult<Widget?>(w);
         };
+    }
+}
+
+/// <summary>Sets a non-positive MaxRequestBodyBytes in its constructor to verify validation.</summary>
+internal class InvalidBodyLimitProfile : EntitySetProfile<int, Widget>
+{
+    public InvalidBodyLimitProfile() : base(x => x.Id)
+    {
+        EntitySetName = "InvalidBodyLimitWidgets";
+        MaxRequestBodyBytes = 0; // must throw ArgumentOutOfRangeException
     }
 }
