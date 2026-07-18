@@ -134,6 +134,27 @@ The rest of the surface rides other profile declarations - navigation properties
 
 See [docs/navigation-routing.md](docs/navigation-routing.md), [docs/property-access.md](docs/property-access.md), [docs/deep-insert.md](docs/deep-insert.md), and [docs/bound-operations.md](docs/bound-operations.md) for the full details behind each row.
 
+### Authorization
+
+OhData rides ASP.NET Core's own authentication and authorization - there's no OhData-specific auth system. Protect a whole entity set with one call:
+
+```csharp
+RequireAuthorization("AdminOnly");   // or RequireAuthorization() / RequireRoles("Admin")
+```
+
+…or authorize **per operation** with `ConfigureAuthorization`, whose per-category lambdas mirror `AuthorizationPolicyBuilder` (requirements accumulate and AND):
+
+```csharp
+ConfigureAuthorization(auth => auth
+    .Read(r   => r.AllowAnonymous())                     // catalog reads are public
+    .Create(c => c.RequirePolicy("Editors"))
+    .Update(u => u.RequireRole("Editors").RequireResource())   // Editor AND owns the row
+    .Delete(d => d.RequireRole("Admin"))
+    .Invoke("Approve", i => i.RequirePolicy("Approvers")));
+```
+
+`.RequireResource()` adds **instance-level** (owner/tenant) checks: OhData loads the entity and evaluates ASP.NET Core resource-based authorization against it, so you write a standard `AuthorizationHandler<OperationAuthorizationRequirement, TModel>`. Profiles stay free of ASP.NET Core types - requirements are stored as plain policy/role/claim names. See [docs/authorization.md](docs/authorization.md).
+
 ---
 
 ## Client quick start
