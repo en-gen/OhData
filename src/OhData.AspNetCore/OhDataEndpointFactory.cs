@@ -1937,14 +1937,7 @@ internal static class OhDataEndpointFactory
                     }
 
                     // MaxTop caps an *explicit* $top exactly like the GetQueryable path (400
-                    // InvalidQueryOption when exceeded). Deliberately NOT mirrored from
-                    // GetQueryable: the implicit "MaxTop as default page size when $top is
-                    // absent" behavior, and Prefer: maxpagesize. Both exist on GetQueryable to
-                    // produce a bounded page *plus* an @odata.nextLink so the client can retrieve
-                    // the remainder. GetAll has no nextLink/$skiptoken continuation story, so
-                    // silently truncating an omitted $top to MaxTop would drop data with no way
-                    // to page to it — worse than today's behavior of returning everything. This
-                    // choice is documented in docs/query-options.md.
+                    // InvalidQueryOption when exceeded).
                     if (options.Top is not null && source.MaxTop.HasValue && options.Top.Value > source.MaxTop.Value)
                     {
                         return ODataError(400, "InvalidQueryOption",
@@ -1963,21 +1956,56 @@ internal static class OhDataEndpointFactory
                     if (capabilityError is not null) return capabilityError;
                     ValidatePropertyAllowlists(options);
 
-                    // Leg 1: apply Skip($skip) then Take($top) against a materialized item array,
-                    // AFTER the handler call (GetAll or Search) below fills the array and BEFORE
-                    // $select/$expand serialization. @odata.count reflects the PRE-paging total
-                    // (§11.2.6.5 — @odata.count is unaffected by $top/$skip), so it is captured
-                    // from the array length before paging is applied.
-                    (object[] Paged, long PreTotal) ApplyGetAllPaging(object[] items)
+                    // Post-materialization paging for GetAll, applied AFTER the handler call (GetAll
+                    // or Search) fills the array and BEFORE $select/$expand serialization.
+                    // @odata.count reflects the PRE-paging total (§11.2.6.5 — unaffected by
+                    // $top/$skip), captured from the array length before paging.
+                    //
+                    // #201: an OMITTED $top is now capped to MaxTop (or a smaller Prefer:
+                    // maxpagesize), with a $skip @odata.nextLink for the remainder — GetAll
+                    // re-enumerates its source on each request, so offset paging is a valid
+                    // continuation story (the same $skip scheme the Priority-1 path uses). This
+                    // makes GetAll safe-by-default: it can no longer be coerced into returning an
+                    // unbounded result set. Opt out by setting MaxTop = null (returns the full set,
+                    // no nextLink). An EXPLICIT $top is taken as-is (already validated <= MaxTop
+                    // above) and suppresses the default cap and its nextLink.
+                    (object[] Paged, long PreTotal, string? NextLink) ApplyGetAllPaging(object[] items)
                     {
                         long preTotal = items.Length;
+                        int effectiveSkip = options.Skip is { Value: > 0 } ? options.Skip.Value : 0;
+
                         IEnumerable<object> seq = items;
-                        if (options.Skip is not null && options.Skip.Value > 0)
-                            seq = seq.Skip(options.Skip.Value);
+                        if (effectiveSkip > 0)
+                            seq = seq.Skip(effectiveSkip);
+
+                        int? appliedPageSize = null;
                         if (options.Top is not null)
+                        {
                             seq = seq.Take(options.Top.Value);
+                        }
+                        else
+                        {
+                            int? preferredPageSize = ParseMaxPageSize(ctx);
+                            appliedPageSize = preferredPageSize.HasValue
+                                ? (source.MaxTop.HasValue
+                                    ? Math.Min(preferredPageSize.Value, source.MaxTop.Value)
+                                    : preferredPageSize.Value)
+                                : source.MaxTop;
+                            if (appliedPageSize.HasValue)
+                                seq = seq.Take(appliedPageSize.Value);
+                            if (preferredPageSize.HasValue)
+                                ctx.Response.Headers["Preference-Applied"] = $"maxpagesize={appliedPageSize!.Value}";
+                        }
+
                         object[] paged = ReferenceEquals(seq, items) ? items : seq.ToArray();
-                        return (paged, preTotal);
+
+                        // nextLink only when the default cap was applied (omitted $top) and more
+                        // items remain beyond this page. The pre-paging total lets us decide exactly.
+                        string? nextLink = null;
+                        if (appliedPageSize is int ps && ps > 0 && effectiveSkip + paged.Length < preTotal)
+                            nextLink = BuildNextPageLinkWithSkip(ctx, effectiveSkip + paged.Length);
+
+                        return (paged, preTotal, nextLink);
                     }
 
                     // Gap 4: $search on GetAll path
@@ -1991,7 +2019,7 @@ internal static class OhDataEndpointFactory
 
                         var searchResults = await s.InvokeSearchAsync(searchTerm.ToString(), ct);
                         object[] searchItems = searchResults.ToArray();
-                        var (pagedSearchItems, searchPreTotal) = ApplyGetAllPaging(searchItems);
+                        var (pagedSearchItems, searchPreTotal, searchNextLink) = ApplyGetAllPaging(searchItems);
 
                         var (searchFinal, searchSelectedProps) = await ApplyCollectionPipelineAsync(pagedSearchItems, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
                         string searchBaseUrl = BuildBaseUrl(ctx, prefix);
@@ -2001,6 +2029,8 @@ internal static class OhDataEndpointFactory
                         // requested. Leg 1: reflects the pre-paging total, per §11.2.6.5.
                         if (options.Count?.Value == true)
                             searchEnvelope["@odata.count"] = searchPreTotal;
+                        if (searchNextLink is not null)
+                            searchEnvelope["@odata.nextLink"] = searchNextLink;
                         searchEnvelope["value"] = searchFinal;
                         return Results.Ok(searchEnvelope);
                     }
@@ -2008,7 +2038,7 @@ internal static class OhDataEndpointFactory
                     object? result = await s.InvokeGetAllAsync(ct);
                     var enumerable = result as IEnumerable<TModel> ?? Enumerable.Empty<TModel>();
                     var rawItems = enumerable.ToArray();
-                    var (pagedItems, preTotal) = ApplyGetAllPaging(rawItems);
+                    var (pagedItems, preTotal, nextLink) = ApplyGetAllPaging(rawItems);
 
                     var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(pagedItems, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
 
@@ -2019,6 +2049,9 @@ internal static class OhDataEndpointFactory
                     // requested on the GetAll path, reflecting the pre-paging total.
                     if (options.Count?.Value == true)
                         envelope["@odata.count"] = preTotal;
+                    // #201: $skip continuation link when an omitted $top was capped to MaxTop.
+                    if (nextLink is not null)
+                        envelope["@odata.nextLink"] = nextLink;
                     envelope["value"] = finalItems;
                     return Results.Ok(envelope);
                 }
@@ -2029,9 +2062,11 @@ internal static class OhDataEndpointFactory
             })
               .WithSummary($"List {name} (simple read path)")
               .WithDescription(
-                  "Returns the full result of the GetAll handler. $top, $skip, $select, $expand, " +
-                  "and $count are applied server-side, after materialization; $filter and " +
-                  "$orderby are not supported on this path — configure GetQueryable to enable them.")
+                  "Returns the result of the GetAll handler. $top, $skip, $select, $expand, and " +
+                  "$count are applied server-side, after materialization; $filter and $orderby are " +
+                  "not supported on this path — configure GetQueryable to enable them. An omitted " +
+                  "$top is capped to MaxTop (or a smaller Prefer: maxpagesize) with an " +
+                  "@odata.nextLink for the remainder; set MaxTop=null to return the full set.")
               .WithTags(name).Produces<ODataCollectionResponse<TModel>>(200).Produces(400)
               .WithMetadata(new OhDataQueryOptionsMetadata(
                   FilterEnabled: false,
