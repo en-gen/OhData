@@ -60,6 +60,13 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     // properties, the EDM, response serialization, and request binding all consult this set.
     private readonly HashSet<string> _ignoredPropertyNames = new(StringComparer.Ordinal);
 
+    // The open generic StructuralTypeConfiguration<TModel>.Ignore<TProperty>(...) definition,
+    // closed per ignored property with its real CLR type (see Ignore below).
+    private static readonly MethodInfo s_edmIgnoreMethodDefinition =
+        typeof(StructuralTypeConfiguration<TModel>)
+            .GetMethods(BindingFlags.Public | BindingFlags.Instance)
+            .Single(m => m.Name == "Ignore" && m.IsGenericMethodDefinition);
+
     private readonly Expression<Func<TModel, TKey>> _getKey;
 
     /// <summary>
@@ -824,15 +831,28 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
                     "routing, entity-id URLs, and $metadata.", nameof(properties));
             }
 
+            if (member.Member is not PropertyInfo clrProperty)
+            {
+                throw new ArgumentException(
+                    $"'{name}' is not a property of {typeof(TModel).Name} — fields cannot be ignored.",
+                    nameof(properties));
+            }
+
             if (!_ignoredPropertyNames.Add(name)) continue; // duplicate — already configured
 
             // EDM removal rides the configurator pipeline, so it is auto-ejected when
             // AdvancedConfigure is overridden (rows 1-2 of the spec's suppression table) while
             // runtime suppression (routes, wire, PATCH) still applies. ModelBuilder's
-            // PropertySelectorVisitor strips the boxing Convert node, and Ignore<TProperty>
-            // resolves the property by PropertyInfo, so passing the object?-typed selector is safe.
-            Expression<Func<TModel, object?>> selector = properties[i];
-            _configurators.Add(cfg => cfg.Ignore(selector));
+            // PropertySelectorVisitor rejects the boxing Convert node an
+            // Expression<Func<TModel, object?>> carries for value-typed properties
+            // ("Unsupported Expression NodeType"), so rebuild an unboxed, strongly-typed
+            // selector and invoke Ignore<TProperty> with the property's real CLR type.
+            ParameterExpression p = Expression.Parameter(typeof(TModel), "x");
+            LambdaExpression typedSelector = Expression.Lambda(
+                typeof(Func<,>).MakeGenericType(typeof(TModel), clrProperty.PropertyType),
+                Expression.Property(p, clrProperty), p);
+            MethodInfo edmIgnore = s_edmIgnoreMethodDefinition.MakeGenericMethod(clrProperty.PropertyType);
+            _configurators.Add(cfg => edmIgnore.Invoke(cfg, new object[] { typedSelector }));
         }
     }
 
