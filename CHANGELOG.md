@@ -25,9 +25,15 @@ Production hardening (milestone 1.4.0): safe-by-default limits across the read p
   `MapOhData().RequireAuthorization()` composes as before and an unspecified category inherits it
   (anonymous when there is none). `$metadata`, the service document, and unbound operations remain
   group-level-only. The legacy `RequireAuthorization()`/`RequireRoles()` model is unchanged and still
-  the default; combining it with `ConfigureAuthorization(...)` on one profile throws at startup. See
-  `docs/authorization.md`. *(Resource-based / instance-level checks — `.RequireResource()` — are a
-  follow-up; declaring one currently throws at startup.)*
+  the default; combining it with `ConfigureAuthorization(...)` on one profile throws at startup.
+  **Resource-based (instance-level) authorization** is also supported via `.RequireResource()`: OhData
+  loads the `{key}` entity and evaluates the framework's `OperationAuthorizationRequirement` (exposed as
+  `OhDataOperations.Read/Create/Update/Delete/Invoke`) against it, so you write a standard
+  `AuthorizationHandler<OperationAuthorizationRequirement, TModel>` for owner/tenant checks (or
+  `.RequireResource("PolicyName")` to run a named policy with the entity as the resource). It composes
+  with the coarse requirements (AND), applies uniformly across key-based routes (entity, property, nav,
+  `$ref`), fails **closed** (a requirement no handler satisfies → `403`), and requires a `GetById`
+  handler on resource-checked Read/Update/Delete (enforced at startup). See `docs/authorization.md`.
 - **Observability: distributed-tracing spans and metrics (#200).** OhData now emits telemetry via
   the BCL `System.Diagnostics` primitives — an `ActivitySource` and a `Meter`, both named `OhData` —
   with **no `OpenTelemetry.*` package dependency** taken by the library; consumers opt in from their

@@ -116,6 +116,60 @@ Selectors: `.Read(...)`, `.Create(...)`, `.Update(...)`, `.Delete(...)`, `.Write
 `ConfigureAuthorization(...)` and the legacy `RequireAuthorization()`/`RequireRoles()` are mutually
 exclusive on a single profile - calling both throws `InvalidOperationException` at startup. Choose one.
 
+## Resource-based (instance-level) authorization
+
+The requirements above are coarse - they answer "can this *kind* of user touch this operation." To
+answer "can this user touch *this row*" (owner checks, tenant isolation), add `.RequireResource()` to a
+category. OhData loads the `{key}` entity and evaluates ASP.NET Core's native resource-based
+authorization against it - you write a standard handler:
+
+```csharp
+// profile:
+ConfigureAuthorization(auth => auth
+    .Read(r   => r.RequireResource())
+    .Update(u => u.RequireRole("Editors").RequireResource()));   // must be an Editor AND own the row
+
+// your handler (switch on the operation name):
+public sealed class OrderAuthorizationHandler
+    : AuthorizationHandler<OperationAuthorizationRequirement, Order>
+{
+    protected override Task HandleRequirementAsync(
+        AuthorizationHandlerContext ctx, OperationAuthorizationRequirement req, Order order)
+    {
+        if (req.Name == OhDataOperations.Read.Name) ctx.Succeed(req);
+        if (req.Name == OhDataOperations.Update.Name && order.OwnerId == ctx.User.FindFirst("sub")?.Value)
+            ctx.Succeed(req);
+        return Task.CompletedTask;
+    }
+}
+// Program.cs:  services.AddScoped<IAuthorizationHandler, OrderAuthorizationHandler>();
+```
+
+`OhData.AspNetCore.OhDataOperations` exposes the five framework `OperationAuthorizationRequirement`
+instances (`Read`/`Create`/`Update`/`Delete`/`Invoke`); the handler's resource *type* selects the
+entity set, and `requirement.Name` selects the operation. Use `.RequireResource("PolicyName")` instead
+to evaluate a **named policy** (carrying your own custom `IAuthorizationRequirement`s, with data) with
+the entity as the resource.
+
+Key points:
+
+- **The resource is the `{key}` entity.** For property/navigation/`$ref` routes the resource is the
+  parent entity in the path, so those routes are covered uniformly - there's no bypass. **Create** is
+  the exception: `POST` to a collection is checked against the *incoming* (pre-persist) entity from the
+  body (there's no stored row yet); `POST` to a navigation is checked against the parent.
+- **Collection reads are not resource-checked** (there's no single instance) - filter those in the
+  query itself. `$metadata`/service-document/unbound operations are never resource-checked.
+- **It composes with the coarse requirements (AND)** - both must pass. `.RequireResource()` alone is
+  not an endpoint gate, so an anonymous request *reaches the handler* and is denied `403` (which enables
+  "read if public **or** owner"); pair it with `.RequireAuthenticatedUser()` if you want anonymous
+  requests to get `401` instead.
+- **Fail-closed.** If no matching handler is registered, the requirement is never satisfied →
+  everything returns `403`. Opting in without a handler denies; it never silently allows.
+- **Cost & requirements.** A resource-checked route performs one `GetById` load (in the auth filter) to
+  fetch the entity for the check, so `.RequireResource()` on Read/Update/Delete **requires a `GetById`
+  handler** (enforced at startup). Not compatible with `AllowUpsert` create-on-`PUT` (a missing entity
+  returns `404` before the handler runs).
+
 ### Fallback
 
 If two entity sets need entirely separate surfaces (not just different requirements per verb), you can
