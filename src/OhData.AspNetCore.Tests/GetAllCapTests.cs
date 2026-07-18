@@ -114,6 +114,35 @@ public class GetAllCapTests
         Assert.Equal(2, json.GetProperty("value").GetArrayLength());
         Assert.False(json.TryGetProperty("@odata.nextLink", out _));
     }
+
+    [Fact]
+    public async Task Search_ResultSetOverMaxTop_CapsAndEmitsNextLink()
+    {
+        // The $search branch runs through the same ApplyGetAllPaging, so a search returning more
+        // than MaxTop matches must be capped with a $skip continuation link, just like a plain GET.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<GetAllSearchCapProfile>());
+        var json = await GetJsonAsync(fx, $"{Capped.Replace("GetAllCapWidgets", "GetAllSearchCapWidgets")}?$search=Widget");
+
+        Assert.Equal(10, json.GetProperty("value").GetArrayLength());
+        Assert.True(json.TryGetProperty("@odata.nextLink", out var nl));
+        Assert.Contains("skip=", nl.GetString());
+    }
+
+    [Fact]
+    public async Task PreferMaxPageSize_WhenMaxTopIsNull_HonoredAsThePageSize()
+    {
+        // MaxTop=null opts out of the default cap, but a client Prefer: maxpagesize is still
+        // honored as the page size (there is no ceiling to clamp it against).
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<GetAllUnboundedProfile>());
+        using var request = new HttpRequestMessage(HttpMethod.Get, Unbounded);
+        request.Headers.Add("Prefer", "maxpagesize=8");
+        var resp = await fx.Client.SendAsync(request);
+
+        var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(8, json.GetProperty("value").GetArrayLength());
+        Assert.True(json.TryGetProperty("@odata.nextLink", out _));
+        Assert.Contains(resp.Headers.GetValues("Preference-Applied"), v => v.Contains("maxpagesize=8"));
+    }
 }
 
 internal class GetAllCapProfile : EntitySetProfile<int, Widget>
@@ -141,5 +170,22 @@ internal class GetAllUnboundedProfile : EntitySetProfile<int, Widget>
         CountEnabled = true;
         MaxTop = null; // #201 opt-out: return the full set, no cap, no nextLink.
         GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(Store);
+    }
+}
+
+internal class GetAllSearchCapProfile : EntitySetProfile<int, Widget>
+{
+    private static readonly List<Widget> Store = Enumerable.Range(1, 25)
+        .Select(i => new Widget { Id = i, Name = $"Widget{i}" }).ToList();
+
+    public GetAllSearchCapProfile() : base(x => x.Id)
+    {
+        EntitySetName = "GetAllSearchCapWidgets";
+        CountEnabled = true;
+        MaxTop = 10;
+        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(Store);
+        // Every item matches "Widget", so the search result set (25) exceeds MaxTop (10).
+        Search = (term, ct) => Task.FromResult<IEnumerable<Widget>>(
+            Store.Where(w => w.Name.Contains(term, StringComparison.OrdinalIgnoreCase)));
     }
 }
