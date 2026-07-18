@@ -40,6 +40,16 @@ internal sealed record BoundOperationDefinition
     public bool IsEntityLevel { get; init; } = false;
 
     /// <summary>
+    /// The delegate's declared return type, unwrapped from <c>Task&lt;T&gt;</c>/<c>ValueTask&lt;T&gt;</c>
+    /// (and <see langword="null"/> for a <c>void</c>/<c>Task</c>/<c>ValueTask</c> return — every
+    /// invocation of such an operation produces <c>204 No Content</c>, never <c>200</c>).
+    /// Computed once at bind time; used only to build OpenAPI response documentation
+    /// (<c>Produces(...)</c>) for the operation's route — it plays no part in the actual
+    /// per-request invocation, which goes through <see cref="Invoke"/> instead.
+    /// </summary>
+    public Type? ReturnType { get; init; }
+
+    /// <summary>
     /// Invokes the underlying delegate, automatically appending a <see cref="CancellationToken"/>
     /// when the original method accepts one.
     /// </summary>
@@ -92,12 +102,19 @@ internal sealed record BoundOperationDefinition
                 resultProp = typeof(Task<>).MakeGenericType(returnType.GetGenericArguments()[0]).GetProperty("Result");
         }
 
+        Type? docReturnType = isVoidReturn ? null
+            : returnType.IsGenericType &&
+              (returnType.GetGenericTypeDefinition() == typeof(Task<>) || returnType.GetGenericTypeDefinition() == typeof(ValueTask<>))
+                ? returnType.GetGenericArguments()[0]
+                : returnType;
+
         return new BoundOperationDefinition
         {
             Name = method.Name,
             IsAction = isAction,
             IsEntityLevel = isEntityLevel,
             Parameters = visibleParams,
+            ReturnType = docReturnType,
             Invoke = AsyncDispatchHelper.BuildInvoker(del, hasCt, isVoidReturn, resultProp)
         };
     }

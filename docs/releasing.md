@@ -78,23 +78,21 @@ reject the release.
    `.snupkg` per package, uploaded automatically by the workflow); and confirm build provenance with
    `gh attestation verify` (see below).
 7. Close the release branch out into `develop`. The release branch is merge-committed into **both**
-   `main` (step 3's PR) and `develop`, with one intermediate sync — after the Release is published:
-   ```bash
-   # (a) sync main back into the release branch: picks up main's merge commit (which the vX.Y.Z
-   #     tag points at) and any hotfix that landed on main since the branch was cut. Usually an
-   #     empty no-op merge, but it makes main a full ancestor of develop and the tag reachable.
-   git checkout release/X.Y.Z && git pull --ff-only && git merge origin/main -m "chore: sync main into release/X.Y.Z" && git push
-   # (b) merge-commit the release branch into develop - direct push, never a PR
-   git checkout develop && git pull --ff-only && git merge origin/release/X.Y.Z -m "chore: merge release/X.Y.Z back into develop" && git push
-   # (c) delete the release branch (local and remote)
-   git branch -d release/X.Y.Z && git push origin --delete release/X.Y.Z
-   ```
-   Never use a PR for the develop side: a back-merge PR invites "Squash and merge", which severs the
-   shared history between `main` and `develop` — the next release PR then reports phantom conflicts
-   on every file both branches touched (this happened on both the 1.1.0 and 1.2.0 release PRs) and
-   GitVersion loses the merge lineage it uses to compute versions. The direct merge commit is the one
-   sanctioned exception to the feature-branches-only rule. Release PRs (`release/X.Y.Z` → `main`)
-   must likewise be merged with a merge commit, never squashed.
+   `main` (step 3's PR) and `develop` — after the Release is published:
+   - (a) Sync main back into the release branch: `git checkout release/X.Y.Z && git pull --ff-only &&
+     git merge origin/main -m "chore: sync main into release/X.Y.Z" && git push`. This picks up
+     main's merge commit (which the `vX.Y.Z` tag points at) and any hotfix that landed on main since
+     the branch was cut — usually a no-op/fast-forward, but it makes main a full ancestor of develop
+     and the tag reachable from develop.
+   - (b) Open a PR from `release/X.Y.Z` to `develop` and merge it with **"Create a merge commit" —
+     NEVER "Squash and merge"** (develop's ruleset requires changes via PR, so this is a PR by
+     necessity). Squashing a back-merge severs the shared history between `main` and `develop` — the
+     next release PR then reports phantom conflicts on every file both branches touched (this
+     happened on both the 1.1.0 and 1.2.0 release PRs) and GitVersion loses the merge lineage it uses
+     to compute versions.
+   - (c) Delete the release branch (local and remote).
+   Release PRs (`release/X.Y.Z` → `main`) must likewise be merged with a merge commit, never
+   squashed. Squash remains the right choice for ordinary feature PRs only.
 
 ## Rehearsal mode (no push, no key required)
 

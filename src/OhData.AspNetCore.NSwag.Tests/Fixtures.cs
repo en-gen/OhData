@@ -49,6 +49,23 @@ internal class NoFlagsWidgetProfile : EntitySetProfile<int, Widget>
     }
 }
 
+/// <summary>
+/// Leg 1 (docs-fidelity): GetAll with MaxTop explicitly nulled out (no cap), to distinguish
+/// "profile left MaxTop at its default" (NoFlagsWidgetProfile, capped at 1000) from "profile
+/// opted out of a $top ceiling entirely".
+/// </summary>
+internal class NoMaxTopWidgetProfile : EntitySetProfile<int, Widget>
+{
+    private readonly List<Widget> _store = new() { new() { Id = 1, Name = "Sprocket" } };
+
+    public NoMaxTopWidgetProfile() : base(x => x.Id)
+    {
+        EntitySetName = "NoMaxTopWidgets";
+        MaxTop = null;
+        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store);
+    }
+}
+
 internal class FilterOnlyWidgetProfile : EntitySetProfile<int, Widget>
 {
     private readonly List<Widget> _store = new() { new() { Id = 1, Name = "Sprocket" } };

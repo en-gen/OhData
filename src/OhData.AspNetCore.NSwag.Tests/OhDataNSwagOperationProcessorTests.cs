@@ -160,13 +160,35 @@ public class OhDataNSwagOperationProcessorTests
     [Fact]
     public async System.Threading.Tasks.Task NoMaxTop_TopDescriptionHasNoCap()
     {
+        // A profile-level `MaxTop = null` only means "not overridden at the profile level" --
+        // it still inherits EntitySetDefaults.MaxTop (1000 by default). Genuinely disabling the
+        // cap requires nulling it out at the defaults level too.
+        await using var fixture = await NSwagTestHostBuilder.BuildAsync(o =>
+        {
+            o.WithDefaults(d => d.MaxTop = null);
+            o.AddProfile<NoMaxTopWidgetProfile>();
+        });
+
+        using var doc = await fixture.GetDocumentAsync();
+        string description = ParameterDescription(doc, "/odata/NoMaxTopWidgets", "$top");
+
+        Assert.DoesNotContain("server cap", description);
+    }
+
+    // Leg 1 (docs-fidelity): GetAll's $top is now capped by MaxTop exactly like GetQueryable's,
+    // so a GetAll profile that leaves MaxTop at its EntitySetDefaults-provided default (1000)
+    // must advertise that cap too, instead of the pre-Leg-1 behavior of always claiming "no cap"
+    // for the GetAll path regardless of the profile's actual MaxTop.
+    [Fact]
+    public async System.Threading.Tasks.Task GetAllWithDefaultMaxTop_TopDescriptionContainsCap()
+    {
         await using var fixture = await NSwagTestHostBuilder.BuildAsync(
             o => o.AddProfile<NoFlagsWidgetProfile>());
 
         using var doc = await fixture.GetDocumentAsync();
         string description = ParameterDescription(doc, "/odata/NoFlagsWidgets", "$top");
 
-        Assert.DoesNotContain("server cap", description);
+        Assert.Contains("1000", description);
     }
 
     // ── 5. Non-OhData endpoint in the same host is untouched ──────────────────

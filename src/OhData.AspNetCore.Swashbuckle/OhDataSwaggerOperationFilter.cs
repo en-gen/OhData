@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Linq;
+using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.OpenApi;
 using Swashbuckle.AspNetCore.SwaggerGen;
 
@@ -21,6 +22,32 @@ public sealed class OhDataSwaggerOperationFilter : IOperationFilter
     /// <inheritdoc/>
     public void Apply(OpenApiOperation operation, OperationFilterContext context)
     {
+        var endpointMetadata = context.ApiDescription.ActionDescriptor.EndpointMetadata;
+
+        // Leg 4 (docs-fidelity): see the matching comment in OhDataNSwagOperationProcessor for
+        // why this is applied explicitly rather than assumed to flow through automatically.
+        if (string.IsNullOrEmpty(operation.Summary))
+        {
+            string? summary = endpointMetadata.OfType<IEndpointSummaryMetadata>().LastOrDefault()?.Summary;
+            if (!string.IsNullOrEmpty(summary)) operation.Summary = summary;
+        }
+        if (string.IsNullOrEmpty(operation.Description))
+        {
+            string? description = endpointMetadata.OfType<IEndpointDescriptionMetadata>().LastOrDefault()?.Description;
+            if (!string.IsNullOrEmpty(description)) operation.Description = description;
+        }
+
+        // Leg 2 (docs-fidelity): see the matching comment in OhDataOpenApiOperationTransformer
+        // for why this only sets the description text — the schema itself was already built by
+        // Swashbuckle from the ApiParameterDescription OhDataApiDescriptionProvider added.
+        var bodyMetadata = context.ApiDescription.ActionDescriptor.EndpointMetadata
+            .OfType<OhDataRequestBodyMetadata>()
+            .FirstOrDefault();
+        if (bodyMetadata is not null && operation.RequestBody is not null)
+        {
+            operation.RequestBody.Description = bodyMetadata.Description;
+        }
+
         var metadata = context.ApiDescription.ActionDescriptor.EndpointMetadata
             .OfType<OhDataQueryOptionsMetadata>()
             .FirstOrDefault();

@@ -1,4 +1,4 @@
-### OhData TestBench — sample HTTP requests
+### OhData TestBench — sample HTTP requests (movies demo)
 ### Use VS Code REST Client or JetBrains HTTP Client
 ### Start with: dotnet run --project src/OhData.TestBench.AspNetCore
 
@@ -22,203 +22,210 @@ GET {{baseUrl}}/v2/$metadata
 
 ###
 
-# ── Products — collection queries ────────────────────────────────────────────
+# ── Movies — collection queries (GetQueryable, SQL pushdown) ─────────────────
 
-### All products
-GET {{baseUrl}}/v1/Products
-
-###
-
-### Filter by category
-GET {{baseUrl}}/v1/Products?$filter=Category eq 'Hardware'
+### All movies
+GET {{baseUrl}}/v1/Movies
 
 ###
 
-### Filter by price range
-GET {{baseUrl}}/v1/Products?$filter=Price lt 15.00
+### Filter + orderby + top + select -- recognizable real movies, synthetic ratings
+GET {{baseUrl}}/v1/Movies?$filter=year gt 2000 and rating gt 8&$orderby=rating desc&$top=5&$select=title,year,rating
 
 ###
 
-### Order by price descending, take top 3
-GET {{baseUrl}}/v1/Products?$orderby=Price desc&$top=3
+### Filter by genre
+GET {{baseUrl}}/v1/Movies?$filter=genreCode eq 'SCIFI'&$orderby=year
 
 ###
 
-### Page: skip 2, take 2
-GET {{baseUrl}}/v1/Products?$skip=2&$top=2&$orderby=Id
-
-###
-
-### Inline count
-GET {{baseUrl}}/v1/Products?$count=true
+### Page: skip 10, take 5
+GET {{baseUrl}}/v1/Movies?$skip=10&$top=5&$orderby=id
 
 ###
 
 ### Inline count with filter
-GET {{baseUrl}}/v1/Products?$count=true&$filter=Category eq 'Electronics'
-
-###
-
-### Select specific properties
-GET {{baseUrl}}/v1/Products?$select=Name,Price
-
-###
-
-### Combine filter + orderby + select
-GET {{baseUrl}}/v1/Products?$filter=Price gt 10.00&$orderby=Price&$select=Name,Price,Category
+GET {{baseUrl}}/v1/Movies?$count=true&$filter=genreCode eq 'ACTION'
 
 ###
 
 ### Count endpoint
-GET {{baseUrl}}/v1/Products/$count
+GET {{baseUrl}}/v1/Movies/$count
 
 ###
 
-### Count with filter
-GET {{baseUrl}}/v1/Products/$count?$filter=Category eq 'Hardware'
+# ── Movies — single item + ETag ───────────────────────────────────────────────
 
-###
-
-# ── Products — single item ────────────────────────────────────────────────────
-
-### Get by id
-GET {{baseUrl}}/v1/Products(1)
+### Get by id -- note the ETag response header (UseETag(Id, UpdatedAt))
+GET {{baseUrl}}/v1/Movies(1)
 
 ###
 
 ### Get non-existent id → 404
-GET {{baseUrl}}/v1/Products(999)
+GET {{baseUrl}}/v1/Movies(9999)
 
 ###
 
-# ── Products — write operations ───────────────────────────────────────────────
-
-### Create a product
-POST {{baseUrl}}/v1/Products
+### If-Match: read the ETag above, then PATCH with it -- succeeds (200)
+PATCH {{baseUrl}}/v1/Movies(1)
 Content-Type: application/json
+If-Match: "paste-the-etag-value-from-the-GET-above"
 
 {
-  "name": "New Widget",
-  "price": 7.50,
-  "category": "Hardware"
+  "rating": 9.5
 }
 
 ###
 
-### Update a product (replace)
-PUT {{baseUrl}}/v1/Products(1)
+### Same PATCH with a stale/wrong If-Match → 412 Precondition Failed
+PATCH {{baseUrl}}/v1/Movies(1)
 Content-Type: application/json
+If-Match: "not-the-current-etag"
 
 {
-  "name": "Updated Widget",
-  "price": 11.99,
-  "category": "Hardware"
+  "rating": 1.0
 }
 
 ###
 
-### Partial update
-PATCH {{baseUrl}}/v1/Products(1)
+# ── Movies — bound operations ─────────────────────────────────────────────────
+
+### TopRated: collection-bound function, GET with query-string params
+GET {{baseUrl}}/v1/Movies/TopRated?count=5
+
+###
+
+### Rate: entity-bound action, POST with a JSON body -- folds into a running average
+POST {{baseUrl}}/v1/Movies(1)/Rate
 Content-Type: application/json
 
 {
-  "price": 8.99
+  "rating": 9.8
 }
 
 ###
 
-### Delete a product
-DELETE {{baseUrl}}/v1/Products(3)
+# ── Movies — write operations ─────────────────────────────────────────────────
 
-###
-
-# ── Categories — simple GetAll (string key) ───────────────────────────────────
-
-GET {{baseUrl}}/v1/Categories
-
-###
-
-GET {{baseUrl}}/v1/Categories('Hardware')
-
-###
-
-# ── Orders — navigation property routing (v2 only) ───────────────────────────
-
-### All orders
-GET {{baseUrl}}/v2/Orders
-
-###
-
-### Order by id
-GET {{baseUrl}}/v2/Orders(11111111-1111-1111-1111-111111111111)
-
-###
-
-### Navigation route — order lines for a specific order
-GET {{baseUrl}}/v2/Orders(11111111-1111-1111-1111-111111111111)/Lines
-
-###
-
-### Navigation route — different order
-GET {{baseUrl}}/v2/Orders(22222222-2222-2222-2222-222222222222)/Lines
-
-###
-
-### POST to a collection navigation property — create a new related entity (§11.4.2.1)
-POST {{baseUrl}}/v2/Orders(11111111-1111-1111-1111-111111111111)/Notes
+### Create a movie (v1 -- AllowDeepInsert is false; any "cast" here would be stripped)
+POST {{baseUrl}}/v1/Movies
 Content-Type: application/json
 
 {
-  "text": "Customer requested gift wrap"
+  "title": "A New Feature",
+  "year": 2025,
+  "rating": 7.5,
+  "runtimeMinutes": 118,
+  "genreCode": "DRAMA",
+  "studioId": 1,
+  "releaseDate": "2025-01-01"
 }
 
 ###
 
-### Same, with Prefer: return=minimal → 204 + Location/OData-EntityId instead of a body
-POST {{baseUrl}}/v2/Orders(11111111-1111-1111-1111-111111111111)/Notes
+### Update a movie (replace)
+PUT {{baseUrl}}/v1/Movies(1)
 Content-Type: application/json
-Prefer: return=minimal
 
 {
-  "text": "Second note"
+  "title": "The Godfather",
+  "year": 1972,
+  "rating": 9.3,
+  "runtimeMinutes": 175,
+  "genreCode": "CRIME",
+  "studioId": 7,
+  "releaseDate": "1972-03-24"
 }
 
 ###
 
-### POST to a nonexistent order → 404
-POST {{baseUrl}}/v2/Orders(99999999-9999-9999-9999-999999999999)/Notes
+### Delete a movie
+DELETE {{baseUrl}}/v1/Movies(79)
+
+###
+
+# ── Genres — simple GetAll (string key) ────────────────────────────────────────
+
+GET {{baseUrl}}/v1/Genres
+
+###
+
+GET {{baseUrl}}/v1/Genres('SCIFI')
+
+###
+
+# ── v2: deep insert, Cast/Studio navigation, $expand, $ref ────────────────────
+
+### Deep insert: AllowDeepInsert = true on v2 -- nested "cast" entries are linked to
+### EXISTING actors by id (23 = Leonardo DiCaprio, 24 = Kate Winslet in the seed data)
+POST {{baseUrl}}/v2/Movies
 Content-Type: application/json
 
 {
-  "text": "Should not be created"
+  "title": "A New Feature",
+  "year": 2025,
+  "rating": 7.5,
+  "runtimeMinutes": 118,
+  "genreCode": "DRAMA",
+  "studioId": 1,
+  "releaseDate": "2025-01-01",
+  "cast": [ { "id": 23 }, { "id": 24 } ]
 }
 
 ###
 
-# ── ETags (if GetETag is configured) ─────────────────────────────────────────
+### $expand=cast -- per-entity fallback (see MovieProfileV2's Cast comment for why)
+GET {{baseUrl}}/v2/Movies(1)?$expand=cast
 
-### If-Match: optimistic concurrency check
-### First get the ETag from a GET response, then use it:
-PUT {{baseUrl}}/v1/Products(2)
+###
+
+### $expand=studio -- batch-loaded (one query for the whole page, see CLAUDE.md)
+GET {{baseUrl}}/v2/Movies?$filter=id eq 1&$expand=studio
+
+###
+
+### $expand=movies on Studios -- the reverse batch-loaded navigation
+GET {{baseUrl}}/v2/Studios?$filter=id eq 7&$expand=movies
+
+###
+
+### GET the current cast for a movie
+GET {{baseUrl}}/v2/Movies(1)/Cast
+
+###
+
+### $ref add: link an existing actor (id 40) to a movie's Cast
+POST {{baseUrl}}/v2/Movies(1)/Cast/$ref
 Content-Type: application/json
-If-Match: "some-etag-value"
 
 {
-  "name": "Updated Gadget",
-  "price": 22.99,
-  "category": "Electronics"
+  "@odata.id": "Actors(40)"
 }
 
 ###
 
-# ── Versioning — v2 has Orders, v1 does not ───────────────────────────────────
-
-### Orders exist in v2
-GET {{baseUrl}}/v2/Orders
+### $ref remove: unlink an actor from a movie's Cast
+DELETE {{baseUrl}}/v2/Movies(1)/Cast/$ref?$id=Actors(40)
 
 ###
 
-### Orders do not exist in v1 → 404
-GET {{baseUrl}}/v1/Orders
+### Actors and Studios are queryable entity sets in v2 (not in v1)
+GET {{baseUrl}}/v2/Actors?$filter=birthYear gt 1980&$orderby=name
+
+###
+
+GET {{baseUrl}}/v2/Studios
+
+###
+
+# ── Versioning — v1 doesn't have Actors/Studios ───────────────────────────────
+
+### Actors exist in v2
+GET {{baseUrl}}/v2/Actors(1)
+
+###
+
+### Actors do not exist in v1 → 404
+GET {{baseUrl}}/v1/Actors
 
 ###

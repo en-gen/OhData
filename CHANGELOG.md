@@ -9,7 +9,198 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Nothing yet.
+## [1.3.0] - 2026-07-17
+
+Spec-correctness and OpenAPI docs-fidelity across the read and documentation paths. Every change is
+additive or a bug fix — no breaking API changes. Highlights: un-expanded navigation properties are
+now omitted on every read path (OData JSON Format v4.01 §4.5.1/§11.2.4.2); nested `$expand`/`$select`
+clauses are executed to arbitrary depth; `$metadata` is served as UTF-8 with a prolog, bytes, and
+charset that all agree; `Accept` negotiation follows RFC 7231 §5.3.2 media ranges and q-values; and
+the generated OpenAPI document now matches the live server (write-route request bodies, function
+query parameters, typed responses, and `$top`/`$skip` on the simple `GetAll` read path).
+
+**One response-shape change to be aware of:** clients that relied on the empty `[]`/`null`
+placeholders OhData previously emitted for un-requested navigation properties will no longer receive
+those keys — request the navigation with `$expand` to include it (see the #176 entry under Fixed).
+
+### Added
+
+- **`$top`/`$skip` on the `GetAll` (simple/`IEnumerable`) collection read path.** Previously
+  rejected wholesale with `400 UnsupportedQueryOption` alongside `$filter`/`$orderby` - now applied
+  as a post-materialization `Skip()`/`Take()`, the same class of operation as the already-live
+  `$select`/`$expand`/`$count` on this path. `MaxTop` caps an explicit `$top` exactly like
+  `GetQueryable` does (`400 InvalidQueryOption` when exceeded); an *omitted* `$top` is deliberately
+  **not** implicitly capped to `MaxTop` the way `GetQueryable`'s is, since `GetAll` emits no
+  `@odata.nextLink`/`$skiptoken` continuation and truncating silently would drop data with no way
+  to retrieve the rest - see `docs/query-options.md` for the full rationale. `@odata.count`
+  continues to reflect the pre-paging total. `$filter`/`$orderby` remain rejected.
+- **Request-body documentation for write routes**, without attaching runtime `Accepts`/
+  `IAcceptsMetadata` (which would short-circuit this framework's manual JSON-content-type/body
+  handling and replace the OData error envelope with an empty 415 - see the comment near
+  `OhDataEndpointFactory`'s PATCH route). A new `OhDataApiDescriptionProvider`
+  (`IApiDescriptionProvider`, registered once idempotently inside `AddOhData`) reads a plain
+  `OhDataRequestBodyMetadata` marker attached to each write route (entity POST/PUT/PATCH, nav-POST,
+  property PUT/PATCH, `$ref` POST/PUT, bound/unbound actions) and adds the corresponding body
+  parameter/schema to the route's `ApiDescription`. Every OpenAPI document generator built on
+  ApiExplorer - Microsoft.AspNetCore.OpenApi, NSwag, and Swashbuckle - picks this up automatically;
+  no per-package configuration needed. New public documentation-only types:
+  `ODataPropertyWriteRequest<T>` (`{"value": ...}`) and `ODataRefWriteRequest`
+  (`{"@odata.id": "..."}`). Ships in the core `EnGen.OhData.AspNetCore` package.
+  Swashbuckle's `SwaggerGenerator` dereferences `ApiParameterDescription.ModelMetadata`
+  unconditionally when building a request body's schema and throws a `NullReferenceException` if
+  it's null (unlike Microsoft.AspNetCore.OpenApi/NSwag, which tolerate null and fall back to
+  `.Type`); `OhDataApiDescriptionProvider` supplies a real `ModelMetadata` via the framework's own
+  dependency-free `EmptyModelMetadataProvider` to avoid this.
+- **Typed responses on read routes.** Bare, schema-less `.Produces(200)` calls are replaced with
+  honest schemas across the board: collection GET (on `GetQueryable`, `GetAll`, and Priority-1) and
+  collection-navigation GET now document `ODataCollectionResponse<T>` (a new public DTO mirroring
+  the real `{"@odata.context", "@odata.count", "@odata.nextLink", "value"}` envelope - used for
+  documentation only, never for actual serialization); structural-property GET documents
+  `ODataPropertyResponse<T>`; navigation/entity `$ref` GET documents `ODataRefResponse`/
+  `ODataRefCollectionResponse`; bound/unbound function and action results document the operation's
+  actual declared return type (unwrapped from `Task<T>`/`ValueTask<T>`) instead of a bare `200`;
+  `$count` and `$value` routes now declare their real `text/plain`/`application/octet-stream`
+  content types instead of defaulting to `application/json`.
+- **Read-path summaries** on collection GET routes via `WithSummary()`/`WithDescription()`, so
+  generated docs make clear which read path backs an endpoint: `GetQueryable` → "List {Set}
+  (queryable)" naming the live query options; `GetAll` → "List {Set} (simple read path)" noting
+  that `$top`/`$skip`/`$select`/`$expand`/`$count` are applied server-side post-materialization
+  while `$filter`/`$orderby` are not supported. Microsoft.AspNetCore.OpenApi reads these natively;
+  the NSwag and Swashbuckle companion packages apply the same endpoint metadata explicitly, since
+  neither doc stack surfaces it by default.
+- New `OhData.AspNetCore.Swashbuckle.Tests` project (12 tests), matching the existing
+  `OhData.AspNetCore.OpenApi.Tests`/`OhData.AspNetCore.NSwag.Tests` structure, so the Swashbuckle
+  companion package now has direct test coverage against a real generated `swagger.json` (it
+  previously had none).
+
+### Fixed
+
+- **Accept negotiation now follows RFC 7231 §5.3.2 media ranges and q-values (#182).** The
+  group-level 406 filter matched the `Accept` header by substring (`accept.Contains("application/json")`
+  / `"text/plain"` / `"*/*"`), which mishandled three cases: a media range such as `application/*`
+  wrongly 406'd a JSON route (it matches `application/json`), `text/*` on `/$count` or
+  `/{property}/$value` wrongly 406'd (it matches `text/plain`), and `application/json;q=0` -
+  meaning "not acceptable" - wrongly returned `200`. The header is now parsed into media ranges via
+  `MediaTypeHeaderValue.TryParseList`, with each candidate type resolved against its most specific
+  matching range (exact `type/subtype` > `type/*` > `*/*`) and its q-value honored (absent q ⇒ 1.0,
+  q=0 ⇒ that range is unacceptable); a request is acceptable when at least one range with q>0 matches
+  a type the route can produce. Per-route producible sets are unchanged (`application/json`
+  everywhere; plus `text/plain` on `/$count`, plus `text/plain`/`application/octet-stream` on
+  `/$value`; `$metadata` stays exempt). An absent/empty `Accept` header still means "no constraint"
+  → `200`; a present-but-unparseable header is treated as not-acceptable (`406`).
+- **Nested `$expand` / `$select` clauses are now executed (#183).** A request such as
+  `GET /Movies(1)?$expand=Studio($expand=Movies)` previously returned the expanded studio with an
+  empty `"movies": []` - the second-level clause was parsed but never invoked against a handler, so
+  no data was loaded (and nested `$select` inside `$expand` was likewise ignored). Stage-3 expand
+  injection only ever iterated the *top-level* `ExpandedNavigationSelectItem`s. Expansion is now
+  recursive (OData JSON Format v4.01 §11.2.4.2): after injecting a navigation's related entities,
+  the framework resolves the navigation *target*'s own entity set from the EDM, loads its nested
+  `$expand`'d navigations one level deeper, and repeats for arbitrary depth
+  (`$expand=A($expand=B($expand=C))`). Each level honours its own nested `$select` projection, and a
+  nested navigation that is *not* expanded is still omitted (no regression of #176/#179). Batching is
+  preserved per level: a navigation exposing a `BatchHandler` is invoked once for the whole flattened
+  set of entities at that level (rather than once per parent), with the per-entity `Handler` used as
+  the fallback - so a fully batch-registered graph stays batched at every depth, while a per-entity
+  graph is loaded per related entity (N+1 within that one navigation, unchanged from the top-level
+  behaviour). A recursion guard (`MaxNestedExpandDepth = 12`) bounds pathological/adversarial nesting.
+  To let requests reach that depth, the model-bound `$expand` depth written at EDM-build time is
+  raised from Microsoft's default of 2 to the same guard value; the settings-level
+  `MaxExpansionDepth` check remains disabled. Fixes both collection GET and single-entity `GetById`
+  (which ride the same pipeline). Also corrects the `OmitUnexpandedNavigations` doc comment, which
+  described nested-clause expansion that did not previously happen. Applies to `GetAll`,
+  `GetQueryable`, and the Priority-1 `ODataQueryOptions` collection paths.
+- **Bound/unbound function query parameters are now documented in OpenAPI (#181).** A function
+  (`BindFunction`, e.g. `TopRated(int count = 10)`) reads its parameters from the query string, but
+  its handler binds no minimal-API parameters, so ApiExplorer saw none of them and every generated
+  document listed `parameters: []` for the operation even though `?count=2` demonstrably worked.
+  Actions already got request-body documentation via `OhDataRequestBodyMetadata`; functions got
+  nothing. Fixed symmetrically: a new plain `OhDataQueryParametersMetadata` marker (carrying each
+  parameter's name, CLR type, and required/optional flag) is attached to every bound/unbound
+  function route, and `OhDataApiDescriptionProvider` turns it into one query `ApiParameterDescription`
+  per parameter (with a real `ModelMetadata`, `BindingSource.Query`, and `IsRequired` driven by
+  whether the delegate parameter has a C# default). A trailing `CancellationToken` is excluded, and
+  an entity-level function's leading key is skipped (it is already documented as a path parameter).
+  All three doc stacks (Microsoft.AspNetCore.OpenApi, Swashbuckle, NSwag) render it automatically;
+  no per-package configuration needed. New public documentation-only types: `OhDataQueryParameter`
+  and `OhDataQueryParametersMetadata`, in the core `EnGen.OhData.AspNetCore` package.
+- **Un-expanded navigation properties are no longer emitted on read responses (#176).** OhData
+  serialised the full CLR entity graph, so a navigation that was not requested via `$expand` still
+  surfaced in the payload - a collection nav as `"cast": []`, a single-valued nav as
+  `"studio": null` - and an *expanded* entity even carried its own un-expanded navigations
+  (e.g. `?$expand=Studio` returned `"studio":{...,"movies":[]}`). OData JSON Format v4.01 §4.5.1 /
+  §11.2.4.2 require a non-expanded navigation to be OMITTED entirely, never rendered inline. A new
+  EDM-model-driven pass runs after expansion on `GetById` and collection GET (`GetAll`/`GetQueryable`
+  /Priority-1) and removes every navigation member not expanded at its own level, recursing into the
+  expanded ones so a related entity never leaks its own navigations. Expanded navigations remain
+  present and populated. **Response-shape change:** clients that relied on the empty `[]`/`null`
+  navigation placeholders will no longer receive those keys - request the navigation with `$expand`
+  to include it. Deep-insert `POST` responses are unaffected (they still echo the created graph per
+  §11.4.2.2).
+- **Un-expanded navigation omission now also covers nav-route and bound-operation reads (#179).**
+  The #176 fix wired the omission into only the top-level reads (collection GET, `GetById`); three
+  other serialization paths still emitted the full CLR graph, so an entity's shape depended on which
+  route returned it. Now all read paths run the same EDM-driven pass: the single-valued navigation
+  GET (`GET /Set(key)/{nav}`) strips the target entity type's own navigations; the navigation-collection
+  GET (`GET /Set(key)/{nav}`) strips each item's navigations using the nav element type; and bound
+  function/action results that return the entity set's own type (both the collection and single-entity
+  branches of `WrapBoundOpResult`) strip navigations and — matching the normal collection/`GetById`
+  paths — inject `@odata.etag` when `UseETag` is configured (previously dropped). Same spec basis as
+  #176 (OData JSON Format v4.01 §4.5.1 / §11.2.4.2); expanded navigations remain present and populated.
+- `NoMaxTop_TopDescriptionHasNoCap` (NSwag doc-generation tests): a `GetAll` profile that left
+  `MaxTop` at its `EntitySetDefaults`-provided default (`1000`) was previously documented as having
+  no `$top` cap at all, because the `GetAll` route's `OhDataQueryOptionsMetadata` hardcoded
+  `MaxTop: null` regardless of the profile's actual value (a pre-existing docs/behavior mismatch
+  this program fixes as a side effect of implementing `$top` on `GetAll`).
+- **`406 Not Acceptable` on `/$count` and `/{property}/$value` when a client sends
+  `Accept: text/plain`.** The group-level Accept-negotiation filter only permitted
+  `application/json`/`*/*` (with a `$metadata`/`application/xml` exemption), but those two segments
+  actually return `text/plain` (and `$value` returns `application/octet-stream` for `byte[]`).
+  A client asking for the media type those routes *advertise in the OpenAPI document* — e.g.
+  Swagger UI hitting `/{Set}/$count` — was therefore rejected. This was latent until the typed
+  `$count`/`$value` response content types were corrected in the same Unreleased batch (before that,
+  the routes mislabeled themselves as `application/json`, so UIs sent `Accept: application/json` and
+  slipped through). The filter now exempts `/$count` (`text/plain`) and `/$value` (`text/plain`,
+  `application/octet-stream`), mirroring the existing `$metadata` exemption. The narrow exemption is
+  preserved: a genuinely unsupported type (e.g. `text/xml`) on those routes still returns `406`.
+- **`$metadata` declared `encoding="utf-16"` while being served as UTF-8 (#180).** The CSDL was
+  written through a `StringWriter` (whose `Encoding` is the CLR string's native UTF-16), so
+  `XmlWriter` stamped `encoding="utf-16"` into the prolog, but the document went out as UTF-8 bytes
+  under a charset-less `application/xml` header. A strict XML consumer - notably OData codegen
+  clients that read `$metadata` - would decode the UTF-8 bytes as UTF-16 and fail. The CSDL is now
+  written as UTF-8 (prolog reads `encoding="utf-8"`) and served as `application/xml; charset=utf-8`,
+  so prolog, bytes, and header agree.
+- **OpenAPI/omission edge-case polish (#184).** Four independent, low-severity fixes found in the
+  pre-1.3.0 release-gate pass:
+  - **`[JsonPropertyName]`-renamed navigations are now honored by omission and `$expand`.** The
+    un-expanded-navigation omission pass and the `$expand` key-injection both derived a navigation's
+    serialized JSON key from `PropertyNamingPolicy.ConvertName(navProp.Name)`, ignoring a per-property
+    `[System.Text.Json.Serialization.JsonPropertyName("…")]` rename. A renamed navigation therefore
+    leaked inline (omission looked for the policy-cased key and missed it), and `$expand` wrote a
+    second, differently-cased key. The serialized key is now resolved from the CLR property's
+    `[JsonPropertyName]` when present, falling back to the naming-policy name (so a symmetric
+    `JsonNamingPolicy` such as snake_case still round-trips). Same spec basis as #176/#179 (OData JSON
+    Format v4.01 §4.5.1 / §11.2.4.2).
+  - **Key-property write stubs now declare the `{key}` OpenAPI path parameter.** The immutable-key
+    `PUT`/`PATCH`/`DELETE /{Set}({key})/{KeyProperty}` stubs return a clean `400` but took no `key`
+    lambda parameter, so their generated operation omitted the `{key}` path-parameter declaration its
+    sibling `GET` carries — producing an OpenAPI document with an undeclared template variable. The
+    stubs now take `(string key)`; the `400` behavior is unchanged.
+  - **Action request-body schemas now expose their named parameters instead of an empty `{}`.**
+    Bound/unbound action bodies were documented with `OhDataRequestBodyMetadata.BodyType =
+    typeof(object)`, yielding a typeless schema whose parameters were conveyed only by the prose
+    description. The body type is now a per-action synthesized POCO whose public properties mirror the
+    action's parameters (each pinned with `[JsonPropertyName]` to the exact parameter name), so
+    Microsoft.AspNetCore.OpenApi, Swashbuckle, and NSwag all render the real body shape (e.g.
+    `{"rating": <number>}`). `CancellationToken` is excluded, and for entity-level actions the leading
+    key is excluded. The prose description is retained alongside the schema.
+  - **`$select=<nav>` (un-expanded) context URL — behavior kept, now documented and tested.**
+    `GET Set(key)?$select=cast` (a navigation, not `$expand`'d) returns a content-less entity (only
+    `@odata.*` annotations) whose `@odata.context` still lists `(cast)`. This is spec-defensible and
+    is kept deliberately: selecting an un-expanded navigation selects its navigation *link*, which the
+    default `odata.metadata=minimal` omits when convention-computable (OData JSON §4.5.9 / §11.2.4.1),
+    while the context URL MUST echo the client's select list (§10.8). Dropping the `(cast)` projection
+    (the rejected alternative) would emit `#Set/$entity`, falsely claiming the full entity was
+    returned — strictly more misleading. Documented in code with the spec basis and covered by a test.
 
 ---
 
@@ -485,7 +676,8 @@ post-release-prep audit fix wave (below) found before the tag was actually cut.
 
 ---
 
-[Unreleased]: https://github.com/en-gen/OhData/commits/develop
+[Unreleased]: https://github.com/en-gen/OhData/compare/v1.3.0...develop
+[1.3.0]: https://github.com/en-gen/OhData/releases/tag/v1.3.0
 [1.2.0]: https://github.com/en-gen/OhData/releases/tag/v1.2.0
 [1.1.0]: https://github.com/en-gen/OhData/releases/tag/v1.1.0
 [1.0.0]: https://github.com/en-gen/OhData/releases/tag/v1.0.0
