@@ -120,7 +120,7 @@ When the entity set has `UseETag` configured, `GET /{EntitySet}({key})/{Property
 
 ## Authorization
 
-Property routes inherit the entity set's `RequireAuthorization()`/`RequireRoles()` configuration, same as every other route for that entity set — there is no separate opt-in.
+Property routes inherit the entity set's authorization configuration, same as every other route for that entity set — there is no separate opt-in. Under `ConfigureAuthorization(...)`, a property **read** falls under the `Read` category and a property **write** (`PUT`/`PATCH`/`DELETE`) under `Update`; when that category uses `.RequireResource()`, the property route is instance-checked against the entity too — so there is no way to bypass an owner check by writing through a property route. See [docs/authorization.md](authorization.md).
 
 ## Route-collision validation
 
@@ -235,8 +235,10 @@ returns.
 
 ### Authorization
 
-Property-write routes inherit the entity set's `RequireAuthorization()`/`RequireRoles()`
-configuration, same as property reads and every other route for the entity set.
+Property-write routes inherit the entity set's authorization configuration, same as property reads
+and every other route for the entity set. Under `ConfigureAuthorization(...)` they fall under the
+`Update` category (including its `.RequireResource()` instance check, if configured) — see
+[docs/authorization.md](authorization.md).
 
 ### Key property
 

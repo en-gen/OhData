@@ -115,23 +115,8 @@ public class PerOperationAuthConfigTests
     public void NullConfigure_ThrowsInConstructor() =>
         Assert.Throws<ArgumentNullException>(() => new NullConfigureProfile());
 
-    // ── PR1 guard: .RequireResource() is not enforced yet → throws at startup ─
-
-    private sealed class ResourceProfile : PerOpProfileBase
-    {
-        public ResourceProfile()
-        {
-            EntitySetName = "ResGuard";
-            ConfigureAuthorization(a => a.Update(u => u.RequireResource()));
-        }
-    }
-
-    [Fact]
-    public async Task RequireResource_ThrowsAtStartup()
-    {
-        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
-            await PerOpAuthTestHost.BuildAsync(o => o.AddProfile<ResourceProfile>()));
-    }
+    // Note: .RequireResource() (Layer B / resource-based auth) is exercised in
+    // PerOperationResourceAuthTests — including the without-GetById startup guard.
 
     // ── RequirePolicy: named policy enforced per operation ───────────────────
 

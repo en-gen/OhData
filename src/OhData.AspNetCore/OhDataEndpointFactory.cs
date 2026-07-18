@@ -17,6 +17,7 @@ using System.Threading.Tasks;
 using System.Web;
 using System.Xml;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization.Infrastructure;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
@@ -1849,7 +1850,10 @@ internal static class OhDataEndpointFactory
             return named ?? generic;
         }
 
-        void ApplyOperationAuth(IEndpointConventionBuilder rb, OhDataOperation category, string? boundOperationName = null)
+        // Layer C applies coarse per-route auth. `keyBased` marks routes carrying a {key} segment, to
+        // which Layer B (resource-based) auth attaches a load-by-key filter (see AttachResourceFilter);
+        // collection-level routes (no {key}) pass keyBased: false.
+        void ApplyOperationAuth(IEndpointConventionBuilder rb, OhDataOperation category, string? boundOperationName = null, bool keyBased = true)
         {
             if (operationAuthRules is null) return; // legacy group-auth path governs instead
             OperationAuthRule? rule = ResolveOperationRule(category, boundOperationName);
@@ -1860,13 +1864,12 @@ internal static class OhDataEndpointFactory
                 return;
             }
 
-            // #199 PR1 (Layer C only): resource-based authorization (.RequireResource) is not yet
-            // enforced — fail loud at startup rather than silently leaving a route open. The Layer B
-            // PR replaces this guard with the AuthorizeAsync invocation at the entity-load points.
-            if (rule.Requirements.Any(r => r.Kind == AuthRequirementKind.Resource))
+            // #199 Layer B: resource-based (instance-level) requirements are not an endpoint gate —
+            // they are evaluated inside a per-request filter that loads the {key} entity. Attaching it
+            // here (only when the category opts in) keeps property/nav/$ref routes gap-free.
+            if (keyBased)
             {
-                throw new InvalidOperationException(
-                    $"Entity set '{name}': .RequireResource() (resource-based authorization) is not available in this build.");
+                AttachResourceFilter(rb, category, boundOperationName);
             }
 
             // Named policies apply as separate RequireAuthorization(name) calls (they stack → AND).
@@ -1905,6 +1908,95 @@ internal static class OhDataEndpointFactory
                     }
                 });
             }
+        }
+
+        // #199 Layer B helpers ─────────────────────────────────────────────────
+        bool CategoryHasResource(OhDataOperation category, string? boundOperationName)
+        {
+            OperationAuthRule? rule = ResolveOperationRule(category, boundOperationName);
+            return rule is { AllowAnonymous: false }
+                && rule.Requirements.Any(r => r.Kind == AuthRequirementKind.Resource);
+        }
+
+        static OperationAuthorizationRequirement BuiltInResourceRequirement(OhDataOperation category) => category switch
+        {
+            OhDataOperation.Read => OhDataOperations.Read,
+            OhDataOperation.Create => OhDataOperations.Create,
+            OhDataOperation.Update => OhDataOperations.Update,
+            OhDataOperation.Delete => OhDataOperations.Delete,
+            _ => OhDataOperations.Invoke,
+        };
+
+        // Evaluate the category's resource-based requirements against `entity` via
+        // IAuthorizationService. Returns a 403 result on failure (fail-closed — a requirement no
+        // registered handler satisfies denies), or null to proceed. No-op without a Resource requirement.
+        async Task<IResult?> CheckResourceAuthAsync(HttpContext ctx, object entity, OhDataOperation category, string? boundOperationName)
+        {
+            OperationAuthRule? rule = ResolveOperationRule(category, boundOperationName);
+            if (rule is null || rule.AllowAnonymous) return null;
+            var resourceReqs = rule.Requirements.Where(r => r.Kind == AuthRequirementKind.Resource).ToList();
+            if (resourceReqs.Count == 0) return null;
+
+            var authService = ctx.RequestServices.GetRequiredService<IAuthorizationService>();
+            foreach (var req in resourceReqs)
+            {
+                AuthorizationResult result = req.Name is not null
+                    ? await authService.AuthorizeAsync(ctx.User, entity, req.Name)
+                    : await authService.AuthorizeAsync(ctx.User, entity, BuiltInResourceRequirement(category));
+                if (!result.Succeeded)
+                {
+                    return ODataError(403, "Forbidden",
+                        "You are not authorized to perform this operation on the requested resource.");
+                }
+            }
+            return null;
+        }
+
+        // Attach a per-request filter to a key-based route that loads the {key} entity and runs the
+        // category's resource requirement against it. Only attaches when the category opts in, so
+        // non-resource routes carry zero request-time overhead.
+        void AttachResourceFilter(IEndpointConventionBuilder rb, OhDataOperation category, string? boundOperationName)
+        {
+            if (!CategoryHasResource(category, boundOperationName)) return;
+            rb.AddEndpointFilter(async (efc, next) =>
+            {
+                HttpContext ctx = efc.HttpContext;
+                if (ctx.Request.RouteValues.TryGetValue("key", out object? keyObj) && keyObj is string keyStr)
+                {
+                    var s = ResolveHandlers(ctx);
+                    object? parsedKey;
+                    try
+                    {
+                        parsedKey = ODataKeyParser.Parse(keyStr, typeof(TKey));
+                    }
+                    catch (FormatException)
+                    {
+                        return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{keyStr}'", target: "key");
+                    }
+
+                    object? entity = await s.InvokeGetByIdAsync(parsedKey!, ctx.RequestAborted);
+                    if (entity is null)
+                    {
+                        return ODataError(404, "NotFound", $"{name} with key '{keyStr}' was not found.");
+                    }
+
+                    IResult? authFail = await CheckResourceAuthAsync(ctx, entity, category, boundOperationName);
+                    if (authFail is not null) return authFail;
+                }
+                return await next(efc);
+            });
+        }
+
+        // #199 Layer B: resource checks on Read/Update/Delete load the entity by key, so a Resource
+        // requirement on any of those categories requires a GetById handler. Fail fast at startup.
+        if (operationAuthRules is not null && !source.HasGetById
+            && (CategoryHasResource(OhDataOperation.Read, null)
+                || CategoryHasResource(OhDataOperation.Update, null)
+                || CategoryHasResource(OhDataOperation.Delete, null)))
+        {
+            throw new InvalidOperationException(
+                $"Entity set '{name}': resource-based authorization (.RequireResource()) on Read/Update/Delete " +
+                "requires a GetById handler to load the entity for the check.");
         }
 
         // Priority 1: ODataEntitySetProfile with direct ODataQueryOptions handler
@@ -2026,7 +2118,7 @@ internal static class OhDataEndpointFactory
                   CountEnabled: source.CountEnabled,
                   SearchEnabled: source.HasSearch,
                   MaxTop: source.MaxTop));
-            ApplyOperationAuth(collReadP1Rb, OhDataOperation.Read);
+            ApplyOperationAuth(collReadP1Rb, OhDataOperation.Read, keyBased: false);
         }
         // Priority 2: base GetQueryable (IQueryable without ODataQueryOptions)
         else if (source.HasGetQueryable)
@@ -2188,7 +2280,7 @@ internal static class OhDataEndpointFactory
                   CountEnabled: source.CountEnabled,
                   SearchEnabled: source.HasSearch,
                   MaxTop: source.MaxTop));
-            ApplyOperationAuth(collReadP2Rb, OhDataOperation.Read);
+            ApplyOperationAuth(collReadP2Rb, OhDataOperation.Read, keyBased: false);
         }
         else if (source.HasGetAll)
         {
@@ -2359,7 +2451,7 @@ internal static class OhDataEndpointFactory
                   // Leg 1: $top is now live on this path and capped by MaxTop exactly like
                   // GetQueryable, so the doc metadata should advertise the same cap.
                   MaxTop: source.MaxTop));
-            ApplyOperationAuth(collReadAllRb, OhDataOperation.Read);
+            ApplyOperationAuth(collReadAllRb, OhDataOperation.Read, keyBased: false);
         }
 
         bool hasCountSource = (source is IODataEntitySetEndpointSource odsCheck && odsCheck.HasGetODataQueryable)
@@ -2426,7 +2518,7 @@ internal static class OhDataEndpointFactory
                   CountEnabled: true,
                   SearchEnabled: false,
                   MaxTop: null));
-            ApplyOperationAuth(countCollRb, OhDataOperation.Read);
+            ApplyOperationAuth(countCollRb, OhDataOperation.Read, keyBased: false);
         }
 
         if (source.HasGetById)
@@ -2615,6 +2707,12 @@ internal static class OhDataEndpointFactory
                             navProp.SetValue(model, null);
                         }
                     }
+
+                    // #199 Layer B: resource-based Create auth runs against the incoming (pre-persist)
+                    // entity — there is no stored row yet, so the collection POST cannot use the
+                    // load-by-key filter (nav-POST, which has a {key}, checks against the parent instead).
+                    IResult? createAuthFail = await CheckResourceAuthAsync(ctx, model, OhDataOperation.Create, boundOperationName: null);
+                    if (createAuthFail is not null) return createAuthFail;
 
                     var s = ResolveHandlers(ctx);
                     logger?.LogDebug("POST {Prefix}/{Name}", prefix, name);

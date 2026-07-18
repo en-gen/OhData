@@ -24,7 +24,7 @@ the authoritative list of what OhData does and does not implement.
 | `services.AddControllers().AddOData(o => o.AddRouteComponents(prefix, model))` + `app.MapControllers()` | `services.AddOhData(o => o.WithPrefix(prefix).AddProfile<T>())` + `app.MapOhData()` | `AddOhData` is `AddScoped`, not singleton, per profile, so constructor injection of a scoped `DbContext` is safe without extra plumbing. |
 | `Delta<T>` parameter on a `Patch` action | `Delta<TModel>` parameter on the `Patch` delegate | **Same type** — `Microsoft.AspNetCore.OData.Deltas.Delta<T>`. OhData does not reinvent partial-update semantics; it reuses the type MS OData ships, including `delta.Patch(existing)` and `GetChangedPropertyNames()`. |
 | Multiple `AddRouteComponents` calls / a versioning library for `/v1`, `/v2` prefixes | `AddOhData("v1", ...)` / `AddOhData("v2", ...)` named registrations, or the `AddOhDataVersion`/`MapOhDataVersion` convenience pair | Each named registration is fully isolated: its own EDM model, its own profile set, its own prefix. See [docs/versioning.md](versioning.md). |
-| `[Authorize]` / `[Authorize(Policy = "...")]` on the controller | `RequireAuthorization()` / `RequireAuthorization("PolicyName")` / `RequireRoles(...)` called in the profile constructor | Same ASP.NET Core auth pipeline underneath — OhData calls `RequireAuthorization` on the generated endpoints for you. Granularity is per-entity-set, not per-operation; see [docs/authorization.md](authorization.md). |
+| `[Authorize]` / `[Authorize(Policy = "...")]` on the controller, or on individual actions | `RequireAuthorization()` / `RequireAuthorization("PolicyName")` / `RequireRoles(...)` for the whole set, or `ConfigureAuthorization(auth => auth.Read(...).Writes(...)...)` for **per-operation** granularity — plus `.RequireResource()` for instance-level (owner) checks | Same ASP.NET Core auth pipeline underneath — OhData calls `RequireAuthorization` on the generated endpoints for you. See [docs/authorization.md](authorization.md). |
 | `[HttpGet]`/`[HttpPost]` controller actions with custom route templates for bound functions/actions | `BindFunction(handler)` / `BindAction(handler)` / `BindEntityFunction(handler)` / `BindEntityAction(handler)` called in the constructor | The delegate's method name becomes the OData operation name; no route template or attribute needed. See [docs/bound-operations.md](bound-operations.md). |
 
 ## Worked example: `Product`
@@ -300,10 +300,11 @@ today — pulled directly from the "not targeted" / "known limitations" sections
   by projecting only the selected columns in the SQL query. If your `$select` usage exists
   specifically to reduce database I/O for wide tables, that benefit does not carry over.
 - **Per-operation authorization.** `Microsoft.AspNetCore.OData` lets you put `[Authorize]` on
-  individual controller actions. OhData's `RequireAuthorization`/`RequireRoles` apply to every
-  operation on an entity set at once — if you need some verbs open and others protected, split
-  the entity set across two profiles with different entity-set names that delegate to the same
-  service (see `docs/authorization.md`).
+  individual controller actions. OhData matches this with `ConfigureAuthorization(...)` — authorize
+  `Read`/`Create`/`Update`/`Delete`/`Invoke` independently, with per-category requirements that mirror
+  `AuthorizationPolicyBuilder`, plus `.RequireResource()` for instance-level (owner/tenant) checks.
+  `RequireAuthorization`/`RequireRoles` remain the simple all-operations option. See
+  `docs/authorization.md`.
 
 None of the above are things OhData plans to silently paper over — each is either called out as
 `❌` in the spec-compliance table or discussed under "Known limitations" there. If your workload
