@@ -170,7 +170,8 @@ categories live in their own table:
 ```
 
 Only `GetQueryable` is assigned, so `ProductSummaries` is read-only by construction — no
-POST/PUT/PATCH/DELETE routes exist at all.
+POST/PUT/PATCH/DELETE routes exist at all (nor a single-entity `GET /ProductSummaries({id})`,
+since `GetById` is also unassigned — the collection query is this set's entire surface).
 
 ## Many-to-many without exposing the join table
 

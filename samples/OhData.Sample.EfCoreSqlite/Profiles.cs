@@ -53,8 +53,10 @@ public class ProductProfile : EntitySetProfile<int, Product>
         // suppressed ProductTags join table (watch the SQL: one query with two JOINs for the
         // whole page — no N+1, and no join entity ever materialized). The framework derives
         // the per-entity handler from this too, so GET /odata/Products(1)/Tags also works.
-        // (The two-argument SelectMany overload matters on SQLite: it translates to plain
-        // INNER JOINs, where a correlated sub-Select would need the unsupported SQL APPLY.)
+        // (The two-argument SelectMany overload also keeps the parent key alongside each tag.
+        // Empirically, the one-lambda correlated form — p.Tags.Select(t => new { p.Id, t }) —
+        // failed to translate on SQLite with EF Core 10 here; this two-argument shape
+        // translates to plain INNER JOINs on every provider.)
         HasMany(x => x.Tags, batchGetAll: async (productIds, ct) =>
         {
             var idSet = productIds.ToHashSet();
@@ -203,9 +205,11 @@ public class ProductSummaryProfile : EntitySetProfile<int, ProductSummary>
 
         // An explicit Join rather than p.Category: this sample's EF model deliberately keeps
         // the Product/Category relationship FK-only (the CLR navigations are Ignored — see
-        // ShopDbContext), so the join condition is spelled out. Either shape translates to
-        // the same SQL INNER JOIN. Read-only by design: no other handlers are assigned, so
-        // no POST/PUT/PATCH/DELETE routes exist for this set.
+        // ShopDbContext), so the join condition is spelled out. In a model with the navigation
+        // mapped, projecting through p.Category.Name would translate to the same SQL INNER
+        // JOIN — here it would throw, since the navigation isn't in the EF model. Read-only by
+        // design: no other handlers are assigned, so no POST/PUT/PATCH/DELETE routes exist for
+        // this set (and no single-entity GET either — GetById is unassigned).
         GetQueryable = (_) => Task.FromResult(
             db.Products.Join(
                 db.Categories,
