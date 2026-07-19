@@ -133,6 +133,17 @@ Production hardening (milestone 1.4.0): safe-by-default limits across the read p
   collection read paths (`GetAll`, `GetQueryable`, and Priority-1 `GetODataQueryable`), via the shared
   capability gate. Implemented and capability-gated options are unaffected (`$filter`/`$orderby`/
   `$select`/`$expand`/`$count`/`$top`/`$skip`/`$search`/`$skiptoken`).
+- **Companion packages omit `Ignore()`d properties from generated schemas (#228).** #226 removed
+  ignored properties from responses, request binding, `$metadata`, and query options — but the
+  OpenAPI companion packages generate schemas from CLR types, so generated documents still listed
+  them. Each companion now consults the registrations' ignored-property map (CLR model type →
+  ignored CLR names, reached via `InternalsVisibleTo` so the core package keeps carrying no
+  doc-stack dependency) and removes those members from the type's schema, respecting the
+  serializer naming policy: `OhDataOpenApiSchemaTransformer` (`IOpenApiSchemaTransformer`,
+  Microsoft.AspNetCore.OpenApi), `OhDataNSwagSchemaProcessor` (NJsonSchema `ISchemaProcessor`,
+  NSwag), and `OhDataSwaggerSchemaFilter` (`ISchemaFilter`, Swashbuckle). Opt-in per stack —
+  register the schema hook alongside the existing operation-level one; see the updated snippets in
+  `docs/openapi.md`, `docs/nswag.md`, and `docs/versioning.md`.
 
 ## [1.3.0] - 2026-07-17
 

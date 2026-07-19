@@ -58,8 +58,20 @@ state serializes *fewer* members than an un-ignored model — measured at 0.82×
 0.81× allocations for a 100-entity page ([#226](https://github.com/en-gen/OhData/issues/226) has
 the full A/B table). When no profile ignores anything, the pipeline is byte-identical to before.
 
-## Limitations
+## OpenAPI / Swagger documents
 
-- The OpenAPI/NSwag companion packages generate schemas from CLR types and currently still list
-  ignored properties in generated documents (runtime behavior is unaffected — ignored values
-  never cross the wire). Tracked as a follow-up alongside the other doc-reflection items.
+As of [#228](https://github.com/en-gen/OhData/issues/228) the companion packages omit ignored
+properties from generated schemas, so documents match the real wire shape. Each doc stack has a
+schema-level hook to register alongside its operation-level one:
+
+- **Microsoft.AspNetCore.OpenApi:** `o.AddSchemaTransformer<OhDataOpenApiSchemaTransformer>()` —
+  see [openapi.md](openapi.md#ignored-properties-omitted-from-schemas)
+- **NSwag:** `s.SchemaSettings.SchemaProcessors.Add(new OhDataNSwagSchemaProcessor(sp))` — see
+  [nswag.md](nswag.md#ignored-properties-omitted-from-schemas)
+- **Swashbuckle:** `c.SchemaFilter<OhDataSwaggerSchemaFilter>()` — see
+  [versioning.md](versioning.md)
+
+One caveat: an OpenAPI document holds a single component schema per CLR type, so if separate
+registrations expose the same model type with *different* ignore sets (legal — see Rules above),
+the schemas omit the **union** of the sets, preferring to under-document a property one
+registration exposes over listing a name another registration deliberately hides.
