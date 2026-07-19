@@ -27,25 +27,16 @@ internal sealed record UnboundOperationDefinition
     internal static UnboundOperationDefinition From(Delegate del, bool isAction)
     {
         var method = del.Method;
-        var allParams = method.GetParameters();
-        bool hasCt = allParams.Length > 0
-            && allParams[^1].ParameterType == typeof(CancellationToken);
-        var visibleParams = hasCt ? allParams[..^1] : allParams;
+        var (hasCt, visibleParams) = AsyncDispatchHelper.SplitCancellationToken(method.GetParameters());
 
         var rawReturn = method.ReturnType;
-        bool isVoidReturn = rawReturn == typeof(void)
-            || rawReturn == typeof(Task)
-            || rawReturn == typeof(ValueTask);
+        bool isVoidReturn = AsyncDispatchHelper.IsVoidAsyncReturn(rawReturn);
 
         Type? returnType = null;
         bool returnsCollection = false;
         if (!isVoidReturn)
         {
-            Type unwrapped = rawReturn.IsGenericType &&
-                             (rawReturn.GetGenericTypeDefinition() == typeof(Task<>) ||
-                              rawReturn.GetGenericTypeDefinition() == typeof(ValueTask<>))
-                ? rawReturn.GetGenericArguments()[0]
-                : rawReturn;
+            Type unwrapped = AsyncDispatchHelper.UnwrapAsyncReturn(rawReturn);
 
             var collElement = GetCollectionElementType(unwrapped);
             if (collElement is not null)
@@ -59,15 +50,7 @@ internal sealed record UnboundOperationDefinition
             }
         }
 
-        PropertyInfo? resultProp = null;
-        if (!isVoidReturn && rawReturn.IsGenericType)
-        {
-            var genDef = rawReturn.GetGenericTypeDefinition();
-            if (genDef == typeof(Task<>))
-                resultProp = rawReturn.GetProperty("Result");
-            else if (genDef == typeof(ValueTask<>))
-                resultProp = typeof(Task<>).MakeGenericType(rawReturn.GetGenericArguments()[0]).GetProperty("Result");
-        }
+        PropertyInfo? resultProp = AsyncDispatchHelper.GetAsyncResultAccessor(rawReturn);
 
         return new UnboundOperationDefinition
         {

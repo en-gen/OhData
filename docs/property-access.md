@@ -32,7 +32,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
 }
 ```
 
-Property routes ride the existing `GetById` handler — there is no separate delegate to write. A route is registered for every public, readable, non-indexer CLR property of the model **except** properties declared as navigations via `HasMany`/`HasOptional`/`HasRequired`.
+Property routes ride the existing `GetById` handler — there is no separate delegate to write. A route is registered for every public, readable, non-indexer CLR property of the model **except** properties declared as navigations via `HasMany`/`HasOptional`/`HasRequired`. Properties excluded via `Ignore(...)` also get no property routes — see [ignoring-properties.md](ignoring-properties.md).
 
 To opt a single entity set out:
 
@@ -49,6 +49,35 @@ builder.WithDefaults(d => d.PropertyAccessEnabled = false);
 `PropertyAccessEnabled` resolves to `true`/`false` the same way as `SelectEnabled`/`FilterEnabled` — a `null` profile-level value inherits the server default (`EntitySetDefaults.PropertyAccessEnabled`, default `true`).
 
 If a profile does not configure `GetById`, no property routes are registered regardless of `PropertyAccessEnabled`.
+
+## API documentation visibility
+
+Property routes are numerous — up to four per structural property, per entity set (the two
+reads, plus `PUT`/`PATCH`/`DELETE`) — and would otherwise dominate a generated Swagger/OpenAPI
+document, drowning the primary CRUD, navigation, and bound-operation surface. So they are
+**omitted from the generated API docs by default**, while remaining fully live at runtime.
+
+This is documentation-only: the routes still respond exactly as described on this page whether or
+not they appear in the docs. The default only changes what ASP.NET Core's ApiExplorer enumerates
+(via `ExcludeFromDescription`), which is the shared upstream for every doc stack —
+Microsoft.AspNetCore.OpenApi, Swashbuckle, and NSwag alike — so one setting covers all three.
+
+To include property routes in the generated docs, set `PropertyRouteDocsEnabled`:
+
+```csharp
+// Per profile:
+protected bool? PropertyRouteDocsEnabled { get; init; } = true;
+
+// Or server-wide:
+builder.WithDefaults(d => d.PropertyRouteDocsEnabled = true);
+```
+
+`PropertyRouteDocsEnabled` resolves the same way as the other capability flags — a `null`
+profile-level value inherits the server default (`EntitySetDefaults.PropertyRouteDocsEnabled`,
+default `false`). The flag only has an effect when property routes are actually registered (i.e.
+`PropertyAccessEnabled` resolves `true` and the required handler is configured); otherwise there
+is nothing to document and it is inert. It covers all property routes together — reads, writes,
+and the immutable-key stubs.
 
 ## Response shape
 
@@ -91,7 +120,7 @@ When the entity set has `UseETag` configured, `GET /{EntitySet}({key})/{Property
 
 ## Authorization
 
-Property routes inherit the entity set's `RequireAuthorization()`/`RequireRoles()` configuration, same as every other route for that entity set — there is no separate opt-in.
+Property routes inherit the entity set's authorization configuration, same as every other route for that entity set — there is no separate opt-in. Under `ConfigureAuthorization(...)`, a property **read** falls under the `Read` category and a property **write** (`PUT`/`PATCH`/`DELETE`) under `Update`; when that category uses `.RequireResource()`, the property route is instance-checked against the entity too — so there is no way to bypass an owner check by writing through a property route. See [docs/authorization.md](authorization.md).
 
 ## Route-collision validation
 
@@ -206,8 +235,10 @@ returns.
 
 ### Authorization
 
-Property-write routes inherit the entity set's `RequireAuthorization()`/`RequireRoles()`
-configuration, same as property reads and every other route for the entity set.
+Property-write routes inherit the entity set's authorization configuration, same as property reads
+and every other route for the entity set. Under `ConfigureAuthorization(...)` they fall under the
+`Update` category (including its `.RequireResource()` instance check, if configured) — see
+[docs/authorization.md](authorization.md).
 
 ### Key property
 

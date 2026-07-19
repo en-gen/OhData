@@ -79,15 +79,17 @@ public class GetAllTopSkipTests
     }
 
     [Fact]
-    public async Task Top_OmittedOnMaxTopProfile_ReturnsFullSet()
+    public async Task Top_OmittedOnMaxTopProfile_CapsToMaxTop_WithNextLink()
     {
-        // Leg 1: deliberately NOT mirrored from GetQueryable -- an omitted $top on the GetAll
-        // path is not implicitly capped to MaxTop, since GetAll has no @odata.nextLink/
-        // $skiptoken continuation story (see the comment in OhDataEndpointFactory and
-        // docs/query-options.md for the full rationale).
+        // #201: an omitted $top on the GetAll path is now capped to MaxTop (safe-by-default),
+        // with a $skip @odata.nextLink for the remainder — GetAll re-enumerates its source each
+        // request, so offset paging is a valid continuation story. (It previously returned the
+        // full 20-item set; set MaxTop=null to opt back into that.) See GetAllCapTests for the
+        // full continuation/opt-out matrix.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<GetAllMaxTopProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/GetAllMaxTopWidgets");
-        Assert.Equal(20, json.GetProperty("value").GetArrayLength());
+        Assert.Equal(5, json.GetProperty("value").GetArrayLength());
+        Assert.True(json.TryGetProperty("@odata.nextLink", out _));
     }
 
     [Fact]

@@ -9,6 +9,154 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-07-19
+
+Production hardening (milestone 1.4.0): safe-by-default limits across the read paths,
+per-operation and resource-based authorization, observability, and profile-driven property
+exclusion.
+
+### Added
+
+- **Property exclusion via `Ignore()` (#226).** `EntitySetProfile.Ignore(x => x.Property)` excludes
+  model properties from the whole OData surface — `$metadata`, query options, property routes,
+  response bodies, and request binding (POST/PUT via serializer options, PATCH via an explicit
+  delta-builder filter) — without touching the CLR type. Wire suppression uses one derived
+  per-registration `JsonSerializerOptions` with a `JsonTypeInfoResolver` modifier (A/B-benchmarked
+  on the issue; zero cost when unused, *faster* than baseline when used). Startup validation
+  rejects ignoring the key, ignore/navigation conflicts (either declaration order), and
+  same-model-type profiles with mismatched ignore sets.
+- **Per-operation authorization (#199).** A profile can now authorize each operation category
+  independently via `ConfigureAuthorization(auth => …)`, replacing the all-or-nothing profile-wide
+  model for sets that need it. Categories are `Read`, `Create`, `Update`, `Delete`, and `Invoke`
+  (bound operations), with `Writes()`/`All()` conveniences and `Invoke("Name", …)` for a single bound
+  operation. Each category takes a nested lambda that **mirrors `AuthorizationPolicyBuilder`** —
+  `RequireAuthenticatedUser()`, `RequireRole(...)`, `RequireClaim(...)`, `RequirePolicy(...)` accumulate
+  and combine with AND — plus the exclusive `AllowAnonymous()`. Requirements are stored as plain data
+  (policy/role/claim *names*), so profiles stay free of ASP.NET Core types; the factory applies them
+  **per route** (`RequireAuthorization`/`AllowAnonymous`), so a global
+  `MapOhData().RequireAuthorization()` composes as before and an unspecified category inherits it
+  (anonymous when there is none). `$metadata`, the service document, and unbound operations remain
+  group-level-only. The legacy `RequireAuthorization()`/`RequireRoles()` model is unchanged and still
+  the default; combining it with `ConfigureAuthorization(...)` on one profile throws at startup.
+  **Resource-based (instance-level) authorization** is also supported via `.RequireResource()`: OhData
+  loads the `{key}` entity and evaluates the framework's `OperationAuthorizationRequirement` (exposed as
+  `OhDataOperations.Read/Create/Update/Delete/Invoke`) against it, so you write a standard
+  `AuthorizationHandler<OperationAuthorizationRequirement, TModel>` for owner/tenant checks (or
+  `.RequireResource("PolicyName")` to run a named policy with the entity as the resource). It composes
+  with the coarse requirements (AND), applies uniformly across key-based routes (entity, property, nav,
+  `$ref`), fails **closed** (a requirement no handler satisfies → `403`), and requires a `GetById`
+  handler on resource-checked Read/Update/Delete (enforced at startup). See `docs/authorization.md`.
+- **Observability: distributed-tracing spans and metrics (#200).** OhData now emits telemetry via
+  the BCL `System.Diagnostics` primitives — an `ActivitySource` and a `Meter`, both named `OhData` —
+  with **no `OpenTelemetry.*` package dependency** taken by the library; consumers opt in from their
+  own OpenTelemetry pipeline (`.AddSource("OhData")` / `.AddMeter("OhData")`), and the instrumentation
+  is near-free when nothing is listening. One span per request (child of the ASP.NET Core request
+  activity), named `{method} {route}` and tagged with `odata.entity_set`, `http.route`,
+  `odata.operation` (a coarse method/shape label), `http.request.method`, and `http.response.status_code`
+  (span status set to `Error` on `5xx`). Two metrics on the `OhData` meter:
+  `ohdata.server.request.duration` (histogram, seconds) and `ohdata.server.active_requests`
+  (up/down counter), tagged by entity set / operation / status. The `http.*` server tags aren't
+  duplicated (ASP.NET Core already emits them). See `docs/observability.md`. A per-response
+  result-size histogram is a planned follow-up.
+- **Tunable query-complexity guards; the `$expand`-depth guard is now enforced (#202).** The
+  settings-level expansion-depth validator was hardcoded to `0` (disabled), so a `$expand` nesting
+  deeper than the framework could satisfy was silently truncated rather than rejected. Four limits are
+  now configurable — globally via `WithDefaults`, or per entity set on the profile (profile overrides
+  global): `MaxExpansionDepth` (default **12**, the framework's internal nested-expand cap — now
+  **enforced**: a `$expand` nesting deeper than the limit returns `400` instead of a silently-truncated
+  result), plus `MaxFilterNodeCount` (default `10000`), `MaxOrderByNodeCount` (default `1000`), and
+  `MaxAnyAllExpressionDepth` (default `1000`). The node-count defaults are unchanged from what was
+  already applied — they were previously hardcoded and are now lowerable to harden against expensive
+  `$filter`/`$orderby` expressions. Enforced uniformly on all three collection read paths
+  (`GetQueryable`, `GetAll`, Priority-1) via the shared property-allowlist validation. **Behavior
+  change:** a request nesting `$expand` deeper than `MaxExpansionDepth` (default 12) now returns `400`
+  where it previously returned a partial (truncated) `200`; no realistic request nested that deep,
+  since the framework never expanded past its internal cap. Values above 12 are bounded by that
+  internal cap; the intended use is to *lower* the limit.
+- **Configurable request-body-size limit for write operations (#203).** A new
+  `MaxRequestBodyBytes` (global via `WithDefaults`, or per entity set on the profile — the profile
+  value overrides the global default) rejects an oversized write body (`POST`/`PUT`/`PATCH` and their
+  navigation/`$ref`/property/action variants) with `413 Payload Too Large` and the OData error
+  envelope, **before** the body is deserialized. Enforcement is twofold: an oversized `Content-Length`
+  is rejected up front by a group-level filter, and the per-request Kestrel `MaxRequestBodySize` is
+  set so a chunked / no-`Content-Length` body is bounded during read (Kestrel's resulting
+  `BadHttpRequestException` is mapped to the same `413`). The limit is attached per entity set as
+  route-group endpoint metadata and enforced once in the group filter — no per-handler wiring.
+  **Default is `null`** (no OhData-level limit; the host's Kestrel default, ~30 MB, still applies), so
+  this is purely additive — opt in by setting a value. See `docs/deep-insert.md`.
+- **Structural-property routes are omitted from generated API docs by default (#221).** The property
+  routes — `GET /{Set}({key})/{Property}`, its `/$value` variant, and the `PUT`/`PATCH`/`DELETE`
+  property writes (including the immutable-key stubs) — number up to four per property, per entity
+  set, and would otherwise dominate a Swagger/OpenAPI document. They are now excluded from
+  ApiExplorer (`ExcludeFromDescription`) by default, which covers all three doc stacks
+  (Microsoft.AspNetCore.OpenApi, Swashbuckle, NSwag) at once. A new `PropertyRouteDocsEnabled`
+  (global via `WithDefaults`, or per entity set on the profile — the profile value overrides the
+  global default, **default `false`**) opts them back into the docs. **Documentation-only:** the
+  routes remain fully functional at runtime regardless of this flag; only their visibility in the
+  generated document changes. **Docs-output change:** consumers who relied on property routes
+  appearing in the generated OpenAPI document must set `PropertyRouteDocsEnabled = true` to keep
+  them. See `docs/property-access.md`.
+
+### Changed
+
+- **The `GetAll` (simple/`IEnumerable`) read path now caps an omitted `$top` to `MaxTop` (#201).**
+  Previously, omitting `$top` on a `GetAll` route returned the **entire** backing collection, however
+  large — a deliberate decision at the time, because `GetAll` had no `@odata.nextLink` continuation
+  story. #195 established an offset-`$skip` continuation for a re-enumerable source, and `GetAll` is
+  re-enumerable, so that blocker is gone. An omitted `$top` is now capped to `MaxTop` (or a smaller
+  `Prefer: maxpagesize`, clamped and echoed via `Preference-Applied`) with a `$skip` `@odata.nextLink`
+  for the remainder — making all three collection read paths (`GetQueryable`, `GetAll`, Priority-1)
+  uniformly safe-by-default. **This is a response-shape change** for `GetAll` routes whose source
+  exceeds `MaxTop` (default `1000`): such a request now returns a bounded page plus `@odata.nextLink`
+  instead of the full set. Sources **under** `MaxTop` are unaffected (the page isn't full, so no
+  `nextLink` is emitted). **To opt out** and return the full set in one response, set `MaxTop = null`
+  on the profile. `@odata.count` continues to reflect the pre-paging total.
+
+### Fixed
+
+- **The Priority-1 (`ODataEntitySetProfile` / `GetODataQueryable`) read path now enforces `MaxTop` (#195).**
+  This path delegates query application to the profile's own `ApplyTo`, and the framework previously
+  materialized whatever came back with `queryable.ToArray()` — so a client that omitted `$top` (or sent
+  `$top` larger than `MaxTop`) could force the server to return the entire backing collection. The
+  headline `MaxTop = 1000` default was silently inert here; it was only advertised in OpenAPI metadata.
+  Now, consistent with the `GetQueryable` path: an oversized `$top` is rejected with `400`
+  (`InvalidQueryOption`); an omitted `$top` is capped to `MaxTop` (or a smaller `Prefer: maxpagesize`,
+  which is clamped so it can never lift the ceiling and is echoed via `Preference-Applied`); and a
+  continuation `@odata.nextLink` is emitted when a full page is returned. The continuation link uses
+  `$skip` rather than the opaque `$skiptoken` the `GetQueryable` path emits, because a Priority-1
+  profile re-applies the incoming `ODataQueryOptions` via `ApplyTo`, which honors `$skip` natively but
+  has no handler for `$skiptoken`. A profile that sets `ODataQueryResult.NextLink` itself is trusted to
+  be paging on its own terms and the framework does not cap or override it. `@odata.count` remains the
+  profile's responsibility (set `ODataQueryResult.TotalCount` for an accurate pre-paging total).
+- **The main collection GET routes now reject unimplemented system query options (#196).** `$apply`,
+  `$compute`, `$index`, and `$deltatoken` were parsed and then **silently ignored** on the main
+  collection route, so `GET /Widgets?$apply=...` returned `200` with the option quietly dropped — while
+  the navigation-collection route already rejected the same options with `400`. Ignoring a known query
+  option violates OData Minimal-conformance item 7 ("the service MUST parse the option or reject the
+  request"). These four options now return `400 UnsupportedQueryOption` uniformly across all three
+  collection read paths (`GetAll`, `GetQueryable`, and Priority-1 `GetODataQueryable`), via the shared
+  capability gate. Implemented and capability-gated options are unaffected (`$filter`/`$orderby`/
+  `$select`/`$expand`/`$count`/`$top`/`$skip`/`$search`/`$skiptoken`).
+- **Allowlist expression overloads now enforce their documented direct-member contract (#227).**
+  `FilterProperties`/`OrderByProperties`/`SelectProperties`/`ExpandProperties` documented that only
+  direct property access (`x => x.Name`) is supported, but nested member access slipped through:
+  `SelectProperties(x => x.Name.Length)` silently allowlisted `"Length"` and
+  `FilterProperties(x => x.Category.Name)` silently allowlisted `"Name"`. Both now throw
+  `ArgumentException` at profile construction, per the documented contract. **Behavior change:** a
+  profile that was (mis)relying on the lax behavior will now fail at startup — rewrite the selector
+  to a direct property of the model.
+- **Companion packages omit `Ignore()`d properties from generated schemas (#228).** #226 removed
+  ignored properties from responses, request binding, `$metadata`, and query options — but the
+  OpenAPI companion packages generate schemas from CLR types, so generated documents still listed
+  them. Each companion now consults the registrations' ignored-property map (CLR model type →
+  ignored CLR names, reached via `InternalsVisibleTo` so the core package keeps carrying no
+  doc-stack dependency) and removes those members from the type's schema, respecting the
+  serializer naming policy: `OhDataOpenApiSchemaTransformer` (`IOpenApiSchemaTransformer`,
+  Microsoft.AspNetCore.OpenApi), `OhDataNSwagSchemaProcessor` (NJsonSchema `ISchemaProcessor`,
+  NSwag), and `OhDataSwaggerSchemaFilter` (`ISchemaFilter`, Swashbuckle). Opt-in per stack —
+  register the schema hook alongside the existing operation-level one; see the updated snippets in
+  `docs/openapi.md`, `docs/nswag.md`, and `docs/versioning.md`.
+
 ## [1.3.0] - 2026-07-17
 
 Spec-correctness and OpenAPI docs-fidelity across the read and documentation paths. Every change is
@@ -676,7 +824,8 @@ post-release-prep audit fix wave (below) found before the tag was actually cut.
 
 ---
 
-[Unreleased]: https://github.com/en-gen/OhData/compare/v1.3.0...develop
+[Unreleased]: https://github.com/en-gen/OhData/compare/v1.4.0...develop
+[1.4.0]: https://github.com/en-gen/OhData/releases/tag/v1.4.0
 [1.3.0]: https://github.com/en-gen/OhData/releases/tag/v1.3.0
 [1.2.0]: https://github.com/en-gen/OhData/releases/tag/v1.2.0
 [1.1.0]: https://github.com/en-gen/OhData/releases/tag/v1.1.0

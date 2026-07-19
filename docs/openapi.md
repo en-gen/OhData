@@ -14,12 +14,21 @@ dotnet add package EnGen.OhData.AspNetCore.OpenApi
 ```csharp
 using OhData.AspNetCore;
 
-builder.Services.AddOpenApi(o => o.AddOperationTransformer<OhDataOpenApiOperationTransformer>());
+builder.Services.AddOpenApi(o =>
+{
+    o.AddOperationTransformer<OhDataOpenApiOperationTransformer>();
+    o.AddSchemaTransformer<OhDataOpenApiSchemaTransformer>();
+});
 
 // ...
 
 app.MapOpenApi();
 ```
+
+The operation transformer documents the OData query parameters; the schema transformer keeps
+generated schemas honest for profiles that use `Ignore(...)` (see
+[below](#ignored-properties-omitted-from-schemas)). Each is independent — register only the one
+you need, or both.
 
 ## What gets documented
 
@@ -66,6 +75,16 @@ the parameter names and CLR types listed in the body's description (an action's 
 deserialized by name out of one JSON object, not bound to a single CLR type, so there is no single
 schema to generate).
 
+## Property routes omitted by default
+
+Individual structural-property routes — `GET /{Set}({key})/{Property}`, its `/$value` variant, and
+the `PUT`/`PATCH`/`DELETE` property writes — are **excluded from the generated document by
+default**. They number up to four per property, per entity set, and would otherwise dominate the
+docs. This is applied at the ApiExplorer level (`ExcludeFromDescription`), so it covers this
+package, Swashbuckle, and NSwag identically, and it does not affect runtime behavior — the routes
+stay fully functional. Opt them back in per profile or server-wide via `PropertyRouteDocsEnabled`;
+see [property-access.md](property-access.md#api-documentation-visibility).
+
 ## Typed collection responses
 
 Collection GET routes (on `GetQueryable`, `GetAll`, and Priority-1) and collection-valued
@@ -76,6 +95,17 @@ the actual response is still built by hand as an ordered dictionary so annotatio
 before entity properties. `$ref` routes similarly document `ODataRefResponse`/
 `ODataRefCollectionResponse`, and structural-property GET routes document
 `ODataPropertyResponse<T>`.
+
+## Ignored properties omitted from schemas
+
+Properties excluded via `EntitySetProfile.Ignore(...)` never cross the wire (see
+[ignoring-properties.md](ignoring-properties.md)), but OpenAPI schemas are generated from the CLR
+type — which still has the property. `OhDataOpenApiSchemaTransformer` implements
+`IOpenApiSchemaTransformer` and removes each ignored member from its model type's generated schema
+(request and response alike, since both share the component schema), so the document matches the
+real wire shape. Matching respects the serializer naming policy — the profile ignores the CLR name
+(`CostBasis`), the schema key is the JSON name (`costBasis`). Suppression is keyed by CLR model
+type, so a same-named property on a different (un-ignored) type is untouched.
 
 ## Read-path summaries
 

@@ -56,6 +56,17 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     // and navigation routes are disjoint by construction (never both claim the same route).
     private readonly HashSet<string> _navigationPropertyNames = new(StringComparer.Ordinal);
 
+    // Names of properties excluded from the OData surface via Ignore() (#226). Structural
+    // properties, the EDM, response serialization, and request binding all consult this set.
+    private readonly HashSet<string> _ignoredPropertyNames = new(StringComparer.Ordinal);
+
+    // The open generic StructuralTypeConfiguration<TModel>.Ignore<TProperty>(...) definition,
+    // closed per ignored property with its real CLR type (see Ignore below).
+    private static readonly MethodInfo s_edmIgnoreMethodDefinition =
+        typeof(StructuralTypeConfiguration<TModel>)
+            .GetMethods(BindingFlags.Public | BindingFlags.Instance)
+            .Single(m => m.Name == "Ignore" && m.IsGenericMethodDefinition);
+
     private readonly Expression<Func<TModel, TKey>> _getKey;
 
     /// <summary>
@@ -104,6 +115,17 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// existing <c>GetById</c> handler.
     /// </summary>
     protected bool? PropertyAccessEnabled { get; init; }
+
+    /// <summary>
+    /// Controls whether this entity set's structural property routes
+    /// (<c>GET /{EntitySet}({key})/{Property}</c>, <c>.../{Property}/$value</c>, and the
+    /// <c>PUT</c>/<c>PATCH</c>/<c>DELETE</c> property writes) appear in the generated API
+    /// documentation. Inherits from <see cref="EntitySetDefaults"/> (default <c>false</c>) when
+    /// <c>null</c>. Documentation-only: property routes remain live at runtime whenever
+    /// <see cref="PropertyAccessEnabled"/> resolves <c>true</c> and the required handler is
+    /// configured, regardless of this flag.
+    /// </summary>
+    protected bool? PropertyRouteDocsEnabled { get; init; }
 
     /// <summary>
     /// Controls the midpoint-rounding behavior of the OData <c>round()</c> canonical function
@@ -258,12 +280,97 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         }
     }
     private int? _resolvedMaxTop;
+
+    private long? _maxRequestBodyBytes;
+
+    /// <summary>
+    /// Maximum request-body size, in bytes, for this entity set's write operations (POST/PUT/PATCH
+    /// and their navigation/<c>$ref</c>/property/action variants). A request whose body exceeds this
+    /// limit is rejected with <c>413 Payload Too Large</c> before deserialization. Inherits from
+    /// <see cref="EntitySetDefaults.MaxRequestBodyBytes"/> when <c>null</c>; when both are <c>null</c>
+    /// no OhData-level limit applies (the host's Kestrel <c>MaxRequestBodySize</c> still bounds it).
+    /// Must be a positive value.
+    /// </summary>
+    protected long? MaxRequestBodyBytes
+    {
+        get => _maxRequestBodyBytes;
+        init
+        {
+            if (value is <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxRequestBodyBytes), value, "MaxRequestBodyBytes must be a positive value or null.");
+            _maxRequestBodyBytes = value;
+        }
+    }
+    private long? _resolvedMaxRequestBodyBytes;
+
+    private int? _maxExpansionDepth;
+    private int? _maxFilterNodeCount;
+    private int? _maxOrderByNodeCount;
+    private int? _maxAnyAllExpressionDepth;
+
+    /// <summary>#202: maximum nested <c>$expand</c> depth for this set (400 beyond it). Inherits
+    /// <see cref="EntitySetDefaults.MaxExpansionDepth"/> (default 12) when null. Must be positive.</summary>
+    protected int? MaxExpansionDepth
+    {
+        get => _maxExpansionDepth;
+        init
+        {
+            if (value is <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxExpansionDepth), value, "MaxExpansionDepth must be a positive integer.");
+            _maxExpansionDepth = value;
+        }
+    }
+
+    /// <summary>#202: maximum <c>$filter</c> node count for this set. Inherits
+    /// <see cref="EntitySetDefaults.MaxFilterNodeCount"/> (default 10000) when null. Must be positive.</summary>
+    protected int? MaxFilterNodeCount
+    {
+        get => _maxFilterNodeCount;
+        init
+        {
+            if (value is <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxFilterNodeCount), value, "MaxFilterNodeCount must be a positive integer.");
+            _maxFilterNodeCount = value;
+        }
+    }
+
+    /// <summary>#202: maximum <c>$orderby</c> node count for this set. Inherits
+    /// <see cref="EntitySetDefaults.MaxOrderByNodeCount"/> (default 1000) when null. Must be positive.</summary>
+    protected int? MaxOrderByNodeCount
+    {
+        get => _maxOrderByNodeCount;
+        init
+        {
+            if (value is <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxOrderByNodeCount), value, "MaxOrderByNodeCount must be a positive integer.");
+            _maxOrderByNodeCount = value;
+        }
+    }
+
+    /// <summary>#202: maximum <c>any()</c>/<c>all()</c> lambda nesting depth in a <c>$filter</c> for
+    /// this set. Inherits <see cref="EntitySetDefaults.MaxAnyAllExpressionDepth"/> (default 1000) when
+    /// null. Must be positive.</summary>
+    protected int? MaxAnyAllExpressionDepth
+    {
+        get => _maxAnyAllExpressionDepth;
+        init
+        {
+            if (value is <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxAnyAllExpressionDepth), value, "MaxAnyAllExpressionDepth must be a positive integer.");
+            _maxAnyAllExpressionDepth = value;
+        }
+    }
+    private int _resolvedMaxExpansionDepth;
+    private int _resolvedMaxFilterNodeCount;
+    private int _resolvedMaxOrderByNodeCount;
+    private int _resolvedMaxAnyAllExpressionDepth;
     private bool _resolvedFilterEnabled;
     private bool _resolvedOrderByEnabled;
     private bool _resolvedSelectEnabled;
     private bool _resolvedExpandEnabled;
     private bool _resolvedCountEnabled;
     private bool _resolvedPropertyAccessEnabled;
+    private bool _resolvedPropertyRouteDocsEnabled;
     private List<StructuralPropertyInfo>? _structuralProperties;
 
     /// <summary>
@@ -357,6 +464,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private bool _authRequired;
     private string? _authPolicy;
     private IReadOnlyList<string>? _authRoles;
+    private List<OperationAuthRule>? _operationAuthRules;
     private bool _isAdvancedConfigureOverridden;
 
     private readonly ICollection<Action<EntityTypeConfiguration<TModel>>> _configurators;
@@ -408,6 +516,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         var entitySet = builder.EntitySet<TModel>(EntitySetName);
 
         _resolvedMaxTop = MaxTop ?? defaults.MaxTop;
+        _resolvedMaxRequestBodyBytes = MaxRequestBodyBytes ?? defaults.MaxRequestBodyBytes;
+        _resolvedMaxExpansionDepth = MaxExpansionDepth ?? defaults.MaxExpansionDepth;
+        _resolvedMaxFilterNodeCount = MaxFilterNodeCount ?? defaults.MaxFilterNodeCount;
+        _resolvedMaxOrderByNodeCount = MaxOrderByNodeCount ?? defaults.MaxOrderByNodeCount;
+        _resolvedMaxAnyAllExpressionDepth = MaxAnyAllExpressionDepth ?? defaults.MaxAnyAllExpressionDepth;
         _resolvedIdempotentDelete = IdempotentDelete ?? defaults.IdempotentDelete;
         _resolvedAllowUpsert = AllowUpsert ?? defaults.AllowUpsert;
         _resolvedFilterEnabled = FilterEnabled ?? defaults.FilterEnabled;
@@ -416,9 +529,20 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _resolvedExpandEnabled = ExpandEnabled ?? defaults.ExpandEnabled;
         _resolvedCountEnabled = CountEnabled ?? defaults.CountEnabled;
         _resolvedPropertyAccessEnabled = PropertyAccessEnabled ?? defaults.PropertyAccessEnabled;
+        _resolvedPropertyRouteDocsEnabled = PropertyRouteDocsEnabled ?? defaults.PropertyRouteDocsEnabled;
         _resolvedAllowDeepInsert = AllowDeepInsert ?? defaults.AllowDeepInsert;
         _resolvedRoundingMode = RoundingMode ?? defaults.RoundingMode;
         _structuralProperties = BuildStructuralProperties();
+
+        // #226: a name that is both ignored and declared as a navigation is a config
+        // contradiction. Checked here (not in Ignore()) so it is declaration-order-independent.
+        foreach (string ignored in _ignoredPropertyNames.Where(_navigationPropertyNames.Contains))
+        {
+            throw new InvalidOperationException(
+                $"Entity set '{EntitySetName}': property '{ignored}' is declared both as a " +
+                "navigation property (HasMany/HasOptional/HasRequired) and in Ignore(). " +
+                "Remove one of the declarations.");
+        }
 
         AdvancedConfigure(entitySet);
 
@@ -455,172 +579,18 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         var entityCollection = entityType.Collection;
 
         foreach (var method in _functions.Select(x => x.Method))
-        {
-            var entityFunction = entityCollection.Function(method.Name);
-
-            foreach (var param in method.GetParameters().Where(p => p.ParameterType != typeof(CancellationToken)))
-            {
-                var entityFunctionParam = entityFunction.Parameter(param.ParameterType, param.Name!);
-                if (param.IsOptional) entityFunctionParam.Optional();
-                if (param.HasDefaultValue)
-                {
-                    string defaultStr = param.DefaultValue is bool b ? (b ? "true" : "false") : $"{param.DefaultValue}";
-                    entityFunctionParam.HasDefaultValue(defaultStr);
-                }
-            }
-
-            // Determine return type: unwrap Task<T>/ValueTask<T> if needed
-            var rawReturn = method.ReturnType;
-            var returnType = rawReturn.IsGenericType && (rawReturn.GetGenericTypeDefinition() == typeof(Task<>) || rawReturn.GetGenericTypeDefinition() == typeof(ValueTask<>))
-                ? rawReturn.GetGenericArguments()[0]
-                : rawReturn == typeof(Task) || rawReturn == typeof(void) || rawReturn == typeof(ValueTask) ? null : rawReturn;
-
-            if (returnType is not null)
-            {
-                // FunctionConfiguration only exposes generic Returns<T>/ReturnsCollection<T>; call via reflection.
-                var collectionElement = GetCollectionElementType(returnType);
-                if (collectionElement is not null)
-                {
-                    typeof(FunctionConfiguration)
-                        .GetMethod(nameof(FunctionConfiguration.ReturnsCollection), Array.Empty<Type>())!
-                        .MakeGenericMethod(collectionElement)
-                        .Invoke(entityFunction, null);
-                }
-                else
-                {
-                    typeof(FunctionConfiguration)
-                        .GetMethod(nameof(FunctionConfiguration.Returns), Array.Empty<Type>())!
-                        .MakeGenericMethod(returnType)
-                        .Invoke(entityFunction, null);
-                }
-            }
-        }
+            RegisterEdmOperation(method, entityCollection.Function(method.Name), typeof(FunctionConfiguration), skipKeyParameter: false);
 
         foreach (var method in _actions.Select(x => x.Method))
-        {
-            var entityAction = entityCollection.Action(method.Name);
+            RegisterEdmOperation(method, entityCollection.Action(method.Name), typeof(ActionConfiguration), skipKeyParameter: false);
 
-            foreach (var param in method.GetParameters().Where(p => p.ParameterType != typeof(CancellationToken)))
-            {
-                var entityActionParam = entityAction.Parameter(param.ParameterType, param.Name!);
-                if (param.IsOptional) entityActionParam.Optional();
-                if (param.HasDefaultValue)
-                {
-                    string defaultStr = param.DefaultValue is bool b ? (b ? "true" : "false") : $"{param.DefaultValue}";
-                    entityActionParam.HasDefaultValue(defaultStr);
-                }
-            }
-
-            // Resolve return type for $metadata, mirroring the function logic above.
-            var rawActionReturn = method.ReturnType;
-            var actionReturnType = rawActionReturn.IsGenericType && (rawActionReturn.GetGenericTypeDefinition() == typeof(Task<>) || rawActionReturn.GetGenericTypeDefinition() == typeof(ValueTask<>))
-                ? rawActionReturn.GetGenericArguments()[0]
-                : rawActionReturn == typeof(Task) || rawActionReturn == typeof(void) || rawActionReturn == typeof(ValueTask) ? null : rawActionReturn;
-
-            if (actionReturnType is not null)
-            {
-                var collectionElement = GetCollectionElementType(actionReturnType);
-                if (collectionElement is not null)
-                {
-                    typeof(ActionConfiguration)
-                        .GetMethod(nameof(ActionConfiguration.ReturnsCollection), Array.Empty<Type>())!
-                        .MakeGenericMethod(collectionElement)
-                        .Invoke(entityAction, null);
-                }
-                else
-                {
-                    typeof(ActionConfiguration)
-                        .GetMethod(nameof(ActionConfiguration.Returns), Array.Empty<Type>())!
-                        .MakeGenericMethod(actionReturnType)
-                        .Invoke(entityAction, null);
-                }
-            }
-        }
-
-        // Gap 7: Register entity-level functions bound to the entity type (not collection)
+        // Gap 7: entity-level functions/actions bind to the entity type, not the collection. Their
+        // first parameter is the entity key (TKey) — skipped here, since it is not an OData parameter.
         foreach (var method in _entityFunctions.Select(x => x.Method))
-        {
-            // Skip the first parameter — it is the key (TKey), not an OData parameter
-            var entityFunction = entityType.Function(method.Name);
-            var allParams = method.GetParameters().Where(p => p.ParameterType != typeof(CancellationToken)).Skip(1);
+            RegisterEdmOperation(method, entityType.Function(method.Name), typeof(FunctionConfiguration), skipKeyParameter: true);
 
-            foreach (var param in allParams)
-            {
-                var entityFunctionParam = entityFunction.Parameter(param.ParameterType, param.Name!);
-                if (param.IsOptional) entityFunctionParam.Optional();
-                if (param.HasDefaultValue)
-                {
-                    string defaultStr = param.DefaultValue is bool b ? (b ? "true" : "false") : $"{param.DefaultValue}";
-                    entityFunctionParam.HasDefaultValue(defaultStr);
-                }
-            }
-
-            var rawReturn = method.ReturnType;
-            var returnType = rawReturn.IsGenericType && (rawReturn.GetGenericTypeDefinition() == typeof(Task<>) || rawReturn.GetGenericTypeDefinition() == typeof(ValueTask<>))
-                ? rawReturn.GetGenericArguments()[0]
-                : rawReturn == typeof(Task) || rawReturn == typeof(void) || rawReturn == typeof(ValueTask) ? null : rawReturn;
-
-            if (returnType is not null)
-            {
-                var collectionElement = GetCollectionElementType(returnType);
-                if (collectionElement is not null)
-                {
-                    typeof(FunctionConfiguration)
-                        .GetMethod(nameof(FunctionConfiguration.ReturnsCollection), Array.Empty<Type>())!
-                        .MakeGenericMethod(collectionElement)
-                        .Invoke(entityFunction, null);
-                }
-                else
-                {
-                    typeof(FunctionConfiguration)
-                        .GetMethod(nameof(FunctionConfiguration.Returns), Array.Empty<Type>())!
-                        .MakeGenericMethod(returnType)
-                        .Invoke(entityFunction, null);
-                }
-            }
-        }
-
-        // Gap 7: Register entity-level actions bound to the entity type (not collection)
         foreach (var method in _entityActions.Select(x => x.Method))
-        {
-            var entityAction = entityType.Action(method.Name);
-            var allParams = method.GetParameters().Where(p => p.ParameterType != typeof(CancellationToken)).Skip(1);
-
-            foreach (var param in allParams)
-            {
-                var entityActionParam = entityAction.Parameter(param.ParameterType, param.Name!);
-                if (param.IsOptional) entityActionParam.Optional();
-                if (param.HasDefaultValue)
-                {
-                    string defaultStr = param.DefaultValue is bool b ? (b ? "true" : "false") : $"{param.DefaultValue}";
-                    entityActionParam.HasDefaultValue(defaultStr);
-                }
-            }
-
-            var rawActionReturn = method.ReturnType;
-            var actionReturnType = rawActionReturn.IsGenericType && (rawActionReturn.GetGenericTypeDefinition() == typeof(Task<>) || rawActionReturn.GetGenericTypeDefinition() == typeof(ValueTask<>))
-                ? rawActionReturn.GetGenericArguments()[0]
-                : rawActionReturn == typeof(Task) || rawActionReturn == typeof(void) || rawActionReturn == typeof(ValueTask) ? null : rawActionReturn;
-
-            if (actionReturnType is not null)
-            {
-                var collectionElement = GetCollectionElementType(actionReturnType);
-                if (collectionElement is not null)
-                {
-                    typeof(ActionConfiguration)
-                        .GetMethod(nameof(ActionConfiguration.ReturnsCollection), Array.Empty<Type>())!
-                        .MakeGenericMethod(collectionElement)
-                        .Invoke(entityAction, null);
-                }
-                else
-                {
-                    typeof(ActionConfiguration)
-                        .GetMethod(nameof(ActionConfiguration.Returns), Array.Empty<Type>())!
-                        .MakeGenericMethod(actionReturnType)
-                        .Invoke(entityAction, null);
-                }
-            }
-        }
+            RegisterEdmOperation(method, entityType.Action(method.Name), typeof(ActionConfiguration), skipKeyParameter: true);
 
         _resolvedBoundFunctions = _functions.Select(d => BoundOperationDefinition.From(d, isAction: false))
             .Concat(_entityFunctions.Select(d => BoundOperationDefinition.From(d, isAction: false, isEntityLevel: true)))
@@ -687,7 +657,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
             .Where(prop => prop.CanRead)
             .Where(prop => prop.GetIndexParameters().Length == 0) // skip indexers
-            .Where(prop => !_navigationPropertyNames.Contains(prop.Name)))
+            .Where(prop => !_navigationPropertyNames.Contains(prop.Name))
+            .Where(prop => !_ignoredPropertyNames.Contains(prop.Name))) // #226
         {
             list.Add(new StructuralPropertyInfo
             {
@@ -805,34 +776,105 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     }
 
     /// <summary>
+    /// Excludes one or more model properties from the entire OData surface (#226): they are
+    /// omitted from <c>$metadata</c>, rejected in <c>$select</c>/<c>$filter</c>/<c>$orderby</c>/
+    /// <c>$expand</c> (as unknown properties), get no property routes, are omitted from every
+    /// response body, and are not bound from POST/PUT/PATCH request bodies. Handlers still see
+    /// the full CLR model — only the OData-exposed surface hides ignored properties.
+    /// <para>
+    /// Multiple calls accumulate. The key property cannot be ignored. A property declared as a
+    /// navigation (<c>HasMany</c>/<c>HasOptional</c>/<c>HasRequired</c>) cannot also be ignored —
+    /// that combination fails at startup.
+    /// </para>
+    /// </summary>
+    /// <param name="properties">
+    /// One or more direct property-access selectors, e.g. <c>x =&gt; x.InternalNotes</c>.
+    /// At least one selector is required.
+    /// </param>
+    protected void Ignore(params Expression<Func<TModel, object?>>[] properties)
+    {
+        ThrowIfSealed();
+        if (properties is null) throw new ArgumentNullException(nameof(properties));
+        if (properties.Length == 0)
+            throw new ArgumentException("At least one property selector is required.", nameof(properties));
+
+        string keyPropertyName = GetNavigationPropertyName(_getKey.Body);
+        for (int i = 0; i < properties.Length; i++)
+        {
+            MemberExpression member = GetDirectMember(properties[i].Body, i, nameof(properties));
+
+            string name = member.Member.Name;
+            if (string.Equals(name, keyPropertyName, StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    $"The key property '{name}' cannot be ignored — the key is required for " +
+                    "routing, entity-id URLs, and $metadata.", nameof(properties));
+            }
+
+            if (member.Member is not PropertyInfo clrProperty)
+            {
+                throw new ArgumentException(
+                    $"'{name}' is not a property of {typeof(TModel).Name} — fields cannot be ignored.",
+                    nameof(properties));
+            }
+
+            if (!_ignoredPropertyNames.Add(name)) continue; // duplicate — already configured
+
+            // EDM removal rides the configurator pipeline, so it is auto-ejected when
+            // AdvancedConfigure is overridden (rows 1-2 of the spec's suppression table) while
+            // runtime suppression (routes, wire, PATCH) still applies. ModelBuilder's
+            // PropertySelectorVisitor rejects the boxing Convert node an
+            // Expression<Func<TModel, object?>> carries for value-typed properties
+            // ("Unsupported Expression NodeType"), so rebuild an unboxed, strongly-typed
+            // selector and invoke Ignore<TProperty> with the property's real CLR type.
+            ParameterExpression p = Expression.Parameter(typeof(TModel), "x");
+            LambdaExpression typedSelector = Expression.Lambda(
+                typeof(Func<,>).MakeGenericType(typeof(TModel), clrProperty.PropertyType),
+                Expression.Property(p, clrProperty), p);
+            MethodInfo edmIgnore = s_edmIgnoreMethodDefinition.MakeGenericMethod(clrProperty.PropertyType);
+            _configurators.Add(cfg => edmIgnore.Invoke(cfg, new object[] { typedSelector }));
+        }
+    }
+
+    /// <summary>
     /// Extracts member names from a set of simple property-access expressions.
-    /// Throws <see cref="ArgumentException"/> if an expression is not a direct member access.
+    /// Throws <see cref="ArgumentException"/> if an expression is not a direct member access
+    /// on the lambda parameter (#227): x => x.Name.Length or x => x.Category.Name is rejected
+    /// rather than silently allowlisting a name that isn't a property of TModel.
     /// </summary>
     private static string[] ExtractNames(Expression<Func<TModel, object?>>[] expressions)
     {
         string[] names = new string[expressions.Length];
         for (int i = 0; i < expressions.Length; i++)
         {
-            var body = expressions[i].Body;
-
-            // Strip boxing Convert / ConvertChecked nodes (e.g. value types cast to object)
-            if (body is UnaryExpression unary &&
-                (unary.NodeType == ExpressionType.Convert || unary.NodeType == ExpressionType.ConvertChecked))
-            {
-                body = unary.Operand;
-            }
-
-            if (body is not MemberExpression member)
-            {
-                throw new ArgumentException(
-                    $"Expression at index {i} must be a direct property access (e.g. x => x.Name). " +
-                    $"Nested access such as x => x.Category.Name is not supported.",
-                    nameof(expressions));
-            }
-
-            names[i] = member.Member.Name;
+            names[i] = GetDirectMember(expressions[i].Body, i, nameof(expressions)).Member.Name;
         }
         return names;
+    }
+
+    /// <summary>
+    /// Strips a boxing Convert/ConvertChecked node (e.g. a value type cast to object) and
+    /// validates that the remaining body is a member access made directly on the lambda
+    /// parameter. Shared by <see cref="ExtractNames"/> and <see cref="Ignore"/> (#226/#227),
+    /// which both promise this contract in their error message.
+    /// </summary>
+    private static MemberExpression GetDirectMember(Expression body, int index, string paramName)
+    {
+        if (body is UnaryExpression unary &&
+            (unary.NodeType == ExpressionType.Convert || unary.NodeType == ExpressionType.ConvertChecked))
+        {
+            body = unary.Operand;
+        }
+
+        if (body is not MemberExpression member || member.Expression is not ParameterExpression)
+        {
+            throw new ArgumentException(
+                $"Expression at index {index} must be a direct property access on the model " +
+                "(e.g. x => x.Name). Nested access such as x => x.Category.Name is not supported.",
+                paramName);
+        }
+
+        return member;
     }
 
     /// <summary>
@@ -1410,6 +1452,40 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         return idProp?.Name;
     }
 
+    // Registers a bound function/action in the EDM: declares its (non-CancellationToken) parameters
+    // and — via reflection, since the fluent API only exposes generic Returns<T>/ReturnsCollection<T>
+    // — its return type, unwrapping Task<T>/ValueTask<T> and treating void/Task/ValueTask as no return.
+    // `skipKeyParameter` drops the leading TKey parameter of entity-level operations.
+    private static void RegisterEdmOperation(
+        MethodInfo method, OperationConfiguration operation, Type configType, bool skipKeyParameter)
+    {
+        var parameters = method.GetParameters().Where(p => p.ParameterType != typeof(CancellationToken));
+        if (skipKeyParameter) parameters = parameters.Skip(1);
+
+        foreach (var param in parameters)
+        {
+            var opParam = operation.Parameter(param.ParameterType, param.Name!);
+            if (param.IsOptional) opParam.Optional();
+            if (param.HasDefaultValue)
+            {
+                string defaultStr = param.DefaultValue is bool b ? (b ? "true" : "false") : $"{param.DefaultValue}";
+                opParam.HasDefaultValue(defaultStr);
+            }
+        }
+
+        var rawReturn = method.ReturnType;
+        Type? returnType = AsyncDispatchHelper.IsVoidAsyncReturn(rawReturn)
+            ? null
+            : AsyncDispatchHelper.UnwrapAsyncReturn(rawReturn);
+        if (returnType is null) return;
+
+        var collectionElement = GetCollectionElementType(returnType);
+        string configMethod = collectionElement is not null ? "ReturnsCollection" : "Returns";
+        configType.GetMethod(configMethod, Array.Empty<Type>())!
+            .MakeGenericMethod(collectionElement ?? returnType)
+            .Invoke(operation, null);
+    }
+
     private static Type? GetCollectionElementType(Type type)
     {
         if (type == typeof(string)) return null; // string is IEnumerable<char> but not a "collection" here
@@ -1426,6 +1502,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected void RequireAuthorization()
     {
         ThrowIfSealed();
+        ThrowIfOperationAuthConfigured();
         if (_authRequired)
         {
             throw new InvalidOperationException(
@@ -1444,6 +1521,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected void RequireAuthorization(string policy)
     {
         ThrowIfSealed();
+        ThrowIfOperationAuthConfigured();
         if (_authPolicy is not null)
         {
             throw new InvalidOperationException(
@@ -1462,6 +1540,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected void RequireRoles(params string[] roles)
     {
         ThrowIfSealed();
+        ThrowIfOperationAuthConfigured();
         if (roles.Length == 0)
             throw new ArgumentException("At least one role must be specified.", nameof(roles));
         if (_authRoles is not null)
@@ -1472,6 +1551,52 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
         _authRoles = Array.AsReadOnly(roles);
         _authRequired = true;
+    }
+
+    /// <summary>
+    /// Declares per-operation authorization (#199) using a fluent builder whose per-category lambdas
+    /// mirror <c>AuthorizationPolicyBuilder</c>. Requirements within a category combine with AND;
+    /// later category rules win on overlap. Cannot be combined with the profile-wide
+    /// <see cref="RequireAuthorization()"/>/<see cref="RequireRoles"/> methods — choose one model.
+    /// </summary>
+    /// <example>
+    /// <code>
+    /// ConfigureAuthorization(auth =&gt; auth
+    ///     .Read(r =&gt; r.AllowAnonymous())
+    ///     .Writes(w =&gt; w.RequirePolicy("Editors"))
+    ///     .Delete(d =&gt; d.RequireRole("Admin")));
+    /// </code>
+    /// </example>
+    protected void ConfigureAuthorization(Action<IAuthorizationRuleBuilder> configure)
+    {
+        ThrowIfSealed();
+        if (configure is null)
+            throw new ArgumentNullException(nameof(configure));
+        if (_operationAuthRules is not null)
+        {
+            throw new InvalidOperationException(
+                "ConfigureAuthorization has already been called on this profile. Call it only once.");
+        }
+        if (_authRequired)
+        {
+            throw new InvalidOperationException(
+                "ConfigureAuthorization cannot be combined with RequireAuthorization()/RequireRoles(). " +
+                "Use one authorization model.");
+        }
+
+        var builder = new AuthorizationRuleBuilder();
+        configure(builder);
+        _operationAuthRules = builder.Rules.ToList();
+    }
+
+    private void ThrowIfOperationAuthConfigured()
+    {
+        if (_operationAuthRules is not null)
+        {
+            throw new InvalidOperationException(
+                "RequireAuthorization()/RequireRoles() cannot be combined with ConfigureAuthorization(). " +
+                "Use one authorization model.");
+        }
     }
 
     // ── IEntitySetEndpointSource ─────────────────────────────────────────────
@@ -1490,6 +1615,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     bool IEntitySetEndpointSource.HasETag => _getETag is not null;
     AuthorizationConfig? IEntitySetEndpointSource.Authorization =>
         _authRequired ? new AuthorizationConfig(true, _authPolicy, _authRoles) : null;
+    IReadOnlyList<OperationAuthRule>? IEntitySetEndpointSource.OperationAuthorization => _operationAuthRules;
     IReadOnlyList<NavigationRouteDefinition> IEntitySetEndpointSource.NavigationRoutes => _navRoutes;
     IReadOnlyList<BoundOperationDefinition> IEntitySetEndpointSource.BoundFunctions =>
         _resolvedBoundFunctions ??= _functions.Select(d => BoundOperationDefinition.From(d, isAction: false))
@@ -1532,6 +1658,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         => LazyInitializer.EnsureInitialized(ref _keyToUrl, CompileKeyToUrl)((TModel)model);
 
     int? IEntitySetEndpointSource.MaxTop => _resolvedMaxTop;
+    long? IEntitySetEndpointSource.MaxRequestBodyBytes => _resolvedMaxRequestBodyBytes;
+    int IEntitySetEndpointSource.MaxExpansionDepth => _resolvedMaxExpansionDepth;
+    int IEntitySetEndpointSource.MaxFilterNodeCount => _resolvedMaxFilterNodeCount;
+    int IEntitySetEndpointSource.MaxOrderByNodeCount => _resolvedMaxOrderByNodeCount;
+    int IEntitySetEndpointSource.MaxAnyAllExpressionDepth => _resolvedMaxAnyAllExpressionDepth;
     bool IEntitySetEndpointSource.IdempotentDelete => _resolvedIdempotentDelete;
     bool IEntitySetEndpointSource.AllowUpsert => _resolvedAllowUpsert;
     bool IEntitySetEndpointSource.HasSearch => Search is not null;
@@ -1541,11 +1672,13 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     bool IEntitySetEndpointSource.ExpandEnabled => _resolvedExpandEnabled;
     bool IEntitySetEndpointSource.CountEnabled => _resolvedCountEnabled;
     bool IEntitySetEndpointSource.PropertyAccessEnabled => _resolvedPropertyAccessEnabled;
+    bool IEntitySetEndpointSource.PropertyRouteDocsEnabled => _resolvedPropertyRouteDocsEnabled;
     RoundingMode IEntitySetEndpointSource.RoundingMode => _resolvedRoundingMode;
     IReadOnlyList<StructuralPropertyInfo> IEntitySetEndpointSource.StructuralProperties =>
         _structuralProperties ??= BuildStructuralProperties();
     bool IEntitySetEndpointSource.AllowDeepInsert => _resolvedAllowDeepInsert;
     IReadOnlyCollection<string> IEntitySetEndpointSource.NavigationPropertyNames => _navigationPropertyNames;
+    IReadOnlyCollection<string> IEntitySetEndpointSource.IgnoredPropertyNames => _ignoredPropertyNames;
     string IEntitySetEndpointSource.KeyPropertyName => GetNavigationPropertyName(_getKey.Body);
     bool IEntitySetEndpointSource.IsAdvancedConfigureOverridden => _isAdvancedConfigureOverridden;
 

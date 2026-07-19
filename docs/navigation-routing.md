@@ -83,7 +83,7 @@ as "no children" (`[]`) for `HasMany`, or "no related entity" (`null`) for
 ## Navigation route behaviour
 
 - Returning `null` from the handler produces `404 Not Found`
-- Authorization from the parent profile's `RequireAuthorization()` / `RequireRoles()` is applied to navigation routes automatically
+- Authorization from the parent profile is applied to navigation routes automatically — both the all-operations `RequireAuthorization()`/`RequireRoles()` and per-operation `ConfigureAuthorization(...)` (a nav read is `Read`, a nav `POST`/`$ref` write is `Create`/`Update`; `.RequireResource()` checks against the parent entity)
 - Navigation routes are tagged with the parent entity set name in OpenAPI/Swagger
 - For collection navigations, `$orderby`, `$top`, `$skip`, `$count`, and `$select` are honored on the returned collection via ad-hoc in-memory `IEnumerable`/`IEnumerable<T>.OrderBy` operations (not pushed down to the handler or to SQL). Options are applied in standard OData order: `$orderby`, then `$skip`, then `$top` (`$count` is captured after `$skip` but before `$top`, per spec - the count reflects the collection after skipping but before the page limit is applied). `$orderby` supports multiple sort keys (`Prop1 asc,Prop2 desc`) and is case-insensitive on the property name. An unknown property name in `$orderby` returns `400 Bad Request` (`InvalidQueryOption`), matching `$select`'s validation behavior.
 - Any other system query option (`$filter`, `$expand`, `$search`, `$apply`, `$compute`, `$skiptoken`, `$deltatoken`) is **not implemented on navigation routes** and returns `400 Bad Request` (`UnsupportedQueryOption`) rather than being silently ignored (OData 4.0 Minimal conformance item 7: parse the option or reject it). To filter related data, expose the child entity set with its own profile and query it directly.
@@ -230,8 +230,9 @@ The `Location`/`@odata.id` are built the same way `$ref` builds populated refere
 `refTargetEntitySet` plus the child's key property, detected by convention (`Id` or
 `{TypeName}Id`) — the same `ChildEntitySetName`/`ChildKeyPropertyName` machinery `$ref` uses.
 
-Authorization is inherited from the parent profile's `RequireAuthorization()` / `RequireRoles()`,
-same as every other route on the entity set.
+Authorization is inherited from the parent profile — both the all-operations
+`RequireAuthorization()`/`RequireRoles()` and per-operation `ConfigureAuthorization(...)` (see
+[docs/authorization.md](authorization.md)) — same as every other route on the entity set.
 
 > **POST-to-nav vs. deep insert:** the `post` handler above creates ONE related entity on an
 > already-existing parent (`POST /Orders(id)/Lines`). To create a parent **and** its related
