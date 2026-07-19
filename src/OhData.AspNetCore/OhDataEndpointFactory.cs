@@ -1526,6 +1526,94 @@ internal static class OhDataEndpointFactory
     // and in what order. Ordinal-case as normalized by the Microsoft.OData parser (which
     // resolves $select identifiers to the EDM property name regardless of the casing the
     // client sent).
+    /// <summary>
+    /// #206: composes the <c>$select</c> member-init projection
+    /// (<c>x =&gt; new TModel { A = x.A, ... }</c>) onto <paramref name="query"/> when the
+    /// request is eligible, returning <paramref name="query"/> unchanged (full fetch — today's
+    /// behavior) otherwise. The projection set is selected structural properties ∪ the entity
+    /// key (always: <c>@odata.id</c>, expansion correlation, <c>$skiptoken</c>) ∪ the
+    /// <c>UseETag</c> properties (so <c>@odata.etag</c> is identical with and without
+    /// pushdown). The lambda is built per request and deliberately UNCACHED: <c>$select</c>
+    /// combinations are client-controlled and unbounded, so a lambda cache keyed by select-set
+    /// would be an unbounded-growth vector (#202 hardening ethos); LINQ providers' own query
+    /// caches key structurally and absorb repeated shapes.
+    /// </summary>
+    private static IQueryable<TModel> TryApplySelectProjection<TModel>(
+        IQueryable<TModel> query,
+        IReadOnlyList<string> selectedNames,
+        IEntitySetEndpointSource source,
+        bool hasParameterlessCtor,
+        IReadOnlyDictionary<string, StructuralPropertyInfo> structuralByName,
+        ILogger? logger)
+    {
+        if (!hasParameterlessCtor)
+        {
+            logger?.LogDebug(
+                "OhData: $select pushdown skipped for {EntitySet}: {Model} has no public parameterless constructor.",
+                source.EntitySetName, typeof(TModel).Name);
+            return query;
+        }
+
+        // Selected names can include expanded-navigation identifiers (ExtractSelectedProperties
+        // keeps them for the JSON trim); those are not structural and are skipped here —
+        // expansion loads via delegates correlated by the always-projected key. Nested $select
+        // paths ($select=address/city) arrive as their top-level identifier and project the
+        // whole member; the JSON trim shapes the nested object.
+        var members = new Dictionary<string, PropertyInfo>(StringComparer.Ordinal);
+        foreach (string name in selectedNames)
+        {
+            if (structuralByName.TryGetValue(name, out StructuralPropertyInfo? selectedProp))
+                members[selectedProp.Name] = selectedProp.Property;
+        }
+
+        foreach (StructuralPropertyInfo structural in structuralByName.Values
+            .Where(p => p.IsKey))
+        {
+            members[structural.Name] = structural.Property;
+        }
+
+        if (source.HasETag)
+        {
+            if (source.ETagPropertyNames is null)
+            {
+                logger?.LogDebug(
+                    "OhData: $select pushdown skipped for {EntitySet}: UseETag selector property names are unknowable (non-direct selector).",
+                    source.EntitySetName);
+                return query;
+            }
+
+            foreach (string name in source.ETagPropertyNames)
+            {
+                if (!structuralByName.TryGetValue(name, out StructuralPropertyInfo? etagProp))
+                {
+                    logger?.LogDebug(
+                        "OhData: $select pushdown skipped for {EntitySet}: UseETag property '{Property}' is not a structural property.",
+                        source.EntitySetName, name);
+                    return query;
+                }
+
+                members[etagProp.Name] = etagProp.Property;
+            }
+        }
+
+        foreach (PropertyInfo member in members.Values
+            .Where(m => m.SetMethod is not { IsPublic: true }))
+        {
+            logger?.LogDebug(
+                "OhData: $select pushdown skipped for {EntitySet}: '{Property}' has no public setter.",
+                source.EntitySetName, member.Name);
+            return query;
+        }
+
+        ParameterExpression x = Expression.Parameter(typeof(TModel), "x");
+        MemberBinding[] bindings = members.Values
+            .Select(m => (MemberBinding)Expression.Bind(m, Expression.Property(x, m)))
+            .ToArray();
+        Expression<Func<TModel, TModel>> projection = Expression.Lambda<Func<TModel, TModel>>(
+            Expression.MemberInit(Expression.New(typeof(TModel)), bindings), x);
+        return query.Select(projection);
+    }
+
     private static List<string>? ExtractSelectedProperties(SelectExpandClause clause)
     {
         if (clause.AllSelected) return null;
@@ -1831,6 +1919,14 @@ internal static class OhDataEndpointFactory
         var cachedQuerySettings = new ODataQuerySettings { PageSize = source.MaxTop };
         // #202: per-entity-set complexity-guard settings (expansion depth + node counts).
         var cachedValidationSettings = BuildValidationSettings(source);
+
+        // #206: $select projection pushdown — startup-computed eligibility inputs. Member-init
+        // needs a public parameterless constructor (positional records have none), and the
+        // per-request projection-set assembly matches selected names against the structural
+        // properties by name.
+        bool pushdownCtorOk = typeof(TModel).GetConstructor(Type.EmptyTypes) is not null;
+        var pushdownStructuralByName = source.StructuralProperties
+            .ToDictionary(p => p.Name, StringComparer.OrdinalIgnoreCase);
 
         // #199 Layer C: per-operation authorization. When the profile declared
         // ConfigureAuthorization(...), resolve the effective rule per route category and apply it to
@@ -2239,6 +2335,20 @@ internal static class OhDataEndpointFactory
                             filtered = filtered.Take(appliedPageSize.Value);
                         if (preferredPageSize.HasValue)
                             ctx.Response.Headers["Preference-Applied"] = $"maxpagesize={appliedPageSize!.Value}";
+                    }
+
+                    // #206: $select projection pushdown. When eligible, compose a member-init
+                    // projection so the LINQ provider emits a column-pruned SELECT. The wire is
+                    // unchanged either way: materialized objects are plain TModels and the
+                    // existing JSON pipeline ($select trim, nav omission, ETag, expansion
+                    // correlated by the always-projected key) runs identically. Ineligibility
+                    // falls back silently to the full fetch (Debug-logged reason).
+                    if (source.SelectPushdownEnabled &&
+                        options.SelectExpand?.SelectExpandClause is { } pushdownClause &&
+                        ExtractSelectedProperties(pushdownClause) is { } pushdownSelected)
+                    {
+                        filtered = TryApplySelectProjection(
+                            filtered, pushdownSelected, source, pushdownCtorOk, pushdownStructuralByName, logger);
                     }
 
                     var items = filtered.ToArray();
