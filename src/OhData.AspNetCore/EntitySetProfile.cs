@@ -491,14 +491,12 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         Expression<Func<TModel, object?>>[] selectors)
     {
         var names = new List<string>(selectors.Length);
-        foreach (Expression<Func<TModel, object?>> selector in selectors)
+        foreach (Expression selectorBody in selectors.Select(s => s.Body))
         {
-            Expression body = selector.Body;
-            if (body is UnaryExpression unary &&
-                (unary.NodeType == ExpressionType.Convert || unary.NodeType == ExpressionType.ConvertChecked))
-            {
-                body = unary.Operand;
-            }
+            Expression body = selectorBody is UnaryExpression unary &&
+                (unary.NodeType == ExpressionType.Convert || unary.NodeType == ExpressionType.ConvertChecked)
+                ? unary.Operand
+                : selectorBody;
 
             if (body is not MemberExpression member || member.Expression is not ParameterExpression)
                 return null;
