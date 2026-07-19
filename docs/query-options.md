@@ -288,7 +288,41 @@ Enabled via `SelectEnabled = true`. Reduces the response payload to the specifie
 GET /odata/Products?$select=Id,Name,Price
 ```
 
-The framework fetches the full entity from the data source and removes unselected properties from the JSON response. SQL-level column projection is not currently performed.
+The response shape is produced by JSON post-processing (unselected properties are removed from
+the serialized entity), which is what keeps the output camelCase-consistent.
+
+### Projection pushdown (#206)
+
+On the `GetQueryable` path, an eligible `$select` additionally pushes a **column projection**
+down to the data source: the framework composes a member-init projection
+(`x => new TModel { Id = x.Id, Name = x.Name }`) onto the queryable before enumeration, so LINQ
+providers emit a column-pruned `SELECT` instead of reading every column. The wire output is
+**byte-identical** with or without pushdown — the projection changes the SQL, never the
+response.
+
+The projected member set is the selected structural properties **plus the entity key** (needed
+for `@odata.id` and `$expand` correlation) **plus any `UseETag` properties** (so `@odata.etag`
+values are unchanged). Nested `$select` paths (`$select=address/city`) project the whole
+top-level member.
+
+Pushdown is **on by default** (`EntitySetDefaults.SelectPushdownEnabled`, per-profile
+`SelectPushdownEnabled` override) and falls back silently to the full fetch — with a
+Debug-level log naming the reason — when a request is ineligible:
+
+- the model has no public parameterless constructor (e.g. positional records),
+- a projected member has no public setter (init-only setters are fine; this arises via
+  `UseETag` selectors over get-only computed properties, since the EDM excludes get-only
+  properties from `$select` itself),
+- `UseETag` was configured with a non-direct (computed) selector, making the ETag property
+  names unknowable,
+- or the profile/server opted out via `SelectPushdownEnabled = false` (do this for exotic
+  `IQueryable` providers that cannot translate member-init projections; every EF Core
+  relational provider and InMemory can).
+
+`GetAll` (no queryable) and `GetById` (no collection query) have no pushdown path. On the
+Priority-1 `GetODataQueryable` path the profile owns the `ApplyTo` call, so — like
+`RoundingMode` — the framework does not project automatically; read the resolved
+`SelectPushdownEnabled` yourself if you want the same behavior in a custom handler.
 
 Restrict which properties may be selected:
 
