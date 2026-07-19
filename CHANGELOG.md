@@ -114,14 +114,6 @@ exclusion.
 
 ### Fixed
 
-- **Allowlist expression overloads now enforce their documented direct-member contract (#227).**
-  `FilterProperties`/`OrderByProperties`/`SelectProperties`/`ExpandProperties` documented that only
-  direct property access (`x => x.Name`) is supported, but nested member access slipped through:
-  `SelectProperties(x => x.Name.Length)` silently allowlisted `"Length"` and
-  `FilterProperties(x => x.Category.Name)` silently allowlisted `"Name"`. Both now throw
-  `ArgumentException` at profile construction, per the documented contract. **Behavioral note:** a
-  profile that was (mis)relying on the lax behavior will now fail at startup — rewrite the selector
-  to a direct property of the model.
 - **The Priority-1 (`ODataEntitySetProfile` / `GetODataQueryable`) read path now enforces `MaxTop` (#195).**
   This path delegates query application to the profile's own `ApplyTo`, and the framework previously
   materialized whatever came back with `queryable.ToArray()` — so a client that omitted `$top` (or sent
@@ -145,6 +137,14 @@ exclusion.
   collection read paths (`GetAll`, `GetQueryable`, and Priority-1 `GetODataQueryable`), via the shared
   capability gate. Implemented and capability-gated options are unaffected (`$filter`/`$orderby`/
   `$select`/`$expand`/`$count`/`$top`/`$skip`/`$search`/`$skiptoken`).
+- **Allowlist expression overloads now enforce their documented direct-member contract (#227).**
+  `FilterProperties`/`OrderByProperties`/`SelectProperties`/`ExpandProperties` documented that only
+  direct property access (`x => x.Name`) is supported, but nested member access slipped through:
+  `SelectProperties(x => x.Name.Length)` silently allowlisted `"Length"` and
+  `FilterProperties(x => x.Category.Name)` silently allowlisted `"Name"`. Both now throw
+  `ArgumentException` at profile construction, per the documented contract. **Behavior change:** a
+  profile that was (mis)relying on the lax behavior will now fail at startup — rewrite the selector
+  to a direct property of the model.
 - **Companion packages omit `Ignore()`d properties from generated schemas (#228).** #226 removed
   ignored properties from responses, request binding, `$metadata`, and query options — but the
   OpenAPI companion packages generate schemas from CLR types, so generated documents still listed
