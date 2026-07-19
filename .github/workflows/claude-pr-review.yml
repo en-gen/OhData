@@ -41,7 +41,23 @@ jobs:
         with:
           fetch-depth: 0 # full history so the base...head diff and blame context resolve
 
+      # The secrets context is not usable in a job-level `if`, so probe it in a step and gate
+      # the review on the output — a repo without the secret gets a green skip + notice, not a
+      # red X on every PR.
+      - name: Check for ANTHROPIC_API_KEY
+        id: key
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Claude PR Review skipped::ANTHROPIC_API_KEY secret is not configured (Settings → Secrets and variables → Actions)."
+          fi
+
       - name: Claude two-pass review
+        if: steps.key.outputs.present == 'true'
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
