@@ -356,6 +356,9 @@ MigrationBackup/
 # Ionide (cross platform F# VS Code tools) working folder
 .ionide/
 
+# Sample-app SQLite database files (created at first run by Database.Migrate())
+samples/**/app.db*
+
 # k6 generated reports (generated output; keep the directory itself)
 /k6/reports/*
 !/k6/reports/.gitkeep

@@ -14,6 +14,8 @@ Try it live — fire real `$filter`/`$orderby`/`$expand` queries (writes too) at
 
 (Free-tier hosting: the first load after a quiet spell takes a moment to wake up, and demo data is ephemeral — anything you write disappears whenever the instance recycles.)
 
+Or run it locally: the clone-and-run [EF Core + SQLite sample](samples/OhData.Sample.EfCoreSqlite/) puts a real relational database behind OhData and logs the SQL, so you can watch `$filter`/`$orderby`/`$top` become `WHERE`/`ORDER BY`/`LIMIT`.
+
 ## Getting Started
 
 Install the server package:
