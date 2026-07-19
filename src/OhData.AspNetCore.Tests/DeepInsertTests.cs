@@ -56,8 +56,10 @@ public class DeepInsertTests
         Assert.NotNull(DeepInsertDefaultProfile.LastReceivedByHandler);
         Assert.Null(DeepInsertDefaultProfile.LastReceivedByHandler!.Lines);
 
+        // #240: the POST echo omits the un-expanded navigation entirely (matching a read of the
+        // same type), rather than leaking it as an explicit null.
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal(JsonValueKind.Null, json.GetProperty("lines").ValueKind);
+        Assert.False(json.TryGetProperty("lines", out _));
     }
 
     [Fact]
@@ -76,8 +78,9 @@ public class DeepInsertTests
         Assert.NotNull(DeepInsertDefaultProfile.LastReceivedByHandler);
         Assert.Null(DeepInsertDefaultProfile.LastReceivedByHandler!.Category);
 
+        // #240: the stripped single-valued navigation is omitted from the echo, not echoed as null.
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal(JsonValueKind.Null, json.GetProperty("category").ValueKind);
+        Assert.False(json.TryGetProperty("category", out _));
     }
 
     [Fact]
