@@ -21,6 +21,9 @@ internal sealed class TestFixture : IAsyncDisposable
     private readonly WebApplication _app;
     public HttpClient Client { get; }
 
+    /// <summary>The running host, for tests that need its service provider (e.g. DB seeding).</summary>
+    internal WebApplication App => _app;
+
     internal TestFixture(WebApplication app)
     {
         _app = app;

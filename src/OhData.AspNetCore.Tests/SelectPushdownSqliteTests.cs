@@ -97,7 +97,7 @@ public class SelectPushdownSqliteTests : IAsyncLifetime
                         (eventId, _) => eventId == Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.CommandExecuted));
             });
 
-        using var scope = ((Microsoft.AspNetCore.Builder.WebApplication)SelectPushdownSqliteTestsHelpers.GetApp(_fx)).Services.CreateScope();
+        using var scope = _fx.App.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<PushSqliteDbContext>();
         db.Database.EnsureCreated();
         db.Wides.AddRange(
@@ -158,6 +158,101 @@ public class SelectPushdownSqliteTests : IAsyncLifetime
     }
 }
 
+// #206 review finding (HIGH): projecting an EF-OWNED complex property under a TRACKING
+// queryable throws inside EF ("owned entity without a corresponding owner") — the projection
+// must fall back for complex members so this stays a 200 full-fetch, never a 500.
+
+public sealed class SqliteOwnedItem
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public SqliteOwnedDims? Dims { get; set; }
+}
+
+public sealed class SqliteOwnedDims
+{
+    public double Width { get; set; }
+    public double Height { get; set; }
+}
+
+public sealed class PushOwnedDbContext : DbContext
+{
+    public PushOwnedDbContext(DbContextOptions<PushOwnedDbContext> options) : base(options) { }
+
+    public DbSet<SqliteOwnedItem> Items => Set<SqliteOwnedItem>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+        modelBuilder.Entity<SqliteOwnedItem>().OwnsOne(x => x.Dims);
+}
+
+public sealed class SqliteOwnedProfile : EntitySetProfile<int, SqliteOwnedItem>
+{
+    private readonly PushOwnedDbContext _db;
+
+    public SqliteOwnedProfile(PushOwnedDbContext db) : base(x => x.Id)
+    {
+        _db = db;
+        SelectEnabled = true;
+        // Deliberately a TRACKING queryable — the vanilla profile shape that triggered the 500.
+        GetQueryable = _ => Task.FromResult(_db.Items.AsQueryable());
+    }
+}
+
+public class SelectPushdownOwnedTypeTests : IAsyncLifetime
+{
+    private SqliteConnection _connection = null!;
+    private TestFixture _fx = null!;
+
+    public async Task InitializeAsync()
+    {
+        _connection = new SqliteConnection("Data Source=:memory:");
+        _connection.Open();
+
+        _fx = await TestHostBuilder.BuildAsync(
+            b => b.AddProfile<SqliteOwnedProfile>(),
+            configureServices: services =>
+                services.AddDbContext<PushOwnedDbContext>(o => o.UseSqlite(_connection)));
+
+        using var scope = _fx.App.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PushOwnedDbContext>();
+        db.Database.EnsureCreated();
+        db.Items.Add(new SqliteOwnedItem
+        {
+            Id = 1,
+            Name = "Crate",
+            Dims = new SqliteOwnedDims { Width = 2.5, Height = 4.0 },
+        });
+        db.SaveChanges();
+    }
+
+    public async Task DisposeAsync()
+    {
+        await _fx.DisposeAsync();
+        _connection.Dispose();
+    }
+
+    [Fact]
+    public async Task SelectOwnedComplex_TrackingQueryable_Returns200ViaFallback()
+    {
+        var resp = await _fx.Client.GetAsync("/odata/SqliteOwnedItems?$select=dims");
+        Assert.Equal(System.Net.HttpStatusCode.OK, resp.StatusCode);
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("\"width\":2.5", body);
+        Assert.DoesNotContain("\"name\"", body); // $select trim still applies
+    }
+
+    [Fact]
+    public async Task SelectScalarOnOwnedModel_TrackingQueryable_StillWorks()
+    {
+        // Scalar-only $select on the same model: dims isn't in the projection set. Under
+        // tracking, EF also rejects a bare scalar member-init on an owner type in some shapes —
+        // what matters here is the request contract: 200 with the selected data, never a 500.
+        var resp = await _fx.Client.GetAsync("/odata/SqliteOwnedItems?$select=name");
+        Assert.Equal(System.Net.HttpStatusCode.OK, resp.StatusCode);
+        Assert.Contains("\"name\":\"Crate\"", await resp.Content.ReadAsStringAsync());
+    }
+}
+
 /// <summary>Opt-out host: identical profile shape but SelectPushdownEnabled=false server-wide.</summary>
 public class SelectPushdownSqliteOptOutTests : IAsyncLifetime
 {
@@ -187,7 +282,7 @@ public class SelectPushdownSqliteOptOutTests : IAsyncLifetime
                         (eventId, _) => eventId == Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.CommandExecuted));
             });
 
-        using var scope = ((Microsoft.AspNetCore.Builder.WebApplication)SelectPushdownSqliteTestsHelpers.GetApp(_fx)).Services.CreateScope();
+        using var scope = _fx.App.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<PushSqliteDbContext>();
         db.Database.EnsureCreated();
         db.Wides.Add(new SqliteWide { Id = 1, Name = "A", Price = 10m, Description = "d1", Sku = "S1", Stock = 5 });
@@ -214,10 +309,3 @@ public class SelectPushdownSqliteOptOutTests : IAsyncLifetime
     }
 }
 
-internal static class SelectPushdownSqliteTestsHelpers
-{
-    internal static object GetApp(TestFixture fx) =>
-        typeof(TestFixture).GetField("_app",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
-            .GetValue(fx)!;
-}

@@ -310,19 +310,24 @@ Pushdown is **on by default** (`EntitySetDefaults.SelectPushdownEnabled`, per-pr
 Debug-level log naming the reason — when a request is ineligible:
 
 - the model has no public parameterless constructor (e.g. positional records),
+- a projected member is **complex-typed** (phase-1 boundary: projecting an EF-*owned* complex
+  property under a tracking queryable throws inside EF; `byte[]` counts as primitive, so
+  rowversion ETag inputs keep pushdown),
 - a projected member has no public setter (init-only setters are fine; this arises via
   `UseETag` selectors over get-only computed properties, since the EDM excludes get-only
   properties from `$select` itself),
 - `UseETag` was configured with a non-direct (computed) selector, making the ETag property
   names unknowable,
+- the model has structural properties whose names differ only by case (the name lookup is
+  case-insensitive, so such models are pushdown-ineligible outright),
 - or the profile/server opted out via `SelectPushdownEnabled = false` (do this for exotic
   `IQueryable` providers that cannot translate member-init projections; every EF Core
   relational provider and InMemory can).
 
 `GetAll` (no queryable) and `GetById` (no collection query) have no pushdown path. On the
 Priority-1 `GetODataQueryable` path the profile owns the `ApplyTo` call, so — like
-`RoundingMode` — the framework does not project automatically; read the resolved
-`SelectPushdownEnabled` yourself if you want the same behavior in a custom handler.
+`RoundingMode` — the framework does not project automatically; a Priority-1 handler that wants
+column pruning applies its own `Select` projection (it already owns the whole query pipeline).
 
 Restrict which properties may be selected:
 

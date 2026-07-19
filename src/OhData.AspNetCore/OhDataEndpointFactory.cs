@@ -1526,6 +1526,37 @@ internal static class OhDataEndpointFactory
     // and in what order. Ordinal-case as normalized by the Microsoft.OData parser (which
     // resolves $select identifiers to the EDM property name regardless of the casing the
     // client sent).
+    private static List<string>? ExtractSelectedProperties(SelectExpandClause clause)
+    {
+        if (clause.AllSelected) return null;
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var props = new List<string>();
+        foreach (var item in clause.SelectedItems)
+        {
+            if (item is PathSelectItem psi)
+            {
+                string id = psi.SelectedPath.FirstSegment.Identifier;
+                if (seen.Add(id)) props.Add(id);
+            }
+        }
+
+        // When only $expand (no $select) is used, AllSelected is false but SelectedItems
+        // has no PathSelectItems — only ExpandedNavigationSelectItems. An empty set would
+        // strip every property in Stage 4, so treat this as "keep all".
+        if (props.Count == 0) return null;
+
+        // Preserve expanded nav properties so they survive Stage 4 when $select and
+        // $expand are combined (e.g. $select=Name&$expand=Children keeps both).
+        foreach (var ensi in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
+        {
+            string id = ensi.PathToNavigationProperty.FirstSegment.Identifier;
+            if (seen.Add(id)) props.Add(id);
+        }
+
+        return props;
+    }
+
     /// <summary>
     /// #206: composes the <c>$select</c> member-init projection
     /// (<c>x =&gt; new TModel { A = x.A, ... }</c>) onto <paramref name="query"/> when the
@@ -1559,18 +1590,18 @@ internal static class OhDataEndpointFactory
         // expansion loads via delegates correlated by the always-projected key. Nested $select
         // paths ($select=address/city) arrive as their top-level identifier and project the
         // whole member; the JSON trim shapes the nested object.
-        var members = new Dictionary<string, PropertyInfo>(StringComparer.Ordinal);
+        var members = new Dictionary<string, StructuralPropertyInfo>(StringComparer.Ordinal);
         foreach (StructuralPropertyInfo selectedProp in selectedNames
             .Where(structuralByName.ContainsKey)
             .Select(name => structuralByName[name]))
         {
-            members[selectedProp.Name] = selectedProp.Property;
+            members[selectedProp.Name] = selectedProp;
         }
 
         foreach (StructuralPropertyInfo structural in structuralByName.Values
             .Where(p => p.IsKey))
         {
-            members[structural.Name] = structural.Property;
+            members[structural.Name] = structural;
         }
 
         if (source.HasETag)
@@ -1593,57 +1624,40 @@ internal static class OhDataEndpointFactory
                     return query;
                 }
 
-                members[etagProp.Name] = etagProp.Property;
+                members[etagProp.Name] = etagProp;
             }
         }
 
-        foreach (PropertyInfo member in members.Values
-            .Where(m => m.SetMethod is not { IsPublic: true }))
+        foreach (StructuralPropertyInfo member in members.Values)
         {
-            logger?.LogDebug(
-                "OhData: $select pushdown skipped for {EntitySet}: '{Property}' has no public setter.",
-                source.EntitySetName, member.Name);
-            return query;
+            // Complex-typed members are a phase-1 boundary: projecting an EF-owned complex
+            // property under a TRACKING queryable throws inside EF ("owned entity without a
+            // corresponding owner"), turning a working request into a 500. byte[] is classified
+            // primitive (s_primitiveClrTypes), so rowversion ETag inputs keep pushdown.
+            if (member.IsComplex)
+            {
+                logger?.LogDebug(
+                    "OhData: $select pushdown skipped for {EntitySet}: '{Property}' is complex-typed (owned-entity projection is a phase-1 boundary).",
+                    source.EntitySetName, member.Name);
+                return query;
+            }
+
+            if (member.Property.SetMethod is not { IsPublic: true })
+            {
+                logger?.LogDebug(
+                    "OhData: $select pushdown skipped for {EntitySet}: '{Property}' has no public setter.",
+                    source.EntitySetName, member.Name);
+                return query;
+            }
         }
 
         ParameterExpression x = Expression.Parameter(typeof(TModel), "x");
         MemberBinding[] bindings = members.Values
-            .Select(m => (MemberBinding)Expression.Bind(m, Expression.Property(x, m)))
+            .Select(m => (MemberBinding)Expression.Bind(m.Property, Expression.Property(x, m.Property)))
             .ToArray();
         Expression<Func<TModel, TModel>> projection = Expression.Lambda<Func<TModel, TModel>>(
             Expression.MemberInit(Expression.New(typeof(TModel)), bindings), x);
         return query.Select(projection);
-    }
-
-    private static List<string>? ExtractSelectedProperties(SelectExpandClause clause)
-    {
-        if (clause.AllSelected) return null;
-
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var props = new List<string>();
-        foreach (var item in clause.SelectedItems)
-        {
-            if (item is PathSelectItem psi)
-            {
-                string id = psi.SelectedPath.FirstSegment.Identifier;
-                if (seen.Add(id)) props.Add(id);
-            }
-        }
-
-        // When only $expand (no $select) is used, AllSelected is false but SelectedItems
-        // has no PathSelectItems — only ExpandedNavigationSelectItems. An empty set would
-        // strip every property in Stage 4, so treat this as "keep all".
-        if (props.Count == 0) return null;
-
-        // Preserve expanded nav properties so they survive Stage 4 when $select and
-        // $expand are combined (e.g. $select=Name&$expand=Children keeps both).
-        foreach (var ensi in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
-        {
-            string id = ensi.PathToNavigationProperty.FirstSegment.Identifier;
-            if (seen.Add(id)) props.Add(id);
-        }
-
-        return props;
     }
 
     // M3: appends the OData JSON §10.7/§10.8 projection suffix to a context segment when a
@@ -1924,10 +1938,17 @@ internal static class OhDataEndpointFactory
         // #206: $select projection pushdown — startup-computed eligibility inputs. Member-init
         // needs a public parameterless constructor (positional records have none), and the
         // per-request projection-set assembly matches selected names against the structural
-        // properties by name.
+        // properties by name. Names are matched case-insensitively (EDM identifiers); a model
+        // whose structural properties differ only by case makes that lookup ambiguous, so such
+        // a profile is pushdown-ineligible outright rather than crashing the dictionary build.
         bool pushdownCtorOk = typeof(TModel).GetConstructor(Type.EmptyTypes) is not null;
-        var pushdownStructuralByName = source.StructuralProperties
-            .ToDictionary(p => p.Name, StringComparer.OrdinalIgnoreCase);
+        var pushdownNameGroups = source.StructuralProperties
+            .GroupBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        bool pushdownNamesUnambiguous = pushdownNameGroups.All(g => g.Count() == 1);
+        var pushdownStructuralByName = pushdownNameGroups
+            .Where(g => g.Count() == 1)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
         // #199 Layer C: per-operation authorization. When the profile declared
         // ConfigureAuthorization(...), resolve the effective rule per route category and apply it to
@@ -2345,6 +2366,7 @@ internal static class OhDataEndpointFactory
                     // correlated by the always-projected key) runs identically. Ineligibility
                     // falls back silently to the full fetch (Debug-logged reason).
                     if (source.SelectPushdownEnabled &&
+                        pushdownNamesUnambiguous &&
                         options.SelectExpand?.SelectExpandClause is { } pushdownClause &&
                         ExtractSelectedProperties(pushdownClause) is { } pushdownSelected)
                     {

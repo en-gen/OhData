@@ -61,7 +61,7 @@ lambda cache keyed by select-set would be an unbounded-growth vector (same harde
 ### Eligibility — per request, cheap, silent fallback
 
 Pushdown applies only when ALL hold; otherwise the request silently uses today's full fetch
-(logged once per reason at Debug):
+(each skipped request logs the reason at Debug):
 
 1. `SelectPushdownEnabled` resolves `true` — new profile-level `bool?` inheriting
    `EntitySetDefaults.SelectPushdownEnabled`, **default `true`**. The opt-out exists for
@@ -70,10 +70,14 @@ Pushdown applies only when ALL hold; otherwise the request silently uses today's
 3. `TModel` has a public parameterless constructor (positional records → fallback), computed
    once at startup.
 4. Every property in the projection set has a usable setter (init-only counts; get-only
-   computed properties disable pushdown **only when actually in the projection set**). Setter
-   availability is captured per property at startup; the per-request check is a set
-   intersection.
+   computed properties disable pushdown **only when actually in the projection set**) and is
+   **not complex-typed** — projecting an EF-owned complex property under a tracking queryable
+   throws inside EF, so complex members are a phase-1 fallback (`byte[]` is classified
+   primitive, keeping rowversion ETag inputs eligible). Both checks run per request over the
+   assembled projection set.
 5. If `UseETag` is configured, its property names were capturable (direct-member selectors).
+6. The model's structural property names are unambiguous case-insensitively (a model with
+   `Name` and `NAme` is pushdown-ineligible outright rather than a startup failure).
 
 Wire-shape invariants (tested): responses with pushdown on vs off are **byte-identical** —
 including `@odata.etag`, `@odata.id`, `@odata.nextLink`, `$expand`-ed content, and `$count`.
@@ -86,10 +90,9 @@ including `@odata.etag`, `@odata.id`, `@odata.nextLink`, `$expand`-ed content, a
   `RoundingMode`: the framework does not auto-apply there; the profile can read the resolved
   flag and project itself (documented).
 - The `$count` companion path is unaffected (no columns to prune in a COUNT).
-- Type-erasure note: the factory works with type-erased sources; the projection is built where
-  the generics live — a new internal `IEntitySetEndpointSource` member implemented by
-  `EntitySetProfile<TKey, TModel>` receives the projection-set names and returns the projected
-  `IQueryable` (typed member-init inside, `Cast<object>` at the boundary as today).
+- Implementation note: the collection handler is already generically typed
+  (`MapEntitySet<TKey, TModel>` holds an `IQueryable<TModel>`), so the projection composes as a
+  typed static helper in the factory — no interface change needed for the projection itself.
 
 ### Verification
 
