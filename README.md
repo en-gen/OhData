@@ -237,12 +237,28 @@ for the full methodology, raw output, and known asymmetries between the two pipe
 
 ## Battle-testing
 
-1,100 automated tests protect the framework end to end: 778 in `OhData.AspNetCore.Tests` (server
+1,470 automated tests protect the framework end to end: 1,097 in `OhData.AspNetCore.Tests` (server
 routing, query options, navigation, ETags, authorization, malformed-payload hardening), 267 in
 `OhData.Client.Tests`, 30 in `OhData.MicrosoftODataClient.Tests` (compatibility against the
-official `Microsoft.OData.Client`), and 25 across the OpenAPI-integration suites
-(`OhData.AspNetCore.OpenApi.Tests`, `OhData.AspNetCore.NSwag.Tests`). Run them yourself with the
-commands in [CLAUDE.md](CLAUDE.md#build--test).
+official `Microsoft.OData.Client`), and 76 across the OpenAPI-integration suites
+(`OhData.AspNetCore.OpenApi.Tests`, `OhData.AspNetCore.NSwag.Tests`,
+`OhData.AspNetCore.Swashbuckle.Tests`). Run them yourself with the commands in
+[CLAUDE.md](CLAUDE.md#build--test).
+
+## Versioning & support
+
+OhData follows [SemVer](https://semver.org/): patch releases fix bugs, minor releases add
+functionality without breaking the public API, and any breaking change means a major version.
+That contract is **enforced at build time**, not just promised — every release is diffed against
+the previously published API surface via .NET package validation
+(`PackageValidationBaselineVersion`), so an unintended breaking change fails the release build.
+Behavior changes that don't break the API are called out explicitly in the
+[CHANGELOG](CHANGELOG.md).
+
+**The latest 1.x release is the supported version.** Fixes — including security fixes — ship as a
+new release on top of it; older releases receive no back-ports. `develop` carries pre-release
+work and is not for production use. See [SECURITY.md](SECURITY.md) for vulnerability reporting
+and the full support policy.
 
 ---
 
