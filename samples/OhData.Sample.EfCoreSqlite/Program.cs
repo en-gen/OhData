@@ -21,7 +21,8 @@ builder.Services.AddDbContext<ShopDbContext>(o => o.UseSqlite(
 builder.Services.AddOhData(o => o
     .WithPrefix("/odata")
     .AddProfile<ProductProfile>()
-    .AddProfile<CategoryProfile>());
+    .AddProfile<CategoryProfile>()
+    .AddProfile<ProductSummaryProfile>());
 
 var app = builder.Build();
 

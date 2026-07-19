@@ -12,6 +12,8 @@ What it demonstrates:
 - `FilterEnabled` / `OrderByEnabled` / `SelectEnabled` / `ExpandEnabled` / `CountEnabled` and `MaxTop`
 - Batch-loaded `$expand` in both directions (`Products?$expand=Category`,
   `Categories?$expand=Products`) — one SQL query per page, not one per row (no N+1)
+- An entity set over a **plain DTO** (`ProductSummaries`) — a `Join` projection inside the
+  `IQueryable`, decoupling the wire model from the persistence model without losing pushdown
 - EF Core **migrations** (committed, in [`Migrations/`](Migrations/)) applied with
   `Database.Migrate()` on startup, plus idempotent seeding
 
@@ -118,6 +120,55 @@ and `$expand=Category` on a page of products issues a single batched `JOIN` for 
       INNER JOIN "Categories" AS "c" ON "p"."CategoryId" = "c"."Id"
       WHERE "p"."Id" IN (@idSet1, @idSet2, @idSet3)
 ```
+
+## OData DTOs: projecting away your persistence model
+
+`ProductSummaries` is an entity set with **no table behind it**. `ProductSummary` is a plain
+DTO — not an EF entity, no `DbSet`, no migration — and `ProductSummaryProfile` builds it by
+projecting a join inside the `IQueryable`:
+
+```csharp
+GetQueryable = (_) => Task.FromResult(
+    db.Products.Join(db.Categories,
+        p => p.CategoryId, c => c.Id,
+        (p, c) => new ProductSummary { Id = p.Id, Name = p.Name, Price = p.Price, CategoryName = c.Name }));
+```
+
+Because the projection is still un-materialized, OData query options compose **through** it.
+Filtering on `categoryName` — a property that only exists on the wire model — becomes a
+`WHERE` on the joined `Categories` table:
+
+```bash
+curl "http://localhost:5220/odata/ProductSummaries?\$filter=categoryName%20eq%20'Tools'&\$orderby=name&\$top=3"
+```
+
+```
+info: Microsoft.EntityFrameworkCore.Database.Command[20101]
+      Executed DbCommand (0ms) [Parameters=[@TypedProperty='?' (Size = 5), @TypedProperty1='?' (DbType = Int32)], CommandType='Text', CommandTimeout='30']
+      SELECT "p"."Id", "p"."Name", "p"."Price", "c"."Name" AS "CategoryName"
+      FROM "Products" AS "p"
+      INNER JOIN "Categories" AS "c" ON "p"."CategoryId" = "c"."Id"
+      WHERE "c"."Name" = @TypedProperty
+      ORDER BY "p"."Name"
+      LIMIT @TypedProperty1
+```
+
+Note the `SELECT` list: it contains exactly the four projected columns. `Stock` and
+`CategoryId` never leave the database, because the wire model doesn't have them — the
+projection prunes the SQL, and `$select` (try
+`?\$select=name,categoryName&\$orderby=name&\$top=3`) additionally prunes the JSON payload.
+The client sees a flat `{ id, name, price, categoryName }` resource and can't tell that
+categories live in their own table:
+
+```json
+{"@odata.context":"http://localhost:5220/odata/$metadata#ProductSummaries","value":[
+  {"id":3,"name":"Adjustable Wrench","price":12.25,"categoryName":"Tools"},
+  {"id":2,"name":"Ball-Peen Hammer","price":17.49,"categoryName":"Tools"},
+  {"id":1,"name":"Claw Hammer","price":14.99,"categoryName":"Tools"}]}
+```
+
+Only `GetQueryable` is assigned, so `ProductSummaries` is read-only by construction — no
+POST/PUT/PATCH/DELETE routes exist at all.
 
 ## Project tour
 

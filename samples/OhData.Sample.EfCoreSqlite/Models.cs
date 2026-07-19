@@ -41,6 +41,24 @@ public class Category
     public ICollection<Product> Products { get; set; } = new List<Product>();
 }
 
+/// <summary>
+/// A plain DTO — not an EF entity, no DbSet, no table. <see cref="ProductSummaryProfile"/>
+/// projects it from <see cref="Product"/> ⋈ <see cref="Category"/> inside the
+/// <c>IQueryable</c>, so the OData surface (the "wire model") is fully decoupled from the
+/// persistence model while keeping SQL pushdown: <c>$filter</c>/<c>$orderby</c> on DTO
+/// properties translate through the projection into SQL on the underlying tables.
+/// </summary>
+public class ProductSummary
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public decimal Price { get; set; }
+
+    /// <summary>Flattened from the joined <see cref="Category"/> row — the client never
+    /// learns that categories live in their own table.</summary>
+    public string CategoryName { get; set; } = "";
+}
+
 // ── EF Core SQLite context ────────────────────────────────────────────────────
 
 /// <summary>

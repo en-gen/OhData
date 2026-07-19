@@ -134,3 +134,43 @@ public class CategoryProfile : EntitySetProfile<int, Category>
         };
     }
 }
+
+// ── ProductSummaries (DTO projection) ─────────────────────────────────────────
+
+/// <summary>
+/// An entity set over a DTO that has no table of its own. <c>GetQueryable</c> returns a
+/// projection — <c>Products ⋈ Categories</c> flattened into <see cref="ProductSummary"/> —
+/// and because it's still an un-materialized <c>IQueryable</c>, OData query options compose
+/// on top of it: <c>$filter=categoryName eq 'Tools'</c> becomes SQL
+/// <c>WHERE c."Name" = 'Tools'</c> on the JOIN, and <c>$select</c> prunes the SELECT list.
+/// The wire model is decoupled from the persistence model with zero mapping code.
+/// </summary>
+public class ProductSummaryProfile : EntitySetProfile<int, ProductSummary>
+{
+    public ProductSummaryProfile(ShopDbContext db) : base(x => x.Id)
+    {
+        FilterEnabled = true;
+        OrderByEnabled = true;
+        SelectEnabled = true;
+        CountEnabled = true;
+        MaxTop = 50;
+
+        // An explicit Join rather than p.Category: this sample's EF model deliberately keeps
+        // the Product/Category relationship FK-only (the CLR navigations are Ignored — see
+        // ShopDbContext), so the join condition is spelled out. Either shape translates to
+        // the same SQL INNER JOIN. Read-only by design: no other handlers are assigned, so
+        // no POST/PUT/PATCH/DELETE routes exist for this set.
+        GetQueryable = (_) => Task.FromResult(
+            db.Products.Join(
+                db.Categories,
+                p => p.CategoryId,
+                c => c.Id,
+                (p, c) => new ProductSummary
+                {
+                    Id = p.Id,
+                    Name = p.Name,
+                    Price = p.Price,
+                    CategoryName = c.Name,
+                }));
+    }
+}
