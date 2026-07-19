@@ -70,7 +70,9 @@ public class ShopDbContext(DbContextOptions<ShopDbContext> options) : DbContext(
 
         // SQLite has no native decimal column type; storing Price as REAL (double) keeps
         // $filter/$orderby on price translating to plain SQL comparisons instead of hitting
-        // the SQLite provider's decimal-in-query limitations.
+        // the SQLite provider's decimal-in-query limitations. Note that double is an
+        // approximate type — fine for a demo, but a real money app should store cents as an
+        // integer or use the provider's default decimal-as-TEXT mapping instead.
         modelBuilder.Entity<Product>().Property(p => p.Price).HasConversion<double>();
     }
 }

@@ -41,15 +41,16 @@ The API listens on `http://localhost:5220`. Delete `app.db*` any time to reset t
 curl "http://localhost:5220/odata/"
 curl "http://localhost:5220/odata/\$metadata"
 
-# Collection, and the query options (quote the URL: $ and spaces)
+# Collection, and the query options (quote the URL and percent-encode spaces as %20 —
+# modern curl rejects URLs containing literal spaces)
 curl "http://localhost:5220/odata/Products"
-curl "http://localhost:5220/odata/Products?\$filter=price gt 10&\$orderby=name&\$top=5"
-curl "http://localhost:5220/odata/Products?\$orderby=price desc&\$skip=5&\$top=3"
-curl "http://localhost:5220/odata/Products?\$select=name,price"
-curl "http://localhost:5220/odata/Products/\$count?\$filter=price gt 10"
+curl "http://localhost:5220/odata/Products?\$filter=price%20gt%2010&\$orderby=name&\$top=5"
+curl "http://localhost:5220/odata/Products?\$orderby=price%20desc&\$skip=5&\$top=3"
+curl "http://localhost:5220/odata/Products?\$select=name,price&\$orderby=name&\$top=2"
+curl "http://localhost:5220/odata/Products/\$count?\$filter=price%20gt%2010"
 
 # Batch-loaded $expand — one JOIN per page, not one query per row
-curl "http://localhost:5220/odata/Products?\$top=3&\$expand=Category"
+curl "http://localhost:5220/odata/Products?\$orderby=name&\$top=3&\$expand=Category"
 curl "http://localhost:5220/odata/Categories?\$expand=Products"
 
 # Single entity / navigation
@@ -64,10 +65,12 @@ curl -X POST "http://localhost:5220/odata/Products" \
 curl -X PATCH "http://localhost:5220/odata/Products(26)" \
      -H "Content-Type: application/json" \
      -d '{"price":27.49}'
+# (26 is the id from the POST response above — adjust if yours differs)
 ```
 
-(PowerShell: use `Invoke-WebRequest` or single-quote the URLs so `$filter` isn't expanded as a
-variable.)
+(PowerShell: single-quote the URL and drop the `\` before `$` — the backslash is bash escaping,
+and inside single quotes PowerShell doesn't expand `$filter` anyway. For example:
+`Invoke-WebRequest 'http://localhost:5220/odata/Products?$filter=price%20gt%2010'`.)
 
 ## The SQL pushdown, live
 
@@ -75,7 +78,7 @@ The console logs every SQL statement (the `Microsoft.EntityFrameworkCore.Databas
 category is set to `Information` in [`appsettings.json`](appsettings.json)). Run:
 
 ```
-curl "http://localhost:5220/odata/Products?\$filter=price gt 10&\$orderby=name&\$top=5"
+curl "http://localhost:5220/odata/Products?\$filter=price%20gt%2010&\$orderby=name&\$top=5"
 ```
 
 and the console shows the whole OData query as one SQL statement — filtering, ordering, and

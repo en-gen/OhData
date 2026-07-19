@@ -27,8 +27,9 @@ public class ProductProfile : EntitySetProfile<int, Product>
         ExpandEnabled = true;
         CountEnabled = true;
 
-        // Server-side page-size ceiling: $top above this (or no $top at all, on servers that
-        // choose to page) is capped at 50 rows per request.
+        // Server-side page-size ceiling: an explicit $top above 50 is REJECTED with 400
+        // (it is not silently capped); a request with no $top at all is server-paged to
+        // 50 rows with an @odata.nextLink to the rest.
         MaxTop = 50;
 
         // Batch-loaded $expand=Category (see docs/navigation-routing.md): the batchGet
@@ -119,6 +120,8 @@ public class CategoryProfile : EntitySetProfile<int, Category>
             return products.ToLookup(p => p.CategoryId);
         });
 
+        // Deliberately partial CRUD: any handler left unassigned registers NO route at all
+        // (OhData's headline rule) — so Categories has no PUT/PATCH/DELETE endpoints.
         GetQueryable = (_) => Task.FromResult(db.Categories.AsQueryable());
 
         GetById = (id, ct) => db.Categories.SingleOrDefaultAsync(c => c.Id == id, ct);
