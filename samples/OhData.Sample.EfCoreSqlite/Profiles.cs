@@ -49,6 +49,22 @@ public class ProductProfile : EntitySetProfile<int, Product>
             },
             refTargetEntitySet: "Categories");
 
+        // Batch-loaded $expand=Tags across the many-to-many. The SelectMany goes THROUGH the
+        // suppressed ProductTags join table (watch the SQL: one query with two JOINs for the
+        // whole page — no N+1, and no join entity ever materialized). The framework derives
+        // the per-entity handler from this too, so GET /odata/Products(1)/Tags also works.
+        // (The two-argument SelectMany overload matters on SQLite: it translates to plain
+        // INNER JOINs, where a correlated sub-Select would need the unsupported SQL APPLY.)
+        HasMany(x => x.Tags, batchGetAll: async (productIds, ct) =>
+        {
+            var idSet = productIds.ToHashSet();
+            var pairs = await db.Products
+                .Where(p => idSet.Contains(p.Id))
+                .SelectMany(p => p.Tags, (p, t) => new { p.Id, Tag = t })
+                .ToListAsync(ct);
+            return pairs.ToLookup(x => x.Id, x => x.Tag);
+        });
+
         GetQueryable = (_) => Task.FromResult(db.Products.AsQueryable());
 
         GetById = (id, ct) => db.Products.SingleOrDefaultAsync(p => p.Id == id, ct);
@@ -132,6 +148,36 @@ public class CategoryProfile : EntitySetProfile<int, Category>
             await db.SaveChangesAsync(ct);
             return category;
         };
+    }
+}
+
+// ── Tags ──────────────────────────────────────────────────────────────────────
+
+/// <summary>
+/// The other end of the many-to-many. Note the two different "ignores" at play: EF's
+/// <c>modelBuilder...Ignore()</c> (used for Category/Products in
+/// <see cref="ShopDbContext"/>) removes a property from the PERSISTENCE model, while the
+/// profile's <c>Ignore()</c> here (#226) removes one from the WIRE model — same word,
+/// different layer. <c>Tag.Products</c> must stay in the EF model (it's half of the skip
+/// navigation), so it is ignored wire-side instead.
+/// </summary>
+public class TagProfile : EntitySetProfile<int, Tag>
+{
+    public TagProfile(ShopDbContext db) : base(x => x.Id)
+    {
+        FilterEnabled = true;
+        OrderByEnabled = true;
+        SelectEnabled = true;
+        CountEnabled = true;
+        MaxTop = 50;
+
+        // Wire-shape ignore: Tag serializes as { id, label } — no products collection, and
+        // no reverse navigation route. The EF skip navigation is untouched.
+        Ignore(x => x.Products);
+
+        GetQueryable = (_) => Task.FromResult(db.Tags.AsQueryable());
+
+        GetById = (id, ct) => db.Tags.SingleOrDefaultAsync(t => t.Id == id, ct);
     }
 }
 

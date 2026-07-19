@@ -28,6 +28,14 @@ public class Product
     /// <summary>Single-valued navigation, batch-loaded for <c>$expand=Category</c> — see
     /// <see cref="ProductProfile"/>.</summary>
     public Category Category { get; set; } = null!;
+
+    /// <summary>
+    /// Many-to-many skip navigation (EF Core <c>HasMany().WithMany()</c>): the
+    /// <c>ProductTags</c> join table exists only inside the database — it has no CLR type,
+    /// so it can never leak onto the OData wire. Batch-loaded for <c>$expand=Tags</c> — see
+    /// <see cref="ProductProfile"/>.
+    /// </summary>
+    public ICollection<Tag> Tags { get; set; } = new List<Tag>();
 }
 
 /// <summary>A product category with a batch-loaded reverse navigation.</summary>
@@ -38,6 +46,23 @@ public class Category
 
     /// <summary>Reverse collection navigation, batch-loaded for <c>$expand=Products</c> — see
     /// <see cref="CategoryProfile"/>.</summary>
+    public ICollection<Product> Products { get; set; } = new List<Product>();
+}
+
+/// <summary>
+/// A product tag, related to <see cref="Product"/> many-to-many through an implicit
+/// shared-type join entity (the <c>ProductTags</c> table) — no CLR join type anywhere.
+/// </summary>
+public class Tag
+{
+    public int Id { get; set; }
+    public string Label { get; set; } = "";
+
+    /// <summary>
+    /// Reverse skip navigation. EF needs it for the <c>HasMany().WithMany()</c> pairing, but
+    /// <see cref="TagProfile"/> excludes it from the wire with the profile-level
+    /// <c>Ignore()</c>, so a Tag serializes as just <c>{ id, label }</c>.
+    /// </summary>
     public ICollection<Product> Products { get; set; } = new List<Product>();
 }
 
@@ -69,6 +94,7 @@ public class ShopDbContext(DbContextOptions<ShopDbContext> options) : DbContext(
 {
     public DbSet<Product> Products => Set<Product>();
     public DbSet<Category> Categories => Set<Category>();
+    public DbSet<Tag> Tags => Set<Tag>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -85,6 +111,19 @@ public class ShopDbContext(DbContextOptions<ShopDbContext> options) : DbContext(
             .HasOne<Category>()
             .WithMany()
             .HasForeignKey(p => p.CategoryId);
+
+        // Many-to-many with a SUPPRESSED join table: Product.Tags ⟷ Tag.Products are EF Core
+        // "skip navigations", and the join entity is an implicit shared-type entity — there is
+        // no CLR class for it, only the ProductTags table UsingEntity() names. Unlike
+        // Category/Products above, these navigations must stay IN the EF model (skip
+        // navigations are how EF knows to route the relationship through the join table).
+        // That's safe here because the profiles only ever read tags through a projection
+        // (SelectMany), which never materializes join-entity rows — so EF's relationship
+        // fixup never stitches up the cyclic Product ⟷ Tag object graph.
+        modelBuilder.Entity<Product>()
+            .HasMany(p => p.Tags)
+            .WithMany(t => t.Products)
+            .UsingEntity("ProductTags");
 
         // SQLite has no native decimal column type; storing Price as REAL (double) keeps
         // $filter/$orderby on price translating to plain SQL comparisons instead of hitting

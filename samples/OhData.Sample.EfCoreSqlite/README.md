@@ -14,6 +14,8 @@ What it demonstrates:
   `Categories?$expand=Products`) — one SQL query per page, not one per row (no N+1)
 - An entity set over a **plain DTO** (`ProductSummaries`) — a `Join` projection inside the
   `IQueryable`, decoupling the wire model from the persistence model without losing pushdown
+- A **many-to-many** (`Products ⟷ Tags`) whose join table has no CLR type and never appears
+  on the wire — `$expand=Tags` batch-loads through it with a single JOIN per page
 - EF Core **migrations** (committed, in [`Migrations/`](Migrations/)) applied with
   `Database.Migrate()` on startup, plus idempotent seeding
 
@@ -170,12 +172,64 @@ categories live in their own table:
 Only `GetQueryable` is assigned, so `ProductSummaries` is read-only by construction — no
 POST/PUT/PATCH/DELETE routes exist at all.
 
+## Many-to-many without exposing the join table
+
+`Product ⟷ Tag` is a many-to-many through a `ProductTags` join table that **has no CLR
+type**: the EF model uses skip navigations (`HasMany(p => p.Tags).WithMany(t => t.Products)`)
+with an implicit shared-type join entity, so the join table exists only inside SQLite. The
+`ProductProfile` exposes the relationship with the batch `HasMany` overload — a single
+`SelectMany` query through the join per page:
+
+```bash
+curl "http://localhost:5220/odata/Tags"
+curl "http://localhost:5220/odata/Products(1)/Tags"
+curl "http://localhost:5220/odata/Products?\$orderby=id&\$top=3&\$expand=Tags"
+```
+
+The `$expand=Tags` response inlines each product's tags:
+
+```json
+{"@odata.context":"http://localhost:5220/odata/$metadata#Products","value":[
+  {"id":1,"name":"Claw Hammer","price":14.99,"stock":42,"categoryId":1,
+   "tags":[{"id":1,"label":"bestseller"},{"id":3,"label":"heavy-duty"}]},
+  {"id":2,"name":"Ball-Peen Hammer","price":17.49,"stock":18,"categoryId":1,"tags":[]},
+  {"id":3,"name":"Adjustable Wrench","price":12.25,"stock":31,"categoryId":1,"tags":[]}]}
+```
+
+and the console shows the tags for the whole page loaded by **one** query that joins through
+`ProductTags` (after the page query itself — two statements total, regardless of page size):
+
+```
+info: Microsoft.EntityFrameworkCore.Database.Command[20101]
+      Executed DbCommand (0ms) [Parameters=[@idSet1='?' (DbType = Int32), @idSet2='?' (DbType = Int32), @idSet3='?' (DbType = Int32)], CommandType='Text', CommandTimeout='30']
+      SELECT "p"."Id", "s"."Id", "s"."Label"
+      FROM "Products" AS "p"
+      INNER JOIN (
+          SELECT "t"."Id", "t"."Label", "p0"."ProductsId"
+          FROM "ProductTags" AS "p0"
+          INNER JOIN "Tags" AS "t" ON "p0"."TagsId" = "t"."Id"
+      ) AS "s" ON "p"."Id" = "s"."ProductsId"
+      WHERE "p"."Id" IN (@idSet1, @idSet2, @idSet3)
+```
+
+Two different suppressions are at work here, and they live at different layers:
+
+- **EF's model-level suppression** hides things from the *persistence* model: the join
+  entity has no CLR type at all (only the table name `ProductTags`), and
+  `modelBuilder...Ignore()` keeps `Product.Category`/`Category.Products` out of the EF model
+  entirely.
+- **OhData's profile `Ignore()`** (#226) hides things from the *wire* model: `TagProfile`
+  ignores `Tag.Products` — the property must stay in the EF model (it's half of the skip
+  navigation), but a Tag serializes as just `{ id, label }`.
+
+Same word, different layers.
+
 ## Project tour
 
 | File | What's in it |
 |------|--------------|
-| [`Models.cs`](Models.cs) | `Product`, `Category`, and the `ShopDbContext` (FK-only relationship — see the comment there for why the CLR navigations are `Ignore`d in EF) |
-| [`Profiles.cs`](Profiles.cs) | The two `EntitySetProfile` classes — this is the OhData part |
+| [`Models.cs`](Models.cs) | `Product`, `Category`, `Tag`, the `ProductSummary` DTO, and the `ShopDbContext` (FK-only Product↔Category — see the comment there for why those CLR navigations are `Ignore`d in EF — plus the Product⟷Tag skip navigations) |
+| [`Profiles.cs`](Profiles.cs) | The four `EntitySetProfile` classes — this is the OhData part |
 | [`Program.cs`](Program.cs) | `AddOhData` + `MapOhData`, `Database.Migrate()`, seeding |
 | [`Migrations/`](Migrations/) | Committed EF Core migrations. To add one: `dotnet tool restore && dotnet ef migrations add <Name>` (the [`dotnet-ef` local tool](.config/dotnet-tools.json) is pinned in this directory) |
 

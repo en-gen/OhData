@@ -22,6 +22,7 @@ builder.Services.AddOhData(o => o
     .WithPrefix("/odata")
     .AddProfile<ProductProfile>()
     .AddProfile<CategoryProfile>()
+    .AddProfile<TagProfile>()
     .AddProfile<ProductSummaryProfile>());
 
 var app = builder.Build();

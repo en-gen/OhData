@@ -13,4 +13,4 @@ dotnet add package EnGen.OhData.AspNetCore
 
 | Sample | What it shows |
 |--------|---------------|
-| [OhData.Sample.EfCoreSqlite](OhData.Sample.EfCoreSqlite/) | A real relational database (EF Core + SQLite, committed migrations) behind `GetQueryable` — `$filter`/`$orderby`/`$skip`/`$top` translate into SQL `WHERE`/`ORDER BY`/`LIMIT`/`OFFSET`, with SQL logging turned on so you can watch it happen. Also: batch-loaded `$expand` (no N+1), `$select`, `$count`, and full CRUD. |
+| [OhData.Sample.EfCoreSqlite](OhData.Sample.EfCoreSqlite/) | A real relational database (EF Core + SQLite, committed migrations) behind `GetQueryable` — `$filter`/`$orderby`/`$skip`/`$top` translate into SQL `WHERE`/`ORDER BY`/`LIMIT`/`OFFSET`, with SQL logging turned on so you can watch it happen. Also: batch-loaded `$expand` (no N+1), `$select`, `$count`, full CRUD, a DTO-projection entity set (wire model decoupled from the EF entities), and a many-to-many whose join table never reaches the wire. |
