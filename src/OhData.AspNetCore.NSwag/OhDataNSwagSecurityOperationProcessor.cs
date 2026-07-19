@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.AspNetCore.Authorization;
@@ -51,6 +52,7 @@ public sealed class OhDataNSwagSecurityOperationProcessor : IOperationProcessor
     /// </param>
     public OhDataNSwagSecurityOperationProcessor(string securitySchemeId, IEnumerable<string>? requiredScopes = null)
     {
+        ArgumentException.ThrowIfNullOrEmpty(securitySchemeId);
         _securitySchemeId = securitySchemeId;
         _requiredScopes = requiredScopes?.ToList() ?? new List<string>();
     }
@@ -85,6 +87,8 @@ public sealed class OhDataNSwagSecurityOperationProcessor : IOperationProcessor
 
         // Document the auth-failure responses this route can now return. 403 also covers Layer B
         // (resource/instance-level) denials, otherwise not expressible in OpenAPI (#219).
+        // NSwag's OpenApiOperation.Responses is always initialized, so (unlike the OpenApi
+        // companion, where Responses can be null) no null-guard is needed before indexing.
         if (!operation.Responses.ContainsKey("401"))
         {
             operation.Responses["401"] = new OpenApiResponse

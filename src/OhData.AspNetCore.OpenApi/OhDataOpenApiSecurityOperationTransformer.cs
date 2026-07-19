@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -52,6 +53,7 @@ public sealed class OhDataOpenApiSecurityOperationTransformer : IOpenApiOperatio
     /// </param>
     public OhDataOpenApiSecurityOperationTransformer(string securitySchemeId, IEnumerable<string>? requiredScopes = null)
     {
+        ArgumentException.ThrowIfNullOrEmpty(securitySchemeId);
         _securitySchemeId = securitySchemeId;
         _requiredScopes = requiredScopes?.ToList() ?? new List<string>();
     }

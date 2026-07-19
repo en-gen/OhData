@@ -115,11 +115,86 @@ public sealed class OhDataOpenApiSecurityOperationTransformerTests
             "security must be opt-in — nothing emitted when the transformer is not registered");
     }
 
+    // ── 6. OhData never injects a security scheme definition (boundary) ────────
+    //
+    // The #219 boundary: OhData reflects the *requirement* but never defines the *scheme*. With no
+    // app-provided scheme, components.securitySchemes must stay empty even though the transformer
+    // still emits the operation-level requirement (a $ref the app is responsible for satisfying).
+
+    [Fact]
+    public async Task Transformer_NeverDefinesSecurityScheme()
+    {
+        await using var fx = await BuildAsync(o => o.AddProfile<SecuredProfile>(), defineScheme: false);
+        using JsonDocument doc = await FetchDocumentAsync(fx.Client);
+
+        bool hasSchemes = doc.RootElement.TryGetProperty("components", out JsonElement components)
+            && components.TryGetProperty("securitySchemes", out JsonElement schemes)
+            && schemes.EnumerateObject().Any();
+        Assert.False(hasSchemes, "OhData must not define any securityScheme — that stays the app's job");
+    }
+
+    // ── 7. An app-defined 401 response is not clobbered ────────────────────────
+
+    [Fact]
+    public async Task ExistingResponse_NotClobbered()
+    {
+        const string existing = "app-defined 401";
+        await using var fx = await BuildAsync(
+            o => o.AddProfile<SecuredProfile>(),
+            extraOpenApi: o => o.AddOperationTransformer(new PreSeed401Transformer(existing)));
+        using JsonDocument doc = await FetchDocumentAsync(fx.Client);
+
+        JsonElement op = GetOperation(doc, "/odata/SecuredWidgets", "get");
+        string? desc = op.GetProperty("responses").GetProperty("401").GetProperty("description").GetString();
+        Assert.Equal(existing, desc);
+    }
+
+    // ── 8. Registering the transformer twice does not duplicate the requirement ─
+
+    [Fact]
+    public async Task DuplicateRegistration_SecurityNotDuplicated()
+    {
+        await using var fx = await BuildAsync(
+            o => o.AddProfile<SecuredProfile>(),
+            extraOpenApi: o => o.AddOperationTransformer(new OhDataOpenApiSecurityOperationTransformer(SchemeId)));
+        using JsonDocument doc = await FetchDocumentAsync(fx.Client);
+
+        JsonElement op = GetOperation(doc, "/odata/SecuredWidgets", "get");
+        int bearerRefs = op.GetProperty("security").EnumerateArray()
+            .Count(req => req.EnumerateObject().Any(s => s.Name == SchemeId));
+        Assert.Equal(1, bearerRefs);
+    }
+
+    // ── 9. AllowAnonymous wins over an authorize requirement on the same route ──
+    //
+    // Exercises the `&& !IAllowAnonymous` clause directly: a non-OhData endpoint that carries both
+    // RequireAuthorization() and AllowAnonymous() must be treated as unsecured, matching ASP.NET
+    // Core's own precedence.
+
+    [Fact]
+    public async Task EndpointWithBothAuthorizeAndAllowAnonymous_NotSecured()
+    {
+        await using var fx = await BuildAsync(
+            o => o.AddProfile<AnonProfile>(),
+            configureApp: app => app.MapGet("/plain/both", () => "hi")
+                .RequireAuthorization()
+                .AllowAnonymous());
+        using JsonDocument doc = await FetchDocumentAsync(fx.Client);
+
+        JsonElement op = GetOperation(doc, "/plain/both", "get");
+        Assert.False(op.TryGetProperty("security", out JsonElement sec) && sec.GetArrayLength() > 0,
+            "AllowAnonymous must win over RequireAuthorization");
+        Assert.False(op.GetProperty("responses").TryGetProperty("401", out _));
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────────
 
     private static async Task<TestFixture> BuildAsync(
         Action<OhDataBuilder> configure,
-        bool registerSecurityTransformer = true)
+        bool registerSecurityTransformer = true,
+        bool defineScheme = true,
+        Action<OpenApiOptions>? extraOpenApi = null,
+        Action<WebApplication>? configureApp = null)
     {
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
@@ -139,23 +214,29 @@ public sealed class OhDataOpenApiSecurityOperationTransformerTests
 
         builder.Services.AddOpenApi(o =>
         {
+            // Runs first so a test can pre-seed operations before the security transformer sees them.
+            extraOpenApi?.Invoke(o);
+
             o.AddOperationTransformer<OhDataOpenApiOperationTransformer>();
 
             // The app owns the scheme definition — OhData only references it. Simulate the app's
             // identity setup by defining a "Bearer" scheme in components (a real app would do this
             // in its own document transformer), so the operation-level $ref resolves.
-            o.AddDocumentTransformer((document, context, ct) =>
+            if (defineScheme)
             {
-                document.Components ??= new OpenApiComponents();
-                document.Components.SecuritySchemes ??= new Dictionary<string, IOpenApiSecurityScheme>();
-                document.Components.SecuritySchemes[SchemeId] = new OpenApiSecurityScheme
+                o.AddDocumentTransformer((document, context, ct) =>
                 {
-                    Type = SecuritySchemeType.Http,
-                    Scheme = "bearer",
-                    BearerFormat = "JWT",
-                };
-                return Task.CompletedTask;
-            });
+                    document.Components ??= new OpenApiComponents();
+                    document.Components.SecuritySchemes ??= new Dictionary<string, IOpenApiSecurityScheme>();
+                    document.Components.SecuritySchemes[SchemeId] = new OpenApiSecurityScheme
+                    {
+                        Type = SecuritySchemeType.Http,
+                        Scheme = "bearer",
+                        BearerFormat = "JWT",
+                    };
+                    return Task.CompletedTask;
+                });
+            }
 
             if (registerSecurityTransformer)
             {
@@ -166,6 +247,7 @@ public sealed class OhDataOpenApiSecurityOperationTransformerTests
         var app = builder.Build();
         app.MapOhData();
         app.MapOpenApi();
+        configureApp?.Invoke(app);
         await app.StartAsync();
         return new TestFixture(app);
     }
@@ -207,6 +289,25 @@ public sealed class OhDataOpenApiSecurityOperationTransformerTests
     }
 
     // ── Fixtures ────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Pre-seeds every operation with a distinctively-described <c>401</c> before the security
+    /// transformer runs, to prove the transformer's <c>ContainsKey("401")</c> guard leaves an
+    /// app-defined response untouched.
+    /// </summary>
+    private sealed class PreSeed401Transformer : IOpenApiOperationTransformer
+    {
+        private readonly string _description;
+
+        public PreSeed401Transformer(string description) => _description = description;
+
+        public Task TransformAsync(OpenApiOperation operation, OpenApiOperationTransformerContext context, System.Threading.CancellationToken cancellationToken)
+        {
+            operation.Responses ??= new OpenApiResponses();
+            operation.Responses["401"] = new OpenApiResponse { Description = _description };
+            return Task.CompletedTask;
+        }
+    }
 
     private sealed class NoOpAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>
     {
