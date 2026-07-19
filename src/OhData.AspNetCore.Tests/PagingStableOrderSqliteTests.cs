@@ -38,6 +38,32 @@ public sealed class PagingPreOrderedProfile : EntitySetProfile<int, SqliteWide>
     }
 }
 
+/// <summary>Profile whose only ordering is buried inside a $filter-predicate subquery. That
+/// ordering does not govern the top-level result order, so the key stabilizer must still inject an
+/// ORDER BY (regression guard for the whole-tree-scan bug found in review).</summary>
+public sealed class PagingBuriedOrderProfile : EntitySetProfile<int, SqliteWide>
+{
+    public PagingBuriedOrderProfile(PushSqliteDbContext db) : base(x => x.Id)
+    {
+        MaxTop = 2;
+        // Stock >= (min Stock, ordered by Name) — every seeded row has Stock=1, so all match; the
+        // OrderBy(Name) lives only inside the correlated subquery, not on the outer sequence.
+        GetQueryable = _ => Task.FromResult(
+            db.Wides.Where(w => w.Stock >= db.Wides.OrderBy(x => x.Name).Select(x => x.Stock).First()));
+    }
+}
+
+/// <summary>Unbounded profile (MaxTop resolves to null via defaults) — with no client paging the
+/// framework must NOT add a whole-table ORDER BY, since no row-limiting operator runs.</summary>
+public sealed class PagingUnboundedProfile : EntitySetProfile<int, SqliteWide>
+{
+    public PagingUnboundedProfile(PushSqliteDbContext db) : base(x => x.Id)
+    {
+        OrderByEnabled = true;
+        GetQueryable = _ => Task.FromResult(db.Wides.AsQueryable());
+    }
+}
+
 file static class PagingTestData
 {
     // Non-unique Name column so a client $orderby=name has ties the key tiebreaker must resolve.
@@ -210,5 +236,130 @@ public class PagingPreOrderedSourceSqliteTests : IAsyncLifetime
     {
         var ids = await PagingTestData.PageAllIds(_fx.Client, "/odata/SqliteWides");
         Assert.Equal(new[] { 5, 4, 3, 2, 1 }, ids);
+    }
+}
+
+public class PagingBuriedOrderSqliteTests : IAsyncLifetime
+{
+    private SqliteConnection _connection = null!;
+    private SqlCaptureSink _sink = null!;
+    private TestFixture _fx = null!;
+
+    public async Task InitializeAsync()
+    {
+        _connection = new SqliteConnection("Data Source=:memory:");
+        _connection.Open();
+        _sink = new SqlCaptureSink();
+
+        _fx = await TestHostBuilder.BuildAsync(
+            b => b.AddProfile<PagingBuriedOrderProfile>(),
+            configureServices: services =>
+            {
+                services.AddSingleton(_sink);
+                services.AddDbContext<PushSqliteDbContext>(o => o
+                    .UseSqlite(_connection)
+                    .LogTo(
+                        message => _sink.Add(message),
+                        (eventId, _) => eventId == Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.CommandExecuted));
+            });
+
+        using var scope = _fx.App.Services.CreateScope();
+        PagingTestData.Seed(scope.ServiceProvider.GetRequiredService<PushSqliteDbContext>());
+        _sink.Clear();
+    }
+
+    public async Task DisposeAsync()
+    {
+        await _fx.DisposeAsync();
+        _connection.Dispose();
+    }
+
+    [Fact]
+    public async Task OrderingBuriedInPredicate_DoesNotSuppressKeyStabilizer()
+    {
+        // The buried OrderBy(Name) must not count as the result order; paging stays key-ordered.
+        var ids = await PagingTestData.PageAllIds(_fx.Client, "/odata/SqliteWides");
+        Assert.Equal(new[] { 1, 2, 3, 4, 5 }, ids);
+    }
+
+    [Fact]
+    public async Task OrderingBuriedInPredicate_TopLevelQueryStillOrdersByKey()
+    {
+        _sink.Clear();
+        var resp = await _fx.Client.GetAsync("/odata/SqliteWides");
+        Assert.Equal(System.Net.HttpStatusCode.OK, resp.StatusCode);
+
+        string sql = _sink.LastWidesSelect();
+        Assert.Contains("ORDER BY", sql);
+        Assert.Contains("LIMIT", sql);
+        Assert.Contains("\"Id\"", sql);
+    }
+}
+
+public class PagingUnboundedSqliteTests : IAsyncLifetime
+{
+    private SqliteConnection _connection = null!;
+    private SqlCaptureSink _sink = null!;
+    private TestFixture _fx = null!;
+
+    public async Task InitializeAsync()
+    {
+        _connection = new SqliteConnection("Data Source=:memory:");
+        _connection.Open();
+        _sink = new SqlCaptureSink();
+
+        _fx = await TestHostBuilder.BuildAsync(
+            b =>
+            {
+                b.WithDefaults(d => d.MaxTop = null); // unbounded: no server paging cap
+                b.AddProfile<PagingUnboundedProfile>();
+            },
+            configureServices: services =>
+            {
+                services.AddSingleton(_sink);
+                services.AddDbContext<PushSqliteDbContext>(o => o
+                    .UseSqlite(_connection)
+                    .LogTo(
+                        message => _sink.Add(message),
+                        (eventId, _) => eventId == Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.CommandExecuted));
+            });
+
+        using var scope = _fx.App.Services.CreateScope();
+        PagingTestData.Seed(scope.ServiceProvider.GetRequiredService<PushSqliteDbContext>());
+        _sink.Clear();
+    }
+
+    public async Task DisposeAsync()
+    {
+        await _fx.DisposeAsync();
+        _connection.Dispose();
+    }
+
+    [Fact]
+    public async Task Unbounded_NoClientPaging_EmitsNeitherLimitNorOrderBy()
+    {
+        _sink.Clear();
+        var resp = await _fx.Client.GetAsync("/odata/SqliteWides");
+        Assert.Equal(System.Net.HttpStatusCode.OK, resp.StatusCode);
+
+        string sql = _sink.LastWidesSelect();
+        // No row-limiting operator runs, so there is no undefined-page problem to solve — the
+        // framework must not burden an unbounded query with a whole-table sort.
+        Assert.DoesNotContain("LIMIT", sql);
+        Assert.DoesNotContain("ORDER BY", sql);
+    }
+
+    [Fact]
+    public async Task Unbounded_ClientTopWithoutOrderBy_StillStabilizes()
+    {
+        // A client $top triggers a row limit, so the stabilizer must engage even when MaxTop is null.
+        _sink.Clear();
+        var resp = await _fx.Client.GetAsync("/odata/SqliteWides?$top=2");
+        Assert.Equal(System.Net.HttpStatusCode.OK, resp.StatusCode);
+
+        string sql = _sink.LastWidesSelect();
+        Assert.Contains("ORDER BY", sql);
+        Assert.Contains("LIMIT", sql);
+        Assert.Contains("\"Id\"", sql);
     }
 }
