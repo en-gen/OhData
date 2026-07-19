@@ -13,6 +13,9 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using NSwag.Generation.AspNetCore;
+using NSwag.Generation.Processors;
+using NSwag.Generation.Processors.Contexts;
 using OhData.Abstractions;
 using OhData.AspNetCore;
 using Xunit;
@@ -93,11 +96,53 @@ public sealed class OhDataNSwagAuthRequirementsOperationProcessorTests
         Assert.DoesNotContain("**Authorization:**", description);
     }
 
+    // ── 6. Registering twice does not double-append the section ─────────────────
+
+    [Fact]
+    public async Task RegisteredTwice_SectionAppendedOnce()
+    {
+        await using var fx = await BuildAsync(
+            o => o.AddProfile<RichAuthProfile>(), AuthRequirementDisclosure.Kinds, registerTwice: true);
+        using JsonDocument doc = await fx.GetDocumentAsync();
+
+        string description = OperationDescription(doc, "/odata/RichWidgets", "get");
+        Assert.Equal(1, CountOccurrences(description, "**Authorization:**"));
+    }
+
+    // ── 7. An existing operation description is preserved, not replaced ─────────
+
+    [Fact]
+    public async Task ExistingDescription_PreservedAndSectionAppended()
+    {
+        const string baseText = "Base operation description.";
+        await using var fx = await BuildAsync(
+            o => o.AddProfile<RichAuthProfile>(), AuthRequirementDisclosure.Kinds,
+            configureBeforeRequirements: s => s.OperationProcessors.Add(new PreSeedDescriptionProcessor(baseText)));
+        using JsonDocument doc = await fx.GetDocumentAsync();
+
+        string description = OperationDescription(doc, "/odata/RichWidgets", "get");
+        Assert.StartsWith(baseText, description);
+        Assert.Contains("**Authorization:** Requires", description);
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────────
+
+    private static int CountOccurrences(string haystack, string needle)
+    {
+        int count = 0, index = 0;
+        while ((index = haystack.IndexOf(needle, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += needle.Length;
+        }
+        return count;
+    }
 
     private static async Task<TestFixture> BuildAsync(
         Action<OhDataBuilder> configure,
-        AuthRequirementDisclosure? disclosure)
+        AuthRequirementDisclosure? disclosure,
+        bool registerTwice = false,
+        Action<AspNetCoreOpenApiDocumentGeneratorSettings>? configureBeforeRequirements = null)
     {
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
@@ -114,9 +159,17 @@ public sealed class OhDataNSwagAuthRequirementsOperationProcessorTests
         {
             s.OperationProcessors.Add(new OhDataNSwagOperationProcessor());
             s.SchemaSettings.SchemaProcessors.Add(new OhDataNSwagSchemaProcessor(sp));
+
+            // Runs before the requirements processor so a test can pre-seed a base description.
+            configureBeforeRequirements?.Invoke(s);
+
             if (disclosure is AuthRequirementDisclosure level)
             {
                 s.OperationProcessors.Add(new OhDataNSwagAuthRequirementsOperationProcessor(level));
+                if (registerTwice)
+                {
+                    s.OperationProcessors.Add(new OhDataNSwagAuthRequirementsOperationProcessor(level));
+                }
             }
         });
 
@@ -155,6 +208,20 @@ public sealed class OhDataNSwagAuthRequirementsOperationProcessorTests
 
         protected override Task<AuthenticateResult> HandleAuthenticateAsync() =>
             Task.FromResult(AuthenticateResult.NoResult());
+    }
+
+    /// <summary>Sets a base description on every operation before the requirements processor runs.</summary>
+    private sealed class PreSeedDescriptionProcessor : IOperationProcessor
+    {
+        private readonly string _description;
+
+        public PreSeedDescriptionProcessor(string description) => _description = description;
+
+        public bool Process(OperationProcessorContext context)
+        {
+            context.OperationDescription.Operation.Description = _description;
+            return true;
+        }
     }
 
     private class Widget

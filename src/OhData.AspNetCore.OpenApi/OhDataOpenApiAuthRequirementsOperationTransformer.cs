@@ -1,4 +1,3 @@
-using System;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -31,6 +30,11 @@ namespace OhData.AspNetCore;
 /// <see cref="AuthRequirementDisclosure.Kinds"/> surfaces requirement kinds and their non-secret
 /// identifiers (claim types, role names, policy names) but not claim values. Named policies stay
 /// opaque (name only) and resource/instance-level (Layer B) rules are not rendered (#220).
+/// </para>
+/// <para>
+/// Register at most one instance: registering several (e.g. one at each disclosure level) appends
+/// one section per instance, which at <see cref="AuthRequirementDisclosure.Full"/> would leak the
+/// values the default level withholds.
 /// </para>
 /// </remarks>
 public sealed class OhDataOpenApiAuthRequirementsOperationTransformer : IOpenApiOperationTransformer
@@ -67,21 +71,7 @@ public sealed class OhDataOpenApiAuthRequirementsOperationTransformer : IOpenApi
             return Task.CompletedTask;
         }
 
-        string line = "**Authorization:** " + requirements;
-
-        // Idempotent: never append the same section twice if the transformer runs more than once.
-        if (operation.Description is { Length: > 0 } existing)
-        {
-            if (!existing.Contains(line, StringComparison.Ordinal))
-            {
-                operation.Description = existing + "\n\n" + line;
-            }
-        }
-        else
-        {
-            operation.Description = line;
-        }
-
+        operation.Description = OhDataAuthRequirementsText.AppendSection(operation.Description, requirements);
         return Task.CompletedTask;
     }
 }
