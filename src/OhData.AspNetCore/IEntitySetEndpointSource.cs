@@ -61,6 +61,19 @@ internal interface IEntitySetEndpointSource
     bool CountEnabled { get; }
     bool PropertyAccessEnabled { get; }
     bool PropertyRouteDocsEnabled { get; }
+
+    /// <summary>
+    /// Whether <c>$select</c> projection pushdown may apply on this set's <c>GetQueryable</c>
+    /// path (#206). Resolved from the profile flag / <c>EntitySetDefaults</c> (default true).
+    /// </summary>
+    bool SelectPushdownEnabled { get; }
+
+    /// <summary>
+    /// CLR property names participating in the <c>UseETag</c> hash, when every selector was a
+    /// direct member access; <c>null</c> when ETags are unconfigured OR any selector was
+    /// computed (names unknowable — #206 pushdown is then ineligible while <see cref="HasETag"/>).
+    /// </summary>
+    IReadOnlyCollection<string>? ETagPropertyNames { get; }
     RoundingMode RoundingMode { get; }
     IReadOnlyList<StructuralPropertyInfo> StructuralProperties { get; }
 

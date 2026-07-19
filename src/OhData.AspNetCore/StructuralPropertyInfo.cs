@@ -1,4 +1,5 @@
 using System;
+using System.Reflection;
 
 namespace OhData.Abstractions;
 
@@ -45,4 +46,12 @@ internal sealed record StructuralPropertyInfo
     /// invoked via per-request reflection.
     /// </summary>
     public required Func<object, object?> Accessor { get; init; }
+
+    /// <summary>
+    /// The reflected property, used by the <c>$select</c> projection-pushdown builder (#206)
+    /// as the <c>Expression.Bind</c> target. Setter usability for pushdown eligibility is
+    /// <c>Property.SetMethod is { IsPublic: true }</c> — init-only setters qualify; get-only
+    /// computed properties do not.
+    /// </summary>
+    public required PropertyInfo Property { get; init; }
 }
