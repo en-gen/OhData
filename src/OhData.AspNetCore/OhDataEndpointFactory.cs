@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -15,8 +16,12 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Web;
 using System.Xml;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization.Infrastructure;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.AspNetCore.OData.Query;
 using Microsoft.AspNetCore.OData.Query.Wrapper;
 using Microsoft.AspNetCore.OData.Query.Validator;
@@ -33,7 +38,10 @@ using OhData.Abstractions.AspNetCore.OData;
 
 namespace OhData.AspNetCore;
 
-internal readonly record struct ODataErrorDetail(string Code, string Message, string? Target = null);
+// #203: per-entity-set write-body-size limit, attached as route-group endpoint metadata (see
+// MapEntitySet) and enforced by the group-level write-body-size filter in MapAll. Absent metadata
+// means "no OhData-level limit" — the host's Kestrel MaxRequestBodySize still applies.
+internal sealed record OhDataBodyLimitMetadata(long MaxBytes);
 
 internal static class OhDataEndpointFactory
 {
@@ -107,6 +115,14 @@ internal static class OhDataEndpointFactory
     private static string BuildBaseUrl(HttpContext ctx, string prefix) =>
         $"{ctx.Request.Scheme}://{ctx.Request.Host}{ctx.Request.PathBase}{prefix}";
 
+    // Canonical entity-id URL: {base}/{set}({key}), with the key formatted URL-safely (single-quoted
+    // + percent-encoded for string keys) exactly as ODataKeyParser expects to read it back in.
+    private static string BuildEntityId(string baseUrl, string setName, object key) =>
+        $"{baseUrl}/{setName}({ODataEntityKeyUrlFormatter.Format(key)})";
+
+    private static string BuildEntityId(HttpContext ctx, string prefix, string setName, object key) =>
+        BuildEntityId(BuildBaseUrl(ctx, prefix), setName, key);
+
     private static string BuildNextPageLink(HttpContext ctx, string skiptoken)
     {
         var req = ctx.Request;
@@ -116,9 +132,33 @@ internal static class OhDataEndpointFactory
         return $"{req.Scheme}://{req.Host}{req.PathBase}{req.Path}?{query}";
     }
 
+    // #195: continuation link for the Priority-1 path, expressed as $skip rather than the opaque
+    // $skiptoken BuildNextPageLink emits. The Priority-1 profile re-applies the incoming
+    // ODataQueryOptions via ApplyTo, which honors $skip natively but has no handler for $skiptoken.
+    private static string BuildNextPageLinkWithSkip(HttpContext ctx, int skip)
+    {
+        var req = ctx.Request;
+        var query = HttpUtility.ParseQueryString(req.QueryString.ToString());
+        query.Remove("$skiptoken");
+        query["$skip"] = skip.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return $"{req.Scheme}://{req.Host}{req.PathBase}{req.Path}?{query}";
+    }
+
     private static bool PrefersMinimal(HttpContext ctx) =>
         ctx.Request.Headers.TryGetValue("Prefer", out var prefer) &&
         prefer.ToString().Contains("return=minimal", StringComparison.OrdinalIgnoreCase);
+
+    // §8.2.8.7: Prefer: return=representation is an explicit opt-in for behaviour that is already
+    // OhData's default (write handlers return the representation). Acknowledge it in the response
+    // header when the client asked — the symmetric counterpart to PrefersMinimal above.
+    private static void EchoReturnRepresentationPreference(HttpContext ctx)
+    {
+        if (ctx.Request.Headers.TryGetValue("Prefer", out var prefer)
+            && prefer.ToString().Contains("return=representation", StringComparison.OrdinalIgnoreCase))
+        {
+            ctx.Response.Headers["Preference-Applied"] = "return=representation";
+        }
+    }
 
     // BUG 1 fix: POST/PUT/PATCH bodies are read and deserialized manually (see below) rather
     // than via a `TModel model` minimal-API parameter, so content-type negotiation must be done
@@ -127,6 +167,59 @@ internal static class OhDataEndpointFactory
     // metadata, would short-circuit with an empty 415 body before this OData error-formatting
     // code ever runs. Media-type parameters (e.g. ";odata.metadata=full", ";charset=utf-8") are
     // stripped before comparison since they don't affect whether the payload is JSON.
+    // #203: the write methods that carry a request body OhData deserializes. DELETE is excluded
+    // (its $ref variant reads only a small link body and no body-size limit is meaningful there).
+    private static bool IsBodyBearingWriteMethod(string method) =>
+        HttpMethods.IsPost(method) || HttpMethods.IsPut(method) || HttpMethods.IsPatch(method);
+
+    // #200: derive the telemetry dimensions from the matched endpoint. entitySet comes from the
+    // route's WithTags(name) metadata; route is the raw template (the precise identity, mirroring
+    // ASP.NET Core's http.route); operation is a coarse method/shape label for convenient grouping.
+    private static (string? entitySet, string? route, string operation) DescribeOhDataEndpoint(HttpContext http)
+    {
+        Endpoint? endpoint = http.GetEndpoint();
+        string? route = (endpoint as RouteEndpoint)?.RoutePattern.RawText;
+        string? entitySet = endpoint?.Metadata.GetMetadata<ITagsMetadata>()?.Tags is { Count: > 0 } tags
+            ? tags[0]
+            : null;
+        return (entitySet, route, ClassifyOperation(http.Request.Method, route));
+    }
+
+    private static string ClassifyOperation(string method, string? route)
+    {
+        route ??= "";
+        if (route.EndsWith("/$metadata", StringComparison.Ordinal)) return "metadata";
+        if (route.EndsWith("/$count", StringComparison.Ordinal)) return "read-count";
+        if (route.EndsWith("/$value", StringComparison.Ordinal)) return "read-value";
+        if (route.EndsWith("/$ref", StringComparison.Ordinal))
+            return HttpMethods.IsGet(method) ? "read-ref" : HttpMethods.IsDelete(method) ? "delete-ref" : "write-ref";
+
+        int keyEnd = route.IndexOf("({key})", StringComparison.Ordinal);
+        bool hasKey = keyEnd >= 0;
+        if (hasKey && route.IndexOf('/', keyEnd) >= 0) // a segment after the key → navigation/property
+        {
+            return method switch
+            {
+                _ when HttpMethods.IsGet(method) => "read-navigation",
+                _ when HttpMethods.IsPost(method) => "create-navigation",
+                _ when HttpMethods.IsDelete(method) => "delete-navigation",
+                _ => "update-navigation",
+            };
+        }
+        if (hasKey)
+        {
+            return method switch
+            {
+                _ when HttpMethods.IsGet(method) => "read-entity",
+                _ when HttpMethods.IsPut(method) || HttpMethods.IsPatch(method) => "update-entity",
+                _ when HttpMethods.IsDelete(method) => "delete-entity",
+                _ => "entity",
+            };
+        }
+        // no key: collection routes plus bound/unbound operations (the http.route tag disambiguates).
+        return HttpMethods.IsGet(method) ? "read-collection" : HttpMethods.IsPost(method) ? "create" : "collection";
+    }
+
     private static bool IsJsonContentType(HttpContext ctx)
     {
         string? contentType = ctx.Request.ContentType;
@@ -255,11 +348,68 @@ internal static class OhDataEndpointFactory
             .GetService<IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions>>()
             ?.Value?.SerializerOptions;
 
+        // #226: registration-wide ignored-property suppression. Validates same-model-type
+        // conflicts, then — only when at least one profile declares ignores — derives a single
+        // options instance whose resolver modifier removes the ignored members. When no profile
+        // ignores anything the original options are threaded through unchanged (zero delta).
+        var ignoredByType = IgnoredPropertyJsonOptions.BuildIgnoredPropertyMap(registration.Profiles);
+        JsonSerializerOptions? effectiveJsonOptions = ignoredByType.Count == 0
+            ? startupJsonOptions
+            : IgnoredPropertyJsonOptions.Build(startupJsonOptions ?? _camelCaseSerializerOptions, ignoredByType);
+
         // Resolved once here (rather than down at the per-profile loop) so the group-level
         // exception filter below can log through the same "OhData" category every other
         // handler uses.
         var loggerFactory = routes.ServiceProvider.GetService<ILoggerFactory>();
         var groupLogger = loggerFactory?.CreateLogger("OhData");
+
+        // #200: observability. The outermost group filter opens an ActivitySource span per OData
+        // request and records the request-duration histogram + active-request up/down counter (both
+        // on the "OhData" Meter). Added first so it wraps every other filter and the handler; the
+        // final HTTP status is read via Response.OnCompleted (an endpoint filter cannot see it after
+        // next() because the IResult executes later). Near-free when no OTel listener is attached:
+        // StartActivity returns null and the instruments no-op.
+        group.AddEndpointFilter(async (ctx, next) =>
+        {
+            HttpContext http = ctx.HttpContext;
+            (string? entitySet, string? route, string operation) = DescribeOhDataEndpoint(http);
+
+            Activity? activity = OhDataDiagnostics.ActivitySource.StartActivity(
+                $"{http.Request.Method} {route ?? http.Request.Path.ToString()}", ActivityKind.Server);
+            if (activity is not null)
+            {
+                if (entitySet is not null) activity.SetTag("odata.entity_set", entitySet);
+                if (route is not null) activity.SetTag("http.route", route);
+                activity.SetTag("odata.operation", operation);
+                activity.SetTag("http.request.method", http.Request.Method);
+            }
+
+            long startTs = Stopwatch.GetTimestamp();
+            var activeTags = new TagList { { "odata.entity_set", entitySet }, { "odata.operation", operation } };
+            OhDataDiagnostics.ActiveRequests.Add(1, activeTags);
+
+            http.Response.OnCompleted(() =>
+            {
+                int status = http.Response.StatusCode;
+                double seconds = Stopwatch.GetElapsedTime(startTs).TotalSeconds;
+                OhDataDiagnostics.RequestDuration.Record(seconds, new TagList
+                {
+                    { "odata.entity_set", entitySet },
+                    { "odata.operation", operation },
+                    { "http.response.status_code", status },
+                });
+                OhDataDiagnostics.ActiveRequests.Add(-1, activeTags);
+                if (activity is not null)
+                {
+                    activity.SetTag("http.response.status_code", status);
+                    if (status >= 500) activity.SetStatus(ActivityStatusCode.Error);
+                    activity.Dispose();
+                }
+                return Task.CompletedTask;
+            });
+
+            return await next(ctx);
+        });
 
         // S7: a handler that throws (as opposed to returning an ODataError IResult, which every
         // deliberate error path in this file does) previously escaped as an empty, envelope-less
@@ -281,6 +431,14 @@ internal static class OhDataEndpointFactory
             {
                 return await next(ctx);
             }
+            // #203: Kestrel throws BadHttpRequestException (StatusCode 413) when a body without a
+            // usable Content-Length (e.g. chunked) exceeds the per-request MaxRequestBodySize set by
+            // the write-body-size filter below. Map it to the OData 413 envelope instead of a 500.
+            catch (BadHttpRequestException bhre) when (bhre.StatusCode == StatusCodes.Status413PayloadTooLarge)
+            {
+                return ODataError(413, "RequestEntityTooLarge",
+                    "The request body exceeds the maximum allowed size.");
+            }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 groupLogger?.LogError(ex, "OhData: unhandled exception processing {Method} {Path}",
@@ -289,6 +447,33 @@ internal static class OhDataEndpointFactory
                 return ODataError(500, "InternalServerError",
                     "An unexpected error occurred while processing the request.");
             }
+        });
+
+        // #203: enforce the per-entity-set write-body-size limit (attached as OhDataBodyLimitMetadata
+        // in MapEntitySet). Runs only for body-bearing write methods (POST/PUT/PATCH). Sets Kestrel's
+        // per-request MaxRequestBodySize — which bounds a chunked/no-Content-Length body during read
+        // (a resulting BadHttpRequestException is mapped to 413 by the filter above) — and
+        // fast-rejects an oversized Content-Length before the handler reads the body. Sits inside the
+        // exception filter above so its 413 mapping covers the streamed-body case.
+        group.AddEndpointFilter(async (ctx, next) =>
+        {
+            var http = ctx.HttpContext;
+            if (IsBodyBearingWriteMethod(http.Request.Method) &&
+                http.GetEndpoint()?.Metadata.GetMetadata<OhDataBodyLimitMetadata>() is { } limit)
+            {
+                IHttpMaxRequestBodySizeFeature? sizeFeature = http.Features.Get<IHttpMaxRequestBodySizeFeature>();
+                if (sizeFeature is { IsReadOnly: false })
+                {
+                    sizeFeature.MaxRequestBodySize = limit.MaxBytes;
+                }
+
+                if (http.Request.ContentLength is long len && len > limit.MaxBytes)
+                {
+                    return ODataError(413, "RequestEntityTooLarge",
+                        $"The request body ({len} bytes) exceeds the maximum allowed size ({limit.MaxBytes} bytes).");
+                }
+            }
+            return await next(ctx);
         });
 
         // Gap 1: Add OData-Version: 4.0 header to all responses (§8.2.6).
@@ -410,7 +595,7 @@ internal static class OhDataEndpointFactory
             {
                 _mapEntitySetMethod
                     .MakeGenericMethod(profile.KeyType, profile.ModelType)
-                    .Invoke(null, new object?[] { group, profile, registration, loggerFactory, startupJsonOptions });
+                    .Invoke(null, new object?[] { group, profile, registration, loggerFactory, effectiveJsonOptions });
             }
             catch (System.Reflection.TargetInvocationException tie) when (tie.InnerException is not null)
             {
@@ -422,7 +607,7 @@ internal static class OhDataEndpointFactory
         }
 
         // Gap 7: Unbound functions/actions — registered once at service root level (§11.5.1)
-        MapUnboundOperations(group, registration.UnboundOperations, startupJsonOptions);
+        MapUnboundOperations(group, registration.UnboundOperations, effectiveJsonOptions);
 
         return group;
     }
@@ -633,20 +818,10 @@ internal static class OhDataEndpointFactory
 
     internal static IResult ODataError(
         int status, string code, string message,
-        string? target = null,
-        IReadOnlyList<ODataErrorDetail>? details = null)
+        string? target = null)
     {
         var errorObj = new Dictionary<string, object?> { ["code"] = code, ["message"] = message };
         if (target is not null) errorObj["target"] = target;
-        if (details is { Count: > 0 })
-        {
-            errorObj["details"] = details.Select(d =>
-            {
-                var dd = new Dictionary<string, object?> { ["code"] = d.Code, ["message"] = d.Message };
-                if (d.Target is not null) dd["target"] = d.Target;
-                return (object)dd;
-            }).ToArray();
-        }
 
         var body = new Dictionary<string, object> { ["error"] = errorObj };
         return status switch
@@ -655,6 +830,15 @@ internal static class OhDataEndpointFactory
             404 => Results.NotFound(body),
             _ => Results.Json(body, statusCode: status)
         };
+    }
+
+    // Every keyed route peels off the FormatException that ODataKeyParser.Parse throws on an
+    // unparseable key and maps it to the same 400 envelope. `withTarget` preserves the existing
+    // split: entity-addressed routes point `target` at "key"; navigation routes omit it.
+    private static IResult BadKeyError(ILogger? logger, Exception ex, string key, string name, bool withTarget = true)
+    {
+        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
+        return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: withTarget ? "key" : null);
     }
 
     // RFC 7231 §5.3.2 Accept negotiation (issue #182). Parses the Accept header into media
@@ -748,6 +932,11 @@ internal static class OhDataEndpointFactory
     private static IResult? CheckCollectionQueryOptionCapabilities(
         HttpContext ctx, IEntitySetEndpointSource source, bool checkFilterOrderBy = true)
     {
+        // #196: reject system options this framework does not implement at all, rather than
+        // ignoring them silently (Minimal-conformance item 7 — "parse the option or reject it").
+        IResult? unimplemented = CheckUnimplementedCollectionQueryOptions(ctx);
+        if (unimplemented is not null) return unimplemented;
+
         if (checkFilterOrderBy)
         {
             IResult? r = CheckDisabledQueryOption(ctx, "$filter", source.FilterEnabled, nameof(IEntitySetEndpointSource.FilterEnabled));
@@ -786,6 +975,31 @@ internal static class OhDataEndpointFactory
         "$filter", "$expand", "$search", "$apply", "$compute", "$skiptoken", "$deltatoken",
     };
 
+    // #196: system query options the *main* collection GET routes do not implement at all — as
+    // opposed to the capability-gated $filter/$orderby/$select/$expand/$count (handled by
+    // CheckCollectionQueryOptionCapabilities) or the implemented $top/$skip/$search/$skiptoken.
+    // These were previously ignored silently on the main route even though the navigation route
+    // already rejected them. $apply/$compute are unimplemented aggregation options ($compute is
+    // 4.01-only and blocked by the pinned OData package range); $index is a 4.01 ordered-insert
+    // option; $deltatoken belongs to delta/change-tracking. Ignoring a known option violates
+    // Minimal-conformance item 7 ("parse the option or reject the request").
+    private static readonly string[] s_collectionUnimplementedSystemOptions =
+    {
+        "$apply", "$compute", "$index", "$deltatoken",
+    };
+
+    private static IResult? CheckUnimplementedCollectionQueryOptions(HttpContext ctx)
+    {
+        string? option = s_collectionUnimplementedSystemOptions
+            .FirstOrDefault(o => ctx.Request.Query.ContainsKey(o));
+        if (option is not null)
+        {
+            return ODataError(400, "UnsupportedQueryOption",
+                $"The query option '{option}' is not supported.");
+        }
+        return null;
+    }
+
     private static IResult? CheckNavUnsupportedQueryOptions(HttpContext ctx)
     {
         string? option = s_navUnsupportedSystemOptions
@@ -799,18 +1013,23 @@ internal static class OhDataEndpointFactory
         return null;
     }
 
-    private static readonly ODataValidationSettings s_propertyAllowlistValidationSettings = new()
+    // #202: per-entity-set validation settings, built once per set from the source's resolved
+    // complexity limits (MaxExpansionDepth default 12, node counts 10000/1000/1000 as before) so an
+    // implementor can tighten them per profile or globally via WithDefaults. AllowedQueryOptions=All
+    // etc. is retained so the only checks these run are the per-property allowlist annotations and
+    // the complexity ceilings — $top/$skip/$count keep their own dedicated enforcement (see the
+    // ValidatePropertyAllowlists remark). MaxExpansionDepth is now enforced (was hardcoded 0/disabled):
+    // a $expand nesting deeper than the limit is rejected with 400 rather than silently truncated.
+    private static ODataValidationSettings BuildValidationSettings(IEntitySetEndpointSource source) => new()
     {
         AllowedQueryOptions = AllowedQueryOptions.All,
         AllowedArithmeticOperators = AllowedArithmeticOperators.All,
         AllowedFunctions = AllowedFunctions.AllFunctions,
         AllowedLogicalOperators = AllowedLogicalOperators.All,
-        MaxExpansionDepth = 0, // 0 disables the settings-level expansion-depth check entirely (per
-                               // XML doc); the model-bound Expand(maxDepth,...) config governs how
-                               // deep a nested $expand may go (raised for #183 — see EntitySetProfile).
-        MaxAnyAllExpressionDepth = 1000,
-        MaxNodeCount = 10000,
-        MaxOrderByNodeCount = 1000,
+        MaxExpansionDepth = source.MaxExpansionDepth,
+        MaxAnyAllExpressionDepth = source.MaxAnyAllExpressionDepth,
+        MaxNodeCount = source.MaxFilterNodeCount,
+        MaxOrderByNodeCount = source.MaxOrderByNodeCount,
     };
 
     // Runs only the per-option validators that enforce the property allowlists
@@ -824,11 +1043,11 @@ internal static class OhDataEndpointFactory
     // 400s, CountEnabled gate), so only the three property-scoped validators run here. Throws
     // Microsoft.OData.ODataException on violation, which each route's existing catch clause maps
     // to a 400 OData error.
-    private static void ValidatePropertyAllowlists<TModel>(ODataQueryOptions<TModel> options)
+    private static void ValidatePropertyAllowlists<TModel>(ODataQueryOptions<TModel> options, ODataValidationSettings settings)
     {
-        options.Filter?.Validate(s_propertyAllowlistValidationSettings);
-        options.OrderBy?.Validate(s_propertyAllowlistValidationSettings);
-        options.SelectExpand?.Validate(s_propertyAllowlistValidationSettings);
+        options.Filter?.Validate(settings);
+        options.OrderBy?.Validate(settings);
+        options.SelectExpand?.Validate(settings);
     }
 
     /// <remarks>
@@ -1593,6 +1812,15 @@ internal static class OhDataEndpointFactory
                 entityAuthGroup.RequireAuthorization();
         }
 
+        // #203: attach this entity set's resolved write-body-size limit as endpoint metadata,
+        // enforced by the group-level filter in MapAll for write methods only. Attached to the
+        // auth group so it propagates to every route under this entity set (collection and
+        // key-based). Absent metadata means "no OhData-level limit" (Kestrel's global still applies).
+        if (source.MaxRequestBodyBytes is long maxBodyBytes)
+        {
+            entityAuthGroup.WithMetadata(new OhDataBodyLimitMetadata(maxBodyBytes));
+        }
+
         // Collection-level routes use a sub-group so they can use the short "" template.
         var entityGroup = entityAuthGroup.MapGroup($"/{name}");
 
@@ -1601,11 +1829,189 @@ internal static class OhDataEndpointFactory
         var cachedODataQueryContext = new ODataQueryContext(registration.EdmModel, typeof(TModel), null);
         var cachedCountSettings = new ODataQuerySettings();
         var cachedQuerySettings = new ODataQuerySettings { PageSize = source.MaxTop };
+        // #202: per-entity-set complexity-guard settings (expansion depth + node counts).
+        var cachedValidationSettings = BuildValidationSettings(source);
+
+        // #199 Layer C: per-operation authorization. When the profile declared
+        // ConfigureAuthorization(...), resolve the effective rule per route category and apply it to
+        // that route's own handler builder — not a shared group, because the MapGroup slash rule
+        // forbids per-category sub-groups for key-based routes. When null, the legacy single-group
+        // auth applied above (entityAuthGroup) governs instead and these helpers are no-ops.
+        IReadOnlyList<OperationAuthRule>? operationAuthRules = source.OperationAuthorization;
+
+        OperationAuthRule? ResolveOperationRule(OhDataOperation category, string? boundOperationName)
+        {
+            if (operationAuthRules is null) return null;
+            OperationAuthRule? generic = null;
+            OperationAuthRule? named = null;
+            foreach (var rule in operationAuthRules.Where(rule => (rule.Operations & category) != 0))
+            {
+                if (rule.BoundOperationName is null)
+                {
+                    generic = rule; // last generic rule for this category wins
+                }
+                else if (boundOperationName is not null &&
+                         string.Equals(rule.BoundOperationName, boundOperationName, StringComparison.Ordinal))
+                {
+                    named = rule; // a name-specific rule (Invoke("Name", …)) wins over a generic one
+                }
+            }
+            return named ?? generic;
+        }
+
+        // Layer C applies coarse per-route auth. `keyBased` marks routes carrying a {key} segment, to
+        // which Layer B (resource-based) auth attaches a load-by-key filter (see AttachResourceFilter);
+        // collection-level routes (no {key}) pass keyBased: false.
+        void ApplyOperationAuth(IEndpointConventionBuilder rb, OhDataOperation category, string? boundOperationName = null, bool keyBased = true)
+        {
+            if (operationAuthRules is null) return; // legacy group-auth path governs instead
+            OperationAuthRule? rule = ResolveOperationRule(category, boundOperationName);
+            if (rule is null) return; // no rule → inherit any group/global auth (anonymous if none)
+            if (rule.AllowAnonymous)
+            {
+                rb.AllowAnonymous();
+                return;
+            }
+
+            // #199 Layer B: resource-based (instance-level) requirements are not an endpoint gate —
+            // they are evaluated inside a per-request filter that loads the {key} entity. Attaching it
+            // here (only when the category opts in) keeps property/nav/$ref routes gap-free.
+            if (keyBased)
+            {
+                AttachResourceFilter(rb, category, boundOperationName);
+            }
+
+            // Named policies apply as separate RequireAuthorization(name) calls (they stack → AND).
+            foreach (var req in rule.Requirements.Where(r => r.Kind == AuthRequirementKind.Policy))
+            {
+                rb.RequireAuthorization(req.Name!);
+            }
+
+            // Inline requirements (authenticated/role/claim) replay onto one AuthorizationPolicyBuilder.
+            var inlineRequirements = rule.Requirements
+                .Where(r => r.Kind is AuthRequirementKind.AuthenticatedUser
+                                   or AuthRequirementKind.Role
+                                   or AuthRequirementKind.Claim)
+                .ToList();
+            if (inlineRequirements.Count > 0)
+            {
+                rb.RequireAuthorization(policy =>
+                {
+                    foreach (var req in inlineRequirements)
+                    {
+                        switch (req.Kind)
+                        {
+                            case AuthRequirementKind.AuthenticatedUser:
+                                policy.RequireAuthenticatedUser();
+                                break;
+                            case AuthRequirementKind.Role:
+                                policy.RequireRole(req.Values!.ToArray());
+                                break;
+                            case AuthRequirementKind.Claim:
+                                if (req.Values is { Count: > 0 })
+                                    policy.RequireClaim(req.Name!, req.Values);
+                                else
+                                    policy.RequireClaim(req.Name!);
+                                break;
+                        }
+                    }
+                });
+            }
+        }
+
+        // #199 Layer B helpers ─────────────────────────────────────────────────
+        bool CategoryHasResource(OhDataOperation category, string? boundOperationName)
+        {
+            OperationAuthRule? rule = ResolveOperationRule(category, boundOperationName);
+            return rule is { AllowAnonymous: false }
+                && rule.Requirements.Any(r => r.Kind == AuthRequirementKind.Resource);
+        }
+
+        static OperationAuthorizationRequirement BuiltInResourceRequirement(OhDataOperation category) => category switch
+        {
+            OhDataOperation.Read => OhDataOperations.Read,
+            OhDataOperation.Create => OhDataOperations.Create,
+            OhDataOperation.Update => OhDataOperations.Update,
+            OhDataOperation.Delete => OhDataOperations.Delete,
+            _ => OhDataOperations.Invoke,
+        };
+
+        // Evaluate the category's resource-based requirements against `entity` via
+        // IAuthorizationService. Returns a 403 result on failure (fail-closed — a requirement no
+        // registered handler satisfies denies), or null to proceed. No-op without a Resource requirement.
+        async Task<IResult?> CheckResourceAuthAsync(HttpContext ctx, object entity, OhDataOperation category, string? boundOperationName)
+        {
+            OperationAuthRule? rule = ResolveOperationRule(category, boundOperationName);
+            if (rule is null || rule.AllowAnonymous) return null;
+            var resourceReqs = rule.Requirements.Where(r => r.Kind == AuthRequirementKind.Resource).ToList();
+            if (resourceReqs.Count == 0) return null;
+
+            var authService = ctx.RequestServices.GetRequiredService<IAuthorizationService>();
+            foreach (var req in resourceReqs)
+            {
+                AuthorizationResult result = req.Name is not null
+                    ? await authService.AuthorizeAsync(ctx.User, entity, req.Name)
+                    : await authService.AuthorizeAsync(ctx.User, entity, BuiltInResourceRequirement(category));
+                if (!result.Succeeded)
+                {
+                    return ODataError(403, "Forbidden",
+                        "You are not authorized to perform this operation on the requested resource.");
+                }
+            }
+            return null;
+        }
+
+        // Attach a per-request filter to a key-based route that loads the {key} entity and runs the
+        // category's resource requirement against it. Only attaches when the category opts in, so
+        // non-resource routes carry zero request-time overhead.
+        void AttachResourceFilter(IEndpointConventionBuilder rb, OhDataOperation category, string? boundOperationName)
+        {
+            if (!CategoryHasResource(category, boundOperationName)) return;
+            rb.AddEndpointFilter(async (efc, next) =>
+            {
+                HttpContext ctx = efc.HttpContext;
+                if (ctx.Request.RouteValues.TryGetValue("key", out object? keyObj) && keyObj is string keyStr)
+                {
+                    var s = ResolveHandlers(ctx);
+                    object? parsedKey;
+                    try
+                    {
+                        parsedKey = ODataKeyParser.Parse(keyStr, typeof(TKey));
+                    }
+                    catch (FormatException)
+                    {
+                        return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{keyStr}'", target: "key");
+                    }
+
+                    object? entity = await s.InvokeGetByIdAsync(parsedKey!, ctx.RequestAborted);
+                    if (entity is null)
+                    {
+                        return ODataError(404, "NotFound", $"{name} with key '{keyStr}' was not found.");
+                    }
+
+                    IResult? authFail = await CheckResourceAuthAsync(ctx, entity, category, boundOperationName);
+                    if (authFail is not null) return authFail;
+                }
+                return await next(efc);
+            });
+        }
+
+        // #199 Layer B: resource checks on Read/Update/Delete load the entity by key, so a Resource
+        // requirement on any of those categories requires a GetById handler. Fail fast at startup.
+        if (operationAuthRules is not null && !source.HasGetById
+            && (CategoryHasResource(OhDataOperation.Read, null)
+                || CategoryHasResource(OhDataOperation.Update, null)
+                || CategoryHasResource(OhDataOperation.Delete, null)))
+        {
+            throw new InvalidOperationException(
+                $"Entity set '{name}': resource-based authorization (.RequireResource()) on Read/Update/Delete " +
+                "requires a GetById handler to load the entity for the check.");
+        }
 
         // Priority 1: ODataEntitySetProfile with direct ODataQueryOptions handler
         if (source is IODataEntitySetEndpointSource odataSource && odataSource.HasGetODataQueryable)
         {
-            entityGroup.MapGet("", async (HttpContext ctx, CancellationToken ct) =>
+            var collReadP1Rb = entityGroup.MapGet("", async (HttpContext ctx, CancellationToken ct) =>
             {
                 try
                 {
@@ -1619,13 +2025,62 @@ internal static class OhDataEndpointFactory
                     // ExpandProperties allowlists before handing options to the profile — the
                     // profile's own ApplyTo call has no opportunity to reject a disallowed
                     // property since it never calls Validate() itself.
-                    ValidatePropertyAllowlists(options);
+                    ValidatePropertyAllowlists(options, cachedValidationSettings);
+                    // #195: reject $top > MaxTop before invoking the profile. The Priority-1 path
+                    // delegates query application to the profile, so without this guard a client
+                    // could request an arbitrarily large page. Mirrors the Priority-2 path.
+                    if (options.Top is not null && source.MaxTop.HasValue &&
+                        options.Top.Value > source.MaxTop.Value)
+                    {
+                        return ODataError(400, "InvalidQueryOption",
+                            $"The value of '$top' ({options.Top.Value}) exceeds the maximum allowed value ({source.MaxTop.Value}).");
+                    }
+
                     var odataResult = await odataSrc.InvokeGetODataQueryableAsync(options, ct);
                     var queryable = odataResult.Items is IQueryable<TModel> typedQ
                         ? typedQ
                         : odataResult.Items.Cast<TModel>().AsQueryable();
 
+                    // #195: framework-side safety cap. The profile owns query application, but if it
+                    // does not page the result itself (no NextLink) and the client did not cap with
+                    // $top, bound the materialized set to MaxTop (or a smaller Prefer: maxpagesize)
+                    // and emit a continuation nextLink — so a Priority-1 profile can never be coerced
+                    // into returning an unbounded result set. When the profile supplies its own
+                    // NextLink it is trusted to have paged; when $top is present the client has capped
+                    // explicitly; neither case caps again.
+                    //
+                    // The continuation link uses $skip (not the opaque $skiptoken the Priority-2 path
+                    // emits): a Priority-1 profile applies the incoming ODataQueryOptions via ApplyTo,
+                    // which natively honors $skip but throws on a $skiptoken it has no handler for.
+                    // The profile applies $skip itself on the follow-up request; the framework then
+                    // only re-applies the Take cap on top.
+                    string? frameworkNextLink = null;
+                    int? appliedPageSize = null;
+                    if (odataResult.NextLink is null && options.Top is null)
+                    {
+                        int? preferredPageSize = ParseMaxPageSize(ctx);
+                        appliedPageSize = preferredPageSize.HasValue
+                            ? (source.MaxTop.HasValue
+                                ? Math.Min(preferredPageSize.Value, source.MaxTop.Value)
+                                : preferredPageSize.Value)
+                            : source.MaxTop;
+
+                        if (appliedPageSize.HasValue)
+                            queryable = queryable.Take(appliedPageSize.Value);
+                        if (preferredPageSize.HasValue)
+                            ctx.Response.Headers["Preference-Applied"] = $"maxpagesize={appliedPageSize!.Value}";
+                    }
+
                     object[] items = queryable.ToArray();
+
+                    // Emit a $skip continuation link when a full page was returned under the cap
+                    // (there may be more rows). The next offset is the profile-applied $skip on this
+                    // request plus the page just returned.
+                    if (appliedPageSize is int ps && ps > 0 && items.Length == ps)
+                    {
+                        int nextSkip = (options.Skip?.Value ?? 0) + items.Length;
+                        frameworkNextLink = BuildNextPageLinkWithSkip(ctx, nextSkip);
+                    }
 
                     var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
 
@@ -1638,10 +2093,11 @@ internal static class OhDataEndpointFactory
                     {
                         envelope["@odata.count"] = odataResult.TotalCount ?? (long)items.Length;
                     }
-                    // nextLink: prefer profile-provided next link over framework-computed.
-                    if (odataResult.NextLink is not null)
+                    // nextLink: prefer the profile's own link; otherwise the framework continuation.
+                    string? effectiveNextLink = odataResult.NextLink ?? frameworkNextLink;
+                    if (effectiveNextLink is not null)
                     {
-                        envelope["@odata.nextLink"] = odataResult.NextLink;
+                        envelope["@odata.nextLink"] = effectiveNextLink;
                     }
                     envelope["value"] = finalItems;
                     return Results.Ok(envelope);
@@ -1671,11 +2127,12 @@ internal static class OhDataEndpointFactory
                   CountEnabled: source.CountEnabled,
                   SearchEnabled: source.HasSearch,
                   MaxTop: source.MaxTop));
+            ApplyOperationAuth(collReadP1Rb, OhDataOperation.Read, keyBased: false);
         }
         // Priority 2: base GetQueryable (IQueryable without ODataQueryOptions)
         else if (source.HasGetQueryable)
         {
-            entityGroup.MapGet("", async (HttpContext ctx, CancellationToken ct) =>
+            var collReadP2Rb = entityGroup.MapGet("", async (HttpContext ctx, CancellationToken ct) =>
             {
                 try
                 {
@@ -1689,7 +2146,7 @@ internal static class OhDataEndpointFactory
                     var options = new ODataQueryOptions<TModel>(cachedODataQueryContext, ctx.Request);
                     // B1 fix: enforce FilterProperties/OrderByProperties/SelectProperties/
                     // ExpandProperties allowlists before any ApplyTo call below.
-                    ValidatePropertyAllowlists(options);
+                    ValidatePropertyAllowlists(options, cachedValidationSettings);
 
                     // Gap 4: $search on GetQueryable path — delegate to the Search handler, then
                     // apply remaining OData query options on top of the in-memory result set.
@@ -1832,10 +2289,11 @@ internal static class OhDataEndpointFactory
                   CountEnabled: source.CountEnabled,
                   SearchEnabled: source.HasSearch,
                   MaxTop: source.MaxTop));
+            ApplyOperationAuth(collReadP2Rb, OhDataOperation.Read, keyBased: false);
         }
         else if (source.HasGetAll)
         {
-            entityGroup.MapGet("", async (HttpContext ctx, CancellationToken ct) =>
+            var collReadAllRb = entityGroup.MapGet("", async (HttpContext ctx, CancellationToken ct) =>
             {
                 try
                 {
@@ -1857,14 +2315,7 @@ internal static class OhDataEndpointFactory
                     }
 
                     // MaxTop caps an *explicit* $top exactly like the GetQueryable path (400
-                    // InvalidQueryOption when exceeded). Deliberately NOT mirrored from
-                    // GetQueryable: the implicit "MaxTop as default page size when $top is
-                    // absent" behavior, and Prefer: maxpagesize. Both exist on GetQueryable to
-                    // produce a bounded page *plus* an @odata.nextLink so the client can retrieve
-                    // the remainder. GetAll has no nextLink/$skiptoken continuation story, so
-                    // silently truncating an omitted $top to MaxTop would drop data with no way
-                    // to page to it — worse than today's behavior of returning everything. This
-                    // choice is documented in docs/query-options.md.
+                    // InvalidQueryOption when exceeded).
                     if (options.Top is not null && source.MaxTop.HasValue && options.Top.Value > source.MaxTop.Value)
                     {
                         return ODataError(400, "InvalidQueryOption",
@@ -1881,23 +2332,58 @@ internal static class OhDataEndpointFactory
                     // exactly like on the GetQueryable path.
                     IResult? capabilityError = CheckCollectionQueryOptionCapabilities(ctx, source, checkFilterOrderBy: false);
                     if (capabilityError is not null) return capabilityError;
-                    ValidatePropertyAllowlists(options);
+                    ValidatePropertyAllowlists(options, cachedValidationSettings);
 
-                    // Leg 1: apply Skip($skip) then Take($top) against a materialized item array,
-                    // AFTER the handler call (GetAll or Search) below fills the array and BEFORE
-                    // $select/$expand serialization. @odata.count reflects the PRE-paging total
-                    // (§11.2.6.5 — @odata.count is unaffected by $top/$skip), so it is captured
-                    // from the array length before paging is applied.
-                    (object[] Paged, long PreTotal) ApplyGetAllPaging(object[] items)
+                    // Post-materialization paging for GetAll, applied AFTER the handler call (GetAll
+                    // or Search) fills the array and BEFORE $select/$expand serialization.
+                    // @odata.count reflects the PRE-paging total (§11.2.6.5 — unaffected by
+                    // $top/$skip), captured from the array length before paging.
+                    //
+                    // #201: an OMITTED $top is now capped to MaxTop (or a smaller Prefer:
+                    // maxpagesize), with a $skip @odata.nextLink for the remainder — GetAll
+                    // re-enumerates its source on each request, so offset paging is a valid
+                    // continuation story (the same $skip scheme the Priority-1 path uses). This
+                    // makes GetAll safe-by-default: it can no longer be coerced into returning an
+                    // unbounded result set. Opt out by setting MaxTop = null (returns the full set,
+                    // no nextLink). An EXPLICIT $top is taken as-is (already validated <= MaxTop
+                    // above) and suppresses the default cap and its nextLink.
+                    (object[] Paged, long PreTotal, string? NextLink) ApplyGetAllPaging(object[] items)
                     {
                         long preTotal = items.Length;
+                        int effectiveSkip = options.Skip is { Value: > 0 } ? options.Skip.Value : 0;
+
                         IEnumerable<object> seq = items;
-                        if (options.Skip is not null && options.Skip.Value > 0)
-                            seq = seq.Skip(options.Skip.Value);
+                        if (effectiveSkip > 0)
+                            seq = seq.Skip(effectiveSkip);
+
+                        int? appliedPageSize = null;
                         if (options.Top is not null)
+                        {
                             seq = seq.Take(options.Top.Value);
+                        }
+                        else
+                        {
+                            int? preferredPageSize = ParseMaxPageSize(ctx);
+                            appliedPageSize = preferredPageSize.HasValue
+                                ? (source.MaxTop.HasValue
+                                    ? Math.Min(preferredPageSize.Value, source.MaxTop.Value)
+                                    : preferredPageSize.Value)
+                                : source.MaxTop;
+                            if (appliedPageSize.HasValue)
+                                seq = seq.Take(appliedPageSize.Value);
+                            if (preferredPageSize.HasValue)
+                                ctx.Response.Headers["Preference-Applied"] = $"maxpagesize={appliedPageSize!.Value}";
+                        }
+
                         object[] paged = ReferenceEquals(seq, items) ? items : seq.ToArray();
-                        return (paged, preTotal);
+
+                        // nextLink only when the default cap was applied (omitted $top) and more
+                        // items remain beyond this page. The pre-paging total lets us decide exactly.
+                        string? nextLink = null;
+                        if (appliedPageSize is int ps && ps > 0 && effectiveSkip + paged.Length < preTotal)
+                            nextLink = BuildNextPageLinkWithSkip(ctx, effectiveSkip + paged.Length);
+
+                        return (paged, preTotal, nextLink);
                     }
 
                     // Gap 4: $search on GetAll path
@@ -1911,7 +2397,7 @@ internal static class OhDataEndpointFactory
 
                         var searchResults = await s.InvokeSearchAsync(searchTerm.ToString(), ct);
                         object[] searchItems = searchResults.ToArray();
-                        var (pagedSearchItems, searchPreTotal) = ApplyGetAllPaging(searchItems);
+                        var (pagedSearchItems, searchPreTotal, searchNextLink) = ApplyGetAllPaging(searchItems);
 
                         var (searchFinal, searchSelectedProps) = await ApplyCollectionPipelineAsync(pagedSearchItems, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
                         string searchBaseUrl = BuildBaseUrl(ctx, prefix);
@@ -1921,6 +2407,8 @@ internal static class OhDataEndpointFactory
                         // requested. Leg 1: reflects the pre-paging total, per §11.2.6.5.
                         if (options.Count?.Value == true)
                             searchEnvelope["@odata.count"] = searchPreTotal;
+                        if (searchNextLink is not null)
+                            searchEnvelope["@odata.nextLink"] = searchNextLink;
                         searchEnvelope["value"] = searchFinal;
                         return Results.Ok(searchEnvelope);
                     }
@@ -1928,7 +2416,7 @@ internal static class OhDataEndpointFactory
                     object? result = await s.InvokeGetAllAsync(ct);
                     var enumerable = result as IEnumerable<TModel> ?? Enumerable.Empty<TModel>();
                     var rawItems = enumerable.ToArray();
-                    var (pagedItems, preTotal) = ApplyGetAllPaging(rawItems);
+                    var (pagedItems, preTotal, nextLink) = ApplyGetAllPaging(rawItems);
 
                     var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(pagedItems, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
 
@@ -1939,6 +2427,9 @@ internal static class OhDataEndpointFactory
                     // requested on the GetAll path, reflecting the pre-paging total.
                     if (options.Count?.Value == true)
                         envelope["@odata.count"] = preTotal;
+                    // #201: $skip continuation link when an omitted $top was capped to MaxTop.
+                    if (nextLink is not null)
+                        envelope["@odata.nextLink"] = nextLink;
                     envelope["value"] = finalItems;
                     return Results.Ok(envelope);
                 }
@@ -1949,9 +2440,11 @@ internal static class OhDataEndpointFactory
             })
               .WithSummary($"List {name} (simple read path)")
               .WithDescription(
-                  "Returns the full result of the GetAll handler. $top, $skip, $select, $expand, " +
-                  "and $count are applied server-side, after materialization; $filter and " +
-                  "$orderby are not supported on this path — configure GetQueryable to enable them.")
+                  "Returns the result of the GetAll handler. $top, $skip, $select, $expand, and " +
+                  "$count are applied server-side, after materialization; $filter and $orderby are " +
+                  "not supported on this path — configure GetQueryable to enable them. An omitted " +
+                  "$top is capped to MaxTop (or a smaller Prefer: maxpagesize) with an " +
+                  "@odata.nextLink for the remainder; set MaxTop=null to return the full set.")
               .WithTags(name).Produces<ODataCollectionResponse<TModel>>(200).Produces(400)
               .WithMetadata(new OhDataQueryOptionsMetadata(
                   FilterEnabled: false,
@@ -1967,13 +2460,14 @@ internal static class OhDataEndpointFactory
                   // Leg 1: $top is now live on this path and capped by MaxTop exactly like
                   // GetQueryable, so the doc metadata should advertise the same cap.
                   MaxTop: source.MaxTop));
+            ApplyOperationAuth(collReadAllRb, OhDataOperation.Read, keyBased: false);
         }
 
         bool hasCountSource = (source is IODataEntitySetEndpointSource odsCheck && odsCheck.HasGetODataQueryable)
             || source.HasGetQueryable || source.HasGetAll;
         if (hasCountSource)
         {
-            entityGroup.MapGet("/$count", async (HttpContext ctx, CancellationToken ct) =>
+            var countCollRb = entityGroup.MapGet("/$count", async (HttpContext ctx, CancellationToken ct) =>
             {
                 try
                 {
@@ -1987,7 +2481,7 @@ internal static class OhDataEndpointFactory
                     var s = ResolveHandlers(ctx);
                     var options = new ODataQueryOptions<TModel>(cachedODataQueryContext, ctx.Request);
                     // B1 fix: enforce the FilterProperties allowlist here too.
-                    ValidatePropertyAllowlists(options);
+                    ValidatePropertyAllowlists(options, cachedValidationSettings);
 
                     if (s is IODataEntitySetEndpointSource odataCountSrc && odataCountSrc.HasGetODataQueryable)
                     {
@@ -2033,6 +2527,7 @@ internal static class OhDataEndpointFactory
                   CountEnabled: true,
                   SearchEnabled: false,
                   MaxTop: null));
+            ApplyOperationAuth(countCollRb, OhDataOperation.Read, keyBased: false);
         }
 
         if (source.HasGetById)
@@ -2071,7 +2566,7 @@ internal static class OhDataEndpointFactory
                     {
                         options = new ODataQueryOptions<TModel>(cachedODataQueryContext, ctx.Request);
                         // B1 fix: enforce SelectProperties/ExpandProperties allowlists.
-                        ValidatePropertyAllowlists(options);
+                        ValidatePropertyAllowlists(options, cachedValidationSettings);
                         selectedProps = options.SelectExpand?.SelectExpandClause is not null
                             ? ExtractSelectedProperties(options.SelectExpand.SelectExpandClause)
                             : null;
@@ -2100,7 +2595,7 @@ internal static class OhDataEndpointFactory
                     // + percent-encoded for string keys) rather than echoing the raw route
                     // segment -- the latter may carry decoded-but-unescaped characters (routing
                     // URL-decodes path segments before the handler sees them).
-                    string odataId = $"{BuildBaseUrl(ctx, prefix)}/{name}({ODataEntityKeyUrlFormatter.Format(parsedKey!)})";
+                    string odataId = BuildEntityId(ctx, prefix, name, parsedKey!);
 
                     if (hasExpand && options is not null)
                     {
@@ -2133,8 +2628,7 @@ internal static class OhDataEndpointFactory
                 }
                 catch (FormatException ex)
                 {
-                    logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                    return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                    return BadKeyError(logger, ex, key, name);
                 }
                 catch (Microsoft.OData.ODataException ex)
                 {
@@ -2150,6 +2644,7 @@ internal static class OhDataEndpointFactory
                   CountEnabled: false,
                   SearchEnabled: false,
                   MaxTop: null));
+            ApplyOperationAuth(rb, OhDataOperation.Read);
         }
 
         if (source.HasPost)
@@ -2222,6 +2717,12 @@ internal static class OhDataEndpointFactory
                         }
                     }
 
+                    // #199 Layer B: resource-based Create auth runs against the incoming (pre-persist)
+                    // entity — there is no stored row yet, so the collection POST cannot use the
+                    // load-by-key filter (nav-POST, which has a {key}, checks against the parent instead).
+                    IResult? createAuthFail = await CheckResourceAuthAsync(ctx, model, OhDataOperation.Create, boundOperationName: null);
+                    if (createAuthFail is not null) return createAuthFail;
+
                     var s = ResolveHandlers(ctx);
                     logger?.LogDebug("POST {Prefix}/{Name}", prefix, name);
                     object? result = await s.InvokePostAsync(model, ct);
@@ -2256,13 +2757,7 @@ internal static class OhDataEndpointFactory
                         // §8.3.3: Content-Location points to the canonical URL of the created resource.
                         ctx.Response.Headers["Content-Location"] = odataId;
 
-                        // §8.2.8.7: Prefer: return=representation — explicit opt-in; already the default behaviour.
-                        // Acknowledge the preference in the response header when present.
-                        if (ctx.Request.Headers.TryGetValue("Prefer", out var postPrefer)
-                            && postPrefer.ToString().Contains("return=representation", StringComparison.OrdinalIgnoreCase))
-                        {
-                            ctx.Response.Headers["Preference-Applied"] = "return=representation";
-                        }
+                        EchoReturnRepresentationPreference(ctx);
 
                         // Gap 5: include @odata.id in POST response body
                         // Gap 2: include @odata.etag in body
@@ -2281,6 +2776,7 @@ internal static class OhDataEndpointFactory
                   BodyType = typeof(TModel),
                   Description = $"The {name} entity to create."
               });
+            ApplyOperationAuth(rb, OhDataOperation.Create);
         }
 
         if (source.HasPut)
@@ -2344,7 +2840,7 @@ internal static class OhDataEndpointFactory
                         if (wasCreated)
                         {
                             // S4 fix: canonical, URL-safe key literal built from parsedKey (see GetById above).
-                            string upsertOdataId = $"{BuildBaseUrl(ctx, prefix)}/{name}({ODataEntityKeyUrlFormatter.Format(parsedKey!)})";
+                            string upsertOdataId = BuildEntityId(ctx, prefix, name, parsedKey!);
                             ctx.Response.Headers.Location = upsertOdataId;
                             // V1/§8.3.4: OData-EntityId is REQUIRED on the 204 response of an
                             // upsert-PUT that created the entity. A plain update-PUT must NOT
@@ -2354,17 +2850,12 @@ internal static class OhDataEndpointFactory
                         return Results.NoContent();
                     }
 
-                    // §8.2.8.7: Prefer: return=representation — explicit opt-in; already the default behaviour.
-                    if (ctx.Request.Headers.TryGetValue("Prefer", out var putPrefer)
-                        && putPrefer.ToString().Contains("return=representation", StringComparison.OrdinalIgnoreCase))
-                    {
-                        ctx.Response.Headers["Preference-Applied"] = "return=representation";
-                    }
+                    EchoReturnRepresentationPreference(ctx);
 
                     // Gap 5: include @odata.id in PUT response
                     // Gap 2: include @odata.etag in body
                     // S4 fix: canonical, URL-safe key literal built from parsedKey (see GetById above).
-                    string odataId = $"{BuildBaseUrl(ctx, prefix)}/{name}({ODataEntityKeyUrlFormatter.Format(parsedKey!)})";
+                    string odataId = BuildEntityId(ctx, prefix, name, parsedKey!);
                     if (wasCreated)
                         return Results.Created(odataId, ODataEntityNode(ctx, prefix, $"{name}/$entity", result, jsonOptions, odataId: odataId, etag: putEtag));
                     return ODataEntityResult(ctx, prefix, name, result, jsonOptions, odataId: odataId, etag: putEtag);
@@ -2375,8 +2866,7 @@ internal static class OhDataEndpointFactory
                 }
                 catch (FormatException ex)
                 {
-                    logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                    return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                    return BadKeyError(logger, ex, key, name);
                 }
             });
             rb.WithTags(name).Produces<TModel>(200).Produces(400).Produces(404).Produces(415)
@@ -2385,6 +2875,7 @@ internal static class OhDataEndpointFactory
                   BodyType = typeof(TModel),
                   Description = $"The full {name} entity representation to replace the existing resource with."
               });
+            ApplyOperationAuth(rb, OhDataOperation.Update);
         }
 
         if (source.HasPatch)
@@ -2432,7 +2923,10 @@ internal static class OhDataEndpointFactory
                     {
                         var clrProp = typeof(TModel).GetProperty(prop.Name,
                             BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance);
-                        if (clrProp is not null)
+                        // #226: ignored properties get the same silent-skip as unknown members.
+                        // This loop resolves members via CLR reflection (not the EDM), so EDM
+                        // removal alone would not stop an ignored member from binding here.
+                        if (clrProp is not null && !source.IgnoredPropertyNames.Contains(clrProp.Name))
                         {
                             object? value = prop.Value.Deserialize(clrProp.PropertyType, jsonOptions);
                             patchDelta.TrySetPropertyValue(clrProp.Name, value);
@@ -2458,17 +2952,12 @@ internal static class OhDataEndpointFactory
                         return Results.NoContent();
                     }
 
-                    // §8.2.8.7: Prefer: return=representation -- explicit opt-in; already the default behaviour.
-                    if (ctx.Request.Headers.TryGetValue("Prefer", out var patchPrefer)
-                        && patchPrefer.ToString().Contains("return=representation", StringComparison.OrdinalIgnoreCase))
-                    {
-                        ctx.Response.Headers["Preference-Applied"] = "return=representation";
-                    }
+                    EchoReturnRepresentationPreference(ctx);
 
                     // Gap 5: include @odata.id in PATCH response
                     // Gap 2: include @odata.etag in body
                     // S4 fix: canonical, URL-safe key literal built from parsedKey (see GetById above).
-                    string odataId = $"{BuildBaseUrl(ctx, prefix)}/{name}({ODataEntityKeyUrlFormatter.Format(parsedKey!)})";
+                    string odataId = BuildEntityId(ctx, prefix, name, parsedKey!);
                     return ODataEntityResult(ctx, prefix, name, result, jsonOptions, odataId: odataId, etag: patchEtag);
                 }
                 catch (JsonException ex)
@@ -2477,8 +2966,7 @@ internal static class OhDataEndpointFactory
                 }
                 catch (FormatException ex)
                 {
-                    logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                    return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                    return BadKeyError(logger, ex, key, name);
                 }
             });
             // Note: no .Accepts<TModel>("application/json") here -- that metadata caused ASP.NET
@@ -2492,6 +2980,7 @@ internal static class OhDataEndpointFactory
                   BodyType = typeof(TModel),
                   Description = $"A partial {name} representation. Only properties present in the JSON body are applied (partial-update semantics) -- omitted properties are left unchanged."
               });
+            ApplyOperationAuth(rb, OhDataOperation.Update);
         }
 
         if (source.HasDelete)
@@ -2512,11 +3001,11 @@ internal static class OhDataEndpointFactory
                 }
                 catch (FormatException ex)
                 {
-                    logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                    return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                    return BadKeyError(logger, ex, key, name);
                 }
             });
             rb.WithTags(name).Produces(204).Produces(400).Produces(404);
+            ApplyOperationAuth(rb, OhDataOperation.Delete);
         }
 
         // Startup route-collision validation: POST /{name}({key})/{segment}.
@@ -2638,8 +3127,7 @@ internal static class OhDataEndpointFactory
                     }
                     catch (FormatException ex)
                     {
-                        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                        return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'");
+                        return BadKeyError(logger, ex, key, name, withTarget: false);
                     }
                 })
                 .WithTags(name)
@@ -2653,6 +3141,7 @@ internal static class OhDataEndpointFactory
                         : navItemType ?? typeof(object),
                     "application/json")
                 .Produces(404);
+            ApplyOperationAuth(rb, OhDataOperation.Read);
 
             // Batch 3: GET /{name}({key})/{nav}/$count — standalone count for navigation collections (§11.2.3)
             if (navIsCollection)
@@ -2680,13 +3169,13 @@ internal static class OhDataEndpointFactory
                         }
                         catch (FormatException ex)
                         {
-                            logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                            return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'");
+                            return BadKeyError(logger, ex, key, name, withTarget: false);
                         }
                     })
                     .WithTags(name)
                     .Produces<long>(200, "text/plain")
                     .Produces(404);
+                ApplyOperationAuth(countRb, OhDataOperation.Read);
             }
 
             // Gap 6: $ref endpoints for navigation (§11.4.6)
@@ -2735,11 +3224,9 @@ internal static class OhDataEndpointFactory
                                         }
                                         if (cachedAccessor(child) is { } k)
                                         {
-                                            // S4 fix: canonical, URL-safe key literal (quoted + percent-encoded for string keys).
-                                            string formattedKey = ODataEntityKeyUrlFormatter.Format(k);
                                             refs.Add(new Dictionary<string, string>
                                             {
-                                                ["@odata.id"] = $"{baseUrl}/{refNavCapture.ChildEntitySetName}({formattedKey})"
+                                                ["@odata.id"] = BuildEntityId(baseUrl, refNavCapture.ChildEntitySetName, k)
                                             });
                                         }
                                     }
@@ -2773,12 +3260,10 @@ internal static class OhDataEndpointFactory
                                     var accessor = GetOrCompileNavRefKeyAccessor(child.GetType(), refNavCapture.ChildKeyPropertyName);
                                     if (accessor(child) is { } k)
                                     {
-                                        // S4 fix: canonical, URL-safe key literal (quoted + percent-encoded for string keys).
-                                        string childKey = ODataEntityKeyUrlFormatter.Format(k);
                                         return Results.Ok(new Dictionary<string, object?>
                                         {
                                             ["@odata.context"] = context,
-                                            ["@odata.id"] = $"{baseUrl}/{refNavCapture.ChildEntitySetName}({childKey})"
+                                            ["@odata.id"] = BuildEntityId(baseUrl, refNavCapture.ChildEntitySetName, k)
                                         });
                                     }
                                 }
@@ -2792,14 +3277,14 @@ internal static class OhDataEndpointFactory
                     }
                     catch (FormatException ex)
                     {
-                        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                        return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'");
+                        return BadKeyError(logger, ex, key, name, withTarget: false);
                     }
                 })
                 .WithTags(name)
                 .Produces(200,
                     navRefIsCollection ? typeof(ODataRefCollectionResponse) : typeof(ODataRefResponse),
                     "application/json");
+            ApplyOperationAuth(refGetRb, OhDataOperation.Read);
 
             // POST /{name}({key})/{nav}/$ref   — collection nav: add a link (§11.4.6.2)
             // PUT  /{name}({key})/{nav}/$ref   — single-value nav: set the link (§11.4.6.3)
@@ -2848,8 +3333,7 @@ internal static class OhDataEndpointFactory
                     }
                     catch (FormatException ex)
                     {
-                        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                        return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'");
+                        return BadKeyError(logger, ex, key, name, withTarget: false);
                     }
                 }
 
@@ -2861,21 +3345,23 @@ internal static class OhDataEndpointFactory
 
                 if (navRefIsCollection)
                 {
-                    entityAuthGroup.MapPost($"/{name}({{key}})/{navRefPropertyName}/$ref", handleAddOrSetRef)
+                    var refAddRb = entityAuthGroup.MapPost($"/{name}({{key}})/{navRefPropertyName}/$ref", handleAddOrSetRef)
                         .WithTags(name)
                         .Produces(204)
                         .Produces(400)
                         .Produces(415)
                         .WithMetadata(refBodyMetadata);
+                    ApplyOperationAuth(refAddRb, OhDataOperation.Update);
                 }
                 else
                 {
-                    entityAuthGroup.MapPut($"/{name}({{key}})/{navRefPropertyName}/$ref", handleAddOrSetRef)
+                    var refSetRb = entityAuthGroup.MapPut($"/{name}({{key}})/{navRefPropertyName}/$ref", handleAddOrSetRef)
                         .WithTags(name)
                         .Produces(204)
                         .Produces(400)
                         .Produces(415)
                         .WithMetadata(refBodyMetadata);
+                    ApplyOperationAuth(refSetRb, OhDataOperation.Update);
                 }
             }
 
@@ -2900,13 +3386,13 @@ internal static class OhDataEndpointFactory
                         }
                         catch (FormatException ex)
                         {
-                            logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                            return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'");
+                            return BadKeyError(logger, ex, key, name, withTarget: false);
                         }
                     })
                     .WithTags(name)
                     .Produces(204)
                     .Produces(400);
+                ApplyOperationAuth(refDeleteRb, OhDataOperation.Update);
             }
 
             // POST /{name}({key})/{nav} — create a new related entity (§11.4.2.1).
@@ -2918,7 +3404,7 @@ internal static class OhDataEndpointFactory
                 string postNavPropertyName = navPropertyName;
                 Type postNavItemType = navItemType ?? typeof(object);
                 var postNavCapture = nav;
-                entityAuthGroup.MapPost($"/{name}({{key}})/{postNavPropertyName}",
+                var navPostRb = entityAuthGroup.MapPost($"/{name}({{key}})/{postNavPropertyName}",
                     async (string key, HttpContext ctx, CancellationToken ct) =>
                     {
                         if (!IsJsonContentType(ctx)) return UnsupportedMediaTypeError(ctx);
@@ -2930,8 +3416,7 @@ internal static class OhDataEndpointFactory
                         }
                         catch (FormatException ex)
                         {
-                            logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                            return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                            return BadKeyError(logger, ex, key, name);
                         }
 
                         object? child;
@@ -2964,9 +3449,7 @@ internal static class OhDataEndpointFactory
                             var accessor = GetOrCompileNavRefKeyAccessor(created.GetType(), postNavCapture.ChildKeyPropertyName);
                             if (accessor(created) is { } childKeyVal)
                             {
-                                // S4 fix: canonical, URL-safe key literal (quoted + percent-encoded for string keys).
-                                string formattedChildKey = ODataEntityKeyUrlFormatter.Format(childKeyVal);
-                                childOdataId = $"{baseUrl}/{postNavCapture.ChildEntitySetName}({formattedChildKey})";
+                                childOdataId = BuildEntityId(baseUrl, postNavCapture.ChildEntitySetName, childKeyVal);
                             }
                         }
 
@@ -2987,11 +3470,7 @@ internal static class OhDataEndpointFactory
                         if (childOdataId is not null)
                             ctx.Response.Headers["Content-Location"] = childOdataId;
 
-                        if (ctx.Request.Headers.TryGetValue("Prefer", out var postNavPrefer)
-                            && postNavPrefer.ToString().Contains("return=representation", StringComparison.OrdinalIgnoreCase))
-                        {
-                            ctx.Response.Headers["Preference-Applied"] = "return=representation";
-                        }
+                        EchoReturnRepresentationPreference(ctx);
 
                         // When the target entity set is known, the context matches the child's
                         // own entity set (as if fetched via GET /{ChildEntitySet}({key})); otherwise
@@ -3014,13 +3493,27 @@ internal static class OhDataEndpointFactory
                         BodyType = postNavItemType,
                         Description = $"The related {postNavPropertyName} entity to create."
                     });
+                ApplyOperationAuth(navPostRb, OhDataOperation.Create);
             }
         }
 
+        // #221: property routes are numerous (four per structural property, per entity set) and,
+        // by default, omitted from the generated API docs via ExcludeFromDescription — leaving the
+        // primary CRUD/nav/bound-operation surface legible. They stay fully live at runtime
+        // regardless; DocProp only affects ApiExplorer enumeration (the shared upstream for
+        // Microsoft.AspNetCore.OpenApi, Swashbuckle, and NSwag). Opt back in via
+        // PropertyRouteDocsEnabled (server-wide default or per-profile). DocProp is the identity
+        // when docs are enabled, so it composes cleanly onto each route's fluent chain.
+        RouteHandlerBuilder DocProp(RouteHandlerBuilder b) =>
+            source.PropertyRouteDocsEnabled ? b : b.ExcludeFromDescription();
+
         // Individual structural property access (I-6, OData §11.2.6 / Part 2 §4.6-4.7).
-        // Read-only in this PR: property WRITE (PUT/PATCH/DELETE) is deferred to a later PR.
-        // Rides the existing GetById handler — no new handler delegate. Registered only when
-        // PropertyAccessEnabled resolves true AND GetById is configured.
+        // This block registers property READ (GET /{Set}({key})/{Property} and its /$value),
+        // which rides the existing GetById handler — no new handler delegate. Property WRITE
+        // (PUT/PATCH/DELETE on /{Set}({key})/{Property}) is implemented further below, riding
+        // Patch as a one-property Delta; only raw /{Property}/$value *writes* remain unsupported
+        // (read-only). Registered only when PropertyAccessEnabled resolves true AND GetById is
+        // configured.
         if (source.PropertyAccessEnabled && source.HasGetById)
         {
             // Startup route-collision validation (shared /{Set}({key})/{segment} space).
@@ -3047,7 +3540,7 @@ internal static class OhDataEndpointFactory
             foreach (var propCapture in source.StructuralProperties)
             {
                 // GET /{name}({key})/{Property} — property-value envelope (§11.2.6).
-                entityAuthGroup.MapGet($"/{name}({{key}})/{propCapture.Name}",
+                var propGetRb = DocProp(entityAuthGroup.MapGet($"/{name}({{key}})/{propCapture.Name}",
                     async (string key, HttpContext ctx, CancellationToken ct) =>
                     {
                         try
@@ -3088,18 +3581,18 @@ internal static class OhDataEndpointFactory
                         }
                         catch (FormatException ex)
                         {
-                            logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                            return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                            return BadKeyError(logger, ex, key, name);
                         }
                     })
                     .WithTags(name)
                     .Produces(200, typeof(ODataPropertyResponse<>).MakeGenericType(propCapture.ClrType), "application/json")
                     .Produces(204)
-                    .Produces(404);
+                    .Produces(404));
+                ApplyOperationAuth(propGetRb, OhDataOperation.Read);
 
                 // GET /{name}({key})/{Property}/$value — raw value (Part 2 §4.7).
                 bool propIsComplex = propCapture.IsComplex;
-                entityAuthGroup.MapGet($"/{name}({{key}})/{propCapture.Name}/$value",
+                var propValueRb = DocProp(entityAuthGroup.MapGet($"/{name}({{key}})/{propCapture.Name}/$value",
                     async (string key, HttpContext ctx, CancellationToken ct) =>
                     {
                         // Complex-typed properties have no raw representation — a static
@@ -3137,8 +3630,7 @@ internal static class OhDataEndpointFactory
                         }
                         catch (FormatException ex)
                         {
-                            logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                            return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                            return BadKeyError(logger, ex, key, name);
                         }
                     })
                     .WithTags(name)
@@ -3147,7 +3639,8 @@ internal static class OhDataEndpointFactory
                     // properties only) — never JSON.
                     .Produces<string>(200, "text/plain", "application/octet-stream")
                     .Produces(400)
-                    .Produces(404);
+                    .Produces(404));
+                ApplyOperationAuth(propValueRb, OhDataOperation.Read);
             }
         }
 
@@ -3180,12 +3673,15 @@ internal static class OhDataEndpointFactory
                     // omits the {key} path-parameter declaration its sibling GET carries, producing
                     // an OpenAPI document with an undeclared template variable (technically invalid).
                     // The key is unused: the response is a fixed 400 regardless of its value.
-                    entityAuthGroup.MapPut($"/{name}({{key}})/{propName}", (string key) => KeyImmutableError())
-                        .WithTags(name).Produces(400);
-                    entityAuthGroup.MapMethods($"/{name}({{key}})/{propName}", PatchMethod, (string key) => KeyImmutableError())
-                        .WithTags(name).Produces(400);
-                    entityAuthGroup.MapDelete($"/{name}({{key}})/{propName}", (string key) => KeyImmutableError())
-                        .WithTags(name).Produces(400);
+                    var propKeyPutRb = DocProp(entityAuthGroup.MapPut($"/{name}({{key}})/{propName}", (string key) => KeyImmutableError())
+                        .WithTags(name).Produces(400));
+                    ApplyOperationAuth(propKeyPutRb, OhDataOperation.Update);
+                    var propKeyPatchRb = DocProp(entityAuthGroup.MapMethods($"/{name}({{key}})/{propName}", PatchMethod, (string key) => KeyImmutableError())
+                        .WithTags(name).Produces(400));
+                    ApplyOperationAuth(propKeyPatchRb, OhDataOperation.Update);
+                    var propKeyDeleteRb = DocProp(entityAuthGroup.MapDelete($"/{name}({{key}})/{propName}", (string key) => KeyImmutableError())
+                        .WithTags(name).Produces(400));
+                    ApplyOperationAuth(propKeyDeleteRb, OhDataOperation.Update);
                     continue;
                 }
 
@@ -3276,8 +3772,7 @@ internal static class OhDataEndpointFactory
                     }
                     catch (FormatException ex)
                     {
-                        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                        return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                        return BadKeyError(logger, ex, key, name);
                     }
                 }
 
@@ -3287,20 +3782,22 @@ internal static class OhDataEndpointFactory
                     Description = $"The new value for '{propName}', wrapped in a 'value' member."
                 };
 
-                entityAuthGroup.MapPut($"/{name}({{key}})/{propName}",
+                var propPutRb = DocProp(entityAuthGroup.MapPut($"/{name}({{key}})/{propName}",
                     (string key, HttpContext ctx, CancellationToken ct) => HandleSetPropertyAsync(key, ctx, ct, isPatchVerb: false))
                     .WithTags(name).Produces(204).Produces(400).Produces(404).Produces(412).Produces(415)
-                    .WithMetadata(propertyWriteBodyMetadata);
+                    .WithMetadata(propertyWriteBodyMetadata));
+                ApplyOperationAuth(propPutRb, OhDataOperation.Update);
 
-                entityAuthGroup.MapMethods($"/{name}({{key}})/{propName}", PatchMethod,
+                var propPatchRb = DocProp(entityAuthGroup.MapMethods($"/{name}({{key}})/{propName}", PatchMethod,
                     (string key, HttpContext ctx, CancellationToken ct) => HandleSetPropertyAsync(key, ctx, ct, isPatchVerb: true))
                     .WithTags(name).Produces(204).Produces(400).Produces(404).Produces(412).Produces(415)
-                    .WithMetadata(propertyWriteBodyMetadata);
+                    .WithMetadata(propertyWriteBodyMetadata));
+                ApplyOperationAuth(propPatchRb, OhDataOperation.Update);
 
                 // DELETE — set the property to null (§11.4.9.3). Non-nullable is a structural
                 // (static, per-type) validation, checked before touching the data source at all —
                 // the same "cheap check first" pattern used for the key-immutable stub above.
-                entityAuthGroup.MapDelete($"/{name}({{key}})/{propName}", async (string key, HttpContext ctx, CancellationToken ct) =>
+                var propDeleteRb = DocProp(entityAuthGroup.MapDelete($"/{name}({{key}})/{propName}", async (string key, HttpContext ctx, CancellationToken ct) =>
                 {
                     if (!propIsNullable)
                     {
@@ -3332,10 +3829,10 @@ internal static class OhDataEndpointFactory
                     }
                     catch (FormatException ex)
                     {
-                        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                        return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                        return BadKeyError(logger, ex, key, name);
                     }
-                }).WithTags(name).Produces(204).Produces(400).Produces(404).Produces(412);
+                }).WithTags(name).Produces(204).Produces(400).Produces(404).Produces(412));
+                ApplyOperationAuth(propDeleteRb, OhDataOperation.Update);
             }
         }
 
@@ -3386,6 +3883,7 @@ internal static class OhDataEndpointFactory
             // Issue #181: document the function's query-string parameters.
             var boundFnQueryParams = BuildFunctionQueryParametersMetadata(fnCapture.Parameters, skipKey: false);
             if (boundFnQueryParams is not null) rb.WithMetadata(boundFnQueryParams);
+            ApplyOperationAuth(rb, OhDataOperation.Invoke, fnCapture.Name);
         }
 
         // Bound actions — POST /{EntitySet}/{ActionName} with JSON body params
@@ -3461,6 +3959,7 @@ internal static class OhDataEndpointFactory
                         string.Join(", ", actionCapture.Parameters.Select(p => $"{p.Name} ({p.ParameterType.Name})")) + "."
                 });
             }
+            ApplyOperationAuth(rb, OhDataOperation.Invoke, actionCapture.Name);
         }
 
         // Gap 7: Entity-level bound functions — GET /{name}({key})/{fn.Name}
@@ -3513,8 +4012,7 @@ internal static class OhDataEndpointFactory
                     }
                     catch (FormatException ex)
                     {
-                        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                        return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                        return BadKeyError(logger, ex, key, name);
                     }
                 })
                 .WithTags(name).Produces(400);
@@ -3523,6 +4021,7 @@ internal static class OhDataEndpointFactory
             // which is a route parameter already documented via BindingSource.Path).
             var entityFnQueryParams = BuildFunctionQueryParametersMetadata(fnCapture.Parameters, skipKey: true);
             if (entityFnQueryParams is not null) rb.WithMetadata(entityFnQueryParams);
+            ApplyOperationAuth(rb, OhDataOperation.Invoke, fnCapture.Name);
         }
 
         // Gap 7: Entity-level bound actions — POST /{name}({key})/{action.Name}
@@ -3590,8 +4089,7 @@ internal static class OhDataEndpointFactory
                     }
                     catch (FormatException ex)
                     {
-                        logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
-                        return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{key}'", target: "key");
+                        return BadKeyError(logger, ex, key, name);
                     }
                 })
                 .WithTags(name).Produces(400).Produces(415);
@@ -3610,6 +4108,7 @@ internal static class OhDataEndpointFactory
                         string.Join(", ", bodyParams.Select(p => $"{p.Name} ({p.ParameterType.Name})")) + "."
                 });
             }
+            ApplyOperationAuth(rb, OhDataOperation.Invoke, actionCapture.Name);
         }
 
     }

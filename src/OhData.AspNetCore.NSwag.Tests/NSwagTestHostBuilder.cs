@@ -64,9 +64,10 @@ internal static class NSwagTestHostBuilder
         builder.WebHost.UseTestServer();
         builder.Services.AddLogging();
         builder.Services.AddEndpointsApiExplorer();
-        builder.Services.AddOpenApiDocument(s =>
+        builder.Services.AddOpenApiDocument((s, sp) =>
         {
             s.OperationProcessors.Add(new OhDataNSwagOperationProcessor());
+            s.SchemaSettings.SchemaProcessors.Add(new OhDataNSwagSchemaProcessor(sp));
             configureDocument?.Invoke(s);
         });
 

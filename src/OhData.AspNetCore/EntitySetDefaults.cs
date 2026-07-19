@@ -57,6 +57,99 @@ public class EntitySetDefaults
         }
     }
 
+    private long? _maxRequestBodyBytes;
+
+    /// <summary>
+    /// Default maximum request-body size, in bytes, for write operations (POST/PUT/PATCH and their
+    /// navigation/<c>$ref</c>/property/action variants) across all entity sets. <c>null</c> (the
+    /// default) applies no OhData-level limit — the host's Kestrel <c>MaxRequestBodySize</c> (~30 MB
+    /// by default) still applies. When set, a request whose body exceeds the limit is rejected with
+    /// <c>413 Payload Too Large</c> before the body is deserialized. Profile-level
+    /// <see cref="EntitySetProfile{TKey,TModel}.MaxRequestBodyBytes"/> overrides this value. Must be
+    /// a positive value or <c>null</c>.
+    /// </summary>
+    public long? MaxRequestBodyBytes
+    {
+        get => _maxRequestBodyBytes;
+        set
+        {
+            if (value is <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxRequestBodyBytes), value, "MaxRequestBodyBytes must be a positive value or null.");
+            _maxRequestBodyBytes = value;
+        }
+    }
+
+    private int _maxExpansionDepth = 12;
+    private int _maxFilterNodeCount = 10000;
+    private int _maxOrderByNodeCount = 1000;
+    private int _maxAnyAllExpressionDepth = 1000;
+
+    /// <summary>
+    /// #202: maximum nested <c>$expand</c> depth accepted on the collection read paths. A request
+    /// nesting deeper is rejected with <c>400</c> before any handler runs. Defaults to <c>12</c>
+    /// (the framework's internal nested-expand cap), so a request nesting deeper than the framework
+    /// could ever satisfy is now an explicit error instead of a silently-truncated result. Lower it
+    /// to harden against deep-graph queries; must be a positive integer. Profile-level
+    /// <see cref="EntitySetProfile{TKey,TModel}.MaxExpansionDepth"/> overrides this value.
+    /// </summary>
+    public int MaxExpansionDepth
+    {
+        get => _maxExpansionDepth;
+        set
+        {
+            if (value <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxExpansionDepth), value, "MaxExpansionDepth must be a positive integer.");
+            _maxExpansionDepth = value;
+        }
+    }
+
+    /// <summary>
+    /// #202: maximum node count in a <c>$filter</c> expression tree (OData's
+    /// <c>MaxNodeCount</c>). Defaults to <c>10000</c>. Lower it to reject pathologically large
+    /// filter expressions sooner. Must be a positive integer. Profile-level override available.
+    /// </summary>
+    public int MaxFilterNodeCount
+    {
+        get => _maxFilterNodeCount;
+        set
+        {
+            if (value <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxFilterNodeCount), value, "MaxFilterNodeCount must be a positive integer.");
+            _maxFilterNodeCount = value;
+        }
+    }
+
+    /// <summary>
+    /// #202: maximum node count in an <c>$orderby</c> expression. Defaults to <c>1000</c>. Must be a
+    /// positive integer. Profile-level override available.
+    /// </summary>
+    public int MaxOrderByNodeCount
+    {
+        get => _maxOrderByNodeCount;
+        set
+        {
+            if (value <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxOrderByNodeCount), value, "MaxOrderByNodeCount must be a positive integer.");
+            _maxOrderByNodeCount = value;
+        }
+    }
+
+    /// <summary>
+    /// #202: maximum nesting depth of <c>any()</c>/<c>all()</c> lambda expressions in a
+    /// <c>$filter</c>. Defaults to <c>1000</c>. Must be a positive integer. Profile-level override
+    /// available.
+    /// </summary>
+    public int MaxAnyAllExpressionDepth
+    {
+        get => _maxAnyAllExpressionDepth;
+        set
+        {
+            if (value <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxAnyAllExpressionDepth), value, "MaxAnyAllExpressionDepth must be a positive integer.");
+            _maxAnyAllExpressionDepth = value;
+        }
+    }
+
     /// <summary>
     /// When <c>true</c> (the default), a <c>DELETE</c> on a non-existent resource returns
     /// <c>204 No Content</c> — idempotent per OData spec.
@@ -80,6 +173,21 @@ public class EntitySetDefaults
     /// Profile-level <c>PropertyAccessEnabled</c> overrides this value.
     /// </summary>
     public bool PropertyAccessEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Whether individual structural property routes appear in the generated API documentation
+    /// (Swagger/OpenAPI): the two property reads
+    /// (<c>GET /{EntitySet}({key})/{Property}</c> and <c>.../{Property}/$value</c>) and the
+    /// property writes (<c>PUT</c>/<c>PATCH</c>/<c>DELETE /{EntitySet}({key})/{Property}</c>,
+    /// including the immutable-key stubs). Defaults to <c>false</c>: these routes number four per
+    /// property, per entity set, and would otherwise dominate the docs. They remain fully
+    /// functional at runtime regardless of this flag — it only controls documentation visibility
+    /// (via <c>ExcludeFromDescription</c>), and only matters when the routes are actually
+    /// registered (i.e. <see cref="PropertyAccessEnabled"/> resolves <c>true</c> and the required
+    /// handler is configured). Set to <c>true</c> to include them. Profile-level
+    /// <c>PropertyRouteDocsEnabled</c> overrides this value.
+    /// </summary>
+    public bool PropertyRouteDocsEnabled { get; set; } = false;
 
     /// <summary>
     /// Whether <c>POST /{EntitySet}</c> passes nested navigation-property values (a "deep

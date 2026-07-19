@@ -8,16 +8,24 @@ dotnet add package EnGen.OhData.AspNetCore.NSwag
 
 ## Registration
 
-Register `OhDataNSwagOperationProcessor` with NSwag's document generator:
+Register `OhDataNSwagOperationProcessor` (query parameters) and `OhDataNSwagSchemaProcessor`
+(schema fidelity for `Ignore(...)`d properties — see
+[below](#ignored-properties-omitted-from-schemas)) with NSwag's document generator. The schema
+processor needs the host's `IServiceProvider` to reach the OhData registrations, so use the
+service-provider overload of `AddOpenApiDocument`:
 
 ```csharp
 using OhData.AspNetCore;
 
-builder.Services.AddOpenApiDocument(s =>
+builder.Services.AddOpenApiDocument((s, sp) =>
 {
     s.OperationProcessors.Add(new OhDataNSwagOperationProcessor());
+    s.SchemaSettings.SchemaProcessors.Add(new OhDataNSwagSchemaProcessor(sp));
 });
 ```
+
+(Each processor is independent — if no profile uses `Ignore(...)` you can register only the
+operation processor with the single-argument overload, as before.)
 
 Minimal API endpoints need ASP.NET Core's `ApiExplorer` enabled for NSwag to discover them at all (this is the same prerequisite the Swashbuckle integration relies on):
 
@@ -61,6 +69,18 @@ collection GET routes (see [openapi.md](openapi.md#read-path-summaries)). `OhDat
 applies them explicitly from `IEndpointSummaryMetadata`/`IEndpointDescriptionMetadata` endpoint
 metadata, without overwriting a summary/description NSwag already populated from another source
 (e.g. XML doc comments).
+
+## Ignored properties omitted from schemas
+
+Properties excluded via `EntitySetProfile.Ignore(...)` never cross the wire (see
+[ignoring-properties.md](ignoring-properties.md)), but NSwag generates schemas from the CLR type —
+which still has the property. `OhDataNSwagSchemaProcessor` implements NJsonSchema's
+`ISchemaProcessor` and removes each ignored member from its model type's generated schema (request
+and response alike, since both share the component schema), so the document matches the real wire
+shape. Matching respects `[JsonPropertyName]` and the System.Text.Json naming policy the document
+generator is configured with — the profile ignores the CLR name (`CostBasis`), the schema key is
+the JSON name (`costBasis`). Suppression is keyed by CLR model type, so a same-named property on a
+different (un-ignored) type is untouched.
 
 ## Versioned registrations
 

@@ -8,6 +8,51 @@ namespace OhData.Abstractions;
 internal static class AsyncDispatchHelper
 {
     /// <summary>
+    /// Splits a method's parameters into (has trailing CancellationToken, the parameters visible to
+    /// callers with that token removed). The framework supplies the token itself at invocation time.
+    /// </summary>
+    internal static (bool hasCancellationToken, ParameterInfo[] visibleParameters) SplitCancellationToken(
+        ParameterInfo[] allParameters)
+    {
+        bool hasCt = allParameters.Length > 0
+            && allParameters[^1].ParameterType == typeof(CancellationToken);
+        return (hasCt, hasCt ? allParameters[..^1] : allParameters);
+    }
+
+    /// <summary>
+    /// True when the return type carries no result value (<c>void</c>/<c>Task</c>/<c>ValueTask</c>) —
+    /// such an operation always yields 204 No Content.
+    /// </summary>
+    internal static bool IsVoidAsyncReturn(Type returnType) =>
+        returnType == typeof(void)
+        || returnType == typeof(Task)
+        || returnType == typeof(ValueTask);
+
+    /// <summary>Unwraps <c>Task&lt;T&gt;</c>/<c>ValueTask&lt;T&gt;</c> to <c>T</c>; returns the type unchanged otherwise.</summary>
+    internal static Type UnwrapAsyncReturn(Type returnType) =>
+        returnType.IsGenericType
+        && (returnType.GetGenericTypeDefinition() == typeof(Task<>)
+            || returnType.GetGenericTypeDefinition() == typeof(ValueTask<>))
+            ? returnType.GetGenericArguments()[0]
+            : returnType;
+
+    /// <summary>
+    /// Resolves the <c>Task&lt;T&gt;.Result</c> accessor <see cref="BuildInvoker"/> reads the awaited
+    /// value from, caching it at registration time instead of reflecting per invocation. Returns null
+    /// for non-generic (void/Task/ValueTask) returns, which have nothing to read.
+    /// </summary>
+    internal static PropertyInfo? GetAsyncResultAccessor(Type returnType)
+    {
+        if (!returnType.IsGenericType) return null;
+        var genDef = returnType.GetGenericTypeDefinition();
+        if (genDef == typeof(Task<>))
+            return returnType.GetProperty("Result");
+        if (genDef == typeof(ValueTask<>))
+            return typeof(Task<>).MakeGenericType(returnType.GetGenericArguments()[0]).GetProperty("Result");
+        return null;
+    }
+
+    /// <summary>
     /// Builds an async invoker for a delegate that may return void, Task, Task&lt;T&gt;,
     /// ValueTask, or ValueTask&lt;T&gt;. Handles CancellationToken injection.
     /// </summary>

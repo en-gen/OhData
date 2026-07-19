@@ -2,9 +2,9 @@
 
 The publish pipeline is [`.github/workflows/publish.yml`](../.github/workflows/publish.yml): it fires when a
 GitHub Release is **published**, validates the release tag against the GitVersion-computed version, builds,
-runs all three test suites, packs `EnGen.OhData.AspNetCore` and `EnGen.OhData.Client` (with `.snupkg`
-symbols), runs a package-quality gate, attests build provenance, and pushes to nuget.org with
-`--skip-duplicate`.
+runs all test suites, packs every published package (`EnGen.OhData.AspNetCore`, `EnGen.OhData.Client`, and
+the `Swashbuckle`/`OpenApi`/`NSwag` companions, each with `.snupkg` symbols), runs a package-quality gate,
+attests build provenance, and pushes to nuget.org with `--skip-duplicate`.
 
 ## Deterministic builds
 
@@ -28,10 +28,10 @@ and assemblies are optimized (Release, not Debug). All rules run — the package
 embedded in every package via `Directory.Build.props`. A non-zero exit fails the job.
 
 Also gated on `EnablePackageValidation=true` (set on every packable csproj): MSBuild's own API/ABI compat
-checks. The packages that have shipped also set `PackageValidationBaselineVersion` (currently `1.1.0` on
-AspNetCore/Client/Swashbuckle), so every pack is diffed against that published API surface and unintended
-breaking changes fail the build. **Bump the baseline as part of each release**, and add one to newly
-published packages after their first release.
+checks. Every published package also sets `PackageValidationBaselineVersion` — always the **previous**
+published release — so every pack is diffed against that shipped API surface and unintended breaking
+changes fail the build. **Bump the baseline on all packable csproj files as part of each release** (the
+release-prep PR), and add one to newly published packages after their first release.
 
 ## One-time setup
 

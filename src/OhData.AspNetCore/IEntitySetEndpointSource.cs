@@ -34,11 +34,23 @@ internal interface IEntitySetEndpointSource
 
     AuthorizationConfig? Authorization { get; }
 
+    /// <summary>
+    /// Per-operation authorization rules declared via <c>ConfigureAuthorization(...)</c> (#199), or
+    /// <c>null</c> when the profile uses the legacy profile-wide <see cref="Authorization"/> model.
+    /// When non-null, the factory applies auth per-route rather than to a single all-operations group.
+    /// </summary>
+    IReadOnlyList<OperationAuthRule>? OperationAuthorization { get; }
+
     IReadOnlyList<NavigationRouteDefinition> NavigationRoutes { get; }
     IReadOnlyList<BoundOperationDefinition> BoundFunctions { get; }
     IReadOnlyList<BoundOperationDefinition> BoundActions { get; }
 
     int? MaxTop { get; }
+    long? MaxRequestBodyBytes { get; }
+    int MaxExpansionDepth { get; }
+    int MaxFilterNodeCount { get; }
+    int MaxOrderByNodeCount { get; }
+    int MaxAnyAllExpressionDepth { get; }
     bool IdempotentDelete { get; }
     bool AllowUpsert { get; }
     bool HasSearch { get; }
@@ -48,6 +60,7 @@ internal interface IEntitySetEndpointSource
     bool ExpandEnabled { get; }
     bool CountEnabled { get; }
     bool PropertyAccessEnabled { get; }
+    bool PropertyRouteDocsEnabled { get; }
     RoundingMode RoundingMode { get; }
     IReadOnlyList<StructuralPropertyInfo> StructuralProperties { get; }
 
@@ -67,6 +80,15 @@ internal interface IEntitySetEndpointSource
     /// <c>false</c>.
     /// </summary>
     IReadOnlyCollection<string> NavigationPropertyNames { get; }
+
+    /// <summary>
+    /// Names of CLR properties excluded from the OData surface via
+    /// <c>EntitySetProfile.Ignore(...)</c> (#226). Empty when the profile ignores nothing.
+    /// Drives structural-route exclusion, the registration-wide serializer-options derivation,
+    /// and the PATCH delta-builder filter.
+    /// </summary>
+    IReadOnlyCollection<string> IgnoredPropertyNames { get; }
+
     string KeyPropertyName { get; }
     string InvokeGetKeyString(object model);
 

@@ -1,0 +1,113 @@
+name: Claude PR Review
+
+# Two-pass automated review of every non-draft PR:
+#   1. Adversarial pass  — scrutinize the implementation assuming it is wrong: hunt for
+#      concrete failure scenarios, OData 4.01 spec violations, edge cases, missing tests.
+#   2. Holistic pass     — review the change in the context of the surrounding code for
+#      patterns, duplication, and simplification opportunities (a /simplify-style sweep).
+#
+# Requires the ANTHROPIC_API_KEY repository secret (Settings → Secrets and variables →
+# Actions). Without it the job fails fast on the first step.
+#
+# Style nits are deliberately out of scope — dotnet-format (husky) and CodeQL already
+# cover formatting and lint-class findings; this review is about correctness and design.
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, synchronize]
+    branches: [develop, main]
+
+# A new push supersedes the in-flight review of the same PR.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Drafts opt out; release-train PRs (release/* → main, main → develop back-merges)
+    # are process PRs whose content was already reviewed on the way into develop.
+    if: >-
+      !github.event.pull_request.draft &&
+      !startsWith(github.head_ref, 'release/') &&
+      github.head_ref != 'main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # full history so the base...head diff and blame context resolve
+
+      # The secrets context is not usable in a job-level `if`, so probe it in a step and gate
+      # the review on the output — a repo without the secret gets a green skip + notice, not a
+      # red X on every PR.
+      - name: Check for ANTHROPIC_API_KEY
+        id: key
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Claude PR Review skipped::ANTHROPIC_API_KEY secret is not configured (Settings → Secrets and variables → Actions)."
+          fi
+
+      - name: Claude two-pass review
+        if: steps.key.outputs.present == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: |
+            --model claude-opus-4-8
+            --allowedTools "Read,Grep,Glob,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh api repos/*/pulls/*/comments*),Bash(gh api repos/*/pulls/*/reviews*),Bash(gh pr comment:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*)"
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+            BASE: ${{ github.event.pull_request.base.ref }}
+
+            You are the automated reviewer for OhData, a spec-conformant OData 4.01 server
+            framework for ASP.NET Core minimal APIs. Read CLAUDE.md first for the
+            architecture. Get the diff with `gh pr diff ${{ github.event.pull_request.number }}`
+            and read every touched file IN FULL (not just hunks) before judging anything.
+
+            Run two passes over the change:
+
+            ## Pass 1 — adversarial implementation scrutiny
+            Assume the diff is wrong and try to prove it. For each candidate finding,
+            verify it against the actual surrounding code before reporting; report ONLY
+            findings you can defend with a concrete failure scenario (specific input/state
+            → specific wrong output, crash, leak, or spec violation). Hunt specifically for:
+            - correctness bugs and unhandled edge cases (null/empty, key types, casing,
+              concurrency, cancellation, large payloads)
+            - OData 4.01 spec violations (error envelope shape, status codes, $-query
+              option semantics, header contracts)
+            - security issues (data leaks across the serialization surface, authz gaps,
+              injection, resource exhaustion)
+            - behavior changes to existing routes that the PR does not declare
+            - missing or weak tests for the risky paths the diff introduces
+
+            ## Pass 2 — holistic patterns & simplification
+            Review the change in the context of the files it touches, /simplify-style:
+            - duplication the diff introduces or could have removed (an existing helper
+              that already does this; two near-identical branches)
+            - unnecessary complexity: indirection, flags, or abstraction the change does
+              not need — name the simpler equivalent concretely
+            - inconsistency with the codebase's established patterns (cite the pattern
+              and where it lives)
+            - dead code or vestigial config left behind by the change
+            Suggestions here must be concrete enough to act on (before/after sketch or
+            named helper), not vibes.
+
+            ## Reporting
+            Post ONE review via
+            `gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews -f event=COMMENT -f body=...`
+            with two sections: "Adversarial findings" (each: file:line, severity
+            high/medium/low, the concrete failure scenario) and "Patterns & simplification"
+            (each: file:line, the concrete suggestion). If a pass has no findings, say
+            "No findings." under its heading — do NOT pad. Do not comment on formatting,
+            naming taste, or anything dotnet-format/CodeQL already enforces. Do not
+            request changes or approve — comment only; the human owner decides.
