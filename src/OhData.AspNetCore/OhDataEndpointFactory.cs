@@ -1560,9 +1560,10 @@ internal static class OhDataEndpointFactory
         // paths ($select=address/city) arrive as their top-level identifier and project the
         // whole member; the JSON trim shapes the nested object.
         var members = new Dictionary<string, PropertyInfo>(StringComparer.Ordinal);
-        foreach (string name in selectedNames.Where(structuralByName.ContainsKey))
+        foreach (StructuralPropertyInfo selectedProp in selectedNames
+            .Where(structuralByName.ContainsKey)
+            .Select(name => structuralByName[name]))
         {
-            StructuralPropertyInfo selectedProp = structuralByName[name];
             members[selectedProp.Name] = selectedProp.Property;
         }
 

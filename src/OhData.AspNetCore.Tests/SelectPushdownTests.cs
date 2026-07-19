@@ -168,6 +168,62 @@ public sealed class PushEtagComputedProfile : EntitySetProfile<int, PushEtagComp
     }
 }
 
+/// <summary>
+/// UseETag with a COMPUTED selector: ETag property names are unknowable, so pushdown must fall
+/// back at request time (distinct from the metadata-level null check — this exercises the
+/// request-path branch).
+/// </summary>
+public sealed class PushEtagUnknowableItem
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+}
+
+public sealed class PushEtagUnknowableProfile : EntitySetProfile<int, PushEtagUnknowableItem>
+{
+    private readonly List<PushEtagUnknowableItem> _store = new()
+    {
+        new PushEtagUnknowableItem { Id = 1, Name = "U1" },
+    };
+
+    public PushEtagUnknowableProfile() : base(x => x.Id)
+    {
+        SelectEnabled = true;
+        UseETag(x => x.Name.Length); // computed — names unknowable
+        GetQueryable = _ => Task.FromResult(_store.AsQueryable());
+        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(x => x.Id == id));
+    }
+}
+
+/// <summary>
+/// UseETag over a NAVIGATION property: the name is capturable (direct member) but it is not a
+/// structural property, so the ETag-name-not-structural fallback branch fires at request time.
+/// </summary>
+public sealed class PushEtagNavItem
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public List<PushPart>? Parts { get; set; }
+}
+
+public sealed class PushEtagNavProfile : EntitySetProfile<int, PushEtagNavItem>
+{
+    private readonly List<PushEtagNavItem> _store = new()
+    {
+        new PushEtagNavItem { Id = 1, Name = "N1" },
+    };
+
+    public PushEtagNavProfile() : base(x => x.Id)
+    {
+        SelectEnabled = true;
+        HasMany(x => x.Parts!, (int key, CancellationToken ct) =>
+            Task.FromResult<IEnumerable<PushPart>>(PushData.Parts()));
+        UseETag(x => x.Parts); // direct member, but a navigation — not structural
+        GetQueryable = _ => Task.FromResult(_store.AsQueryable());
+        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(x => x.Id == id));
+    }
+}
+
 public class SelectPushdownTests : IAsyncLifetime
 {
     private TestFixture _on = null!;
@@ -180,7 +236,9 @@ public class SelectPushdownTests : IAsyncLifetime
             .AddProfile<PushTaggedProfile>()
             .AddProfile<PushRecordProfile>()
             .AddProfile<PushComputedProfile>()
-            .AddProfile<PushEtagComputedProfile>();
+            .AddProfile<PushEtagComputedProfile>()
+            .AddProfile<PushEtagUnknowableProfile>()
+            .AddProfile<PushEtagNavProfile>();
 
         _on = await TestHostBuilder.BuildAsync(Configure);
         _off = await TestHostBuilder.BuildAsync(b =>
@@ -224,6 +282,8 @@ public class SelectPushdownTests : IAsyncLifetime
     [InlineData("/odata/PushRecordItems?$select=name")]
     [InlineData("/odata/PushComputedItems?$select=first")]
     [InlineData("/odata/PushEtagComputedItems?$select=first")]
+    [InlineData("/odata/PushEtagUnknowableItems?$select=name")]
+    [InlineData("/odata/PushEtagNavItems?$select=name")]
     public Task Responses_AreByteIdentical_PushdownOnVsOff(string url) => AssertByteIdentical(url);
 
     [Fact]
