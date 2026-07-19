@@ -2900,7 +2900,13 @@ internal static class OhDataEndpointFactory
                         // satisfying §11.4.2.2's "return the created entity with related entities."
                         // #240: omit un-expanded navigations from the POST echo so it matches a read
                         // of the same type — EXCEPT when the profile opted into deep insert, where the
-                        // 201 deliberately echoes the created graph inline (§11.4.2.2).
+                        // 201 deliberately echoes the created graph inline (§11.4.2.2). The gate is
+                        // entity-level because OmitUnexpandedNavigations strips ALL declared navs
+                        // unconditionally (it never inspects whether a nav is populated); a per-request
+                        // choice would require a value-aware strip. Accepted residual: a deep-insert
+                        // profile doing a *non-deep* POST still echoes its (null/empty) navs. PUT/PATCH
+                        // omit unconditionally — deep insert is POST-only, so there is no update
+                        // equivalent to honour.
                         var createdNode = ODataEntityNode(ctx, prefix, $"{name}/$entity", result, jsonOptions, odataId: odataId, etag: postEtag,
                             omitNavsForType: source.AllowDeepInsert ? null : rootEdmType);
                         return Results.Created(odataId, createdNode);

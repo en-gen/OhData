@@ -55,6 +55,37 @@ public class WriteResponseNavOmissionTests
         }
     }
 
+    /// <summary>Upsert-enabled profile: a PUT to a missing key returns null from Put, which — with
+    /// AllowUpsert — delegates to Post and yields a 201 create echo carrying populated navs.</summary>
+    private sealed class UpsertNavMovieProfile : EntitySetProfile<int, OmitMovie>
+    {
+        private static OmitMovie Populated(int id, string title) => new()
+        {
+            Id = id,
+            Title = title,
+            Studio = new OmitStudio { Id = 7, Name = "Skyline" },
+            Cast = new List<OmitActor> { new() { Id = 100, Name = "Ada" } },
+        };
+
+        public UpsertNavMovieProfile() : base(x => x.Id)
+        {
+            EntitySetName = "UpsertNavMovies";
+            AllowUpsert = true;
+
+            GetById = (id, _) => Task.FromResult<OmitMovie?>(null);
+            Put = (id, movie, _) => Task.FromResult<OmitMovie>(null!); // null → triggers upsert-create
+            Post = (movie, _) => Task.FromResult<OmitMovie?>(Populated(movie.Id == 0 ? 9 : movie.Id, movie.Title));
+
+            HasOptional(
+                navigation: x => x.Studio!,
+                get: (movieId, _) => Task.FromResult<OmitStudio?>(null),
+                refTargetEntitySet: null);
+            HasMany(
+                navigation: x => x.Cast!,
+                getAll: (movieId, _) => Task.FromResult<IEnumerable<OmitActor>>(new List<OmitActor>()));
+        }
+    }
+
     private static void AssertNavsOmittedButScalarsPresent(JsonElement body, string expectedTitle)
     {
         Assert.False(body.TryGetProperty("studio", out _), "write response must omit un-expanded single nav 'studio'");
@@ -69,8 +100,8 @@ public class WriteResponseNavOmissionTests
         var resp = await fx.Client.PostAsJsonAsync("/odata/WriteNavMovies", new { title = "Ascent" });
         Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
 
-        var body = JsonDocument.Parse(await resp.Content.ReadAsStringAsync()).RootElement;
-        AssertNavsOmittedButScalarsPresent(body, "Ascent");
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        AssertNavsOmittedButScalarsPresent(doc.RootElement, "Ascent");
     }
 
     [Fact]
@@ -80,8 +111,8 @@ public class WriteResponseNavOmissionTests
         var resp = await fx.Client.PutAsJsonAsync("/odata/WriteNavMovies(1)", new { id = 1, title = "Ballad" });
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
-        var body = JsonDocument.Parse(await resp.Content.ReadAsStringAsync()).RootElement;
-        AssertNavsOmittedButScalarsPresent(body, "Ballad");
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        AssertNavsOmittedButScalarsPresent(doc.RootElement, "Ballad");
     }
 
     [Fact]
@@ -95,24 +126,39 @@ public class WriteResponseNavOmissionTests
         var resp = await fx.Client.SendAsync(request);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
-        var body = JsonDocument.Parse(await resp.Content.ReadAsStringAsync()).RootElement;
-        AssertNavsOmittedButScalarsPresent(body, "Crest");
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        AssertNavsOmittedButScalarsPresent(doc.RootElement, "Crest");
     }
 
     [Fact]
-    public async Task Post_ReturnRepresentation_MatchesGetByIdShape()
+    public async Task PutUpsertCreate_201Echo_OmitsUnexpandedNavigations()
+    {
+        // The 201 upsert-create branch of PUT (a distinct response path from the 200 update) must
+        // also omit navigations.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<UpsertNavMovieProfile>());
+        var resp = await fx.Client.PutAsJsonAsync("/odata/UpsertNavMovies(9)", new { id = 9, title = "Dune" });
+        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
+
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        AssertNavsOmittedButScalarsPresent(doc.RootElement, "Dune");
+    }
+
+    [Fact]
+    public async Task Post_Echo_AndGetById_ExposeTheIdenticalMemberSet()
     {
         // The whole point of #240: the POST echo and a subsequent GET of the same type expose the
         // identical member set (neither carries the navigations).
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WriteNavMovieProfile>());
 
-        var postBody = JsonDocument.Parse(await (await fx.Client.PostAsJsonAsync(
-            "/odata/WriteNavMovies", new { title = "Ascent" })).Content.ReadAsStringAsync()).RootElement;
-        var getBody = JsonDocument.Parse(await (await fx.Client.GetAsync(
-            "/odata/WriteNavMovies(1)")).Content.ReadAsStringAsync()).RootElement;
+        using var postDoc = JsonDocument.Parse(await (await fx.Client.PostAsJsonAsync(
+            "/odata/WriteNavMovies", new { title = "Ascent" })).Content.ReadAsStringAsync());
+        using var getDoc = JsonDocument.Parse(await (await fx.Client.GetAsync(
+            "/odata/WriteNavMovies(1)")).Content.ReadAsStringAsync());
 
-        Assert.Equal(getBody.TryGetProperty("studio", out _), postBody.TryGetProperty("studio", out _));
-        Assert.Equal(getBody.TryGetProperty("cast", out _), postBody.TryGetProperty("cast", out _));
-        Assert.False(postBody.TryGetProperty("studio", out _));
+        foreach (string nav in new[] { "studio", "cast" })
+        {
+            Assert.False(postDoc.RootElement.TryGetProperty(nav, out _), $"POST echo must omit '{nav}'");
+            Assert.False(getDoc.RootElement.TryGetProperty(nav, out _), $"GET must omit '{nav}'");
+        }
     }
 }
