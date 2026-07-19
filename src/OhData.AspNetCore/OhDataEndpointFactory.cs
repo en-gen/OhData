@@ -2898,7 +2898,11 @@ internal static class OhDataEndpointFactory
                         // return value) may carry nested navigation values populated by the
                         // handler — SerializeToNode below serializes them inline automatically,
                         // satisfying §11.4.2.2's "return the created entity with related entities."
-                        var createdNode = ODataEntityNode(ctx, prefix, $"{name}/$entity", result, jsonOptions, odataId: odataId, etag: postEtag);
+                        // #240: omit un-expanded navigations from the POST echo so it matches a read
+                        // of the same type — EXCEPT when the profile opted into deep insert, where the
+                        // 201 deliberately echoes the created graph inline (§11.4.2.2).
+                        var createdNode = ODataEntityNode(ctx, prefix, $"{name}/$entity", result, jsonOptions, odataId: odataId, etag: postEtag,
+                            omitNavsForType: source.AllowDeepInsert ? null : rootEdmType);
                         return Results.Created(odataId, createdNode);
                     }
                 }
@@ -2990,8 +2994,8 @@ internal static class OhDataEndpointFactory
                     // S4 fix: canonical, URL-safe key literal built from parsedKey (see GetById above).
                     string odataId = BuildEntityId(ctx, prefix, name, parsedKey!);
                     if (wasCreated)
-                        return Results.Created(odataId, ODataEntityNode(ctx, prefix, $"{name}/$entity", result, jsonOptions, odataId: odataId, etag: putEtag));
-                    return ODataEntityResult(ctx, prefix, name, result, jsonOptions, odataId: odataId, etag: putEtag);
+                        return Results.Created(odataId, ODataEntityNode(ctx, prefix, $"{name}/$entity", result, jsonOptions, odataId: odataId, etag: putEtag, omitNavsForType: rootEdmType));
+                    return ODataEntityResult(ctx, prefix, name, result, jsonOptions, odataId: odataId, etag: putEtag, omitNavsForType: rootEdmType);
                 }
                 catch (JsonException ex)
                 {
@@ -3091,7 +3095,7 @@ internal static class OhDataEndpointFactory
                     // Gap 2: include @odata.etag in body
                     // S4 fix: canonical, URL-safe key literal built from parsedKey (see GetById above).
                     string odataId = BuildEntityId(ctx, prefix, name, parsedKey!);
-                    return ODataEntityResult(ctx, prefix, name, result, jsonOptions, odataId: odataId, etag: patchEtag);
+                    return ODataEntityResult(ctx, prefix, name, result, jsonOptions, odataId: odataId, etag: patchEtag, omitNavsForType: rootEdmType);
                 }
                 catch (JsonException ex)
                 {
@@ -3611,7 +3615,7 @@ internal static class OhDataEndpointFactory
                         string contextSegment = postNavCapture.ChildEntitySetName is not null
                             ? $"{postNavCapture.ChildEntitySetName}/$entity"
                             : $"{name}({key})/{postNavPropertyName}/$entity";
-                        var createdNode = ODataEntityNode(ctx, prefix, contextSegment, created, jsonOptions, odataId: childOdataId);
+                        var createdNode = ODataEntityNode(ctx, prefix, contextSegment, created, jsonOptions, odataId: childOdataId, omitNavsForType: navTargetEdmType);
                         return childOdataId is not null
                             ? Results.Created(childOdataId, createdNode)
                             : Results.Json(createdNode, statusCode: 201);
