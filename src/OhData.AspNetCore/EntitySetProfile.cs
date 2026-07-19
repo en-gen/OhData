@@ -117,6 +117,16 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected bool? PropertyAccessEnabled { get; init; }
 
     /// <summary>
+    /// Controls whether <c>$select</c> projection pushdown applies on this entity set's
+    /// <c>GetQueryable</c> path (#206). When enabled and a request's <c>$select</c> is
+    /// eligible, the framework composes a member-init projection onto the queryable so the
+    /// LINQ provider emits a column-pruned <c>SELECT</c>; wire output is byte-identical either
+    /// way. Inherits from <see cref="EntitySetDefaults"/> (default <c>true</c>) when
+    /// <c>null</c>. Disable for <c>IQueryable</c> providers that cannot translate member-init.
+    /// </summary>
+    protected bool? SelectPushdownEnabled { get; init; }
+
+    /// <summary>
     /// Controls whether this entity set's structural property routes
     /// (<c>GET /{EntitySet}({key})/{Property}</c>, <c>.../{Property}/$value</c>, and the
     /// <c>PUT</c>/<c>PATCH</c>/<c>DELETE</c> property writes) appear in the generated API
@@ -370,6 +380,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private bool _resolvedExpandEnabled;
     private bool _resolvedCountEnabled;
     private bool _resolvedPropertyAccessEnabled;
+    private bool _resolvedSelectPushdownEnabled;
     private bool _resolvedPropertyRouteDocsEnabled;
     private List<StructuralPropertyInfo>? _structuralProperties;
 
@@ -418,6 +429,14 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// </param>
     protected void UseETag(params Expression<Func<TModel, object?>>[] propertySelectors)
     {
+        // #206: capture the ETag property NAMES (direct-member selectors only) for the
+        // $select projection-pushdown eligibility check — the projection must include every
+        // ETag input so @odata.etag values are identical with and without pushdown. Runs
+        // BEFORE the compiled-delegate cache early return below, which would otherwise skip
+        // this on every construction after the first. A selector that is not a direct member
+        // access makes the names unknowable → null → pushdown ineligible while ETags are on.
+        _etagPropertyNames = TryExtractDirectMemberNames(propertySelectors);
+
         // Reuse the cached compiled delegate if available (avoids recompiling on every scoped construction).
         if (s_etagCache.TryGetValue(GetType(), out var cached))
         {
@@ -459,6 +478,34 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
         // Cache for per-request instances — this delegate only accesses model properties.
         s_etagCache.TryAdd(GetType(), _getETag);
+    }
+
+    private IReadOnlyCollection<string>? _etagPropertyNames;
+
+    /// <summary>
+    /// Extracts CLR property names when EVERY selector is a direct member access on the lambda
+    /// parameter (after Convert-stripping); returns <c>null</c> as soon as any selector is
+    /// computed/nested — the caller treats null as "names unknowable".
+    /// </summary>
+    private static IReadOnlyCollection<string>? TryExtractDirectMemberNames(
+        Expression<Func<TModel, object?>>[] selectors)
+    {
+        var names = new List<string>(selectors.Length);
+        foreach (Expression<Func<TModel, object?>> selector in selectors)
+        {
+            Expression body = selector.Body;
+            if (body is UnaryExpression unary &&
+                (unary.NodeType == ExpressionType.Convert || unary.NodeType == ExpressionType.ConvertChecked))
+            {
+                body = unary.Operand;
+            }
+
+            if (body is not MemberExpression member || member.Expression is not ParameterExpression)
+                return null;
+            names.Add(member.Member.Name);
+        }
+
+        return names;
     }
 
     private bool _authRequired;
@@ -529,6 +576,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _resolvedExpandEnabled = ExpandEnabled ?? defaults.ExpandEnabled;
         _resolvedCountEnabled = CountEnabled ?? defaults.CountEnabled;
         _resolvedPropertyAccessEnabled = PropertyAccessEnabled ?? defaults.PropertyAccessEnabled;
+        _resolvedSelectPushdownEnabled = SelectPushdownEnabled ?? defaults.SelectPushdownEnabled;
         _resolvedPropertyRouteDocsEnabled = PropertyRouteDocsEnabled ?? defaults.PropertyRouteDocsEnabled;
         _resolvedAllowDeepInsert = AllowDeepInsert ?? defaults.AllowDeepInsert;
         _resolvedRoundingMode = RoundingMode ?? defaults.RoundingMode;
@@ -668,6 +716,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
                 IsNullable = IsNullableClrType(prop.PropertyType),
                 IsComplex = !IsPrimitiveODataClrType(prop.PropertyType),
                 Accessor = CompileStructuralAccessor(prop),
+                Property = prop,
             });
         }
 
@@ -1673,6 +1722,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     bool IEntitySetEndpointSource.CountEnabled => _resolvedCountEnabled;
     bool IEntitySetEndpointSource.PropertyAccessEnabled => _resolvedPropertyAccessEnabled;
     bool IEntitySetEndpointSource.PropertyRouteDocsEnabled => _resolvedPropertyRouteDocsEnabled;
+    bool IEntitySetEndpointSource.SelectPushdownEnabled => _resolvedSelectPushdownEnabled;
+    IReadOnlyCollection<string>? IEntitySetEndpointSource.ETagPropertyNames => _etagPropertyNames;
     RoundingMode IEntitySetEndpointSource.RoundingMode => _resolvedRoundingMode;
     IReadOnlyList<StructuralPropertyInfo> IEntitySetEndpointSource.StructuralProperties =>
         _structuralProperties ??= BuildStructuralProperties();
