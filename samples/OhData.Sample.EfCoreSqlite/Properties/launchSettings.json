@@ -1,0 +1,12 @@
+{
+  "profiles": {
+    "OhData.Sample.EfCoreSqlite": {
+      "commandName": "Project",
+      "dotnetRunMessages": true,
+      "applicationUrl": "http://localhost:5220",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    }
+  }
+}
