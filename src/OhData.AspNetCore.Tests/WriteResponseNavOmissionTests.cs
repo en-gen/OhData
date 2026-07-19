@@ -119,7 +119,7 @@ public class WriteResponseNavOmissionTests
     public async Task Patch_ResponseBody_OmitsUnexpandedNavigations()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WriteNavMovieProfile>());
-        var request = new HttpRequestMessage(HttpMethod.Patch, "/odata/WriteNavMovies(1)")
+        using var request = new HttpRequestMessage(HttpMethod.Patch, "/odata/WriteNavMovies(1)")
         {
             Content = JsonContent.Create(new { title = "Crest" }),
         };
