@@ -339,6 +339,72 @@ internal static class OhDataEndpointFactory
             : queryable.Provider.CreateQuery<TModel>(rewritten);
     }
 
+    // #241: detects whether an expression tree already applies a LINQ ordering operator, so the
+    // stabilizing key order below never overrides a profile that pre-orders its own IQueryable.
+    // Over-detection is the safe direction (we skip injecting rather than override); a bare
+    // row-limiting operator with no ordering anywhere is exactly the case this catches.
+    private sealed class OrderingDetector : ExpressionVisitor
+    {
+        public bool Found { get; private set; }
+
+        protected override Expression VisitMethodCall(MethodCallExpression node)
+        {
+            if ((node.Method.DeclaringType == typeof(Queryable) || node.Method.DeclaringType == typeof(Enumerable))
+                && node.Method.Name is "OrderBy" or "OrderByDescending" or "ThenBy" or "ThenByDescending")
+            {
+                Found = true;
+            }
+            return base.VisitMethodCall(node);
+        }
+    }
+
+    private static bool ExpressionContainsOrdering(Expression expression)
+    {
+        var detector = new OrderingDetector();
+        detector.Visit(expression);
+        return detector.Found;
+    }
+
+    // #241: compiled, cached key-selector expression (entity key ascending) used to give server
+    // paging a deterministic total order. Keyed by model type; the key property name is fixed per
+    // model. Expression construction is cheap but caching keeps it off the per-request path.
+    private static readonly ConcurrentDictionary<(Type ModelType, string KeyProperty), LambdaExpression>
+        s_keyOrderExpressionCache = new();
+
+    private static Expression<Func<TModel, TKey>> GetKeyOrderExpression<TModel, TKey>(string keyPropertyName)
+    {
+        var lambda = s_keyOrderExpressionCache.GetOrAdd(
+            (typeof(TModel), keyPropertyName),
+            static (key, keyType) =>
+            {
+                ParameterExpression param = Expression.Parameter(key.ModelType, "e");
+                Expression body = Expression.Property(param, key.KeyProperty);
+                if (body.Type != keyType) body = Expression.Convert(body, keyType);
+                return Expression.Lambda(
+                    typeof(Func<,>).MakeGenericType(key.ModelType, keyType), body, param);
+            },
+            typeof(TKey));
+        return (Expression<Func<TModel, TKey>>)lambda;
+    }
+
+    // #241: guarantees the deterministic total order server paging requires (OData §11.2.6.2).
+    // - Client supplied $orderby: append the entity key as a final tiebreaker so paging is stable
+    //   even when the client sorts on a non-unique column.
+    // - No client $orderby and the profile's IQueryable is not already ordered: order by the entity
+    //   key ascending, so the framework's LIMIT never rides an unordered scan (EF warning 10102).
+    // - No client $orderby but the profile pre-orders its own queryable: left untouched — the
+    //   profile's order stands, and we never silently override it.
+    private static IQueryable<TModel> EnsureStableOrder<TModel, TKey>(
+        IQueryable<TModel> filtered, bool clientOrdered, bool sourceAlreadyOrdered, string keyPropertyName)
+    {
+        Expression<Func<TModel, TKey>> keyOrder = GetKeyOrderExpression<TModel, TKey>(keyPropertyName);
+        if (clientOrdered)
+            return filtered is IOrderedQueryable<TModel> ordered ? ordered.ThenBy(keyOrder) : filtered;
+        if (sourceAlreadyOrdered)
+            return filtered;
+        return filtered.OrderBy(keyOrder);
+    }
+
     public static RouteGroupBuilder MapAll(IEndpointRouteBuilder routes, OhDataRegistration registration)
     {
         string prefix = registration.Prefix;
@@ -2295,10 +2361,18 @@ internal static class OhDataEndpointFactory
                     // Apply filter/orderby/skip/top without $select so TModel shape is preserved.
                     // $select is handled via JsonNode post-processing to avoid ISelectExpandWrapper casing issues.
                     IQueryable<TModel> filtered = queryable;
+                    bool sourceAlreadyOrdered = ExpressionContainsOrdering(queryable.Expression);
                     if (options.Filter is not null)
                         filtered = (IQueryable<TModel>)options.Filter.ApplyTo(filtered, cachedQuerySettings);
                     if (options.OrderBy is not null)
                         filtered = (IQueryable<TModel>)options.OrderBy.ApplyTo(filtered, cachedQuerySettings);
+                    // #241: give server paging a deterministic total order before any Skip/Take below,
+                    // so the emitted LIMIT never rides an unordered scan (EF warning 10102) and page
+                    // boundaries across @odata.nextLink are stable. Appends the entity key as a
+                    // tiebreaker to a client $orderby; orders by the key when neither the client nor
+                    // the profile's own queryable established an order.
+                    filtered = EnsureStableOrder<TModel, TKey>(
+                        filtered, options.OrderBy is not null, sourceAlreadyOrdered, source.KeyPropertyName);
                     // round() spec compliance (Part 2 §5.1.1.9): rewrite the Math.Round call nodes
                     // ApplyTo just emitted into the away-from-zero overload, unless the profile
                     // opted back into banker's rounding.
