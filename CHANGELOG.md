@@ -9,6 +9,19 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`$select` projection pushdown (#206, phase 1).** On the `GetQueryable` path, an eligible
+  `$select` now composes a member-init projection onto the profile's queryable, so LINQ
+  providers emit a **column-pruned `SELECT`** instead of reading every column. Wire output is
+  byte-identical with or without pushdown (the existing camelCase JSON pipeline runs
+  unchanged); the projected set is the selected properties plus the entity key and any
+  `UseETag` properties. On by default (`EntitySetDefaults.SelectPushdownEnabled` /
+  per-profile `SelectPushdownEnabled`), with silent Debug-logged fallback to the full fetch
+  for ineligible requests (no parameterless constructor, setterless projected member,
+  computed `UseETag` selector) and an opt-out for `IQueryable` providers that cannot
+  translate member-init. `$expand` pushdown is phase 2, tracked on the same issue.
+
 ## [1.4.0] - 2026-07-19
 
 Production hardening (milestone 1.4.0): safe-by-default limits across the read paths,

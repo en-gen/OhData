@@ -175,6 +175,16 @@ public class EntitySetDefaults
     public bool PropertyAccessEnabled { get; set; } = true;
 
     /// <summary>
+    /// Whether <c>$select</c> projection pushdown is enabled by default on all entity sets
+    /// (#206). When <c>true</c> (the default) and a request's <c>$select</c> is eligible, the
+    /// <c>GetQueryable</c> path composes a member-init projection onto the profile's queryable
+    /// so LINQ providers emit a column-pruned <c>SELECT</c>. Wire output is byte-identical
+    /// either way; disable per profile (or here) for <c>IQueryable</c> providers that cannot
+    /// translate member-init projections.
+    /// </summary>
+    public bool SelectPushdownEnabled { get; set; } = true;
+
+    /// <summary>
     /// Whether individual structural property routes appear in the generated API documentation
     /// (Swagger/OpenAPI): the two property reads
     /// (<c>GET /{EntitySet}({key})/{Property}</c> and <c>.../{Property}/$value</c>) and the
