@@ -9,7 +9,11 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Production hardening (milestone 1.4.0): safe-by-default limits across the read paths.
+## [1.4.0] - 2026-07-19
+
+Production hardening (milestone 1.4.0): safe-by-default limits across the read paths,
+per-operation and resource-based authorization, observability, and profile-driven property
+exclusion.
 
 ### Added
 
@@ -133,6 +137,14 @@ Production hardening (milestone 1.4.0): safe-by-default limits across the read p
   collection read paths (`GetAll`, `GetQueryable`, and Priority-1 `GetODataQueryable`), via the shared
   capability gate. Implemented and capability-gated options are unaffected (`$filter`/`$orderby`/
   `$select`/`$expand`/`$count`/`$top`/`$skip`/`$search`/`$skiptoken`).
+- **Allowlist expression overloads now enforce their documented direct-member contract (#227).**
+  `FilterProperties`/`OrderByProperties`/`SelectProperties`/`ExpandProperties` documented that only
+  direct property access (`x => x.Name`) is supported, but nested member access slipped through:
+  `SelectProperties(x => x.Name.Length)` silently allowlisted `"Length"` and
+  `FilterProperties(x => x.Category.Name)` silently allowlisted `"Name"`. Both now throw
+  `ArgumentException` at profile construction, per the documented contract. **Behavior change:** a
+  profile that was (mis)relying on the lax behavior will now fail at startup — rewrite the selector
+  to a direct property of the model.
 - **Companion packages omit `Ignore()`d properties from generated schemas (#228).** #226 removed
   ignored properties from responses, request binding, `$metadata`, and query options — but the
   OpenAPI companion packages generate schemas from CLR types, so generated documents still listed
@@ -812,7 +824,8 @@ post-release-prep audit fix wave (below) found before the tag was actually cut.
 
 ---
 
-[Unreleased]: https://github.com/en-gen/OhData/compare/v1.3.0...develop
+[Unreleased]: https://github.com/en-gen/OhData/compare/v1.4.0...develop
+[1.4.0]: https://github.com/en-gen/OhData/releases/tag/v1.4.0
 [1.3.0]: https://github.com/en-gen/OhData/releases/tag/v1.3.0
 [1.2.0]: https://github.com/en-gen/OhData/releases/tag/v1.2.0
 [1.1.0]: https://github.com/en-gen/OhData/releases/tag/v1.1.0
