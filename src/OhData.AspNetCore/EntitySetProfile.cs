@@ -801,24 +801,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         string keyPropertyName = GetNavigationPropertyName(_getKey.Body);
         for (int i = 0; i < properties.Length; i++)
         {
-            // Stricter than ExtractNames: the member must be a DIRECT property of TModel
-            // (member.Expression is the lambda parameter). ExtractNames accepts any member
-            // access after Convert-stripping, so x => x.Name.Length would slip through it
-            // as "Length" — a name that isn't a TModel property at all.
-            Expression body = properties[i].Body;
-            if (body is UnaryExpression unary &&
-                (unary.NodeType == ExpressionType.Convert || unary.NodeType == ExpressionType.ConvertChecked))
-            {
-                body = unary.Operand;
-            }
-
-            if (body is not MemberExpression member || member.Expression is not ParameterExpression)
-            {
-                throw new ArgumentException(
-                    $"Expression at index {i} must be a direct property access on the model " +
-                    "(e.g. x => x.Name). Nested access such as x => x.Category.Name is not supported.",
-                    nameof(properties));
-            }
+            MemberExpression member = GetDirectMember(properties[i].Body, i, nameof(properties));
 
             string name = member.Member.Name;
             if (string.Equals(name, keyPropertyName, StringComparison.Ordinal))
@@ -855,33 +838,43 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
     /// <summary>
     /// Extracts member names from a set of simple property-access expressions.
-    /// Throws <see cref="ArgumentException"/> if an expression is not a direct member access.
+    /// Throws <see cref="ArgumentException"/> if an expression is not a direct member access
+    /// on the lambda parameter (#227): x => x.Name.Length or x => x.Category.Name is rejected
+    /// rather than silently allowlisting a name that isn't a property of TModel.
     /// </summary>
     private static string[] ExtractNames(Expression<Func<TModel, object?>>[] expressions)
     {
         string[] names = new string[expressions.Length];
         for (int i = 0; i < expressions.Length; i++)
         {
-            var body = expressions[i].Body;
-
-            // Strip boxing Convert / ConvertChecked nodes (e.g. value types cast to object)
-            if (body is UnaryExpression unary &&
-                (unary.NodeType == ExpressionType.Convert || unary.NodeType == ExpressionType.ConvertChecked))
-            {
-                body = unary.Operand;
-            }
-
-            if (body is not MemberExpression member)
-            {
-                throw new ArgumentException(
-                    $"Expression at index {i} must be a direct property access (e.g. x => x.Name). " +
-                    $"Nested access such as x => x.Category.Name is not supported.",
-                    nameof(expressions));
-            }
-
-            names[i] = member.Member.Name;
+            names[i] = GetDirectMember(expressions[i].Body, i, nameof(expressions)).Member.Name;
         }
         return names;
+    }
+
+    /// <summary>
+    /// Strips a boxing Convert/ConvertChecked node (e.g. a value type cast to object) and
+    /// validates that the remaining body is a member access made directly on the lambda
+    /// parameter. Shared by <see cref="ExtractNames"/> and <see cref="Ignore"/> (#226/#227),
+    /// which both promise this contract in their error message.
+    /// </summary>
+    private static MemberExpression GetDirectMember(Expression body, int index, string paramName)
+    {
+        if (body is UnaryExpression unary &&
+            (unary.NodeType == ExpressionType.Convert || unary.NodeType == ExpressionType.ConvertChecked))
+        {
+            body = unary.Operand;
+        }
+
+        if (body is not MemberExpression member || member.Expression is not ParameterExpression)
+        {
+            throw new ArgumentException(
+                $"Expression at index {index} must be a direct property access on the model " +
+                "(e.g. x => x.Name). Nested access such as x => x.Category.Name is not supported.",
+                paramName);
+        }
+
+        return member;
     }
 
     /// <summary>
