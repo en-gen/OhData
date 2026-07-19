@@ -14,12 +14,21 @@ dotnet add package EnGen.OhData.AspNetCore.OpenApi
 ```csharp
 using OhData.AspNetCore;
 
-builder.Services.AddOpenApi(o => o.AddOperationTransformer<OhDataOpenApiOperationTransformer>());
+builder.Services.AddOpenApi(o =>
+{
+    o.AddOperationTransformer<OhDataOpenApiOperationTransformer>();
+    o.AddSchemaTransformer<OhDataOpenApiSchemaTransformer>();
+});
 
 // ...
 
 app.MapOpenApi();
 ```
+
+The operation transformer documents the OData query parameters; the schema transformer keeps
+generated schemas honest for profiles that use `Ignore(...)` (see
+[below](#ignored-properties-omitted-from-schemas)). Each is independent — register only the one
+you need, or both.
 
 ## What gets documented
 
@@ -86,6 +95,17 @@ the actual response is still built by hand as an ordered dictionary so annotatio
 before entity properties. `$ref` routes similarly document `ODataRefResponse`/
 `ODataRefCollectionResponse`, and structural-property GET routes document
 `ODataPropertyResponse<T>`.
+
+## Ignored properties omitted from schemas
+
+Properties excluded via `EntitySetProfile.Ignore(...)` never cross the wire (see
+[ignoring-properties.md](ignoring-properties.md)), but OpenAPI schemas are generated from the CLR
+type — which still has the property. `OhDataOpenApiSchemaTransformer` implements
+`IOpenApiSchemaTransformer` and removes each ignored member from its model type's generated schema
+(request and response alike, since both share the component schema), so the document matches the
+real wire shape. Matching respects the serializer naming policy — the profile ignores the CLR name
+(`CostBasis`), the schema key is the JSON name (`costBasis`). Suppression is keyed by CLR model
+type, so a same-named property on a different (un-ignored) type is untouched.
 
 ## Read-path summaries
 

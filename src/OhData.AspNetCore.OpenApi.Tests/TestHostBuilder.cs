@@ -57,8 +57,11 @@ internal static class TestHostBuilder
             configure(o);
         });
 
-        builder.Services.AddOpenApi(configureOpenApi ??
-            (o => o.AddOperationTransformer<OhDataOpenApiOperationTransformer>()));
+        builder.Services.AddOpenApi(configureOpenApi ?? (o =>
+        {
+            o.AddOperationTransformer<OhDataOpenApiOperationTransformer>();
+            o.AddSchemaTransformer<OhDataOpenApiSchemaTransformer>();
+        }));
 
         var app = builder.Build();
 

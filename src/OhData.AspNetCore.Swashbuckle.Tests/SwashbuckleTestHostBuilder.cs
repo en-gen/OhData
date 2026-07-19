@@ -63,6 +63,7 @@ internal static class SwashbuckleTestHostBuilder
         builder.Services.AddSwaggerGen(c =>
         {
             c.OperationFilter<OhDataSwaggerOperationFilter>();
+            c.SchemaFilter<OhDataSwaggerSchemaFilter>();
         });
 
         builder.Services.AddOhData(o =>

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 
 namespace OhData.AspNetCore;
 
@@ -41,4 +42,12 @@ public sealed class OhDataRegistrationCollection
     /// an explicit name). Throws if no default registration exists.
     /// </summary>
     public OhDataRegistration Default => Get(OhDataDefaults.DefaultRegistrationName);
+
+    /// <summary>
+    /// All registrations resolved so far. A registration appears here once its keyed singleton
+    /// has been built — <c>app.MapOhData(name)</c> forces that at startup, so by the time any
+    /// request (including an OpenAPI document request) is served, every mapped registration is
+    /// present. Used by <see cref="IgnoredPropertyDocsMap"/> (#228).
+    /// </summary>
+    internal IEnumerable<OhDataRegistration> All => _registrations.Values;
 }
