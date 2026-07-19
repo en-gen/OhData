@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using OhData.Abstractions;
@@ -82,6 +83,29 @@ public static class OhDataAuthRequirementsText
         }
 
         return parts.Count == 0 ? null : "Requires " + string.Join("; ", parts) + ".";
+    }
+
+    /// <summary>
+    /// The label the "auth requirements" filters prefix onto the rendered requirements sentence.
+    /// </summary>
+    public const string SectionLabel = "**Authorization:**";
+
+    /// <summary>
+    /// Appends the rendered <paramref name="requirements"/> as an <see cref="SectionLabel"/> section
+    /// onto an operation's <paramref name="existingDescription"/>, returning the new description.
+    /// Keeps the two companions byte-identical and idempotent: an operation that already carries the
+    /// exact section is returned unchanged, so registering the filter twice never double-appends.
+    /// </summary>
+    public static string AppendSection(string? existingDescription, string requirements)
+    {
+        string section = SectionLabel + " " + requirements;
+        if (existingDescription is { Length: > 0 } existing)
+        {
+            return existing.Contains(section, StringComparison.Ordinal)
+                ? existing
+                : existing + "\n\n" + section;
+        }
+        return section;
     }
 
     private static string Code(string? value) => "`" + (value ?? string.Empty) + "`";

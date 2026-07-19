@@ -15,6 +15,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Microsoft.OpenApi;
 using OhData.Abstractions;
 using OhData.AspNetCore;
 using Xunit;
@@ -85,7 +86,7 @@ public sealed class OhDataOpenApiAuthRequirementsOperationTransformerTests
         Assert.DoesNotContain("**Authorization:**", description);
     }
 
-    // ── 5. Anonymous (no per-op auth) → nothing rendered ───────────────────────
+    // ── 5. No per-operation auth → nothing rendered ────────────────────────────
 
     [Fact]
     public async Task ProfileWithoutPerOperationAuth_RendersNothing()
@@ -97,11 +98,54 @@ public sealed class OhDataOpenApiAuthRequirementsOperationTransformerTests
         Assert.DoesNotContain("**Authorization:**", description);
     }
 
+    // ── 6. Registering twice does not double-append the section ─────────────────
+
+    [Fact]
+    public async Task RegisteredTwice_SectionAppendedOnce()
+    {
+        await using var fx = await BuildAsync(
+            o => o.AddProfile<RichAuthProfile>(), AuthRequirementDisclosure.Kinds, registerTwice: true);
+        using JsonDocument doc = await FetchDocumentAsync(fx.Client);
+
+        string description = OperationDescription(doc, "/odata/RichWidgets", "get");
+        int occurrences = CountOccurrences(description, "**Authorization:**");
+        Assert.Equal(1, occurrences);
+    }
+
+    // ── 7. An existing operation description is preserved, not replaced ─────────
+
+    [Fact]
+    public async Task ExistingDescription_PreservedAndSectionAppended()
+    {
+        const string baseText = "Base operation description.";
+        await using var fx = await BuildAsync(
+            o => o.AddProfile<RichAuthProfile>(), AuthRequirementDisclosure.Kinds,
+            configureBefore: o => o.AddOperationTransformer(new PreSeedDescriptionTransformer(baseText)));
+        using JsonDocument doc = await FetchDocumentAsync(fx.Client);
+
+        string description = OperationDescription(doc, "/odata/RichWidgets", "get");
+        Assert.StartsWith(baseText, description);
+        Assert.Contains("**Authorization:** Requires", description);
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────────
+
+    private static int CountOccurrences(string haystack, string needle)
+    {
+        int count = 0, index = 0;
+        while ((index = haystack.IndexOf(needle, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += needle.Length;
+        }
+        return count;
+    }
 
     private static async Task<TestFixture> BuildAsync(
         Action<OhDataBuilder> configure,
-        AuthRequirementDisclosure? disclosure)
+        AuthRequirementDisclosure? disclosure,
+        bool registerTwice = false,
+        Action<OpenApiOptions>? configureBefore = null)
     {
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
@@ -121,10 +165,17 @@ public sealed class OhDataOpenApiAuthRequirementsOperationTransformerTests
 
         builder.Services.AddOpenApi(o =>
         {
+            // Runs first so a test can pre-seed a base description before the requirements filter.
+            configureBefore?.Invoke(o);
+
             o.AddOperationTransformer<OhDataOpenApiOperationTransformer>();
             if (disclosure is AuthRequirementDisclosure level)
             {
                 o.AddOperationTransformer(new OhDataOpenApiAuthRequirementsOperationTransformer(level));
+                if (registerTwice)
+                {
+                    o.AddOperationTransformer(new OhDataOpenApiAuthRequirementsOperationTransformer(level));
+                }
             }
         });
 
@@ -165,6 +216,20 @@ public sealed class OhDataOpenApiAuthRequirementsOperationTransformerTests
 
         protected override Task<AuthenticateResult> HandleAuthenticateAsync() =>
             Task.FromResult(AuthenticateResult.NoResult());
+    }
+
+    /// <summary>Sets a base description on every operation before the requirements filter runs.</summary>
+    private sealed class PreSeedDescriptionTransformer : IOpenApiOperationTransformer
+    {
+        private readonly string _description;
+
+        public PreSeedDescriptionTransformer(string description) => _description = description;
+
+        public Task TransformAsync(OpenApiOperation operation, OpenApiOperationTransformerContext context, System.Threading.CancellationToken cancellationToken)
+        {
+            operation.Description = _description;
+            return Task.CompletedTask;
+        }
     }
 
     private class Widget
