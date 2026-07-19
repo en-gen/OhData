@@ -339,6 +339,56 @@ internal static class OhDataEndpointFactory
             : queryable.Provider.CreateQuery<TModel>(rewritten);
     }
 
+    // #241: reports whether the result order is already established by a top-level ordering operator,
+    // so the stabilizing key order below never overrides a profile that pre-orders its own IQueryable.
+    // Walks only the outer method-call spine (following the source argument) — an OrderBy buried inside
+    // a $filter predicate or a nav-collection subquery lambda does not govern the result order, so it
+    // must not suppress key injection (that would leave the LIMIT unordered — the very #241 bug).
+    private static bool ResultOrderIsEstablished(Expression expression)
+    {
+        while (expression is MethodCallExpression call)
+        {
+            if ((call.Method.DeclaringType == typeof(Queryable) || call.Method.DeclaringType == typeof(Enumerable))
+                && call.Method.Name is "OrderBy" or "OrderByDescending" or "ThenBy" or "ThenByDescending")
+            {
+                return true;
+            }
+            // Descend the source (first argument) only — never into predicate/selector lambdas.
+            expression = call.Arguments.Count > 0 ? call.Arguments[0] : null!;
+        }
+        return false;
+    }
+
+    // #241: entity-key-ascending selector used to give server paging a deterministic total order.
+    // Built fresh per use: this only assembles three expression nodes (never Expression.Compile),
+    // which the LINQ provider then translates — EF's own query-plan cache dedupes the translation,
+    // so a delegate cache here would buy nothing.
+    private static Expression<Func<TModel, TKey>> BuildKeyOrderExpression<TModel, TKey>(string keyPropertyName)
+    {
+        ParameterExpression param = Expression.Parameter(typeof(TModel), "e");
+        Expression body = Expression.Property(param, keyPropertyName);
+        if (body.Type != typeof(TKey)) body = Expression.Convert(body, typeof(TKey));
+        return Expression.Lambda<Func<TModel, TKey>>(body, param);
+    }
+
+    // #241: guarantees the deterministic total order server paging requires (OData §11.2.6.2).
+    // - Client supplied $orderby: append the entity key as a final tiebreaker so paging is stable
+    //   even when the client sorts on a non-unique column.
+    // - No client $orderby and the result order is not already established: order by the entity key
+    //   ascending, so the framework's LIMIT never rides an unordered scan (EF warning 10102).
+    // - No client $orderby but the profile pre-orders its own queryable: left untouched — the
+    //   profile's order stands, and we never silently override it.
+    private static IQueryable<TModel> EnsureStableOrder<TModel, TKey>(
+        IQueryable<TModel> filtered, bool clientOrdered, bool sourceAlreadyOrdered, string keyPropertyName)
+    {
+        if (!clientOrdered && sourceAlreadyOrdered)
+            return filtered;
+        Expression<Func<TModel, TKey>> keyOrder = BuildKeyOrderExpression<TModel, TKey>(keyPropertyName);
+        if (clientOrdered)
+            return filtered is IOrderedQueryable<TModel> ordered ? ordered.ThenBy(keyOrder) : filtered;
+        return filtered.OrderBy(keyOrder);
+    }
+
     public static RouteGroupBuilder MapAll(IEndpointRouteBuilder routes, OhDataRegistration registration)
     {
         string prefix = registration.Prefix;
@@ -2172,6 +2222,13 @@ internal static class OhDataEndpointFactory
                     // which natively honors $skip but throws on a $skiptoken it has no handler for.
                     // The profile applies $skip itself on the follow-up request; the framework then
                     // only re-applies the Take cap on top.
+                    //
+                    // #244: unlike the Priority-2 path, the framework does NOT inject a stabilizing
+                    // order before this cap Take. A Priority-1 profile owns the whole pipeline via its
+                    // own ApplyTo — including any $skip/$top — so the framework cannot safely prepend an
+                    // ORDER BY here (ordering after the profile's own Skip would sort a sliced subset).
+                    // Deterministic order on this path is therefore the profile's responsibility;
+                    // an unordered lazy IQueryable can still emit LIMIT without ORDER BY. Tracked in #244.
                     string? frameworkNextLink = null;
                     int? appliedPageSize = null;
                     if (odataResult.NextLink is null && options.Top is null)
@@ -2295,10 +2352,28 @@ internal static class OhDataEndpointFactory
                     // Apply filter/orderby/skip/top without $select so TModel shape is preserved.
                     // $select is handled via JsonNode post-processing to avoid ISelectExpandWrapper casing issues.
                     IQueryable<TModel> filtered = queryable;
+                    bool sourceAlreadyOrdered = ResultOrderIsEstablished(queryable.Expression);
                     if (options.Filter is not null)
                         filtered = (IQueryable<TModel>)options.Filter.ApplyTo(filtered, cachedQuerySettings);
                     if (options.OrderBy is not null)
                         filtered = (IQueryable<TModel>)options.OrderBy.ApplyTo(filtered, cachedQuerySettings);
+                    // #241: a deterministic total order is only needed when a row-limiting operator
+                    // (Skip/Take/server-paging) will actually run — otherwise the full result set is
+                    // returned and page order is moot, so an unbounded set (MaxTop=null, no $top/$skip/
+                    // maxpagesize) is not burdened with a whole-table sort. When paging does engage,
+                    // give it a stable order before any Skip/Take so the emitted LIMIT never rides an
+                    // unordered scan (EF warning 10102) and @odata.nextLink boundaries are stable:
+                    // append the entity key as a tiebreaker to a client $orderby; order by the key when
+                    // neither the client nor the profile's own queryable established an order.
+                    bool willRowLimit = options.Top is not null
+                        || options.Skip is not null
+                        || ctx.Request.Query.ContainsKey("$skiptoken")
+                        || (options.Top is null && (source.MaxTop.HasValue || ParseMaxPageSize(ctx).HasValue));
+                    if (willRowLimit)
+                    {
+                        filtered = EnsureStableOrder<TModel, TKey>(
+                            filtered, options.OrderBy is not null, sourceAlreadyOrdered, source.KeyPropertyName);
+                    }
                     // round() spec compliance (Part 2 §5.1.1.9): rewrite the Math.Round call nodes
                     // ApplyTo just emitted into the away-from-zero overload, unless the profile
                     // opted back into banker's rounding.
