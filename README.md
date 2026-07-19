@@ -242,15 +242,15 @@ routing, query options, navigation, ETags, authorization, malformed-payload hard
 `OhData.Client.Tests`, 30 in `OhData.MicrosoftODataClient.Tests` (compatibility against the
 official `Microsoft.OData.Client`), and 76 across the OpenAPI-integration suites
 (`OhData.AspNetCore.OpenApi.Tests`, `OhData.AspNetCore.NSwag.Tests`,
-`OhData.AspNetCore.Swashbuckle.Tests`). Run them yourself with the commands in
-[CLAUDE.md](CLAUDE.md#build--test).
+`OhData.AspNetCore.Swashbuckle.Tests`). Run every suite yourself with
+`dotnet test src/OhData.sln`.
 
 ## Versioning & support
 
 OhData follows [SemVer](https://semver.org/): patch releases fix bugs, minor releases add
 functionality without breaking the public API, and any breaking change means a major version.
-That contract is **enforced at build time**, not just promised — every release is diffed against
-the previously published API surface via .NET package validation
+The no-breaking-changes half of that contract is **enforced at build time**, not just promised —
+every release is diffed against the previously published API surface via .NET package validation
 (`PackageValidationBaselineVersion`), so an unintended breaking change fails the release build.
 Behavior changes that don't break the API are called out explicitly in the
 [CHANGELOG](CHANGELOG.md).
