@@ -242,7 +242,7 @@ internal sealed class MsClientFixture : IAsyncDisposable
         builder.Services.AddOhData(o =>
         {
             o.WithPrefix(Prefix);
-            o.AddProfile<WidgetDtoProfile>();
+            o.AddEntitySetProfile<WidgetDtoProfile>();
         });
 
         var app = builder.Build();

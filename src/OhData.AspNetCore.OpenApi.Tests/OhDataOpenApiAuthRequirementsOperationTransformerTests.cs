@@ -36,7 +36,7 @@ public sealed class OhDataOpenApiAuthRequirementsOperationTransformerTests
     [Fact]
     public async Task Kinds_RendersRolesClaimTypesAndPolicyNames_ButHidesClaimValues()
     {
-        await using var fx = await BuildAsync(o => o.AddProfile<RichAuthProfile>(), AuthRequirementDisclosure.Kinds);
+        await using var fx = await BuildAsync(o => o.AddEntitySetProfile<RichAuthProfile>(), AuthRequirementDisclosure.Kinds);
         using JsonDocument doc = await FetchDocumentAsync(fx.Client);
 
         string description = OperationDescription(doc, "/odata/RichWidgets", "get");
@@ -54,7 +54,7 @@ public sealed class OhDataOpenApiAuthRequirementsOperationTransformerTests
     [Fact]
     public async Task Full_RendersClaimValues()
     {
-        await using var fx = await BuildAsync(o => o.AddProfile<RichAuthProfile>(), AuthRequirementDisclosure.Full);
+        await using var fx = await BuildAsync(o => o.AddEntitySetProfile<RichAuthProfile>(), AuthRequirementDisclosure.Full);
         using JsonDocument doc = await FetchDocumentAsync(fx.Client);
 
         string description = OperationDescription(doc, "/odata/RichWidgets", "get");
@@ -67,7 +67,7 @@ public sealed class OhDataOpenApiAuthRequirementsOperationTransformerTests
     [Fact]
     public async Task NotRegistered_NoRequirementsSection()
     {
-        await using var fx = await BuildAsync(o => o.AddProfile<RichAuthProfile>(), disclosure: null);
+        await using var fx = await BuildAsync(o => o.AddEntitySetProfile<RichAuthProfile>(), disclosure: null);
         using JsonDocument doc = await FetchDocumentAsync(fx.Client);
 
         string description = OperationDescription(doc, "/odata/RichWidgets", "get");
@@ -79,7 +79,7 @@ public sealed class OhDataOpenApiAuthRequirementsOperationTransformerTests
     [Fact]
     public async Task ResourceOnlyRequirement_RendersNothing()
     {
-        await using var fx = await BuildAsync(o => o.AddProfile<ResourceOnlyProfile>(), AuthRequirementDisclosure.Full);
+        await using var fx = await BuildAsync(o => o.AddEntitySetProfile<ResourceOnlyProfile>(), AuthRequirementDisclosure.Full);
         using JsonDocument doc = await FetchDocumentAsync(fx.Client);
 
         string description = OperationDescription(doc, "/odata/ResourceWidgets", "get");
@@ -91,7 +91,7 @@ public sealed class OhDataOpenApiAuthRequirementsOperationTransformerTests
     [Fact]
     public async Task ProfileWithoutPerOperationAuth_RendersNothing()
     {
-        await using var fx = await BuildAsync(o => o.AddProfile<PlainProfile>(), AuthRequirementDisclosure.Kinds);
+        await using var fx = await BuildAsync(o => o.AddEntitySetProfile<PlainProfile>(), AuthRequirementDisclosure.Kinds);
         using JsonDocument doc = await FetchDocumentAsync(fx.Client);
 
         string description = OperationDescription(doc, "/odata/PlainWidgets", "get");
@@ -104,7 +104,7 @@ public sealed class OhDataOpenApiAuthRequirementsOperationTransformerTests
     public async Task RegisteredTwice_SectionAppendedOnce()
     {
         await using var fx = await BuildAsync(
-            o => o.AddProfile<RichAuthProfile>(), AuthRequirementDisclosure.Kinds, registerTwice: true);
+            o => o.AddEntitySetProfile<RichAuthProfile>(), AuthRequirementDisclosure.Kinds, registerTwice: true);
         using JsonDocument doc = await FetchDocumentAsync(fx.Client);
 
         string description = OperationDescription(doc, "/odata/RichWidgets", "get");
@@ -119,7 +119,7 @@ public sealed class OhDataOpenApiAuthRequirementsOperationTransformerTests
     {
         const string baseText = "Base operation description.";
         await using var fx = await BuildAsync(
-            o => o.AddProfile<RichAuthProfile>(), AuthRequirementDisclosure.Kinds,
+            o => o.AddEntitySetProfile<RichAuthProfile>(), AuthRequirementDisclosure.Kinds,
             configureBefore: o => o.AddOperationTransformer(new PreSeedDescriptionTransformer(baseText)));
         using JsonDocument doc = await FetchDocumentAsync(fx.Client);
 

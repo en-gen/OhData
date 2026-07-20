@@ -21,7 +21,7 @@ the authoritative list of what OhData does and does not implement.
 | Plain `IEnumerable<T>`/`List<T>` action return | `GetAll` delegate | No query options are applied to `GetAll` — it is the deliberately "dumb" path. Use `GetQueryable` if you want `$filter`/`$orderby`/`$top`/`$skip` to work. |
 | `ODataConventionModelBuilder` + `modelBuilder.EntitySet<T>("Name")` in `Program.cs` | Implicit: entity set name defaults to a pluralized form of the model type name. Override with `EntitySetName = "..."` in the profile constructor | No central model-builder file; each profile owns its own slice of the EDM. |
 | `modelBuilder.EntityType<T>().HasMany(...)` / `HasOptional(...)` for navigation | `HasMany(...)` / `HasOptional(...)` / `HasRequired(...)` called in the profile constructor | Same vocabulary, but the call also optionally registers the `GET .../{Nav}` route and `$ref` routes via delegate parameters — one declaration does both jobs. |
-| `services.AddControllers().AddOData(o => o.AddRouteComponents(prefix, model))` + `app.MapControllers()` | `services.AddOhData(o => o.WithPrefix(prefix).AddProfile<T>())` + `app.MapOhData()` | `AddOhData` is `AddScoped`, not singleton, per profile, so constructor injection of a scoped `DbContext` is safe without extra plumbing. |
+| `services.AddControllers().AddOData(o => o.AddRouteComponents(prefix, model))` + `app.MapControllers()` | `services.AddOhData(o => o.WithPrefix(prefix).AddEntitySetProfile<T>())` + `app.MapOhData()` | `AddOhData` is `AddScoped`, not singleton, per profile, so constructor injection of a scoped `DbContext` is safe without extra plumbing. |
 | `Delta<T>` parameter on a `Patch` action | `Delta<TModel>` parameter on the `Patch` delegate | **Same type** — `Microsoft.AspNetCore.OData.Deltas.Delta<T>`. OhData does not reinvent partial-update semantics; it reuses the type MS OData ships, including `delta.Patch(existing)` and `GetChangedPropertyNames()`. |
 | Multiple `AddRouteComponents` calls / a versioning library for `/v1`, `/v2` prefixes | `AddOhData("v1", ...)` / `AddOhData("v2", ...)` named registrations, or the `AddOhDataVersion`/`MapOhDataVersion` convenience pair | Each named registration is fully isolated: its own EDM model, its own profile set, its own prefix. See [docs/versioning.md](versioning.md). |
 | `[Authorize]` / `[Authorize(Policy = "...")]` on the controller, or on individual actions | `RequireAuthorization()` / `RequireAuthorization("PolicyName")` / `RequireRoles(...)` for the whole set, or `ConfigureAuthorization(auth => auth.Read(...).Writes(...)...)` for **per-operation** granularity — plus `.RequireResource()` for instance-level (owner) checks | Same ASP.NET Core auth pipeline underneath — OhData calls `RequireAuthorization` on the generated endpoints for you. See [docs/authorization.md](authorization.md). |
@@ -157,7 +157,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddDbContext<AppDbContext>(o => o.UseInMemoryDatabase("Store"));
 builder.Services.AddOhData(o => o
     .WithPrefix("/odata")
-    .AddProfile<ProductProfile>());
+    .AddEntitySetProfile<ProductProfile>());
 
 var app = builder.Build();
 app.MapOhData();

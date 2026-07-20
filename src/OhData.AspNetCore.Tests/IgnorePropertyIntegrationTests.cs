@@ -132,9 +132,9 @@ public class IgnorePropertyIntegrationTests : IAsyncLifetime
     public async Task InitializeAsync()
     {
         _fx = await TestHostBuilder.BuildAsync(b => b
-            .AddProfile<IgnProductProfile>()
-            .AddProfile<IgnTagProfile>()
-            .AddProfile<IgnControlProfile>());
+            .AddEntitySetProfile<IgnProductProfile>()
+            .AddEntitySetProfile<IgnTagProfile>()
+            .AddEntitySetProfile<IgnControlProfile>());
     }
 
     public async Task DisposeAsync() => await _fx.DisposeAsync();
@@ -335,8 +335,8 @@ public class IgnorePropertyStartupValidationTests
     {
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             TestHostBuilder.BuildAsync(b => b
-                .AddProfile<IgnConflictA>()
-                .AddProfile<IgnConflictB>()));
+                .AddEntitySetProfile<IgnConflictA>()
+                .AddEntitySetProfile<IgnConflictB>()));
         Assert.Contains("ConflictA", ex.Message);
         Assert.Contains("ConflictB", ex.Message);
         Assert.Contains(nameof(IgnProduct), ex.Message);
@@ -348,7 +348,7 @@ public class IgnorePropertyStartupValidationTests
         // OhDataBuilder wraps seal-time (VisitModelBuilder) failures in an "OhData: failed to
         // build EDM for profile ..." InvalidOperationException; the conflict detail is inner.
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            TestHostBuilder.BuildAsync(b => b.AddProfile<IgnNavConflictProfile>()));
+            TestHostBuilder.BuildAsync(b => b.AddEntitySetProfile<IgnNavConflictProfile>()));
         Assert.IsType<InvalidOperationException>(ex.InnerException);
         Assert.Contains("Tags", ex.InnerException!.Message);
         Assert.Contains("Ignore()", ex.InnerException.Message);
@@ -358,7 +358,7 @@ public class IgnorePropertyStartupValidationTests
     public async Task HasManyThenIgnore_SameProperty_ThrowsAtStartup()
     {
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            TestHostBuilder.BuildAsync(b => b.AddProfile<IgnNavConflictReversedProfile>()));
+            TestHostBuilder.BuildAsync(b => b.AddEntitySetProfile<IgnNavConflictReversedProfile>()));
         Assert.IsType<InvalidOperationException>(ex.InnerException);
         Assert.Contains("Tags", ex.InnerException!.Message);
         Assert.Contains("Ignore()", ex.InnerException.Message);

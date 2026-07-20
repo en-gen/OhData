@@ -101,8 +101,8 @@ public class NestedExpandTests
     private static Task<TestFixture> BuildAsync() =>
         TestHostBuilder.BuildAsync(o =>
         {
-            o.AddProfile<NestMovieProfile>();
-            o.AddProfile<NestStudioProfile>();
+            o.AddEntitySetProfile<NestMovieProfile>();
+            o.AddEntitySetProfile<NestStudioProfile>();
         });
 
     [Fact]

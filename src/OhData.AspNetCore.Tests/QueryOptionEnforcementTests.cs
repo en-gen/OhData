@@ -42,7 +42,7 @@ public class QueryOptionEnforcementTests
     [InlineData("$count=true", "$count")]
     public async Task GetQueryable_FlagDisabled_OptionPresent_Returns400(string query, string optionName)
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AllOffProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllOffProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync($"/odata/AllOffWidgets?{query}");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -61,7 +61,7 @@ public class QueryOptionEnforcementTests
     [InlineData("$count=true", "$count")]
     public async Task Priority1_FlagDisabled_OptionPresent_Returns400(string query, string optionName)
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AllOffODataProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllOffODataProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync($"/odata/AllOffODataWidgets?{query}");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -80,7 +80,7 @@ public class QueryOptionEnforcementTests
     [InlineData("$count=true", "$count")]
     public async Task GetAll_FlagDisabled_OptionPresent_Returns400(string query, string optionName)
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AllOffGetAllProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllOffGetAllProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync($"/odata/AllOffGetAllWidgets?{query}");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -94,7 +94,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task Filter_WhenEnabled_ValidProperty_Returns200()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AllOnProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllOnProfile>());
         var response = await fx.Client.GetAsync("/odata/AllOnWidgets?$filter=Name eq 'Alpha'");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -103,7 +103,7 @@ public class QueryOptionEnforcementTests
     public async Task Filter_WhenEnabled_UnknownProperty_Returns400()
     {
         // Unknown property is rejected because it is not in the EDM model.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AllOnProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllOnProfile>());
         var response = await fx.Client.GetAsync("/odata/AllOnWidgets?$filter=DoesNotExist eq 1");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
@@ -111,7 +111,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task OrderBy_WhenEnabled_SortsResults()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AllOnProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllOnProfile>());
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/AllOnWidgets?$orderby=Name");
         JsonElement values = json.GetProperty("value");
         Assert.Equal("Alpha", values[0].GetProperty("name").GetString());
@@ -121,7 +121,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task OrderBy_Descending_WhenEnabled_SortsResults()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AllOnProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllOnProfile>());
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/AllOnWidgets?$orderby=Name desc");
         JsonElement values = json.GetProperty("value");
         Assert.Equal("Beta", values[0].GetProperty("name").GetString());
@@ -131,7 +131,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task Select_WhenEnabled_OnlySelectedFieldPresent()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AllOnProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllOnProfile>());
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/AllOnWidgets?$select=Name");
         JsonElement first = json.GetProperty("value")[0];
         Assert.True(first.TryGetProperty("name", out _));
@@ -141,7 +141,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task Count_Standalone_WhenEnabled_Returns200()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AllOnProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllOnProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/AllOnWidgets/$count");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         string body = await response.Content.ReadAsStringAsync();
@@ -152,7 +152,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task Count_Inline_WhenEnabled_ReturnsOdataCount()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AllOnProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllOnProfile>());
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/AllOnWidgets?$count=true");
         Assert.True(json.TryGetProperty("@odata.count", out JsonElement countEl));
         Assert.Equal(2L, countEl.GetInt64());
@@ -163,7 +163,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task CountRoute_FilterDisabled_WithFilter_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AllOffProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllOffProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/AllOffWidgets/$count?$filter=Name eq 'Alpha'");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -173,7 +173,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task CountRoute_FilterEnabled_WithFilter_ReturnsFilteredCount()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AllOnProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllOnProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/AllOnWidgets/$count?$filter=Name eq 'Alpha'");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("1", await response.Content.ReadAsStringAsync());
@@ -185,7 +185,7 @@ public class QueryOptionEnforcementTests
     public async Task MaxTop_WithoutTopParam_CapsResultsAtMaxTop()
     {
         // When no $top is specified, MaxTop acts as the default page size.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MaxTopProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MaxTopProfile>());
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/MaxTopWidgets");
         int count = json.GetProperty("value").GetArrayLength();
         Assert.True(count <= 5, $"Expected at most 5 items (MaxTop=5) but got {count}");
@@ -194,7 +194,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task MaxTop_WithTopBelowCap_ReturnsRequestedCount()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MaxTopProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MaxTopProfile>());
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/MaxTopWidgets?$top=3");
         Assert.Equal(3, json.GetProperty("value").GetArrayLength());
     }
@@ -202,7 +202,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task MaxTop_WithTopAtCap_ReturnsCappedCount()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MaxTopProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MaxTopProfile>());
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/MaxTopWidgets?$top=5");
         Assert.Equal(5, json.GetProperty("value").GetArrayLength());
     }
@@ -211,7 +211,7 @@ public class QueryOptionEnforcementTests
     public async Task MaxTop_WithTopExceedingCap_Returns400()
     {
         // $top > MaxTop is rejected with 400 Bad Request.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MaxTopProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MaxTopProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/MaxTopWidgets?$top=20");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
@@ -220,7 +220,7 @@ public class QueryOptionEnforcementTests
     public async Task MaxTop_WithoutTop_AddsNextLink()
     {
         // When results are capped a @odata.nextLink is added to signal more pages exist.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MaxTopProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MaxTopProfile>());
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/MaxTopWidgets");
         Assert.True(json.TryGetProperty("@odata.nextLink", out _));
     }
@@ -230,7 +230,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task FilterProperties_AllowedProperty_Returns200()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AllowlistProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllowlistProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/AllowlistWidgets?$filter=Name eq 'Alpha'");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -238,7 +238,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task FilterProperties_DisallowedProperty_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AllowlistProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllowlistProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/AllowlistWidgets?$filter=Id eq 1");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -250,7 +250,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task OrderByProperties_AllowedProperty_Returns200()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AllowlistProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllowlistProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/AllowlistWidgets?$orderby=Id");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -258,7 +258,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task OrderByProperties_DisallowedProperty_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AllowlistProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllowlistProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/AllowlistWidgets?$orderby=Name");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -270,7 +270,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task SelectProperties_AllowedProperty_Returns200()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AllowlistProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllowlistProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/AllowlistWidgets?$select=Name");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -278,7 +278,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task SelectProperties_DisallowedProperty_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AllowlistProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllowlistProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/AllowlistWidgets?$select=Id");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -290,7 +290,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task ExpandProperties_AllowedProperty_Returns200AndExpands()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ExpandAllowlistProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ExpandAllowlistProfile>());
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ExpandAllowlistParents?$expand=Children");
         JsonElement first = json.GetProperty("value")[0];
         Assert.True(first.TryGetProperty("children", out JsonElement children));
@@ -300,7 +300,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task ExpandProperties_DisallowedProperty_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ExpandAllowlistProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ExpandAllowlistProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/ExpandAllowlistParents?$expand=Secrets");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -317,7 +317,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task Filter_NavPathAny_NoAllowlist_Returns200()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPathFilterProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavPathFilterProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync(
             "/odata/NavPathFilterParents?$filter=Tags/any(t: t/Name eq 'Red')");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -330,7 +330,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task Filter_NavPathAll_NoAllowlist_Returns200()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPathFilterProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavPathFilterProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync(
             "/odata/NavPathFilterParents?$filter=Tags/all(t: t/Name ne 'Blue')");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -344,7 +344,7 @@ public class QueryOptionEnforcementTests
     {
         // Mirrors the TestBench's Orders/Lines shape exactly (collection nav, numeric
         // comparison) -- the precise repro reported against the TestBench for NEW-1.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPathOrderProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavPathOrderProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync(
             "/odata/NavPathOrders?$filter=Lines/any(l: l/Quantity gt 1)");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -359,7 +359,7 @@ public class QueryOptionEnforcementTests
     {
         // The root's FilterProperties(Name) allowlist must not leak onto the Tag type reached
         // through the Tags navigation -- Tag has no allowlist semantics of its own in 1.0.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPathAllowlistProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavPathAllowlistProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync(
             "/odata/NavPathAllowlistParents?$filter=Tags/any(t: t/Name eq 'Red')");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -371,7 +371,7 @@ public class QueryOptionEnforcementTests
         // Security-property regression guard for B1: making nav-target types fully permissive
         // must NOT weaken the root allowlist itself -- a non-allowlisted root property is still
         // rejected even though Tags/any(...) on the very same entity set is now allowed.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPathAllowlistProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavPathAllowlistProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/NavPathAllowlistParents?$filter=Id eq 1");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -383,7 +383,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task OrderBy_NavPathSingleValued_NoAllowlist_Returns200()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPathOrderByProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavPathOrderByProfile>());
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>(
             "/odata/NavPathOrderByParents?$orderby=Category/Name");
         JsonElement values = json.GetProperty("value");
@@ -396,7 +396,7 @@ public class QueryOptionEnforcementTests
     public async Task OrderBy_NavPathSingleValued_WithRootAllowlist_Returns200()
     {
         // Same non-leak guarantee as the $filter case above, for $orderby's own allowlist.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPathOrderByAllowlistProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavPathOrderByAllowlistProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync(
             "/odata/NavPathOrderByAllowlistParents?$orderby=Category/Name");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -405,7 +405,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task OrderBy_RootAllowlist_NonAllowlistedProperty_StillReturns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPathOrderByAllowlistProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavPathOrderByAllowlistProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/NavPathOrderByAllowlistParents?$orderby=Id");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -422,7 +422,7 @@ public class QueryOptionEnforcementTests
     [InlineData("$search=foo", "$search")]
     public async Task NavRoute_UnsupportedOption_Returns400(string query, string optionName)
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavEnforcementProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavEnforcementProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync($"/odata/NavEnforcementParents(1)/Children?{query}");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -434,7 +434,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task NavRoute_SupportedOptions_StillWork()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavEnforcementProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavEnforcementProfile>());
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>(
             "/odata/NavEnforcementParents(1)/Children?$orderby=Name desc&$top=1&$count=true&$select=Name");
         Assert.Equal(2, json.GetProperty("@odata.count").GetInt64());
@@ -449,7 +449,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task GetById_SelectDisabled_WithSelect_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AllOffProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllOffProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/AllOffWidgets(1)?$select=Name");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -459,7 +459,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task GetById_ExpandDisabled_WithExpand_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AllOffProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllOffProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/AllOffWidgets(1)?$expand=Children");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -469,7 +469,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task GetById_ExpandEnabled_ExpandsNavigationProperty()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavEnforcementProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavEnforcementProfile>());
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavEnforcementParents(1)?$expand=Children");
         Assert.Equal(1, json.GetProperty("id").GetInt32());
         Assert.True(json.TryGetProperty("children", out JsonElement children),
@@ -483,7 +483,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task GetById_ExpandEnabled_WithSelect_ProjectsAndExpands()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavEnforcementProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavEnforcementProfile>());
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>(
             "/odata/NavEnforcementParents(1)?$select=Name&$expand=Children");
         Assert.True(json.TryGetProperty("name", out _));
@@ -497,7 +497,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task GetById_ExpandEnabled_UnknownNavProperty_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavEnforcementProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavEnforcementProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/NavEnforcementParents(1)?$expand=Nope");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -507,7 +507,7 @@ public class QueryOptionEnforcementTests
     [Fact]
     public async Task GetById_ExpandEnabled_BatchHandler_IsUsed()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BatchNavEnforcementProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<BatchNavEnforcementProfile>());
         BatchNavEnforcementProfile.BatchCalls = 0;
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/BatchNavParents(1)?$expand=Children");
         Assert.True(json.TryGetProperty("children", out JsonElement children));

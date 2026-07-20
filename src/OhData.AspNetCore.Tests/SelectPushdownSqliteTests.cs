@@ -86,7 +86,7 @@ public class SelectPushdownSqliteTests : IAsyncLifetime
         _sink = new SqlCaptureSink();
 
         _fx = await TestHostBuilder.BuildAsync(
-            b => b.AddProfile<SqliteWideProfile>(),
+            b => b.AddEntitySetProfile<SqliteWideProfile>(),
             configureServices: services =>
             {
                 services.AddSingleton(_sink);
@@ -209,7 +209,7 @@ public class SelectPushdownOwnedTypeTests : IAsyncLifetime
         _connection.Open();
 
         _fx = await TestHostBuilder.BuildAsync(
-            b => b.AddProfile<SqliteOwnedProfile>(),
+            b => b.AddEntitySetProfile<SqliteOwnedProfile>(),
             configureServices: services =>
                 services.AddDbContext<PushOwnedDbContext>(o => o.UseSqlite(_connection)));
 
@@ -270,7 +270,7 @@ public class SelectPushdownSqliteOptOutTests : IAsyncLifetime
             b =>
             {
                 b.WithDefaults(d => d.SelectPushdownEnabled = false);
-                b.AddProfile<SqliteWideProfile>();
+                b.AddEntitySetProfile<SqliteWideProfile>();
             },
             configureServices: services =>
             {

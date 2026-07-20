@@ -145,7 +145,7 @@ public class EntityIdUrlFormattingTests
     public async Task Post_StringKeyWithSpace_LocationIsQuotedAndEncoded()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<StringKeyProfile>(),
+            o => o.AddEntitySetProfile<StringKeyProfile>(),
             configureServices: s => s.AddSingleton(new StringKeyStore()));
         var resp = await fx.Client.PostAsync("/odata/StringKeyItems", JsonBody(new { id = "a b", name = "X" }));
 
@@ -161,7 +161,7 @@ public class EntityIdUrlFormattingTests
     public async Task Post_StringKeyWithEmbeddedQuote_LocationDoublesQuoteThenEncodes()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<StringKeyProfile>(),
+            o => o.AddEntitySetProfile<StringKeyProfile>(),
             configureServices: s => s.AddSingleton(new StringKeyStore()));
         var resp = await fx.Client.PostAsync("/odata/StringKeyItems", JsonBody(new { id = "it's", name = "X" }));
 
@@ -176,7 +176,7 @@ public class EntityIdUrlFormattingTests
     public async Task Post_StringKeyWithUnicode_LocationIsQuotedAndPercentEncoded_AndRoundTrips()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<StringKeyProfile>(),
+            o => o.AddEntitySetProfile<StringKeyProfile>(),
             configureServices: s => s.AddSingleton(new StringKeyStore()));
         const string unicodeKey = "café";
         var resp = await fx.Client.PostAsync("/odata/StringKeyItems", JsonBody(new { id = unicodeKey, name = "X" }));
@@ -197,7 +197,7 @@ public class EntityIdUrlFormattingTests
     public async Task Post_IntKey_LocationUnchanged()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<IntKeyProfile>(),
+            o => o.AddEntitySetProfile<IntKeyProfile>(),
             configureServices: s => s.AddSingleton(new IntKeyStore()));
         var resp = await fx.Client.PostAsync("/odata/UrlFormatIntItems", JsonBody(new { name = "X" }));
 
@@ -209,7 +209,7 @@ public class EntityIdUrlFormattingTests
     public async Task Post_GuidKey_LocationUnchanged()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<GuidKeyProfile>(),
+            o => o.AddEntitySetProfile<GuidKeyProfile>(),
             configureServices: s => s.AddSingleton(new GuidKeyStore()));
         var resp = await fx.Client.PostAsync("/odata/UrlFormatGuidItems", JsonBody(new { name = "X" }));
 
@@ -223,7 +223,7 @@ public class EntityIdUrlFormattingTests
     public async Task GetById_StringKeyWithSpace_ODataIdIsCanonical()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<StringKeyProfile>(),
+            o => o.AddEntitySetProfile<StringKeyProfile>(),
             configureServices: s => s.AddSingleton(new StringKeyStore()));
         var postResp = await fx.Client.PostAsync("/odata/StringKeyItems", JsonBody(new { id = "a b", name = "X" }));
         Assert.Equal(HttpStatusCode.Created, postResp.StatusCode);
@@ -238,7 +238,7 @@ public class EntityIdUrlFormattingTests
     public async Task Put_StringKeyWithSpace_ODataIdIsCanonical()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<StringKeyProfile>(),
+            o => o.AddEntitySetProfile<StringKeyProfile>(),
             configureServices: s => s.AddSingleton(new StringKeyStore()));
         var postResp = await fx.Client.PostAsync("/odata/StringKeyItems", JsonBody(new { id = "a b", name = "X" }));
         Assert.Equal(HttpStatusCode.Created, postResp.StatusCode);
@@ -253,7 +253,7 @@ public class EntityIdUrlFormattingTests
     public async Task Patch_StringKeyWithQuote_ODataIdIsCanonical()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<StringKeyProfile>(),
+            o => o.AddEntitySetProfile<StringKeyProfile>(),
             configureServices: s => s.AddSingleton(new StringKeyStore()));
         var postResp = await fx.Client.PostAsync("/odata/StringKeyItems", JsonBody(new { id = "it's", name = "X" }));
         Assert.Equal(HttpStatusCode.Created, postResp.StatusCode);
@@ -272,7 +272,7 @@ public class EntityIdUrlFormattingTests
     public async Task GetById_IntKey_ODataIdUnchanged()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<IntKeyProfile>(),
+            o => o.AddEntitySetProfile<IntKeyProfile>(),
             configureServices: s => s.AddSingleton(new IntKeyStore()));
         var postResp = await fx.Client.PostAsync("/odata/UrlFormatIntItems", JsonBody(new { name = "X" }));
         Assert.Equal(HttpStatusCode.Created, postResp.StatusCode);

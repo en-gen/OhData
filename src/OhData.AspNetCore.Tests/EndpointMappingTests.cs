@@ -23,7 +23,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task GetAll_Returns200()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/Widgets");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -31,7 +31,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task GetAll_ReturnsExpectedItems()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/Widgets");
         Assert.Equal(JsonValueKind.Array, json.GetProperty("value").ValueKind);
         Assert.Equal(2, json.GetProperty("value").GetArrayLength());
@@ -40,7 +40,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task GetAll_ResponseWrappedInOdataEnvelope()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/Widgets");
         Assert.True(json.TryGetProperty("@odata.context", out _));
         Assert.True(json.TryGetProperty("value", out _));
@@ -49,7 +49,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Count_Endpoint_ReturnsInteger()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/Widgets/$count");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         string body = await response.Content.ReadAsStringAsync();
@@ -59,7 +59,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Count_Queryable_WithFilter_ReturnsFilteredCount()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<QueryableWidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/QueryableWidgets/$count?$filter=Name eq 'Sprocket'");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         string body = await response.Content.ReadAsStringAsync();
@@ -70,7 +70,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Count_Queryable_NoFilter_ReturnsTotalCount()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<QueryableWidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/QueryableWidgets/$count");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         string body = await response.Content.ReadAsStringAsync();
@@ -81,7 +81,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task GetAll_WithCountTrue_ReturnsOdataCountInEnvelope()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<QueryableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets?$count=true");
         Assert.True(json.TryGetProperty("@odata.count", out var countEl));
         Assert.Equal(2L, countEl.GetInt64());
@@ -90,7 +90,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task GetAll_WithCountTrueAndFilter_OdataCountReflectsFilteredTotal()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<QueryableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>(
             "/odata/QueryableWidgets?$count=true&$filter=Name eq 'Cog'");
         Assert.True(json.TryGetProperty("@odata.count", out var countEl));
@@ -101,7 +101,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task GetAll_InvalidFilterProperty_Returns400ODataError()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<QueryableWidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/QueryableWidgets?$filter=DoesNotExist eq 'x'");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -114,7 +114,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task GetById_ExistingKey_Returns200()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/Widgets(1)");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -122,7 +122,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task GetById_MissingKey_Returns404()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/Widgets(999)");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -132,7 +132,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Post_ValidBody_Returns201()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.PostAsJsonAsync("/odata/Widgets", new Widget { Name = "Sprocket Jr." });
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
     }
@@ -140,7 +140,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Post_ResponseBodyContainsNewEntity()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var widget = await fx.Client
             .PostAsJsonAsync("/odata/Widgets", new Widget { Name = "New" })
             .ContinueWith(t => t.Result.Content.ReadFromJsonAsync<Widget>())
@@ -153,7 +153,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Put_ExistingKey_Returns200()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.PutAsJsonAsync("/odata/Widgets(1)", new Widget { Id = 1, Name = "Updated" });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -163,7 +163,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task EmptyProfile_GetAll_Returns404()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EmptyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<EmptyProfile>());
         var response = await fx.Client.GetAsync("/odata/EmptyWidgets");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -173,7 +173,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task ServiceDocument_Returns200()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/odata");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -181,7 +181,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task ServiceDocument_ListsEntitySet()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata");
         var values = json.GetProperty("value");
         Assert.Equal(JsonValueKind.Array, values.ValueKind);
@@ -193,7 +193,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Metadata_Returns200WithXml()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/$metadata");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
@@ -202,7 +202,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Metadata_ContainsEntitySetName()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         string xml = await fx.Client.GetStringAsync("/odata/$metadata");
         Assert.Contains("Widgets", xml);
     }
@@ -213,7 +213,7 @@ public class EndpointMappingTests
     public async Task CustomPrefix_RoutesResolveUnderPrefix()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<WidgetProfile>(),
+            o => o.AddEntitySetProfile<WidgetProfile>(),
             prefix: "/api/v1");
         var response = await fx.Client.GetAsync("/api/v1/Widgets");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -224,7 +224,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Delete_ExistingKey_Returns204()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.DeleteAsync("/odata/Widgets(1)");
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
     }
@@ -233,7 +233,7 @@ public class EndpointMappingTests
     public async Task Delete_MissingKey_Idempotent_Returns204()
     {
         // Default: IdempotentDelete = true — missing key returns 204 (no-op success)
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.DeleteAsync("/odata/Widgets(9999)");
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
     }
@@ -241,7 +241,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Delete_RouteOmitted_WhenHandlerNotConfigured()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EmptyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<EmptyProfile>());
         var response = await fx.Client.DeleteAsync("/odata/EmptyWidgets(1)");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -251,7 +251,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Patch_ExistingKey_Returns200()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.PatchAsync("/odata/Widgets(1)",
             new StringContent("{\"name\":\"Changed\"}", System.Text.Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -260,7 +260,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Patch_MissingKey_Returns404()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.PatchAsync("/odata/Widgets(999)",
             new StringContent("{\"name\":\"Changed\"}", System.Text.Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
@@ -269,7 +269,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Patch_UpdatesField()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.PatchAsync("/odata/Widgets(1)",
             new StringContent("{\"name\":\"Changed\"}", System.Text.Encoding.UTF8, "application/json"));
         var widget = await response.Content.ReadFromJsonAsync<Widget>();
@@ -280,7 +280,7 @@ public class EndpointMappingTests
     public async Task Patch_PartialBody_PreservesUnchangedFields()
     {
         // Patching only "name" must not reset "price" to its CLR default (0).
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<PatchItemProfile>(), configureServices: s => s.AddSingleton(new PatchItemStore()));
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<PatchItemProfile>(), configureServices: s => s.AddSingleton(new PatchItemStore()));
         var response = await fx.Client.PatchAsJsonAsync("/odata/PatchItems(1)", new { name = "Changed" });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
@@ -292,7 +292,7 @@ public class EndpointMappingTests
     public async Task Patch_PartialBody_PersistedCorrectlyOnSubsequentGet()
     {
         // Verify the store reflects partial update -- unchanged field survives a GET after PATCH.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<PatchItemProfile>(), configureServices: s => s.AddSingleton(new PatchItemStore()));
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<PatchItemProfile>(), configureServices: s => s.AddSingleton(new PatchItemStore()));
         await fx.Client.PatchAsJsonAsync("/odata/PatchItems(2)", new { name = "Renamed" });
         var json = await fx.Client.GetFromJsonAsync<System.Text.Json.JsonElement>("/odata/PatchItems(2)");
         Assert.Equal("Renamed", json.GetProperty("name").GetString());
@@ -302,7 +302,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Patch_RouteOmitted_WhenHandlerNotConfigured()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EmptyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<EmptyProfile>());
         var request = new HttpRequestMessage(HttpMethod.Patch, "/odata/EmptyWidgets(1)")
         {
             Content = JsonContent.Create(new Widget { Name = "Changed" })
@@ -317,7 +317,7 @@ public class EndpointMappingTests
     public async Task Select_SingleProperty_OnlySelectedPropertyPresent()
     {
         // $select uses JsonSerializer with camelCase to match the rest of the OData response.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<QueryableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets?$select=Name");
         var firstItem = json.GetProperty("value")[0];
         Assert.True(firstItem.TryGetProperty("name", out _));
@@ -327,7 +327,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Select_OtherProperty_OnlySelectedPropertyPresent()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<QueryableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets?$select=Id");
         var firstItem = json.GetProperty("value")[0];
         Assert.True(firstItem.TryGetProperty("id", out _));
@@ -337,7 +337,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Select_AllProperties_ReturnsAllProperties()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<QueryableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets?$select=Id,Name");
         var firstItem = json.GetProperty("value")[0];
         Assert.True(firstItem.TryGetProperty("id", out _));
@@ -349,7 +349,7 @@ public class EndpointMappingTests
     {
         // Without $select, Widget objects are serialized directly by ASP.NET Core JSON
         // (camelCase by default), so check for camelCase property names.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<QueryableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets");
         var firstItem = json.GetProperty("value")[0];
         Assert.True(firstItem.TryGetProperty("id", out _) || firstItem.TryGetProperty("Id", out _));
@@ -359,7 +359,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Select_CorrectValuesPreserved()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<QueryableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets?$select=Name");
         var values = json.GetProperty("value");
         string?[] names = Enumerable.Range(0, values.GetArrayLength())
@@ -374,7 +374,7 @@ public class EndpointMappingTests
     public async Task Select_GetAllPath_SingleProperty_OnlySelectedPropertyPresent()
     {
         // $select uses camelCase serialization so the output matches the rest of the response.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/Widgets?$select=Name");
         var firstItem = json.GetProperty("value")[0];
         Assert.True(firstItem.TryGetProperty("name", out _));
@@ -386,7 +386,7 @@ public class EndpointMappingTests
     {
         // The OData parser normalizes $select=name to EDM identifier "Name" — behaves like $select=Name.
         // Output uses camelCase ("name") to be consistent with non-$select responses.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/Widgets?$select=name");
         var firstItem = json.GetProperty("value")[0];
         Assert.True(firstItem.TryGetProperty("name", out _));
@@ -397,7 +397,7 @@ public class EndpointMappingTests
     {
         // OData validates $select property names against the EDM model at parse time.
         // Requesting a non-existent property should return 400 with an OData error body.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/Widgets?$select=Name,DoesNotExist");
         Assert.Equal(System.Net.HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -409,7 +409,7 @@ public class EndpointMappingTests
     public async Task Select_ExpandoSerializesAsObjectNotArray()
     {
         // Result items should serialize as JSON objects (not arrays or strings)
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/Widgets?$select=Name");
         var firstItem = json.GetProperty("value")[0];
         Assert.Equal(JsonValueKind.Object, firstItem.ValueKind);
@@ -420,7 +420,7 @@ public class EndpointMappingTests
     {
         // $select uses JsonSerializer with camelCase so the output is consistent with
         // non-$select OData responses (which ASP.NET Core serializes as camelCase).
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/Widgets?$select=Name");
         var first = json.GetProperty("value")[0];
         Assert.True(first.TryGetProperty("name", out _));   // camelCase
@@ -433,7 +433,7 @@ public class EndpointMappingTests
     {
         // Verifies that $select works with the GetQueryable (EF Core) path.
         // Output uses camelCase to be consistent with non-$select responses.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EfCoreWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<EfCoreWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<System.Text.Json.JsonElement>("/odata/EfWidgets?$select=Name");
         var firstItem = json.GetProperty("value")[0];
         Assert.True(firstItem.TryGetProperty("name", out _));
@@ -443,7 +443,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Select_EfCoreInMemory_CorrectValues()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EfCoreWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<EfCoreWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<System.Text.Json.JsonElement>("/odata/EfWidgets?$select=Name");
         var values = json.GetProperty("value");
         string?[] names = System.Linq.Enumerable.Range(0, values.GetArrayLength())
@@ -461,7 +461,7 @@ public class EndpointMappingTests
     public async Task Auth_UnauthenticatedRequest_Returns401()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<AuthorizedWidgetProfile>(),
+            o => o.AddEntitySetProfile<AuthorizedWidgetProfile>(),
             addAuth: true);
         var response = await fx.Client.GetAsync("/odata/AuthorizedWidgets");
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
@@ -471,7 +471,7 @@ public class EndpointMappingTests
     public async Task Auth_UnauthenticatedGetById_Returns401()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<AuthorizedWidgetProfile>(),
+            o => o.AddEntitySetProfile<AuthorizedWidgetProfile>(),
             addAuth: true);
         var response = await fx.Client.GetAsync("/odata/AuthorizedWidgets(1)");
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
@@ -483,7 +483,7 @@ public class EndpointMappingTests
     public async Task Auth_PolicyAndRoles_CollectionGet_Returns401()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<PolicyAndRolesWidgetProfile>(),
+            o => o.AddEntitySetProfile<PolicyAndRolesWidgetProfile>(),
             addAuth: true);
         var response = await fx.Client.GetAsync("/odata/PolicyRoleWidgets");
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
@@ -493,7 +493,7 @@ public class EndpointMappingTests
     public async Task Auth_PolicyAndRoles_Post_Returns401()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<PolicyAndRolesWidgetProfile>(),
+            o => o.AddEntitySetProfile<PolicyAndRolesWidgetProfile>(),
             addAuth: true);
         var response = await fx.Client.PostAsJsonAsync("/odata/PolicyRoleWidgets", new Widget { Name = "X" });
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
@@ -503,7 +503,7 @@ public class EndpointMappingTests
     public async Task Auth_PolicyAndRoles_GetById_Returns401()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<PolicyAndRolesWidgetProfile>(),
+            o => o.AddEntitySetProfile<PolicyAndRolesWidgetProfile>(),
             addAuth: true);
         var response = await fx.Client.GetAsync("/odata/PolicyRoleWidgets(1)");
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
@@ -514,7 +514,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task ErrorResponse_HasOdataErrorShape()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/Widgets(notanint)");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -527,14 +527,14 @@ public class EndpointMappingTests
     [Fact]
     public async Task NavigationRoute_HasMany_Returns200()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ParentWithChildrenProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ParentWithChildrenProfile>());
         var response = await fx.Client.GetAsync("/odata/Parents(1)/Children");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
     [Fact]
     public async Task NavigationRoute_ParentNotFound_Returns404()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ParentWithChildrenProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ParentWithChildrenProfile>());
         var response = await fx.Client.GetAsync("/odata/Parents(999)/Children");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -542,7 +542,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task GetById_WithETag_ReturnsETagHeader()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagWidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/ETagWidgets(1)");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.NotNull(response.Headers.ETag);
@@ -550,7 +550,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Put_WithCorrectIfMatch_Succeeds()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagWidgetProfile>());
         var getResp = await fx.Client.GetAsync("/odata/ETagWidgets(1)");
         string etag = getResp.Headers.ETag!.Tag;
         var request = new HttpRequestMessage(HttpMethod.Put, "/odata/ETagWidgets(1)")
@@ -564,7 +564,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Put_WithWrongIfMatch_Returns412()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagWidgetProfile>());
         var request = new HttpRequestMessage(HttpMethod.Put, "/odata/ETagWidgets(1)")
         {
             Content = JsonContent.Create(new Widget { Id = 1, Name = "Updated" }),
@@ -578,8 +578,8 @@ public class EndpointMappingTests
     public async Task MultipleRegistrations_BothMapIndependently()
     {
         // Each named registration uses its own prefix and profile
-        await using var fx1 = await TestHostBuilder.BuildAsync(o => o.WithPrefix("/v1").AddProfile<WidgetProfile>(), prefix: "/v1");
-        await using var fx2 = await TestHostBuilder.BuildAsync(o => o.WithPrefix("/v2").AddProfile<EmptyProfile>(), prefix: "/v2");
+        await using var fx1 = await TestHostBuilder.BuildAsync(o => o.WithPrefix("/v1").AddEntitySetProfile<WidgetProfile>(), prefix: "/v1");
+        await using var fx2 = await TestHostBuilder.BuildAsync(o => o.WithPrefix("/v2").AddEntitySetProfile<EmptyProfile>(), prefix: "/v2");
         var r1 = await fx1.Client.GetAsync("/v1/Widgets");
         var r2 = await fx2.Client.GetAsync("/v2");
         Assert.Equal(HttpStatusCode.OK, r1.StatusCode);
@@ -591,7 +591,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task BoundFunction_WithStringParam_ReturnsFilteredResult()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>(), configureServices: s => s.AddSingleton(new BoundOpsStore()));
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<BoundOpsProfile>(), configureServices: s => s.AddSingleton(new BoundOpsStore()));
         var response = await fx.Client.GetAsync("/odata/BoundWidgets/GetByName?name=Alpha");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         // Gap 1: bound function returning IEnumerable<TModel> is wrapped in OData envelope
@@ -607,7 +607,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task BoundFunction_WithIntParam_ReturnsScalar()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>(), configureServices: s => s.AddSingleton(new BoundOpsStore()));
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<BoundOpsProfile>(), configureServices: s => s.AddSingleton(new BoundOpsStore()));
         var response = await fx.Client.GetAsync("/odata/BoundWidgets/DoubleCount?factor=3");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         // m5: primitive bound-function results now carry the JSON §11 individual-value envelope.
@@ -620,7 +620,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task BoundFunction_MissingRequiredParam_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>(), configureServices: s => s.AddSingleton(new BoundOpsStore()));
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<BoundOpsProfile>(), configureServices: s => s.AddSingleton(new BoundOpsStore()));
         var response = await fx.Client.GetAsync("/odata/BoundWidgets/DoubleCount");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -631,7 +631,7 @@ public class EndpointMappingTests
     public async Task BoundAction_NoParams_Returns204()
     {
         // ClearAll removes all widgets; subsequent GetAll should return empty
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>(), configureServices: s => s.AddSingleton(new BoundOpsStore()));
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<BoundOpsProfile>(), configureServices: s => s.AddSingleton(new BoundOpsStore()));
         var clearResponse = await fx.Client.PostAsync("/odata/BoundWidgets/ClearAll",
             new StringContent("", System.Text.Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.NoContent, clearResponse.StatusCode);
@@ -640,7 +640,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task BoundAction_WithBodyParam_ExecutesSideEffect()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>(), configureServices: s => s.AddSingleton(new BoundOpsStore()));
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<BoundOpsProfile>(), configureServices: s => s.AddSingleton(new BoundOpsStore()));
         // AddSuffix mutates the store; call then verify names changed
         var addResp = await fx.Client.PostAsync("/odata/BoundWidgets/AddSuffix",
             new StringContent("{\"suffix\":\"!\"}", System.Text.Encoding.UTF8, "application/json"));
@@ -655,7 +655,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Post_ReturnsLocationHeaderWithKey()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.PostAsJsonAsync("/odata/Widgets", new Widget { Name = "New" });
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         string? location = response.Headers.Location?.ToString();
@@ -668,7 +668,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Put_NullResult_Returns404()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NullPutProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NullPutProfile>());
         var response = await fx.Client.PutAsJsonAsync("/odata/NullPutWidgets(999)", new Widget { Id = 999, Name = "X" });
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -677,7 +677,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task GetAll_WithFilter_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/Widgets?$filter=Name eq 'Sprocket'");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -691,7 +691,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task GetAll_WithTop_Returns200()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/Widgets?$top=1");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -700,7 +700,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Count_GetAllPath_WithFilter_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/Widgets/$count?$filter=Name eq 'Sprocket'");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
@@ -709,7 +709,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task BoundFunction_GuidParam_Succeeds()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<GuidFunctionProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<GuidFunctionProfile>());
         var id = Guid.NewGuid();
         var response = await fx.Client.GetAsync($"/odata/GuidFnWidgets/EchoGuid?id={id}");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -724,7 +724,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task BoundAction_VoidReturn_Returns204()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<VoidActionProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<VoidActionProfile>());
         var response = await fx.Client.PostAsync("/odata/VoidActionWidgets/DoNothing",
             new StringContent("{}", System.Text.Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
@@ -736,17 +736,17 @@ public class EndpointMappingTests
     {
         var builder = Microsoft.AspNetCore.Builder.WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
-        builder.Services.AddOhData("v1", o => o.AddProfile<WidgetProfile>());
+        builder.Services.AddOhData("v1", o => o.AddEntitySetProfile<WidgetProfile>());
         // Second registration with the same name must throw immediately at call time
         Assert.Throws<InvalidOperationException>(() =>
-            builder.Services.AddOhData("v1", o => o.AddProfile<EmptyProfile>()));
+            builder.Services.AddOhData("v1", o => o.AddEntitySetProfile<EmptyProfile>()));
     }
 
     // ── C3: MaxTop enforced on GetQueryable path ──────────────────────────────
     [Fact]
     public async Task GetQueryable_MaxTop_IsEnforced()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MaxTopProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MaxTopProfile>());
         // Store has 20 items; MaxTop = 5 on the profile
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/MaxTopWidgets");
         int count = json.GetProperty("value").GetArrayLength();
@@ -757,7 +757,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Navigation_Collection_WrappedInOdataEnvelope()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ParentWithChildrenProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ParentWithChildrenProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/Parents(1)/Children");
         Assert.True(json.TryGetProperty("@odata.context", out _), "Expected @odata.context in navigation collection response");
         Assert.True(json.TryGetProperty("value", out var value), "Expected value array in navigation collection response");
@@ -768,7 +768,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task ETag_WeakPrefix_IsStrippedBeforeComparison()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagWidgetProfile>());
         // First GET to obtain the strong ETag value
         var getResp = await fx.Client.GetAsync("/odata/ETagWidgets(1)");
         string? etag = getResp.Headers.ETag?.Tag?.Trim('"');
@@ -790,7 +790,7 @@ public class EndpointMappingTests
     {
         // Smoke test: role-protected profile produces 401 on unauthenticated request.
         // This verifies the IReadOnlyList<string> Roles path still wires auth correctly.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<RoleAuthProfile>(), addAuth: true);
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<RoleAuthProfile>(), addAuth: true);
         var response = await fx.Client.GetAsync("/odata/RoleWidgets");
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
@@ -802,8 +802,8 @@ public class EndpointMappingTests
         var builder = Microsoft.AspNetCore.Builder.WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
         builder.Services.AddLogging();
-        builder.Services.AddOhData("v1", o => o.WithPrefix("/v1").AddProfile<WidgetProfile>());
-        builder.Services.AddOhData("v2", o => o.WithPrefix("/v2").AddProfile<SecondProfile>());
+        builder.Services.AddOhData("v1", o => o.WithPrefix("/v1").AddEntitySetProfile<WidgetProfile>());
+        builder.Services.AddOhData("v2", o => o.WithPrefix("/v2").AddEntitySetProfile<SecondProfile>());
         await using var app = builder.Build();
         app.MapOhData("v1");
         app.MapOhData("v2");
@@ -820,7 +820,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task GetAll_NullResult_ReturnsEmptyCollection()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NullGetAllProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NullGetAllProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NullGetAllWidgets");
         Assert.True(json.TryGetProperty("value", out var value));
         Assert.Equal(0, value.GetArrayLength());
@@ -830,7 +830,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task DecimalKey_ParsedFromRoute()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DecimalKeyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DecimalKeyProfile>());
         var response = await fx.Client.GetAsync("/odata/DecimalItems(1.5)");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -861,7 +861,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task BoundAction_CaseInsensitiveParamName_Succeeds()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoundOpsProfile>(), configureServices: s => s.AddSingleton(new BoundOpsStore()));
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<BoundOpsProfile>(), configureServices: s => s.AddSingleton(new BoundOpsStore()));
         // Send "Suffix" (PascalCase) when the C# param is "suffix" (camelCase)
         var response = await fx.Client.PostAsync("/odata/BoundWidgets/AddSuffix",
             new StringContent("{\"Suffix\": \"!\"}", System.Text.Encoding.UTF8, "application/json"));
@@ -875,7 +875,7 @@ public class EndpointMappingTests
     {
         // $select=Name returns only the name property (in camelCase to be consistent
         // with the rest of the OData response serialization).
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<QueryableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets?$select=Name");
         var items = json.GetProperty("value");
         Assert.True(items.GetArrayLength() > 0);
@@ -889,7 +889,7 @@ public class EndpointMappingTests
     {
         // The Microsoft.OData parser normalizes $select=name to EDM identifier "Name",
         // so the result is the same as $select=Name — output is camelCase "name".
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<QueryableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets?$select=name");
         var items = json.GetProperty("value");
         Assert.True(items.GetArrayLength() > 0);
@@ -933,7 +933,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Put_KeyMismatch_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.PutAsync("/odata/Widgets(1)",
             new StringContent("{\"id\":2,\"name\":\"X\"}", System.Text.Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -943,7 +943,7 @@ public class EndpointMappingTests
     public async Task Patch_KeyMismatch_Returns400()
     {
         // PATCH with an explicit wrong key in the body is still rejected
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.PatchAsync("/odata/Widgets(1)",
             new StringContent("{\"id\":2,\"name\":\"X\"}", System.Text.Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -953,7 +953,7 @@ public class EndpointMappingTests
     public async Task Patch_OmittedKey_Succeeds()
     {
         // PATCH without a key property in the body is valid — URL key is authoritative
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.PatchAsync("/odata/Widgets(1)",
             new StringContent("{\"name\":\"NoKey\"}", System.Text.Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -962,7 +962,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Patch_MalformedJson_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.PatchAsync("/odata/Widgets(1)",
             new StringContent("{broken", System.Text.Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -974,7 +974,7 @@ public class EndpointMappingTests
     public async Task WithPrefix_NoLeadingSlash_NormalizesPrefix()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.WithPrefix("api").AddProfile<WidgetProfile>());
+            o => o.WithPrefix("api").AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/api/Widgets");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -983,7 +983,7 @@ public class EndpointMappingTests
     public async Task WithPrefix_TrailingSlash_NormalizesPrefix()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.WithPrefix("/api/").AddProfile<WidgetProfile>());
+            o => o.WithPrefix("/api/").AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/api/Widgets");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -997,7 +997,7 @@ public class EndpointMappingTests
         // QueryableWidgetProfile has 2 items, so MaxTop=1 should cap results to 1.
         await using var fx = await TestHostBuilder.BuildAsync(o =>
             o.WithDefaults(d => d.MaxTop = 1)
-             .AddProfile<QueryableWidgetProfile>());
+             .AddEntitySetProfile<QueryableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets");
         Assert.Equal(1, json.GetProperty("value").GetArrayLength());
     }
@@ -1007,7 +1007,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task KeyParser_DateTimeOffset_Succeeds()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DateTimeOffsetKeyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DateTimeOffsetKeyProfile>());
         var response = await fx.Client.GetAsync("/odata/DateTimeOffsetItems(2024-01-15T12:00:00%2B00:00)");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -1015,7 +1015,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task KeyParser_DateTime_Succeeds()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DateTimeKeyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DateTimeKeyProfile>());
         var response = await fx.Client.GetAsync("/odata/DateTimeItems(2024-06-01T00:00:00Z)");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -1023,7 +1023,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task KeyParser_DateOnly_Succeeds()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DateOnlyKeyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DateOnlyKeyProfile>());
         var response = await fx.Client.GetAsync("/odata/DateOnlyItems(2024-03-20)");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -1034,7 +1034,7 @@ public class EndpointMappingTests
     public async Task Delete_NotFound_Idempotent_Returns204()
     {
         // Default IdempotentDelete = true — deleting a non-existent key returns 204
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.DeleteAsync("/odata/Widgets(999)");
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
     }
@@ -1043,7 +1043,7 @@ public class EndpointMappingTests
     public async Task Delete_NotFound_NonIdempotent_Returns404()
     {
         // IdempotentDelete = false on profile — returns 404
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NonIdempotentDeleteProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NonIdempotentDeleteProfile>());
         var response = await fx.Client.DeleteAsync("/odata/NonIdempotentWidgets(999)");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -1053,7 +1053,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task AllResponses_IncludeODataVersionHeader()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var resp = await fx.Client.GetAsync("/odata/Widgets");
         Assert.Equal("4.0", resp.Headers.GetValues("OData-Version").FirstOrDefault());
     }
@@ -1061,7 +1061,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task AllResponses_Metadata_IncludesODataVersionHeader()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var resp = await fx.Client.GetAsync("/odata/$metadata");
         Assert.Equal("4.0", resp.Headers.GetValues("OData-Version").FirstOrDefault());
     }
@@ -1071,7 +1071,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task GetById_IfNoneMatch_Matching_Returns304()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagWidgetProfile>());
         var first = await fx.Client.GetAsync("/odata/ETagWidgets(1)");
         string etag = first.Headers.ETag!.Tag;
         var req = new HttpRequestMessage(HttpMethod.Get, "/odata/ETagWidgets(1)");
@@ -1083,7 +1083,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task GetById_IfNoneMatch_NotMatching_Returns200()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagWidgetProfile>());
         var req = new HttpRequestMessage(HttpMethod.Get, "/odata/ETagWidgets(1)");
         req.Headers.TryAddWithoutValidation("If-None-Match", "\"stale-etag\"");
         var resp = await fx.Client.SendAsync(req);
@@ -1096,7 +1096,7 @@ public class EndpointMappingTests
     public async Task GetQueryable_MaxTop_AddsNextLink()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o =>
-            o.WithDefaults(d => d.MaxTop = 1).AddProfile<QueryableWidgetProfile>());
+            o.WithDefaults(d => d.MaxTop = 1).AddEntitySetProfile<QueryableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets");
         Assert.True(json.TryGetProperty("@odata.nextLink", out _));
     }
@@ -1105,7 +1105,7 @@ public class EndpointMappingTests
     public async Task GetQueryable_FollowNextLink_ReturnsNextPage()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o =>
-            o.WithDefaults(d => d.MaxTop = 1).AddProfile<QueryableWidgetProfile>());
+            o.WithDefaults(d => d.MaxTop = 1).AddEntitySetProfile<QueryableWidgetProfile>());
         var first = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets");
         string nextLink = first.GetProperty("@odata.nextLink").GetString()!;
         // nextLink is absolute; strip host for TestClient
@@ -1120,7 +1120,7 @@ public class EndpointMappingTests
     {
         // MaxTop=10 but only 2 items — page is not full, so no nextLink
         await using var fx = await TestHostBuilder.BuildAsync(o =>
-            o.WithDefaults(d => d.MaxTop = 10).AddProfile<QueryableWidgetProfile>());
+            o.WithDefaults(d => d.MaxTop = 10).AddEntitySetProfile<QueryableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets");
         Assert.False(json.TryGetProperty("@odata.nextLink", out _));
     }
@@ -1130,7 +1130,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Post_PreferMinimal_Returns204WithLocation()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var req = new HttpRequestMessage(HttpMethod.Post, "/odata/Widgets")
         {
             Content = JsonContent.Create(new Widget { Name = "X" })
@@ -1144,7 +1144,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Put_PreferMinimal_Returns204()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var req = new HttpRequestMessage(HttpMethod.Put, "/odata/Widgets(1)")
         {
             Content = JsonContent.Create(new Widget { Id = 1, Name = "X" })
@@ -1157,7 +1157,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Patch_PreferMinimal_Returns204()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var req = new HttpRequestMessage(HttpMethod.Patch, "/odata/Widgets(1)")
         {
             Content = new StringContent("{\"name\":\"X\"}", System.Text.Encoding.UTF8, "application/json")
@@ -1170,7 +1170,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Post_NoPreferHeader_Returns201WithBody()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var resp = await fx.Client.PostAsJsonAsync("/odata/Widgets", new Widget { Name = "X" });
         Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
         string body = await resp.Content.ReadAsStringAsync();
@@ -1184,7 +1184,7 @@ public class EndpointMappingTests
     {
         // §8.3.4: a 204 response that creates an entity MUST carry OData-EntityId so the
         // client can recover the new entity's id from an empty body.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         using var req = new HttpRequestMessage(HttpMethod.Post, "/odata/Widgets")
         {
             Content = JsonContent.Create(new Widget { Name = "X" })
@@ -1202,7 +1202,7 @@ public class EndpointMappingTests
     public async Task Put_AllowUpsert_PreferMinimal_NonExistingKey_HasODataEntityIdHeader()
     {
         // Upsert-PUT that creates a new entity via 204 must also carry OData-EntityId.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<UpsertProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<UpsertProfile>());
         using var req = new HttpRequestMessage(HttpMethod.Put, "/odata/UpsertWidgets(99)")
         {
             Content = JsonContent.Create(new Widget { Id = 99, Name = "NewViaUpsert" })
@@ -1220,7 +1220,7 @@ public class EndpointMappingTests
     {
         // A plain update-PUT (no entity created) must NOT carry OData-EntityId — the
         // header is scoped to responses that create/upsert an entity (§8.3.4).
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<UpsertProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<UpsertProfile>());
         using var req = new HttpRequestMessage(HttpMethod.Put, "/odata/UpsertWidgets(1)")
         {
             Content = JsonContent.Create(new Widget { Id = 1, Name = "UpdatedExisting" })
@@ -1236,7 +1236,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task GetById_ResponseContainsOdataId()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/Widgets(1)");
         Assert.True(json.TryGetProperty("@odata.id", out var id));
         Assert.Contains("Widgets(1)", id.GetString());
@@ -1245,7 +1245,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Put_ResponseContainsOdataId()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var resp = await fx.Client.PutAsJsonAsync("/odata/Widgets(1)", new Widget { Id = 1, Name = "Updated" });
         var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(json.TryGetProperty("@odata.id", out var id));
@@ -1255,7 +1255,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Post_ResponseContainsOdataId()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var resp = await fx.Client.PostAsJsonAsync("/odata/Widgets", new Widget { Name = "New" });
         var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(json.TryGetProperty("@odata.id", out var id));
@@ -1268,7 +1268,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Put_KeyMismatch_ErrorHasTarget()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var resp = await fx.Client.PutAsync("/odata/Widgets(1)",
             new StringContent("{\"id\":2,\"name\":\"X\"}", System.Text.Encoding.UTF8, "application/json"));
         var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
@@ -1279,7 +1279,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task PatchById_KeyMismatch_ErrorHasTarget()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var resp = await fx.Client.PatchAsync("/odata/Widgets(1)",
             new StringContent("{\"id\":2,\"name\":\"X\"}", System.Text.Encoding.UTF8, "application/json"));
         var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
@@ -1290,7 +1290,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task GetById_BadKeyFormat_ErrorHasTarget()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var resp = await fx.Client.GetAsync("/odata/Widgets(notanint)");
         var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(json.GetProperty("error").TryGetProperty("target", out var target));
@@ -1302,7 +1302,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task EntityBoundFunction_ReturnsEntityData()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EntityBoundOpsProfile>(), configureServices: s => s.AddSingleton(new EntityBoundOpsStore()));
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<EntityBoundOpsProfile>(), configureServices: s => s.AddSingleton(new EntityBoundOpsStore()));
         var resp = await fx.Client.GetAsync("/odata/EntityBoundWidgets(1)/GetNameForKey");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         // m5: primitive bound-function results now carry the JSON §11 individual-value envelope.
@@ -1315,7 +1315,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task EntityBoundFunction_UnknownKey_ReturnsOk_WithEmptyString()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EntityBoundOpsProfile>(), configureServices: s => s.AddSingleton(new EntityBoundOpsStore()));
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<EntityBoundOpsProfile>(), configureServices: s => s.AddSingleton(new EntityBoundOpsStore()));
         var resp = await fx.Client.GetAsync("/odata/EntityBoundWidgets(999)/GetNameForKey");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
     }
@@ -1323,7 +1323,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task EntityBoundAction_MutatesEntity()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EntityBoundOpsProfile>(), configureServices: s => s.AddSingleton(new EntityBoundOpsStore()));
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<EntityBoundOpsProfile>(), configureServices: s => s.AddSingleton(new EntityBoundOpsStore()));
         var renameResp = await fx.Client.PostAsync("/odata/EntityBoundWidgets(1)/RenameWidget",
             new StringContent("{\"newName\":\"Renamed\"}", System.Text.Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.NoContent, renameResp.StatusCode);
@@ -1337,7 +1337,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task EntityBoundFunction_BadKey_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EntityBoundOpsProfile>(), configureServices: s => s.AddSingleton(new EntityBoundOpsStore()));
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<EntityBoundOpsProfile>(), configureServices: s => s.AddSingleton(new EntityBoundOpsStore()));
         var resp = await fx.Client.GetAsync("/odata/EntityBoundWidgets(notanint)/GetNameForKey");
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
     }
@@ -1352,7 +1352,7 @@ public class EndpointMappingTests
     public async Task EntityBoundFunction_ZeroParameters_ThrowsAtStartup()
     {
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            TestHostBuilder.BuildAsync(o => o.AddProfile<ZeroParamEntityFunctionProfile>()));
+            TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ZeroParamEntityFunctionProfile>()));
         Assert.Contains("BindEntityFunction", ex.Message, StringComparison.Ordinal);
         Assert.Contains("NoParams", ex.Message, StringComparison.Ordinal);
         Assert.Contains("ZeroParamFnWidgets", ex.Message, StringComparison.Ordinal);
@@ -1362,7 +1362,7 @@ public class EndpointMappingTests
     public async Task EntityBoundAction_ZeroParameters_ThrowsAtStartup()
     {
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            TestHostBuilder.BuildAsync(o => o.AddProfile<ZeroParamEntityActionProfile>()));
+            TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ZeroParamEntityActionProfile>()));
         Assert.Contains("BindEntityAction", ex.Message, StringComparison.Ordinal);
         Assert.Contains("NoParams", ex.Message, StringComparison.Ordinal);
         Assert.Contains("ZeroParamActionWidgets", ex.Message, StringComparison.Ordinal);
@@ -1372,7 +1372,7 @@ public class EndpointMappingTests
     public async Task EntityBoundFunction_WrongFirstParameterType_ThrowsAtStartup()
     {
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            TestHostBuilder.BuildAsync(o => o.AddProfile<WrongKeyTypeEntityFunctionProfile>()));
+            TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WrongKeyTypeEntityFunctionProfile>()));
         Assert.Contains("BadFirstParam", ex.Message, StringComparison.Ordinal);
         Assert.Contains("Int32", ex.Message, StringComparison.Ordinal);
         Assert.Contains("String", ex.Message, StringComparison.Ordinal);
@@ -1383,7 +1383,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Expand_InlinesNavigationData()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ExpandableParentProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ExpandableParentProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ExpandableParents?$expand=Children");
         var first = json.GetProperty("value")[0];
         Assert.True(first.TryGetProperty("children", out var children));
@@ -1393,7 +1393,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Expand_WithChildren_ChildrenDataPresent()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ExpandableParentProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ExpandableParentProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ExpandableParents?$expand=Children");
         var first = json.GetProperty("value")[0];
         var children = first.GetProperty("children");
@@ -1405,7 +1405,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task BoundFunction_ReturnsCollectionOfTModel_IncludesOdataContext()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ContextFunctionProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ContextFunctionProfile>());
         var resp = await fx.Client.GetAsync("/odata/ContextFnWidgets/GetAll2");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
@@ -1418,7 +1418,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task BoundFunction_ReturnsSingleTModel_IncludesOdataContext()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ContextFunctionProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ContextFunctionProfile>());
         var resp = await fx.Client.GetAsync("/odata/ContextFnWidgets/GetFirst");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
@@ -1431,7 +1431,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task GetById_WithETag_ResponseBodyIncludesOdataEtag()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagBodyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagBodyProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ETagBodyWidgets(1)");
         Assert.True(json.TryGetProperty("@odata.etag", out _), "Expected @odata.etag in GetById body");
     }
@@ -1439,7 +1439,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Post_WithETag_ResponseBodyIncludesOdataEtag()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagBodyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagBodyProfile>());
         var resp = await fx.Client.PostAsJsonAsync("/odata/ETagBodyWidgets", new Widget { Name = "New" });
         var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(json.TryGetProperty("@odata.etag", out _), "Expected @odata.etag in POST body");
@@ -1448,7 +1448,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Put_WithETag_ResponseBodyIncludesOdataEtag()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagBodyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagBodyProfile>());
         var resp = await fx.Client.PutAsJsonAsync("/odata/ETagBodyWidgets(1)", new Widget { Id = 1, Name = "Updated" });
         var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(json.TryGetProperty("@odata.etag", out _), "Expected @odata.etag in PUT body");
@@ -1457,7 +1457,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Patch_WithETag_ResponseBodyIncludesOdataEtag()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagBodyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagBodyProfile>());
         var resp = await fx.Client.PatchAsync("/odata/ETagBodyWidgets(1)",
             new StringContent("{\"name\":\"Patched\"}", System.Text.Encoding.UTF8, "application/json"));
         var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
@@ -1469,7 +1469,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Put_AllowUpsert_NonExistingKey_Returns201()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<UpsertProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<UpsertProfile>());
         var resp = await fx.Client.PutAsJsonAsync("/odata/UpsertWidgets(99)", new Widget { Id = 99, Name = "NewViaUpsert" });
         Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
     }
@@ -1478,7 +1478,7 @@ public class EndpointMappingTests
     public async Task Put_NoAllowUpsert_NonExistingKey_Returns404()
     {
         // Default WidgetProfile does not set AllowUpsert — PUT to missing key returns 404
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NullPutProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NullPutProfile>());
         var resp = await fx.Client.PutAsJsonAsync("/odata/NullPutWidgets(99)", new Widget { Id = 99, Name = "X" });
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
@@ -1486,7 +1486,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Put_AllowUpsert_ExistingKey_Returns200()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<UpsertProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<UpsertProfile>());
         var resp = await fx.Client.PutAsJsonAsync("/odata/UpsertWidgets(1)", new Widget { Id = 1, Name = "UpdatedExisting" });
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
     }
@@ -1496,7 +1496,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Search_WithHandler_ReturnsFilteredResults()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<SearchableWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<SearchableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/SearchableWidgets?$search=Alpha");
         var value = json.GetProperty("value");
         Assert.Equal(1, value.GetArrayLength());
@@ -1505,7 +1505,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Search_WithHandler_NoMatch_ReturnsEmptyCollection()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<SearchableWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<SearchableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/SearchableWidgets?$search=NoMatch");
         var value = json.GetProperty("value");
         Assert.Equal(0, value.GetArrayLength());
@@ -1514,7 +1514,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Search_WithoutHandler_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NoSearchProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NoSearchProfile>());
         var resp = await fx.Client.GetAsync("/odata/NoSearchWidgets?$search=anything");
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
         var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
@@ -1526,7 +1526,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task NavigationCollection_WithTop_ReturnsLimitedItems()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavQueryProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavQueryParents(1)/Children?$top=1");
         var value = json.GetProperty("value");
         Assert.Equal(1, value.GetArrayLength());
@@ -1535,7 +1535,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task NavigationCollection_WithSkip_SkipsItems()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavQueryProfile>());
         var all = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavQueryParents(1)/Children");
         int allCount = all.GetProperty("value").GetArrayLength();
 
@@ -1547,7 +1547,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task NavigationCollection_WithCountTrue_ReturnsOdataCount()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavQueryProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavQueryParents(1)/Children?$count=true");
         Assert.True(json.TryGetProperty("@odata.count", out var count));
         Assert.True(count.GetInt64() > 0);
@@ -1558,7 +1558,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task NavigationCollection_OrderByAsc_SortsAscending()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavOrderByProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavOrderByProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavOrderByParents(1)/Children?$orderby=Name");
         string?[] names = json.GetProperty("value").EnumerateArray().Select(v => v.GetProperty("name").GetString()).ToArray();
         Assert.Equal(new[] { "Alpha", "Bravo", "Charlie", "Delta" }, names);
@@ -1567,7 +1567,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task NavigationCollection_OrderByDesc_SortsDescending()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavOrderByProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavOrderByProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavOrderByParents(1)/Children?$orderby=Name desc");
         string?[] names = json.GetProperty("value").EnumerateArray().Select(v => v.GetProperty("name").GetString()).ToArray();
         Assert.Equal(new[] { "Delta", "Charlie", "Bravo", "Alpha" }, names);
@@ -1577,7 +1577,7 @@ public class EndpointMappingTests
     public async Task NavigationCollection_OrderByMultiKey_SortsByBothKeys()
     {
         // Category asc, then Name desc within each category: A-group (Delta, Alpha), B-group (Charlie, Bravo).
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavOrderByProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavOrderByProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>(
             "/odata/NavOrderByParents(1)/Children?$orderby=Category asc,Name desc");
         string?[] names = json.GetProperty("value").EnumerateArray().Select(v => v.GetProperty("name").GetString()).ToArray();
@@ -1587,7 +1587,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task NavigationCollection_OrderByUnknownProperty_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavOrderByProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavOrderByProfile>());
         var response = await fx.Client.GetAsync("/odata/NavOrderByParents(1)/Children?$orderby=NoSuchProperty");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -1598,7 +1598,7 @@ public class EndpointMappingTests
     public async Task NavigationCollection_OrderByCombinedWithTopSkip_AppliesOrderFirst()
     {
         // Ascending by Name: Alpha, Bravo, Charlie, Delta. $skip=1&$top=2 → Bravo, Charlie.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavOrderByProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavOrderByProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>(
             "/odata/NavOrderByParents(1)/Children?$orderby=Name&$skip=1&$top=2");
         string?[] names = json.GetProperty("value").EnumerateArray().Select(v => v.GetProperty("name").GetString()).ToArray();
@@ -1610,7 +1610,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task NavigationRef_Get_Returns200WithContext()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavQueryProfile>());
         var resp = await fx.Client.GetAsync("/odata/NavQueryParents(1)/Children/$ref");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
@@ -1620,7 +1620,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task NavigationRef_Post_Returns204()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavQueryProfile>());
         var resp = await fx.Client.PostAsync("/odata/NavQueryParents(1)/Children/$ref",
             new StringContent("{\"@odata.id\":\"http://localhost/odata/Children(99)\"}", System.Text.Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.NoContent, resp.StatusCode);
@@ -1629,7 +1629,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task NavigationRef_Delete_Returns204()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavQueryProfile>());
         var resp = await fx.Client.DeleteAsync("/odata/NavQueryParents(1)/Children/$ref?$id=http://localhost/odata/Children(1)");
         Assert.Equal(HttpStatusCode.NoContent, resp.StatusCode);
     }
@@ -1641,7 +1641,7 @@ public class EndpointMappingTests
     {
         // NavRefProfile configures refTargetEntitySet="Children" so GET $ref should
         // return an array of objects with @odata.id values.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavRefProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavRefProfile>());
         var resp = await fx.Client.GetAsync("/odata/NavRefParents(1)/Children/$ref");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
@@ -1662,7 +1662,7 @@ public class EndpointMappingTests
     public async Task NavigationRef_Get_WithoutRefTargetEntitySet_ReturnsEmptyArray()
     {
         // NavQueryProfile does not set refTargetEntitySet — should return empty value array (existing behavior).
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavQueryProfile>());
         var resp = await fx.Client.GetAsync("/odata/NavQueryParents(1)/Children/$ref");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
@@ -1675,7 +1675,7 @@ public class EndpointMappingTests
     {
         // V3: single-valued nav (PrimaryChild) with refTargetEntitySet="Children" configured —
         // GET $ref must return a real @odata.id, not a context-only envelope (§11.4.6.1).
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavRefSingleProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavRefSingleProfile>());
         var resp = await fx.Client.GetAsync("/odata/NavRefSingleParents(1)/PrimaryChild/$ref");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
@@ -1738,7 +1738,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Expand_OnGetAllPath_InlinesNavigationData()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ExpandableGetAllProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ExpandableGetAllProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ExpandableGetAllParents?$expand=Children");
         var value = json.GetProperty("value");
         Assert.True(value.GetArrayLength() > 0);
@@ -1750,7 +1750,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Expand_OnGetAllPath_ChildrenDataPresent()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ExpandableGetAllProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ExpandableGetAllProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ExpandableGetAllParents?$expand=Children");
         var value = json.GetProperty("value");
         // Both parents should have their children expanded
@@ -1766,7 +1766,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task NavigationCollection_CountEndpoint_Returns200WithInteger()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavCountProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavCountProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/NavCountParents(1)/Children/$count");
         Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
         string body = await response.Content.ReadAsStringAsync();
@@ -1777,7 +1777,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task NavigationCollection_CountEndpoint_ReturnsCorrectCountForParent2()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavCountProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavCountProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/NavCountParents(2)/Children/$count");
         Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
         string body = await response.Content.ReadAsStringAsync();
@@ -1788,7 +1788,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task NavigationCollection_CountEndpoint_BadKey_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavCountProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavCountProfile>());
         var response = await fx.Client.GetAsync("/odata/NavCountParents(notanint)/Children/$count");
         Assert.Equal(System.Net.HttpStatusCode.BadRequest, response.StatusCode);
     }
@@ -1798,7 +1798,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task NavigationCollection_WithSelect_FiltersProperties()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavCountProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavCountProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavCountParents(1)/Children?$select=Name");
         var value = json.GetProperty("value");
         Assert.True(value.GetArrayLength() > 0);
@@ -1810,7 +1810,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task NavigationCollection_WithSelect_MultipleProperties()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavCountProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavCountProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavCountParents(1)/Children?$select=Id,Name");
         var value = json.GetProperty("value");
         Assert.True(value.GetArrayLength() > 0);
@@ -1825,7 +1825,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task NavigationCollection_WithSelect_InvalidProperty_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavCountProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavCountProfile>());
         var response = await fx.Client.GetAsync("/odata/NavCountParents(1)/Children?$select=InvalidProp");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -1838,7 +1838,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task ODataProfile_CollectionGet_Returns200WithValueArray()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ODataWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataWidgets");
         Assert.True(json.TryGetProperty("value", out var value));
         Assert.Equal(JsonValueKind.Array, value.ValueKind);
@@ -1850,7 +1850,7 @@ public class EndpointMappingTests
     {
         // The Priority-1 handler receives ODataQueryOptions and applies them itself.
         // $filter=Name eq 'Cog' should return only Cog.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ODataWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataWidgets?$filter=Name%20eq%20'Cog'");
         var value = json.GetProperty("value");
         Assert.Equal(1, value.GetArrayLength());
@@ -1860,7 +1860,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task ODataProfile_Top_LimitsResults()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ODataWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataWidgets?$top=1");
         Assert.Equal(1, json.GetProperty("value").GetArrayLength());
     }
@@ -1868,7 +1868,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task ODataProfile_Skip_SkipsResults()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ODataWidgetProfile>());
         var all = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataWidgets");
         var skipped = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataWidgets?$skip=1");
         Assert.Equal(
@@ -1879,7 +1879,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task ODataProfile_OrderBy_SortsResults()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ODataWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataWidgets?$orderby=Name");
         var value = json.GetProperty("value");
         string?[] names = Enumerable.Range(0, value.GetArrayLength())
@@ -1891,7 +1891,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task ODataProfile_CountInline_ReturnsOdataCount()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ODataWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataWidgets?$count=true");
         Assert.True(json.TryGetProperty("@odata.count", out var count));
         Assert.Equal(3, count.GetInt32());
@@ -1900,7 +1900,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task ODataProfile_CountStandalone_ReturnsInteger()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ODataWidgetProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/ODataWidgets/$count");
         Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
         string body = await response.Content.ReadAsStringAsync();
@@ -1911,7 +1911,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task ODataProfile_GetById_Returns200()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ODataWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataWidgets(1)");
         Assert.Equal("Sprocket", json.GetProperty("name").GetString());
     }
@@ -1923,7 +1923,7 @@ public class EndpointMappingTests
     {
         // ODataQueryResultProfile has 20 items but applies $top itself and returns TotalCount=20.
         // $count in the envelope should be 20 (pre-paging), not 5 (post-paging).
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataQueryResultProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ODataQueryResultProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataResultWidgets?$top=5&$count=true");
         Assert.True(json.TryGetProperty("@odata.count", out var count));
         Assert.Equal(20L, count.GetInt64());
@@ -1934,7 +1934,7 @@ public class EndpointMappingTests
     public async Task ODataQueryResult_WithNextLink_NextLinkPropagated()
     {
         // ODataQueryNextLinkProfile always sets NextLink = "http://next".
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataQueryNextLinkProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ODataQueryNextLinkProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataNextLinkWidgets");
         Assert.True(json.TryGetProperty("@odata.nextLink", out var nextLink));
         Assert.Equal("http://next", nextLink.GetString());
@@ -1944,7 +1944,7 @@ public class EndpointMappingTests
     public async Task ODataQueryResult_WithoutTotalCount_CountFallsBackToItemLength()
     {
         // ODataWidgetProfile does not set TotalCount — $count should fall back to items.Length.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ODataWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataWidgets?$count=true");
         Assert.True(json.TryGetProperty("@odata.count", out var count));
         // ODataWidgets has 3 items; no TotalCount set so falls back to item count.
@@ -1956,7 +1956,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task DeltaPatch_PartialUpdate_OnlyChangesSpecifiedProperties()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DeltaPatchWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeltaPatchWidgetProfile>());
         // Patch only the Name — Id should be unchanged
         var response = await fx.Client.PatchAsJsonAsync(
             "/odata/DeltaWidgets(1)",
@@ -1971,7 +1971,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task DeltaPatch_MissingEntity_Returns404()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DeltaPatchWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeltaPatchWidgetProfile>());
         var response = await fx.Client.PatchAsJsonAsync(
             "/odata/DeltaWidgets(99)",
             new { Name = "Ghost" });
@@ -1981,7 +1981,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task DeltaPatch_EntityStillReadableAfterPatch()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DeltaPatchWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeltaPatchWidgetProfile>());
         await fx.Client.PatchAsJsonAsync("/odata/DeltaWidgets(2)", new { Name = "PatchedCog" });
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/DeltaWidgets(2)");
         Assert.Equal("PatchedCog", json.GetProperty("name").GetString());
@@ -1992,7 +1992,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Accept_ApplicationJson_Returns200()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
         request.Headers.Add("Accept", "application/json");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
@@ -2002,7 +2002,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Accept_Star_Returns200()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
         request.Headers.Add("Accept", "*/*");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
@@ -2012,7 +2012,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Accept_TextXml_Returns406()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
         request.Headers.Add("Accept", "text/xml");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
@@ -2022,7 +2022,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Accept_TextHtml_Returns406()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
         request.Headers.Add("Accept", "text/html");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
@@ -2033,7 +2033,7 @@ public class EndpointMappingTests
     public async Task Accept_Metadata_ApplicationXml_Returns200()
     {
         // $metadata returns XML — should not be blocked by the 406 filter
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/$metadata");
         request.Headers.Add("Accept", "application/xml");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
@@ -2045,7 +2045,7 @@ public class EndpointMappingTests
     {
         // /$count returns the count as text/plain, so a client asking for text/plain (as an
         // OpenAPI-driven UI does, since the route advertises text/plain) must not be rejected.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets/$count");
         request.Headers.Add("Accept", "text/plain");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
@@ -2057,7 +2057,7 @@ public class EndpointMappingTests
     public async Task Accept_TextPlain_OnValue_Returns200()
     {
         // /{property}/$value returns the raw scalar value as text/plain — same exemption.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets(1)/Name/$value");
         request.Headers.Add("Accept", "text/plain");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
@@ -2069,7 +2069,7 @@ public class EndpointMappingTests
     public async Task Accept_TextXml_OnCount_Returns406()
     {
         // The text/plain exemption is narrow: a genuinely unsupported type on /$count still 406s.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets/$count");
         request.Headers.Add("Accept", "text/xml");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
@@ -2084,7 +2084,7 @@ public class EndpointMappingTests
     public async Task Accept_ApplicationWildcard_OnJsonRoute_Returns200()
     {
         // RFC 7231: "application/*" is a media range that matches application/json. Previously 406.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
         request.Headers.Add("Accept", "application/*");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
@@ -2095,7 +2095,7 @@ public class EndpointMappingTests
     public async Task Accept_TextWildcard_OnCount_Returns200()
     {
         // "text/*" matches text/plain, which /$count produces. Previously 406.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets/$count");
         request.Headers.Add("Accept", "text/*");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
@@ -2107,7 +2107,7 @@ public class EndpointMappingTests
     public async Task Accept_TextWildcard_OnValue_Returns200()
     {
         // "text/*" matches text/plain on /{property}/$value.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets(1)/Name/$value");
         request.Headers.Add("Accept", "text/*");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
@@ -2119,7 +2119,7 @@ public class EndpointMappingTests
     public async Task Accept_TextWildcard_OnJsonRoute_Returns406()
     {
         // "text/*" cannot match application/json, so a plain JSON collection still 406s.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
         request.Headers.Add("Accept", "text/*");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
@@ -2131,7 +2131,7 @@ public class EndpointMappingTests
     {
         // q=0 means "not acceptable" — the client is explicitly refusing application/json.
         // Previously the substring scan saw "application/json" and wrongly returned 200.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
         request.Headers.Add("Accept", "application/json;q=0");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
@@ -2142,7 +2142,7 @@ public class EndpointMappingTests
     public async Task Accept_FullWildcard_QualityZero_Returns406()
     {
         // "*/*;q=0" refuses everything.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
         request.Headers.Add("Accept", "*/*;q=0");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
@@ -2154,7 +2154,7 @@ public class EndpointMappingTests
     {
         // RFC 7231 §5.3.2 specificity: the exact "application/json;q=0" is more specific than
         // "application/*", so JSON is excluded even though the wildcard would otherwise allow it.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
         request.Headers.Add("Accept", "application/json;q=0, application/*");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
@@ -2166,7 +2166,7 @@ public class EndpointMappingTests
     {
         // A typical browser-style list: prefer text/html, fall back to JSON with a lower q.
         // JSON still has q>0, so the request is acceptable.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
         request.Headers.Add("Accept", "text/html;q=0.9, application/json;q=0.8");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
@@ -2178,7 +2178,7 @@ public class EndpointMappingTests
     {
         // JSON explicitly excluded (q=0); the only positive range is text/html, which the JSON
         // route cannot produce → 406.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
         request.Headers.Add("Accept", "application/json;q=0, text/html");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
@@ -2189,7 +2189,7 @@ public class EndpointMappingTests
     public async Task Accept_ApplicationJson_WithCharsetParameter_Returns200()
     {
         // Parameters on the media type (e.g. charset) must not defeat the exact match.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets");
         request.Headers.Add("Accept", "application/json; charset=utf-8");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
@@ -2201,7 +2201,7 @@ public class EndpointMappingTests
     {
         // $metadata is exempt from the JSON-only check and produces application/xml; "application/*"
         // (and "*/*") must resolve to 200 there just as on any other route.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/$metadata");
         request.Headers.Add("Accept", "application/*");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
@@ -2213,7 +2213,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task ETagCollection_GetAll_ContainsOdataEtagPerItem()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagCollectionProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagCollectionProfile>());
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ETagCollWidgets");
         JsonElement value = json.GetProperty("value");
         Assert.True(value.GetArrayLength() > 0);
@@ -2230,7 +2230,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task ETagCollection_SelectFiltered_OdataEtagSurvivesSelect()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagCollectionProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagCollectionProfile>());
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ETagCollWidgets?$select=name");
         JsonElement value = json.GetProperty("value");
         Assert.True(value.GetArrayLength() > 0);
@@ -2251,7 +2251,7 @@ public class EndpointMappingTests
     public async Task IfMatch_MultipleEtags_MatchingOneAllowsPut()
     {
         // If-Match: "bogus-etag", "<actual-etag>" — second entry matches → 200
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagIfMatchProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagIfMatchProfile>());
         // Obtain the current ETag via GET.
         string etag = (await fx.Client.GetAsync("/odata/IfMatchWidgets(1)")).Headers.ETag!.Tag;
         var request = new HttpRequestMessage(HttpMethod.Put, "/odata/IfMatchWidgets(1)");
@@ -2265,7 +2265,7 @@ public class EndpointMappingTests
     public async Task IfMatch_MultipleEtags_NoneMatchingReturns412()
     {
         // If-Match: "bogus1", "bogus2" — neither matches → 412
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagIfMatchProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagIfMatchProfile>());
         var request = new HttpRequestMessage(HttpMethod.Put, "/odata/IfMatchWidgets(1)");
         request.Headers.TryAddWithoutValidation("If-Match", "\"bogus1\", \"bogus2\"");
         request.Content = JsonContent.Create(new { Id = 1, Name = "Updated" });
@@ -2277,7 +2277,7 @@ public class EndpointMappingTests
     public async Task IfMatch_WeakEtagInList_IsStripped()
     {
         // W/"<actual-etag>" should match (W/ stripped before comparison) → 200
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagIfMatchProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagIfMatchProfile>());
         string etag = (await fx.Client.GetAsync("/odata/IfMatchWidgets(1)")).Headers.ETag!.Tag;
         var request = new HttpRequestMessage(HttpMethod.Put, "/odata/IfMatchWidgets(1)");
         request.Headers.TryAddWithoutValidation("If-Match", $"W/{etag}");
@@ -2291,7 +2291,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task MaxPageSize_LimitsResultCount()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MaxPageSizeProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MaxPageSizeProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/MaxPageWidgets");
         response.Headers.TryGetValues("Prefer", out _); // Prefer not echoed
         JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -2302,7 +2302,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task MaxPageSize_WithPrefer_LimitsToRequestedSize()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MaxPageSizeProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MaxPageSizeProfile>());
         var request = new HttpRequestMessage(HttpMethod.Get, "/odata/MaxPageWidgets");
         request.Headers.Add("Prefer", "maxpagesize=5");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
@@ -2320,7 +2320,7 @@ public class EndpointMappingTests
     public async Task MaxPageSize_ExplicitTopOverridesPrefer()
     {
         // $top=3 should take precedence over Prefer: maxpagesize=10
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MaxPageSizeProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MaxPageSizeProfile>());
         var request = new HttpRequestMessage(HttpMethod.Get, "/odata/MaxPageWidgets?$top=3");
         request.Headers.Add("Prefer", "maxpagesize=10");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
@@ -2335,7 +2335,7 @@ public class EndpointMappingTests
     public async Task MaxPageSize_BelowMaxTop_IsHonoredAsRequested()
     {
         // MaxTopProfile: MaxTop=5, 20 items. maxpagesize=3 < MaxTop=5 — honored in full.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MaxTopProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MaxTopProfile>());
         using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/MaxTopWidgets");
         request.Headers.Add("Prefer", "maxpagesize=3");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
@@ -2351,7 +2351,7 @@ public class EndpointMappingTests
     {
         // MaxTopProfile: MaxTop=5, 20 items. maxpagesize=10 > MaxTop=5 — clamped down to 5;
         // maxpagesize must not be able to lift the server's hard MaxTop ceiling (M-4/DoS hardening).
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MaxTopProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MaxTopProfile>());
         using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/MaxTopWidgets");
         request.Headers.Add("Prefer", "maxpagesize=10");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
@@ -2369,7 +2369,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Format_JsonShorthand_Returns200()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/Widgets?$format=json");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -2377,7 +2377,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Format_ApplicationJson_Returns200()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         // $format=application/json must be percent-encoded in query strings
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/Widgets?$format=application%2Fjson");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -2386,7 +2386,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Format_UnsupportedValue_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/Widgets?$format=xml");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         string body = await response.Content.ReadAsStringAsync();
@@ -2397,7 +2397,7 @@ public class EndpointMappingTests
     public async Task Format_UnsupportedValue_TakesPrecedenceOverAccept()
     {
         // $format=xml should return 400 even if Accept: application/json is also set
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets?$format=xml");
         request.Headers.Add("Accept", "application/json");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
@@ -2407,7 +2407,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Post_ResponseIncludesContentLocationHeader()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         HttpResponseMessage response = await fx.Client.PostAsJsonAsync("/odata/Widgets", new { Name = "Sprocket" });
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         Assert.NotNull(response.Headers.Location);
@@ -2421,7 +2421,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Post_Minimal_ResponseIncludesContentLocationHeader()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var request = new HttpRequestMessage(HttpMethod.Post, "/odata/Widgets");
         request.Headers.Add("Prefer", "return=minimal");
         request.Content = JsonContent.Create(new { Name = "Sprocket" });
@@ -2437,7 +2437,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Post_ReturnRepresentation_ReturnsPreferenceAppliedHeader()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var request = new HttpRequestMessage(HttpMethod.Post, "/odata/Widgets");
         request.Headers.Add("Prefer", "return=representation");
         request.Content = JsonContent.Create(new { Name = "Sprocket" });
@@ -2450,7 +2450,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task GetAll_CountTrue_ReturnsOdataCount()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/Widgets?$count=true");
         Assert.True(json.TryGetProperty("@odata.count", out JsonElement count));
         Assert.Equal(JsonValueKind.Number, count.ValueKind);
@@ -2460,7 +2460,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task GetAll_SearchWithCountTrue_ReturnsOdataCount()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<SearchableWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<SearchableWidgetProfile>());
         // SearchableWidgets has Alpha, Beta, Gamma; searching "alph" matches only "Alpha" = 1 result
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/SearchableWidgets?$search=alph&$count=true");
         Assert.True(json.TryGetProperty("@odata.count", out JsonElement count));
@@ -2476,7 +2476,7 @@ public class EndpointMappingTests
     {
         // OData-MaxVersion is a request-only header (client → server) per §8.2.7.
         // Servers must NOT include it in responses; only OData-Version is set by the server.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/Widgets");
         Assert.False(response.Headers.Contains("OData-MaxVersion"),
             "OData-MaxVersion is a request-only header and must not appear in responses.");
@@ -2487,7 +2487,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Put_ReturnRepresentation_ReturnsPreferenceAppliedHeader()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var request = new HttpRequestMessage(HttpMethod.Put, "/odata/Widgets(1)");
         request.Headers.Add("Prefer", "return=representation");
         request.Content = JsonContent.Create(new { Id = 1, Name = "Updated" });
@@ -2500,7 +2500,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task Patch_ReturnRepresentation_ReturnsPreferenceAppliedHeader()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var request = new HttpRequestMessage(HttpMethod.Patch, "/odata/Widgets(1)");
         request.Headers.Add("Prefer", "return=representation");
         request.Content = JsonContent.Create(new { Name = "Patched" });
@@ -2513,7 +2513,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task GetAll_TopZero_ReturnsEmptyArray()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<QueryableWidgetProfile>());
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets?$top=0");
         Assert.Equal(0, json.GetProperty("value").GetArrayLength());
     }
@@ -2524,7 +2524,7 @@ public class EndpointMappingTests
     public async Task ETag_IfMatch_Wildcard_AlwaysMatchesOnPut()
     {
         // If-Match: * must always match regardless of the current ETag — should return 200, not 412.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagWidgetProfile>());
         var request = new HttpRequestMessage(HttpMethod.Put, "/odata/ETagWidgets(1)");
         request.Headers.TryAddWithoutValidation("If-Match", "*");
         request.Content = JsonContent.Create(new Widget { Id = 1, Name = "Sprocket" });
@@ -2536,7 +2536,7 @@ public class EndpointMappingTests
     public async Task ETag_IfMatch_Wildcard_AlwaysMatchesOnDelete()
     {
         // If-Match: * must always match regardless of the current ETag — should return 204, not 412.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagWidgetProfile>());
         var request = new HttpRequestMessage(HttpMethod.Delete, "/odata/ETagWidgets(1)");
         request.Headers.TryAddWithoutValidation("If-Match", "*");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
@@ -2551,7 +2551,7 @@ public class EndpointMappingTests
     public async Task ETag_IfMatch_MultipleETags_OneMatches_Returns200()
     {
         // If-Match: "wrongetag", "<actual>" — second entry matches → 200
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagIfMatchProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagIfMatchProfile>());
         string etag = (await fx.Client.GetAsync("/odata/IfMatchWidgets(1)")).Headers.ETag!.Tag;
         var request = new HttpRequestMessage(HttpMethod.Put, "/odata/IfMatchWidgets(1)");
         request.Headers.TryAddWithoutValidation("If-Match", $"\"wrongetag\", {etag}");
@@ -2564,7 +2564,7 @@ public class EndpointMappingTests
     public async Task ETag_IfMatch_MultipleETags_NoneMatch_Returns412()
     {
         // If-Match: "wrong1", "wrong2" — neither matches → 412
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagIfMatchProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagIfMatchProfile>());
         var request = new HttpRequestMessage(HttpMethod.Put, "/odata/IfMatchWidgets(1)");
         request.Headers.TryAddWithoutValidation("If-Match", "\"wrong1\", \"wrong2\"");
         request.Content = JsonContent.Create(new Widget { Id = 1, Name = "Updated" });
@@ -2579,7 +2579,7 @@ public class EndpointMappingTests
     {
         TrackingRefProfile.AddCalls.Clear();
         TrackingRefProfile.RemoveCalls.Clear();
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<TrackingRefProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<TrackingRefProfile>());
         HttpResponseMessage response = await fx.Client.PostAsync(
             "/odata/TrackingParents(1)/Children/$ref",
             new System.Net.Http.StringContent(
@@ -2598,7 +2598,7 @@ public class EndpointMappingTests
     {
         TrackingRefProfile.AddCalls.Clear();
         TrackingRefProfile.RemoveCalls.Clear();
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<TrackingRefProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<TrackingRefProfile>());
         HttpResponseMessage response = await fx.Client.DeleteAsync(
             "/odata/TrackingParents(1)/Children/$ref?$id=http://localhost/odata/Children(1)");
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
@@ -2612,7 +2612,7 @@ public class EndpointMappingTests
     {
         TrackingRefProfile.AddCalls.Clear();
         TrackingRefProfile.RemoveCalls.Clear();
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<TrackingRefProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<TrackingRefProfile>());
         using var content = new System.Net.Http.StringContent(
             "{\"something\":\"else\"}",
             System.Text.Encoding.UTF8,
@@ -2628,7 +2628,7 @@ public class EndpointMappingTests
     public async Task NavigationRef_SingleValue_Put_Returns204()
     {
         TrackingSetRefProfile.SetRefCalls.Clear();
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<TrackingSetRefProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<TrackingSetRefProfile>());
         using var content = new System.Net.Http.StringContent(
             "{\"@odata.id\":\"http://localhost/odata/Children(7)\"}",
             System.Text.Encoding.UTF8,
@@ -2648,7 +2648,7 @@ public class EndpointMappingTests
         // POST is not valid for single-value nav; spec requires PUT (§11.4.6.3).
         // ASP.NET Core returns 405 because GET is registered for the same path.
         TrackingSetRefProfile.SetRefCalls.Clear();
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<TrackingSetRefProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<TrackingSetRefProfile>());
         using var content = new System.Net.Http.StringContent(
             "{\"@odata.id\":\"http://localhost/odata/Children(7)\"}",
             System.Text.Encoding.UTF8,
@@ -2662,7 +2662,7 @@ public class EndpointMappingTests
     public async Task NavigationRef_SingleValue_Delete_Returns204()
     {
         TrackingSetRefProfile.RemoveRefCalls.Clear();
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<TrackingSetRefProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<TrackingSetRefProfile>());
         HttpResponseMessage response = await fx.Client.DeleteAsync(
             "/odata/SetRefParents(1)/PrimaryChild/$ref");
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
@@ -2677,7 +2677,7 @@ public class EndpointMappingTests
     {
         // A nav with only getAll (no addRef) registers GET but not POST.
         // ASP.NET Core returns 405 because another method is registered on the same path.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ReadOnlyNavProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ReadOnlyNavProfile>());
         using var content = new System.Net.Http.StringContent(
             "{\"@odata.id\":\"http://localhost/odata/Children(1)\"}",
             System.Text.Encoding.UTF8,
@@ -2693,7 +2693,7 @@ public class EndpointMappingTests
     public async Task AdvancedConfigure_Override_ServerStartsAndResponds()
     {
         // Verifies the profile with AdvancedConfigure builds without error
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AdvancedConfigureProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AdvancedConfigureProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/AdvancedWidgets");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -2703,7 +2703,7 @@ public class EndpointMappingTests
     [Fact]
     public async Task AdvancedConfigure_Override_GetById_Works()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AdvancedConfigureProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AdvancedConfigureProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/AdvancedWidgets(1)");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -2716,7 +2716,7 @@ public class EndpointMappingTests
     public async Task Navigation_Select_FiltersToRequestedProperty()
     {
         // $select=Name should include camelCase "name" but exclude "id" and "parentId"
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavQueryProfile>());
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavQueryParents(1)/Children?$select=Name");
         JsonElement value = json.GetProperty("value");
         Assert.True(value.GetArrayLength() > 0);
@@ -2730,7 +2730,7 @@ public class EndpointMappingTests
     public async Task Navigation_OrderBy_SilentlyIgnored_Returns200()
     {
         // $orderby has no effect on the GetAll nav path but must not cause an error
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavQueryProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/NavQueryParents(1)/Children?$orderby=Name desc");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -2836,7 +2836,7 @@ public class EndpointMappingTests
     {
         // ODataTotalCountProfile returns 2 items but sets TotalCount = 10.
         // $count=true must return 10 (from TotalCount), not 2 (page size).
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataTotalCountProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ODataTotalCountProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/TotalCountWidgets?$count=true");
         Assert.True(json.TryGetProperty("@odata.count", out var countEl),
             "Expected @odata.count in the response envelope");
@@ -2852,7 +2852,7 @@ public class EndpointMappingTests
     {
         // ETagExpandSelectProfile has GetQueryable + UseETag + ExpandEnabled + SelectEnabled.
         // Without $select, every item in the collection should carry @odata.etag.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagExpandSelectProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagExpandSelectProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ETagExpandSelectParents?$expand=Children");
         var value = json.GetProperty("value");
         Assert.True(value.GetArrayLength() > 0);
@@ -2870,7 +2870,7 @@ public class EndpointMappingTests
     public async Task UnifiedPipeline_SelectFiltersProperties_ETagSurvives()
     {
         // Requesting $select=Id should strip Name but must NOT strip @odata.etag.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagExpandSelectProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagExpandSelectProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ETagExpandSelectParents?$select=Id");
         var value = json.GetProperty("value");
         Assert.True(value.GetArrayLength() > 0);
@@ -2887,7 +2887,7 @@ public class EndpointMappingTests
         // $expand=Children&$select=Id,Name,Children — all three features active at once.
         // Note: when $select is in use, expanded navigation properties must be explicitly
         // listed in $select to be included (JsonNode post-processing honours the select list).
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagExpandSelectProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagExpandSelectProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>(
             "/odata/ETagExpandSelectParents?$expand=Children&$select=Id,Name,Children");
         var value = json.GetProperty("value");

@@ -73,7 +73,7 @@ public class CoverageGapTests
     public async Task DefaultEntitySetName_UsesPluralizationOfModelType()
     {
         // DefaultNameCategory → "DefaultNameCategories" (consonant+y rule)
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DefaultNameCategoryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DefaultNameCategoryProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata");
         var values = json.GetProperty("value");
         bool found = Enumerable.Range(0, values.GetArrayLength())
@@ -163,13 +163,13 @@ public class CoverageGapTests
     [Fact]
     public void AddProfilesFrom_AlreadyRegisteredType_IsSkipped()
     {
-        // AddProfile<ScanTargetProfile> first, then scan the same assembly.
+        // AddEntitySetProfile<ScanTargetProfile> first, then scan the same assembly.
         // The scan's _alreadyRegistered check must prevent a duplicate registration.
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddOhData("skip1", o => o
             .WithPrefix("/skip1")
-            .AddProfile<ScanTargetProfile>()
+            .AddEntitySetProfile<ScanTargetProfile>()
             .AddProfilesFrom(s => s.InAssemblyOf<ScanTargetProfile>()));
 
         // ScanTargetProfile should appear exactly once as a Scoped descriptor.
@@ -197,7 +197,7 @@ public class CoverageGapTests
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
         builder.Services.AddLogging();
-        builder.Services.AddOhData(o => o.AddProfile<ETagWithoutGetByIdProfile>());
+        builder.Services.AddOhData(o => o.AddEntitySetProfile<ETagWithoutGetByIdProfile>());
         var app = builder.Build();
         Assert.Throws<InvalidOperationException>(() => app.MapOhData());
     }
@@ -207,7 +207,7 @@ public class CoverageGapTests
     [Fact]
     public async Task UseETag_MultipleSelectors_ReturnsETagHeader()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MultiETagProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MultiETagProfile>());
         var response = await fx.Client.GetAsync("/odata/MultiETagWidgets(1)");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.NotNull(response.Headers.ETag);
@@ -229,7 +229,7 @@ public class CoverageGapTests
     [Fact]
     public async Task HasOptional_WithGetHandler_Returns200WithEntity()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ParentWithTagProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ParentWithTagProfile>());
         var response = await fx.Client.GetAsync("/odata/TaggedParents(1)/Tag");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -237,7 +237,7 @@ public class CoverageGapTests
     [Fact]
     public async Task HasOptional_WithGetHandler_ParentNotFound_Returns404()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ParentWithTagProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ParentWithTagProfile>());
         var response = await fx.Client.GetAsync("/odata/TaggedParents(999)/Tag");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -247,7 +247,7 @@ public class CoverageGapTests
     [Fact]
     public async Task HasRequired_WithGetHandler_Returns200WithEntity()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ParentWithAddressProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ParentWithAddressProfile>());
         var response = await fx.Client.GetAsync("/odata/AddressedParents(1)/Address");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -255,7 +255,7 @@ public class CoverageGapTests
     [Fact]
     public async Task HasRequired_WithGetHandler_ParentNotFound_Returns404()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ParentWithAddressProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ParentWithAddressProfile>());
         var response = await fx.Client.GetAsync("/odata/AddressedParents(999)/Address");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -265,7 +265,7 @@ public class CoverageGapTests
     [Fact]
     public async Task FilterProperties_ExpressionOverload_AllowedProperty_Filters()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NameFilterOnlyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NameFilterOnlyProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NameFilterWidgets?$filter=Name eq 'Alpha'");
         Assert.Equal(1, json.GetProperty("value").GetArrayLength());
     }
@@ -275,7 +275,7 @@ public class CoverageGapTests
     [Fact]
     public async Task SelectProperties_ExpressionOverload_AllowedProperty_OmitsOtherFields()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NameSelectOnlyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NameSelectOnlyProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NameSelectWidgets?$select=Name");
         var first = json.GetProperty("value")[0];
         Assert.True(first.TryGetProperty("name", out _));
@@ -287,7 +287,7 @@ public class CoverageGapTests
     [Fact]
     public async Task OrderByProperties_ExpressionOverload_AllowedProperty_Sorts()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NameOrderByOnlyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NameOrderByOnlyProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NameOrderByWidgets?$orderby=Name");
         var value = json.GetProperty("value");
         string?[] names = Enumerable.Range(0, value.GetArrayLength())
@@ -301,7 +301,7 @@ public class CoverageGapTests
     [Fact]
     public async Task SelectProperties_StringOverload_AllowedProperty_OmitsOtherFields()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<StringSelectOnlyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<StringSelectOnlyProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/StringSelectWidgets?$select=Name");
         var first = json.GetProperty("value")[0];
         Assert.True(first.TryGetProperty("name", out _));
@@ -313,7 +313,7 @@ public class CoverageGapTests
     [Fact]
     public async Task OrderByProperties_StringOverload_AllowedProperty_Sorts()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<StringOrderByOnlyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<StringOrderByOnlyProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/StringOrderByWidgets?$orderby=Name");
         var value = json.GetProperty("value");
         string?[] names = Enumerable.Range(0, value.GetArrayLength())
@@ -330,7 +330,7 @@ public class CoverageGapTests
         // ExpandProperties with no args restricts advertised expand in $metadata, but the
         // OData runtime does not reject $expand at query time — it processes it without
         // expanding data (navigation is not eagerly loaded). Verify the request succeeds.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NoExpandProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NoExpandProfile>());
         var response = await fx.Client.GetAsync("/odata/NoExpandParents");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -383,7 +383,7 @@ public class CoverageGapTests
     {
         // DoubleCount expects int factor; passing a non-integer triggers InvalidParameter.
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<BoundOpsProfile>(),
+            o => o.AddEntitySetProfile<BoundOpsProfile>(),
             configureServices: s => s.AddSingleton(new BoundOpsStore()));
         var response = await fx.Client.GetAsync("/odata/BoundWidgets/DoubleCount?factor=notanint");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -396,7 +396,7 @@ public class CoverageGapTests
     [Fact]
     public async Task GetQueryable_InvalidSkipToken_Returns400WithInvalidSkipToken()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryableWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<QueryableWidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/QueryableWidgets?$skiptoken=!!!notvalidbase64!!!");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -408,7 +408,7 @@ public class CoverageGapTests
     [Fact]
     public async Task NavigationCollection_BadKey_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ParentWithChildrenProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ParentWithChildrenProfile>());
         var response = await fx.Client.GetAsync("/odata/Parents(notanint)/Children");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
@@ -418,7 +418,7 @@ public class CoverageGapTests
     [Fact]
     public async Task NavigationCount_BadKey_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavCountProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavCountProfile>());
         var response = await fx.Client.GetAsync("/odata/NavCountParents(notanint)/Children/$count");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
@@ -428,7 +428,7 @@ public class CoverageGapTests
     [Fact]
     public async Task NavigationRef_Get_BadKey_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavQueryProfile>());
         var response = await fx.Client.GetAsync("/odata/NavQueryParents(notanint)/Children/$ref");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
@@ -438,7 +438,7 @@ public class CoverageGapTests
     [Fact]
     public async Task NavigationRef_Post_BadKey_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavQueryProfile>());
         using var content = new StringContent(
             "{\"@odata.id\":\"http://localhost/odata/Children(1)\"}",
             Encoding.UTF8, "application/json");
@@ -451,7 +451,7 @@ public class CoverageGapTests
     [Fact]
     public async Task NavigationRef_Delete_BadKey_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavQueryProfile>());
         var response = await fx.Client.DeleteAsync(
             "/odata/NavQueryParents(notanint)/Children/$ref?$id=http://localhost/odata/Children(1)");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -463,7 +463,7 @@ public class CoverageGapTests
     public async Task EntityBoundAction_BadKey_Returns400()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<EntityBoundOpsProfile>(),
+            o => o.AddEntitySetProfile<EntityBoundOpsProfile>(),
             configureServices: s => s.AddSingleton(new EntityBoundOpsStore()));
         using var content = new StringContent("{\"newName\":\"Test\"}", Encoding.UTF8, "application/json");
         var response = await fx.Client.PostAsync("/odata/EntityBoundWidgets(notanint)/RenameWidget", content);
@@ -475,7 +475,7 @@ public class CoverageGapTests
     [Fact]
     public async Task Delete_BadKey_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.DeleteAsync("/odata/Widgets(notanint)");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
@@ -485,7 +485,7 @@ public class CoverageGapTests
     [Fact]
     public async Task Put_BadKey_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         using var content = new StringContent("{\"id\":1,\"name\":\"X\"}", Encoding.UTF8, "application/json");
         var response = await fx.Client.PutAsync("/odata/Widgets(notanint)", content);
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -496,7 +496,7 @@ public class CoverageGapTests
     [Fact]
     public async Task Patch_BadKey_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         using var content = new StringContent("{\"name\":\"X\"}", Encoding.UTF8, "application/json");
         var response = await fx.Client.PatchAsync("/odata/Widgets(notanint)", content);
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -507,7 +507,7 @@ public class CoverageGapTests
     [Fact]
     public async Task ODataProfile_CountWithFilter_ReturnsFilteredCount()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ODataWidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/ODataWidgets/$count?$filter=Name eq 'Cog'");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         string body = await response.Content.ReadAsStringAsync();
@@ -520,7 +520,7 @@ public class CoverageGapTests
     [Fact]
     public async Task HasOptional_Ref_WithTargetEntitySet_ReturnsOdataId()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ParentWithTagRefProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ParentWithTagRefProfile>());
         var response = await fx.Client.GetAsync("/odata/TagRefParents(1)/Tag/$ref");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -533,7 +533,7 @@ public class CoverageGapTests
     [Fact]
     public async Task HasOptional_Ref_WithoutTargetEntitySet_Returns200WithContext()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ParentWithTagProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ParentWithTagProfile>());
         var response = await fx.Client.GetAsync("/odata/TaggedParents(1)/Tag/$ref");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -545,7 +545,7 @@ public class CoverageGapTests
     [Fact]
     public async Task ETag_IfMatch_Wildcard_AlwaysMatchesOnPatch()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagBodyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagBodyProfile>());
         using var request = new HttpRequestMessage(HttpMethod.Patch, "/odata/ETagBodyWidgets(1)");
         request.Headers.TryAddWithoutValidation("If-Match", "*");
         request.Content = new StringContent("{\"name\":\"Patched\"}", Encoding.UTF8, "application/json");
@@ -558,7 +558,7 @@ public class CoverageGapTests
     [Fact]
     public async Task GetById_IfNoneMatch_Wildcard_Returns304()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagWidgetProfile>());
         using var req = new HttpRequestMessage(HttpMethod.Get, "/odata/ETagWidgets(1)");
         req.Headers.TryAddWithoutValidation("If-None-Match", "*");
         var response = await fx.Client.SendAsync(req);
@@ -573,8 +573,8 @@ public class CoverageGapTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddOhData(o => o
-            .AddProfile<WidgetProfile>()
-            .AddProfile<QueryableWidgetProfile>());
+            .AddEntitySetProfile<WidgetProfile>()
+            .AddEntitySetProfile<QueryableWidgetProfile>());
         var reg = services.BuildServiceProvider().GetRequiredService<OhDataRegistration>();
         var names = reg.EntitySetNames.ToList();
         Assert.Contains("Widgets", names);
@@ -587,8 +587,8 @@ public class CoverageGapTests
     public async Task ServiceDocument_MultipleProfiles_ListsAll()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o
-            .AddProfile<WidgetProfile>()
-            .AddProfile<QueryableWidgetProfile>());
+            .AddEntitySetProfile<WidgetProfile>()
+            .AddEntitySetProfile<QueryableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata");
         var values = json.GetProperty("value");
         var names = Enumerable.Range(0, values.GetArrayLength())
@@ -603,7 +603,7 @@ public class CoverageGapTests
     [Fact]
     public async Task Count_GetAllPath_ReturnsCorrectCount()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/Widgets/$count");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         string body = await response.Content.ReadAsStringAsync();
@@ -616,7 +616,7 @@ public class CoverageGapTests
     [Fact]
     public async Task GetQueryable_TopExceedsMaxTop_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MaxTopProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MaxTopProfile>());
         // MaxTopProfile has MaxTop=5; requesting $top=10 should be rejected
         var response = await fx.Client.GetAsync("/odata/MaxTopWidgets?$top=10");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -627,13 +627,13 @@ public class CoverageGapTests
     // ── Profile type in two different named registrations → throws ─────────────
 
     [Fact]
-    public void AddProfile_SameTypeInTwoDifferentRegistrations_Throws()
+    public void AddEntitySetProfile_SameTypeInTwoDifferentRegistrations_Throws()
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddOhData("r1", o => o.WithPrefix("/r1").AddProfile<WidgetProfile>());
+        services.AddOhData("r1", o => o.WithPrefix("/r1").AddEntitySetProfile<WidgetProfile>());
         Assert.Throws<InvalidOperationException>(() =>
-            services.AddOhData("r2", o => o.WithPrefix("/r2").AddProfile<WidgetProfile>()));
+            services.AddOhData("r2", o => o.WithPrefix("/r2").AddEntitySetProfile<WidgetProfile>()));
     }
 
     // ── Entity-level function returning null → 204 ────────────────────────────
@@ -641,7 +641,7 @@ public class CoverageGapTests
     [Fact]
     public async Task EntityBoundFunction_ReturnsNull_Returns204()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NullReturnEntityFnProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NullReturnEntityFnProfile>());
         var response = await fx.Client.GetAsync("/odata/NullFnWidgets(1)/GetNullWidget");
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
     }
@@ -652,7 +652,7 @@ public class CoverageGapTests
     public async Task BoundFunction_WithReturnValue_Returns200()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<BoundOpsProfile>(),
+            o => o.AddEntitySetProfile<BoundOpsProfile>(),
             configureServices: s => s.AddSingleton(new BoundOpsStore()));
         var response = await fx.Client.GetAsync("/odata/BoundWidgets/DoubleCount?factor=1");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -669,7 +669,7 @@ public class CoverageGapTests
     [Fact]
     public async Task Put_AllowUpsert_NewKey_Returns201()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagUpsertProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagUpsertProfile>());
         using var content = new StringContent("{\"id\":99,\"name\":\"New\"}", Encoding.UTF8, "application/json");
         var response = await fx.Client.PutAsync("/odata/ETagUpsertWidgets(99)", content);
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);

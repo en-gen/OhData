@@ -102,7 +102,7 @@ internal sealed class CompatibilityTestFixture : IAsyncDisposable
         builder.Services.AddOhData(o =>
         {
             o.WithPrefix(Prefix);
-            o.AddProfile<WidgetProfile>();
+            o.AddEntitySetProfile<WidgetProfile>();
         });
 
         var app = builder.Build();

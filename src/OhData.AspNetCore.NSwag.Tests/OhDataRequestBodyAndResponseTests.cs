@@ -152,8 +152,8 @@ public sealed class OhDataRequestBodyAndResponseTests
     {
         await using TestFixture fx = await NSwagTestHostBuilder.BuildAsync(o =>
         {
-            o.AddProfile<WriteSurfaceProfile>();
-            o.AddProfile<WriteSurfaceQueryableProfile>();
+            o.AddEntitySetProfile<WriteSurfaceProfile>();
+            o.AddEntitySetProfile<WriteSurfaceQueryableProfile>();
         });
         return await fx.GetDocumentAsync();
     }

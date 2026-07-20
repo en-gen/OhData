@@ -7,14 +7,15 @@ using OhData.Abstractions;
 namespace OhData.AspNetCore;
 
 /// <summary>
-/// Configures assembly scanning for <see cref="EntitySetProfile{TKey,TModel}"/> subclasses.
-/// Obtained via <see cref="OhDataBuilder.AddProfilesFrom"/>.
+/// Configures assembly scanning for <see cref="EntitySetProfile{TKey,TModel}"/> and
+/// <see cref="DeltaProfile"/> subclasses. Obtained via <see cref="OhDataBuilder.AddProfilesFrom"/>.
 /// </summary>
 /// <remarks>
-/// Scanning discovers all concrete, non-abstract <see cref="EntitySetProfile{TKey,TModel}"/>
-/// subclasses in the specified assemblies and registers them as if each had been passed to
-/// <see cref="OhDataBuilder.AddProfile{TProfile}"/> individually. Types already registered
-/// in the current builder are skipped.
+/// A single scan discovers all concrete, non-abstract <see cref="EntitySetProfile{TKey,TModel}"/>
+/// and <see cref="DeltaProfile"/> subclasses in the specified assemblies and registers each as if
+/// it had been passed to <see cref="OhDataBuilder.AddEntitySetProfile{TProfile}"/> or
+/// <see cref="OhDataBuilder.AddDeltaProfile{TProfile}"/> individually. Types already registered in
+/// the current builder are skipped.
 /// </remarks>
 public sealed class ProfileScanner
 {
@@ -63,8 +64,12 @@ public sealed class ProfileScanner
             .Where(t =>
                 t.IsClass &&
                 !t.IsAbstract &&
-                IsEntitySetProfile(t) &&
+                IsProfile(t) &&
                 !_alreadyRegistered.Contains(t));
+
+    // A single scan discovers BOTH entity set profiles and delta profiles; OhDataBuilder routes
+    // each discovered type to the appropriate registry.
+    private static bool IsProfile(Type type) => IsEntitySetProfile(type) || IsDeltaProfile(type);
 
     private static bool IsEntitySetProfile(Type type)
     {
@@ -76,4 +81,6 @@ public sealed class ProfileScanner
 
         return false;
     }
+
+    private static bool IsDeltaProfile(Type type) => typeof(DeltaProfile).IsAssignableFrom(type);
 }

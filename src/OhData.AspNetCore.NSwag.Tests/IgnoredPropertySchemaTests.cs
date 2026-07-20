@@ -81,9 +81,9 @@ public sealed class IgnoredPropertySchemaTests
     {
         await using TestFixture fx = await NSwagTestHostBuilder.BuildAsync(o =>
         {
-            o.AddProfile<ProductProfile>();
-            o.AddProfile<AuditEntryProfile>();
-            o.AddProfile<RenamedProfile>();
+            o.AddEntitySetProfile<ProductProfile>();
+            o.AddEntitySetProfile<AuditEntryProfile>();
+            o.AddEntitySetProfile<RenamedProfile>();
         });
         return await fx.GetDocumentAsync();
     }

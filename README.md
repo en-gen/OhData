@@ -74,7 +74,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
 // 3. Register in Program.cs
 builder.Services.AddOhData(o => o
     .WithPrefix("/odata")
-    .AddProfile<ProductProfile>()                              // list profiles explicitly
+    .AddEntitySetProfile<ProductProfile>()                              // list profiles explicitly
     // ...or scan assemblies for every EntitySetProfile they contain:
     .AddProfilesFromAssembly(Assembly.GetExecutingAssembly())  // by assembly instance
     .AddProfilesFromAssemblyOf<ProductProfile>());             // by marker type
@@ -328,6 +328,7 @@ and the full support policy.
 | Navigation property routing, `$ref`, and POST-to-navigation | [docs/navigation-routing.md](docs/navigation-routing.md) |
 | Individual property access, reads/writes, and `/$value` | [docs/property-access.md](docs/property-access.md) |
 | Deep insert (nested related entities in POST) | [docs/deep-insert.md](docs/deep-insert.md) |
+| Delta mapping (DTO → entity write path, dependency-free) | [docs/delta-mapping.md](docs/delta-mapping.md) |
 | Bound functions and actions | [docs/bound-operations.md](docs/bound-operations.md) |
 | ETags and optimistic concurrency | [docs/etags.md](docs/etags.md) |
 | Authorization | [docs/authorization.md](docs/authorization.md) |

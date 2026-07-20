@@ -37,7 +37,7 @@ public sealed class OhDataNSwagSecurityOperationProcessorTests
     [Fact]
     public async Task SecuredOperation_GetsSecurityReferencingAppScheme_And401And403()
     {
-        await using var fx = await BuildAsync(o => o.AddProfile<SecuredProfile>());
+        await using var fx = await BuildAsync(o => o.AddEntitySetProfile<SecuredProfile>());
         using JsonDocument doc = await fx.GetDocumentAsync();
 
         JsonElement op = GetOperation(doc, "/odata/SecuredWidgets", "get");
@@ -52,7 +52,7 @@ public sealed class OhDataNSwagSecurityOperationProcessorTests
     [Fact]
     public async Task SecuredWriteOperation_AlsoGetsSecurityAnd401And403()
     {
-        await using var fx = await BuildAsync(o => o.AddProfile<SecuredProfile>());
+        await using var fx = await BuildAsync(o => o.AddEntitySetProfile<SecuredProfile>());
         using JsonDocument doc = await fx.GetDocumentAsync();
 
         JsonElement op = GetOperation(doc, "/odata/SecuredWidgets", "post");
@@ -67,7 +67,7 @@ public sealed class OhDataNSwagSecurityOperationProcessorTests
     [Fact]
     public async Task AnonymousProfile_GetsNoSecurityAndNo401Or403()
     {
-        await using var fx = await BuildAsync(o => o.AddProfile<AnonProfile>());
+        await using var fx = await BuildAsync(o => o.AddEntitySetProfile<AnonProfile>());
         using JsonDocument doc = await fx.GetDocumentAsync();
 
         JsonElement op = GetOperation(doc, "/odata/AnonWidgets", "get");
@@ -85,7 +85,7 @@ public sealed class OhDataNSwagSecurityOperationProcessorTests
     [Fact]
     public async Task PerOperationAuth_ReadSecured_CreateAnonymous()
     {
-        await using var fx = await BuildAsync(o => o.AddProfile<PerOpProfile>());
+        await using var fx = await BuildAsync(o => o.AddEntitySetProfile<PerOpProfile>());
         using JsonDocument doc = await fx.GetDocumentAsync();
 
         JsonElement get = GetOperation(doc, "/odata/PerOpWidgets", "get");
@@ -104,7 +104,7 @@ public sealed class OhDataNSwagSecurityOperationProcessorTests
     public async Task ProcessorNotRegistered_NoSecurityEmittedEvenOnSecuredRoutes()
     {
         await using var fx = await BuildAsync(
-            o => o.AddProfile<SecuredProfile>(),
+            o => o.AddEntitySetProfile<SecuredProfile>(),
             registerSecurityProcessor: false);
         using JsonDocument doc = await fx.GetDocumentAsync();
 
@@ -118,7 +118,7 @@ public sealed class OhDataNSwagSecurityOperationProcessorTests
     [Fact]
     public async Task Processor_NeverDefinesSecurityScheme()
     {
-        await using var fx = await BuildAsync(o => o.AddProfile<SecuredProfile>());
+        await using var fx = await BuildAsync(o => o.AddEntitySetProfile<SecuredProfile>());
         using JsonDocument doc = await fx.GetDocumentAsync();
 
         bool hasV3 = doc.RootElement.TryGetProperty("components", out JsonElement components)
@@ -136,7 +136,7 @@ public sealed class OhDataNSwagSecurityOperationProcessorTests
     {
         const string existing = "app-defined 401";
         await using var fx = await BuildAsync(
-            o => o.AddProfile<SecuredProfile>(),
+            o => o.AddEntitySetProfile<SecuredProfile>(),
             configureBeforeSecurity: s => s.OperationProcessors.Add(new PreSeed401Processor(existing)));
         using JsonDocument doc = await fx.GetDocumentAsync();
 
@@ -151,7 +151,7 @@ public sealed class OhDataNSwagSecurityOperationProcessorTests
     public async Task DuplicateRegistration_SecurityNotDuplicated()
     {
         await using var fx = await BuildAsync(
-            o => o.AddProfile<SecuredProfile>(),
+            o => o.AddEntitySetProfile<SecuredProfile>(),
             configureBeforeSecurity: s => s.OperationProcessors.Add(new OhDataNSwagSecurityOperationProcessor(SchemeId)));
         using JsonDocument doc = await fx.GetDocumentAsync();
 
@@ -167,7 +167,7 @@ public sealed class OhDataNSwagSecurityOperationProcessorTests
     public async Task EndpointWithBothAuthorizeAndAllowAnonymous_NotSecured()
     {
         await using var fx = await BuildAsync(
-            o => o.AddProfile<AnonProfile>(),
+            o => o.AddEntitySetProfile<AnonProfile>(),
             configureApp: app => app.MapGet("/plain/both", () => "hi")
                 .RequireAuthorization()
                 .AllowAnonymous());

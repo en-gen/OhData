@@ -173,7 +173,7 @@ RoundingMode = RoundingMode.BankersRounding;
 // Or globally across all profiles in the registration:
 builder.Services.AddOhData(o => o
     .WithDefaults(d => d.RoundingMode = RoundingMode.BankersRounding)
-    .AddProfile<ProductProfile>());
+    .AddEntitySetProfile<ProductProfile>());
 ```
 
 **Provider-translation caveat:** the two-argument `Math.Round(value, MidpointRounding)` overload
@@ -229,7 +229,7 @@ MaxTop = 100;
 // Or globally across all profiles in the registration:
 builder.Services.AddOhData(o => o
     .WithDefaults(d => d.MaxTop = 500)
-    .AddProfile<ProductProfile>());
+    .AddEntitySetProfile<ProductProfile>());
 ```
 
 **`MaxTop` defaults to `1000`** (`EntitySetDefaults.MaxTop`) when not overridden per-profile or globally - server-side paging is always active on the `GetQueryable`/`GetAll`/Priority-1 paths, even if you never configure it explicitly.
@@ -475,7 +475,7 @@ Four ceilings bound how expensive a single request's query options may be. Each 
 ```csharp
 builder.Services.AddOhData(o => o
     .WithDefaults(d => { d.MaxExpansionDepth = 3; d.MaxFilterNodeCount = 200; })
-    .AddProfile<OrderProfile>());
+    .AddEntitySetProfile<OrderProfile>());
 
 public class OrderProfile : EntitySetProfile<int, Order>
 {

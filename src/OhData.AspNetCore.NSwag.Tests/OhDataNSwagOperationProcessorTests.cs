@@ -39,7 +39,7 @@ public class OhDataNSwagOperationProcessorTests
     public async System.Threading.Tasks.Task AllFlagsEnabled_AllODataParametersPresent()
     {
         await using var fixture = await NSwagTestHostBuilder.BuildAsync(
-            o => o.AddProfile<AllFlagsWidgetProfile>());
+            o => o.AddEntitySetProfile<AllFlagsWidgetProfile>());
 
         using var doc = await fixture.GetDocumentAsync();
         string[] names = ParameterNames(doc, "/odata/AllFlagsWidgets");
@@ -61,7 +61,7 @@ public class OhDataNSwagOperationProcessorTests
     public async System.Threading.Tasks.Task NoFlagsEnabled_OnlyTopAndSkipPresent()
     {
         await using var fixture = await NSwagTestHostBuilder.BuildAsync(
-            o => o.AddProfile<NoFlagsWidgetProfile>());
+            o => o.AddEntitySetProfile<NoFlagsWidgetProfile>());
 
         using var doc = await fixture.GetDocumentAsync();
         string[] names = ParameterNames(doc, "/odata/NoFlagsWidgets");
@@ -75,7 +75,7 @@ public class OhDataNSwagOperationProcessorTests
     public async System.Threading.Tasks.Task FilterOnly_OnlyFilterPlusPagingPresent()
     {
         await using var fixture = await NSwagTestHostBuilder.BuildAsync(
-            o => o.AddProfile<FilterOnlyWidgetProfile>());
+            o => o.AddEntitySetProfile<FilterOnlyWidgetProfile>());
 
         using var doc = await fixture.GetDocumentAsync();
         string[] names = ParameterNames(doc, "/odata/FilterOnlyWidgets");
@@ -87,7 +87,7 @@ public class OhDataNSwagOperationProcessorTests
     public async System.Threading.Tasks.Task OrderByOnly_OnlyOrderByPlusPagingPresent()
     {
         await using var fixture = await NSwagTestHostBuilder.BuildAsync(
-            o => o.AddProfile<OrderByOnlyWidgetProfile>());
+            o => o.AddEntitySetProfile<OrderByOnlyWidgetProfile>());
 
         using var doc = await fixture.GetDocumentAsync();
         string[] names = ParameterNames(doc, "/odata/OrderByOnlyWidgets");
@@ -99,7 +99,7 @@ public class OhDataNSwagOperationProcessorTests
     public async System.Threading.Tasks.Task SelectOnly_OnlySelectPlusPagingPresent()
     {
         await using var fixture = await NSwagTestHostBuilder.BuildAsync(
-            o => o.AddProfile<SelectOnlyWidgetProfile>());
+            o => o.AddEntitySetProfile<SelectOnlyWidgetProfile>());
 
         using var doc = await fixture.GetDocumentAsync();
         string[] names = ParameterNames(doc, "/odata/SelectOnlyWidgets");
@@ -111,7 +111,7 @@ public class OhDataNSwagOperationProcessorTests
     public async System.Threading.Tasks.Task ExpandOnly_OnlyExpandPlusPagingPresent()
     {
         await using var fixture = await NSwagTestHostBuilder.BuildAsync(
-            o => o.AddProfile<ExpandOnlyWidgetProfile>());
+            o => o.AddEntitySetProfile<ExpandOnlyWidgetProfile>());
 
         using var doc = await fixture.GetDocumentAsync();
         string[] names = ParameterNames(doc, "/odata/ExpandOnlyWidgets");
@@ -123,7 +123,7 @@ public class OhDataNSwagOperationProcessorTests
     public async System.Threading.Tasks.Task CountOnly_OnlyCountPlusPagingPresent()
     {
         await using var fixture = await NSwagTestHostBuilder.BuildAsync(
-            o => o.AddProfile<CountOnlyWidgetProfile>());
+            o => o.AddEntitySetProfile<CountOnlyWidgetProfile>());
 
         using var doc = await fixture.GetDocumentAsync();
         string[] names = ParameterNames(doc, "/odata/CountOnlyWidgets");
@@ -135,7 +135,7 @@ public class OhDataNSwagOperationProcessorTests
     public async System.Threading.Tasks.Task SearchOnly_OnlySearchPlusPagingPresent()
     {
         await using var fixture = await NSwagTestHostBuilder.BuildAsync(
-            o => o.AddProfile<SearchOnlyWidgetProfile>());
+            o => o.AddEntitySetProfile<SearchOnlyWidgetProfile>());
 
         using var doc = await fixture.GetDocumentAsync();
         string[] names = ParameterNames(doc, "/odata/SearchOnlyWidgets");
@@ -149,7 +149,7 @@ public class OhDataNSwagOperationProcessorTests
     public async System.Threading.Tasks.Task MaxTopSet_TopDescriptionContainsCap()
     {
         await using var fixture = await NSwagTestHostBuilder.BuildAsync(
-            o => o.AddProfile<AllFlagsWidgetProfile>());
+            o => o.AddEntitySetProfile<AllFlagsWidgetProfile>());
 
         using var doc = await fixture.GetDocumentAsync();
         string description = ParameterDescription(doc, "/odata/AllFlagsWidgets", "$top");
@@ -166,7 +166,7 @@ public class OhDataNSwagOperationProcessorTests
         await using var fixture = await NSwagTestHostBuilder.BuildAsync(o =>
         {
             o.WithDefaults(d => d.MaxTop = null);
-            o.AddProfile<NoMaxTopWidgetProfile>();
+            o.AddEntitySetProfile<NoMaxTopWidgetProfile>();
         });
 
         using var doc = await fixture.GetDocumentAsync();
@@ -183,7 +183,7 @@ public class OhDataNSwagOperationProcessorTests
     public async System.Threading.Tasks.Task GetAllWithDefaultMaxTop_TopDescriptionContainsCap()
     {
         await using var fixture = await NSwagTestHostBuilder.BuildAsync(
-            o => o.AddProfile<NoFlagsWidgetProfile>());
+            o => o.AddEntitySetProfile<NoFlagsWidgetProfile>());
 
         using var doc = await fixture.GetDocumentAsync();
         string description = ParameterDescription(doc, "/odata/NoFlagsWidgets", "$top");
@@ -197,7 +197,7 @@ public class OhDataNSwagOperationProcessorTests
     public async System.Threading.Tasks.Task PlainMinimalApiEndpoint_NoODataParametersInjected()
     {
         await using var fixture = await NSwagTestHostBuilder.BuildAsync(
-            o => o.AddProfile<NoFlagsWidgetProfile>(),
+            o => o.AddEntitySetProfile<NoFlagsWidgetProfile>(),
             configureExtraRoutes: routes => routes.MapGet("/plain", () => "hi"));
 
         using var doc = await fixture.GetDocumentAsync();
@@ -222,7 +222,7 @@ public class OhDataNSwagOperationProcessorTests
     public async System.Threading.Tasks.Task GetByIdOnlyRoute_GetsTopAndSkipButNoOtherODataParams()
     {
         await using var fixture = await NSwagTestHostBuilder.BuildAsync(
-            o => o.AddProfile<GetByIdOnlyWidgetProfile>());
+            o => o.AddEntitySetProfile<GetByIdOnlyWidgetProfile>());
 
         using var doc = await fixture.GetDocumentAsync();
 
@@ -247,7 +247,7 @@ public class OhDataNSwagOperationProcessorTests
     public async System.Threading.Tasks.Task PreExistingTopParameter_NotDuplicated()
     {
         await using var fixture = await NSwagTestHostBuilder.BuildAsync(
-            o => o.AddProfile<DupTopWidgetProfile>(),
+            o => o.AddEntitySetProfile<DupTopWidgetProfile>(),
             configureDocument: s => s.OperationProcessors.Insert(
                 0, new PreExistingTopOperationProcessor("/odata/DupTopWidgets")));
 

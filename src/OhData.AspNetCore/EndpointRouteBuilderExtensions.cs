@@ -25,6 +25,9 @@ public static class EndpointRouteBuilderExtensions
     public static RouteGroupBuilder MapOhData(this IEndpointRouteBuilder routes, string name)
     {
         var registration = routes.ServiceProvider.GetRequiredKeyedService<OhDataRegistration>(name);
+        // Force delta-mapping compilation now so any unmapped/incompatible mapping fails fast at
+        // startup (MapOhData) rather than at first request. No-op when no DeltaProfile is registered.
+        _ = routes.ServiceProvider.GetService<OhData.Abstractions.IDeltaFactory>();
         return OhDataEndpointFactory.MapAll(routes, registration);
     }
 }

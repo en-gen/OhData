@@ -112,7 +112,7 @@ public class PagingStableOrderSqliteTests : IAsyncLifetime
         _sink = new SqlCaptureSink();
 
         _fx = await TestHostBuilder.BuildAsync(
-            b => b.AddProfile<PagingWideProfile>(),
+            b => b.AddEntitySetProfile<PagingWideProfile>(),
             configureServices: services =>
             {
                 services.AddSingleton(_sink);
@@ -190,7 +190,7 @@ public class PagingPreOrderedSourceSqliteTests : IAsyncLifetime
         _sink = new SqlCaptureSink();
 
         _fx = await TestHostBuilder.BuildAsync(
-            b => b.AddProfile<PagingPreOrderedProfile>(),
+            b => b.AddEntitySetProfile<PagingPreOrderedProfile>(),
             configureServices: services =>
             {
                 services.AddSingleton(_sink);
@@ -252,7 +252,7 @@ public class PagingBuriedOrderSqliteTests : IAsyncLifetime
         _sink = new SqlCaptureSink();
 
         _fx = await TestHostBuilder.BuildAsync(
-            b => b.AddProfile<PagingBuriedOrderProfile>(),
+            b => b.AddEntitySetProfile<PagingBuriedOrderProfile>(),
             configureServices: services =>
             {
                 services.AddSingleton(_sink);
@@ -312,7 +312,7 @@ public class PagingUnboundedSqliteTests : IAsyncLifetime
             b =>
             {
                 b.WithDefaults(d => d.MaxTop = null); // unbounded: no server paging cap
-                b.AddProfile<PagingUnboundedProfile>();
+                b.AddEntitySetProfile<PagingUnboundedProfile>();
             },
             configureServices: services =>
             {

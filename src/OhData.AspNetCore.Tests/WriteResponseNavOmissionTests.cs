@@ -96,7 +96,7 @@ public class WriteResponseNavOmissionTests
     [Fact]
     public async Task Post_201Echo_OmitsUnexpandedNavigations()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WriteNavMovieProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WriteNavMovieProfile>());
         var resp = await fx.Client.PostAsJsonAsync("/odata/WriteNavMovies", new { title = "Ascent" });
         Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
 
@@ -107,7 +107,7 @@ public class WriteResponseNavOmissionTests
     [Fact]
     public async Task Put_ResponseBody_OmitsUnexpandedNavigations()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WriteNavMovieProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WriteNavMovieProfile>());
         var resp = await fx.Client.PutAsJsonAsync("/odata/WriteNavMovies(1)", new { id = 1, title = "Ballad" });
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
@@ -118,7 +118,7 @@ public class WriteResponseNavOmissionTests
     [Fact]
     public async Task Patch_ResponseBody_OmitsUnexpandedNavigations()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WriteNavMovieProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WriteNavMovieProfile>());
         using var request = new HttpRequestMessage(HttpMethod.Patch, "/odata/WriteNavMovies(1)")
         {
             Content = JsonContent.Create(new { title = "Crest" }),
@@ -135,7 +135,7 @@ public class WriteResponseNavOmissionTests
     {
         // The 201 upsert-create branch of PUT (a distinct response path from the 200 update) must
         // also omit navigations.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<UpsertNavMovieProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<UpsertNavMovieProfile>());
         var resp = await fx.Client.PutAsJsonAsync("/odata/UpsertNavMovies(9)", new { id = 9, title = "Dune" });
         Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
 
@@ -148,7 +148,7 @@ public class WriteResponseNavOmissionTests
     {
         // The whole point of #240: the POST echo and a subsequent GET of the same type expose the
         // identical member set (neither carries the navigations).
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WriteNavMovieProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WriteNavMovieProfile>());
 
         using var postDoc = JsonDocument.Parse(await (await fx.Client.PostAsJsonAsync(
             "/odata/WriteNavMovies", new { title = "Ascent" })).Content.ReadAsStringAsync());

@@ -31,7 +31,7 @@ public class RequestBodySizeLimitTests
     [Fact]
     public async Task Post_BodyUnderLimit_Succeeds()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BodyLimitProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<BodyLimitProfile>());
         var resp = await fx.Client.PostAsync(LimitedUrl, Json("{\"name\":\"ok\"}"));
         Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
     }
@@ -42,7 +42,7 @@ public class RequestBodySizeLimitTests
     [InlineData("PATCH")]
     public async Task Write_BodyOverLimit_Returns413(string method)
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BodyLimitProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<BodyLimitProfile>());
         string url = method == "POST" ? LimitedUrl : $"{LimitedUrl}(1)";
         using var request = new HttpRequestMessage(new HttpMethod(method), url) { Content = Json(LargeBody()) };
         var resp = await fx.Client.SendAsync(request);
@@ -56,7 +56,7 @@ public class RequestBodySizeLimitTests
     public async Task Post_NoLimitConfigured_LargeBodySucceeds()
     {
         // WidgetProfile sets no MaxRequestBodyBytes, so a large body is not rejected by OhData.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var resp = await fx.Client.PostAsync(UnlimitedUrl, Json(LargeBody()));
         Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
     }
@@ -67,7 +67,7 @@ public class RequestBodySizeLimitTests
         // The global default limit is inherited by a profile that sets no per-profile value.
         await using var fx = await TestHostBuilder.BuildAsync(o => o
             .WithDefaults(d => d.MaxRequestBodyBytes = 200)
-            .AddProfile<WidgetProfile>());
+            .AddEntitySetProfile<WidgetProfile>());
         var resp = await fx.Client.PostAsync(UnlimitedUrl, Json(LargeBody()));
         Assert.Equal(HttpStatusCode.RequestEntityTooLarge, resp.StatusCode);
     }
@@ -79,7 +79,7 @@ public class RequestBodySizeLimitTests
         // body (under 200, over 50) is accepted — the profile value wins.
         await using var fx = await TestHostBuilder.BuildAsync(o => o
             .WithDefaults(d => d.MaxRequestBodyBytes = 50)
-            .AddProfile<BodyLimitProfile>());
+            .AddEntitySetProfile<BodyLimitProfile>());
         string midBody = "{\"name\":\"" + new string('x', 130) + "\"}"; // ~150 bytes
         var resp = await fx.Client.PostAsync(LimitedUrl, Json(midBody));
         Assert.Equal(HttpStatusCode.Created, resp.StatusCode);

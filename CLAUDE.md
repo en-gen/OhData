@@ -34,7 +34,7 @@ EntitySetProfile<TKey, TModel>
     └─► IVisitModelBuilder       → builds the OData EDM model (Microsoft.OData.ModelBuilder)
     └─► IEntitySetEndpointSource → runtime-typed interface for OhDataEndpointFactory to call handlers
 
-AddOhData(builder => builder.AddProfile<MyProfile>())
+AddOhData(builder => builder.AddEntitySetProfile<MyProfile>())
     └─► OhDataBuilder collects profile types + prefix
     └─► Profiles registered as AddScoped (not singleton) to support DbContext injection
     └─► OhDataRegistration (keyed singleton) built lazily:
@@ -122,11 +122,13 @@ app.MapOhData()  →  returns RouteGroupBuilder
 
 **POST/PUT/PATCH deserialize the request body by hand.** All three read and JSON-deserialize the body manually (rather than an ASP.NET Core minimal-API bound parameter) so malformed JSON, non-object bodies, and non-JSON `Content-Type` values return the OData error envelope (400/415) instead of ASP.NET Core's implicit binder short-circuiting with an empty body. This is also why PATCH's non-object-body case (JSON array/string/number/bool/null) is caught explicitly - `JsonElement.EnumerateObject()` throws `InvalidOperationException` for non-`Object` `ValueKind`, which is now caught and mapped to 400.
 
+**Delta mapping is a separate, dependency-free subsystem (#243).** `DeltaProfile` (non-generic, `For<TModel,TEntity>()` + fluent `.Rename`/`.Ignore`/`.Convert`, no `.Build()`) declares DTO→entity write mappings; the single DI-singleton `IDeltaFactory` exposes `Create<TModel,TEntity>(Delta<TModel>)` and `Create<TModel,TEntity>(TModel)`, both returning a `Delta<TEntity>` the handler applies with `Delta<TEntity>.Patch(entity)` — the framework never applies or persists. Registration is symmetric: `AddEntitySetProfile<T>()` (the former `AddProfile<T>()` — hard-renamed, no alias) and `AddDeltaProfile<T>()`; the existing `AddProfilesFrom*` scanner discovers **both** profile kinds in one pass (widened predicate in `ProfileScanner`, routed in `OhDataBuilder.AddProfilesFrom`). Delta profiles accumulate in a cross-registration `DeltaProfileRegistry` (instance singleton, like `GlobalProfileRegistry`); `IDeltaFactory` is built lazily from it and **forced at `MapOhData()`** for startup fail-fast. `DeltaMappingCompiler` validates every writable model property is mapped/renamed/converted/ignored and every mapping is type-compatible (automatic subset = identity / `target.IsAssignableFrom(source)` / nullable-wrap `T→T?`; everything else needs an explicit `.Convert` — never `Convert.ChangeType`), then compiles an immutable `DeltaMappingPlan` keyed by `(TModel,TEntity)`. `Delta<TEntity>.UpdatableProperties` is seeded from the model allowlist minus `Ignore()`d names, translated through the rename map, so security constraints survive the boundary. Scalars/structural only — no navigation writes. Also ships `Delta<T>` sugar `IsChanged`/`TryGetChanged` (expression-based). Files: `DeltaProfile.cs`, `DeltaFactory.cs`, `IDeltaFactory.cs`, `DeltaExtensions.cs`.
+
 ### Project layout
 
 | Project | Target | Role |
 |---|---|---|
-| `OhData.AspNetCore` | net10.0 | All core and runtime types: `EntitySetProfile<TKey,TModel>`, `IEntitySetEndpointSource` (internal), `IVisitModelBuilder` (internal), `AuthorizationConfig`, `NavigationRouteDefinition`, `BoundOperationDefinition`, `OhDataBuilder`, `OhDataEndpointFactory`, `OhDataRegistration`, `OhDataRegistrationCollection`, `OhDataDefaults`, `AddOhDataVersion` / `MapOhDataVersion` versioning helpers, `ODataEntitySetProfile<TKey,TModel>`, `IODataEntitySetEndpointSource`, extension methods |
+| `OhData.AspNetCore` | net10.0 | All core and runtime types: `EntitySetProfile<TKey,TModel>`, `IEntitySetEndpointSource` (internal), `IVisitModelBuilder` (internal), `AuthorizationConfig`, `NavigationRouteDefinition`, `BoundOperationDefinition`, `OhDataBuilder`, `OhDataEndpointFactory`, `OhDataRegistration`, `OhDataRegistrationCollection`, `OhDataDefaults`, `AddOhDataVersion` / `MapOhDataVersion` versioning helpers, `ODataEntitySetProfile<TKey,TModel>`, `IODataEntitySetEndpointSource`, `DeltaProfile` / `DeltaMapping<TModel,TEntity>` / `IDeltaFactory` (delta mapping) and `Delta<T>` sugar, extension methods |
 | `OhData.Client` | net10.0 | Typed .NET OData 4.0 client with fluent LINQ-based filter/select/expand translation |
 | `OhData.TestBench.AspNetCore` | net10.0 | Runnable demo app with EF Core InMemory, Swagger UI + Scalar, versioned v1/v2 registrations |
 | `OhData.ClientTestBench.AspNetCore` | net10.0 | Runnable demo app used as server target for client integration tests |

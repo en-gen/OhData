@@ -228,7 +228,7 @@ public class MsODataClientBenchmarks
         builder.Services.AddOhData(o =>
         {
             o.WithPrefix(Prefix);
-            o.AddProfile<MsBenchWidgetProfile>();
+            o.AddEntitySetProfile<MsBenchWidgetProfile>();
         });
 
         _serverApp = builder.Build();

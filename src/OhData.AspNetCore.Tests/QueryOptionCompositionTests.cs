@@ -24,8 +24,8 @@ public class QueryOptionCompositionTests
 
     private static async Task<TestFixture> BuildAsync() =>
         await TestHostBuilder.BuildAsync(o => o
-            .AddProfile<QueryOptionProfile>()
-            .AddProfile<QueryOptionExpandProfile>());
+            .AddEntitySetProfile<QueryOptionProfile>()
+            .AddEntitySetProfile<QueryOptionExpandProfile>());
 
     private static async Task<int[]> GetOrderedIdsAsync(HttpClient client, string query)
     {

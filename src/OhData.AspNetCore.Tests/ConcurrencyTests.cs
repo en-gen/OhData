@@ -195,7 +195,7 @@ public class ConcurrencyTests
     [Fact]
     public async Task ParallelReads_100Concurrent_AllSucceedWithWellFormedPayloads()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
 
         var tasks = new List<Task<HttpResponseMessage>>();
         for (int i = 0; i < 100; i++)
@@ -239,7 +239,7 @@ public class ConcurrencyTests
         for (int i = 40; i <= 43; i++) store.Items[i] = new Widget { Id = i, Name = $"Seed{i}" };
 
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<ConcurrentWriteProfile>(),
+            o => o.AddEntitySetProfile<ConcurrentWriteProfile>(),
             configureServices: s => s.AddSingleton(store));
 
         var tasks = new List<Task<HttpResponseMessage>>();
@@ -307,7 +307,7 @@ public class ConcurrencyTests
     public async Task IfMatch_StaleThenCurrentEtag_412ThenSuccess()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<EtagSequenceProfile>(),
+            o => o.AddEntitySetProfile<EtagSequenceProfile>(),
             configureServices: s => s.AddSingleton(new EtagSequenceStore()));
 
         // 1. GET current etag.
@@ -350,7 +350,7 @@ public class ConcurrencyTests
     public async Task IfMatch_Wildcard_ExistingEntity_Succeeds()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<EtagSequenceProfile>(),
+            o => o.AddEntitySetProfile<EtagSequenceProfile>(),
             configureServices: s => s.AddSingleton(new EtagSequenceStore()));
 
         using var req = new HttpRequestMessage(HttpMethod.Put, "/odata/EtagSequenceWidgets(1)")
@@ -370,7 +370,7 @@ public class ConcurrencyTests
         // happens before the wildcard short-circuit, so this must not fall through to the
         // underlying Put handler's own "not found" -> 404.
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<EtagSequenceProfile>(),
+            o => o.AddEntitySetProfile<EtagSequenceProfile>(),
             configureServices: s => s.AddSingleton(new EtagSequenceStore()));
 
         using var req = new HttpRequestMessage(HttpMethod.Put, "/odata/EtagSequenceWidgets(999)")
@@ -388,7 +388,7 @@ public class ConcurrencyTests
     public async Task ConcurrentRequests_ResolveDistinctScopedServiceInstances()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<ScopedTrackerProfile>(),
+            o => o.AddEntitySetProfile<ScopedTrackerProfile>(),
             configureServices: s => s.AddScoped<ScopedTracker>());
 
         const int concurrency = 30;
@@ -419,9 +419,9 @@ public class ConcurrencyTests
         // across several entity-set types immediately after host start races multiple threads
         // against ConcurrentDictionary.GetOrAdd/TryAdd for the same Type key.
         await using var fx = await TestHostBuilder.BuildAsync(o => o
-            .AddProfile<CacheRaceProfileA>()
-            .AddProfile<CacheRaceProfileB>()
-            .AddProfile<CacheRaceProfileC>());
+            .AddEntitySetProfile<CacheRaceProfileA>()
+            .AddEntitySetProfile<CacheRaceProfileB>()
+            .AddEntitySetProfile<CacheRaceProfileC>());
 
         string[] routes = new[] { "CacheRaceWidgetsA", "CacheRaceWidgetsB", "CacheRaceWidgetsC" };
 
@@ -469,7 +469,7 @@ public class ConcurrencyTests
         // construction generally) does not leak mutable state across containers.
         var buildTasks = Enumerable.Range(0, 4)
             .Select(_ => TestHostBuilder.BuildAsync(
-                o => o.AddProfile<HostIsolationWidgetProfile>(),
+                o => o.AddEntitySetProfile<HostIsolationWidgetProfile>(),
                 configureServices: s => s.AddSingleton(new HostIsolationWidgetStore())))
             .ToArray();
 
