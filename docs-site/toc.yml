@@ -1,0 +1,12 @@
+- name: Home
+  href: index.md
+- name: Concepts
+  items:
+    - name: Architecture
+      href: architecture.md
+- name: Guides
+  items:
+    - name: Query options
+      href: query-options.md
+    - name: Authorization
+      href: authorization.md

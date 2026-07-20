@@ -1,0 +1,18 @@
+{
+  "build": {
+    "content": [
+      {
+        "files": [ "**/*.md", "**/toc.yml" ],
+        "exclude": [ "_site/**" ]
+      }
+    ],
+    "globalMetadata": {
+      "_appName": "OhData",
+      "_appTitle": "OhData",
+      "_enableSearch": true,
+      "_disableContribution": true
+    },
+    "template": [ "default", "modern" ],
+    "dest": "_site"
+  }
+}
