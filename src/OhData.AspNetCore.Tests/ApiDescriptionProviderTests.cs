@@ -49,7 +49,7 @@ public class ApiDescriptionProviderTests
     [Fact]
     public async Task EntityPost_GetsBodyParameterDescription()
     {
-        var (app, provider) = await BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var (app, provider) = await BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         await using var _ = app;
 
         ApiDescription description = FindDescription(provider, "POST", "Widgets");
@@ -65,7 +65,7 @@ public class ApiDescriptionProviderTests
     [Fact]
     public async Task EntityPatch_GetsBodyParameterDescription()
     {
-        var (app, provider) = await BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var (app, provider) = await BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         await using var _ = app;
 
         ApiDescription description = FindDescription(provider, "PATCH", "Widgets(");
@@ -79,7 +79,7 @@ public class ApiDescriptionProviderTests
     [Fact]
     public async Task GetById_HasNoBodyParameterDescription()
     {
-        var (app, provider) = await BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var (app, provider) = await BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         await using var _ = app;
 
         ApiDescription description = FindDescription(provider, "GET", "Widgets(");
@@ -93,7 +93,7 @@ public class ApiDescriptionProviderTests
         // Issue #181: a bound function's query-string parameters must surface as query
         // ApiParameterDescriptions (with correct Type/ModelMetadata and a required flag driven by
         // whether the delegate parameter has a C# default), mirroring the body-parameter fix above.
-        var (app, provider) = await BuildAsync(o => o.AddProfile<FunctionParamProfile>());
+        var (app, provider) = await BuildAsync(o => o.AddEntitySetProfile<FunctionParamProfile>());
         await using var _ = app;
 
         ApiDescription description = FindDescription(provider, "GET", "FnParamWidgets/TopRated");
@@ -119,7 +119,7 @@ public class ApiDescriptionProviderTests
         // Issue #181: an entity-bound function's leading key parameter is a route/path parameter
         // (documented via BindingSource.Path), so only the parameters AFTER the key are added as
         // query parameters. Exercises the skip-key branch of BuildFunctionQueryParametersMetadata.
-        var (app, provider) = await BuildAsync(o => o.AddProfile<FunctionParamProfile>());
+        var (app, provider) = await BuildAsync(o => o.AddEntitySetProfile<FunctionParamProfile>());
         await using var _ = app;
 
         ApiDescription description = FindDescription(provider, "GET", "Describe");
@@ -152,7 +152,7 @@ public class ApiDescriptionProviderTests
         var (app, provider) = await BuildAsync(o =>
         {
             o.WithDefaults(d => d.PropertyRouteDocsEnabled = true);
-            o.AddProfile<WidgetProfile>();
+            o.AddEntitySetProfile<WidgetProfile>();
         });
         await using var _ = app;
 
@@ -178,12 +178,12 @@ public class ApiDescriptionProviderTests
         builder.Services.AddOhData(o =>
         {
             o.WithPrefix("/odata");
-            o.AddProfile<WidgetProfile>();
+            o.AddEntitySetProfile<WidgetProfile>();
         });
         builder.Services.AddOhData("v2", o =>
         {
             o.WithPrefix("/odata/v2");
-            o.AddProfile<SecondProfile>();
+            o.AddEntitySetProfile<SecondProfile>();
         });
 
         var app = builder.Build();
@@ -215,7 +215,7 @@ public class ApiDescriptionProviderTests
         // PUT/PATCH/DELETE writes) plus the key-immutable stub writes are numerous and, by
         // default, excluded from the generated API docs via ExcludeFromDescription. Widget's
         // only non-key structural property is Name.
-        var (app, provider) = await BuildAsync(o => o.AddProfile<WidgetProfile>());
+        var (app, provider) = await BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         await using var _ = app;
 
         // Non-key property read routes are absent.
@@ -243,7 +243,7 @@ public class ApiDescriptionProviderTests
         var (app, provider) = await BuildAsync(o =>
         {
             o.WithDefaults(d => d.PropertyRouteDocsEnabled = true);
-            o.AddProfile<WidgetProfile>();
+            o.AddEntitySetProfile<WidgetProfile>();
         });
         await using var _ = app;
 
@@ -258,7 +258,7 @@ public class ApiDescriptionProviderTests
     public async Task PropertyRoutes_Documented_WhenEnabledPerProfile()
     {
         // #221: opt in per-profile — the profile-level flag overrides the default-false.
-        var (app, provider) = await BuildAsync(o => o.AddProfile<PropertyDocsWidgetProfile>());
+        var (app, provider) = await BuildAsync(o => o.AddEntitySetProfile<PropertyDocsWidgetProfile>());
         await using var _ = app;
 
         Assert.True(HasDescription(provider, "GET", "PropDocWidgets({key})/Name"));
@@ -273,7 +273,7 @@ public class ApiDescriptionProviderTests
         var (app, provider) = await BuildAsync(o =>
         {
             o.WithDefaults(d => d.PropertyRouteDocsEnabled = true);
-            o.AddProfile<NoPropertyDocsWidgetProfile>();
+            o.AddEntitySetProfile<NoPropertyDocsWidgetProfile>();
         });
         await using var _ = app;
 

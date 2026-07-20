@@ -11,6 +11,21 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Dependency-free delta mapping (#243).** `DeltaProfile` + the injected `IDeltaFactory` give
+  DTO-backed entity sets a clean PATCH/PUT/POST **write** path without AutoMapper. Declare mappings
+  in a profile (`For<TModel, TEntity>()`, then only the divergences via `.Rename()` / `.Ignore()` /
+  `.Convert()` — no `.Build()`); the framework discovers, compiles, and validates them once at
+  startup. Handlers call `IDeltaFactory.Create<TModel, TEntity>(delta)` (delta → delta) or
+  `Create<TModel, TEntity>(model)` (model → delta) and apply the result with the built-in
+  `Delta<TEntity>.Patch(entity)` — the framework never applies or persists. Conversion is a strict
+  safe subset (identity, reference-assignable, nullable-wrap `T → T?`); everything else
+  (narrowing, `int → long`, enum↔string, `T? → T`) requires an explicit `.Convert(...)` lambda —
+  `Convert.ChangeType` is never called implicitly. The produced `Delta<TEntity>.UpdatableProperties`
+  allowlist is translated from the model side (structural properties minus `Ignore()`d names) so
+  immutability/security constraints survive the DTO→entity boundary. Fail-fast at `MapOhData()` on
+  any unmapped/unwritable/incompatible/duplicated mapping. Also adds expression-based `Delta<T>`
+  sugar — `IsChanged(x => x.Prop)` and `TryGetChanged(x => x.Prop, out value)`. Scalars/structural
+  only; ships in core `OhData.AspNetCore`. See [docs/delta-mapping.md](docs/delta-mapping.md).
 - **`$expand` Include pushdown (#206, phase 2 — "provenance-auto").** A navigation declared
   **without** a custom expand delegate (a bare `HasMany`/`HasOptional`/`HasRequired`) is now
   **SQL-JOIN-expandable automatically**: on the EF Core-backed `GetQueryable` path, `$expand`'ing
@@ -56,6 +71,11 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **`AddProfile<T>()` renamed to `AddEntitySetProfile<T>()` (breaking).** Symmetric with the new
+  `AddDeltaProfile<T>()`. No `[Obsolete]` alias — update call sites directly. The assembly scanner
+  (`AddProfilesFrom` / `AddProfilesFromAssemblyOf` / `AddProfilesFromAssembly`) is unchanged in
+  signature but now discovers `DeltaProfile` subclasses alongside `EntitySetProfile` subclasses in
+  one pass.
 - **`EntitySetDefaults.MaxExpansionDepth` default is now `3` (was `12`) (#206).** With multi-level and
   `$levels` pushdown, the depth limit is a meaningful request ceiling (it caps `$levels=max` and
   rejects deeper `$expand`/`$levels` with `400`), so the default is a conservative `3`. Raise it per

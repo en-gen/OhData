@@ -148,7 +148,7 @@ and return `ODataError`-shaped `Results.Json(...)`/`Results.BadRequest(...)` (ma
 
 ```csharp
 builder.Services.AddOhData(o => o
-    .AddProfile<ProductProfile>()
+    .AddEntitySetProfile<ProductProfile>()
     .AddFunction((Func<string, Task<string>>)(name => Task.FromResult($"Hello, {name}!")), "Greet")
     .AddAction((Func<int, int, Task<int>>)((a, b) => Task.FromResult(a + b)), "AddNumbers"));
 ```

@@ -31,7 +31,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Post_SyntacticallyInvalidJson_Returns400WithODataErrorBody()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         using var malformedJsonContent = new StringContent("{ broken json", Encoding.UTF8, "application/json");
         var response = await fx.Client.PostAsync("/odata/MalformedWidgets", malformedJsonContent);
 
@@ -49,7 +49,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Post_EmptyBody_Returns400WithODataErrorBody()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         using var emptyJsonContent = new StringContent("", Encoding.UTF8, "application/json");
         var response = await fx.Client.PostAsync("/odata/MalformedWidgets", emptyJsonContent);
 
@@ -61,7 +61,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Post_JsonArrayInsteadOfObject_Returns400WithODataErrorBody()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         using var content = new StringContent("[1,2,3]", Encoding.UTF8, "application/json");
         var response = await fx.Client.PostAsync("/odata/MalformedWidgets", content);
 
@@ -73,7 +73,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Post_WrongTypedField_Returns400WithODataErrorBody()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         using var content = new StringContent("{\"id\":\"notanint\",\"name\":\"x\"}", Encoding.UTF8, "application/json");
         var response = await fx.Client.PostAsync("/odata/MalformedWidgets", content);
 
@@ -85,7 +85,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Post_DeeplyNestedJson_Returns400WithODataErrorBody()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         string nested = string.Concat(Enumerable.Repeat("{\"a\":", 100)) + "1" + string.Concat(Enumerable.Repeat("}", 100));
         using var content = new StringContent(nested, Encoding.UTF8, "application/json");
         var response = await fx.Client.PostAsync("/odata/MalformedWidgets", content);
@@ -100,7 +100,7 @@ public class MalformedPayloadTests
     {
         // Documented/expected behavior: unrecognized JSON properties are silently ignored by the
         // JSON deserializer rather than rejected.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         using var content = new StringContent("{\"name\":\"Extra\",\"totallyBogusField\":123}", Encoding.UTF8, "application/json");
         var response = await fx.Client.PostAsync("/odata/MalformedWidgets", content);
 
@@ -114,7 +114,7 @@ public class MalformedPayloadTests
     {
         // Current behavior: the framework does not enforce non-null / required-property validation
         // on write. Documented here so the contract is explicit rather than accidental.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         using var content = new StringContent("{\"name\":null}", Encoding.UTF8, "application/json");
         var response = await fx.Client.PostAsync("/odata/MalformedWidgets", content);
 
@@ -124,7 +124,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Post_DuplicateJsonKeys_LastValueWins_Returns201()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         using var content = new StringContent("{\"name\":\"first\",\"name\":\"second\"}", Encoding.UTF8, "application/json");
         var response = await fx.Client.PostAsync("/odata/MalformedWidgets", content);
 
@@ -136,7 +136,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Post_VeryLargeStringValue_1MB_Succeeds()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         string bigName = new string('y', 1024 * 1024);
         string bodyJson = JsonSerializer.Serialize(new { name = bigName });
 
@@ -158,7 +158,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Put_SyntacticallyInvalidJson_Returns400WithODataErrorBody()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         var response = await fx.Client.PutAsync("/odata/MalformedWidgets(1)",
             new StringContent("{ broken json", Encoding.UTF8, "application/json"));
 
@@ -170,7 +170,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Put_JsonArrayInsteadOfObject_Returns400WithODataErrorBody()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         using var content = new StringContent("[1,2,3]", Encoding.UTF8, "application/json");
         var response = await fx.Client.PutAsync("/odata/MalformedWidgets(1)", content);
 
@@ -182,7 +182,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Put_WrongTypedField_Returns400WithODataErrorBody()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         using var content = new StringContent("{\"id\":\"notanint\",\"name\":\"x\"}", Encoding.UTF8, "application/json");
         var response = await fx.Client.PutAsync("/odata/MalformedWidgets(1)", content);
 
@@ -194,7 +194,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Put_UnknownExtraFields_AreIgnored_Returns200()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         using var content = new StringContent("{\"id\":1,\"name\":\"Updated\",\"bogus\":123}", Encoding.UTF8, "application/json");
         var response = await fx.Client.PutAsync("/odata/MalformedWidgets(1)", content);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -203,7 +203,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Put_NullValueForNonNullableProperty_IsAccepted_Returns200()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         using var content = new StringContent("{\"id\":1,\"name\":null}", Encoding.UTF8, "application/json");
         var response = await fx.Client.PutAsync("/odata/MalformedWidgets(1)", content);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -217,7 +217,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Patch_SyntacticallyInvalidJson_Returns400WithODataErrorBody()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         using var content = new StringContent("{ broken json", Encoding.UTF8, "application/json");
         var response = await fx.Client.PatchAsync("/odata/MalformedWidgets(1)", content);
 
@@ -230,7 +230,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Patch_EmptyBody_Returns400WithODataErrorBody()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         var response = await fx.Client.PatchAsync("/odata/MalformedWidgets(1)",
             new StringContent("", Encoding.UTF8, "application/json"));
 
@@ -242,7 +242,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Patch_JsonArrayInsteadOfObject_Returns400WithODataErrorBody()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         var response = await fx.Client.PatchAsync("/odata/MalformedWidgets(1)",
             new StringContent("[1,2,3]", Encoding.UTF8, "application/json"));
 
@@ -260,7 +260,7 @@ public class MalformedPayloadTests
     {
         // PATCH's manual JsonElement deserialization respects System.Text.Json's default max
         // depth (64) and surfaces it as a proper OData error rather than crashing.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         string nested = string.Concat(Enumerable.Repeat("{\"a\":", 100)) + "1" + string.Concat(Enumerable.Repeat("}", 100));
         var response = await fx.Client.PatchAsync("/odata/MalformedWidgets(1)",
             new StringContent(nested, Encoding.UTF8, "application/json"));
@@ -273,7 +273,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Patch_UnknownExtraFields_AreIgnored_Returns200()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         var response = await fx.Client.PatchAsync("/odata/MalformedWidgets(1)",
             new StringContent("{\"name\":\"x\",\"totallyBogus\":123}", Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -282,7 +282,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Patch_DuplicateJsonKeys_LastValueWins_Returns200()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         var response = await fx.Client.PatchAsync("/odata/MalformedWidgets(1)",
             new StringContent("{\"name\":\"first\",\"name\":\"second\"}", Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -293,7 +293,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Patch_VeryLargeStringValue_1MB_Succeeds()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         string bigName = new string('z', 1024 * 1024);
         string bodyJson = JsonSerializer.Serialize(new { name = bigName });
 
@@ -311,7 +311,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Post_TextPlainContentType_Returns415WithODataErrorBody()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         var response = await fx.Client.PostAsync("/odata/MalformedWidgets",
             new StringContent("{\"name\":\"x\"}", Encoding.UTF8, "text/plain"));
 
@@ -325,7 +325,7 @@ public class MalformedPayloadTests
     {
         // Non-Skip companion: regardless of body shape, confirm the status code is a well-formed
         // 4xx (415) and the server never 500s or hangs.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         var response = await fx.Client.PostAsync("/odata/MalformedWidgets",
             new StringContent("{\"name\":\"x\"}", Encoding.UTF8, "text/plain"));
 
@@ -338,7 +338,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Post_ApplicationXmlContentType_Returns415_NeverA500()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         var response = await fx.Client.PostAsync("/odata/MalformedWidgets",
             new StringContent("<widget/>", Encoding.UTF8, "application/xml"));
 
@@ -348,7 +348,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Post_MissingContentType_Returns415_NeverA500()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         var request = new HttpRequestMessage(HttpMethod.Post, "/odata/MalformedWidgets")
         {
             Content = new ByteArrayContent(Encoding.UTF8.GetBytes("{\"name\":\"x\"}"))
@@ -364,7 +364,7 @@ public class MalformedPayloadTests
     {
         // "application/json;odata.metadata=full" — a JSON content type with extra parameters —
         // must still be recognized as JSON.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         var request = new HttpRequestMessage(HttpMethod.Post, "/odata/MalformedWidgets")
         {
             Content = new StringContent("{\"name\":\"x\"}", Encoding.UTF8)
@@ -378,7 +378,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Patch_TextPlainContentType_Returns415WithODataErrorBody()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         var response = await fx.Client.PatchAsync("/odata/MalformedWidgets(1)",
             new StringContent("{\"name\":\"x\"}", Encoding.UTF8, "text/plain"));
 
@@ -390,7 +390,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Patch_TextPlainContentType_Returns415_NeverA500()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         var response = await fx.Client.PatchAsync("/odata/MalformedWidgets(1)",
             new StringContent("{\"name\":\"x\"}", Encoding.UTF8, "text/plain"));
         Assert.Equal(HttpStatusCode.UnsupportedMediaType, response.StatusCode);
@@ -401,7 +401,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task GetById_NonNumericKeyForIntEntity_Returns400WithODataErrorBody()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/MalformedWidgets(abc)");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -411,7 +411,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task GetById_EmptyParens_Returns404_NeverA500()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/MalformedWidgets()");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -419,7 +419,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task GetById_ExtraTrailingParen_Returns400WithODataErrorBody()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/MalformedWidgets(1))");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -429,7 +429,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task GetById_OverflowingIntKey_Returns400WithODataErrorBody()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/MalformedWidgets(999999999999999999999999)");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -439,7 +439,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task GetById_QuotedKeyForIntEntity_Returns400WithODataErrorBody()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/MalformedWidgets('1')");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -449,7 +449,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Put_OverflowingIntKey_Returns400WithODataErrorBody()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         var response = await fx.Client.PutAsync("/odata/MalformedWidgets(999999999999999999999999)",
             new StringContent("{\"id\":1,\"name\":\"x\"}", Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -460,7 +460,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Patch_NonNumericKeyForIntEntity_Returns400WithODataErrorBody()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         var response = await fx.Client.PatchAsync("/odata/MalformedWidgets(abc)",
             new StringContent("{\"name\":\"x\"}", Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -471,7 +471,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Delete_NonNumericKeyForIntEntity_Returns400WithODataErrorBody()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedWidgetProfile>());
         var response = await fx.Client.DeleteAsync("/odata/MalformedWidgets(abc)");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -483,7 +483,7 @@ public class MalformedPayloadTests
     {
         // Control characters (0x01, 0x02) percent-encoded in a string key must round-trip safely
         // through routing/key parsing without crashing — the entity simply isn't found.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedStringKeyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedStringKeyProfile>());
         string key = Uri.EscapeDataString("");
         var response = await fx.Client.GetAsync($"/odata/MalformedStringThings('{key}')");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
@@ -494,7 +494,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task GetById_UrlEncodedNewlineInStringKey_Returns404WithODataErrorBody()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedStringKeyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedStringKeyProfile>());
         string key = Uri.EscapeDataString("a\nb");
         var response = await fx.Client.GetAsync($"/odata/MalformedStringThings('{key}')");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
@@ -507,7 +507,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Put_IfMatch_GarbageFormat_Returns412_NeverA500()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedETagWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedETagWidgetProfile>());
         var request = new HttpRequestMessage(HttpMethod.Put, "/odata/MalformedETagWidgets(1)")
         {
             Content = new StringContent("{\"id\":1,\"name\":\"x\"}", Encoding.UTF8, "application/json")
@@ -523,7 +523,7 @@ public class MalformedPayloadTests
     [Fact]
     public async Task Put_IfMatch_ExtremelyLongValue_Returns412_NeverA500()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MalformedETagWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MalformedETagWidgetProfile>());
         var request = new HttpRequestMessage(HttpMethod.Put, "/odata/MalformedETagWidgets(1)")
         {
             Content = new StringContent("{\"id\":1,\"name\":\"x\"}", Encoding.UTF8, "application/json")

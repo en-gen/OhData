@@ -52,7 +52,7 @@ public class ObservabilityTests
         };
         ActivitySource.AddActivityListener(listener);
 
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ObsWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ObsWidgetProfile>());
         var resp = await fx.Client.GetAsync(Url);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
@@ -80,7 +80,7 @@ public class ObservabilityTests
         });
         meterListener.Start();
 
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ObsWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ObsWidgetProfile>());
         await fx.Client.GetAsync(Url);
         meterListener.Dispose(); // flush
 
@@ -111,7 +111,7 @@ public class ObservabilityTests
         });
         meterListener.Start();
 
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ObsWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ObsWidgetProfile>());
         await fx.Client.GetAsync(Url);
         meterListener.Dispose();
 
@@ -123,7 +123,7 @@ public class ObservabilityTests
     [Fact]
     public async Task NoListenerAttached_RequestStillSucceeds()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ObsWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ObsWidgetProfile>());
         var resp = await fx.Client.GetAsync(Url);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
     }
@@ -146,7 +146,7 @@ public class ObservabilityTests
         };
         ActivitySource.AddActivityListener(listener);
 
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ObsRichProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ObsRichProfile>());
         await fx.Client.GetAsync("/odata/ObsRich(1)");                 // read-entity
         await fx.Client.PostAsJsonAsync("/odata/ObsRich", new { name = "n" }); // create
         await fx.Client.PutAsJsonAsync("/odata/ObsRich(1)", new { id = 1, name = "n" }); // update-entity
@@ -155,12 +155,34 @@ public class ObservabilityTests
         await fx.Client.GetAsync("/odata/ObsRich(1)/Children");        // read-navigation
         await fx.Client.GetAsync("/odata/ObsRich/$count");            // read-count
 
-        Assert.Contains("read-entity", ops);
-        Assert.Contains("create", ops);
-        Assert.Contains("update-entity", ops);
-        Assert.Contains("delete-entity", ops);
-        Assert.Contains("read-navigation", ops);
-        Assert.Contains("read-count", ops);
+        // An activity is stopped in a middleware finally block that can run just after the HTTP
+        // response has flushed, so the last request's classification may not be recorded yet when
+        // we reach the asserts. Poll for the full set (bounded) rather than asserting immediately
+        // (pre-existing race — see #257).
+        string[] expected = { "read-entity", "create", "update-entity", "delete-entity", "read-navigation", "read-count" };
+        for (int i = 0; i < 200; i++)
+        {
+            bool all = true;
+            lock (ops)
+            {
+                foreach (string e in expected)
+                {
+                    if (!ops.Contains(e)) { all = false; break; }
+                }
+            }
+            if (all) break;
+            await Task.Delay(25);
+        }
+
+        lock (ops)
+        {
+            Assert.Contains("read-entity", ops);
+            Assert.Contains("create", ops);
+            Assert.Contains("update-entity", ops);
+            Assert.Contains("delete-entity", ops);
+            Assert.Contains("read-navigation", ops);
+            Assert.Contains("read-count", ops);
+        }
     }
 
     [Fact]
@@ -181,7 +203,7 @@ public class ObservabilityTests
         };
         ActivitySource.AddActivityListener(listener);
 
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ObsWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ObsWidgetProfile>());
         await fx.Client.GetAsync("/odata/$metadata");
         Assert.Contains("metadata", seen);
     }
@@ -201,7 +223,7 @@ public class ObservabilityTests
         };
         ActivitySource.AddActivityListener(listener);
 
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ThrowingObsProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ThrowingObsProfile>());
         var resp = await fx.Client.GetAsync("/odata/ObsThrow");
         Assert.Equal(HttpStatusCode.InternalServerError, resp.StatusCode);
 

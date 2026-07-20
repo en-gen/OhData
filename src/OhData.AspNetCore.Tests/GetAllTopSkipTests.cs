@@ -17,7 +17,7 @@ public class GetAllTopSkipTests
     [Fact]
     public async Task Top_LimitsResultCount()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/Widgets?$top=1");
         Assert.Equal(1, json.GetProperty("value").GetArrayLength());
     }
@@ -25,7 +25,7 @@ public class GetAllTopSkipTests
     [Fact]
     public async Task Skip_OffsetsResults()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/Widgets?$skip=1");
         var value = json.GetProperty("value");
         Assert.Equal(1, value.GetArrayLength());
@@ -35,7 +35,7 @@ public class GetAllTopSkipTests
     [Fact]
     public async Task TopAndSkip_Combine()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<GetAllMaxTopProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<GetAllMaxTopProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/GetAllMaxTopWidgets?$skip=2&$top=3");
         var value = json.GetProperty("value");
         Assert.Equal(3, value.GetArrayLength());
@@ -46,7 +46,7 @@ public class GetAllTopSkipTests
     [Fact]
     public async Task TopWithCount_ReturnsPrePagingTotal()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<GetAllMaxTopProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<GetAllMaxTopProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/GetAllMaxTopWidgets?$top=2&$count=true");
         Assert.Equal(2, json.GetProperty("value").GetArrayLength());
         Assert.Equal(20, json.GetProperty("@odata.count").GetInt64());
@@ -55,7 +55,7 @@ public class GetAllTopSkipTests
     [Fact]
     public async Task SkipBeyondEnd_ReturnsEmptyValue()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/Widgets?$skip=100");
         Assert.Equal(0, json.GetProperty("value").GetArrayLength());
     }
@@ -63,7 +63,7 @@ public class GetAllTopSkipTests
     [Fact]
     public async Task Top_WithinMaxTop_Succeeds()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<GetAllMaxTopProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<GetAllMaxTopProfile>());
         var response = await fx.Client.GetAsync("/odata/GetAllMaxTopWidgets?$top=5");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -71,7 +71,7 @@ public class GetAllTopSkipTests
     [Fact]
     public async Task Top_ExceedingMaxTop_Returns400ODataError()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<GetAllMaxTopProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<GetAllMaxTopProfile>());
         var response = await fx.Client.GetAsync("/odata/GetAllMaxTopWidgets?$top=6");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -86,7 +86,7 @@ public class GetAllTopSkipTests
         // request, so offset paging is a valid continuation story. (It previously returned the
         // full 20-item set; set MaxTop=null to opt back into that.) See GetAllCapTests for the
         // full continuation/opt-out matrix.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<GetAllMaxTopProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<GetAllMaxTopProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/GetAllMaxTopWidgets");
         Assert.Equal(5, json.GetProperty("value").GetArrayLength());
         Assert.True(json.TryGetProperty("@odata.nextLink", out _));
@@ -95,7 +95,7 @@ public class GetAllTopSkipTests
     [Fact]
     public async Task Top_NegativeValue_Returns400ODataError()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/Widgets?$top=-1");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -105,7 +105,7 @@ public class GetAllTopSkipTests
     [Fact]
     public async Task Skip_NonNumericValue_Returns400ODataError()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/Widgets?$skip=abc");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -115,7 +115,7 @@ public class GetAllTopSkipTests
     [Fact]
     public async Task Filter_StillUnsupportedOnGetAll_Returns400UnsupportedQueryOption()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/Widgets?$filter=Id eq 1");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -125,7 +125,7 @@ public class GetAllTopSkipTests
     [Fact]
     public async Task OrderBy_StillUnsupportedOnGetAll_Returns400UnsupportedQueryOption()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/Widgets?$orderby=Name");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -135,7 +135,7 @@ public class GetAllTopSkipTests
     [Fact]
     public async Task TopAndSkip_WithSearch_AppliesPagingAfterSearch()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<SearchableWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<SearchableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>(
             "/odata/SearchableWidgets?$search=a&$top=1&$count=true");
         // "Alpha", "Beta", "Gamma" all contain 'a' (case-insensitive) -- 3 pre-paging matches.

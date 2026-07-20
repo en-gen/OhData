@@ -20,7 +20,7 @@ public class SelectUnexpandedNavContextTests
     [Fact]
     public async Task GetById_SelectUnexpandedNav_ContextKeepsProjection_BodyHasNoContentMembers()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagExpandSelectProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagExpandSelectProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ETagExpandSelectParents(1)?$select=Children");
 
         // Context URL keeps the (Children) projection (§10.8) — it faithfully reflects $select.
@@ -42,7 +42,7 @@ public class SelectUnexpandedNavContextTests
     [Fact]
     public async Task GetById_SelectStructuralPlusUnexpandedNav_KeepsStructuralOmitsNav()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagExpandSelectProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagExpandSelectProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ETagExpandSelectParents(1)?$select=Name,Children");
 
         // Both selected items appear in the projected context, in request order.

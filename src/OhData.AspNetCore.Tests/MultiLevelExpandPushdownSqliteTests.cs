@@ -319,12 +319,12 @@ internal static class MultiLevelSqliteHarness
             b =>
             {
                 if (defaults is not null) b.WithDefaults(defaults);
-                b.AddProfile<MlAuthorProfile>();
-                b.AddProfile<MlNodeProfile>();
-                b.AddProfile<MlDeptProfile>();
-                b.AddProfile<MlCatalogProfile>();
-                b.AddProfile<MlStoreProfile>();
-                b.AddProfile<MlAisleProfile>();
+                b.AddEntitySetProfile<MlAuthorProfile>();
+                b.AddEntitySetProfile<MlNodeProfile>();
+                b.AddEntitySetProfile<MlDeptProfile>();
+                b.AddEntitySetProfile<MlCatalogProfile>();
+                b.AddEntitySetProfile<MlStoreProfile>();
+                b.AddEntitySetProfile<MlAisleProfile>();
             },
             configureServices: services =>
             {

@@ -32,7 +32,7 @@ public class AdversarialQueryOptionTests
     [Fact]
     public async Task Top_NegativeValue_Returns400ODataError()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AdversarialQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AdversarialQueryProfile>());
         var response = await fx.Client.GetAsync(Url + "?$top=-1");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -42,7 +42,7 @@ public class AdversarialQueryOptionTests
     [Fact]
     public async Task Top_NonNumericValue_Returns400ODataError()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AdversarialQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AdversarialQueryProfile>());
         var response = await fx.Client.GetAsync(Url + "?$top=notanumber");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -52,7 +52,7 @@ public class AdversarialQueryOptionTests
     [Fact]
     public async Task Skip_NegativeValue_Returns400ODataError()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AdversarialQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AdversarialQueryProfile>());
         var response = await fx.Client.GetAsync(Url + "?$skip=-5");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -64,7 +64,7 @@ public class AdversarialQueryOptionTests
     [Fact]
     public async Task Filter_UnbalancedParens_Returns400ODataError()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AdversarialQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AdversarialQueryProfile>());
         var response = await fx.Client.GetAsync(Url + "?$filter=" + Uri.EscapeDataString("(Name eq 'x'"));
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -74,7 +74,7 @@ public class AdversarialQueryOptionTests
     [Fact]
     public async Task Filter_MissingOperand_Returns400ODataError()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AdversarialQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AdversarialQueryProfile>());
         var response = await fx.Client.GetAsync(Url + "?$filter=" + Uri.EscapeDataString("Name eq"));
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -84,7 +84,7 @@ public class AdversarialQueryOptionTests
     [Fact]
     public async Task Filter_NonexistentProperty_Returns400ODataError()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AdversarialQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AdversarialQueryProfile>());
         var response = await fx.Client.GetAsync(Url + "?$filter=" + Uri.EscapeDataString("DoesNotExist eq 'x'"));
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -94,7 +94,7 @@ public class AdversarialQueryOptionTests
     [Fact]
     public async Task Filter_ExtremelyLong_10kChars_DoesNotHang_ReturnsQuickly()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AdversarialQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AdversarialQueryProfile>());
         string longFilter = "Name eq '" + new string('x', 10_000) + "'";
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -112,7 +112,7 @@ public class AdversarialQueryOptionTests
     [Fact]
     public async Task Filter_100NestedNot_Returns400ODataError_NeverHangsOrCrashes()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AdversarialQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AdversarialQueryProfile>());
         string nestedNot = string.Concat(Enumerable.Repeat("not(", 100)) + "Name eq 'x'" + string.Concat(Enumerable.Repeat(")", 100));
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -130,7 +130,7 @@ public class AdversarialQueryOptionTests
     [Fact]
     public async Task OrderBy_NonexistentProperty_Returns400ODataError()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AdversarialQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AdversarialQueryProfile>());
         var response = await fx.Client.GetAsync(Url + "?$orderby=DoesNotExist");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -140,7 +140,7 @@ public class AdversarialQueryOptionTests
     [Fact]
     public async Task Select_NonexistentProperty_Returns400ODataError()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AdversarialQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AdversarialQueryProfile>());
         var response = await fx.Client.GetAsync(Url + "?$select=DoesNotExist");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -150,7 +150,7 @@ public class AdversarialQueryOptionTests
     [Fact]
     public async Task Expand_NonexistentNavigation_Returns400ODataError()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AdversarialQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AdversarialQueryProfile>());
         var response = await fx.Client.GetAsync(Url + "?$expand=DoesNotExist");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -164,7 +164,7 @@ public class AdversarialQueryOptionTests
     {
         // Documented behavior: an invalid maxpagesize preference is ignored rather than rejected —
         // the server falls back to returning the full (unpaged) result set.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AdversarialQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AdversarialQueryProfile>());
         using var request = new HttpRequestMessage(HttpMethod.Get, Url);
         request.Headers.Add("Prefer", "maxpagesize=-1");
 
@@ -177,7 +177,7 @@ public class AdversarialQueryOptionTests
     [Fact]
     public async Task Prefer_MaxPageSizeNonNumeric_IgnoredGracefully_Returns200WithFullResults()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AdversarialQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AdversarialQueryProfile>());
         using var request = new HttpRequestMessage(HttpMethod.Get, Url);
         request.Headers.Add("Prefer", "maxpagesize=notanumber");
 
@@ -191,7 +191,7 @@ public class AdversarialQueryOptionTests
     public async Task Prefer_MaxPageSizeOverflowsInt32_IgnoredGracefully_NeverA500()
     {
         // 2147483648 = int.MaxValue + 1.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AdversarialQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AdversarialQueryProfile>());
         using var request = new HttpRequestMessage(HttpMethod.Get, Url);
         request.Headers.Add("Prefer", "maxpagesize=2147483648");
 
@@ -204,7 +204,7 @@ public class AdversarialQueryOptionTests
     [Fact]
     public async Task CombinedAdversarialQueryOptions_NeverHangsOrCrashes()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AdversarialQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AdversarialQueryProfile>());
         string query = "?$top=-1&$skip=-5&$filter=" + Uri.EscapeDataString("DoesNotExist eq 'x' and (Name eq")
             + "&$orderby=AlsoMissing&$select=Nope&$expand=Nada";
 

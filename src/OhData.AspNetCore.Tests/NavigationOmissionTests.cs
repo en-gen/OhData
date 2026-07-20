@@ -20,7 +20,7 @@ public class NavigationOmissionTests
     [Fact]
     public async Task GetById_NoExpand_OmitsCollectionNavigation()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<OmitNavMovieProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<OmitNavMovieProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/OmitNavMovies(1)");
 
         Assert.False(json.TryGetProperty("cast", out _), "un-expanded collection nav 'cast' must be omitted");
@@ -30,7 +30,7 @@ public class NavigationOmissionTests
     [Fact]
     public async Task GetAll_NoExpand_OmitsCollectionNavigationOnEveryItem()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<OmitNavMovieProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<OmitNavMovieProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/OmitNavMovies");
         var value = json.GetProperty("value");
         Assert.Equal(3, value.GetArrayLength());
@@ -46,7 +46,7 @@ public class NavigationOmissionTests
     [Fact]
     public async Task GetById_NoExpand_OmitsSingleValuedNavigation()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<OmitNavMovieProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<OmitNavMovieProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/OmitNavMovies(1)");
 
         Assert.False(json.TryGetProperty("studio", out _), "un-expanded single nav 'studio' must be omitted");
@@ -55,7 +55,7 @@ public class NavigationOmissionTests
     [Fact]
     public async Task GetAll_NoExpand_OmitsSingleValuedNavigationOnEveryItem()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<OmitNavMovieProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<OmitNavMovieProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/OmitNavMovies");
 
         foreach (var item in json.GetProperty("value").EnumerateArray())
@@ -69,7 +69,7 @@ public class NavigationOmissionTests
     [Fact]
     public async Task GetById_ExpandCollection_NavigationPresentAndPopulated()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<OmitNavMovieProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<OmitNavMovieProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/OmitNavMovies(1)?$expand=Cast");
 
         Assert.True(json.TryGetProperty("cast", out var cast), "expanded 'cast' must be present");
@@ -81,7 +81,7 @@ public class NavigationOmissionTests
     [Fact]
     public async Task GetById_ExpandSingle_NavigationPresentAndPopulated()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<OmitNavMovieProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<OmitNavMovieProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/OmitNavMovies(1)?$expand=Studio");
 
         Assert.True(json.TryGetProperty("studio", out var studio), "expanded 'studio' must be present");
@@ -92,7 +92,7 @@ public class NavigationOmissionTests
     [Fact]
     public async Task GetAll_ExpandCollection_NavigationPresentAndPopulated()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<OmitNavMovieProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<OmitNavMovieProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/OmitNavMovies?$expand=Cast");
 
         var movie1 = json.GetProperty("value").EnumerateArray().First(m => m.GetProperty("id").GetInt32() == 1);
@@ -105,7 +105,7 @@ public class NavigationOmissionTests
     [Fact]
     public async Task GetById_ExpandOneNav_DoesNotIncludeSiblingNav()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<OmitNavMovieProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<OmitNavMovieProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/OmitNavMovies(1)?$expand=Studio");
 
         Assert.True(json.TryGetProperty("studio", out _), "expanded 'studio' must be present");
@@ -116,7 +116,7 @@ public class NavigationOmissionTests
     [Fact]
     public async Task GetAll_ExpandOneNav_DoesNotIncludeSiblingNav()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<OmitNavMovieProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<OmitNavMovieProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/OmitNavMovies?$expand=Cast");
 
         foreach (var item in json.GetProperty("value").EnumerateArray())
@@ -131,7 +131,7 @@ public class NavigationOmissionTests
     [Fact]
     public async Task GetById_ExpandSingle_ExpandedEntityOmitsItsOwnNavigation()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<OmitNavMovieProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<OmitNavMovieProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/OmitNavMovies(1)?$expand=Studio");
 
         var studio = json.GetProperty("studio");
@@ -144,7 +144,7 @@ public class NavigationOmissionTests
     [Fact]
     public async Task GetAll_ExpandSingle_ExpandedEntityOmitsItsOwnNavigation()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<OmitNavMovieProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<OmitNavMovieProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/OmitNavMovies?$expand=Studio");
 
         foreach (var studio in json.GetProperty("value").EnumerateArray()
@@ -163,7 +163,7 @@ public class NavigationOmissionTests
         // Movie 3 has no studio. Expanding it must produce "studio": null (an expanded single nav
         // with no related entity is null, not omitted) and the recursive omission pass must no-op
         // on the null node rather than throw (issue #176 — covers the null-node recursion path).
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<OmitNavMovieProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<OmitNavMovieProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/OmitNavMovies(3)?$expand=Studio");
 
         Assert.True(json.TryGetProperty("studio", out var studio), "expanded single nav must be present even when null");

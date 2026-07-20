@@ -131,7 +131,7 @@ internal static class Program
         builder.Services.AddOhData(o =>
         {
             o.WithPrefix(prefix);
-            o.AddProfile<WidgetProfile>();
+            o.AddEntitySetProfile<WidgetProfile>();
         });
 
         var app = builder.Build();

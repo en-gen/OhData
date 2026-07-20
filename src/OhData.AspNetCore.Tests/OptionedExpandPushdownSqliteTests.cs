@@ -183,9 +183,9 @@ internal static class OptionedExpandSqliteHarness
             b =>
             {
                 if (defaults is not null) b.WithDefaults(defaults);
-                b.AddProfile<OeParentProfile>();
-                b.AddProfile<MixParentProfile>();
-                b.AddProfile<OeRefHolderProfile>();
+                b.AddEntitySetProfile<OeParentProfile>();
+                b.AddEntitySetProfile<MixParentProfile>();
+                b.AddEntitySetProfile<OeRefHolderProfile>();
             },
             configureServices: services =>
             {

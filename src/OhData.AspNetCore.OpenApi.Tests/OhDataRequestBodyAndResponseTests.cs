@@ -165,8 +165,8 @@ public sealed class OhDataRequestBodyAndResponseTests
 
     private static async Task<TestFixture> BuildAsync() => await TestHostBuilder.BuildAsync(o =>
     {
-        o.AddProfile<WriteSurfaceProfile>();
-        o.AddProfile<WriteSurfaceQueryableProfile>();
+        o.AddEntitySetProfile<WriteSurfaceProfile>();
+        o.AddEntitySetProfile<WriteSurfaceQueryableProfile>();
     });
 
     private static async Task<JsonDocument> BuildAndFetchAsync()

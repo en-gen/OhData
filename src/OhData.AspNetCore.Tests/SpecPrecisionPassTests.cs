@@ -20,7 +20,7 @@ public class SpecPrecisionPassTests
     [Fact]
     public async Task SingleValuedNav_Get_IncludesODataContext()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavRefSingleProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavRefSingleProfile>());
         var resp = await fx.Client.GetAsync("/odata/NavRefSingleParents(1)/PrimaryChild");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
@@ -38,7 +38,7 @@ public class SpecPrecisionPassTests
         // ParentWithChildrenProfile's HasMany handler returns null (not an empty collection)
         // when the parent key doesn't exist, exercising the null-result branch of the
         // standalone nav /$count route.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ParentWithChildrenProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ParentWithChildrenProfile>());
         var resp = await fx.Client.GetAsync("/odata/Parents(999)/Children/$count");
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
 
@@ -53,7 +53,7 @@ public class SpecPrecisionPassTests
     [Fact]
     public async Task RefCollection_Get_ContextIsCollectionRef()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavQueryProfile>());
         var resp = await fx.Client.GetAsync("/odata/NavQueryParents(1)/Children/$ref");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
@@ -65,7 +65,7 @@ public class SpecPrecisionPassTests
     [Fact]
     public async Task RefSingleValued_Get_ContextIsRef()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavRefSingleProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavRefSingleProfile>());
         var resp = await fx.Client.GetAsync("/odata/NavRefSingleParents(1)/PrimaryChild/$ref");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
@@ -79,7 +79,7 @@ public class SpecPrecisionPassTests
     [Fact]
     public async Task CollectionGet_WithSelect_ContextIncludesProjection()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var resp = await fx.Client.GetAsync("/odata/Widgets?$select=Id,Name");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
@@ -91,7 +91,7 @@ public class SpecPrecisionPassTests
     [Fact]
     public async Task CollectionGet_WithSelect_ContextPreservesRequestOrder()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var resp = await fx.Client.GetAsync("/odata/Widgets?$select=Name,Id");
         var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(json.TryGetProperty("@odata.context", out var context));
@@ -101,7 +101,7 @@ public class SpecPrecisionPassTests
     [Fact]
     public async Task CollectionGet_NoSelect_ContextHasNoProjectionSuffix()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var resp = await fx.Client.GetAsync("/odata/Widgets");
         var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(json.TryGetProperty("@odata.context", out var context));
@@ -111,7 +111,7 @@ public class SpecPrecisionPassTests
     [Fact]
     public async Task GetById_WithSelect_ContextIncludesProjectionAndBodyIsFiltered()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var resp = await fx.Client.GetAsync("/odata/Widgets(1)?$select=Name");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
@@ -125,7 +125,7 @@ public class SpecPrecisionPassTests
     [Fact]
     public async Task GetById_NoSelect_ContextHasNoProjectionSuffix()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var resp = await fx.Client.GetAsync("/odata/Widgets(1)");
         var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(json.TryGetProperty("@odata.context", out var context));
@@ -136,7 +136,7 @@ public class SpecPrecisionPassTests
     [Fact]
     public async Task NavCollection_WithSelect_ContextIncludesProjection()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavCountProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavCountProfile>());
         var resp = await fx.Client.GetAsync("/odata/NavCountParents(1)/Children?$select=Name");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
@@ -150,7 +150,7 @@ public class SpecPrecisionPassTests
     [Fact]
     public async Task IfMatch_SpecificEtag_MissingEntity_Put_Returns412()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagWidgetProfile>());
         using var req = new HttpRequestMessage(HttpMethod.Put, "/odata/ETagWidgets(999)")
         {
             Content = JsonContent.Create(new Widget { Id = 999, Name = "Nope" })
@@ -163,7 +163,7 @@ public class SpecPrecisionPassTests
     [Fact]
     public async Task IfMatch_Wildcard_MissingEntity_Patch_Returns412()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagWidgetProfile>());
         using var req = new HttpRequestMessage(HttpMethod.Patch, "/odata/ETagWidgets(999)")
         {
             Content = JsonContent.Create(new { Name = "Nope" })
@@ -176,7 +176,7 @@ public class SpecPrecisionPassTests
     [Fact]
     public async Task IfMatch_SpecificEtag_MissingEntity_Patch_Returns412()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagWidgetProfile>());
         using var req = new HttpRequestMessage(HttpMethod.Patch, "/odata/ETagWidgets(999)")
         {
             Content = JsonContent.Create(new { Name = "Nope" })
@@ -189,7 +189,7 @@ public class SpecPrecisionPassTests
     [Fact]
     public async Task IfMatch_Wildcard_MissingEntity_Delete_Returns412()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagWidgetProfile>());
         using var req = new HttpRequestMessage(HttpMethod.Delete, "/odata/ETagWidgets(999)");
         req.Headers.TryAddWithoutValidation("If-Match", "*");
         using var resp = await fx.Client.SendAsync(req);
@@ -199,7 +199,7 @@ public class SpecPrecisionPassTests
     [Fact]
     public async Task IfMatch_SpecificEtag_MissingEntity_Delete_Returns412()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagWidgetProfile>());
         using var req = new HttpRequestMessage(HttpMethod.Delete, "/odata/ETagWidgets(999)");
         req.Headers.TryAddWithoutValidation("If-Match", "\"some-etag\"");
         using var resp = await fx.Client.SendAsync(req);
@@ -211,7 +211,7 @@ public class SpecPrecisionPassTests
     [Fact]
     public async Task IfNoneMatchWildcard_Put_ExistingEntity_Returns412()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<UpsertProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<UpsertProfile>());
         using var req = new HttpRequestMessage(HttpMethod.Put, "/odata/UpsertWidgets(1)")
         {
             Content = JsonContent.Create(new Widget { Id = 1, Name = "ShouldNotApply" })
@@ -224,7 +224,7 @@ public class SpecPrecisionPassTests
     [Fact]
     public async Task IfNoneMatchWildcard_Put_NewEntity_ProceedsAsInsert()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<UpsertProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<UpsertProfile>());
         using var req = new HttpRequestMessage(HttpMethod.Put, "/odata/UpsertWidgets(42)")
         {
             Content = JsonContent.Create(new Widget { Id = 42, Name = "Created" })
@@ -241,7 +241,7 @@ public class SpecPrecisionPassTests
     public async Task IfNoneMatchAbsent_Put_ExistingEntity_StillSucceeds()
     {
         // No-op check: If-None-Match absent must not change existing PUT/upsert behavior.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<UpsertProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<UpsertProfile>());
         var resp = await fx.Client.PutAsJsonAsync("/odata/UpsertWidgets(1)", new Widget { Id = 1, Name = "Updated" });
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
     }
@@ -251,7 +251,7 @@ public class SpecPrecisionPassTests
     [Fact]
     public async Task NavCollection_InvalidSkip_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavCountProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavCountProfile>());
         var resp = await fx.Client.GetAsync("/odata/NavCountParents(1)/Children?$skip=abc");
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
         var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
@@ -261,7 +261,7 @@ public class SpecPrecisionPassTests
     [Fact]
     public async Task NavCollection_NegativeSkip_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavCountProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavCountProfile>());
         var resp = await fx.Client.GetAsync("/odata/NavCountParents(1)/Children?$skip=-1");
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
     }
@@ -269,7 +269,7 @@ public class SpecPrecisionPassTests
     [Fact]
     public async Task NavCollection_InvalidTop_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavCountProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavCountProfile>());
         var resp = await fx.Client.GetAsync("/odata/NavCountParents(1)/Children?$top=abc");
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
         var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
@@ -279,7 +279,7 @@ public class SpecPrecisionPassTests
     [Fact]
     public async Task NavCollection_NegativeTop_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavCountProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavCountProfile>());
         var resp = await fx.Client.GetAsync("/odata/NavCountParents(1)/Children?$top=-1");
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
     }
@@ -288,7 +288,7 @@ public class SpecPrecisionPassTests
     public async Task NavCollection_ValidTopAndSkip_StillWork()
     {
         // Regression guard: valid numeric $top/$skip must keep working after the m8 fix.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavCountProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavCountProfile>());
         var resp = await fx.Client.GetAsync("/odata/NavCountParents(1)/Children?$top=1&$skip=1");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         var json = await resp.Content.ReadFromJsonAsync<JsonElement>();

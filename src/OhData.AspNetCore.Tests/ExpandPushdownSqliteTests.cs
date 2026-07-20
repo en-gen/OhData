@@ -225,11 +225,11 @@ internal static class ExpandPushdownSqliteHarness
             b =>
             {
                 if (defaults is not null) b.WithDefaults(defaults);
-                b.AddProfile<PushParentProfile>();
-                b.AddProfile<DelParentProfile>();
-                b.AddProfile<RefHolderProfile>();
-                b.AddProfile<CycParentProfile>();
-                b.AddProfile<OrgNodeProfile>();
+                b.AddEntitySetProfile<PushParentProfile>();
+                b.AddEntitySetProfile<DelParentProfile>();
+                b.AddEntitySetProfile<RefHolderProfile>();
+                b.AddEntitySetProfile<CycParentProfile>();
+                b.AddEntitySetProfile<OrgNodeProfile>();
             },
             configureServices: services =>
             {
@@ -544,7 +544,7 @@ public sealed class ExpandPushdownNonEfFallbackTests
     public async Task NonEfSource_DelegatelessNav_StaysEdmOnly_NoCrash()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            b => b.AddProfile<InMemoryPushParentProfile>());
+            b => b.AddEntitySetProfile<InMemoryPushParentProfile>());
 
         var resp = await fx.Client.GetAsync("/odata/InMemoryPushParents?$expand=Children");
         Assert.Equal(System.Net.HttpStatusCode.OK, resp.StatusCode);

@@ -43,7 +43,7 @@ public class ServerPipelineBenchmarks
         builder.Services.AddOhData(o =>
         {
             o.WithPrefix("/odata");
-            o.AddProfile<PipelineWidgetProfile>();
+            o.AddEntitySetProfile<PipelineWidgetProfile>();
         });
 
         _serverApp = builder.Build();

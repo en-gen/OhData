@@ -37,7 +37,7 @@ public class ToListAsyncBenchmarks
         builder.Services.AddOhData(o =>
         {
             o.WithPrefix("/odata");
-            o.AddProfile<BenchWidgetProfile>();
+            o.AddEntitySetProfile<BenchWidgetProfile>();
         });
 
         _serverApp = builder.Build();

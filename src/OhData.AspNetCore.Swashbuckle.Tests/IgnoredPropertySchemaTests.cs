@@ -66,8 +66,8 @@ public sealed class IgnoredPropertySchemaTests
     {
         await using TestFixture fx = await SwashbuckleTestHostBuilder.BuildAsync(o =>
         {
-            o.AddProfile<ProductProfile>();
-            o.AddProfile<AuditEntryProfile>();
+            o.AddEntitySetProfile<ProductProfile>();
+            o.AddEntitySetProfile<AuditEntryProfile>();
         });
         return await fx.GetDocumentAsync();
     }

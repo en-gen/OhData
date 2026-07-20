@@ -16,7 +16,7 @@ public class KeyParsingTests
     [Fact]
     public async Task IntKey_ParsedFromRoute()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/Widgets(1)");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -24,7 +24,7 @@ public class KeyParsingTests
     [Fact]
     public async Task IntKey_Missing_Returns404()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/Widgets(9999)");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -32,7 +32,7 @@ public class KeyParsingTests
     [Fact]
     public async Task BadIntKey_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/Widgets(notanint)");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
@@ -42,7 +42,7 @@ public class KeyParsingTests
     [Fact]
     public async Task LongKey_ParsedFromRoute()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<LongKeyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<LongKeyProfile>());
         var response = await fx.Client.GetAsync("/odata/LongItems(9999999999)");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -50,7 +50,7 @@ public class KeyParsingTests
     [Fact]
     public async Task LongKey_Missing_Returns404()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<LongKeyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<LongKeyProfile>());
         var response = await fx.Client.GetAsync("/odata/LongItems(1)");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -60,7 +60,7 @@ public class KeyParsingTests
     [Fact]
     public async Task ShortKey_ParsedFromRoute()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ShortKeyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ShortKeyProfile>());
         var response = await fx.Client.GetAsync("/odata/ShortItems(32767)");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -70,7 +70,7 @@ public class KeyParsingTests
     [Fact]
     public async Task ByteKey_ParsedFromRoute()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ByteKeyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ByteKeyProfile>());
         var response = await fx.Client.GetAsync("/odata/ByteItems(255)");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -80,7 +80,7 @@ public class KeyParsingTests
     [Fact]
     public async Task BoolKey_True_ParsedFromRoute()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoolKeyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<BoolKeyProfile>());
         var response = await fx.Client.GetAsync("/odata/BoolItems(true)");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -88,7 +88,7 @@ public class KeyParsingTests
     [Fact]
     public async Task BoolKey_False_ParsedFromRoute()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BoolKeyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<BoolKeyProfile>());
         var response = await fx.Client.GetAsync("/odata/BoolItems(false)");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -98,7 +98,7 @@ public class KeyParsingTests
     [Fact]
     public async Task FloatKey_ParsedFromRoute()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<FloatKeyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<FloatKeyProfile>());
         var response = await fx.Client.GetAsync("/odata/FloatItems(1.5)");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -108,7 +108,7 @@ public class KeyParsingTests
     [Fact]
     public async Task DoubleKey_ParsedFromRoute()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DoubleKeyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DoubleKeyProfile>());
         var response = await fx.Client.GetAsync("/odata/DoubleItems(3.14)");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -118,7 +118,7 @@ public class KeyParsingTests
     [Fact]
     public async Task DecimalKey_ParsedFromRoute()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DecimalKeyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DecimalKeyProfile>());
         var response = await fx.Client.GetAsync("/odata/DecimalItems(1.5)");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -128,7 +128,7 @@ public class KeyParsingTests
     [Fact]
     public async Task GuidKey_ParsedFromRoute()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<GadgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<GadgetProfile>());
         var response = await fx.Client.GetAsync($"/odata/Gadgets({GadgetProfile.KnownId})");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -138,7 +138,7 @@ public class KeyParsingTests
     [Fact]
     public async Task StringKey_StrippedOfQuotes()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ThingProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ThingProfile>());
         var response = await fx.Client.GetAsync("/odata/Things('alpha')");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -147,7 +147,7 @@ public class KeyParsingTests
     public async Task GetById_StringKey_EscapedQuotes_Returns200()
     {
         // OData spec: single quotes within string keys are escaped as ''
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ThingProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ThingProfile>());
         var response = await fx.Client.GetAsync("/odata/Things('O''Brien')");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -157,7 +157,7 @@ public class KeyParsingTests
     [Fact]
     public async Task KeyParser_DateTime_Succeeds()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DateTimeKeyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DateTimeKeyProfile>());
         string key = Uri.EscapeDataString("2024-06-01T00:00:00");
         var response = await fx.Client.GetAsync($"/odata/DateTimeItems({key})");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -168,7 +168,7 @@ public class KeyParsingTests
     [Fact]
     public async Task KeyParser_DateTimeOffset_Succeeds()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DateTimeOffsetKeyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DateTimeOffsetKeyProfile>());
         string key = Uri.EscapeDataString("2024-01-15T12:00:00Z");
         var response = await fx.Client.GetAsync($"/odata/DateTimeOffsetItems({key})");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -179,7 +179,7 @@ public class KeyParsingTests
     [Fact]
     public async Task KeyParser_DateOnly_Succeeds()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DateOnlyKeyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DateOnlyKeyProfile>());
         var response = await fx.Client.GetAsync("/odata/DateOnlyItems(2024-03-20)");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -189,7 +189,7 @@ public class KeyParsingTests
     [Fact]
     public async Task TimeOnlyKey_ParsedFromRoute()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<TimeOnlyKeyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<TimeOnlyKeyProfile>());
         // Colons must be percent-encoded in path segments; ASP.NET Core decodes before binding.
         string key = Uri.EscapeDataString("08:30:00");
         var response = await fx.Client.GetAsync($"/odata/TimeOnlyItems({key})");
@@ -199,7 +199,7 @@ public class KeyParsingTests
     [Fact]
     public async Task TimeOnlyKey_Missing_Returns404()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<TimeOnlyKeyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<TimeOnlyKeyProfile>());
         string key = Uri.EscapeDataString("12:00:00");
         var response = await fx.Client.GetAsync($"/odata/TimeOnlyItems({key})");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
@@ -210,7 +210,7 @@ public class KeyParsingTests
     [Fact]
     public async Task EnumKey_ParsedFromRoute()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<StatusItemProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<StatusItemProfile>());
         // Enum keys are formatted as their underlying integer value by ODataKeyFormatter.
         var response = await fx.Client.GetAsync("/odata/StatusItems(1)");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -219,7 +219,7 @@ public class KeyParsingTests
     [Fact]
     public async Task EnumKey_Missing_Returns404()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<StatusItemProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<StatusItemProfile>());
         var response = await fx.Client.GetAsync("/odata/StatusItems(99)");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -229,7 +229,7 @@ public class KeyParsingTests
     [Fact]
     public async Task NullableIntKey_WithValue_ParsedFromRoute()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NullableIntKeyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NullableIntKeyProfile>());
         var response = await fx.Client.GetAsync("/odata/NullableIntItems(42)");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -238,7 +238,7 @@ public class KeyParsingTests
     public async Task NullableIntKey_NullLiteral_Returns404()
     {
         // "null" is a valid OData nullable key literal; our store has no null-keyed entity.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NullableIntKeyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NullableIntKeyProfile>());
         var response = await fx.Client.GetAsync("/odata/NullableIntItems(null)");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
