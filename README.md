@@ -61,7 +61,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
         CountEnabled   = true;
         SelectEnabled  = true;
 
-        // IQueryable path: $filter/$orderby/$skip/$top push down to SQL via EF Core
+        // IQueryable path: EF Core translates $filter/$orderby/$skip/$top into the SQL query
         GetQueryable = (_) => Task.FromResult(db.Products.AsQueryable());
         GetById      = (id, ct) => db.Products.FindAsync(id, ct).AsTask();
         Post         = (p, ct) => { db.Products.Add(p); return db.SaveChangesAsync(ct).ContinueWith(_ => (Product?)p, ct); };
@@ -294,7 +294,7 @@ for the full methodology, raw output, and known asymmetries between the two pipe
 OhData sits on your request path, so it's tested like it belongs there:
 
 - **Integration tests, not mocks.** The server suite spins up a real ASP.NET Core host and drives it over HTTP — every route, every query option, navigation and `$ref` link management, ETag concurrency, and per-operation *and* instance-level authorization. A large share is deliberately **adversarial**: malformed JSON bodies, hostile and oversized query options, and concurrent or cancelled requests, each asserted to fail cleanly with the correct OData error envelope rather than a 500.
-- **Proven against a real database.** EF Core + SQLite tests capture the SQL the provider actually emits and assert that `$filter`/`$orderby`/`$select` push down into the query — so "SQL pushdown" is demonstrated, not just asserted.
+- **Proven against a real database.** EF Core + SQLite tests capture the SQL the provider actually emits and assert that `$filter`/`$orderby`/`$select` are translated *into the SQL query itself* — executed by the database, not by fetching every row and filtering in memory.
 - **Verified against a real OData client.** A dedicated suite exercises the server through the official `Microsoft.OData.Client`, proving on-the-wire interoperability with a widely used consumer — conformance you can see, not conformance on paper.
 - **OpenAPI across every supported stack.** The generated document is tested against the built-in `AddOpenApi`, NSwag, and Swashbuckle, so it's correct whichever you wire up.
 - **Load and performance, on every change.** CI runs a [k6](https://k6.io/) load test against a live server on each build, and BenchmarkDotNet suites track server and client throughput and allocations so a regression shows up in review, not in production.
