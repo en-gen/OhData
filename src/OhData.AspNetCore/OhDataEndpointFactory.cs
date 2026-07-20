@@ -1974,11 +1974,7 @@ internal static class OhDataEndpointFactory
     // (no profile), hence no delegate can exist for its navigations.
     private static IEntitySetEndpointSource? FindStartupSourceForClrType(Type clrType, OhDataRegistration registration)
     {
-        foreach (IEntitySetEndpointSource p in registration.Profiles)
-        {
-            if (p.ModelType == clrType) return p;
-        }
-        return null;
+        return registration.Profiles.FirstOrDefault(p => p.ModelType == clrType);
     }
 
     // #206 phase 2 (multi-level expand): true when an element type can be projected into a fresh
@@ -2010,9 +2006,9 @@ internal static class OhDataEndpointFactory
     {
         if (model.FindDeclaredType(elementType.FullName ?? elementType.Name) is not IEdmEntityType edmType)
             yield break;
-        foreach (IEdmStructuralProperty sp in edmType.StructuralProperties())
+        foreach (IEdmStructuralProperty sp in edmType.StructuralProperties()
+            .Where(sp => sp.Type.Definition is not IEdmComplexType))
         {
-            if (sp.Type.Definition is IEdmComplexType) continue;
             PropertyInfo? clrProp = elementType.GetProperty(
                 sp.Name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
             if (clrProp is { SetMethod.IsPublic: true }) yield return clrProp;
@@ -2734,9 +2730,9 @@ internal static class OhDataEndpointFactory
         var routeBackedNavNames = new HashSet<string>(
             source.NavigationRoutes.Select(r => r.PropertyName), StringComparer.OrdinalIgnoreCase);
         var pushdownExpandNavs = new Dictionary<string, ExpandNavBinding>(StringComparer.OrdinalIgnoreCase);
-        foreach (string navName in source.NavigationPropertyNames)
+        foreach (string navName in source.NavigationPropertyNames
+            .Where(navName => !routeBackedNavNames.Contains(navName))) // delegate-backed → delegate path only
         {
-            if (routeBackedNavNames.Contains(navName)) continue; // delegate-backed → delegate path only
             if (BuildExpandNavBinding<TModel>(navName) is { } binding)
                 pushdownExpandNavs[navName] = binding;
         }

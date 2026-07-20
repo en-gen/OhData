@@ -388,10 +388,11 @@ public sealed class OhDataBuilder
         IEdmEntityContainer? container = model.EntityContainer;
         if (container is null) return;
 
-        foreach (IEntitySetEndpointSource profile in profiles)
+        foreach ((IEntitySetEndpointSource profile, IEdmEntitySet entitySet) in profiles
+            .Select(profile => (profile, entitySet: container.FindEntitySet(profile.EntitySetName)))
+            .Where(pair => pair.entitySet is not null)
+            .Select(pair => (pair.profile, pair.entitySet!)))
         {
-            if (container.FindEntitySet(profile.EntitySetName) is not { } entitySet) continue;
-
             var record = new EdmRecordExpression(
                 new EdmPropertyConstructor("MaxLevels", new EdmIntegerConstant(profile.MaxExpansionDepth)));
             var annotation = new EdmVocabularyAnnotation(entitySet, term, record);
