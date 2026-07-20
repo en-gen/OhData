@@ -60,6 +60,10 @@ The framework does not prescribe how `items` or `totalCount` are obtained. That 
 
 If `TotalCount` is not set and the client sends `$count=true`, the count in the response will reflect only the current page size, which is incorrect per the OData spec. Prefer always supplying `TotalCount` when using this handler.
 
+### Deterministic paging is the profile's responsibility
+
+On this path the profile — not the framework — owns query application, including `$skip`. When you return a lazily-translated `IQueryable` (e.g. an EF Core queryable) and rely on the framework's `MaxTop`/`Prefer: maxpagesize` cap plus its `@odata.nextLink` continuation, **you must give that queryable a stable, total order** — a terminal `OrderBy` (typically the entity key), or by applying the client's `$orderby`. Without one, the emitted `LIMIT`/`OFFSET` runs over an undefined row order, so a row can appear on two pages or be skipped between them, and EF Core logs warning `10102` ("row limiting operation without OrderBy"). The framework does not inject an order for you here: it can't do so safely once you've applied your own `$skip` (ordering a sliced subset is wrong), and a stable key column is your decision, not the framework's. (The `GetQueryable` path is different — there the framework owns the whole pipeline and orders paged results by the entity key automatically.)
+
 > **Note:** `GetODataQueryable` is available on `ODataEntitySetProfile<TKey, TModel>`, not the base `EntitySetProfile<TKey, TModel>`. It requires the `OhData.AspNetCore` package. An `IQueryable<TModel>` is implicitly convertible to `ODataQueryResult<TModel>` for backward compatibility with handlers that return a bare queryable.
 
 ### `GetQueryable` - IQueryable with pushdown (recommended for databases)

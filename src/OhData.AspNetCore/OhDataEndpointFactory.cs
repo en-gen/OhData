@@ -2228,12 +2228,16 @@ internal static class OhDataEndpointFactory
                     // The profile applies $skip itself on the follow-up request; the framework then
                     // only re-applies the Take cap on top.
                     //
-                    // #244: unlike the Priority-2 path, the framework does NOT inject a stabilizing
-                    // order before this cap Take. A Priority-1 profile owns the whole pipeline via its
-                    // own ApplyTo — including any $skip/$top — so the framework cannot safely prepend an
-                    // ORDER BY here (ordering after the profile's own Skip would sort a sliced subset).
-                    // Deterministic order on this path is therefore the profile's responsibility;
-                    // an unordered lazy IQueryable can still emit LIMIT without ORDER BY. Tracked in #244.
+                    // #244: the framework deliberately does NOT inject a stabilizing order before this
+                    // cap Take — unlike the Priority-2 path, where the framework owns skip/take and can
+                    // order every page consistently. Here the profile owns its whole pipeline via
+                    // ApplyTo, including any $skip, so the framework can't order safely: ordering after
+                    // the profile's own Skip would sort a sliced subset, and ordering only the first
+                    // (unskipped) page would misalign the $skip continuation. Deterministic
+                    // @odata.nextLink paging on this path is therefore the profile's responsibility — it
+                    // must establish a stable order (a terminal OrderBy, or applying the client's
+                    // $orderby). EF Core already surfaces the omission: warning 10102 fires when a query
+                    // is skip/take'd without an ORDER BY. See docs/query-options.md.
                     string? frameworkNextLink = null;
                     int? appliedPageSize = null;
                     if (odataResult.NextLink is null && options.Top is null)
