@@ -155,12 +155,34 @@ public class ObservabilityTests
         await fx.Client.GetAsync("/odata/ObsRich(1)/Children");        // read-navigation
         await fx.Client.GetAsync("/odata/ObsRich/$count");            // read-count
 
-        Assert.Contains("read-entity", ops);
-        Assert.Contains("create", ops);
-        Assert.Contains("update-entity", ops);
-        Assert.Contains("delete-entity", ops);
-        Assert.Contains("read-navigation", ops);
-        Assert.Contains("read-count", ops);
+        // An activity is stopped in a middleware finally block that can run just after the HTTP
+        // response has flushed, so the last request's classification may not be recorded yet when
+        // we reach the asserts. Poll for the full set (bounded) rather than asserting immediately
+        // (pre-existing race — see #257).
+        string[] expected = { "read-entity", "create", "update-entity", "delete-entity", "read-navigation", "read-count" };
+        for (int i = 0; i < 200; i++)
+        {
+            bool all = true;
+            lock (ops)
+            {
+                foreach (string e in expected)
+                {
+                    if (!ops.Contains(e)) { all = false; break; }
+                }
+            }
+            if (all) break;
+            await Task.Delay(25);
+        }
+
+        lock (ops)
+        {
+            Assert.Contains("read-entity", ops);
+            Assert.Contains("create", ops);
+            Assert.Contains("update-entity", ops);
+            Assert.Contains("delete-entity", ops);
+            Assert.Contains("read-navigation", ops);
+            Assert.Contains("read-count", ops);
+        }
     }
 
     [Fact]
