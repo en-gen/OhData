@@ -137,7 +137,7 @@ public class PerOperationAuthConfigTests
     public async Task RequirePolicy_DeniesUnauthorized(string? identity, string? roles, HttpStatusCode expected)
     {
         await using var fx = await PerOpAuthTestHost.BuildAsync(
-            o => o.AddProfile<PolicyProfile>(),
+            o => o.AddEntitySetProfile<PolicyProfile>(),
             policies: p => p.AddPolicy("EditorsPolicy", b => b.RequireRole("editor")));
 
         using var req = new HttpRequestMessage(HttpMethod.Put, "/odata/PolSet(1)")
@@ -155,7 +155,7 @@ public class PerOperationAuthConfigTests
     public async Task RequirePolicy_AllowsCorrectRole()
     {
         await using var fx = await PerOpAuthTestHost.BuildAsync(
-            o => o.AddProfile<PolicyProfile>(),
+            o => o.AddEntitySetProfile<PolicyProfile>(),
             policies: p => p.AddPolicy("EditorsPolicy", b => b.RequireRole("editor")));
 
         using var req = new HttpRequestMessage(HttpMethod.Put, "/odata/PolSet(1)")
@@ -188,7 +188,7 @@ public class PerOperationAuthConfigTests
     [InlineData("ed", "user", "scope=write", HttpStatusCode.Forbidden)]     // claim ok, role wrong → 403
     public async Task RequireRoleAndClaim_AreAndCombined(string identity, string roles, string claims, HttpStatusCode expected)
     {
-        await using var fx = await PerOpAuthTestHost.BuildAsync(o => o.AddProfile<ClaimProfile>());
+        await using var fx = await PerOpAuthTestHost.BuildAsync(o => o.AddEntitySetProfile<ClaimProfile>());
         using var req = new HttpRequestMessage(HttpMethod.Put, "/odata/ClaimSet(1)")
         {
             Content = new StringContent("{\"id\":1,\"name\":\"U\"}", Encoding.UTF8, "application/json"),
@@ -204,7 +204,7 @@ public class PerOperationAuthConfigTests
     [Fact]
     public async Task RequireRoleAndClaim_BothSatisfied_Passes()
     {
-        await using var fx = await PerOpAuthTestHost.BuildAsync(o => o.AddProfile<ClaimProfile>());
+        await using var fx = await PerOpAuthTestHost.BuildAsync(o => o.AddEntitySetProfile<ClaimProfile>());
         using var req = new HttpRequestMessage(HttpMethod.Put, "/odata/ClaimSet(1)")
         {
             Content = new StringContent("{\"id\":1,\"name\":\"U\"}", Encoding.UTF8, "application/json"),
@@ -235,7 +235,7 @@ public class PerOperationAuthConfigTests
     [InlineData("other=x", true)]         // claim absent → 403
     public async Task RequireClaim_NoValues_ChecksPresenceOnly(string claims, bool forbidden)
     {
-        await using var fx = await PerOpAuthTestHost.BuildAsync(o => o.AddProfile<ClaimPresenceProfile>());
+        await using var fx = await PerOpAuthTestHost.BuildAsync(o => o.AddEntitySetProfile<ClaimPresenceProfile>());
         using var req = new HttpRequestMessage(HttpMethod.Put, "/odata/ClaimPresence(1)")
         {
             Content = new StringContent("{\"id\":1,\"name\":\"U\"}", Encoding.UTF8, "application/json"),
@@ -268,7 +268,7 @@ public class PerOperationAuthConfigTests
     public async Task AllowAnonymous_OverridesGroupLevelAuth()
     {
         await using var fx = await PerOpAuthTestHost.BuildAsync(
-            o => o.AddProfile<PartialProfile>(),
+            o => o.AddEntitySetProfile<PartialProfile>(),
             groupConfigure: g => g.RequireAuthorization());
 
         // Read is explicitly AllowAnonymous → reachable despite the global group requirement.
@@ -281,7 +281,7 @@ public class PerOperationAuthConfigTests
     public async Task UnspecifiedCategory_InheritsGroupLevelAuth()
     {
         await using var fx = await PerOpAuthTestHost.BuildAsync(
-            o => o.AddProfile<PartialProfile>(),
+            o => o.AddEntitySetProfile<PartialProfile>(),
             groupConfigure: g => g.RequireAuthorization());
 
         // Delete has no per-operation rule → inherits the global group requirement → anonymous 401.
@@ -292,7 +292,7 @@ public class PerOperationAuthConfigTests
     [Fact]
     public async Task UnspecifiedCategory_WithoutGroupAuth_IsAnonymous()
     {
-        await using var fx = await PerOpAuthTestHost.BuildAsync(o => o.AddProfile<PartialProfile>());
+        await using var fx = await PerOpAuthTestHost.BuildAsync(o => o.AddEntitySetProfile<PartialProfile>());
 
         // No global auth and no per-operation rule for Delete → anonymous is allowed through.
         var del = await fx.Client.DeleteAsync("/odata/Partial(1)");

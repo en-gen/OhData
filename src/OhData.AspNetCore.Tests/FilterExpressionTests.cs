@@ -28,7 +28,7 @@ public class FilterExpressionTests
     private const string Url = "/odata/QueryOptionItems";
 
     private static async Task<TestFixture> BuildAsync() =>
-        await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryOptionProfile>());
+        await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<QueryOptionProfile>());
 
     private static async Task<int[]> GetIdsAsync(HttpClient client, string query)
     {
@@ -487,8 +487,8 @@ public class FilterExpressionTests
 
     private static async Task<TestFixture> BuildRoundingAsync() =>
         await TestHostBuilder.BuildAsync(o => o
-            .AddProfile<RoundingModeProfile>()
-            .AddProfile<RoundingModeBankersProfile>());
+            .AddEntitySetProfile<RoundingModeProfile>()
+            .AddEntitySetProfile<RoundingModeBankersProfile>());
 
     [Theory]
     [InlineData(2.5, 3)]

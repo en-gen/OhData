@@ -20,10 +20,10 @@ builder.Services.AddDbContext<ShopDbContext>(o => o.UseSqlite(
 // constructors — one DbContext per request, the normal ASP.NET Core lifetime.
 builder.Services.AddOhData(o => o
     .WithPrefix("/odata")
-    .AddProfile<ProductProfile>()
-    .AddProfile<CategoryProfile>()
-    .AddProfile<TagProfile>()
-    .AddProfile<ProductSummaryProfile>());
+    .AddEntitySetProfile<ProductProfile>()
+    .AddEntitySetProfile<CategoryProfile>()
+    .AddEntitySetProfile<TagProfile>()
+    .AddEntitySetProfile<ProductSummaryProfile>());
 
 var app = builder.Build();
 

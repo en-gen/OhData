@@ -28,7 +28,7 @@ public class GetAllCapTests
     [Fact]
     public async Task NoTop_CapsToMaxTop_EmitsNextLink()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<GetAllCapProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<GetAllCapProfile>());
         var json = await GetJsonAsync(fx, Capped);
 
         Assert.Equal(10, json.GetProperty("value").GetArrayLength());
@@ -39,7 +39,7 @@ public class GetAllCapTests
     [Fact]
     public async Task NextLink_Continuation_WalksWholeCollection()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<GetAllCapProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<GetAllCapProfile>());
 
         var seen = new List<int>();
         string? relative = Capped;
@@ -61,7 +61,7 @@ public class GetAllCapTests
     [Fact]
     public async Task ExplicitTop_SuppressesDefaultCap_NoNextLink()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<GetAllCapProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<GetAllCapProfile>());
         var json = await GetJsonAsync(fx, $"{Capped}?$top=5");
 
         Assert.Equal(5, json.GetProperty("value").GetArrayLength());
@@ -71,7 +71,7 @@ public class GetAllCapTests
     [Fact]
     public async Task Count_ReflectsPrePagingTotal_NotPageSize()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<GetAllCapProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<GetAllCapProfile>());
         var json = await GetJsonAsync(fx, $"{Capped}?$count=true");
 
         Assert.Equal(10, json.GetProperty("value").GetArrayLength());
@@ -81,7 +81,7 @@ public class GetAllCapTests
     [Fact]
     public async Task PreferMaxPageSize_ClampsBelowMaxTop_AndEchoes()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<GetAllCapProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<GetAllCapProfile>());
         using var request = new HttpRequestMessage(HttpMethod.Get, Capped);
         request.Headers.Add("Prefer", "maxpagesize=3");
         var resp = await fx.Client.SendAsync(request);
@@ -95,7 +95,7 @@ public class GetAllCapTests
     [Fact]
     public async Task MaxTopNull_OptsOut_ReturnsFullSet_NoNextLink()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<GetAllUnboundedProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<GetAllUnboundedProfile>());
         var json = await GetJsonAsync(fx, Unbounded);
 
         // MaxTop = null is the explicit opt-out: the whole set comes back with no continuation link.
@@ -108,7 +108,7 @@ public class GetAllCapTests
     {
         // WidgetProfile has 2 items and the default MaxTop (1000); the page isn't full so no
         // continuation link is emitted — existing small-collection behavior is preserved.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<WidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var json = await GetJsonAsync(fx, "/odata/Widgets");
 
         Assert.Equal(2, json.GetProperty("value").GetArrayLength());
@@ -120,7 +120,7 @@ public class GetAllCapTests
     {
         // The $search branch runs through the same ApplyGetAllPaging, so a search returning more
         // than MaxTop matches must be capped with a $skip continuation link, just like a plain GET.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<GetAllSearchCapProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<GetAllSearchCapProfile>());
         var json = await GetJsonAsync(fx, $"{Capped.Replace("GetAllCapWidgets", "GetAllSearchCapWidgets")}?$search=Widget");
 
         Assert.Equal(10, json.GetProperty("value").GetArrayLength());
@@ -133,7 +133,7 @@ public class GetAllCapTests
     {
         // MaxTop=null opts out of the default cap, but a client Prefer: maxpagesize is still
         // honored as the page size (there is no ceiling to clamp it against).
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<GetAllUnboundedProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<GetAllUnboundedProfile>());
         using var request = new HttpRequestMessage(HttpMethod.Get, Unbounded);
         request.Headers.Add("Prefer", "maxpagesize=8");
         var resp = await fx.Client.SendAsync(request);

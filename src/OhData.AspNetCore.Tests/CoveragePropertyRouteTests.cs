@@ -27,7 +27,7 @@ public class CoveragePropertyRouteTests
     [InlineData("DELETE", "/odata/Docs(abc)/Note")]
     public async Task PropertyRoute_BadKeyFormat_Returns400(string method, string url)
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DocProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DocProfile>());
         using var req = new HttpRequestMessage(new HttpMethod(method), url);
         if (method == "PATCH") req.Content = Json("{\"value\":\"x\"}");
         var resp = await fx.Client.SendAsync(req);
@@ -37,7 +37,7 @@ public class CoveragePropertyRouteTests
     [Fact]
     public async Task ByteArrayProperty_Value_ReturnsOctetStream()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DocProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DocProfile>());
         var resp = await fx.Client.GetAsync("/odata/Docs(1)/Data/$value");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         Assert.Equal("application/octet-stream", resp.Content.Headers.ContentType?.MediaType);
@@ -49,7 +49,7 @@ public class CoveragePropertyRouteTests
     [InlineData("CreatedAt", "2020")] // ISO-8601 date contains the year
     public async Task PrimitiveProperty_Value_FormatsAsText(string prop, string expectedSubstring)
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DocProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DocProfile>());
         var resp = await fx.Client.GetAsync($"/odata/Docs(1)/{prop}/$value");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         Assert.Equal("text/plain", resp.Content.Headers.ContentType?.MediaType);
@@ -60,7 +60,7 @@ public class CoveragePropertyRouteTests
     public async Task PropertyWrite_NullToNonNullableValueType_Returns400()
     {
         // Active is a non-nullable value type (bool); setting it to null must be rejected.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DocProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DocProfile>());
         var resp = await fx.Client.PatchAsync("/odata/Docs(1)/Active", Json("{\"value\":null}"));
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
     }
@@ -68,7 +68,7 @@ public class CoveragePropertyRouteTests
     [Fact]
     public async Task PropertyGet_IfNoneMatch_MatchingEtag_Returns304()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DocProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DocProfile>());
         var first = await fx.Client.GetAsync("/odata/Docs(1)/Title");
         string? etag = first.Headers.ETag?.ToString();
         Assert.NotNull(etag);
@@ -82,7 +82,7 @@ public class CoveragePropertyRouteTests
     [Fact]
     public async Task PropertyDelete_Nullable_EmitsEtagHeader()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DocProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DocProfile>());
         var resp = await fx.Client.DeleteAsync("/odata/Docs(1)/Note");
         Assert.Equal(HttpStatusCode.NoContent, resp.StatusCode);
         Assert.NotNull(resp.Headers.ETag);

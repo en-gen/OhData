@@ -30,7 +30,7 @@ public sealed class OhDataOpenApiOperationTransformerTests
     [Fact]
     public async Task AllFlagsEnabled_AllODataParametersPresent()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AllFlagsProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllFlagsProfile>());
         using JsonDocument doc = await FetchDocumentAsync(fx.Client);
 
         JsonElement op = GetOperation(doc, "/odata/AllFlagsWidgets", "get");
@@ -47,7 +47,7 @@ public sealed class OhDataOpenApiOperationTransformerTests
     [Fact]
     public async Task AllFlagsDisabled_OnlyTopAndSkipPresent()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NoFlagsProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NoFlagsProfile>());
         using JsonDocument doc = await FetchDocumentAsync(fx.Client);
 
         JsonElement op = GetOperation(doc, "/odata/NoFlagsWidgets", "get");
@@ -82,7 +82,7 @@ public sealed class OhDataOpenApiOperationTransformerTests
     [Fact]
     public async Task MaxTopSet_TopDescriptionContainsCapValue()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<MaxTopProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MaxTopProfile>());
         using JsonDocument doc = await FetchDocumentAsync(fx.Client);
 
         JsonElement op = GetOperation(doc, "/odata/MaxTopWidgets", "get");
@@ -98,7 +98,7 @@ public sealed class OhDataOpenApiOperationTransformerTests
     public async Task NonOhDataEndpoint_NoODataParametersInjected()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<NoFlagsProfile>(),
+            o => o.AddEntitySetProfile<NoFlagsProfile>(),
             configureApp: app => app.MapGet("/plain/hello", () => "hi"));
         using JsonDocument doc = await FetchDocumentAsync(fx.Client);
 
@@ -120,7 +120,7 @@ public sealed class OhDataOpenApiOperationTransformerTests
     [Fact]
     public async Task GetByIdRoute_GetsTopSkipAndSelectExpandButNotFilterOrderByCountSearch()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AllFlagsProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllFlagsProfile>());
         using JsonDocument doc = await FetchDocumentAsync(fx.Client);
 
         JsonElement op = GetOperation(doc, "/odata/AllFlagsWidgets({key})", "get");
@@ -139,7 +139,7 @@ public sealed class OhDataOpenApiOperationTransformerTests
     public async Task PreExistingTopParameter_NotDuplicated()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<NoFlagsProfile>(),
+            o => o.AddEntitySetProfile<NoFlagsProfile>(),
             configureOpenApi: o =>
             {
                 o.AddOperationTransformer<PreExistingTopTransformer>();
@@ -158,7 +158,7 @@ public sealed class OhDataOpenApiOperationTransformerTests
 
     private static async Task<TestFixture> BuildWithProfileAsync(System.Type profileType)
     {
-        var addProfile = typeof(OhDataBuilder).GetMethod("AddProfile")!.MakeGenericMethod(profileType);
+        var addProfile = typeof(OhDataBuilder).GetMethod("AddEntitySetProfile")!.MakeGenericMethod(profileType);
         return await TestHostBuilder.BuildAsync(o => addProfile.Invoke(o, null));
     }
 

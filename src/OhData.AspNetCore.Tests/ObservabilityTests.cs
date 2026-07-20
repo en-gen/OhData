@@ -52,7 +52,7 @@ public class ObservabilityTests
         };
         ActivitySource.AddActivityListener(listener);
 
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ObsWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ObsWidgetProfile>());
         var resp = await fx.Client.GetAsync(Url);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
@@ -80,7 +80,7 @@ public class ObservabilityTests
         });
         meterListener.Start();
 
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ObsWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ObsWidgetProfile>());
         await fx.Client.GetAsync(Url);
         meterListener.Dispose(); // flush
 
@@ -111,7 +111,7 @@ public class ObservabilityTests
         });
         meterListener.Start();
 
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ObsWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ObsWidgetProfile>());
         await fx.Client.GetAsync(Url);
         meterListener.Dispose();
 
@@ -123,7 +123,7 @@ public class ObservabilityTests
     [Fact]
     public async Task NoListenerAttached_RequestStillSucceeds()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ObsWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ObsWidgetProfile>());
         var resp = await fx.Client.GetAsync(Url);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
     }
@@ -146,7 +146,7 @@ public class ObservabilityTests
         };
         ActivitySource.AddActivityListener(listener);
 
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ObsRichProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ObsRichProfile>());
         await fx.Client.GetAsync("/odata/ObsRich(1)");                 // read-entity
         await fx.Client.PostAsJsonAsync("/odata/ObsRich", new { name = "n" }); // create
         await fx.Client.PutAsJsonAsync("/odata/ObsRich(1)", new { id = 1, name = "n" }); // update-entity
@@ -181,7 +181,7 @@ public class ObservabilityTests
         };
         ActivitySource.AddActivityListener(listener);
 
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ObsWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ObsWidgetProfile>());
         await fx.Client.GetAsync("/odata/$metadata");
         Assert.Contains("metadata", seen);
     }
@@ -201,7 +201,7 @@ public class ObservabilityTests
         };
         ActivitySource.AddActivityListener(listener);
 
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ThrowingObsProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ThrowingObsProfile>());
         var resp = await fx.Client.GetAsync("/odata/ObsThrow");
         Assert.Equal(HttpStatusCode.InternalServerError, resp.StatusCode);
 

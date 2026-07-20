@@ -38,6 +38,19 @@ public sealed class OhDataBuilder
         // as an instance singleton so it is available before the container is built.
         if (!_services.Any(s => s.ServiceType == typeof(GlobalProfileRegistry)))
             _services.AddSingleton(new GlobalProfileRegistry());
+
+        // Delta-mapping infrastructure. The registry accumulates DeltaProfile types across every
+        // OhData registration (instance singleton, mutable before the container is built); the
+        // single IDeltaFactory reads it once, lazily, and compiles/validates every mapping (forced
+        // at MapOhData for startup fail-fast). Both registered idempotently so multiple AddOhData
+        // calls are no-ops here.
+        if (!_services.Any(s => s.ServiceType == typeof(DeltaProfileRegistry)))
+            _services.AddSingleton(new DeltaProfileRegistry());
+        if (!_services.Any(s => s.ServiceType == typeof(IDeltaFactory)))
+        {
+            _services.AddSingleton<IDeltaFactory>(sp =>
+                DeltaFactory.Build(sp, sp.GetRequiredService<DeltaProfileRegistry>()));
+        }
     }
 
     /// <summary>
@@ -72,12 +85,12 @@ public sealed class OhDataBuilder
     /// Registers an entity set profile. The profile is resolved from DI (scoped),
     /// so constructor injection of scoped services (e.g. DbContext) is supported.
     /// </summary>
-    public OhDataBuilder AddProfile<TProfile>() where TProfile : class, IEntitySetProfile
+    public OhDataBuilder AddEntitySetProfile<TProfile>() where TProfile : class, IEntitySetProfile
     {
         if (_profileTypes.Contains(typeof(TProfile)))
         {
             throw new InvalidOperationException(
-                $"OhData: profile type '{typeof(TProfile).Name}' is already registered. Remove the duplicate AddProfile call.");
+                $"OhData: profile type '{typeof(TProfile).Name}' is already registered. Remove the duplicate AddEntitySetProfile call.");
         }
 
         // Detect the same profile type being registered in a different OhData registration.
@@ -99,9 +112,45 @@ public sealed class OhDataBuilder
     }
 
     /// <summary>
+    /// Registers a <see cref="DeltaProfile"/>. Its mappings are compiled and validated once at
+    /// startup and exposed through the injected <see cref="IDeltaFactory"/>. The symmetric
+    /// counterpart to <see cref="AddEntitySetProfile{TProfile}"/>.
+    /// </summary>
+    public OhDataBuilder AddDeltaProfile<TProfile>() where TProfile : DeltaProfile
+    {
+        AddDeltaProfileType(typeof(TProfile), explicitCall: true);
+        return this;
+    }
+
+    // Routes a DeltaProfile type into the shared cross-registration registry and DI. Delta
+    // profiles are not tied to a single OhData registration (the IDeltaFactory is one global
+    // singleton), so uniqueness is tracked in the shared DeltaProfileRegistry rather than the
+    // per-builder _profileTypes list.
+    private void AddDeltaProfileType(Type type, bool explicitCall)
+    {
+        var registryDescriptor = _services.FirstOrDefault(s => s.ServiceType == typeof(DeltaProfileRegistry));
+        var registry = (DeltaProfileRegistry)registryDescriptor!.ImplementationInstance!;
+        if (registry.Types.Contains(type))
+        {
+            if (explicitCall)
+            {
+                throw new InvalidOperationException(
+                    $"OhData: delta profile type '{type.Name}' is already registered. " +
+                    "Remove the duplicate AddDeltaProfile call.");
+            }
+            return; // scan re-discovery of an already-registered type — skip idempotently
+        }
+
+        if (!_services.Any(s => s.ServiceType == type))
+            _services.AddScoped(type);
+        registry.Types.Add(type);
+    }
+
+    /// <summary>
     /// Scans the specified assemblies for <see cref="EntitySetProfile{TKey,TModel}"/> subclasses
-    /// and registers each discovered profile as if it had been passed to
-    /// <see cref="AddProfile{TProfile}"/> individually.
+    /// and <see cref="DeltaProfile"/> subclasses, registering each discovered profile as if it had
+    /// been passed to <see cref="AddEntitySetProfile{TProfile}"/> or
+    /// <see cref="AddDeltaProfile{TProfile}"/> individually.
     /// </summary>
     /// <param name="configure">
     /// Callback that receives a <see cref="ProfileScanner"/> and specifies which assemblies
@@ -121,7 +170,12 @@ public sealed class OhDataBuilder
         var scanner = new ProfileScanner(_profileTypes);
         configure(scanner);
         foreach (var type in scanner.Scan())
-            AddProfileType(type);
+        {
+            if (typeof(DeltaProfile).IsAssignableFrom(type))
+                AddDeltaProfileType(type, explicitCall: false);
+            else
+                AddProfileType(type);
+        }
         return this;
     }
 

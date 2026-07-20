@@ -36,7 +36,7 @@ internal static class BenchmarkHosts
         builder.Services.AddOhData(o =>
         {
             o.WithPrefix(Prefix);
-            o.AddProfile<BenchWidgetProfile>();
+            o.AddEntitySetProfile<BenchWidgetProfile>();
         });
 
         var app = builder.Build();

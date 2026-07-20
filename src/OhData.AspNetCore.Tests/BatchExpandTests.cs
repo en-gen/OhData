@@ -23,7 +23,7 @@ public class BatchExpandTests
     {
         var counter = new BatchCallCounter();
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<BatchExpandQueryableProfile>(),
+            o => o.AddEntitySetProfile<BatchExpandQueryableProfile>(),
             configureServices: s => s.AddSingleton(counter));
 
         var json = await fx.Client.GetFromJsonAsync<JsonElement>(
@@ -50,7 +50,7 @@ public class BatchExpandTests
         // has exactly 2 children named "C{i}-1"/"C{i}-2".
         var counter = new BatchCallCounter();
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<BatchExpandQueryableProfile>(),
+            o => o.AddEntitySetProfile<BatchExpandQueryableProfile>(),
             configureServices: s => s.AddSingleton(counter));
 
         var json = await fx.Client.GetFromJsonAsync<JsonElement>(
@@ -77,7 +77,7 @@ public class BatchExpandTests
     {
         var counter = new BatchCallCounter();
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<BatchExpandQueryableProfile>(),
+            o => o.AddEntitySetProfile<BatchExpandQueryableProfile>(),
             configureServices: s => s.AddSingleton(counter));
 
         var json = await fx.Client.GetFromJsonAsync<JsonElement>(
@@ -96,7 +96,7 @@ public class BatchExpandTests
     {
         var counter = new BatchCallCounter();
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<BatchExpandQueryableProfile>(),
+            o => o.AddEntitySetProfile<BatchExpandQueryableProfile>(),
             configureServices: s => s.AddSingleton(counter));
 
         var json = await fx.Client.GetFromJsonAsync<JsonElement>(
@@ -116,7 +116,7 @@ public class BatchExpandTests
     {
         var counter = new BatchCallCounter();
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<BatchExpandQueryableProfile>(),
+            o => o.AddEntitySetProfile<BatchExpandQueryableProfile>(),
             configureServices: s => s.AddSingleton(counter));
 
         var json = await fx.Client.GetFromJsonAsync<JsonElement>(
@@ -140,7 +140,7 @@ public class BatchExpandTests
     [Fact]
     public async Task BatchOnlyRegistration_ServesStandaloneNavGetRoute()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BatchOnlyNavProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<BatchOnlyNavProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/BatchOnlyParents(1)/Children");
         var value = json.GetProperty("value");
         Assert.Equal(2, value.GetArrayLength());
@@ -149,7 +149,7 @@ public class BatchExpandTests
     [Fact]
     public async Task BatchOnlyRegistration_ServesNavCount()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BatchOnlyNavProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<BatchOnlyNavProfile>());
         var response = await fx.Client.GetAsync("/odata/BatchOnlyParents(1)/Children/$count");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         string body = await response.Content.ReadAsStringAsync();
@@ -159,7 +159,7 @@ public class BatchExpandTests
     [Fact]
     public async Task BatchOnlyRegistration_ServesPopulatedRef()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BatchOnlyNavProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<BatchOnlyNavProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/BatchOnlyParents(1)/PrimaryChild/$ref");
         Assert.True(json.TryGetProperty("@odata.id", out var odataId));
         // Populated ref should point at the "Children" entity set (refTargetEntitySet) with the
@@ -173,7 +173,7 @@ public class BatchExpandTests
         // Parent 2 has no children in BatchOnlyNavProfile's data set; the derived per-entity
         // Handler falls back to an empty collection, so the nav GET route still resolves (200
         // with an empty value array) rather than erroring.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<BatchOnlyNavProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<BatchOnlyNavProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/BatchOnlyParents(2)/Children");
         var value = json.GetProperty("value");
         Assert.Equal(0, value.GetArrayLength());
@@ -186,7 +186,7 @@ public class BatchExpandTests
     {
         var counter = new BatchCallCounter();
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<MixedBatchExpandProfile>(),
+            o => o.AddEntitySetProfile<MixedBatchExpandProfile>(),
             configureServices: s => s.AddSingleton(counter));
 
         var json = await fx.Client.GetFromJsonAsync<JsonElement>(
@@ -214,7 +214,7 @@ public class BatchExpandTests
     {
         var counter = new BatchCallCounter();
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<BatchExpandQueryableProfile>(),
+            o => o.AddEntitySetProfile<BatchExpandQueryableProfile>(),
             configureServices: s => s.AddSingleton(counter));
 
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/BatchExpandParents?$expand=Children");
@@ -227,7 +227,7 @@ public class BatchExpandTests
     {
         var counter = new BatchCallCounter();
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<BatchExpandGetAllProfile>(),
+            o => o.AddEntitySetProfile<BatchExpandGetAllProfile>(),
             configureServices: s => s.AddSingleton(counter));
 
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/BatchExpandGetAllParents?$expand=Children");
@@ -245,7 +245,7 @@ public class BatchExpandTests
     {
         var counter = new BatchCallCounter();
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<BatchExpandODataProfile>(),
+            o => o.AddEntitySetProfile<BatchExpandODataProfile>(),
             configureServices: s => s.AddSingleton(counter));
 
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/BatchExpandODataParents?$expand=Children");
@@ -268,7 +268,7 @@ public class BatchExpandTests
     {
         // ExpandableParentProfile (existing fixture) has no batch handler at all; this proves
         // the fallback branch still produces correct output when BatchHandler is null.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ExpandableParentProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ExpandableParentProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ExpandableParents?$expand=Children");
         var first = json.GetProperty("value")[0];
         Assert.True(first.TryGetProperty("children", out var children));

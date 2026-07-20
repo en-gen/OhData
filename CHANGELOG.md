@@ -11,6 +11,30 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Dependency-free delta mapping (#243).** `DeltaProfile` + the injected `IDeltaFactory` give
+  DTO-backed entity sets a clean PATCH/PUT/POST **write** path without AutoMapper. Declare mappings
+  in a profile (`For<TModel, TEntity>()`, then only the divergences via `.Rename()` / `.Ignore()` /
+  `.Convert()` — no `.Build()`); the framework discovers, compiles, and validates them once at
+  startup. Handlers call `IDeltaFactory.Create<TModel, TEntity>(delta)` (delta → delta) or
+  `Create<TModel, TEntity>(model)` (model → delta) and apply the result with the built-in
+  `Delta<TEntity>.Patch(entity)` — the framework never applies or persists. Conversion is a strict
+  safe subset (identity, reference-assignable, nullable-wrap `T → T?`); everything else
+  (narrowing, `int → long`, enum↔string, `T? → T`) requires an explicit `.Convert(...)` lambda —
+  `Convert.ChangeType` is never called implicitly. The produced `Delta<TEntity>.UpdatableProperties`
+  allowlist is translated from the model side (structural properties minus `Ignore()`d names) so
+  immutability/security constraints survive the DTO→entity boundary. Fail-fast at `MapOhData()` on
+  any unmapped/unwritable/incompatible/duplicated mapping. Also adds expression-based `Delta<T>`
+  sugar — `IsChanged(x => x.Prop)` and `TryGetChanged(x => x.Prop, out value)`. Scalars/structural
+  only; ships in core `OhData.AspNetCore`. See [docs/delta-mapping.md](docs/delta-mapping.md).
+
+### Changed
+
+- **`AddProfile<T>()` renamed to `AddEntitySetProfile<T>()` (breaking).** Symmetric with the new
+  `AddDeltaProfile<T>()`. No `[Obsolete]` alias — update call sites directly. The assembly scanner
+  (`AddProfilesFrom` / `AddProfilesFromAssemblyOf` / `AddProfilesFromAssembly`) is unchanged in
+  signature but now discovers `DeltaProfile` subclasses alongside `EntitySetProfile` subclasses in
+  one pass.
+
 - **`$select` projection pushdown (#206, phase 1).** On the `GetQueryable` path, an eligible
   `$select` now composes a member-init projection onto the profile's queryable, so LINQ
   providers emit a **column-pruned `SELECT`** instead of reading every column. Wire output is

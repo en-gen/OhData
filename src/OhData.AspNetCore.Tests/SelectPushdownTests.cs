@@ -232,13 +232,13 @@ public class SelectPushdownTests : IAsyncLifetime
     public async Task InitializeAsync()
     {
         static void Configure(OhDataBuilder b) => b
-            .AddProfile<PushProductProfile>()
-            .AddProfile<PushTaggedProfile>()
-            .AddProfile<PushRecordProfile>()
-            .AddProfile<PushComputedProfile>()
-            .AddProfile<PushEtagComputedProfile>()
-            .AddProfile<PushEtagUnknowableProfile>()
-            .AddProfile<PushEtagNavProfile>();
+            .AddEntitySetProfile<PushProductProfile>()
+            .AddEntitySetProfile<PushTaggedProfile>()
+            .AddEntitySetProfile<PushRecordProfile>()
+            .AddEntitySetProfile<PushComputedProfile>()
+            .AddEntitySetProfile<PushEtagComputedProfile>()
+            .AddEntitySetProfile<PushEtagUnknowableProfile>()
+            .AddEntitySetProfile<PushEtagNavProfile>();
 
         _on = await TestHostBuilder.BuildAsync(Configure);
         _off = await TestHostBuilder.BuildAsync(b =>

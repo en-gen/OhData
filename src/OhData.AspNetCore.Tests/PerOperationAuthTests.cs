@@ -250,7 +250,7 @@ public class PerOperationAuthTests
     public async Task Anonymous_ReadsPass_OthersReturn401(string desc, HttpMethod method, string path, string body, int categoryInt)
     {
         var category = (OhDataOperation)categoryInt;
-        await using var fx = await PerOpAuthTestHost.BuildAsync(o => o.AddProfile<PerOpSplitProfile>());
+        await using var fx = await PerOpAuthTestHost.BuildAsync(o => o.AddEntitySetProfile<PerOpSplitProfile>());
         var response = await fx.Client.SendAsync(Req(method, path, body, identity: null, roles: null));
 
         if (category == OhDataOperation.Read)
@@ -266,7 +266,7 @@ public class PerOperationAuthTests
     public async Task Editor_ReadCreateUpdateInvokePass_DeleteForbidden(string desc, HttpMethod method, string path, string body, int categoryInt)
     {
         var category = (OhDataOperation)categoryInt;
-        await using var fx = await PerOpAuthTestHost.BuildAsync(o => o.AddProfile<PerOpSplitProfile>());
+        await using var fx = await PerOpAuthTestHost.BuildAsync(o => o.AddEntitySetProfile<PerOpSplitProfile>());
         var response = await fx.Client.SendAsync(Req(method, path, body, identity: "ed", roles: "editor"));
 
         if (category == OhDataOperation.Delete)
@@ -282,7 +282,7 @@ public class PerOperationAuthTests
     public async Task Admin_ReadDeleteInvokePass_CreateUpdateForbidden(string desc, HttpMethod method, string path, string body, int categoryInt)
     {
         var category = (OhDataOperation)categoryInt;
-        await using var fx = await PerOpAuthTestHost.BuildAsync(o => o.AddProfile<PerOpSplitProfile>());
+        await using var fx = await PerOpAuthTestHost.BuildAsync(o => o.AddEntitySetProfile<PerOpSplitProfile>());
         var response = await fx.Client.SendAsync(Req(method, path, body, identity: "ad", roles: "admin"));
 
         if (category is OhDataOperation.Create or OhDataOperation.Update)

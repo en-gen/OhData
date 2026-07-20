@@ -40,7 +40,7 @@ public class DeepInsertTests
     [Fact]
     public async Task Post_Default_StripsNestedCollectionNav_BeforeHandlerSeesIt()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DeepInsertDefaultProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
 
         var response = await fx.Client.PostAsJsonAsync("/odata/DeepInsertDefaultOrders", new
         {
@@ -65,7 +65,7 @@ public class DeepInsertTests
     [Fact]
     public async Task Post_Default_StripsNestedSingleValuedNav_BeforeHandlerSeesIt()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DeepInsertDefaultProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
 
         var response = await fx.Client.PostAsJsonAsync("/odata/DeepInsertDefaultOrders", new
         {
@@ -89,7 +89,7 @@ public class DeepInsertTests
         // Only CLR properties declared as navigations via HasMany/HasOptional/HasRequired are
         // stripped. A plain (non-nav) collection property is left untouched even when the
         // profile has not opted into deep insert.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DeepInsertDefaultProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
 
         var response = await fx.Client.PostAsJsonAsync("/odata/DeepInsertDefaultOrders", new
         {
@@ -111,7 +111,7 @@ public class DeepInsertTests
     [Fact]
     public async Task Post_OptIn_PassesFullGraphToHandler_AndEchoesChildrenInResponse()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DeepInsertOptInProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertOptInProfile>());
 
         var response = await fx.Client.PostAsJsonAsync("/odata/DeepInsertOptInOrders", new
         {
@@ -143,7 +143,7 @@ public class DeepInsertTests
     [Fact]
     public async Task Post_OptIn_ReturnMinimal_Returns204WithODataEntityId_AndStillPersistsGraph()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DeepInsertOptInProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertOptInProfile>());
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "/odata/DeepInsertOptInOrders")
         {
@@ -173,7 +173,7 @@ public class DeepInsertTests
     [Fact]
     public async Task Post_ODataBindAnnotation_Returns501NotImplemented()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DeepInsertOptInProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertOptInProfile>());
 
         using var content = new StringContent(
             "{\"customer\":\"Frank\",\"category@odata.bind\":\"DeepInsertOptInCategories(1)\"}",
@@ -195,7 +195,7 @@ public class DeepInsertTests
     {
         // @odata.bind is rejected regardless of AllowDeepInsert — it is not silently ignored in
         // either mode.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DeepInsertDefaultProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
 
         using var content = new StringContent(
             "{\"customer\":\"Grace\",\"category@odata.bind\":\"DeepInsertDefaultCategories(1)\"}",
@@ -209,7 +209,7 @@ public class DeepInsertTests
     public async Task Post_ODataBindAnnotation_NestedInsideChild_Returns501()
     {
         // The annotation is detected anywhere in the body, not just at the top level.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DeepInsertOptInProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertOptInProfile>());
 
         using var content = new StringContent(
             "{\"customer\":\"Heidi\",\"lines\":[{\"sku\":\"X\",\"product@odata.bind\":\"Products(1)\"}]}",
@@ -224,7 +224,7 @@ public class DeepInsertTests
     [Fact]
     public async Task Post_CoexistsWithPostChildAndBatchNavHandlersOnSameProfile()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<DeepInsertWithNavHandlersProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertWithNavHandlersProfile>());
 
         // Deep insert on the entity-level POST route.
         var createResponse = await fx.Client.PostAsJsonAsync("/odata/DeepInsertNavOrders", new

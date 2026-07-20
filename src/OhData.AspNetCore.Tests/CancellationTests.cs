@@ -104,7 +104,7 @@ public class CancellationTests
     {
         var coord = new CancellationCoordinator();
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<CancellableWidgetProfile>(),
+            o => o.AddEntitySetProfile<CancellableWidgetProfile>(),
             configureServices: s => s.AddSingleton(coord));
 
         using var cts = new CancellationTokenSource();
@@ -122,7 +122,7 @@ public class CancellationTests
     {
         var coord = new CancellationCoordinator();
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<CancellableWidgetProfile>(),
+            o => o.AddEntitySetProfile<CancellableWidgetProfile>(),
             configureServices: s => s.AddSingleton(coord));
 
         using var cts = new CancellationTokenSource();
@@ -140,7 +140,7 @@ public class CancellationTests
     {
         var coord = new CancellationCoordinator();
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<CancellableWidgetProfile>(),
+            o => o.AddEntitySetProfile<CancellableWidgetProfile>(),
             configureServices: s => s.AddSingleton(coord));
 
         using var cts = new CancellationTokenSource();

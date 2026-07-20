@@ -67,8 +67,8 @@ public sealed class IgnoredPropertySchemaTests
     {
         await using TestFixture fx = await TestHostBuilder.BuildAsync(o =>
         {
-            o.AddProfile<ProductProfile>();
-            o.AddProfile<AuditEntryProfile>();
+            o.AddEntitySetProfile<ProductProfile>();
+            o.AddEntitySetProfile<AuditEntryProfile>();
         });
         return await FetchDocumentAsync(fx.Client);
     }

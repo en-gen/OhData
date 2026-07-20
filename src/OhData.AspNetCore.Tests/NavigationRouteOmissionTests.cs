@@ -25,7 +25,7 @@ public class NavigationRouteOmissionTests
     [Fact]
     public async Task SingleValuedNavGet_OmitsTargetsOwnNavigation()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavLeakFilmProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavLeakFilmProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavLeakFilms(1)/Studio");
 
         Assert.Equal("Skyline", json.GetProperty("name").GetString());
@@ -38,7 +38,7 @@ public class NavigationRouteOmissionTests
     [Fact]
     public async Task NavCollectionGet_OmitsEachItemsOwnNavigation()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavLeakFilmProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavLeakFilmProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavLeakFilms(1)/CoStudios");
 
         var value = json.GetProperty("value");
@@ -55,7 +55,7 @@ public class NavigationRouteOmissionTests
     [Fact]
     public async Task NavCollectionGet_WithSelect_StillOmitsNavigationAndProjects()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavLeakFilmProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavLeakFilmProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavLeakFilms(1)/CoStudios?$select=name");
 
         foreach (var studio in json.GetProperty("value").EnumerateArray())
@@ -71,7 +71,7 @@ public class NavigationRouteOmissionTests
     [Fact]
     public async Task BoundFunction_CollectionResult_OmitsNavsAndIncludesETag()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavLeakFilmProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavLeakFilmProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavLeakFilms/TopRated");
 
         var value = json.GetProperty("value");
@@ -94,7 +94,7 @@ public class NavigationRouteOmissionTests
     [Fact]
     public async Task BoundFunction_SingleResult_OmitsNavsAndIncludesETag()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavLeakFilmProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavLeakFilmProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavLeakFilms/GetFeatured");
 
         Assert.Equal("Ascent", json.GetProperty("title").GetString()); // over-strip guard
@@ -112,7 +112,7 @@ public class NavigationRouteOmissionTests
     [Fact]
     public async Task SameEntity_HasIdenticalNavShape_AcrossTopLevelAndBoundOpReads()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavLeakFilmProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavLeakFilmProfile>());
 
         var topLevel = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavLeakFilms(1)");
         var boundOp = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavLeakFilms/GetFeatured");
