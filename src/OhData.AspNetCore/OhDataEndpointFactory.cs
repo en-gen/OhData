@@ -1618,6 +1618,16 @@ internal static class OhDataEndpointFactory
     /// combinations are client-controlled and unbounded, so a lambda cache keyed by select-set
     /// would be an unbounded-growth vector (#202 hardening ethos); LINQ providers' own query
     /// caches key structurally and absorb repeated shapes.
+    /// <para>
+    /// #206 phase 2 (Option A1): when <paramref name="expandNavs"/> is supplied (the $expand
+    /// pushdown path), each pushed navigation is folded into the same member-init
+    /// (<c>Nav = x.Nav.ToList()</c> for collections, <c>Ref = x.Ref</c> for single-valued), so a
+    /// single EF Core query loads the related rows via a JOIN. When <c>null</c> (the $select-only
+    /// path) the projection is byte-for-byte what it was before. Ineligibility (no ctor /
+    /// unknowable ETag names / complex or unsettable structural member) still returns
+    /// <paramref name="query"/> unchanged; the caller detects that by reference and abandons
+    /// expand pushdown for the request, so the folded navigations are never partially applied.
+    /// </para>
     /// </summary>
     private static IQueryable<TModel> TryApplySelectProjection<TModel>(
         IQueryable<TModel> query,
@@ -1625,7 +1635,8 @@ internal static class OhDataEndpointFactory
         IEntitySetEndpointSource source,
         bool hasParameterlessCtor,
         IReadOnlyDictionary<string, StructuralPropertyInfo> structuralByName,
-        ILogger? logger)
+        ILogger? logger,
+        IReadOnlyList<ExpandNavBinding>? expandNavs = null)
     {
         if (!hasParameterlessCtor)
         {
@@ -1702,12 +1713,141 @@ internal static class OhDataEndpointFactory
         }
 
         ParameterExpression x = Expression.Parameter(typeof(TModel), "x");
-        MemberBinding[] bindings = members.Values
+        var bindings = members.Values
             .Select(m => (MemberBinding)Expression.Bind(m.Property, Expression.Property(x, m.Property)))
-            .ToArray();
+            .ToList();
+
+        // #206 phase 2 (Option A1): fold each pushed $expand navigation into the same member-init
+        // so the LINQ provider loads the related rows as part of this one query (EF Core translates
+        // a collection navigation projected with .ToList() into a JOIN, and a single-valued
+        // navigation into an outer join). Eligibility of each binding — settable property,
+        // non-cyclic related type, List-assignable collection — was decided at startup in
+        // BuildExpandNavBinding, so no per-binding re-validation is needed here.
+        if (expandNavs is not null)
+        {
+            foreach (ExpandNavBinding nav in expandNavs)
+            {
+                Expression access = Expression.Property(x, nav.Property);
+                if (nav.IsCollection)
+                {
+                    access = Expression.Call(_enumerableToList.MakeGenericMethod(nav.ElementType), access);
+                }
+                bindings.Add(Expression.Bind(nav.Property, access));
+            }
+        }
+
         Expression<Func<TModel, TModel>> projection = Expression.Lambda<Func<TModel, TModel>>(
             Expression.MemberInit(Expression.New(typeof(TModel)), bindings), x);
         return query.Select(projection);
+    }
+
+    // #206 phase 2 (Option A1): a navigation the $expand pushdown folds into the collection
+    // projection — the CLR property to bind, whether it is a collection (materialized with
+    // .ToList() so EF Core emits the JOIN) or a single-valued reference, and the related element
+    // type. Built once at startup for each DELEGATE-LESS navigation that survives the safety
+    // checks (see BuildExpandNavBinding); delegate-backed navigations never appear here.
+    private readonly record struct ExpandNavBinding(PropertyInfo Property, bool IsCollection, Type ElementType);
+
+    // #206 phase 2: cached open generic Enumerable.ToList<T>, closed per collection-navigation binding.
+    private static readonly MethodInfo _enumerableToList =
+        typeof(Enumerable).GetMethod(nameof(Enumerable.ToList), BindingFlags.Public | BindingFlags.Static)!;
+
+    // #206 phase 2 (Option A1): builds the startup-time $expand pushdown binding for one
+    // DELEGATE-LESS navigation (by CLR property name), or returns null when it is not eligible to
+    // be folded into the collection projection. Only navigations declared WITHOUT a custom expand
+    // delegate reach this method (the caller filters out every navigation that owns a
+    // NavigationRouteDefinition), so provenance — "no delegate exists" — is already established;
+    // this method only adds the structural safety checks. A navigation qualifies when it maps to a
+    // settable CLR property whose (element) type declares no navigation back to TModel — a
+    // bidirectional relationship would materialize a parent<->child object cycle that
+    // System.Text.Json throws on — and, for a collection, whose member type can accept a
+    // List&lt;TElement&gt; (the .ToList() the projection emits). Everything else stays EDM-only.
+    private static ExpandNavBinding? BuildExpandNavBinding<TModel>(string navPropertyName)
+    {
+        PropertyInfo? navProp = typeof(TModel).GetProperty(
+            navPropertyName, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+        if (navProp is null || navProp.SetMethod is not { IsPublic: true }) return null;
+
+        Type? elementType = NavElementClrType(navProp);
+        if (elementType is null) return null;
+        if (TypeHasNavigationTo(elementType, typeof(TModel))) return null; // cyclic — stays EDM-only
+
+        // NavElementClrType returns the property type itself for a single-valued reference and the
+        // element type for a collection, so "element differs from property" identifies a collection.
+        bool isCollection = navProp.PropertyType != elementType;
+
+        if (isCollection &&
+            !navProp.PropertyType.IsAssignableFrom(typeof(List<>).MakeGenericType(elementType)))
+        {
+            return null; // e.g. an array-typed collection nav; a List<T> cannot be assigned to it
+        }
+
+        return new ExpandNavBinding(navProp, isCollection, elementType);
+    }
+
+    // #206 phase 2: true when <paramref name="type"/> declares a public property that navigates
+    // back to <paramref name="target"/> (or a base/interface in target's hierarchy) — i.e. a
+    // navigation that would close a serialization cycle back to the parent entity. The
+    // assignability check is intentionally broadened in BOTH directions on the property type AND
+    // the collection element type (adversarial-review hardening): a back-reference need not be the
+    // exact TModel — a base class or interface that TModel implements (or that is assignable from
+    // TModel) also closes a cycle. Over-matching here only forces a safe fallback to the EDM-only
+    // path, never incorrect data, so the conservative direction is correct.
+    private static bool TypeHasNavigationTo(Type type, Type target)
+    {
+        foreach (PropertyInfo p in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+        {
+            if (target.IsAssignableFrom(p.PropertyType) || p.PropertyType.IsAssignableFrom(target)) return true;
+            Type? elem = NavElementClrType(p);
+            if (elem is not null && elem != p.PropertyType &&
+                (target.IsAssignableFrom(elem) || elem.IsAssignableFrom(target)))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // #206 phase 2: expand pushdown reads related rows through the LINQ provider (a projection with
+    // .ToList()), which only actually loads navigation data for an EF Core provider. On a
+    // LINQ-to-objects (or any non-EF) provider the same projection would read un-populated CLR
+    // navigations and return empty/null data, so pushdown is gated to EF Core queryables and every
+    // other provider takes the (delegate-less → EDM-only) fallback path.
+    private static bool IsEfCoreBacked(IQueryable query)
+    {
+        for (Type? t = query.Provider.GetType(); t is not null; t = t.BaseType)
+        {
+            if (t.Namespace is { } ns &&
+                ns.StartsWith("Microsoft.EntityFrameworkCore", StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // #206 phase 2: a top-level $expand item is "simple" (pushdown-eligible) when it carries no
+    // nested query options — no $levels, no nested $select or $expand, and none of
+    // $filter/$orderby/$top/$skip/$count/$search/$compute. Richer expands are deferred to the
+    // (delegate-less → EDM-only) fallback: pushdown here is deliberately scoped to a single JOIN'd
+    // level with no per-related-row shaping. The explicit $levels bail keeps recursive expands off
+    // the pushdown path entirely (issue-owner directive).
+    private static bool IsSimpleExpandItem(ExpandedNavigationSelectItem item)
+    {
+        if (item.LevelsOption is not null) return false; // $levels recursion — defer off pushdown
+
+        if (item.FilterOption is not null || item.OrderByOption is not null ||
+            item.TopOption is not null || item.SkipOption is not null ||
+            item.CountOption is not null || item.SearchOption is not null ||
+            item.ComputeOption is not null)
+        {
+            return false;
+        }
+
+        SelectExpandClause? nested = item.SelectAndExpand;
+        if (nested is null) return true;
+        if (!nested.AllSelected) return false; // nested $select present
+        return !nested.SelectedItems.OfType<ExpandedNavigationSelectItem>().Any(); // nested $expand present
     }
 
     // M3: appends the OData JSON §10.7/§10.8 projection suffix to a context segment when a
@@ -1999,6 +2139,33 @@ internal static class OhDataEndpointFactory
         var pushdownStructuralByName = pushdownNameGroups
             .Where(g => g.Count() == 1)
             .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+        // #206 phase 2 (Option A1): $expand Include pushdown — startup-computed per-navigation
+        // bindings, keyed by CLR navigation property name. THE ELIGIBILITY RULE IS PROVENANCE:
+        // a navigation is pushed down ONLY when it was declared WITHOUT a custom expand delegate.
+        // A delegate-backed navigation always owns a NavigationRouteDefinition (routes are created
+        // only when a handler is supplied), so "declared as a navigation but has no route" IS the
+        // no-delegate test. NavigationPropertyNames holds every declared navigation (bare and
+        // delegate-backed alike); NavigationRoutes holds only the delegate-backed ones — so the
+        // set difference is exactly the delegate-less navigations. Each survivor of the structural
+        // safety checks (settable property, non-cyclic related type, List-assignable collection)
+        // becomes SQL-JOIN-expandable; delegate-backed navigations expand through their delegate
+        // (Stage 3 / ExpandLevelAsync) and never appear here. Empty when the model exposes no
+        // eligible delegate-less navigation, which short-circuits the request-time gate.
+        //
+        // No threading into the JSON pipeline is needed: a delegate-less navigation has no route,
+        // so ExpandLevelAsync already skips it and leaves the Stage-1 serialization (the pushed,
+        // JOIN-materialized related rows) in place; OmitUnexpandedNavigations then keeps it because
+        // it was $expand'd. Delegate-backed navigations are the only ones ExpandLevelAsync loads.
+        var routeBackedNavNames = new HashSet<string>(
+            source.NavigationRoutes.Select(r => r.PropertyName), StringComparer.OrdinalIgnoreCase);
+        var pushdownExpandNavs = new Dictionary<string, ExpandNavBinding>(StringComparer.OrdinalIgnoreCase);
+        foreach (string navName in source.NavigationPropertyNames)
+        {
+            if (routeBackedNavNames.Contains(navName)) continue; // delegate-backed → delegate path only
+            if (BuildExpandNavBinding<TModel>(navName) is { } binding)
+                pushdownExpandNavs[navName] = binding;
+        }
 
         // #199 Layer C: per-operation authorization. When the profile declared
         // ConfigureAuthorization(...), resolve the effective rule per route category and apply it to
@@ -2444,17 +2611,100 @@ internal static class OhDataEndpointFactory
                     // unchanged either way: materialized objects are plain TModels and the
                     // existing JSON pipeline ($select trim, nav omission, ETag, expansion
                     // correlated by the always-projected key) runs identically. Ineligibility
-                    // falls back silently to the full fetch (Debug-logged reason).
-                    if (source.SelectPushdownEnabled &&
+                    // falls back silently to the full fetch (Debug-logged inside the helper).
+                    // Extracted to a local so every $expand-pushdown fallback below reuses the
+                    // exact same $select-only projection.
+                    IQueryable<TModel> ApplySelectPushdown(IQueryable<TModel> q) =>
+                        source.SelectPushdownEnabled &&
                         pushdownNamesUnambiguous &&
-                        options.SelectExpand?.SelectExpandClause is { } pushdownClause &&
-                        ExtractSelectedProperties(pushdownClause) is { } pushdownSelected)
+                        options.SelectExpand?.SelectExpandClause is { } selClause &&
+                        ExtractSelectedProperties(selClause) is { } selNames
+                            ? TryApplySelectProjection(q, selNames, source, pushdownCtorOk, pushdownStructuralByName, logger)
+                            : q;
+
+                    // #206 phase 2 (Option A1): $expand Include pushdown. Fold the eligible
+                    // top-level, simple $expand navigations of this request — those declared
+                    // WITHOUT a delegate (pushdownExpandNavs), so there is no delegate to bypass —
+                    // into the SAME member-init projection so a single EF Core query loads the
+                    // related rows via a JOIN. A navigation declared WITH a delegate is never in
+                    // pushdownExpandNavs and so always takes the delegate expansion path (Stage 3).
+                    // Gated to EF Core-backed sources (a projection reading un-populated navigations
+                    // would be wrong elsewhere). Anything ineligible (non-EF, nested/optioned or
+                    // $levels $expand, cyclic nav, projection or translation failure, serialization
+                    // cycle) falls back: the delegate-less nav then stays EDM-only for this request,
+                    // exactly as before pushdown existed.
+                    List<ExpandNavBinding>? engagedExpandNavs = null;
+                    if (source.ExpandPushdownEnabled &&
+                        pushdownCtorOk && pushdownNamesUnambiguous &&
+                        pushdownExpandNavs.Count > 0 &&
+                        options.SelectExpand?.SelectExpandClause is { } expandPlanClause &&
+                        IsEfCoreBacked(filtered))
                     {
-                        filtered = TryApplySelectProjection(
-                            filtered, pushdownSelected, source, pushdownCtorOk, pushdownStructuralByName, logger);
+                        foreach (ExpandedNavigationSelectItem expandItem in
+                                 expandPlanClause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
+                        {
+                            string navName = expandItem.PathToNavigationProperty.FirstSegment.Identifier;
+                            if (IsSimpleExpandItem(expandItem) &&
+                                pushdownExpandNavs.TryGetValue(navName, out ExpandNavBinding binding))
+                            {
+                                (engagedExpandNavs ??= new List<ExpandNavBinding>()).Add(binding);
+                            }
+                        }
                     }
 
-                    var items = filtered.ToArray();
+                    TModel[] items;
+                    if (engagedExpandNavs is { Count: > 0 })
+                    {
+                        // Structural part of the projection: the $select set when $select is present
+                        // and eligible, else EVERY structural property (a pure $expand must not drop
+                        // columns). Navigations are appended by TryApplySelectProjection. Expanded
+                        // nav identifiers that ExtractSelectedProperties keeps are not structural and
+                        // are skipped there, so they are never double-bound.
+                        List<string> structuralNames =
+                            options.SelectExpand!.SelectExpandClause is { } combClause &&
+                            ExtractSelectedProperties(combClause) is { } combSelected
+                                ? combSelected
+                                : pushdownStructuralByName.Keys.ToList();
+
+                        IQueryable<TModel> pushedQuery = TryApplySelectProjection(
+                            filtered, structuralNames, source, pushdownCtorOk, pushdownStructuralByName,
+                            logger, engagedExpandNavs);
+
+                        if (ReferenceEquals(pushedQuery, filtered))
+                        {
+                            // Projection ineligible (e.g. a complex/unsettable structural member) →
+                            // the navigations were NOT materialized. Abandon expand pushdown for this
+                            // request and take the fallback path, still honoring $select pushdown.
+                            logger?.LogDebug(
+                                "OhData: $expand pushdown skipped for {EntitySet}: the collection projection was ineligible; delegate-less navigations stay EDM-only for this request.",
+                                source.EntitySetName);
+                            engagedExpandNavs = null;
+                            items = ApplySelectPushdown(filtered).ToArray();
+                        }
+                        else
+                        {
+                            try
+                            {
+                                items = pushedQuery.ToArray();
+                            }
+                            catch (Exception ex) when (ex is not OperationCanceledException)
+                            {
+                                // A provider that cannot translate the folded projection must not
+                                // become a 500: fall back to the full fetch + $select pushdown,
+                                // which is the pre-#206-phase-2 behavior (delegate-less nav → EDM-only).
+                                logger?.LogDebug(ex,
+                                    "OhData: $expand pushdown query failed to translate for {EntitySet}; falling back (delegate-less navigations stay EDM-only for this request).",
+                                    source.EntitySetName);
+                                engagedExpandNavs = null;
+                                items = ApplySelectPushdown(filtered).ToArray();
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // No expand pushdown — $select-only path, byte-for-byte unchanged.
+                        items = ApplySelectPushdown(filtered).ToArray();
+                    }
 
                     // Gap 3: compute nextLink when MaxTop (or preferred page size) is set and page is full
                     string? nextLink = null;
@@ -2466,7 +2716,27 @@ internal static class OhDataEndpointFactory
                         nextLink = BuildNextPageLink(ctx, token);
                     }
 
-                    var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
+                    JsonArray finalItems;
+                    List<string>? selectedProps;
+                    try
+                    {
+                        (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
+                    }
+                    catch (JsonException ex) when (engagedExpandNavs is { Count: > 0 })
+                    {
+                        // #206 phase 2 (adversarial-review hardening): the pushed graph tripped a
+                        // serialization cycle the static back-reference guard missed (e.g. EF
+                        // relationship fixup populated an untyped/base-typed back-navigation the
+                        // projection did not itself materialize). Degrade to the (delegate-less →
+                        // EDM-only) fallback instead of surfacing a 500: re-fetch WITHOUT the folded
+                        // navigations, then run the same pipeline. The row COUNT is unchanged, so the
+                        // nextLink computed above stays valid.
+                        logger?.LogDebug(ex,
+                            "OhData: $expand pushdown produced a serialization cycle for {EntitySet}; falling back (delegate-less navigations stay EDM-only for this request).",
+                            source.EntitySetName);
+                        items = ApplySelectPushdown(filtered).ToArray();
+                        (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
+                    }
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();

@@ -350,7 +350,7 @@ GET /odata/Orders?$expand=Lines,Customer
 GET /odata/Orders(3f2a...)?$expand=Lines        ← single-entity route too
 ```
 
-`$expand` does **not** use EF Core's `Include()` or push the join into SQL. Instead, for each requested navigation property the framework invokes a registered navigation route handler. This is a generic mechanism with no EF Core dependency, and it behaves identically on the `GetQueryable`, `GetAll`, and Priority-1 (`IODataEntitySetEndpointSource`) paths. See [navigation-routing.md](navigation-routing.md) for details.
+For a navigation **declared with a delegate**, `$expand` does **not** use EF Core's `Include()` or push the join into SQL. Instead the framework invokes that navigation's registered handler. This is a generic mechanism with no EF Core dependency, and it behaves identically on the `GetQueryable`, `GetAll`, and Priority-1 (`IODataEntitySetEndpointSource`) paths. See [navigation-routing.md](navigation-routing.md) for details. A navigation **declared without a delegate** takes a different path — SQL-JOIN pushdown — described in [Delegate-less navigations JOIN automatically](#expand-pushdown-delegate-less-navigations-join-automatically-206) below.
 
 There are two ways to register the handler, and they have very different `$expand` performance:
 
@@ -391,8 +391,6 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
 
 Registering only the batch overload is enough - the framework auto-derives a single-key handler from it, so the standalone `GET /Orders(id)/Lines` route, nav `$count`, and `$ref` endpoints all keep working without writing a second handler. You may still register both explicitly (e.g. if the single-key path warrants a different query shape), in which case the per-entity handler you supply is used for those standalone routes and the batch handler is used only for `$expand`.
 
-`$expand` requires a navigation route handler (batch or per-entity - the same one used for the standalone `GET /Orders(id)/Lines` route) to be registered - a navigation property declared with `HasMany(x => x.Lines)` alone (no handler) is visible in `$metadata` but is silently skipped when a client tries to `$expand` it.
-
 Restrict which navigation properties may be expanded:
 
 ```csharp
@@ -400,6 +398,28 @@ ExpandProperties(x => x.Lines, x => x.Customer);
 ```
 
 Expanding a navigation property outside the allowlist returns `400 Bad Request` (`InvalidQueryOption`).
+
+<a id="expand-pushdown-delegate-less-navigations-join-automatically-206"></a>
+### `$expand` pushdown: delegate-less navigations JOIN automatically (#206)
+
+> **The one rule to remember:** writing an expand delegate opts a navigation **out** of pushdown; a bare declaration opts it **in**.
+>
+> **Mental model:** write a delegate only when expansion needs real logic (filtering, ordering, authorization, a custom query shape). A plain relationship gets SQL-JOIN expansion for free.
+
+A navigation declared **without** any expand delegate — a bare `HasMany(x => x.Lines)` / `HasOptional(x => x.Ref)` / `HasRequired(x => x.Ref)` with no `getAll`/`get`/`batchGetAll`/`batchGet` — is now **SQL-JOIN-expandable automatically**. On the EF Core-backed `GetQueryable` path, `$expand`'ing such a navigation folds it into the collection query's projection (`x => new Order { …, Lines = x.Lines.ToList() }`), so **one JOIN'd query** loads the page and all its related rows — no delegate to write, no N+1. This is why the earlier caveat ("a `HasMany(x => x.Lines)` alone is silently skipped under `$expand`") no longer holds: a bare declaration is a first-class, pushed expansion.
+
+The behavior is decided **purely by whether a delegate exists** — there is no global flag to flip and no per-navigation opt-in:
+
+| Declaration | `$expand` path | Why |
+|---|---|---|
+| `HasMany(x => x.Lines)` — **no delegate** | **SQL-JOIN pushdown** (one query) | There is no delegate to bypass; the `Include`/JOIN *is* the definition of the expansion. |
+| `HasMany(x => x.Lines, getAll: …)` / `batchGetAll: …` — **has a delegate** | **Delegate** (never pushed down) | The delegate may filter/order/authorize; pushing it down would change results or leak rows, so it is always honored. |
+
+This is **not** "byte-identical to the delegate path" — for a pushed navigation there is no delegate to compare against; the JOIN *is* the source of the related rows. (The un-pushed, delegate path stays exactly as documented above.)
+
+Pushdown is **on by default** (`EntitySetDefaults.ExpandPushdownEnabled`, per-profile `ExpandPushdownEnabled` override). It engages **only** on the EF Core-backed `GetQueryable` path, **only** for a top-level, simple `$expand` (no `$levels`, and no nested `$select`/`$expand`/`$filter`/`$orderby`/`$top`/`$skip`/`$count` on the expand item), and **only** for a navigation whose related type has no back-reference cycle. Whenever pushdown is ineligible for a request — a non-EF provider, a nested/optioned or `$levels` expand, a cyclic navigation, or a projection/translation/serialization failure — it **falls back silently**: the delegate-less navigation simply stays EDM-only for that request (as it was before this feature), the request still succeeds (never a `500`), and the reason is `Debug`-logged. A delegate-backed navigation is **never** affected — it always expands through its delegate. Set `ExpandPushdownEnabled = false` (per profile or in `WithDefaults`) to keep every delegate-less navigation unexpandable.
+
+`$expand` pushdown composes with `$select` pushdown: `?$select=name&$expand=Lines` prunes the parent's column list *and* JOINs the lines in the same single query.
 
 To also expose navigation as a standalone HTTP route (`GET /Orders(id)/Lines`), provide a handler to `HasMany` - see [navigation-routing.md](navigation-routing.md).
 

@@ -18,7 +18,8 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
     {
         ExpandEnabled = true;
 
-        // EDM-only - adds nav property to $metadata and enables $expand; no route registered
+        // No delegate: adds the nav property to $metadata, and (on an EF Core-backed GetQueryable)
+        // makes it SQL-JOIN-expandable automatically via $expand pushdown (#206) - no GET route.
         HasMany(x => x.Lines);
         HasOptional(x => x.Customer);
 
@@ -26,6 +27,13 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
     }
 }
 ```
+
+> **Delegate-less navigations and `$expand` (#206):** declaring a navigation **without** a delegate
+> opts it **into** SQL-JOIN `$expand` pushdown; supplying a delegate (below) opts it **out** (the
+> delegate then owns expansion). Mental model: *write a delegate only when expansion needs real
+> logic; a plain relationship gets SQL-JOIN expansion for free.* See
+> [`$expand` pushdown](query-options.md#expand-pushdown-delegate-less-navigations-join-automatically-206)
+> for the full behavior, eligibility, and fallback rules.
 
 ## Registering a navigation route
 
@@ -98,14 +106,28 @@ GET /odata/Orders?$expand=Lines($select=ProductName,Quantity),Customer
 GET /odata/Orders(id)?$expand=Lines
 ```
 
-`$expand` does **not** translate to EF Core's `Include()` - it's a post-processing step over the
-already-serialized parent page, driven by the same handler delegates used for navigation routes.
-None of the three collection GET paths (`GetQueryable`, `GetAll`, the `IODataEntitySetEndpointSource`
-priority-1 path) push the expand down into the underlying `IQueryable`/SQL query. A navigation
-property with no registered handler (batch or per-entity) is silently skipped during expansion.
+There are two expansion paths, and **which one a navigation takes is decided purely by whether it
+was declared with a delegate** (#206):
 
-What differs is **how many times the handler is called**, and it depends on which overload you
-registered:
+- **Delegate-less navigation** (a bare `HasMany`/`HasOptional`/`HasRequired`) → **SQL-JOIN
+  pushdown.** On the EF Core-backed `GetQueryable` path the navigation is folded into the collection
+  query's projection, so one JOIN'd query loads the page and its related rows. No delegate to write,
+  no N+1. (Previously such a navigation was `$metadata`-only and silently skipped under `$expand` —
+  that is no longer the case.)
+- **Delegate-backed navigation** (`getAll`/`get`/`batchGetAll`/`batchGet`) → **delegate expansion,
+  never pushed down.** It's a post-processing step over the already-serialized parent page, driven
+  by the handler delegate. The delegate may filter/order/authorize, so it is always honored;
+  pushing it down would change results or leak rows. This path is identical on all three collection
+  GET paths (`GetQueryable`, `GetAll`, priority-1 `IODataEntitySetEndpointSource`).
+
+> **Mental model:** write a delegate only when expansion needs real logic; a plain relationship gets
+> SQL-JOIN expansion for free. See
+> [`$expand` pushdown](query-options.md#expand-pushdown-delegate-less-navigations-join-automatically-206)
+> for eligibility and the silent-fallback rules (non-EF source, `$levels`, nested options, cyclic
+> navigation → the delegate-less navigation stays EDM-only for that request, never a `500`).
+
+For a **delegate-backed** navigation, what differs is **how many times the handler is called**, and
+it depends on which overload you registered:
 
 - **Per-entity handler** (`getAll`/`get`) - called once per parent entity per expanded property:
   *N×P* calls for a page of *N* items and *P* expanded properties (an N+1 pattern against a
@@ -115,8 +137,9 @@ registered:
   [query-options.md](query-options.md#expand) for a worked example and
   [Batch-loaded navigation routes](#batch-loaded-navigation-routes) above for the API.
 
-Both forms produce byte-identical `$expand` output; batch registration only changes the number
-of handler invocations, not the response shape.
+Both delegate forms produce byte-identical `$expand` output; batch registration only changes the
+number of handler invocations, not the response shape. (A delegate-less, pushed navigation has no
+delegate to compare against — the JOIN *is* the source of its related rows.)
 
 ## Navigation routes vs `$expand` - when to use each
 
@@ -124,7 +147,7 @@ of handler invocations, not the response shape.
 |---|---|---|
 | Returns related data as top-level response | ✅ | ❌ (embedded in parent) |
 | Supports filtering/ordering on related data | ❌ | ✅ (with nested options) |
-| Single SQL join (vs. handler calls) | ❌ (separate query per request) | ❌ (not pushed down to SQL - see note above) — call count is *P* with a batch handler, *N×P* with a per-entity handler |
+| Single SQL join (vs. handler calls) | ❌ (separate query per request) | ✅ for a **delegate-less** nav (SQL-JOIN pushdown, #206); ❌ for a **delegate-backed** nav — call count is *P* with a batch handler, *N×P* with a per-entity handler |
 | Works without `$expand` support on client | ✅ | ❌ |
 
 The two approaches are complementary - declare both to support both access patterns.
