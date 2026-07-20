@@ -127,6 +127,23 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected bool? SelectPushdownEnabled { get; init; }
 
     /// <summary>
+    /// Controls whether <c>$expand</c> Include pushdown applies on this entity set's
+    /// <c>GetQueryable</c> path (#206 phase 2). When enabled and a request's top-level
+    /// <c>$expand</c> names a navigation declared <b>without</b> a custom expand delegate (a bare
+    /// <see cref="HasMany{T}(System.Linq.Expressions.Expression{System.Func{TModel, System.Collections.Generic.IEnumerable{T}}})"/>
+    /// / <c>HasOptional</c> / <c>HasRequired</c>), the framework folds that navigation into the
+    /// collection query's projection so an EF Core-backed source loads the related rows via a
+    /// single JOIN'd query instead of leaving the navigation unexpandable. The expand's nested
+    /// options are honored: <c>$filter</c>/<c>$orderby</c>/<c>$top</c>/<c>$skip</c> push to SQL as a
+    /// filtered/ordered/paged <c>Include</c>, and <c>$count</c>/<c>$select</c> shape the result;
+    /// a nested <c>$expand</c> (multi-level) or <c>$levels</c> is not pushed (see docs/query-options.md).
+    /// A navigation declared <b>with</b> a delegate always expands through its delegate and is never
+    /// pushed down. Inherits from <see cref="EntitySetDefaults"/> (default <c>true</c>) when <c>null</c>.
+    /// Disable to keep every delegate-less navigation unexpandable.
+    /// </summary>
+    protected bool? ExpandPushdownEnabled { get; init; }
+
+    /// <summary>
     /// Controls whether this entity set's structural property routes
     /// (<c>GET /{EntitySet}({key})/{Property}</c>, <c>.../{Property}/$value</c>, and the
     /// <c>PUT</c>/<c>PATCH</c>/<c>DELETE</c> property writes) appear in the generated API
@@ -318,8 +335,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private int? _maxOrderByNodeCount;
     private int? _maxAnyAllExpressionDepth;
 
-    /// <summary>#202: maximum nested <c>$expand</c> depth for this set (400 beyond it). Inherits
-    /// <see cref="EntitySetDefaults.MaxExpansionDepth"/> (default 12) when null. Must be positive.</summary>
+    /// <summary>#202/#206: maximum nested <c>$expand</c> depth for this set, and the ceiling
+    /// <c>$levels</c> is resolved/capped to (400 beyond it). Inherits
+    /// <see cref="EntitySetDefaults.MaxExpansionDepth"/> (default 3) when null. Must be positive.</summary>
     protected int? MaxExpansionDepth
     {
         get => _maxExpansionDepth;
@@ -381,6 +399,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private bool _resolvedCountEnabled;
     private bool _resolvedPropertyAccessEnabled;
     private bool _resolvedSelectPushdownEnabled;
+    private bool _resolvedExpandPushdownEnabled;
     private bool _resolvedPropertyRouteDocsEnabled;
     private List<StructuralPropertyInfo>? _structuralProperties;
 
@@ -575,6 +594,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _resolvedCountEnabled = CountEnabled ?? defaults.CountEnabled;
         _resolvedPropertyAccessEnabled = PropertyAccessEnabled ?? defaults.PropertyAccessEnabled;
         _resolvedSelectPushdownEnabled = SelectPushdownEnabled ?? defaults.SelectPushdownEnabled;
+        _resolvedExpandPushdownEnabled = ExpandPushdownEnabled ?? defaults.ExpandPushdownEnabled;
         _resolvedPropertyRouteDocsEnabled = PropertyRouteDocsEnabled ?? defaults.PropertyRouteDocsEnabled;
         _resolvedAllowDeepInsert = AllowDeepInsert ?? defaults.AllowDeepInsert;
         _resolvedRoundingMode = RoundingMode ?? defaults.RoundingMode;
@@ -929,6 +949,18 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// </summary>
     /// <typeparam name="TNavigation">The CLR type of the related entity.</typeparam>
     /// <param name="navigation">Expression selecting the navigation property.</param>
+    /// <remarks>
+    /// #206 phase 2 (Option A1) — <c>$expand</c> pushdown: declaring this navigation <b>without</b>
+    /// a delegate opts it <b>into</b> Include pushdown. When an EF Core-backed <c>GetQueryable</c>
+    /// source is <c>$expand</c>'d on it, the framework folds the navigation into the collection
+    /// query's projection so the related entity loads via a single JOIN'd query (SQL pushdown) —
+    /// no delegate needed. Supplying a <c>get</c>/<c>batchGet</c> delegate (the other overloads)
+    /// opts the navigation <b>out</b> of pushdown: the delegate then owns expansion (so it can
+    /// filter/order/authorize). Mental model: write a delegate only when expansion needs real
+    /// logic; a plain relationship gets SQL-JOIN expansion for free. A pushed single-valued
+    /// reference honors a nested <c>$select</c> (<c>Ref($select=name)</c>); <c>$filter</c>/
+    /// <c>$orderby</c>/<c>$top</c>/<c>$skip</c>/<c>$count</c> do not apply to a single entity.
+    /// </remarks>
     protected void HasOptional<TNavigation>(Expression<Func<TModel, TNavigation>> navigation)
         where TNavigation : class
     {
@@ -983,6 +1015,18 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// </summary>
     /// <typeparam name="TNavigation">The CLR type of the related entity.</typeparam>
     /// <param name="navigation">Expression selecting the navigation property.</param>
+    /// <remarks>
+    /// #206 phase 2 (Option A1) — <c>$expand</c> pushdown: declaring this navigation <b>without</b>
+    /// a delegate opts it <b>into</b> Include pushdown. When an EF Core-backed <c>GetQueryable</c>
+    /// source is <c>$expand</c>'d on it, the framework folds the navigation into the collection
+    /// query's projection so the related entity loads via a single JOIN'd query (SQL pushdown) —
+    /// no delegate needed. Supplying a <c>get</c>/<c>batchGet</c> delegate (the other overloads)
+    /// opts the navigation <b>out</b> of pushdown: the delegate then owns expansion (so it can
+    /// filter/order/authorize). Mental model: write a delegate only when expansion needs real
+    /// logic; a plain relationship gets SQL-JOIN expansion for free. A pushed single-valued
+    /// reference honors a nested <c>$select</c> (<c>Ref($select=name)</c>); <c>$filter</c>/
+    /// <c>$orderby</c>/<c>$top</c>/<c>$skip</c>/<c>$count</c> do not apply to a single entity.
+    /// </remarks>
     protected void HasRequired<TNavigation>(Expression<Func<TModel, TNavigation>> navigation)
         where TNavigation : class
     {
@@ -1036,6 +1080,24 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// </summary>
     /// <typeparam name="TNavigation">The CLR type of the related entities.</typeparam>
     /// <param name="navigation">Expression selecting the collection navigation property.</param>
+    /// <remarks>
+    /// #206 phase 2 (Option A1) — <c>$expand</c> pushdown: declaring this navigation <b>without</b>
+    /// a delegate opts it <b>into</b> Include pushdown. When an EF Core-backed <c>GetQueryable</c>
+    /// source is <c>$expand</c>'d on it, the framework folds the navigation into the collection
+    /// query's projection (<c>x =&gt; new TModel { …, Nav = x.Nav.ToList() }</c>) so the related
+    /// rows load via a single JOIN'd query (SQL pushdown) — no delegate, no N+1. Supplying a
+    /// <c>getAll</c>/<c>batchGetAll</c> delegate (the other overloads) opts the navigation
+    /// <b>out</b> of pushdown: the delegate then owns expansion (so it can filter/order/authorize).
+    /// Mental model: write a delegate only when expansion needs real logic; a plain relationship
+    /// gets SQL-JOIN expansion for free.
+    /// <para>
+    /// A pushed collection honors the expand's nested options: <c>$filter</c>/<c>$orderby</c>/
+    /// <c>$top</c>/<c>$skip</c> push to SQL as a filtered/ordered/paged <c>Include</c> (bound by
+    /// Microsoft's own <c>FilterBinder</c>/<c>OrderByBinder</c>), and <c>$count</c>/<c>$select</c>
+    /// shape the result. A <b>nested</b> <c>$expand</c> (multi-level) or <c>$levels</c> is NOT
+    /// pushed — the navigation then stays EDM-only for that request. See docs/query-options.md.
+    /// </para>
+    /// </remarks>
     protected void HasMany<TNavigation>(Expression<Func<TModel, IEnumerable<TNavigation>>> navigation)
         where TNavigation : class
     {
@@ -1721,6 +1783,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     bool IEntitySetEndpointSource.PropertyAccessEnabled => _resolvedPropertyAccessEnabled;
     bool IEntitySetEndpointSource.PropertyRouteDocsEnabled => _resolvedPropertyRouteDocsEnabled;
     bool IEntitySetEndpointSource.SelectPushdownEnabled => _resolvedSelectPushdownEnabled;
+    bool IEntitySetEndpointSource.ExpandPushdownEnabled => _resolvedExpandPushdownEnabled;
     IReadOnlyCollection<string>? IEntitySetEndpointSource.ETagPropertyNames => _etagPropertyNames;
     RoundingMode IEntitySetEndpointSource.RoundingMode => _resolvedRoundingMode;
     IReadOnlyList<StructuralPropertyInfo> IEntitySetEndpointSource.StructuralProperties =>
