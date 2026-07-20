@@ -130,16 +130,16 @@ public class OrdersProfile : EntitySetProfile<int, Order>
     {
         GetQueryable = _ => Task.FromResult(db.Orders.AsQueryable());
 
-        // Collection navigation. One declaration, four routes:
+        // Collection navigation. getAll gives the read routes; every parameter after it is
+        // OPTIONAL - supply only the ones whose route you want:
         HasMany(
             navigation: x => x.Lines,
             getAll:    (orderId, ct) => Task.FromResult(db.Lines.Where(l => l.OrderId == orderId).AsEnumerable()),
-                                        // GET  /Orders({key})/Lines   (+ GET /Orders({key})/Lines/$count)
-            post:      (orderId, line, ct) => { /* persist */ return Task.FromResult<OrderLine?>(line); },
-                                        // POST /Orders({key})/Lines           - create a related entity
-            addRef:    (orderId, lineId, ct) => Task.CompletedTask,   // POST/PUT /Orders({key})/Lines/$ref - link
-            removeRef: (orderId, lineId, ct) => Task.CompletedTask,   // DELETE   /Orders({key})/Lines/$ref - unlink
-            refTargetEntitySet: "Lines");
+                                          // GET /Orders({key})/Lines  (+ /Lines/$count)
+            post:      (orderId, line, ct) => /* … */,   // optional → POST /Orders({key})/Lines  (create a related entity)
+            addRef:    (orderId, lineId, ct) => /* … */, // optional → POST/PUT /Orders({key})/Lines/$ref  (link existing)
+            removeRef: (orderId, lineId, ct) => /* … */, // optional → DELETE   /Orders({key})/Lines/$ref  (unlink)
+            refTargetEntitySet: "Lines");                // optional → $ref routes emit @odata.id links
 
         // Single-valued navigation → GET /Orders({key})/Customer.
         HasOptional(
@@ -163,7 +163,7 @@ public class OrdersProfile : EntitySetProfile<int, Order>
 }
 ```
 
-Every parameter past `getAll` is optional — `post`, `addRef`/`removeRef`, and `refTargetEntitySet` each opt in one route, so declare only the ones you want (and `HasMany(x => x.Lines)` on its own registers no routes at all — it just declares the navigation for `$metadata` and `$expand`). The same holds for `HasOptional`/`HasRequired`.
+`HasMany(x => x.Lines)` on its own — with no handlers — registers no routes at all; it just declares the navigation for `$metadata` and `$expand`. The same optional-parameter pattern applies to `HasOptional`/`HasRequired`.
 
 See [docs/navigation-routing.md](docs/navigation-routing.md), [docs/property-access.md](docs/property-access.md), [docs/deep-insert.md](docs/deep-insert.md), and [docs/bound-operations.md](docs/bound-operations.md) for the full details behind each declaration.
 
