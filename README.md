@@ -188,7 +188,30 @@ ConfigureAuthorization(auth => auth
     .Invoke("Approve", i => i.RequirePolicy("Approvers")));
 ```
 
-`.RequireResource()` adds **instance-level** (owner/tenant) checks: OhData loads the entity and evaluates ASP.NET Core resource-based authorization against it, so you write a standard `AuthorizationHandler<OperationAuthorizationRequirement, TModel>`. Profiles stay free of ASP.NET Core types - requirements are stored as plain policy/role/claim names. See [docs/authorization.md](docs/authorization.md).
+The requirements above are coarse — they answer "can this *kind* of user touch this operation." `.RequireResource()` adds the **instance-level** check "can this user touch *this row*" (owner checks, tenant isolation). OhData loads the `{key}` entity and hands it to ASP.NET Core's native resource-based authorization, so you write one standard handler:
+
+```csharp
+// profile: an Update must come from an Editor who also owns the row
+ConfigureAuthorization(auth => auth
+    .Update(u => u.RequireRole("Editors").RequireResource()));
+
+// handler: the resource IS the loaded entity; requirement.Name selects the operation
+public sealed class OrderAuthorizationHandler
+    : AuthorizationHandler<OperationAuthorizationRequirement, Order>
+{
+    protected override Task HandleRequirementAsync(
+        AuthorizationHandlerContext ctx, OperationAuthorizationRequirement req, Order order)
+    {
+        if (req.Name == OhDataOperations.Update.Name &&
+            order.OwnerId == ctx.User.FindFirst("sub")?.Value)
+            ctx.Succeed(req);   // this Editor owns this order → allow
+        return Task.CompletedTask;
+    }
+}
+// Program.cs:  services.AddScoped<IAuthorizationHandler, OrderAuthorizationHandler>();
+```
+
+So a request to `PATCH /odata/Orders(42)` runs the role check (must be an `Editors` member) **and** loads order 42 and asks the handler whether this caller owns it — both must pass. The check covers property/navigation/`$ref` routes too (the resource is the parent entity in the path), so there's no bypass. `.RequireResource("PolicyName")` evaluates a **named policy** against the entity instead. Profiles stay free of ASP.NET Core types — requirements are stored as plain policy/role/claim names. See [docs/authorization.md](docs/authorization.md).
 
 ---
 
