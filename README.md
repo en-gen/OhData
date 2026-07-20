@@ -121,20 +121,49 @@ See [docs/openapi.md](docs/openapi.md), [docs/nswag.md](docs/nswag.md), and
 
 ### Beyond the basics
 
-The rest of the surface rides other profile declarations - navigation properties (`HasMany`/`HasOptional`/`HasRequired`), `UseETag`, and `BindFunction`/`BindAction` - rather than the plain CRUD handlers above:
+The rest of the surface rides other profile declarations - navigation properties (`HasMany`/`HasOptional`/`HasRequired`), `UseETag`, and `BindFunction`/`BindAction` - rather than the plain CRUD handlers above. Each declaration registers its routes; the trailing comments show what you get:
 
-| Method | Route | Registered by |
-|--------|-------|---------------|
-| `GET` | `/odata/Orders({key})/Lines` | `HasMany`/`HasOptional`/`HasRequired` with a `getAll`/`get`/`batchGetAll`/`batchGet` delegate |
-| `GET` | `/odata/Orders({key})/Lines/$count` | same, for collection navigations |
-| `POST` | `/odata/Orders({key})/Lines` | `HasMany` with a `post` delegate - creates a related entity |
-| `GET`/`POST`/`PUT`/`DELETE` | `/odata/Orders({key})/Lines/$ref` | `HasMany`/`HasOptional` with `addRef`/`setRef`/`removeRef` |
-| `GET` | `/odata/Products/{FunctionName}` | `BindFunction` (collection-bound) |
-| `POST` | `/odata/Products/{ActionName}` | `BindAction` (collection-bound) |
-| `GET` | `/odata/Products({key})/{FunctionName}` | `BindEntityFunction` |
-| `POST` | `/odata/Products({key})/{ActionName}` | `BindEntityAction` |
+```csharp
+public class OrdersProfile : EntitySetProfile<int, Order>
+{
+    public OrdersProfile(AppDbContext db) : base(x => x.Id)
+    {
+        GetQueryable = _ => Task.FromResult(db.Orders.AsQueryable());
 
-See [docs/navigation-routing.md](docs/navigation-routing.md), [docs/property-access.md](docs/property-access.md), [docs/deep-insert.md](docs/deep-insert.md), and [docs/bound-operations.md](docs/bound-operations.md) for the full details behind each row.
+        // Collection navigation. One declaration, four routes:
+        HasMany(
+            navigation: x => x.Lines,
+            getAll:    (orderId, ct) => Task.FromResult(db.Lines.Where(l => l.OrderId == orderId).AsEnumerable()),
+                                        // GET  /Orders({key})/Lines   (+ GET /Orders({key})/Lines/$count)
+            post:      (orderId, line, ct) => { /* persist */ return Task.FromResult<OrderLine?>(line); },
+                                        // POST /Orders({key})/Lines           - create a related entity
+            addRef:    (orderId, lineId, ct) => Task.CompletedTask,   // POST/PUT /Orders({key})/Lines/$ref - link
+            removeRef: (orderId, lineId, ct) => Task.CompletedTask,   // DELETE   /Orders({key})/Lines/$ref - unlink
+            refTargetEntitySet: "Lines");
+
+        // Single-valued navigation → GET /Orders({key})/Customer.
+        HasOptional(
+            navigation: x => x.Customer,
+            get: (orderId, ct) => Task.FromResult(db.Orders.Find(orderId)?.Customer));
+
+        // ETag response header + If-Match concurrency on GET/PUT/PATCH/DELETE.
+        UseETag(x => x.RowVersion);
+
+        // Bound operations become routes. The entity-bound pair takes the key as its first parameter.
+        BindFunction(Discounted);       // GET  /Orders/Discounted?minOff=…
+        BindAction(Archive);            // POST /Orders/Archive
+        BindEntityFunction(Total);      // GET  /Orders({key})/Total
+        BindEntityAction(Approve);      // POST /Orders({key})/Approve
+    }
+
+    static Task<IEnumerable<Order>> Discounted(decimal minOff) => /* … */;
+    static Task Archive() => /* … */;
+    static Task<decimal> Total(int key) => /* … */;          // first parameter is the entity key
+    static Task Approve(int key, string note) => /* … */;    // first parameter is the entity key
+}
+```
+
+See [docs/navigation-routing.md](docs/navigation-routing.md), [docs/property-access.md](docs/property-access.md), [docs/deep-insert.md](docs/deep-insert.md), and [docs/bound-operations.md](docs/bound-operations.md) for the full details behind each declaration.
 
 And to *shrink* the surface instead of growing it: `Ignore(x => x.CostBasis)` hides a property
 from `$metadata`, query options, routes, and every request/response body — without touching the
