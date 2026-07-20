@@ -354,7 +354,7 @@ GET /odata/Orders?$expand=Lines,Customer
 GET /odata/Orders(3f2a...)?$expand=Lines        ← single-entity route too
 ```
 
-`$expand` does **not** use EF Core's `Include()` or push the join into SQL. Instead, for each requested navigation property the framework invokes a registered navigation route handler. This is a generic mechanism with no EF Core dependency, and it behaves identically on the `GetQueryable`, `GetAll`, and Priority-1 (`IODataEntitySetEndpointSource`) paths. See [navigation-routing.md](navigation-routing.md) for details.
+For a navigation **declared with a delegate**, `$expand` does **not** use EF Core's `Include()` or push the join into SQL. Instead the framework invokes that navigation's registered handler. This is a generic mechanism with no EF Core dependency, and it behaves identically on the `GetQueryable`, `GetAll`, and Priority-1 (`IODataEntitySetEndpointSource`) paths. See [navigation-routing.md](navigation-routing.md) for details. A navigation **declared without a delegate** takes a different path — SQL-JOIN pushdown — described in [Delegate-less navigations JOIN automatically](#expand-pushdown-delegate-less-navigations-join-automatically-206) below.
 
 There are two ways to register the handler, and they have very different `$expand` performance:
 
@@ -395,8 +395,6 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
 
 Registering only the batch overload is enough - the framework auto-derives a single-key handler from it, so the standalone `GET /Orders(id)/Lines` route, nav `$count`, and `$ref` endpoints all keep working without writing a second handler. You may still register both explicitly (e.g. if the single-key path warrants a different query shape), in which case the per-entity handler you supply is used for those standalone routes and the batch handler is used only for `$expand`.
 
-`$expand` requires a navigation route handler (batch or per-entity - the same one used for the standalone `GET /Orders(id)/Lines` route) to be registered - a navigation property declared with `HasMany(x => x.Lines)` alone (no handler) is visible in `$metadata` but is silently skipped when a client tries to `$expand` it.
-
 Restrict which navigation properties may be expanded:
 
 ```csharp
@@ -404,6 +402,60 @@ ExpandProperties(x => x.Lines, x => x.Customer);
 ```
 
 Expanding a navigation property outside the allowlist returns `400 Bad Request` (`InvalidQueryOption`).
+
+<a id="expand-pushdown-delegate-less-navigations-join-automatically-206"></a>
+### `$expand` pushdown: delegate-less navigations JOIN automatically (#206)
+
+> **The one rule to remember:** writing an expand delegate opts a navigation **out** of pushdown; a bare declaration opts it **in**.
+>
+> **Mental model:** write a delegate only when expansion needs real logic (filtering, ordering, authorization, a custom query shape). A plain relationship gets SQL-JOIN expansion for free.
+
+A navigation declared **without** any expand delegate — a bare `HasMany(x => x.Lines)` / `HasOptional(x => x.Ref)` / `HasRequired(x => x.Ref)` with no `getAll`/`get`/`batchGetAll`/`batchGet` — is now **SQL-JOIN-expandable automatically**. On the EF Core-backed `GetQueryable` path, `$expand`'ing such a navigation folds it into the collection query's projection (`x => new Order { …, Lines = x.Lines.ToList() }`), so **one JOIN'd query** loads the page and all its related rows — no delegate to write, no N+1. This is why the earlier caveat ("a `HasMany(x => x.Lines)` alone is silently skipped under `$expand`") no longer holds: a bare declaration is a first-class, pushed expansion.
+
+The behavior is decided **purely by whether a delegate exists** — there is no global flag to flip and no per-navigation opt-in:
+
+| Declaration | `$expand` path | Why |
+|---|---|---|
+| `HasMany(x => x.Lines)` — **no delegate** | **SQL-JOIN pushdown** (one query) | There is no delegate to bypass; the `Include`/JOIN *is* the definition of the expansion. |
+| `HasMany(x => x.Lines, getAll: …)` / `batchGetAll: …` — **has a delegate** | **Delegate** (never pushed down) | The delegate may filter/order/authorize; pushing it down would change results or leak rows, so it is always honored. |
+
+This is **not** "byte-identical to the delegate path" — for a pushed navigation there is no delegate to compare against; the JOIN *is* the source of the related rows. (The un-pushed, delegate path stays exactly as documented above.)
+
+Pushdown is **on by default** (`EntitySetDefaults.ExpandPushdownEnabled`, per-profile `ExpandPushdownEnabled` override). It engages **only** on the EF Core-backed `GetQueryable` path and **only** for a navigation whose related type has no back-reference cycle. Whenever pushdown is ineligible for a request — a non-EF provider, a cyclic navigation, a deferred nested option (see the table below), or a projection/translation/serialization failure — it **falls back silently**: the delegate-less navigation simply stays EDM-only for that request (as it was before this feature), the request still succeeds (never a `500`), and the reason is `Debug`-logged. A delegate-backed navigation is **never** affected — it always expands through its delegate. Set `ExpandPushdownEnabled = false` (per profile or in `WithDefaults`) to keep every delegate-less navigation unexpandable.
+
+`$expand` pushdown composes with `$select` pushdown: `?$select=name&$expand=Lines` prunes the parent's column list *and* JOINs the lines in the same single query. The two capabilities are **independent** — disabling `SelectPushdownEnabled` does not disable `$expand` pushdown, and an `$expand` push never column-prunes the parent on its own.
+
+#### Nested options on a pushed `$expand`
+
+A pushed (delegate-less) `$expand` honors the nested options of the expanded collection. `$filter`, `$orderby`, and `$top`/`$skip` are pushed down to SQL as a **filtered / ordered / paged `Include`** (translated by Microsoft's own OData `FilterBinder`/`OrderByBinder`, so the semantics match a top-level `$filter`/`$orderby`), producing a single JOIN'd query — no per-parent N+1. `$count` and `$select` are then applied to the (camelCase) serialized result.
+
+| Nested option (on a delegate-less pushed nav) | Supported | How |
+|---|---|---|
+| `$select` — `Children($select=name)` | ✅ | JSON projection of the expanded elements (camelCase preserved) |
+| `$filter` — `Children($filter=active eq true)` | ✅ | filtered `Include` (SQL `WHERE` in the JOIN) |
+| `$orderby` — `Children($orderby=name desc)` | ✅ | ordered `Include` (SQL `ORDER BY` in the JOIN) |
+| `$top` / `$skip` — `Children($orderby=name;$top=5)` | ✅ | paged `Include` (SQL `ROW_NUMBER` window) |
+| `$count` — `Children($count=true)` | ✅ | inline `Children@odata.count` = full filtered count (paging is applied after counting, per §11.2.4.2) |
+| **nested `$expand`** — `Children($expand=Grandkids)` | ✅ | multi-level pushdown: folded into the same query as an `Include`→`ThenInclude` JOIN when every level is delegate-less (see [Multi-level `$expand`](#multi-level-expand-and-levels-206) below) |
+| `$levels` — `Children($levels=2)` / `Children($levels=max)` | ✅ | recursive self-referential expand, bounded by `MaxExpansionDepth` (see below) |
+| `$search` / `$compute` / `$apply` | ❌ (deferred) | not implemented on the pushdown path |
+
+A deferred nested option is not an error: the request still returns `200`, but the delegate-less navigation that carried it stays EDM-only (empty) for that request. Nested options on a **delegate-backed** navigation follow the delegate path and are subject to that path's own support (see [navigation-routing.md](navigation-routing.md)); they never engage pushdown.
+
+<a id="multi-level-expand-and-levels-206"></a>
+#### Multi-level `$expand` and `$levels` (#206)
+
+A nested `$expand` is pushed **recursively**: `?$expand=Books($expand=Chapters($expand=Pages))` folds all three levels into one JOIN'd query (EF Core `Include`→`ThenInclude`), applying each level's own nested `$filter`/`$orderby`/`$top`/`$skip`/`$count`/`$select`. A branch is pushed only when it is **delegate-less at every level**; the moment a level's navigation carries a delegate (or is cyclic / a non-projectable type), that whole branch is deferred off pushdown and resolves through the existing path — a **delegate-backed navigation is never EF-included at any depth**, so the delegate is never bypassed. A delegate-backed navigation reached directly from the root (or under delegate-backed ancestors) still expands through its delegate exactly as before; a delegate navigation nested *beneath* a delegate-less pushed one stays empty (it is never JOIN-loaded).
+
+`$levels=N` recursively expands a **self-referential** navigation (a tree/hierarchy) `N` levels deep — `?$expand=Children($levels=2)` — as a bounded, cycle-free projection (each level is a fresh POCO; the deepest loaded level terminates the recursion). `$levels=max` resolves to the configured `MaxExpansionDepth`. Both are capped at `MaxExpansionDepth`: a `$levels` (or a nested `$expand`) that resolves deeper is rejected with `400` before any handler runs (see [Complexity limits](#complexity-limits-202)). A `$levels` expand that *also* carries other nested options (`$filter`/`$select`/…) is deferred off pushdown (a rare combination) and stays EDM-only.
+
+The ceiling is advertised in `$metadata` as the `Org.OData.Capabilities.V1.ExpandRestrictions/MaxLevels` annotation on each entity set, so a client can discover it before issuing a request.
+
+**Caveats.**
+
+- **Nested options are not gated by the parent profile's property allowlists.** `FilterProperties`/`OrderByProperties`/`SelectProperties` restrict the *root* entity set only; a navigation-target type has no allowlist surface of its own and is treated as fully queryable (this is the same design decision that lets nav-path `$filter` work — see `MarkNavigationTargetTypesFullyQueryable`). So `$expand=Children($filter=…)`/`($orderby=…)`/`($select=…)` may reference any column of the child type regardless of what the parent restricted. Model your navigation targets accordingly (e.g. don't expose a sensitive column on a type reachable via a delegate-less navigation you `$expand`), or write an expand **delegate** for that navigation (which opts it out of pushdown and lets you enforce your own shaping).
+- **`$count` on a pushed expand materializes the full filtered child collection.** To report `Nav@odata.count` accurately, the whole filtered set is loaded before `$top`/`$skip` paging is applied — the same amount of data a bare `$expand=Nav` already loads. `$top`/`$skip` *without* `$count` push the paging into SQL and transfer only the page. There is no per-navigation `MaxTop` ceiling on a nested `$top`.
+- **Nested paging without a nested `$orderby` is stabilized by the child's key.** When `$top`/`$skip` are pushed to SQL without a nested `$orderby`, the navigation element's single key is appended as a deterministic tiebreaker (mirroring the root path). A composite-keyed child type is left to the provider's order.
 
 To also expose navigation as a standalone HTTP route (`GET /Orders(id)/Lines`), provide a handler to `HasMany` - see [navigation-routing.md](navigation-routing.md).
 
@@ -415,7 +467,7 @@ Four ceilings bound how expensive a single request's query options may be. Each 
 
 | Limit | Default | Bounds |
 |---|---|---|
-| `MaxExpansionDepth` | `12` | Nesting depth of `$expand`. **Enforced** as of #202 — a deeper `$expand` returns `400` rather than a silently-truncated result. `12` is the framework's internal nested-expand ceiling, so the intended use is to *lower* this to harden; raising it above 12 has no effect. |
+| `MaxExpansionDepth` | `3` | Nesting depth of `$expand`, and the ceiling `$levels` is resolved and capped to (`$levels=max` becomes exactly this value). **Enforced** as of #202 — a deeper `$expand`/`$levels` returns `400` rather than a silently-truncated result. Advertised per entity set in `$metadata` as `Org.OData.Capabilities.V1.ExpandRestrictions/MaxLevels` (#206). Raise it to allow deeper graph/hierarchy queries, or lower it to harden. |
 | `MaxFilterNodeCount` | `10000` | Number of nodes in a `$filter` expression tree. |
 | `MaxOrderByNodeCount` | `1000` | Number of nodes in an `$orderby`. |
 | `MaxAnyAllExpressionDepth` | `1000` | Nesting depth of `any()`/`all()` lambdas in a `$filter`. |

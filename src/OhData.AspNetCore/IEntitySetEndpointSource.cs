@@ -69,6 +69,17 @@ internal interface IEntitySetEndpointSource
     bool SelectPushdownEnabled { get; }
 
     /// <summary>
+    /// Whether <c>$expand</c> Include pushdown may apply on this set's <c>GetQueryable</c> path
+    /// (#206 phase 2). Resolved from the profile flag / <c>EntitySetDefaults</c>
+    /// (default true). When true and a top-level <c>$expand</c> names a navigation declared
+    /// <b>without</b> a delegate on an EF Core-backed source, that navigation is folded into the
+    /// collection query's projection (one JOIN'd query), honoring the expand's nested
+    /// <c>$filter</c>/<c>$orderby</c>/<c>$top</c>/<c>$skip</c>/<c>$count</c>/<c>$select</c>;
+    /// delegate-backed navigations always take the delegate expansion path and are never pushed down.
+    /// </summary>
+    bool ExpandPushdownEnabled { get; }
+
+    /// <summary>
     /// CLR property names participating in the <c>UseETag</c> hash, when every selector was a
     /// direct member access; <c>null</c> when ETags are unconfigured OR any selector was
     /// computed (names unknowable — #206 pushdown is then ineligible while <see cref="HasETag"/>).
