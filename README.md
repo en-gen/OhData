@@ -163,6 +163,8 @@ public class OrdersProfile : EntitySetProfile<int, Order>
 }
 ```
 
+Every parameter past `getAll` is optional — `post`, `addRef`/`removeRef`, and `refTargetEntitySet` each opt in one route, so declare only the ones you want (and `HasMany(x => x.Lines)` on its own registers no routes at all — it just declares the navigation for `$metadata` and `$expand`). The same holds for `HasOptional`/`HasRequired`.
+
 See [docs/navigation-routing.md](docs/navigation-routing.md), [docs/property-access.md](docs/property-access.md), [docs/deep-insert.md](docs/deep-insert.md), and [docs/bound-operations.md](docs/bound-operations.md) for the full details behind each declaration.
 
 And to *shrink* the surface instead of growing it: `Ignore(x => x.CostBasis)` hides a property
