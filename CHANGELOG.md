@@ -11,6 +11,23 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`$expand` Include pushdown (#206, phase 2 — "provenance-auto").** A navigation declared
+  **without** a custom expand delegate (a bare `HasMany`/`HasOptional`/`HasRequired`) is now
+  **SQL-JOIN-expandable automatically**: on the EF Core-backed `GetQueryable` path, `$expand`'ing
+  it folds the navigation into the collection query's member-init projection, so a **single JOIN'd
+  query** loads the page and its related rows (collapsing the per-entity/batch delegate's *N×P*
+  sequential calls to one query) — no delegate to write, no N+1. Both collection and single-valued
+  references are supported, and it composes with `$select` pushdown in one query. **Eligibility is
+  decided purely by whether an expand delegate exists** — no global flag, no per-navigation
+  opt-in: declaring a delegate (`getAll`/`get`/`batchGetAll`/`batchGet`) opts a navigation **out**
+  of pushdown (the delegate always owns expansion, so it can filter/order/authorize and is never
+  bypassed); a bare declaration opts it **in**. On by default
+  (`EntitySetDefaults.ExpandPushdownEnabled` / per-profile `ExpandPushdownEnabled`), with silent
+  Debug-logged fallback — the delegate-less navigation stays EDM-only for that request, never a
+  `500` — whenever pushdown is ineligible: a non-EF provider, a `$levels` or nested/optioned
+  `$expand`, a cyclic navigation (guarded at startup against base/interface back-references), or a
+  projection/translation/serialization failure. Mental model: *write a delegate only when
+  expansion needs real logic; a plain relationship gets SQL-JOIN expansion for free.*
 - **`$select` projection pushdown (#206, phase 1).** On the `GetQueryable` path, an eligible
   `$select` now composes a member-init projection onto the profile's queryable, so LINQ
   providers emit a **column-pruned `SELECT`** instead of reading every column. Wire output is
@@ -20,7 +37,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   per-profile `SelectPushdownEnabled`), with silent Debug-logged fallback to the full fetch
   for ineligible requests (no parameterless constructor, setterless projected member,
   computed `UseETag` selector) and an opt-out for `IQueryable` providers that cannot
-  translate member-init. `$expand` pushdown is phase 2, tracked on the same issue.
+  translate member-init. (`$expand` pushdown is phase 2, above.)
 
 ## [1.4.0] - 2026-07-19
 

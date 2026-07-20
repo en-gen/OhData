@@ -185,6 +185,23 @@ public class EntitySetDefaults
     public bool SelectPushdownEnabled { get; set; } = true;
 
     /// <summary>
+    /// Whether <c>$expand</c> Include pushdown is enabled by default on all entity sets (#206
+    /// phase 2, Option A1). When <c>true</c> (the default) and a request's top-level
+    /// <c>$expand</c> names a navigation that was declared <b>without</b> a custom expand delegate
+    /// (a bare <c>HasMany</c>/<c>HasOptional</c>/<c>HasRequired</c>), the framework folds that
+    /// navigation into the <c>GetQueryable</c> collection query's member-init projection so an
+    /// EF Core-backed source loads the related rows via a single JOIN'd query (SQL pushdown)
+    /// instead of leaving the navigation unexpandable. A navigation declared <b>with</b> a
+    /// delegate (<c>getAll</c>/<c>get</c>/<c>batchGetAll</c>/<c>batchGet</c>) is NEVER pushed
+    /// down — it always expands through its delegate, which may filter/order/authorize. Pushdown
+    /// is skipped silently (the delegate-less navigation stays EDM-only for that request) whenever
+    /// it is ineligible: a non-EF provider, a nested/optioned or <c>$levels</c> <c>$expand</c>, a
+    /// cyclic navigation, or a projection/translation failure. Disable per profile (or here) to
+    /// keep every delegate-less navigation unexpandable.
+    /// </summary>
+    public bool ExpandPushdownEnabled { get; set; } = true;
+
+    /// <summary>
     /// Whether individual structural property routes appear in the generated API documentation
     /// (Swagger/OpenAPI): the two property reads
     /// (<c>GET /{EntitySet}({key})/{Property}</c> and <c>.../{Property}/$value</c>) and the
