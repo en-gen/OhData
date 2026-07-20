@@ -2729,13 +2729,11 @@ internal static class OhDataEndpointFactory
         // it was $expand'd. Delegate-backed navigations are the only ones ExpandLevelAsync loads.
         var routeBackedNavNames = new HashSet<string>(
             source.NavigationRoutes.Select(r => r.PropertyName), StringComparer.OrdinalIgnoreCase);
-        var pushdownExpandNavs = new Dictionary<string, ExpandNavBinding>(StringComparer.OrdinalIgnoreCase);
-        foreach (string navName in source.NavigationPropertyNames
-            .Where(navName => !routeBackedNavNames.Contains(navName))) // delegate-backed → delegate path only
-        {
-            if (BuildExpandNavBinding<TModel>(navName) is { } binding)
-                pushdownExpandNavs[navName] = binding;
-        }
+        var pushdownExpandNavs = source.NavigationPropertyNames
+            .Where(navName => !routeBackedNavNames.Contains(navName)) // delegate-backed → delegate path only
+            .Select(navName => (navName, binding: BuildExpandNavBinding<TModel>(navName)))
+            .Where(pair => pair.binding is not null)
+            .ToDictionary(pair => pair.navName, pair => pair.binding!.Value, StringComparer.OrdinalIgnoreCase);
 
         // #199 Layer C: per-operation authorization. When the profile declared
         // ConfigureAuthorization(...), resolve the effective rule per route category and apply it to
