@@ -2041,6 +2041,11 @@ internal static class OhDataEndpointFactory
                 return;
             }
 
+            // #220: expose the resolved structured requirements as endpoint metadata so the opt-in
+            // OpenAPI/NSwag "auth requirements" filters can render them (kinds/values) into the
+            // operation description. Attached only on secured routes; anonymous routes returned above.
+            rb.WithMetadata(new OhDataOperationAuthMetadata(rule.Requirements));
+
             // #199 Layer B: resource-based (instance-level) requirements are not an endpoint gate —
             // they are evaluated inside a per-request filter that loads the {key} entity. Attaching it
             // here (only when the category opts in) keeps property/nav/$ref routes gap-free.
