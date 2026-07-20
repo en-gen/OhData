@@ -24,10 +24,34 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   bypassed); a bare declaration opts it **in**. On by default
   (`EntitySetDefaults.ExpandPushdownEnabled` / per-profile `ExpandPushdownEnabled`), with silent
   Debug-logged fallback — the delegate-less navigation stays EDM-only for that request, never a
-  `500` — whenever pushdown is ineligible: a non-EF provider, a `$levels` or nested/optioned
-  `$expand`, a cyclic navigation (guarded at startup against base/interface back-references), or a
-  projection/translation/serialization failure. Mental model: *write a delegate only when
+  `500` — whenever pushdown is ineligible: a non-EF provider, a `$levels` or **nested** `$expand`
+  (multi-level), a cyclic navigation (guarded at startup against base/interface back-references),
+  or a projection/translation/serialization failure. Mental model: *write a delegate only when
   expansion needs real logic; a plain relationship gets SQL-JOIN expansion for free.*
+- **Nested `$expand` options on a pushed navigation (#206, phase 2).** A pushed (delegate-less)
+  `$expand` now honors the expanded collection's nested options. `$filter`, `$orderby`, and
+  `$top`/`$skip` are pushed to SQL as a **filtered / ordered / paged `Include`** — translated by
+  Microsoft's own OData `FilterBinder`/`OrderByBinder`, never a bespoke translator — so a single
+  JOIN'd query loads exactly the requested related rows (no per-parent N+1). `$count` emits an
+  inline `Nav@odata.count` (the full filtered count, paging applied after counting per §11.2.4.2)
+  and `$select` projects the expanded elements. Output stays camelCase plain-POCO — no
+  `SelectExpandWrapper` ever reaches the serializer, so no PascalCase leak. A **nested `$expand`**
+  (multi-level `ThenInclude`), `$levels`, or `$search`/`$compute`/`$apply` on the expand item is
+  **deferred** (the navigation stays EDM-only for that request); see `docs/query-options.md`.
+
+### Changed
+
+- **`$expand` pushdown is now decoupled from `$select` pushdown (#206).** An `$expand` push no
+  longer column-prunes the parent projection when `SelectPushdownEnabled` is `false` — the two
+  capabilities are independent, so a profile can disable `$select` pushdown while keeping `$expand`
+  JOIN pushdown (and vice versa).
+
+### Fixed
+
+- **Nested `$top` inside `$expand` no longer returns `400` (#206).** Navigation-target types now
+  clear Microsoft's model-bound `MaxTop = 0` default (`SetMaxTop(null)`), which previously rejected
+  `$expand=Children($top=N)` with "The limit of '0' for Top query has been exceeded." OhData still
+  governs `$top` itself (root: `source.MaxTop` clamp; nested: applied by the expand-pushdown path).
 - **`$select` projection pushdown (#206, phase 1).** On the `GetQueryable` path, an eligible
   `$select` now composes a member-init projection onto the profile's queryable, so LINQ
   providers emit a **column-pruned `SELECT`** instead of reading every column. Wire output is

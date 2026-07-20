@@ -70,11 +70,12 @@ internal interface IEntitySetEndpointSource
 
     /// <summary>
     /// Whether <c>$expand</c> Include pushdown may apply on this set's <c>GetQueryable</c> path
-    /// (#206 phase 2, Option A1). Resolved from the profile flag / <c>EntitySetDefaults</c>
+    /// (#206 phase 2). Resolved from the profile flag / <c>EntitySetDefaults</c>
     /// (default true). When true and a top-level <c>$expand</c> names a navigation declared
     /// <b>without</b> a delegate on an EF Core-backed source, that navigation is folded into the
-    /// collection query's projection (one JOIN'd query); delegate-backed navigations always take
-    /// the delegate expansion path and are never pushed down.
+    /// collection query's projection (one JOIN'd query), honoring the expand's nested
+    /// <c>$filter</c>/<c>$orderby</c>/<c>$top</c>/<c>$skip</c>/<c>$count</c>/<c>$select</c>;
+    /// delegate-backed navigations always take the delegate expansion path and are never pushed down.
     /// </summary>
     bool ExpandPushdownEnabled { get; }
 

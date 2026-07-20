@@ -384,6 +384,13 @@ public sealed class OhDataBuilder
             // effectively-unlimited-but-not-infinite settings this framework uses elsewhere
             // (e.g. MaxAnyAllExpressionDepth = 1000 in OhDataEndpointFactory).
             query.SetExpand(properties: null, maxDepth: 1000, expandType: SelectExpandType.Allowed);
+            // #206 phase 2 (optioned expand): once ANY model-bound setting exists on a type,
+            // Microsoft's SelectExpand validator defaults its MaxTop to 0, which rejects a nested
+            // $top inside a $expand of THIS type ($expand=Children($top=N)) with "limit of 0 for
+            // Top". Nav-target types are the collection element types a nested $top pages, so clear
+            // that spurious ceiling (null = unlimited). OhData governs $top itself: the root path
+            // clamps to source.MaxTop, and the expand-pushdown path applies the nested $top directly.
+            query.SetMaxTop(null);
         }
     }
 

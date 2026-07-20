@@ -128,14 +128,17 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
     /// <summary>
     /// Controls whether <c>$expand</c> Include pushdown applies on this entity set's
-    /// <c>GetQueryable</c> path (#206 phase 2, Option A1). When enabled and a request's top-level
+    /// <c>GetQueryable</c> path (#206 phase 2). When enabled and a request's top-level
     /// <c>$expand</c> names a navigation declared <b>without</b> a custom expand delegate (a bare
     /// <see cref="HasMany{T}(System.Linq.Expressions.Expression{System.Func{TModel, System.Collections.Generic.IEnumerable{T}}})"/>
     /// / <c>HasOptional</c> / <c>HasRequired</c>), the framework folds that navigation into the
     /// collection query's projection so an EF Core-backed source loads the related rows via a
-    /// single JOIN'd query instead of leaving the navigation unexpandable. A navigation declared
-    /// <b>with</b> a delegate always expands through its delegate and is never pushed down.
-    /// Inherits from <see cref="EntitySetDefaults"/> (default <c>true</c>) when <c>null</c>.
+    /// single JOIN'd query instead of leaving the navigation unexpandable. The expand's nested
+    /// options are honored: <c>$filter</c>/<c>$orderby</c>/<c>$top</c>/<c>$skip</c> push to SQL as a
+    /// filtered/ordered/paged <c>Include</c>, and <c>$count</c>/<c>$select</c> shape the result;
+    /// a nested <c>$expand</c> (multi-level) or <c>$levels</c> is not pushed (see docs/query-options.md).
+    /// A navigation declared <b>with</b> a delegate always expands through its delegate and is never
+    /// pushed down. Inherits from <see cref="EntitySetDefaults"/> (default <c>true</c>) when <c>null</c>.
     /// Disable to keep every delegate-less navigation unexpandable.
     /// </summary>
     protected bool? ExpandPushdownEnabled { get; init; }
@@ -953,7 +956,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// no delegate needed. Supplying a <c>get</c>/<c>batchGet</c> delegate (the other overloads)
     /// opts the navigation <b>out</b> of pushdown: the delegate then owns expansion (so it can
     /// filter/order/authorize). Mental model: write a delegate only when expansion needs real
-    /// logic; a plain relationship gets SQL-JOIN expansion for free.
+    /// logic; a plain relationship gets SQL-JOIN expansion for free. A pushed single-valued
+    /// reference honors a nested <c>$select</c> (<c>Ref($select=name)</c>); <c>$filter</c>/
+    /// <c>$orderby</c>/<c>$top</c>/<c>$skip</c>/<c>$count</c> do not apply to a single entity.
     /// </remarks>
     protected void HasOptional<TNavigation>(Expression<Func<TModel, TNavigation>> navigation)
         where TNavigation : class
@@ -1017,7 +1022,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// no delegate needed. Supplying a <c>get</c>/<c>batchGet</c> delegate (the other overloads)
     /// opts the navigation <b>out</b> of pushdown: the delegate then owns expansion (so it can
     /// filter/order/authorize). Mental model: write a delegate only when expansion needs real
-    /// logic; a plain relationship gets SQL-JOIN expansion for free.
+    /// logic; a plain relationship gets SQL-JOIN expansion for free. A pushed single-valued
+    /// reference honors a nested <c>$select</c> (<c>Ref($select=name)</c>); <c>$filter</c>/
+    /// <c>$orderby</c>/<c>$top</c>/<c>$skip</c>/<c>$count</c> do not apply to a single entity.
     /// </remarks>
     protected void HasRequired<TNavigation>(Expression<Func<TModel, TNavigation>> navigation)
         where TNavigation : class
@@ -1082,6 +1089,13 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// <b>out</b> of pushdown: the delegate then owns expansion (so it can filter/order/authorize).
     /// Mental model: write a delegate only when expansion needs real logic; a plain relationship
     /// gets SQL-JOIN expansion for free.
+    /// <para>
+    /// A pushed collection honors the expand's nested options: <c>$filter</c>/<c>$orderby</c>/
+    /// <c>$top</c>/<c>$skip</c> push to SQL as a filtered/ordered/paged <c>Include</c> (bound by
+    /// Microsoft's own <c>FilterBinder</c>/<c>OrderByBinder</c>), and <c>$count</c>/<c>$select</c>
+    /// shape the result. A <b>nested</b> <c>$expand</c> (multi-level) or <c>$levels</c> is NOT
+    /// pushed — the navigation then stays EDM-only for that request. See docs/query-options.md.
+    /// </para>
     /// </remarks>
     protected void HasMany<TNavigation>(Expression<Func<TModel, IEnumerable<TNavigation>>> navigation)
         where TNavigation : class

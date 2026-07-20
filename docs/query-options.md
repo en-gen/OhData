@@ -421,9 +421,32 @@ The behavior is decided **purely by whether a delegate exists** — there is no 
 
 This is **not** "byte-identical to the delegate path" — for a pushed navigation there is no delegate to compare against; the JOIN *is* the source of the related rows. (The un-pushed, delegate path stays exactly as documented above.)
 
-Pushdown is **on by default** (`EntitySetDefaults.ExpandPushdownEnabled`, per-profile `ExpandPushdownEnabled` override). It engages **only** on the EF Core-backed `GetQueryable` path, **only** for a top-level, simple `$expand` (no `$levels`, and no nested `$select`/`$expand`/`$filter`/`$orderby`/`$top`/`$skip`/`$count` on the expand item), and **only** for a navigation whose related type has no back-reference cycle. Whenever pushdown is ineligible for a request — a non-EF provider, a nested/optioned or `$levels` expand, a cyclic navigation, or a projection/translation/serialization failure — it **falls back silently**: the delegate-less navigation simply stays EDM-only for that request (as it was before this feature), the request still succeeds (never a `500`), and the reason is `Debug`-logged. A delegate-backed navigation is **never** affected — it always expands through its delegate. Set `ExpandPushdownEnabled = false` (per profile or in `WithDefaults`) to keep every delegate-less navigation unexpandable.
+Pushdown is **on by default** (`EntitySetDefaults.ExpandPushdownEnabled`, per-profile `ExpandPushdownEnabled` override). It engages **only** on the EF Core-backed `GetQueryable` path and **only** for a navigation whose related type has no back-reference cycle. Whenever pushdown is ineligible for a request — a non-EF provider, a cyclic navigation, a deferred nested option (see the table below), or a projection/translation/serialization failure — it **falls back silently**: the delegate-less navigation simply stays EDM-only for that request (as it was before this feature), the request still succeeds (never a `500`), and the reason is `Debug`-logged. A delegate-backed navigation is **never** affected — it always expands through its delegate. Set `ExpandPushdownEnabled = false` (per profile or in `WithDefaults`) to keep every delegate-less navigation unexpandable.
 
-`$expand` pushdown composes with `$select` pushdown: `?$select=name&$expand=Lines` prunes the parent's column list *and* JOINs the lines in the same single query.
+`$expand` pushdown composes with `$select` pushdown: `?$select=name&$expand=Lines` prunes the parent's column list *and* JOINs the lines in the same single query. The two capabilities are **independent** — disabling `SelectPushdownEnabled` does not disable `$expand` pushdown, and an `$expand` push never column-prunes the parent on its own.
+
+#### Nested options on a pushed `$expand`
+
+A pushed (delegate-less) `$expand` honors the nested options of the expanded collection. `$filter`, `$orderby`, and `$top`/`$skip` are pushed down to SQL as a **filtered / ordered / paged `Include`** (translated by Microsoft's own OData `FilterBinder`/`OrderByBinder`, so the semantics match a top-level `$filter`/`$orderby`), producing a single JOIN'd query — no per-parent N+1. `$count` and `$select` are then applied to the (camelCase) serialized result.
+
+| Nested option (on a delegate-less pushed nav) | Supported | How |
+|---|---|---|
+| `$select` — `Children($select=name)` | ✅ | JSON projection of the expanded elements (camelCase preserved) |
+| `$filter` — `Children($filter=active eq true)` | ✅ | filtered `Include` (SQL `WHERE` in the JOIN) |
+| `$orderby` — `Children($orderby=name desc)` | ✅ | ordered `Include` (SQL `ORDER BY` in the JOIN) |
+| `$top` / `$skip` — `Children($orderby=name;$top=5)` | ✅ | paged `Include` (SQL `ROW_NUMBER` window) |
+| `$count` — `Children($count=true)` | ✅ | inline `Children@odata.count` = full filtered count (paging is applied after counting, per §11.2.4.2) |
+| **nested `$expand`** — `Children($expand=Grandkids)` | ❌ (deferred) | multi-level `ThenInclude` is not pushed; the outer nav stays EDM-only for the request |
+| `$levels` — `Children($levels=2)` | ❌ (deferred) | recursive expand is not pushed |
+| `$search` / `$compute` / `$apply` | ❌ (deferred) | not implemented on the pushdown path |
+
+A deferred nested option is not an error: the request still returns `200`, but the delegate-less navigation that carried it stays EDM-only (empty) for that request. Nested options on a **delegate-backed** navigation follow the delegate path and are subject to that path's own support (see [navigation-routing.md](navigation-routing.md)); they never engage pushdown.
+
+**Caveats.**
+
+- **Nested options are not gated by the parent profile's property allowlists.** `FilterProperties`/`OrderByProperties`/`SelectProperties` restrict the *root* entity set only; a navigation-target type has no allowlist surface of its own and is treated as fully queryable (this is the same design decision that lets nav-path `$filter` work — see `MarkNavigationTargetTypesFullyQueryable`). So `$expand=Children($filter=…)`/`($orderby=…)`/`($select=…)` may reference any column of the child type regardless of what the parent restricted. Model your navigation targets accordingly (e.g. don't expose a sensitive column on a type reachable via a delegate-less navigation you `$expand`), or write an expand **delegate** for that navigation (which opts it out of pushdown and lets you enforce your own shaping).
+- **`$count` on a pushed expand materializes the full filtered child collection.** To report `Nav@odata.count` accurately, the whole filtered set is loaded before `$top`/`$skip` paging is applied — the same amount of data a bare `$expand=Nav` already loads. `$top`/`$skip` *without* `$count` push the paging into SQL and transfer only the page. There is no per-navigation `MaxTop` ceiling on a nested `$top`.
+- **Nested paging without a nested `$orderby` is stabilized by the child's key.** When `$top`/`$skip` are pushed to SQL without a nested `$orderby`, the navigation element's single key is appended as a deterministic tiebreaker (mirroring the root path). A composite-keyed child type is left to the provider's order.
 
 To also expose navigation as a standalone HTTP route (`GET /Orders(id)/Lines`), provide a handler to `HasMany` - see [navigation-routing.md](navigation-routing.md).
 

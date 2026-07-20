@@ -381,7 +381,7 @@ public sealed class ExpandPushdownSqliteTests : IAsyncLifetime
     {
         // $expand=Children($levels=2) carries a $levels option (the parser only accepts $levels on a
         // recursive nav). Such a nav is self-referential → cyclic → excluded by the static guard, and
-        // IsSimpleExpandItem's explicit LevelsOption bail is the belt-and-suspenders that would defer
+        // TryBuildEngagedExpand's explicit LevelsOption bail is the belt-and-suspenders that would defer
         // it even if it were eligible. Either way it must NOT be pushed down and must not 500: the
         // OrgNodes query loads no children (delegate-less, unpushed), so each node's children is [].
         var resp = await _fx.Client.GetAsync("/odata/OrgNodes?$expand=Children($levels=2)&$orderby=id");
