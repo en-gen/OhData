@@ -23,6 +23,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.AspNetCore.OData.Query;
+using Microsoft.AspNetCore.OData.Query.Expressions;
 using Microsoft.AspNetCore.OData.Query.Wrapper;
 using Microsoft.AspNetCore.OData.Query.Validator;
 using Microsoft.AspNetCore.Routing;
@@ -1064,12 +1065,13 @@ internal static class OhDataEndpointFactory
     }
 
     // #202: per-entity-set validation settings, built once per set from the source's resolved
-    // complexity limits (MaxExpansionDepth default 12, node counts 10000/1000/1000 as before) so an
+    // complexity limits (MaxExpansionDepth default 3, node counts 10000/1000/1000 as before) so an
     // implementor can tighten them per profile or globally via WithDefaults. AllowedQueryOptions=All
     // etc. is retained so the only checks these run are the per-property allowlist annotations and
     // the complexity ceilings — $top/$skip/$count keep their own dedicated enforcement (see the
     // ValidatePropertyAllowlists remark). MaxExpansionDepth is now enforced (was hardcoded 0/disabled):
-    // a $expand nesting deeper than the limit is rejected with 400 rather than silently truncated.
+    // a $expand nesting deeper than the limit — including a $levels that resolves deeper (#206) — is
+    // rejected with 400 by Microsoft's SelectExpandQueryValidator rather than silently truncated.
     private static ODataValidationSettings BuildValidationSettings(IEntitySetEndpointSource source) => new()
     {
         AllowedQueryOptions = AllowedQueryOptions.All,
@@ -1163,7 +1165,8 @@ internal static class OhDataEndpointFactory
         IEdmEntityType? rootEdmType,
         OhDataRegistration registration,
         IServiceProvider requestServices,
-        CancellationToken ct)
+        CancellationToken ct,
+        HashSet<string>? pushedLevelsNavNames = null)
     {
         // Stage 1: Serialize once using the configured naming policy.
         var serializerOptions = jsonOptions ?? _camelCaseSerializerOptions;
@@ -1211,7 +1214,8 @@ internal static class OhDataEndpointFactory
         // pass removes each un-expanded navigation and recurses into the expanded ones so their
         // own un-expanded navigations are stripped too (face 3). Runs after Stage 3 so freshly
         // injected expansions are present, and before Stage 4 so $select still has final say.
-        OmitUnexpandedNavigations(json, rootEdmType, options.SelectExpand?.SelectExpandClause, source.ModelType, serializerOptions);
+        OmitUnexpandedNavigations(json, rootEdmType, options.SelectExpand?.SelectExpandClause, source.ModelType, serializerOptions,
+            activeLevels: null, maxLevels: source.MaxExpansionDepth, levelsNavNames: pushedLevelsNavNames);
 
         // Stage 4: Strip unselected properties at the ROOT level (if $select requested). Deeper
         // levels have already had their own $select applied by ExpandLevelAsync in Stage 3.
@@ -1453,7 +1457,10 @@ internal static class OhDataEndpointFactory
         IEdmEntityType? edmType,
         SelectExpandClause? clause,
         Type? clrType,
-        JsonSerializerOptions? serializerOptions)
+        JsonSerializerOptions? serializerOptions,
+        (string Nav, int Remaining)? activeLevels = null,
+        int maxLevels = MaxNestedExpandDepth,
+        HashSet<string>? levelsNavNames = null)
     {
         if (edmType is null) return;
 
@@ -1465,15 +1472,23 @@ internal static class OhDataEndpointFactory
         {
             foreach (JsonNode? element in array)
             {
-                OmitUnexpandedNavigations(element, edmType, clause, clrType, serializerOptions);
+                OmitUnexpandedNavigations(element, edmType, clause, clrType, serializerOptions, activeLevels, maxLevels, levelsNavNames);
             }
             return;
         }
         if (node is not JsonObject obj) return;
 
         // Navigation name → its nested $expand clause, for the navigations expanded at THIS level.
-        // Presence means "keep and recurse"; absence means "remove".
+        // Presence means "keep and recurse"; absence means "remove". #206: a nav carrying $levels=N is
+        // ALSO recorded in levelsRemaining as its resolved recursion budget, so its self-reference is
+        // kept (not stripped) at every level down to the depth actually loaded — Microsoft keeps
+        // $levels implicit (a single top-level item), so without this the recursive levels below the
+        // first would be stripped as "unexpanded". The keep is gated to navs that were actually PUSHED
+        // (levelsNavNames): a delegate-backed $levels nav takes the delegate path (which loads only the
+        // first level), so its deeper self-references must still be stripped as before — otherwise the
+        // delegate's raw serialized graph would leak beyond depth 1.
         Dictionary<string, SelectExpandClause?>? expanded = null;
+        Dictionary<string, int>? levelsRemaining = null;
         if (clause is not null)
         {
             foreach (ExpandedNavigationSelectItem expandItem in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
@@ -1481,6 +1496,12 @@ internal static class OhDataEndpointFactory
                 string navName = expandItem.PathToNavigationProperty.FirstSegment.Identifier;
                 (expanded ??= new Dictionary<string, SelectExpandClause?>(StringComparer.OrdinalIgnoreCase))
                     [navName] = expandItem.SelectAndExpand;
+                if (expandItem.LevelsOption is { } lv && levelsNavNames is not null && levelsNavNames.Contains(navName))
+                {
+                    int resolved = lv.IsMaxLevel ? maxLevels : (int)Math.Min(lv.Level, maxLevels);
+                    (levelsRemaining ??= new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase))[navName] =
+                        Math.Min(Math.Max(resolved, 1), maxLevels);
+                }
             }
         }
 
@@ -1501,15 +1522,33 @@ internal static class OhDataEndpointFactory
                 navProp.Name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
             string serializedKey = ResolveNavigationJsonKey(navProp.Name, clrNavProp, serializerOptions);
 
-            if (expanded is not null && expanded.TryGetValue(navProp.Name, out SelectExpandClause? nested))
+            SelectExpandClause? nested = null;
+            bool explicitlyExpanded = expanded is not null &&
+                expanded.TryGetValue(navProp.Name, out nested);
+            // #206 ($levels): keep the self-referential nav even without an explicit nested item when a
+            // parent $levels expansion still has recursion budget for it.
+            bool keptByLevels = !explicitlyExpanded && activeLevels is { } al &&
+                string.Equals(al.Nav, navProp.Name, StringComparison.OrdinalIgnoreCase) && al.Remaining > 0;
+
+            if (explicitlyExpanded || keptByLevels)
             {
                 // Recurse into the expanded value to strip ITS un-expanded navigations. obj[key]
                 // is null when the expanded single-valued nav had no related entity — the recursive
                 // call no-ops on a null node, so no separate presence check is needed. The nested
                 // CLR type (element type for a collection nav) carries [JsonPropertyName] resolution
                 // one level deeper.
-                OmitUnexpandedNavigations(obj[serializedKey], navProp.ToEntityType(), nested,
-                    NavElementClrType(clrNavProp), serializerOptions);
+                SelectExpandClause? nestedClause = explicitlyExpanded ? nested : null;
+                // Resolve the levels budget carried into the next recursion: a fresh $levels=N at this
+                // level seeds N-1; otherwise the inherited budget decrements. When it reaches 0 the nav
+                // is kept at this level but its own self-reference below is stripped (depth honored).
+                int? nextLevels =
+                    levelsRemaining is not null && levelsRemaining.TryGetValue(navProp.Name, out int freshLevels)
+                        ? freshLevels - 1
+                        : (keptByLevels ? activeLevels!.Value.Remaining - 1 : (int?)null);
+                (string, int)? childActive = nextLevels is int nl && nl > 0 ? (navProp.Name, nl) : null;
+
+                OmitUnexpandedNavigations(obj[serializedKey], navProp.ToEntityType(), nestedClause,
+                    NavElementClrType(clrNavProp), serializerOptions, childActive, maxLevels, levelsNavNames);
             }
             else
             {
@@ -1618,6 +1657,18 @@ internal static class OhDataEndpointFactory
     /// combinations are client-controlled and unbounded, so a lambda cache keyed by select-set
     /// would be an unbounded-growth vector (#202 hardening ethos); LINQ providers' own query
     /// caches key structurally and absorb repeated shapes.
+    /// <para>
+    /// #206 phase 2: when <paramref name="expandNavs"/> is supplied (the $expand pushdown path),
+    /// each pushed navigation is folded into the same member-init — a collection as
+    /// <c>Nav = x.Nav[.Where(f)][.OrderBy(o)][.Skip(s)][.Take(t)].ToList()</c> (the nested
+    /// $filter/$orderby/$top/$skip of the expand, bound by Microsoft's FilterBinder/OrderByBinder;
+    /// see BuildShapedNavAccess), a single-valued reference as <c>Ref = x.Ref</c> — so one EF Core
+    /// query loads the related rows via a JOIN. When <c>null</c> (the $select-only path) the
+    /// projection is byte-for-byte what it was before. Ineligibility (no ctor / unknowable ETag
+    /// names / complex or unsettable structural member, or a nested clause the binder cannot bind)
+    /// returns <paramref name="query"/> unchanged; the caller detects that by reference and abandons
+    /// expand pushdown for the request, so the folded navigations are never partially applied.
+    /// </para>
     /// </summary>
     private static IQueryable<TModel> TryApplySelectProjection<TModel>(
         IQueryable<TModel> query,
@@ -1625,7 +1676,10 @@ internal static class OhDataEndpointFactory
         IEntitySetEndpointSource source,
         bool hasParameterlessCtor,
         IReadOnlyDictionary<string, StructuralPropertyInfo> structuralByName,
-        ILogger? logger)
+        ILogger? logger,
+        IReadOnlyList<EngagedExpand>? expandNavs = null,
+        IEdmModel? edmModel = null,
+        ODataQuerySettings? binderSettings = null)
     {
         if (!hasParameterlessCtor)
         {
@@ -1702,12 +1756,663 @@ internal static class OhDataEndpointFactory
         }
 
         ParameterExpression x = Expression.Parameter(typeof(TModel), "x");
-        MemberBinding[] bindings = members.Values
+        var bindings = members.Values
             .Select(m => (MemberBinding)Expression.Bind(m.Property, Expression.Property(x, m.Property)))
-            .ToArray();
+            .ToList();
+
+        // #206 phase 2: fold each pushed $expand navigation into the same member-init so the LINQ
+        // provider loads the related rows as part of this one query (EF Core translates a collection
+        // navigation projected with .ToList() into a JOIN, and a single-valued navigation into an
+        // outer join). Nested $filter/$orderby/$top/$skip become a filtered/ordered/paged Include via
+        // BuildShapedNavAccess. Eligibility of each binding — settable property, non-cyclic related
+        // type, List-assignable collection — was decided at startup in BuildExpandNavBinding.
+        if (expandNavs is { Count: > 0 })
+        {
+            try
+            {
+                foreach (EngagedExpand nav in expandNavs)
+                {
+                    Expression access = BuildShapedNavAccess(x, nav, edmModel!, binderSettings!);
+                    bindings.Add(Expression.Bind(nav.Binding.Property, access));
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // A nested expand clause Microsoft's binder cannot translate (an unusual $filter/
+                // $orderby shape) must not become a 500: abandon pushdown by returning the query
+                // unchanged. The caller detects this by reference equality and falls back, so the
+                // delegate-less navigation stays EDM-only for the request.
+                logger?.LogDebug(ex,
+                    "OhData: $expand pushdown skipped for {EntitySet}: a nested expand option could not be bound; delegate-less navigations stay EDM-only for this request.",
+                    source.EntitySetName);
+                return query;
+            }
+        }
+
         Expression<Func<TModel, TModel>> projection = Expression.Lambda<Func<TModel, TModel>>(
             Expression.MemberInit(Expression.New(typeof(TModel)), bindings), x);
         return query.Select(projection);
+    }
+
+    // #206 phase 2 (Option A1): a navigation the $expand pushdown folds into the collection
+    // projection — the CLR property to bind, whether it is a collection (materialized with
+    // .ToList() so EF Core emits the JOIN) or a single-valued reference, and the related element
+    // type. Built once at startup for each DELEGATE-LESS navigation that survives the safety
+    // checks (see BuildExpandNavBinding); delegate-backed navigations never appear here.
+    private readonly record struct ExpandNavBinding(PropertyInfo Property, bool IsCollection, Type ElementType);
+
+    // #206 phase 2: cached open generic Enumerable.ToList<T>, closed per collection-navigation binding.
+    private static readonly MethodInfo _enumerableToList =
+        typeof(Enumerable).GetMethod(nameof(Enumerable.ToList), BindingFlags.Public | BindingFlags.Static)!;
+
+    // #206 phase 2 (optioned expand): cached open-generic Enumerable operators used to fold a
+    // filtered / ordered / paged Include into the collection projection. The nested $filter/$orderby/
+    // $top/$skip of a $expand are pushed to SQL by composing these onto the navigation access
+    // (x.Nav.Where(f).OrderBy(o).Skip(s).Take(t).ToList()); EF Core translates the result to a single
+    // JOIN with a ROW_NUMBER window for paging. The Where/OrderBy predicates are produced by
+    // Microsoft's own OData binders (FilterBinder/OrderByBinder), never a hand-rolled translator.
+    private static readonly MethodInfo _enumerableWhere = typeof(Enumerable).GetMethods()
+        .First(m => m.Name == nameof(Enumerable.Where) && m.GetParameters().Length == 2 &&
+                    m.GetParameters()[1].ParameterType.GetGenericArguments().Length == 2);
+    private static readonly MethodInfo _enumerableOrderBy = typeof(Enumerable).GetMethods()
+        .First(m => m.Name == nameof(Enumerable.OrderBy) && m.GetParameters().Length == 2);
+    private static readonly MethodInfo _enumerableOrderByDescending = typeof(Enumerable).GetMethods()
+        .First(m => m.Name == nameof(Enumerable.OrderByDescending) && m.GetParameters().Length == 2);
+    private static readonly MethodInfo _enumerableThenBy = typeof(Enumerable).GetMethods()
+        .First(m => m.Name == nameof(Enumerable.ThenBy) && m.GetParameters().Length == 2);
+    private static readonly MethodInfo _enumerableThenByDescending = typeof(Enumerable).GetMethods()
+        .First(m => m.Name == nameof(Enumerable.ThenByDescending) && m.GetParameters().Length == 2);
+    private static readonly MethodInfo _enumerableSkip = typeof(Enumerable).GetMethods()
+        .First(m => m.Name == nameof(Enumerable.Skip) && m.GetParameters().Length == 2 &&
+                    m.GetParameters()[1].ParameterType == typeof(int));
+    private static readonly MethodInfo _enumerableTake = typeof(Enumerable).GetMethods()
+        .First(m => m.Name == nameof(Enumerable.Take) && m.GetParameters().Length == 2 &&
+                    m.GetParameters()[1].ParameterType == typeof(int));
+    // #206 phase 2 (multi-level expand): Enumerable.Select<TSource,TResult>(source, selector) — the
+    // element-wise projection folded into a JOIN'd collection when a nested $expand (or $levels)
+    // recurses one level deeper. EF Core translates a collection navigation projected element-wise
+    // with .ToList() into a ThenInclude-style JOIN, so the whole delegate-less chain loads in one query.
+    private static readonly MethodInfo _enumerableSelect = typeof(Enumerable).GetMethods()
+        .First(m => m.Name == nameof(Enumerable.Select) && m.GetParameters().Length == 2 &&
+                    m.GetParameters()[1].ParameterType.GetGenericArguments().Length == 2);
+
+    // #206 phase 2 (optioned expand): the OData filter/orderby binders are stateless — all per-bind
+    // state flows through the QueryBinderContext argument — so a single shared instance is reused
+    // across requests (matching this file's cache-the-reflection-machinery ethos).
+    private static readonly FilterBinder _filterBinder = new();
+    private static readonly OrderByBinder _orderByBinder = new();
+
+    // #206 phase 2 (optioned + multi-level expand): one delegate-less navigation the request
+    // $expand'd, resolved for pushdown. Carries the startup binding plus the request's parsed nested
+    // clauses. Filter/OrderBy/Skip/Top are pushed to SQL via BuildShapedNavAccess; Count and
+    // NestedSelect are applied afterward on the serialized JSON (ShapePushedExpandsInJson) so the
+    // wire stays camelCase plain-POCO — no SelectExpandWrapper ever reaches the serializer. When
+    // Count is requested, Skip/Top are DEFERRED to the JSON pass instead of SQL so the emitted
+    // Nav@odata.count reflects the full filtered collection (OData §11.2.4.2), not the page.
+    // <para>#206 (recursion): <c>Children</c> holds each pushed nested $expand one level deeper —
+    // folded into the same JOIN'd query as an element-wise projection (EF ThenInclude). A branch is
+    // only recorded here when it is delegate-less AND pushable AT EVERY level; a delegate-backed (or
+    // otherwise non-pushable) nested nav defers the whole parent off pushdown (see
+    // TryBuildEngagedExpand), so a pushed branch can never EF-include a delegate navigation — the
+    // delegate-safety invariant holds at any depth by construction. <c>Levels</c> (&gt; 0) marks a
+    // <c>$levels=N</c> self-referential expand recursed N deep against the same <c>Binding</c>;
+    // <c>Children</c> is then null (the recursion re-uses this binding).</para>
+    private readonly record struct EngagedExpand(
+        ExpandNavBinding Binding,
+        FilterClause? Filter,
+        OrderByClause? OrderBy,
+        int? Skip,
+        int? Top,
+        bool Count,
+        List<string>? NestedSelect,
+        IReadOnlyList<EngagedExpand>? Children,
+        int Levels);
+
+    // #206 phase 2 (optioned + multi-level expand): resolve a $expand item that targets a
+    // delegate-less, pushdown-eligible navigation into an EngagedExpand (recursing into its own
+    // nested $expand), or return false to DEFER the whole branch off the pushdown path (it then stays
+    // EDM-only for the request, exactly as before). Deferred cases: $search/$compute/$apply
+    // (unsupported inside a pushed expand); a nested $expand whose child is delegate-backed, cyclic,
+    // or a non-member-init-projectable type (the parent is deferred wholesale so a pushed branch is
+    // delegate-less AND projectable end-to-end); an intermediate level whose element type cannot be
+    // member-init-projected. The nested options $filter/$orderby/$top/$skip/$count/$select are honored
+    // at every level. $levels is handled by the caller via BuildLevelsNavBinding; a $levels item that
+    // also carries other nested options is deferred (only structural recursion is pushed for $levels).
+    // <paramref name="remainingDepth"/> is the resolved MaxExpansionDepth budget for the whole chain
+    // (Microsoft's SelectExpandQueryValidator already 400s a request nesting deeper, so this is a
+    // belt-and-suspenders cap that never partially applies a too-deep graph).
+    private static bool TryBuildEngagedExpand(
+        ExpandedNavigationSelectItem item, ExpandNavBinding binding, IEdmModel model,
+        OhDataRegistration registration, int remainingDepth, out EngagedExpand engaged)
+    {
+        engaged = default;
+        if (remainingDepth < 1) return false;
+        if (item.SearchOption is not null || item.ComputeOption is not null || item.ApplyOption is not null)
+        {
+            return false; // $search/$compute/$apply inside an expand — not implemented on the pushdown path
+        }
+
+        // $levels: pure structural recursion only (the caller resolved the self-referential binding
+        // via BuildLevelsNavBinding). A $levels expand combined with other nested options is deferred
+        // to keep the recursion simple and cycle-safe — a rare combination, and graceful (EDM-only).
+        if (item.LevelsOption is not null)
+        {
+            SelectExpandClause? lc = item.SelectAndExpand;
+            bool hasOtherOptions =
+                item.FilterOption is not null || item.OrderByOption is not null ||
+                item.CountOption == true || item.SkipOption is not null || item.TopOption is not null ||
+                (lc is not null && (ExtractSelectedProperties(lc) is not null ||
+                                    lc.SelectedItems.OfType<ExpandedNavigationSelectItem>().Any()));
+            if (hasOtherOptions) return false;
+
+            int levels = item.LevelsOption.IsMaxLevel ? remainingDepth : (int)item.LevelsOption.Level;
+            levels = Math.Min(levels, remainingDepth);
+            if (levels < 1) return false;
+            if (!IsMemberInitProjectable(binding.ElementType, model)) return false;
+
+            engaged = new EngagedExpand(binding, null, null, null, null, false, null, Children: null, Levels: levels);
+            return true;
+        }
+
+        SelectExpandClause? nested = item.SelectAndExpand;
+        List<EngagedExpand>? children = null;
+        var childItems = nested?.SelectedItems.OfType<ExpandedNavigationSelectItem>().ToList();
+        if (childItems is { Count: > 0 })
+        {
+            // An intermediate level (one with its own nested $expand) is projected element-wise into a
+            // fresh member-init so the deeper navigations fold in. That requires the element type to be
+            // member-init-projectable; otherwise defer the whole branch (stays EDM-only, never a 500).
+            if (remainingDepth < 2) return false;
+            if (!IsMemberInitProjectable(binding.ElementType, model)) return false;
+
+            // Delegate-safety at depth: resolve the element type's own profile (if any). A nested nav
+            // that the element type's profile declares WITH a delegate must never be EF-included, so
+            // the whole parent branch is deferred (it then resolves via the existing delegate/EDM path).
+            // When the element type is not its own entity set (no profile), no delegate can exist for
+            // its navigations, so they are inherently delegate-less and eligible if otherwise pushable.
+            IEntitySetEndpointSource? childSource = FindStartupSourceForClrType(binding.ElementType, registration);
+            var childRouteBacked = childSource is not null
+                ? new HashSet<string>(childSource.NavigationRoutes.Select(r => r.PropertyName), StringComparer.OrdinalIgnoreCase)
+                : null;
+
+            foreach (ExpandedNavigationSelectItem childItem in childItems)
+            {
+                string childNavName = childItem.PathToNavigationProperty.FirstSegment.Identifier;
+                if (childRouteBacked is not null && childRouteBacked.Contains(childNavName))
+                    return false; // delegate-backed nested nav — defer whole branch (never EF-included)
+
+                if (BuildExpandNavBinding(binding.ElementType, childNavName) is not { } childBinding)
+                    return false; // cyclic / non-projectable nested nav — defer whole branch
+
+                if (!TryBuildEngagedExpand(childItem, childBinding, model, registration, remainingDepth - 1, out EngagedExpand childEngaged))
+                    return false; // deeper level not pushable — defer whole branch
+
+                (children ??= new List<EngagedExpand>()).Add(childEngaged);
+            }
+        }
+
+        // Filter/OrderBy/Top/Skip/Count are only valid on a collection-valued expand; the OData parser
+        // rejects them on a single-valued reference, so they arrive null there and this stays a bare
+        // single-valued include (BuildShapedNavAccess returns x.Ref unchanged) carrying only $select.
+        int? skip = item.SkipOption is long s ? (int)Math.Min(s, int.MaxValue) : null;
+        int? top = item.TopOption is long t ? (int)Math.Min(t, int.MaxValue) : null;
+        List<string>? nestedSelect = nested is not null ? ExtractSelectedProperties(nested) : null;
+
+        engaged = new EngagedExpand(
+            binding, item.FilterOption, item.OrderByOption, skip, top, item.CountOption == true, nestedSelect,
+            children, Levels: 0);
+        return true;
+    }
+
+    // #206 phase 2 (multi-level expand): the request-scoped startup source (structural metadata only —
+    // NavigationRoutes etc.) whose entity set's CLR model type is <paramref name="clrType"/>, or null
+    // when that type is not exposed as its own entity set. Used at query-plan time to decide whether a
+    // nested navigation is delegate-backed; only structural facts are read, so the startup singleton
+    // source suffices (no request scope needed). Returns the FIRST profile whose model type matches —
+    // OhData allows at most one entity set per CLR model type in practice (set names are de-duplicated
+    // at startup), so a single match is expected; a null result means the type is a nav-target only
+    // (no profile), hence no delegate can exist for its navigations.
+    private static IEntitySetEndpointSource? FindStartupSourceForClrType(Type clrType, OhDataRegistration registration)
+    {
+        return registration.Profiles.FirstOrDefault(p => p.ModelType == clrType);
+    }
+
+    // #206 phase 2 (multi-level expand): true when an element type can be projected into a fresh
+    // member-init at an INTERMEDIATE expand level (i.e. one that folds deeper navigations). Requires a
+    // public parameterless constructor and every scalar structural property (per the EDM) to be a
+    // public-settable CLR property that is not complex-typed — projecting an EF-owned complex property
+    // under a tracking queryable throws (the same phase-1 boundary TryApplySelectProjection guards). A
+    // type that fails this defers its parent branch off pushdown (stays EDM-only), never a 500.
+    private static bool IsMemberInitProjectable(Type elementType, IEdmModel model)
+    {
+        if (elementType.GetConstructor(Type.EmptyTypes) is null) return false;
+        if (model.FindDeclaredType(elementType.FullName ?? elementType.Name) is not IEdmEntityType edmType) return false;
+
+        foreach (IEdmStructuralProperty sp in edmType.StructuralProperties())
+        {
+            if (sp.Type.Definition is IEdmComplexType) return false; // owned-entity projection boundary
+            PropertyInfo? clrProp = elementType.GetProperty(
+                sp.Name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+            if (clrProp is null || clrProp.SetMethod is not { IsPublic: true }) return false;
+        }
+        return true;
+    }
+
+    // #206 phase 2 (multi-level expand): the public-settable, non-complex scalar structural CLR
+    // properties of <paramref name="elementType"/> (per the EDM), bound as <c>n.Prop</c> into an
+    // intermediate level's fresh member-init. Callers gate on IsMemberInitProjectable first, so every
+    // returned property is guaranteed settable and present.
+    private static IEnumerable<PropertyInfo> ScalarStructuralClrProps(Type elementType, IEdmModel model)
+    {
+        if (model.FindDeclaredType(elementType.FullName ?? elementType.Name) is not IEdmEntityType edmType)
+            yield break;
+        foreach (IEdmStructuralProperty sp in edmType.StructuralProperties()
+            .Where(sp => sp.Type.Definition is not IEdmComplexType))
+        {
+            PropertyInfo? clrProp = elementType.GetProperty(
+                sp.Name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+            if (clrProp is { SetMethod.IsPublic: true }) yield return clrProp;
+        }
+    }
+
+    // #206 phase 2 (optioned + multi-level expand): build the navigation access expression folded into
+    // the collection projection for one engaged expand, relative to <paramref name="owner"/> (the
+    // top-level query parameter, or a deeper element parameter when recursing). For a collection nav
+    // this is owner.Nav.Where(filter).OrderBy/ThenBy(key…).Skip(s).Take(t)[.Select(memberInit)].ToList()
+    // — each stage present only when the request carried it, and the .Select present only when a nested
+    // $expand folds deeper navigations (EF ThenInclude). The Where/OrderBy lambdas come from Microsoft's
+    // FilterBinder/OrderByBinder (bound against the nav element type), so nested $filter/$orderby
+    // translate with the exact OData semantics the top-level collection path uses — no bespoke
+    // OData→LINQ translator. Skip/Take are omitted here when $count is requested (the JSON pass pages
+    // after counting). A single-valued reference has no collection operators; it is returned unchanged
+    // unless it carries deeper navigations, in which case it is projected into a null-guarded member-init.
+    // A $levels expand delegates to BuildLevelsNavAccess (bounded self-referential recursion). Runs
+    // inside the caller's try/catch: a binder that cannot bind a clause throws, and the caller then
+    // abandons pushdown for the request (the nav stays EDM-only) rather than surfacing a 500.
+    private static Expression BuildShapedNavAccess(
+        Expression owner, EngagedExpand engaged, IEdmModel model, ODataQuerySettings binderSettings)
+    {
+        ExpandNavBinding nav = engaged.Binding;
+
+        if (engaged.Levels > 0)
+            return BuildLevelsNavAccess(owner, engaged, engaged.Levels, model);
+
+        Expression access = Expression.Property(owner, nav.Property);
+        Type elem = nav.ElementType;
+
+        if (!nav.IsCollection)
+        {
+            // Single-valued reference. When it carries deeper pushed navigations, project it into a
+            // fresh member-init (null-guarded so a missing reference stays null); otherwise the bare
+            // reference (EF outer join loads the full related entity).
+            if (engaged.Children is { Count: > 0 })
+            {
+                Expression init = BuildMemberInit(access, elem, engaged.Children, model, binderSettings);
+                return Expression.Condition(
+                    Expression.Equal(access, Expression.Constant(null, elem)),
+                    Expression.Constant(null, elem), init);
+            }
+            return access;
+        }
+
+        access = ApplyNavFilterOrderPaging(access, engaged, elem, model, binderSettings);
+
+        // Fold a nested $expand into an element-wise projection so the deeper delegate-less navigations
+        // load in the same JOIN'd query (EF ThenInclude). Without children this is byte-identical to the
+        // single-level path (a plain .ToList() of the full related entities — all columns materialized).
+        if (engaged.Children is { Count: > 0 })
+        {
+            ParameterExpression n = Expression.Parameter(elem, "n");
+            LambdaExpression proj = Expression.Lambda(
+                BuildMemberInit(n, elem, engaged.Children, model, binderSettings), n);
+            access = Expression.Call(_enumerableSelect.MakeGenericMethod(elem, elem), access, proj);
+        }
+
+        return Expression.Call(_enumerableToList.MakeGenericMethod(elem), access);
+    }
+
+    // #206 phase 2 (optioned expand): apply a collection expand's nested $filter/$orderby/$skip/$top to
+    // the navigation-access expression, returning the shaped (un-materialized) IEnumerable. Extracted
+    // from BuildShapedNavAccess so the single-level, nested, and $levels paths share one implementation.
+    private static Expression ApplyNavFilterOrderPaging(
+        Expression access, EngagedExpand engaged, Type elem, IEdmModel model, ODataQuerySettings binderSettings)
+    {
+        // A fresh QueryBinderContext per bind: it holds the binder's `$it` lambda parameter and other
+        // per-clause state, so filter and orderby each get their own rather than sharing one.
+        if (engaged.Filter is not null)
+        {
+            var ctx = new QueryBinderContext(model, binderSettings, elem);
+            var predicate = (LambdaExpression)_filterBinder.BindFilter(engaged.Filter, ctx);
+            access = Expression.Call(_enumerableWhere.MakeGenericMethod(elem), access, predicate);
+        }
+
+        if (engaged.OrderBy is not null)
+        {
+            var ctx = new QueryBinderContext(model, binderSettings, elem);
+            OrderByBinderResult? result = _orderByBinder.BindOrderBy(engaged.OrderBy, ctx);
+            bool first = true;
+            for (OrderByBinderResult? cur = result; cur is not null; cur = cur.ThenBy)
+            {
+                var keySelector = (LambdaExpression)cur.OrderByExpression;
+                bool descending = cur.Direction == OrderByDirection.Descending;
+                MethodInfo op = (first, descending) switch
+                {
+                    (true, false) => _enumerableOrderBy,
+                    (true, true) => _enumerableOrderByDescending,
+                    (false, false) => _enumerableThenBy,
+                    (false, true) => _enumerableThenByDescending,
+                };
+                access = Expression.Call(op.MakeGenericMethod(elem, keySelector.ReturnType), access, keySelector);
+                first = false;
+            }
+        }
+
+        // Whenever paging is in play — pushed to SQL now (no $count) OR deferred to the JSON window
+        // (with $count) — stabilize the order so WHICH rows land in the page is deterministic. Mirrors
+        // the root path's EnsureStableOrder (#241): append the nav element's single key as a FINAL
+        // tiebreaker (a ThenBy after an explicit nested $orderby so a non-unique sort column still pages
+        // stably, or the sole OrderBy when none was given). Applied even under $count so the deferred
+        // JSON window (ShapePushedExpandsInJson) pages over a deterministic SQL order. A
+        // composite/unresolvable key is left to the provider (best-effort, never throws).
+        bool paging = (engaged.Skip is int s && s > 0) || engaged.Top is int;
+        if (paging && TryGetKeyClrProperty(model, elem) is { } keyProp)
+        {
+            ParameterExpression e = Expression.Parameter(elem, "e");
+            LambdaExpression keySelector = Expression.Lambda(Expression.Property(e, keyProp), e);
+            MethodInfo tiebreak = engaged.OrderBy is null ? _enumerableOrderBy : _enumerableThenBy;
+            access = Expression.Call(tiebreak.MakeGenericMethod(elem, keyProp.PropertyType), access, keySelector);
+        }
+
+        // Skip/Take push to SQL only when $count is absent; with $count the full (ordered) filtered set
+        // is materialized so the JSON pass can count it before paging (see EngagedExpand remarks).
+        if (!engaged.Count)
+        {
+            if (engaged.Skip is int sk && sk > 0)
+                access = Expression.Call(_enumerableSkip.MakeGenericMethod(elem), access, Expression.Constant(sk));
+            if (engaged.Top is int tp)
+                access = Expression.Call(_enumerableTake.MakeGenericMethod(elem), access, Expression.Constant(tp));
+        }
+
+        return access;
+    }
+
+    // #206 phase 2 (multi-level expand): the fresh member-init projected for one element of an
+    // intermediate expand level — <c>new Elem { scalar1 = source.scalar1, …, ChildNav = &lt;folded&gt; }</c>
+    // — binding every scalar structural property (so nothing is column-pruned) and folding each nested
+    // pushed navigation via BuildShapedNavAccess. <paramref name="source"/> is the element expression
+    // (a Select lambda parameter for a collection, or the reference access for a single-valued nav).
+    // Callers gate on IsMemberInitProjectable so every scalar bind is settable and non-complex.
+    private static Expression BuildMemberInit(
+        Expression source, Type elemType, IReadOnlyList<EngagedExpand> children,
+        IEdmModel model, ODataQuerySettings binderSettings)
+    {
+        var bindings = new List<MemberBinding>();
+        AddScalarBindings(bindings, source, elemType, model);
+        foreach (EngagedExpand child in children)
+            bindings.Add(Expression.Bind(child.Binding.Property, BuildShapedNavAccess(source, child, model, binderSettings)));
+        return Expression.MemberInit(Expression.New(elemType), bindings);
+    }
+
+    // #206 phase 2 (multi-level expand): bind every scalar structural property of <paramref name="elemType"/>
+    // as <c>member = source.member</c> into <paramref name="bindings"/> — the "don't column-prune an
+    // intermediate level" rule shared by BuildMemberInit and BuildLevelsNavAccess. Callers gate on
+    // IsMemberInitProjectable first, so every returned property is settable and non-complex.
+    private static void AddScalarBindings(List<MemberBinding> bindings, Expression source, Type elemType, IEdmModel model)
+    {
+        foreach (PropertyInfo p in ScalarStructuralClrProps(elemType, model))
+            bindings.Add(Expression.Bind(p, Expression.Property(source, p)));
+    }
+
+    // #206 phase 2 ($levels): build the bounded self-referential recursion for a $levels=N expand.
+    // Returns the value assigned to <paramref name="owner"/>.Nav: each level is projected into a FRESH
+    // member-init recursing the SAME navigation one level shallower, and the deepest level empties the
+    // self-navigation (an empty collection / a null reference) so the graph is finite — no parent<->child
+    // object cycle can form for System.Text.Json. Any nested $filter/$orderby is intentionally NOT
+    // applied under $levels (TryBuildEngagedExpand defers a $levels that carries other options), so this
+    // stays a pure structural recursion — the common "load this hierarchy N deep" case.
+    private static Expression BuildLevelsNavAccess(
+        Expression owner, EngagedExpand engaged, int remaining, IEdmModel model)
+    {
+        ExpandNavBinding nav = engaged.Binding;
+        Type elem = nav.ElementType; // == owner's type (a true self-reference; see BuildLevelsNavBinding)
+        Expression access = Expression.Property(owner, nav.Property);
+
+        if (nav.IsCollection)
+        {
+            ParameterExpression n = Expression.Parameter(elem, "n");
+            var bindings = new List<MemberBinding>();
+            AddScalarBindings(bindings, n, elem, model);
+            Expression deeper = remaining > 1
+                ? BuildLevelsNavAccess(n, engaged, remaining - 1, model)
+                // Leaf: an empty page of the self-navigation (Take(0)) so it serializes as [] rather
+                // than null, and the recursion terminates without loading a further level.
+                : Expression.Call(
+                    _enumerableToList.MakeGenericMethod(elem),
+                    Expression.Call(_enumerableTake.MakeGenericMethod(elem),
+                        Expression.Property(n, nav.Property), Expression.Constant(0)));
+            bindings.Add(Expression.Bind(nav.Property, deeper));
+            LambdaExpression proj = Expression.Lambda(Expression.MemberInit(Expression.New(elem), bindings), n);
+            Expression projected = Expression.Call(_enumerableSelect.MakeGenericMethod(elem, elem), access, proj);
+            return Expression.Call(_enumerableToList.MakeGenericMethod(elem), projected);
+        }
+
+        // Single-valued self-reference (e.g. a Manager chain): a null-guarded fresh member-init.
+        var refBindings = new List<MemberBinding>();
+        AddScalarBindings(refBindings, access, elem, model);
+        Expression refDeeper = remaining > 1
+            ? BuildLevelsNavAccess(access, engaged, remaining - 1, model)
+            : Expression.Constant(null, elem);
+        refBindings.Add(Expression.Bind(nav.Property, refDeeper));
+        Expression refInit = Expression.MemberInit(Expression.New(elem), refBindings);
+        return Expression.Condition(
+            Expression.Equal(access, Expression.Constant(null, elem)),
+            Expression.Constant(null, elem), refInit);
+    }
+
+    // #206 phase 2 (optioned expand): the CLR property for a navigation element type's single EDM key,
+    // used to stabilize nested paging (see BuildShapedNavAccess). Returns null for a composite key, a
+    // keyless type, or a CLR name that does not resolve — the caller then simply skips stabilization.
+    private static PropertyInfo? TryGetKeyClrProperty(IEdmModel model, Type elem)
+    {
+        if (model.FindDeclaredType(elem.FullName ?? elem.Name) is not IEdmEntityType entityType) return null;
+        var keys = entityType.Key().ToList();
+        if (keys.Count != 1) return null; // composite / keyless → leave order to the provider
+        return elem.GetProperty(keys[0].Name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+    }
+
+    // #206 phase 2 (optioned + multi-level expand): apply the JSON-side portion of a pushed expand's
+    // nested options to the already-serialized (camelCase) parent objects — $count (emit
+    // Nav@odata.count), the count-deferred $skip/$top paging, nested $select projection, and
+    // (recursively) the same shaping for each deeper pushed level. Filter/OrderBy (and paging when
+    // $count is absent) were already applied in SQL by BuildShapedNavAccess, so this touches only the
+    // navs that actually need post-serialization shaping. Reuses StripToSelectedProperties so nested
+    // $select casing/annotation handling is identical to the root-level strip.
+    private static void ShapePushedExpandsInJson(
+        JsonArray parents, IReadOnlyList<EngagedExpand> engaged, JsonSerializerOptions serializerOptions) =>
+        ShapePushedExpandsInJson(parents.OfType<JsonObject>(), engaged, serializerOptions);
+
+    // #206 ($levels): the CLR property names of every navigation this request pushed with $levels,
+    // walked recursively through the engaged tree. OmitUnexpandedNavigations uses this to keep the
+    // bounded recursion of ONLY these (delegate-less, pushed) navs — a delegate-backed $levels nav is
+    // never in the engaged tree, so its deeper self-references stay stripped as before. Returns null
+    // (the common no-$levels case) so the keep is a strict no-op unless a $levels expand was pushed.
+    private static HashSet<string>? CollectPushedLevelsNavNames(IReadOnlyList<EngagedExpand>? engaged)
+    {
+        if (engaged is null) return null;
+        HashSet<string>? names = null;
+        void Walk(IReadOnlyList<EngagedExpand> level)
+        {
+            foreach (EngagedExpand e in level)
+            {
+                if (e.Levels > 0) (names ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase)).Add(e.Binding.Property.Name);
+                if (e.Children is { Count: > 0 }) Walk(e.Children);
+            }
+        }
+        Walk(engaged);
+        return names;
+    }
+
+    private static void ShapePushedExpandsInJson(
+        IEnumerable<JsonObject> parents, IReadOnlyList<EngagedExpand> engaged, JsonSerializerOptions serializerOptions)
+    {
+        foreach (EngagedExpand e in engaged)
+        {
+            // A level with a nested $count/$select OR deeper pushed children needs JSON work; a pure
+            // leaf whose options were fully handled in SQL is skipped. ($levels shaping is structural
+            // only — it carries no Count/NestedSelect/Children, so it is a no-op here.)
+            bool hasChildren = e.Children is { Count: > 0 };
+            if (!e.Count && e.NestedSelect is null && !hasChildren) continue;
+
+            PropertyInfo prop = e.Binding.Property;
+            string key = ResolveNavigationJsonKey(prop.Name, prop, serializerOptions);
+
+            foreach (JsonObject parent in parents)
+            {
+                JsonNode? node = parent[key];
+                if (e.Binding.IsCollection && node is JsonArray arr)
+                {
+                    if (e.Count)
+                    {
+                        // Count reflects the full filtered collection (paging was deferred to here).
+                        parent[$"{key}@odata.count"] = arr.Count;
+                        int skip = e.Skip is int sk && sk > 0 ? Math.Min(sk, arr.Count) : 0;
+                        int end = e.Top is int tp ? Math.Min(arr.Count, skip + Math.Max(tp, 0)) : arr.Count;
+                        if (skip > 0 || end < arr.Count)
+                        {
+                            // Rebuild to the [skip, end) window in one O(n) pass (Clear detaches the
+                            // captured nodes so they can be re-added) rather than repeated RemoveAt(0).
+                            var window = new List<JsonNode?>(end - skip);
+                            for (int i = skip; i < end; i++) window.Add(arr[i]);
+                            arr.Clear();
+                            foreach (JsonNode? node2 in window) arr.Add(node2);
+                        }
+                    }
+                    // Recurse into deeper pushed levels on the (paged) elements BEFORE this level's
+                    // $select strip — the strip keeps expanded-nav names (ExtractSelectedProperties), so
+                    // the children survive, and shaping deeper counts/selects sees the full child graph.
+                    if (hasChildren)
+                        ShapePushedExpandsInJson(arr.OfType<JsonObject>(), e.Children!, serializerOptions);
+                    if (e.NestedSelect is not null)
+                        StripToSelectedProperties(arr.OfType<JsonObject>(), e.NestedSelect);
+                }
+                else if (!e.Binding.IsCollection && node is JsonObject one)
+                {
+                    if (hasChildren)
+                        ShapePushedExpandsInJson(new[] { one }, e.Children!, serializerOptions);
+                    if (e.NestedSelect is not null)
+                        StripToSelectedProperties(new[] { one }, e.NestedSelect);
+                }
+            }
+        }
+    }
+
+    // #206 phase 2 (Option A1): builds the startup-time $expand pushdown binding for one
+    // DELEGATE-LESS navigation (by CLR property name), or returns null when it is not eligible to
+    // be folded into the collection projection. Only navigations declared WITHOUT a custom expand
+    // delegate reach this method (the caller filters out every navigation that owns a
+    // NavigationRouteDefinition), so provenance — "no delegate exists" — is already established;
+    // this method only adds the structural safety checks. A navigation qualifies when it maps to a
+    // settable CLR property whose (element) type declares no navigation back to TModel — a
+    // bidirectional relationship would materialize a parent<->child object cycle that
+    // System.Text.Json throws on — and, for a collection, whose member type can accept a
+    // List&lt;TElement&gt; (the .ToList() the projection emits). Everything else stays EDM-only.
+    private static ExpandNavBinding? BuildExpandNavBinding<TModel>(string navPropertyName) =>
+        BuildExpandNavBinding(typeof(TModel), navPropertyName);
+
+    // #206 phase 2 (Option A1 / multi-level): non-generic core — build the pushdown binding for a
+    // navigation <paramref name="navPropertyName"/> declared on <paramref name="ownerType"/> (the
+    // root model at the top level, or a nested element type when recursing), or null when it is not
+    // eligible. Acyclicity is checked against the OWNER at this level, so a nested nav that navigates
+    // back to its own parent (a bidirectional relationship) is excluded exactly as at the root.
+    private static ExpandNavBinding? BuildExpandNavBinding(Type ownerType, string navPropertyName)
+    {
+        PropertyInfo? navProp = ownerType.GetProperty(
+            navPropertyName, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+        if (navProp is null || navProp.SetMethod is not { IsPublic: true }) return null;
+
+        Type? elementType = NavElementClrType(navProp);
+        if (elementType is null) return null;
+        if (TypeHasNavigationTo(elementType, ownerType)) return null; // cyclic — stays EDM-only
+
+        // NavElementClrType returns the property type itself for a single-valued reference and the
+        // element type for a collection, so "element differs from property" identifies a collection.
+        bool isCollection = navProp.PropertyType != elementType;
+
+        if (isCollection &&
+            !navProp.PropertyType.IsAssignableFrom(typeof(List<>).MakeGenericType(elementType)))
+        {
+            return null; // e.g. an array-typed collection nav; a List<T> cannot be assigned to it
+        }
+
+        return new ExpandNavBinding(navProp, isCollection, elementType);
+    }
+
+    // #206 phase 2 ($levels): build the pushdown binding for a SELF-REFERENTIAL navigation targeted by
+    // $levels=N — the only shape the OData parser accepts $levels on. Unlike BuildExpandNavBinding this
+    // deliberately allows the (inherently cyclic) self-reference: the $levels projection recurses a
+    // BOUNDED number of times into FRESH member-init POCOs (each level's deeper nav is loaded then
+    // emptied at the leaf), so no parent<->child object cycle can form for System.Text.Json. Requires
+    // the navigation's element type to equal the owner type (a true recursive hierarchy) and, for a
+    // collection, a List-assignable member. Returns null (→ pushdown skipped, nav stays EDM-only) for a
+    // route-backed nav (checked by the caller), a non-self-referential target, or an unsettable property.
+    private static ExpandNavBinding? BuildLevelsNavBinding(Type ownerType, string navPropertyName)
+    {
+        PropertyInfo? navProp = ownerType.GetProperty(
+            navPropertyName, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+        if (navProp is null || navProp.SetMethod is not { IsPublic: true }) return null;
+
+        Type? elementType = NavElementClrType(navProp);
+        if (elementType is null || elementType != ownerType) return null; // $levels needs a true self-reference
+
+        bool isCollection = navProp.PropertyType != elementType;
+        if (isCollection &&
+            !navProp.PropertyType.IsAssignableFrom(typeof(List<>).MakeGenericType(elementType)))
+        {
+            return null;
+        }
+
+        return new ExpandNavBinding(navProp, isCollection, elementType);
+    }
+
+    // #206 phase 2: true when <paramref name="type"/> declares a public property that navigates
+    // back to <paramref name="target"/> (or a base/interface in target's hierarchy) — i.e. a
+    // navigation that would close a serialization cycle back to the parent entity. The
+    // assignability check is intentionally broadened in BOTH directions on the property type AND
+    // the collection element type (adversarial-review hardening): a back-reference need not be the
+    // exact TModel — a base class or interface that TModel implements (or that is assignable from
+    // TModel) also closes a cycle. Over-matching here only forces a safe fallback to the EDM-only
+    // path, never incorrect data, so the conservative direction is correct.
+    private static bool TypeHasNavigationTo(Type type, Type target)
+    {
+        foreach (PropertyInfo p in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+        {
+            if (target.IsAssignableFrom(p.PropertyType) || p.PropertyType.IsAssignableFrom(target)) return true;
+            Type? elem = NavElementClrType(p);
+            if (elem is not null && elem != p.PropertyType &&
+                (target.IsAssignableFrom(elem) || elem.IsAssignableFrom(target)))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // #206 phase 2: expand pushdown reads related rows through the LINQ provider (a projection with
+    // .ToList()), which only actually loads navigation data for an EF Core provider. On a
+    // LINQ-to-objects (or any non-EF) provider the same projection would read un-populated CLR
+    // navigations and return empty/null data, so pushdown is gated to EF Core queryables and every
+    // other provider takes the (delegate-less → EDM-only) fallback path.
+    private static bool IsEfCoreBacked(IQueryable query)
+    {
+        for (Type? t = query.Provider.GetType(); t is not null; t = t.BaseType)
+        {
+            if (t.Namespace is { } ns &&
+                ns.StartsWith("Microsoft.EntityFrameworkCore", StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     // M3: appends the OData JSON §10.7/§10.8 projection suffix to a context segment when a
@@ -1982,6 +2687,11 @@ internal static class OhDataEndpointFactory
         var cachedODataQueryContext = new ODataQueryContext(registration.EdmModel, typeof(TModel), null);
         var cachedCountSettings = new ODataQuerySettings();
         var cachedQuerySettings = new ODataQuerySettings { PageSize = source.MaxTop };
+        // #206 phase 2 (optioned expand): settings for the FilterBinder/OrderByBinder that translate a
+        // pushed expand's nested $filter/$orderby into the filtered-Include lambda. HandleNullPropagation
+        // is False because the target is always an EF Core IQueryable (the pushdown gate requires it),
+        // so the provider — not client-side null guards — evaluates the predicate in SQL.
+        var cachedBinderSettings = new ODataQuerySettings { HandleNullPropagation = HandleNullPropagationOption.False };
         // #202: per-entity-set complexity-guard settings (expansion depth + node counts).
         var cachedValidationSettings = BuildValidationSettings(source);
 
@@ -1999,6 +2709,31 @@ internal static class OhDataEndpointFactory
         var pushdownStructuralByName = pushdownNameGroups
             .Where(g => g.Count() == 1)
             .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+        // #206 phase 2 (Option A1): $expand Include pushdown — startup-computed per-navigation
+        // bindings, keyed by CLR navigation property name. THE ELIGIBILITY RULE IS PROVENANCE:
+        // a navigation is pushed down ONLY when it was declared WITHOUT a custom expand delegate.
+        // A delegate-backed navigation always owns a NavigationRouteDefinition (routes are created
+        // only when a handler is supplied), so "declared as a navigation but has no route" IS the
+        // no-delegate test. NavigationPropertyNames holds every declared navigation (bare and
+        // delegate-backed alike); NavigationRoutes holds only the delegate-backed ones — so the
+        // set difference is exactly the delegate-less navigations. Each survivor of the structural
+        // safety checks (settable property, non-cyclic related type, List-assignable collection)
+        // becomes SQL-JOIN-expandable; delegate-backed navigations expand through their delegate
+        // (Stage 3 / ExpandLevelAsync) and never appear here. Empty when the model exposes no
+        // eligible delegate-less navigation, which short-circuits the request-time gate.
+        //
+        // No threading into the JSON pipeline is needed: a delegate-less navigation has no route,
+        // so ExpandLevelAsync already skips it and leaves the Stage-1 serialization (the pushed,
+        // JOIN-materialized related rows) in place; OmitUnexpandedNavigations then keeps it because
+        // it was $expand'd. Delegate-backed navigations are the only ones ExpandLevelAsync loads.
+        var routeBackedNavNames = new HashSet<string>(
+            source.NavigationRoutes.Select(r => r.PropertyName), StringComparer.OrdinalIgnoreCase);
+        var pushdownExpandNavs = source.NavigationPropertyNames
+            .Where(navName => !routeBackedNavNames.Contains(navName)) // delegate-backed → delegate path only
+            .Select(navName => (navName, binding: BuildExpandNavBinding<TModel>(navName)))
+            .Where(pair => pair.binding is not null)
+            .ToDictionary(pair => pair.navName, pair => pair.binding!.Value, StringComparer.OrdinalIgnoreCase);
 
         // #199 Layer C: per-operation authorization. When the profile declared
         // ConfigureAuthorization(...), resolve the effective rule per route category and apply it to
@@ -2448,17 +3183,130 @@ internal static class OhDataEndpointFactory
                     // unchanged either way: materialized objects are plain TModels and the
                     // existing JSON pipeline ($select trim, nav omission, ETag, expansion
                     // correlated by the always-projected key) runs identically. Ineligibility
-                    // falls back silently to the full fetch (Debug-logged reason).
-                    if (source.SelectPushdownEnabled &&
+                    // falls back silently to the full fetch (Debug-logged inside the helper).
+                    // Extracted to a local so every $expand-pushdown fallback below reuses the
+                    // exact same $select-only projection.
+                    IQueryable<TModel> ApplySelectPushdown(IQueryable<TModel> q) =>
+                        source.SelectPushdownEnabled &&
                         pushdownNamesUnambiguous &&
-                        options.SelectExpand?.SelectExpandClause is { } pushdownClause &&
-                        ExtractSelectedProperties(pushdownClause) is { } pushdownSelected)
+                        options.SelectExpand?.SelectExpandClause is { } selClause &&
+                        ExtractSelectedProperties(selClause) is { } selNames
+                            ? TryApplySelectProjection(q, selNames, source, pushdownCtorOk, pushdownStructuralByName, logger)
+                            : q;
+
+                    // #206 phase 2: $expand Include pushdown, now MULTI-LEVEL. Fold the eligible top-level
+                    // $expand navigations of this request — those declared WITHOUT a delegate
+                    // (pushdownExpandNavs), so there is no delegate to bypass — into the SAME member-init
+                    // projection so a single EF Core query loads the related rows via a JOIN, recursing
+                    // into each nested $expand as an element-wise projection (EF ThenInclude) when the
+                    // deeper navigations are ALSO delegate-less and pushable at that level. Nested options
+                    // at every level ($filter/$orderby/$top/$skip/$count/$select) are honored:
+                    // filter/orderby/paging push to SQL (BuildShapedNavAccess), count/select apply on the
+                    // serialized JSON (ShapePushedExpandsInJson). $levels=N / $levels=max on a
+                    // self-referential nav recurse a BOUNDED (cycle-free) projection N deep, capped at the
+                    // resolved MaxExpansionDepth. A navigation declared WITH a delegate is never in
+                    // pushdownExpandNavs and is skipped for $levels too (routeBackedNavNames), so it always
+                    // takes the delegate expansion path (Stage 3) — the delegate-safety invariant holds at
+                    // EVERY depth: a branch is pushed only when it is delegate-less end-to-end, otherwise
+                    // TryBuildEngagedExpand defers the whole branch off pushdown. Gated to EF Core-backed
+                    // sources (a projection reading un-populated navigations would be wrong elsewhere).
+                    // Anything deferred (non-EF, a delegate-backed/cyclic level, $search/$compute/$apply,
+                    // a $levels carrying extra options) or that fails (projection/translation/serialization
+                    // cycle, unbindable clause) falls back: the navigation then stays EDM-only for this
+                    // request, exactly as before pushdown existed.
+                    List<EngagedExpand>? engagedExpandNavs = null;
+                    if (source.ExpandPushdownEnabled &&
+                        pushdownCtorOk && pushdownNamesUnambiguous &&
+                        options.SelectExpand?.SelectExpandClause is { } expandPlanClause &&
+                        IsEfCoreBacked(filtered))
                     {
-                        filtered = TryApplySelectProjection(
-                            filtered, pushdownSelected, source, pushdownCtorOk, pushdownStructuralByName, logger);
+                        foreach (ExpandedNavigationSelectItem expandItem in
+                                 expandPlanClause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
+                        {
+                            string navName = expandItem.PathToNavigationProperty.FirstSegment.Identifier;
+
+                            // #206 ($levels): a $levels self-referential nav is excluded from
+                            // pushdownExpandNavs (it is inherently cyclic), but a BOUNDED $levels
+                            // projection is cycle-free, so resolve its binding on the fly here — skipping
+                            // any delegate-backed nav (routeBackedNavNames) so its delegate is never bypassed.
+                            ExpandNavBinding binding;
+                            if (expandItem.LevelsOption is not null)
+                            {
+                                if (routeBackedNavNames.Contains(navName)) continue; // delegate-backed → delegate path
+                                if (BuildLevelsNavBinding(typeof(TModel), navName) is not { } lb) continue;
+                                binding = lb;
+                            }
+                            else if (!pushdownExpandNavs.TryGetValue(navName, out binding))
+                            {
+                                continue; // delegate-backed or non-pushable top-level nav → delegate/EDM path
+                            }
+
+                            if (TryBuildEngagedExpand(expandItem, binding, registration.EdmModel, registration,
+                                    source.MaxExpansionDepth, out EngagedExpand engaged))
+                            {
+                                (engagedExpandNavs ??= new List<EngagedExpand>()).Add(engaged);
+                            }
+                        }
                     }
 
-                    var items = filtered.ToArray();
+                    TModel[] items;
+                    if (engagedExpandNavs is { Count: > 0 })
+                    {
+                        // Structural part of the projection: the $select set ONLY when $select
+                        // pushdown is enabled AND a $select is present and eligible; else EVERY
+                        // structural property. Expand pushdown must not column-prune on its own —
+                        // that is $select-pushdown behavior the profile may have disabled
+                        // (SelectPushdownEnabled=false), so the two capabilities stay independent (a
+                        // pure $expand, or $expand under disabled select-pushdown, keeps all columns).
+                        // Navigations are appended by TryApplySelectProjection; expanded nav
+                        // identifiers ExtractSelectedProperties keeps are not structural and are
+                        // skipped there, so they are never double-bound.
+                        List<string> structuralNames =
+                            source.SelectPushdownEnabled &&
+                            options.SelectExpand!.SelectExpandClause is { } combClause &&
+                            ExtractSelectedProperties(combClause) is { } combSelected
+                                ? combSelected
+                                : pushdownStructuralByName.Keys.ToList();
+
+                        IQueryable<TModel> pushedQuery = TryApplySelectProjection(
+                            filtered, structuralNames, source, pushdownCtorOk, pushdownStructuralByName,
+                            logger, engagedExpandNavs, registration.EdmModel, cachedBinderSettings);
+
+                        if (ReferenceEquals(pushedQuery, filtered))
+                        {
+                            // Projection ineligible (e.g. a complex/unsettable structural member) →
+                            // the navigations were NOT materialized. Abandon expand pushdown for this
+                            // request and take the fallback path, still honoring $select pushdown.
+                            logger?.LogDebug(
+                                "OhData: $expand pushdown skipped for {EntitySet}: the collection projection was ineligible; delegate-less navigations stay EDM-only for this request.",
+                                source.EntitySetName);
+                            engagedExpandNavs = null;
+                            items = ApplySelectPushdown(filtered).ToArray();
+                        }
+                        else
+                        {
+                            try
+                            {
+                                items = pushedQuery.ToArray();
+                            }
+                            catch (Exception ex) when (ex is not OperationCanceledException)
+                            {
+                                // A provider that cannot translate the folded projection must not
+                                // become a 500: fall back to the full fetch + $select pushdown,
+                                // which is the pre-#206-phase-2 behavior (delegate-less nav → EDM-only).
+                                logger?.LogDebug(ex,
+                                    "OhData: $expand pushdown query failed to translate for {EntitySet}; falling back (delegate-less navigations stay EDM-only for this request).",
+                                    source.EntitySetName);
+                                engagedExpandNavs = null;
+                                items = ApplySelectPushdown(filtered).ToArray();
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // No expand pushdown — $select-only path, byte-for-byte unchanged.
+                        items = ApplySelectPushdown(filtered).ToArray();
+                    }
 
                     // Gap 3: compute nextLink when MaxTop (or preferred page size) is set and page is full
                     string? nextLink = null;
@@ -2470,7 +3318,48 @@ internal static class OhDataEndpointFactory
                         nextLink = BuildNextPageLink(ctx, token);
                     }
 
-                    var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
+                    // #206 ($levels): the names of navigations this request actually PUSHED with $levels,
+                    // so OmitUnexpandedNavigations keeps their bounded recursion (and ONLY theirs — a
+                    // delegate-backed $levels nav is not pushed and must still be stripped beyond depth 1).
+                    HashSet<string>? pushedLevelsNavNames = CollectPushedLevelsNavNames(engagedExpandNavs);
+
+                    JsonArray finalItems;
+                    List<string>? selectedProps;
+                    try
+                    {
+                        (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct, pushedLevelsNavNames);
+                    }
+                    catch (JsonException ex) when (engagedExpandNavs is { Count: > 0 })
+                    {
+                        // #206 phase 2 (adversarial-review hardening): the pushed graph tripped a
+                        // serialization cycle the static back-reference guard missed (e.g. EF
+                        // relationship fixup populated an untyped/base-typed back-navigation the
+                        // projection did not itself materialize). Degrade to the (delegate-less →
+                        // EDM-only) fallback instead of surfacing a 500: re-fetch WITHOUT the folded
+                        // navigations, then run the same pipeline. The row COUNT is unchanged, so the
+                        // nextLink computed above stays valid.
+                        logger?.LogDebug(ex,
+                            "OhData: $expand pushdown produced a serialization cycle for {EntitySet}; falling back (delegate-less navigations stay EDM-only for this request).",
+                            source.EntitySetName);
+                        // Disengage shaping BEFORE the fallback re-fetch — like the ineligible-projection
+                        // and translation-failure fallbacks above — so ShapePushedExpandsInJson does not
+                        // run against the degraded (EDM-only) data and emit a bogus Nav@odata.count. The
+                        // re-fetch folds no navigations, so it cannot trip the cycle again.
+                        engagedExpandNavs = null;
+                        pushedLevelsNavNames = null; // nothing pushed after the fallback re-fetch
+                        items = ApplySelectPushdown(filtered).ToArray();
+                        (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct, pushedLevelsNavNames);
+                    }
+
+                    // #206 phase 2 (optioned expand): apply the JSON-side portion of each pushed
+                    // expand's nested options — Nav@odata.count and count-deferred paging, plus nested
+                    // $select projection — to the serialized parents. No-op unless a pushed expand
+                    // actually carried $count or $select; the fallbacks above set engagedExpandNavs to
+                    // null, so a request that abandoned pushdown does no shaping here.
+                    if (engagedExpandNavs is { Count: > 0 })
+                    {
+                        ShapePushedExpandsInJson(finalItems, engagedExpandNavs, jsonOptions ?? _camelCaseSerializerOptions);
+                    }
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();

@@ -79,17 +79,20 @@ public class EntitySetDefaults
         }
     }
 
-    private int _maxExpansionDepth = 12;
+    private int _maxExpansionDepth = 3;
     private int _maxFilterNodeCount = 10000;
     private int _maxOrderByNodeCount = 1000;
     private int _maxAnyAllExpressionDepth = 1000;
 
     /// <summary>
-    /// #202: maximum nested <c>$expand</c> depth accepted on the collection read paths. A request
-    /// nesting deeper is rejected with <c>400</c> before any handler runs. Defaults to <c>12</c>
-    /// (the framework's internal nested-expand cap), so a request nesting deeper than the framework
-    /// could ever satisfy is now an explicit error instead of a silently-truncated result. Lower it
-    /// to harden against deep-graph queries; must be a positive integer. Profile-level
+    /// #202/#206: maximum nested <c>$expand</c> depth accepted on the collection read paths, and the
+    /// ceiling <c>$levels</c> is resolved and capped to (<c>$levels=max</c> becomes exactly this
+    /// value; a numeric <c>$levels=N</c> is clamped to it). A request nesting <c>$expand</c> deeper —
+    /// or requesting more <c>$levels</c> — than this is rejected with <c>400</c> before any handler
+    /// runs. Defaults to <c>3</c>. Advertised in <c>$metadata</c> as the
+    /// <c>Org.OData.Capabilities.V1.ExpandRestrictions/MaxLevels</c> annotation on each entity set so
+    /// clients can discover it. Raise it to allow deeper graph queries, or lower it to harden against
+    /// them; must be a positive integer. Profile-level
     /// <see cref="EntitySetProfile{TKey,TModel}.MaxExpansionDepth"/> overrides this value.
     /// </summary>
     public int MaxExpansionDepth
@@ -183,6 +186,25 @@ public class EntitySetDefaults
     /// translate member-init projections.
     /// </summary>
     public bool SelectPushdownEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Whether <c>$expand</c> Include pushdown is enabled by default on all entity sets (#206
+    /// phase 2). When <c>true</c> (the default) and a request's top-level
+    /// <c>$expand</c> names a navigation that was declared <b>without</b> a custom expand delegate
+    /// (a bare <c>HasMany</c>/<c>HasOptional</c>/<c>HasRequired</c>), the framework folds that
+    /// navigation into the <c>GetQueryable</c> collection query's member-init projection so an
+    /// EF Core-backed source loads the related rows via a single JOIN'd query (SQL pushdown)
+    /// instead of leaving the navigation unexpandable. The expand's nested
+    /// <c>$filter</c>/<c>$orderby</c>/<c>$top</c>/<c>$skip</c> push to SQL as a filtered/ordered/paged
+    /// <c>Include</c>, and <c>$count</c>/<c>$select</c> shape the result. A navigation declared
+    /// <b>with</b> a delegate (<c>getAll</c>/<c>get</c>/<c>batchGetAll</c>/<c>batchGet</c>) is NEVER
+    /// pushed down — it always expands through its delegate, which may filter/order/authorize.
+    /// Pushdown is skipped silently (the delegate-less navigation stays EDM-only for that request)
+    /// whenever it is ineligible: a non-EF provider, a nested <c>$expand</c> (multi-level) or
+    /// <c>$levels</c>, a cyclic navigation, or a projection/translation failure. Disable per profile
+    /// (or here) to keep every delegate-less navigation unexpandable.
+    /// </summary>
+    public bool ExpandPushdownEnabled { get; set; } = true;
 
     /// <summary>
     /// Whether individual structural property routes appear in the generated API documentation
