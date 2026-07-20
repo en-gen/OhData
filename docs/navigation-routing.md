@@ -123,8 +123,9 @@ was declared with a delegate** (#206):
 > **Mental model:** write a delegate only when expansion needs real logic; a plain relationship gets
 > SQL-JOIN expansion for free. See
 > [`$expand` pushdown](query-options.md#expand-pushdown-delegate-less-navigations-join-automatically-206)
-> for eligibility and the silent-fallback rules (non-EF source, `$levels`, nested options, cyclic
-> navigation → the delegate-less navigation stays EDM-only for that request, never a `500`).
+> for eligibility (including multi-level nested `$expand` and `$levels`) and the silent-fallback rules
+> (non-EF source, a delegate-backed/cyclic level, `$search`/`$compute`/`$apply` → the navigation stays
+> EDM-only for that request, never a `500`).
 
 For a **delegate-backed** navigation, what differs is **how many times the handler is called**, and
 it depends on which overload you registered:

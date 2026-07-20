@@ -335,8 +335,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private int? _maxOrderByNodeCount;
     private int? _maxAnyAllExpressionDepth;
 
-    /// <summary>#202: maximum nested <c>$expand</c> depth for this set (400 beyond it). Inherits
-    /// <see cref="EntitySetDefaults.MaxExpansionDepth"/> (default 12) when null. Must be positive.</summary>
+    /// <summary>#202/#206: maximum nested <c>$expand</c> depth for this set, and the ceiling
+    /// <c>$levels</c> is resolved/capped to (400 beyond it). Inherits
+    /// <see cref="EntitySetDefaults.MaxExpansionDepth"/> (default 3) when null. Must be positive.</summary>
     protected int? MaxExpansionDepth
     {
         get => _maxExpansionDepth;

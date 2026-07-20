@@ -370,6 +370,29 @@ public sealed class OptionedExpandPushdownSqliteTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task NestedCountWithTop_NoNestedOrderBy_PagesDeterministicallyByChildKey()
+    {
+        _sink.Clear();
+        // $count defers paging to the JSON window; without a nested $orderby the SQL order must still be
+        // stabilized by the child key (adversarial-review hardening, same class as #241) so WHICH rows
+        // land in the page are deterministic rather than provider-arbitrary.
+        var resp = await _fx.Client.GetAsync("/odata/OeParents?$orderby=id&$expand=Children($count=true;$top=2)");
+        Assert.Equal(System.Net.HttpStatusCode.OK, resp.StatusCode);
+
+        // The stabilizing ORDER BY is emitted even though paging is deferred to JSON under $count.
+        string sql = OptionedExpandSqliteHarness.LastSelectAgainst(_sink, "OeParents");
+        Assert.Contains("ORDER BY", sql);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        // Full filtered count is reported; the page is P1's first two children by key (Id 10, 11).
+        Assert.Contains("\"children@odata.count\":4", body);
+        Assert.Contains("\"Alpha\"", body);  // Id 10
+        Assert.Contains("\"Bravo\"", body);  // Id 11
+        Assert.DoesNotContain("\"Charlie\"", body); // Id 12 — paged out deterministically
+        Assert.DoesNotContain("\"Delta\"", body);   // Id 13 — paged out deterministically
+    }
+
+    [Fact]
     public async Task NestedSelect_ProjectsExpandedElements_CamelCase()
     {
         _sink.Clear();
@@ -472,12 +495,13 @@ public sealed class OptionedExpandSafetyTests : IAsyncLifetime
     }
 }
 
-// Multi-level nested $expand under a pushed nav is NOT pushed in this iteration (documented in
-// docs/query-options.md): the outer expand is deferred off pushdown and — being delegate-less —
-// stays EDM-only. It must degrade gracefully (200, no 500), never a partial/incorrect graph.
-public sealed class OptionedExpandMultiLevelFallbackTests : IAsyncLifetime
+// #206: multi-level nested $expand under a delegate-less pushed nav is now pushed as a deeper JOIN
+// (EF ThenInclude), while a delegate-backed sibling still resolves through its delegate — proving the
+// two paths coexist in one request and the delegate is never EF-included at any depth.
+public sealed class OptionedExpandMultiLevelTests : IAsyncLifetime
 {
     private SqliteConnection _connection = null!;
+    private SqlCaptureSink _sink = null!;
     private OptionedExpandDelegateCounter _counter = null!;
     private TestFixture _fx = null!;
 
@@ -485,8 +509,10 @@ public sealed class OptionedExpandMultiLevelFallbackTests : IAsyncLifetime
     {
         _connection = new SqliteConnection("Data Source=:memory:");
         _connection.Open();
+        _sink = new SqlCaptureSink();
         _counter = new OptionedExpandDelegateCounter();
-        _fx = await OptionedExpandSqliteHarness.BuildAsync(_connection, _counter, sink: null);
+        _fx = await OptionedExpandSqliteHarness.BuildAsync(_connection, _counter, _sink);
+        _sink.Clear();
     }
 
     public async Task DisposeAsync()
@@ -496,20 +522,27 @@ public sealed class OptionedExpandMultiLevelFallbackTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task MixedNav_NestedExpandUnderPushedNav_GracefulFallback_No500()
+    public async Task MixedNav_NestedExpandUnderPushedNav_PushesGrandchildJoinsDelegatesSibling()
     {
-        // Pushed($expand=Subs) is a multi-level nested expand → deferred → EDM-only for Pushed.
-        // Delegated has no nested expand → still delegate-loaded. Whole request must succeed (no 500).
+        // Pushed($expand=Subs) is a delegate-less 2-level chain → pushed as MixPushChildren JOIN
+        // MixGrands (ThenInclude). Delegated is delegate-backed → still resolves through its delegate,
+        // never a JOIN. The whole request succeeds (no 500).
+        _sink.Clear();
         var resp = await _fx.Client.GetAsync("/odata/MixParents?$orderby=id&$expand=Pushed($expand=Subs),Delegated");
         Assert.Equal(System.Net.HttpStatusCode.OK, resp.StatusCode);
 
+        string sql = OptionedExpandSqliteHarness.LastSelectAgainst(_sink, "MixParents");
+        // Both delegate-less levels JOIN into the parents query; the delegate nav does not.
+        Assert.Contains("\"MixPushChildren\"", sql);
+        Assert.Contains("\"MixGrands\"", sql);
+        Assert.DoesNotContain("\"MixDelChildren\"", sql);
+        Assert.True(_counter.DelegatedCalls > 0, "the delegate nav must still use its delegate");
+
         string body = await resp.Content.ReadAsStringAsync();
         Assert.Contains("\"MP1\"", body);
-        // Multi-level under a pushed nav is not pushed → Pushed stays EDM-only (empty); Delegated
-        // still resolves through its delegate. Neither the pushed grandchild nor a 500 appears.
-        Assert.Contains("\"pushed\":[]", body);
-        Assert.Contains("\"Del-A\"", body);
-        Assert.DoesNotContain("\"Grand-A\"", body);
+        Assert.Contains("\"Push-A\"", body);   // level-1 pushed child
+        Assert.Contains("\"Grand-A\"", body);  // level-2 pushed grandchild (multi-level ThenInclude)
+        Assert.Contains("\"Del-A\"", body);    // delegate sibling resolved through its delegate
     }
 }
 

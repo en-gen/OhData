@@ -4,6 +4,10 @@ using System.Linq;
 using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.OData.Edm;
+using Microsoft.OData.Edm.Csdl;
+using Microsoft.OData.Edm.Vocabularies;
+using Microsoft.OData.Edm.Vocabularies.V1;
 using Microsoft.OData.ModelBuilder;
 using OhData.Abstractions;
 
@@ -339,6 +343,15 @@ public sealed class OhDataBuilder
             modelBuilder.OnModelCreating = b => MarkNavigationTargetTypesFullyQueryable(b, rootModelTypes);
 
             var edmModel = modelBuilder.GetEdmModel();
+
+            // #206: advertise the resolved MaxExpansionDepth per entity set as the
+            // Org.OData.Capabilities.V1.ExpandRestrictions/MaxLevels annotation, so a client can
+            // discover the server's $expand/$levels ceiling from $metadata before it 400s a too-deep
+            // request. Best-effort: the convention builder returns a concrete EdmModel (the only type
+            // that accepts vocabulary annotations); if that ever changes, the annotation is skipped
+            // rather than failing startup — the limit is still enforced at request time.
+            AnnotateExpandRestrictions(edmModel, profiles, logger);
+
             logger?.LogInformation(
                 "OhData: initialized {Count} entity set(s) [{Names}] at prefix '{Prefix}'",
                 profiles.Count,
@@ -357,6 +370,36 @@ public sealed class OhDataBuilder
             _services.AddSingleton<OhDataRegistration>(sp =>
                 sp.GetRequiredKeyedService<OhDataRegistration>(OhDataDefaults.DefaultRegistrationName));
         }
+    }
+
+    // #206: attach an Org.OData.Capabilities.V1.ExpandRestrictions vocabulary annotation carrying
+    // MaxLevels = the profile's resolved MaxExpansionDepth to each entity set, so the ceiling is
+    // discoverable from $metadata. Emitted inline (inside the EntitySet element) so a CSDL reader
+    // finds it without an out-of-line lookup. Best-effort and non-fatal: any missing model/term/set
+    // is skipped (the depth limit is still enforced by the request-time validator regardless).
+    private static void AnnotateExpandRestrictions(
+        IEdmModel edmModel, IReadOnlyList<IEntitySetEndpointSource> profiles, ILogger? logger)
+    {
+        if (edmModel is not EdmModel model) return;
+        IEdmTerm? term = CapabilitiesVocabularyModel.Instance
+            .FindDeclaredTerm("Org.OData.Capabilities.V1.ExpandRestrictions");
+        if (term is null) return;
+
+        IEdmEntityContainer? container = model.EntityContainer;
+        if (container is null) return;
+
+        foreach (IEntitySetEndpointSource profile in profiles)
+        {
+            if (container.FindEntitySet(profile.EntitySetName) is not { } entitySet) continue;
+
+            var record = new EdmRecordExpression(
+                new EdmPropertyConstructor("MaxLevels", new EdmIntegerConstant(profile.MaxExpansionDepth)));
+            var annotation = new EdmVocabularyAnnotation(entitySet, term, record);
+            annotation.SetSerializationLocation(model, EdmVocabularyAnnotationSerializationLocation.Inline);
+            model.AddVocabularyAnnotation(annotation);
+        }
+
+        logger?.LogDebug("OhData: advertised ExpandRestrictions/MaxLevels for {Count} entity set(s).", profiles.Count);
     }
 
     // Marks every structural type the builder discovered that is NOT one of the root profiles'

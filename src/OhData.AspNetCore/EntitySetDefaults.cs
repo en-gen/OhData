@@ -79,17 +79,20 @@ public class EntitySetDefaults
         }
     }
 
-    private int _maxExpansionDepth = 12;
+    private int _maxExpansionDepth = 3;
     private int _maxFilterNodeCount = 10000;
     private int _maxOrderByNodeCount = 1000;
     private int _maxAnyAllExpressionDepth = 1000;
 
     /// <summary>
-    /// #202: maximum nested <c>$expand</c> depth accepted on the collection read paths. A request
-    /// nesting deeper is rejected with <c>400</c> before any handler runs. Defaults to <c>12</c>
-    /// (the framework's internal nested-expand cap), so a request nesting deeper than the framework
-    /// could ever satisfy is now an explicit error instead of a silently-truncated result. Lower it
-    /// to harden against deep-graph queries; must be a positive integer. Profile-level
+    /// #202/#206: maximum nested <c>$expand</c> depth accepted on the collection read paths, and the
+    /// ceiling <c>$levels</c> is resolved and capped to (<c>$levels=max</c> becomes exactly this
+    /// value; a numeric <c>$levels=N</c> is clamped to it). A request nesting <c>$expand</c> deeper —
+    /// or requesting more <c>$levels</c> — than this is rejected with <c>400</c> before any handler
+    /// runs. Defaults to <c>3</c>. Advertised in <c>$metadata</c> as the
+    /// <c>Org.OData.Capabilities.V1.ExpandRestrictions/MaxLevels</c> annotation on each entity set so
+    /// clients can discover it. Raise it to allow deeper graph queries, or lower it to harden against
+    /// them; must be a positive integer. Profile-level
     /// <see cref="EntitySetProfile{TKey,TModel}.MaxExpansionDepth"/> overrides this value.
     /// </summary>
     public int MaxExpansionDepth

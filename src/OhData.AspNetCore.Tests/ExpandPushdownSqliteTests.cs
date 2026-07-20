@@ -377,20 +377,25 @@ public sealed class ExpandPushdownSqliteTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Levels_FallsBackOffPushdown_StaysEdmOnly()
+    public async Task Levels_OnSelfReferentialNav_PushedAsBoundedRecursion()
     {
-        // $expand=Children($levels=2) carries a $levels option (the parser only accepts $levels on a
-        // recursive nav). Such a nav is self-referential → cyclic → excluded by the static guard, and
-        // TryBuildEngagedExpand's explicit LevelsOption bail is the belt-and-suspenders that would defer
-        // it even if it were eligible. Either way it must NOT be pushed down and must not 500: the
-        // OrgNodes query loads no children (delegate-less, unpushed), so each node's children is [].
+        // #206: $expand=Children($levels=2) on a delegate-less self-referential nav is now pushed as a
+        // BOUNDED (cycle-free) projection — the OrgNodes query self-JOINs OrgNodes to load each level.
+        _sink.Clear();
         var resp = await _fx.Client.GetAsync("/odata/OrgNodes?$expand=Children($levels=2)&$orderby=id");
         Assert.Equal(System.Net.HttpStatusCode.OK, resp.StatusCode);
 
+        // Self-JOIN: the OrgNodes SELECT references the OrgNodes table more than once (parent + child).
+        string sql = ExpandPushdownSqliteHarness.LastSelectAgainst(_sink, "OrgNodes");
+        Assert.True(
+            System.Text.RegularExpressions.Regex.Matches(sql, "\"OrgNodes\"").Count >= 2,
+            "a $levels self-referential expand must self-JOIN the OrgNodes table");
+
         string body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("\"Root\"", body);
-        // Not pushed down → the (delegate-less) children navigation stays empty rather than JOIN-loaded.
-        Assert.Contains("\"children\":[]", body);
+        // Root's children were JOIN-loaded (camelCase): Root → [Leaf], and Leaf (level 2) → [] (bounded).
+        Assert.Contains("\"name\":\"Root\"", body);
+        Assert.Contains("\"name\":\"Leaf\"", body);
+        Assert.Contains("\"children\":[]", body); // the deepest loaded level terminates as an empty page
     }
 }
 

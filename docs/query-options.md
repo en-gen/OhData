@@ -436,11 +436,20 @@ A pushed (delegate-less) `$expand` honors the nested options of the expanded col
 | `$orderby` — `Children($orderby=name desc)` | ✅ | ordered `Include` (SQL `ORDER BY` in the JOIN) |
 | `$top` / `$skip` — `Children($orderby=name;$top=5)` | ✅ | paged `Include` (SQL `ROW_NUMBER` window) |
 | `$count` — `Children($count=true)` | ✅ | inline `Children@odata.count` = full filtered count (paging is applied after counting, per §11.2.4.2) |
-| **nested `$expand`** — `Children($expand=Grandkids)` | ❌ (deferred) | multi-level `ThenInclude` is not pushed; the outer nav stays EDM-only for the request |
-| `$levels` — `Children($levels=2)` | ❌ (deferred) | recursive expand is not pushed |
+| **nested `$expand`** — `Children($expand=Grandkids)` | ✅ | multi-level pushdown: folded into the same query as an `Include`→`ThenInclude` JOIN when every level is delegate-less (see [Multi-level `$expand`](#multi-level-expand-and-levels-206) below) |
+| `$levels` — `Children($levels=2)` / `Children($levels=max)` | ✅ | recursive self-referential expand, bounded by `MaxExpansionDepth` (see below) |
 | `$search` / `$compute` / `$apply` | ❌ (deferred) | not implemented on the pushdown path |
 
 A deferred nested option is not an error: the request still returns `200`, but the delegate-less navigation that carried it stays EDM-only (empty) for that request. Nested options on a **delegate-backed** navigation follow the delegate path and are subject to that path's own support (see [navigation-routing.md](navigation-routing.md)); they never engage pushdown.
+
+<a id="multi-level-expand-and-levels-206"></a>
+#### Multi-level `$expand` and `$levels` (#206)
+
+A nested `$expand` is pushed **recursively**: `?$expand=Books($expand=Chapters($expand=Pages))` folds all three levels into one JOIN'd query (EF Core `Include`→`ThenInclude`), applying each level's own nested `$filter`/`$orderby`/`$top`/`$skip`/`$count`/`$select`. A branch is pushed only when it is **delegate-less at every level**; the moment a level's navigation carries a delegate (or is cyclic / a non-projectable type), that whole branch is deferred off pushdown and resolves through the existing path — a **delegate-backed navigation is never EF-included at any depth**, so the delegate is never bypassed. A delegate-backed navigation reached directly from the root (or under delegate-backed ancestors) still expands through its delegate exactly as before; a delegate navigation nested *beneath* a delegate-less pushed one stays empty (it is never JOIN-loaded).
+
+`$levels=N` recursively expands a **self-referential** navigation (a tree/hierarchy) `N` levels deep — `?$expand=Children($levels=2)` — as a bounded, cycle-free projection (each level is a fresh POCO; the deepest loaded level terminates the recursion). `$levels=max` resolves to the configured `MaxExpansionDepth`. Both are capped at `MaxExpansionDepth`: a `$levels` (or a nested `$expand`) that resolves deeper is rejected with `400` before any handler runs (see [Complexity limits](#complexity-limits-202)). A `$levels` expand that *also* carries other nested options (`$filter`/`$select`/…) is deferred off pushdown (a rare combination) and stays EDM-only.
+
+The ceiling is advertised in `$metadata` as the `Org.OData.Capabilities.V1.ExpandRestrictions/MaxLevels` annotation on each entity set, so a client can discover it before issuing a request.
 
 **Caveats.**
 
@@ -458,7 +467,7 @@ Four ceilings bound how expensive a single request's query options may be. Each 
 
 | Limit | Default | Bounds |
 |---|---|---|
-| `MaxExpansionDepth` | `12` | Nesting depth of `$expand`. **Enforced** as of #202 — a deeper `$expand` returns `400` rather than a silently-truncated result. `12` is the framework's internal nested-expand ceiling, so the intended use is to *lower* this to harden; raising it above 12 has no effect. |
+| `MaxExpansionDepth` | `3` | Nesting depth of `$expand`, and the ceiling `$levels` is resolved and capped to (`$levels=max` becomes exactly this value). **Enforced** as of #202 — a deeper `$expand`/`$levels` returns `400` rather than a silently-truncated result. Advertised per entity set in `$metadata` as `Org.OData.Capabilities.V1.ExpandRestrictions/MaxLevels` (#206). Raise it to allow deeper graph/hierarchy queries, or lower it to harden. |
 | `MaxFilterNodeCount` | `10000` | Number of nodes in a `$filter` expression tree. |
 | `MaxOrderByNodeCount` | `1000` | Number of nodes in an `$orderby`. |
 | `MaxAnyAllExpressionDepth` | `1000` | Nesting depth of `any()`/`all()` lambdas in a `$filter`. |

@@ -35,11 +35,31 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   JOIN'd query loads exactly the requested related rows (no per-parent N+1). `$count` emits an
   inline `Nav@odata.count` (the full filtered count, paging applied after counting per §11.2.4.2)
   and `$select` projects the expanded elements. Output stays camelCase plain-POCO — no
-  `SelectExpandWrapper` ever reaches the serializer, so no PascalCase leak. A **nested `$expand`**
-  (multi-level `ThenInclude`), `$levels`, or `$search`/`$compute`/`$apply` on the expand item is
-  **deferred** (the navigation stays EDM-only for that request); see `docs/query-options.md`.
+  `SelectExpandWrapper` ever reaches the serializer, so no PascalCase leak. `$search`/`$compute`/`$apply`
+  on the expand item is deferred (the navigation stays EDM-only for that request); see
+  `docs/query-options.md`.
+- **Multi-level `$expand` and `$levels` pushdown (#206).** A nested `$expand` is now pushed
+  **recursively**: `?$expand=Books($expand=Chapters($expand=Pages))` folds every level into one
+  JOIN'd query (EF Core `Include`→`ThenInclude`), applying each level's own nested
+  `$filter`/`$orderby`/`$top`/`$skip`/`$count`/`$select`. A branch is pushed only when it is
+  **delegate-less at every level** — the instant a level's navigation carries a delegate (or is
+  cyclic / a non-projectable type) the whole branch is deferred off pushdown, so a **delegate-backed
+  navigation is never EF-included at any depth** and its delegate is never bypassed (the
+  delegate-safety invariant holds recursively). `$levels=N` / `$levels=max` recursively expand a
+  **self-referential** navigation (a tree/hierarchy) as a bounded, cycle-free projection, capped at
+  `MaxExpansionDepth` (`$levels=max` resolves to exactly that value). camelCase plain-POCO output is
+  preserved at every depth, and any level that fails to translate degrades gracefully to EDM-only
+  (never a `500`).
+- **`MaxExpansionDepth` advertised in `$metadata` (#206).** Each entity set now carries an
+  `Org.OData.Capabilities.V1.ExpandRestrictions/MaxLevels` vocabulary annotation equal to its resolved
+  `MaxExpansionDepth`, so clients can discover the server's `$expand`/`$levels` ceiling from the CSDL.
 
 ### Changed
+
+- **`EntitySetDefaults.MaxExpansionDepth` default is now `3` (was `12`) (#206).** With multi-level and
+  `$levels` pushdown, the depth limit is a meaningful request ceiling (it caps `$levels=max` and
+  rejects deeper `$expand`/`$levels` with `400`), so the default is a conservative `3`. Raise it per
+  profile or via `WithDefaults` for deeper graph/hierarchy queries.
 
 - **`$expand` pushdown is now decoupled from `$select` pushdown (#206).** An `$expand` push no
   longer column-prunes the parent projection when `SelectPushdownEnabled` is `false` — the two
