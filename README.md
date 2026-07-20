@@ -291,13 +291,15 @@ for the full methodology, raw output, and known asymmetries between the two pipe
 
 ## Battle-testing
 
-1,470 automated tests protect the framework end to end: 1,097 in `OhData.AspNetCore.Tests` (server
-routing, query options, navigation, ETags, authorization, malformed-payload hardening), 267 in
-`OhData.Client.Tests`, 30 in `OhData.MicrosoftODataClient.Tests` (compatibility against the
-official `Microsoft.OData.Client`), and 76 across the OpenAPI-integration suites
-(`OhData.AspNetCore.OpenApi.Tests`, `OhData.AspNetCore.NSwag.Tests`,
-`OhData.AspNetCore.Swashbuckle.Tests`). Run every suite yourself with
-`dotnet test src/OhData.sln`.
+OhData sits on your request path, so it's tested like it belongs there:
+
+- **Integration tests, not mocks.** The server suite spins up a real ASP.NET Core host and drives it over HTTP — every route, every query option, navigation and `$ref` link management, ETag concurrency, and per-operation *and* instance-level authorization. A large share is deliberately **adversarial**: malformed JSON bodies, hostile and oversized query options, and concurrent or cancelled requests, each asserted to fail cleanly with the correct OData error envelope rather than a 500.
+- **Proven against a real database.** EF Core + SQLite tests capture the SQL the provider actually emits and assert that `$filter`/`$orderby`/`$select` push down into the query — so "SQL pushdown" is demonstrated, not just asserted.
+- **Verified against a real OData client.** A dedicated suite exercises the server through the official `Microsoft.OData.Client`, proving on-the-wire interoperability with a widely used consumer — conformance you can see, not conformance on paper.
+- **OpenAPI across every supported stack.** The generated document is tested against the built-in `AddOpenApi`, NSwag, and Swashbuckle, so it's correct whichever you wire up.
+- **Load and performance, on every change.** CI runs a [k6](https://k6.io/) load test against a live server on each build, and BenchmarkDotNet suites track server and client throughput and allocations so a regression shows up in review, not in production.
+
+Run the whole thing yourself with `dotnet test src/OhData.sln`.
 
 ## Versioning & support
 
