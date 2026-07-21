@@ -12,7 +12,7 @@ dotnet add package EnGen.OhData.AspNetCore.OpenApi
 ## Registration
 
 ```csharp
-using OhData.AspNetCore;
+using OhData.AspNetCore.OpenApi;
 
 builder.Services.AddOpenApi(o =>
 {

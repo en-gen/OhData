@@ -5,13 +5,12 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.OData.Query;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using OhData.Abstractions;
-using OhData.Abstractions.AspNetCore.OData;
-using OhData.AspNetCore;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.Tests;
@@ -840,20 +839,20 @@ public class EndpointMappingTests
     public void MaxTop_Zero_ThrowsArgumentOutOfRange()
     {
         Assert.Throws<ArgumentOutOfRangeException>(() =>
-            new OhData.Abstractions.EntitySetDefaults { MaxTop = 0 });
+            new OhData.EntitySetDefaults { MaxTop = 0 });
     }
 
     [Fact]
     public void MaxTop_Negative_ThrowsArgumentOutOfRange()
     {
         Assert.Throws<ArgumentOutOfRangeException>(() =>
-            new OhData.Abstractions.EntitySetDefaults { MaxTop = -1 });
+            new OhData.EntitySetDefaults { MaxTop = -1 });
     }
 
     [Fact]
     public void MaxTop_Null_IsAllowed()
     {
-        var defaults = new OhData.Abstractions.EntitySetDefaults { MaxTop = null };
+        var defaults = new OhData.EntitySetDefaults { MaxTop = null };
         Assert.Null(defaults.MaxTop);
     }
 
@@ -922,7 +921,7 @@ public class EndpointMappingTests
     {
         // Should not throw — policy + roles is a valid combination
         var profile = new PolicyAndRolesProfile();
-        var source = (OhData.Abstractions.IEntitySetEndpointSource)profile;
+        var source = (OhData.IEntitySetEndpointSource)profile;
         Assert.NotNull(source.Authorization);
         Assert.Equal("MyPolicy", source.Authorization!.Policy);
         Assert.Contains("Admin", source.Authorization.Roles!);
@@ -2912,7 +2911,7 @@ public class EndpointMappingTests
 
 // ── Auth test helpers (not registered as profiles — instantiated directly) ───
 
-internal class DoubleAuthProfile : OhData.Abstractions.EntitySetProfile<int, Widget>
+internal class DoubleAuthProfile : OhData.EntitySetProfile<int, Widget>
 {
     public DoubleAuthProfile() : base(x => x.Id)
     {
@@ -2921,7 +2920,7 @@ internal class DoubleAuthProfile : OhData.Abstractions.EntitySetProfile<int, Wid
     }
 }
 
-internal class DoubleRolesProfile : OhData.Abstractions.EntitySetProfile<int, Widget>
+internal class DoubleRolesProfile : OhData.EntitySetProfile<int, Widget>
 {
     public DoubleRolesProfile() : base(x => x.Id)
     {
@@ -2930,7 +2929,7 @@ internal class DoubleRolesProfile : OhData.Abstractions.EntitySetProfile<int, Wi
     }
 }
 
-internal class PolicyAndRolesProfile : OhData.Abstractions.EntitySetProfile<int, Widget>
+internal class PolicyAndRolesProfile : OhData.EntitySetProfile<int, Widget>
 {
     public PolicyAndRolesProfile() : base(x => x.Id)
     {

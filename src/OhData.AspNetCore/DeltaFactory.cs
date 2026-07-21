@@ -5,9 +5,8 @@ using System.Linq.Expressions;
 using System.Reflection;
 using Microsoft.AspNetCore.OData.Deltas;
 using Microsoft.Extensions.DependencyInjection;
-using OhData.Abstractions;
 
-namespace OhData.AspNetCore;
+namespace OhData;
 
 /// <summary>
 /// An explicit converter declared via <c>DeltaMapping.Convert(...)</c>: the entity property name,

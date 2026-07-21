@@ -2,8 +2,9 @@ using System.Linq;
 using NSwag.Generation.AspNetCore;
 using NSwag.Generation.Processors;
 using NSwag.Generation.Processors.Contexts;
+using OhData;
 
-namespace OhData.AspNetCore;
+namespace OhData.AspNetCore.NSwag;
 
 /// <summary>
 /// Opt-in NSwag operation processor that appends a human-readable authorization-requirements

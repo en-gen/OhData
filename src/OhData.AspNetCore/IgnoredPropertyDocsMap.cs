@@ -1,9 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using OhData.Abstractions;
 
-namespace OhData.AspNetCore;
+namespace OhData;
 
 /// <summary>
 /// Builds the CLR-model-type → ignored-CLR-property-name map the OpenAPI companion packages

@@ -16,8 +16,7 @@ using Microsoft.Extensions.Options;
 using NSwag.Generation.AspNetCore;
 using NSwag.Generation.Processors;
 using NSwag.Generation.Processors.Contexts;
-using OhData.Abstractions;
-using OhData.AspNetCore;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.NSwag.Tests;

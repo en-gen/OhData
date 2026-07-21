@@ -3,9 +3,8 @@ using System.Collections.Generic;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
-using OhData.Abstractions;
 
-namespace OhData.AspNetCore;
+namespace OhData;
 
 /// <summary>
 /// Builds the registration-wide <see cref="JsonSerializerOptions"/> that suppress properties

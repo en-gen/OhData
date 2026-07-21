@@ -41,7 +41,7 @@ internal static class SelectTranslator
 
         if (expr is MemberExpression member)
         {
-            string memberName = namingPolicy?.ConvertName(member.Member.Name) ?? member.Member.Name;
+            string memberName = ODataMemberName.Resolve(member.Member, namingPolicy);
 
             if (member.Expression is ParameterExpression p && p == param)
                 return memberName;

@@ -10,9 +10,8 @@ using Microsoft.OData.Edm.Csdl;
 using Microsoft.OData.Edm.Vocabularies;
 using Microsoft.OData.Edm.Vocabularies.V1;
 using Microsoft.OData.ModelBuilder;
-using OhData.Abstractions;
 
-namespace OhData.AspNetCore;
+namespace OhData;
 
 /// <summary>
 /// Fluent builder used inside <c>AddOhData(ohdata => { ... })</c> to register entity set profiles
@@ -101,6 +100,17 @@ public sealed class OhDataBuilder
     /// independently of the host's <c>HttpJsonOptions.SerializerOptions.PropertyNamingPolicy</c>,
     /// which is intentionally not inherited. Pass <see cref="JsonNamingPolicy.CamelCase"/> to emit
     /// camelCase payloads instead; an explicit value here always wins.
+    /// <para>
+    /// <b>Warning — this policy shapes payloads and OpenAPI schemas, NOT <c>$metadata</c>.</b> Opting
+    /// into camelCase makes response bodies and the generated OpenAPI schema camelCase, but
+    /// <c>$metadata</c> continues to advertise the EDM property names — PascalCase, or the
+    /// <c>[System.Text.Json.Serialization.JsonPropertyName]</c> value where one is present (§4.4).
+    /// The <c>$select</c>/<c>$filter</c>/<c>$orderby</c> parser resolves those EDM names
+    /// case-insensitively, so a camelCase query option still binds; but a strict OData-native client
+    /// that binds by the exact <c>$metadata</c> name will not match a camelCase payload key under this
+    /// opt-in. A <c>[JsonPropertyName]</c> rename is the ONE name used everywhere (metadata, payload,
+    /// query options, schema) regardless of this policy — the policy never re-cases a rename.
+    /// </para>
     /// </remarks>
     /// <param name="policy">
     /// The naming policy, or <c>null</c> for PascalCase (the default). For example
@@ -422,7 +432,16 @@ public sealed class OhDataBuilder
             // StructuralTypes does NOT yet contain nav-target types at the point profiles finish
             // visiting the builder above -- they're discovered lazily inside GetEdmModel().
             var rootModelTypes = new HashSet<Type>(profiles.Select(p => p.ModelType));
-            modelBuilder.OnModelCreating = b => MarkNavigationTargetTypesFullyQueryable(b, rootModelTypes);
+            modelBuilder.OnModelCreating = b =>
+            {
+                // #253: rename every structural property whose CLR member carries a
+                // [JsonPropertyName] so the EDM/$metadata/query-option name IS the JSON name. Runs
+                // for EVERY structural type the builder discovered (root profile types AND nav-target
+                // types reached only through navigation), so a nested $expand($select=renamedChild)
+                // resolves against — and survives the strip under — the same name too.
+                ApplyJsonPropertyNameRenames(b);
+                MarkNavigationTargetTypesFullyQueryable(b, rootModelTypes);
+            };
 
             var edmModel = modelBuilder.GetEdmModel();
 
@@ -518,6 +537,43 @@ public sealed class OhDataBuilder
             // that spurious ceiling (null = unlimited). OhData governs $top itself: the root path
             // clamps to source.MaxTop, and the expand-pushdown path applies the nested $top directly.
             query.SetMaxTop(null);
+        }
+    }
+
+    // #253: give every structural property carrying a [System.Text.Json.Serialization.JsonPropertyName]
+    // that attribute's value as its EDM name, so $metadata, $select/$filter/$orderby and the response
+    // payload all use one name per property. Navigation properties are intentionally left on their CLR
+    // name (the $expand identifier stays the CLR name — see RenamedNavigationTests / #184 — while the
+    // nav's JSON key is still the rename via ResolveNavigationJsonKey). Fails fast when two properties
+    // on one type would resolve to the same EDM name (case-insensitive, the way OData resolves
+    // identifiers), since that ambiguity cannot be represented in the EDM or the URL space.
+    private static void ApplyJsonPropertyNameRenames(ODataModelBuilder builder)
+    {
+        foreach (StructuralTypeConfiguration structuralType in builder.StructuralTypes)
+        {
+            var seen = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            // Navigation properties keep their CLR name as the EDM/$expand identifier (their JSON
+            // key is still renamed by ResolveNavigationJsonKey — see #184 / RenamedNavigationTests).
+            foreach (PropertyConfiguration property in structuralType.Properties
+                         .Where(p => p.Kind != PropertyKind.Navigation))
+            {
+                string edmName = property.PropertyInfo is { } clr
+                    ? ODataPropertyNaming.ResolveEdmName(clr)
+                    : property.Name;
+                if (!string.Equals(edmName, property.Name, StringComparison.Ordinal))
+                    property.Name = edmName;
+
+                if (seen.TryGetValue(edmName, out string? existing) &&
+                    !string.Equals(existing, property.PropertyInfo?.Name, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        $"OhData: type '{structuralType.ClrType.Name}' has two properties that resolve to " +
+                        $"the same OData name '{edmName}' ('{existing}' and " +
+                        $"'{property.PropertyInfo?.Name ?? edmName}'). A [JsonPropertyName] rename must not " +
+                        "collide with another property's OData name. Rename one of them.");
+                }
+                seen[edmName] = property.PropertyInfo?.Name ?? edmName;
+            }
         }
     }
 

@@ -6,8 +6,9 @@ using NSwag;
 using NSwag.Generation.AspNetCore;
 using NSwag.Generation.Processors;
 using NSwag.Generation.Processors.Contexts;
+using OhData;
 
-namespace OhData.AspNetCore;
+namespace OhData.AspNetCore.NSwag;
 
 /// <summary>
 /// Opt-in NSwag operation processor that reflects OhData's per-operation authorization (#199) into

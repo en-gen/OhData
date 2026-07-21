@@ -2,9 +2,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
 using Microsoft.OData.Edm;
-using OhData.Abstractions;
 
-namespace OhData.AspNetCore;
+namespace OhData;
 
 /// <summary>
 /// Holds the resolved state built at startup: the EDM model, registered profiles,

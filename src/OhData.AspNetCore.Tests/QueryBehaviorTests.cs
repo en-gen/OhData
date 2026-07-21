@@ -9,8 +9,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
-using OhData.Abstractions;
-using OhData.AspNetCore;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.Tests;

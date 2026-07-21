@@ -5,8 +5,9 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.OpenApi;
 using Swashbuckle.AspNetCore.SwaggerGen;
+using OhData;
 
-namespace OhData.AspNetCore;
+namespace OhData.AspNetCore.Swashbuckle;
 
 /// <summary>
 /// Swashbuckle schema filter that keeps generated schemas faithful to the real wire shape: it omits

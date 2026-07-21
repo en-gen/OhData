@@ -3,7 +3,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.OData.Deltas;
 using Microsoft.Extensions.DependencyInjection;
-using OhData.Abstractions;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.Tests;

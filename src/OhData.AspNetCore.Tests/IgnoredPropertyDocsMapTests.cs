@@ -1,8 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Microsoft.OData.Edm;
-using OhData.Abstractions;
-using OhData.AspNetCore;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.Tests;

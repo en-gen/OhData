@@ -8,8 +8,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.OpenApi;
 using Microsoft.OpenApi;
-using OhData.Abstractions;
-using OhData.AspNetCore;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.OpenApi.Tests;

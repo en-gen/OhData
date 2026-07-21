@@ -5,7 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.OData.Query;
 
-namespace OhData.Abstractions.AspNetCore.OData;
+namespace OhData;
 
 /// <summary>
 /// Extends <see cref="EntitySetProfile{TKey,TModel}"/> with OData-aware handler overloads that

@@ -1,7 +1,7 @@
 using System;
 using System.Linq;
 using System.Reflection;
-using OhData.Abstractions;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.Tests;
