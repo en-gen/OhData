@@ -1,13 +1,13 @@
 using System;
 
-namespace OhData.Abstractions;
+namespace OhData;
 
 /// <summary>
 /// Server-wide default settings applied to all entity set profiles unless overridden at the
 /// profile level. Configure via <c>builder.WithDefaults(d => { ... })</c> when calling
 /// <c>AddOhData</c>.
 /// </summary>
-public class EntitySetDefaults
+public sealed class EntitySetDefaults
 {
     /// <summary>
     /// Whether <c>$select</c> is enabled by default on all entity sets (OData §11.2.4.1).
@@ -235,9 +235,9 @@ public class EntitySetDefaults
     /// <summary>
     /// Midpoint-rounding behavior for the <c>round()</c> canonical function (OData Part 2
     /// §5.1.1.9) on the <c>GetQueryable</c> pushdown path. Defaults to
-    /// <c>OhData.Abstractions.RoundingMode.SpecCompliant</c> (round-half-away-from-zero, e.g.
+    /// <c>OhData.RoundingMode.SpecCompliant</c> (round-half-away-from-zero, e.g.
     /// <c>2.5 → 3</c>) — see that type's XML doc for the EF Core provider-translation caveat
-    /// that motivates <c>OhData.Abstractions.RoundingMode.BankersRounding</c>.
+    /// that motivates <c>OhData.RoundingMode.BankersRounding</c>.
     /// Profile-level <c>RoundingMode</c> overrides this value.
     /// </summary>
     public RoundingMode RoundingMode { get; set; } = RoundingMode.SpecCompliant;

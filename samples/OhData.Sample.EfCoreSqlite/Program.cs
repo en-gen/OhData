@@ -2,7 +2,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using OhData.AspNetCore;
+using OhData;
 using OhData.Sample.EfCoreSqlite;
 
 var builder = WebApplication.CreateBuilder(args);

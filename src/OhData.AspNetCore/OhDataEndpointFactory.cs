@@ -34,10 +34,8 @@ using Microsoft.Net.Http.Headers;
 using Microsoft.OData.Edm;
 using Microsoft.OData.Edm.Csdl;
 using Microsoft.OData.UriParser;
-using OhData.Abstractions;
-using OhData.Abstractions.AspNetCore.OData;
 
-namespace OhData.AspNetCore;
+namespace OhData;
 
 // #203: per-entity-set write-body-size limit, attached as route-group endpoint metadata (see
 // MapEntitySet) and enforced by the group-level write-body-size filter in MapAll. Absent metadata

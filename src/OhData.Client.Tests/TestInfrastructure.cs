@@ -11,8 +11,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using OhData.Abstractions;
-using OhData.AspNetCore;
+using OhData;
 
 namespace OhData.Client.Tests;
 

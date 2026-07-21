@@ -1,6 +1,6 @@
 using Microsoft.OData.ModelBuilder;
 
-namespace OhData.Abstractions;
+namespace OhData;
 
 internal interface IVisitModelBuilder
 {

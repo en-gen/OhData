@@ -1,4 +1,4 @@
-namespace OhData.AspNetCore;
+namespace OhData;
 
 /// <summary>
 /// Endpoint metadata that describes which OData query options are supported

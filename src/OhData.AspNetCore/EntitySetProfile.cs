@@ -13,7 +13,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.OData.Deltas;
 using Microsoft.OData.ModelBuilder;
 
-namespace OhData.Abstractions;
+namespace OhData;
 
 /// <summary>
 /// Base class for defining an OData entity set. Derive from this class in your application
@@ -158,9 +158,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Controls the midpoint-rounding behavior of the OData <c>round()</c> canonical function
     /// (Part 2 §5.1.1.9) on the <c>GetQueryable</c> pushdown path. Inherits from
     /// <c>EntitySetDefaults.RoundingMode</c> (default
-    /// <c>OhData.Abstractions.RoundingMode.SpecCompliant</c>) when <c>null</c>. See
-    /// <c>OhData.Abstractions.RoundingMode</c> for the EF Core provider-translation caveat that
-    /// motivates <c>OhData.Abstractions.RoundingMode.BankersRounding</c>.
+    /// <c>OhData.RoundingMode.SpecCompliant</c>) when <c>null</c>. See
+    /// <c>OhData.RoundingMode</c> for the EF Core provider-translation caveat that
+    /// motivates <c>OhData.RoundingMode.BankersRounding</c>.
     /// <para>
     /// Only reaches the base-class <c>GetQueryable</c> path (and its <c>$count</c> companion),
     /// where the framework owns the <c>ApplyTo</c> call. On the Priority-1
@@ -632,7 +632,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         // (e.g. $expand=A($expand=B($expand=C))) is not rejected by the model-bound default of 2.
         // The runtime recursion in OhDataEndpointFactory.ExpandLevelAsync bounds actual execution.
         if (ExpandEnabled ?? defaults.ExpandEnabled)
-            entityType.Expand(OhData.AspNetCore.OhDataEndpointFactory.MaxNestedExpandDepth, _expandProperties!);
+            entityType.Expand(OhData.OhDataEndpointFactory.MaxNestedExpandDepth, _expandProperties!);
         if (FilterEnabled ?? defaults.FilterEnabled)
             entityType.Filter(MergeAllowlistWithNavigationProperties(_filterProperties));
         if (OrderByEnabled ?? defaults.OrderByEnabled)
@@ -1764,7 +1764,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         return s_keyToUrlCache.GetOrAdd(GetType(), _ =>
         {
             var compiled = _getKey.Compile();
-            return model => OhData.AspNetCore.ODataEntityKeyUrlFormatter.Format(compiled(model)!);
+            return model => OhData.ODataEntityKeyUrlFormatter.Format(compiled(model)!);
         });
     }
     string IEntitySetEndpointSource.InvokeGetKeyForUrl(object model)

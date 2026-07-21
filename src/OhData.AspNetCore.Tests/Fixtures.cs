@@ -6,8 +6,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.OData.Deltas;
 using Microsoft.AspNetCore.OData.Query;
 using Microsoft.EntityFrameworkCore;
-using OhData.Abstractions;
-using OhData.Abstractions.AspNetCore.OData;
+using OhData;
 
 namespace OhData.AspNetCore.Tests;
 

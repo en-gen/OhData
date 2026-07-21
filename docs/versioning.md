@@ -31,8 +31,8 @@ GET /v2/Customers      ← v2 only
 `AddOhDataVersion` and `MapOhDataVersion` are included in `EnGen.OhData.AspNetCore` and combine name and prefix into a single call:
 
 ```csharp
-using OhData.AspNetCore.Versioning;
-
+// AddOhDataVersion / MapOhDataVersion live in Microsoft.Extensions.DependencyInjection /
+// Microsoft.AspNetCore.Builder, so no OhData-specific using is required.
 builder.Services.AddOhDataVersion("v1", "/v1", o => o.AddEntitySetProfile<ProductProfileV1>());
 builder.Services.AddOhDataVersion("v2", "/v2", o => o
     .AddEntitySetProfile<ProductProfileV1>()

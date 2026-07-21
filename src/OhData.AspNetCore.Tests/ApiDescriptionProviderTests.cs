@@ -5,7 +5,7 @@ using Microsoft.AspNetCore.Mvc.ApiExplorer;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
-using OhData.Abstractions;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.Tests;

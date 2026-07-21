@@ -2,7 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 
-namespace OhData.AspNetCore;
+namespace OhData;
 
 /// <summary>Holds all named OhData registrations. Registered as a singleton.</summary>
 public sealed class OhDataRegistrationCollection

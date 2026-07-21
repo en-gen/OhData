@@ -13,8 +13,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.OData;
 using Microsoft.OData.Client;
 using Microsoft.OData.ModelBuilder;
-using OhData.Abstractions;
-using OhData.AspNetCore;
+using OhData;
 using Xunit;
 
 // Entity type must be public so Microsoft.OData.Client can instantiate it via reflection

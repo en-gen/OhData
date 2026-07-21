@@ -3,8 +3,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
-using OhData.AspNetCore;
-using OhData.AspNetCore.Versioning;
+using OhData;
+using OhData.AspNetCore.Swashbuckle;
 using OhData.TestBench.AspNetCore;
 using Scalar.AspNetCore;
 

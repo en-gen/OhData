@@ -1,7 +1,7 @@
 using System;
 using System.Reflection;
 
-namespace OhData.Abstractions;
+namespace OhData;
 
 /// <summary>
 /// Describes a structural (non-navigation) property of an entity's CLR model, used to register

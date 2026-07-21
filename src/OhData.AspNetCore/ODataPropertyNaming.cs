@@ -2,7 +2,7 @@ using System;
 using System.Reflection;
 using System.Text.Json.Serialization;
 
-namespace OhData.Abstractions;
+namespace OhData;
 
 /// <summary>
 /// #253: single source of truth for the OData/EDM name of a structural property. A property's one

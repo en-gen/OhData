@@ -10,9 +10,8 @@ using Microsoft.OData.Edm.Csdl;
 using Microsoft.OData.Edm.Vocabularies;
 using Microsoft.OData.Edm.Vocabularies.V1;
 using Microsoft.OData.ModelBuilder;
-using OhData.Abstractions;
 
-namespace OhData.AspNetCore;
+namespace OhData;
 
 /// <summary>
 /// Fluent builder used inside <c>AddOhData(ohdata => { ... })</c> to register entity set profiles

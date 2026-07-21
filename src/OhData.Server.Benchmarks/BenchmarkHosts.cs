@@ -10,7 +10,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.OData.Edm;
 using Microsoft.OData.ModelBuilder;
-using OhData.AspNetCore;
+using OhData;
 using OhData.Server.Benchmarks.Model;
 using OhData.Server.Benchmarks.MsODataHost;
 using OhData.Server.Benchmarks.OhDataHost;

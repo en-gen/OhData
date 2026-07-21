@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace OhData.Abstractions;
+namespace OhData;
 
 /// <summary>
 /// Describes a navigation property route registered via

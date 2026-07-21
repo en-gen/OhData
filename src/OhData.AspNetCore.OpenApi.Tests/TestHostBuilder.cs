@@ -7,7 +7,7 @@ using Microsoft.AspNetCore.OpenApi;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using OhData.AspNetCore;
+using OhData;
 
 namespace OhData.AspNetCore.OpenApi.Tests;
 

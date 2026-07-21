@@ -1,4 +1,4 @@
-namespace OhData.AspNetCore;
+namespace OhData;
 
 /// <summary>
 /// Well-known constant values used by the OhData framework.

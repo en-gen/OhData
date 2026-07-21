@@ -5,7 +5,7 @@ using System.Threading.Tasks;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
-using OhData.Abstractions;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.Tests;

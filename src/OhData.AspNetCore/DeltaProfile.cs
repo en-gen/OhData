@@ -2,9 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq.Expressions;
 using System.Reflection;
-using OhData.AspNetCore;
 
-namespace OhData.Abstractions;
+namespace OhData;
 
 /// <summary>
 /// Base class for declaring dependency-free delta mappings between a DTO/view model and its

@@ -20,6 +20,19 @@ structural property's OData name; see **Breaking** below.
 
 ### Breaking
 
+- **Namespaces consolidated.** All user-facing and runtime types move to a single **`OhData`**
+  namespace (from `OhData.Abstractions`, `OhData.Abstractions.AspNetCore.OData`, and
+  `OhData.AspNetCore`), and the DI/endpoint extension methods move to the framework namespaces they
+  extend: `AddOhData`/`AddOhDataVersion` are now in **`Microsoft.Extensions.DependencyInjection`** and
+  `MapOhData`/`MapOhDataVersion` in **`Microsoft.AspNetCore.Builder`** (so they light up on
+  `builder.Services.`/`app.` with no OhData-specific `using`). The `OhData.Abstractions` and
+  `OhData.Abstractions.AspNetCore.OData` namespaces are removed. The companion packages' public
+  transformer/processor/filter types move out of the shared `OhData.AspNetCore` namespace into their own
+  package namespaces — `OhData.AspNetCore.OpenApi`, `OhData.AspNetCore.NSwag`, `OhData.AspNetCore.Swashbuckle`.
+  `OhData.Client`'s namespace is unchanged. **Migration:** replace `using OhData.Abstractions;`,
+  `using OhData.Abstractions.AspNetCore.OData;`, and `using OhData.AspNetCore;` with `using OhData;` for
+  types (the `Add*`/`Map*` extensions need no `using`); reference the companion transformers via their new
+  package namespace (e.g. `using OhData.AspNetCore.OpenApi;`). `EntitySetDefaults` is now `sealed`.
 - **`AddProfile<T>()` is renamed to `AddEntitySetProfile<T>()` (#243).** Hard rename, no `[Obsolete]`
   alias — the old name is removed. **Migration:** rename every `builder.AddProfile<MyProfile>()` call
   site to `builder.AddEntitySetProfile<MyProfile>()`. The `AddProfilesFrom*` assembly scanners are

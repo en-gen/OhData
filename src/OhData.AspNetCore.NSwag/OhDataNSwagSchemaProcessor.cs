@@ -7,8 +7,9 @@ using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using NJsonSchema;
 using NJsonSchema.Generation;
+using OhData;
 
-namespace OhData.AspNetCore;
+namespace OhData.AspNetCore.NSwag;
 
 /// <summary>
 /// NSwag (NJsonSchema) schema processor that keeps generated schemas faithful to the real wire
