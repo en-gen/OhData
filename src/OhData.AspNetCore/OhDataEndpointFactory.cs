@@ -1252,16 +1252,38 @@ internal static class OhDataEndpointFactory
     // OData annotations (keys starting with '@', e.g. @odata.etag) untouched — they are metadata
     // and must survive $select. Shared by the root-level Stage-4 strip and the per-level nested
     // $select strip in ExpandLevelAsync so casing and annotation handling stay identical.
+    //
+    // OData §11.2.4.2: an INLINE control-information key is "name@odata.xxx" (e.g. a nested
+    // expand's "Chapters@odata.count"). Its base name (the substring before '@') names the
+    // property the annotation belongs to, so it must survive $select exactly when that property
+    // does — otherwise stripping the enclosing level's non-selected keys would delete a nested
+    // expand's count/annotations. We therefore keep a key when: '@' is at index 0 (top-level
+    // annotation such as @odata.etag / @odata.id — existing behavior); or '@' appears later and
+    // the base name is a selected/expanded property; or the whole key is itself selected.
     private static void StripToSelectedProperties(IEnumerable<JsonObject> objects, List<string> selectedProps)
     {
         foreach (JsonObject obj in objects)
         {
             var toRemove = obj.Select(p => p.Key)
-                             .Where(k => !k.StartsWith("@", StringComparison.Ordinal) &&
-                                         !selectedProps.Contains(k, StringComparer.OrdinalIgnoreCase))
+                             .Where(k => !KeepUnderSelect(k, selectedProps))
                              .ToList();
             foreach (string? key in toRemove) obj.Remove(key);
         }
+    }
+
+    // Decides whether a single JSON key survives a $select strip. See StripToSelectedProperties
+    // for the §11.2.4.2 rationale behind the inline-control-information (name@odata.xxx) case.
+    private static bool KeepUnderSelect(string key, List<string> selectedProps)
+    {
+        int at = key.IndexOf('@');
+        if (at == 0) return true;                       // top-level annotation (@odata.etag, @odata.id, ...)
+        if (at > 0 &&                                    // inline control info: keep iff its property is selected
+            selectedProps.Contains(key.Substring(0, at), StringComparer.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return selectedProps.Contains(key, StringComparer.OrdinalIgnoreCase);
     }
 
     // Deepest nesting level ExpandLevelAsync will follow. The clause tree the OData parser builds
@@ -1415,7 +1437,7 @@ internal static class OhDataEndpointFactory
                 if (targetSource is not null)
                 {
                     await ExpandLevelAsync(
-                        childItems, childObjects, nestedClause, targetSource, targetEdmType,
+                        childItems, childObjects, (SelectExpandClause)nestedClause, targetSource, targetEdmType,
                         registration, requestServices, serializerOptions, depth + 1, ct);
                 }
                 // If the target set is not registered (no source), the deeper expansion cannot be
@@ -1429,7 +1451,7 @@ internal static class OhDataEndpointFactory
             // ExtractSelectedProperties preserves expanded nav names so they survive projection.
             if (hasNestedSelect)
             {
-                List<string>? nestedSelected = ExtractSelectedProperties(nestedClause);
+                List<string>? nestedSelected = ExtractSelectedProperties((SelectExpandClause)nestedClause);
                 if (nestedSelected is not null) StripToSelectedProperties(childObjects, nestedSelected);
             }
         }
@@ -1792,7 +1814,7 @@ internal static class OhDataEndpointFactory
             {
                 foreach (EngagedExpand nav in expandNavs)
                 {
-                    Expression access = BuildShapedNavAccess(x, nav, edmModel!, binderSettings!);
+                    Expression access = BuildShapedNavAccess(x, nav, (IEdmModel)edmModel!, (ODataQuerySettings)binderSettings!);
                     bindings.Add(Expression.Bind(nav.Binding.Property, access));
                 }
             }
@@ -1922,7 +1944,7 @@ internal static class OhDataEndpointFactory
             bool hasOtherOptions =
                 item.FilterOption is not null || item.OrderByOption is not null ||
                 item.CountOption == true || item.SkipOption is not null || item.TopOption is not null ||
-                (lc is not null && (ExtractSelectedProperties(lc) is not null ||
+                (lc is not null && (ExtractSelectedProperties((SelectExpandClause)lc) is not null ||
                                     lc.SelectedItems.OfType<ExpandedNavigationSelectItem>().Any()));
             if (hasOtherOptions) return false;
 
@@ -1977,7 +1999,7 @@ internal static class OhDataEndpointFactory
         // single-valued include (BuildShapedNavAccess returns x.Ref unchanged) carrying only $select.
         int? skip = item.SkipOption is long s ? (int)Math.Min(s, int.MaxValue) : null;
         int? top = item.TopOption is long t ? (int)Math.Min(t, int.MaxValue) : null;
-        List<string>? nestedSelect = nested is not null ? ExtractSelectedProperties(nested) : null;
+        List<string>? nestedSelect = nested is not null ? ExtractSelectedProperties((SelectExpandClause)nested) : null;
 
         engaged = new EngagedExpand(
             binding, item.FilterOption, item.OrderByOption, skip, top, item.CountOption == true, nestedSelect,
