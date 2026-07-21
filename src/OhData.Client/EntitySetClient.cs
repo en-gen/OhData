@@ -194,10 +194,10 @@ public sealed class EntitySetClient<T> where T : class
     // NOTE ON CASING: OrderBy/ThenBy/Expand/Select(params Expression[]) below all derive
     // property names from CLR reflection (member.Member.Name), same as Filter and the
     // single-expression Select. All of them run each path segment through
-    // _options.JsonOptions.PropertyNamingPolicy (CamelCase by default) so every query option is
-    // internally consistent. The server matches query-option property names case-insensitively
-    // against its PascalCase EDM, so this default binds regardless of the server's response
-    // casing. Only the
+    // _options.JsonOptions.PropertyNamingPolicy (null => PascalCase/CLR names by default) so every
+    // query option is internally consistent. The default matches the server's PascalCase EDM
+    // one-for-one; the server also matches query-option property names case-insensitively, so a
+    // camelCase opt-in still binds. Only the
     // raw-string overloads (Select(string[]), Expand(string[]), Filter(string)) are left
     // untouched — the caller supplied those names explicitly and already knows the exact
     // casing the target server expects.

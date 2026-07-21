@@ -39,6 +39,10 @@ and the PascalCase-default casing flip; see **Breaking** below.
   keep the previous camelCase wire/OpenAPI shape, opt back in explicitly with
   `AddOhData(o => o.WithJsonPropertyNamingPolicy(JsonNamingPolicy.CamelCase))`. Note that opting into
   camelCase desyncs payload casing from `$metadata`, which always uses the PascalCase CLR/EDM names.
+- **`OhData.Client` now defaults property casing to PascalCase (#263).** Request bodies and
+  `$filter`/`$select`/`$expand`/`$orderby` property names now use the CLR/PascalCase names by default,
+  matching OhData.AspNetCore's PascalCase-default responses and `$metadata`. **Migration:** to keep
+  camelCase, set `OhDataClientOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase`.
 
 ### Added
 
