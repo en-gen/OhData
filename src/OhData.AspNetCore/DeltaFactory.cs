@@ -116,6 +116,10 @@ internal static class DeltaMappingCompiler
             // co-declared Rename would be silently dropped. Reject rather than guess.
             if (renames.ContainsKey(convertSource))
                 errors.Add($"Model property '{convertSource}' is declared in both Rename() and Convert(); use only Convert() (it maps the target too).");
+            // Ignore() wins in the compile loop (skipped before the converter runs), so a co-declared
+            // Convert() silently no-ops. Reject rather than let one quietly no-op (mirrors Ignore()+Rename()).
+            if (ignored.Contains(convertSource))
+                errors.Add($"Model property '{convertSource}' is declared in both Ignore() and Convert(); use only one.");
         }
 
         // Two model properties targeting one entity property is an ambiguous last-writer-wins map.
@@ -259,21 +263,61 @@ internal static class DeltaMappingCompiler
 
     /// <summary>
     /// True when <paramref name="type"/> is a navigation-collection type — one OhData would model as a
-    /// HasMany navigation, which delta mapping (scalars/structural only) must never auto-write. Detected
-    /// structurally: any <see cref="System.Collections.IEnumerable"/> except the two collection-shaped
-    /// scalars — <c>string</c> (an <c>IEnumerable&lt;char&gt;</c> that is a scalar) and <c>byte[]</c>
-    /// (OData <c>Edm.Binary</c>). Single, non-collection reference types are deliberately NOT flagged:
+    /// HasMany navigation, which delta mapping (scalars/structural only) must never auto-write. A type is
+    /// flagged only when it is a collection (<see cref="System.Collections.IEnumerable"/>) whose ELEMENT
+    /// type is a class/entity (a related-entity or complex-class write, e.g. <c>List&lt;Order&gt;</c>).
+    /// A collection of a scalar/structural element — primitive, enum, <c>Guid</c>, <c>DateTime</c>,
+    /// <c>DateTimeOffset</c>, <c>decimal</c>, nullable value type, or the collection-shaped scalars
+    /// <c>string</c>/<c>byte[]</c> — is STRUCTURAL and must stay auto-mappable (<c>List&lt;int&gt;</c>,
+    /// <c>string[]</c>, <c>List&lt;DateTime&gt;</c>, Collection(Edm.PrimitiveType)). The two collection-shaped
+    /// scalars <c>string</c> (an <c>IEnumerable&lt;char&gt;</c>) and <c>byte[]</c> (OData <c>Edm.Binary</c>)
+    /// are never collections here. Single, non-collection reference types are deliberately NOT flagged:
     /// reflection cannot distinguish an EDM complex (structural) type from an entity (navigation) type,
     /// and the documented conversion policy blesses reference-assignable single references as automatic,
     /// so they remain mappable and an explicit Convert()/Ignore() is available if one is a navigation.
-    /// Nullable value types (never collections) are unwrapped defensively for robustness.
+    /// A bare non-generic <see cref="System.Collections.IEnumerable"/> (unknown element type) is flagged
+    /// conservatively. Nullable value types (never collections) are unwrapped defensively for robustness.
     /// </summary>
     internal static bool IsNavigationCollectionType(Type type)
     {
         Type t = Nullable.GetUnderlyingType(type) ?? type;
         if (t == typeof(string)) return false;   // IEnumerable<char>, but a scalar
         if (t == typeof(byte[])) return false;   // Edm.Binary scalar
-        return typeof(System.Collections.IEnumerable).IsAssignableFrom(t);
+        if (!typeof(System.Collections.IEnumerable).IsAssignableFrom(t)) return false;
+        return !IsStructuralScalar(EnumerableElementType(t));
+    }
+
+    /// <summary>
+    /// The element judgment reused for collection classification: <c>string</c>/<c>byte[]</c> and every
+    /// non-class type (primitive, enum, <c>Guid</c>, <c>DateTime</c>/<c>DateTimeOffset</c>, <c>decimal</c>,
+    /// other structs, and nullable value types once unwrapped) are structural scalars; a class element is
+    /// an entity/complex reference. Mirrors the "scalars/structural only" single-property intent.
+    /// </summary>
+    private static bool IsStructuralScalar(Type type)
+    {
+        Type t = Nullable.GetUnderlyingType(type) ?? type;
+        if (t == typeof(string) || t == typeof(byte[])) return true;
+        return !t.IsClass;
+    }
+
+    /// <summary>
+    /// The element type of an <see cref="System.Collections.IEnumerable"/>: the array element for arrays,
+    /// the <c>T</c> of the first <c>IEnumerable&lt;T&gt;</c> the type is or implements otherwise, and
+    /// <c>object</c> for a bare non-generic <see cref="System.Collections.IEnumerable"/>.
+    /// </summary>
+    private static Type EnumerableElementType(Type enumerableType)
+    {
+        if (enumerableType.IsArray) return enumerableType.GetElementType()!;
+
+        if (enumerableType.IsGenericType && enumerableType.GetGenericTypeDefinition() == typeof(IEnumerable<>))
+            return enumerableType.GetGenericArguments()[0];
+
+        foreach (Type i in enumerableType.GetInterfaces())
+        {
+            if (i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IEnumerable<>))
+                return i.GetGenericArguments()[0];
+        }
+        return typeof(object); // bare non-generic IEnumerable — unknown element, flag conservatively
     }
 
     private static PropertyInfo[] PublicInstanceProperties(Type type) =>

@@ -119,6 +119,39 @@ public sealed class DmScalarsProfile : DeltaProfile
     public DmScalarsProfile() => For<DmScalarModel, DmScalarEntity>();   // all pure convention
 }
 
+// ── R2-2: primitive/scalar collections are STRUCTURAL and must auto-map (not be rejected) ─
+public class DmPrimCollModel
+{
+    public int Id { get; set; }
+    public List<int> Numbers { get; set; } = new();            // Collection(Edm.Int32) — structural
+    public string[] Tags { get; set; } = Array.Empty<string>(); // Collection(Edm.String) — structural
+    public List<DateTime> Dates { get; set; } = new();          // Collection(Edm.DateTimeOffset) — structural
+}
+public class DmPrimCollEntity
+{
+    public int Id { get; set; }
+    public List<int> Numbers { get; set; } = new();
+    public string[] Tags { get; set; } = Array.Empty<string>();
+    public List<DateTime> Dates { get; set; } = new();
+}
+// Identically-typed primitive collections on both sides: they auto-map by identity and must NOT be
+// misclassified as navigations (the regression this guards against).
+public sealed class DmPrimitiveCollectionsProfile : DeltaProfile
+{
+    public DmPrimitiveCollectionsProfile() => For<DmPrimCollModel, DmPrimCollEntity>();
+}
+
+// ── R2-3: a property in both Ignore() and Convert() must fail fast ────────────────
+public class DmIcDto { public int Id { get; set; } public int Val { get; set; } }
+public class DmIcEntity { public int Id { get; set; } public long Val { get; set; } }
+public sealed class DmIgnoreConvertConflictProfile : DeltaProfile
+{
+    public DmIgnoreConvertConflictProfile() =>
+        For<DmIcDto, DmIcEntity>()
+            .Ignore(d => d.Val)
+            .Convert(d => d.Val, e => e.Val, (int v) => (long)v);
+}
+
 // ── BUG2: a property in both Rename() and Ignore() must fail fast ─────────────────
 public class DmRiDto { public int Id { get; set; } public string Name { get; set; } = ""; }
 public class DmRiEntity { public int Id { get; set; } public string Label { get; set; } = ""; }
@@ -308,5 +341,65 @@ public class DeltaMappingValidationTests
     {
         var ex = Assert.Throws<InvalidOperationException>(() => BuildFactory(typeof(DmRenameIgnoreConflictProfile)));
         Assert.Contains("both Ignore() and Rename()", ex.Message);
+    }
+
+    // ── R2-2: primitive/scalar collections stay STRUCTURAL and auto-map ──────────
+    [Fact]
+    public void PrimitiveScalarCollections_StillAutoMap()
+    {
+        // Compiles clean (no false-positive rejection) and copies the collections by identity.
+        IDeltaFactory factory = BuildFactory(typeof(DmPrimitiveCollectionsProfile));
+        var model = new DmPrimCollModel
+        {
+            Id = 1,
+            Numbers = new List<int> { 1, 2, 3 },
+            Tags = new[] { "a", "b" },
+            Dates = new List<DateTime> { new(2026, 7, 21, 0, 0, 0, DateTimeKind.Utc) },
+        };
+
+        var entity = new DmPrimCollEntity();
+        factory.Create<DmPrimCollModel, DmPrimCollEntity>(model).Patch(entity);
+
+        Assert.Equal(new[] { 1, 2, 3 }, entity.Numbers);
+        Assert.Equal(new[] { "a", "b" }, entity.Tags);
+        Assert.Equal(model.Dates, entity.Dates);
+    }
+
+    // ── R2-2: a collection of a CLASS element is still rejected as a navigation ──
+    [Fact]
+    public void ClassElementCollection_AutoMap_StillFailsFast()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() => BuildFactory(typeof(DmNavCollectionProfile)));
+        Assert.Contains("navigation/collection", ex.Message);
+    }
+
+    // ── R2-2: element-type classification boundaries (adversarial) ───────────────
+    [Theory]
+    [InlineData(typeof(List<int>), false)]                      // primitive
+    [InlineData(typeof(List<int?>), false)]                     // nullable value
+    [InlineData(typeof(int[]), false)]                          // primitive array
+    [InlineData(typeof(string[]), false)]                       // string array
+    [InlineData(typeof(List<DateTime>), false)]                 // struct
+    [InlineData(typeof(List<Guid>), false)]                     // struct
+    [InlineData(typeof(List<DmStatus>), false)]                 // enum
+    [InlineData(typeof(List<decimal>), false)]                  // struct
+    [InlineData(typeof(string), false)]                         // collection-shaped scalar
+    [InlineData(typeof(byte[]), false)]                         // Edm.Binary scalar
+    [InlineData(typeof(List<byte[]>), false)]                   // collection of binary scalars
+    [InlineData(typeof(Dictionary<string, int>), false)]        // element KeyValuePair<,> is a struct
+    [InlineData(typeof(int), false)]                            // not a collection at all
+    [InlineData(typeof(List<DmNavChild>), true)]                // collection of a class
+    [InlineData(typeof(IReadOnlyList<DmNavChild>), true)]       // interface collection of a class
+    [InlineData(typeof(DmNavChild[]), true)]                    // array of a class
+    [InlineData(typeof(System.Collections.IEnumerable), true)]  // bare non-generic — conservative
+    public void IsNavigationCollectionType_Classifies(Type type, bool expected)
+        => Assert.Equal(expected, DeltaMappingCompiler.IsNavigationCollectionType(type));
+
+    // ── R2-3: a property in both Ignore() and Convert() fails fast ───────────────
+    [Fact]
+    public void IgnoreAndConvertSameProperty_FailsFast()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() => BuildFactory(typeof(DmIgnoreConvertConflictProfile)));
+        Assert.Contains("both Ignore() and Convert()", ex.Message);
     }
 }
