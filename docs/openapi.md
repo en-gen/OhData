@@ -106,6 +106,13 @@ serializer's casing (camelCase by ASP.NET Core default). A `[JsonPropertyName]` 
 policy — in the schema and on the wire alike — matching the response precedence. Renaming is keyed by
 CLR model type (the same key the ignore suppression below uses).
 
+Renaming follows the whole response graph, not just the top-level entity: nested complex types (a
+`HomeAddress` property, a `List<Tag>` collection, a dictionary value) and inherited base classes each
+get their own component schema, and every one of them is renamed to the response casing. The
+transformer drives that descent itself — because renaming a property key removes the host-cased key
+the runtime uses to locate a child schema, so left to its own traversal the runtime would stop at any
+renamed complex property and leave nested-only component schemas at host casing (#260).
+
 ## Ignored properties omitted from schemas
 
 Properties excluded via `EntitySetProfile.Ignore(...)` never cross the wire (see

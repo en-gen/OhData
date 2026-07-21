@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -66,6 +67,14 @@ public sealed class OhDataNSwagSchemaProcessor : ISchemaProcessor
             return;
         }
 
+        // When a type inherits, NJsonSchema models it as `allOf: [{$ref base}, {inline own props}]`,
+        // so the type's own properties live on an inline allOf member, not on the top-level schema's
+        // Properties (#260). Mutate every schema that carries this type's own keys — the schema itself
+        // plus its inline allOf members. Referenced ($ref) allOf members hold the base type's props,
+        // which the base's own schema pass renames, so they are skipped here.
+        List<JsonSchema> bearers = new() { context.Schema };
+        bearers.AddRange(context.Schema.AllOf.Where(member => !member.HasReference));
+
         foreach (PropertyInfo property in modelType.GetProperties(BindingFlags.Public | BindingFlags.Instance))
         {
             if (property.GetIndexParameters().Length != 0) continue;
@@ -74,10 +83,13 @@ public sealed class OhDataNSwagSchemaProcessor : ISchemaProcessor
 
             if (ignored is not null && ignored.Contains(property.Name))
             {
-                // Removing a name Properties doesn't contain is a no-op, and a RequiredProperties
-                // entry without a matching property is invalid schema regardless, so nothing to guard.
-                context.Schema.Properties.Remove(hostName);
-                context.Schema.RequiredProperties.Remove(hostName);
+                foreach (JsonSchema bearer in bearers)
+                {
+                    // Removing a name Properties doesn't contain is a no-op, and a RequiredProperties
+                    // entry without a matching property is invalid schema regardless, so nothing to guard.
+                    bearer.Properties.Remove(hostName);
+                    bearer.RequiredProperties.Remove(hostName);
+                }
                 continue;
             }
 
@@ -86,14 +98,17 @@ public sealed class OhDataNSwagSchemaProcessor : ISchemaProcessor
             string responseName = SchemaPropertyCasing.ResolveResponseName(property, policy);
             if (responseName == hostName) continue;
 
-            if (context.Schema.Properties.TryGetValue(hostName, out JsonSchemaProperty? schemaProperty))
+            foreach (JsonSchema bearer in bearers)
             {
-                context.Schema.Properties.Remove(hostName);
-                context.Schema.Properties[responseName] = schemaProperty;
-            }
-            if (context.Schema.RequiredProperties.Remove(hostName))
-            {
-                context.Schema.RequiredProperties.Add(responseName);
+                if (bearer.Properties.TryGetValue(hostName, out JsonSchemaProperty? schemaProperty))
+                {
+                    bearer.Properties.Remove(hostName);
+                    bearer.Properties[responseName] = schemaProperty;
+                }
+                if (bearer.RequiredProperties.Remove(hostName))
+                {
+                    bearer.RequiredProperties.Add(responseName);
+                }
             }
         }
     }

@@ -80,6 +80,13 @@ so the document advertises exactly what responses emit rather than the host seri
 schema and on the wire alike. Renaming is keyed by CLR model type (the same key the ignore
 suppression below uses).
 
+Renaming covers the whole response graph, not just the top-level entity: nested complex types (a
+`HomeAddress` property, a `List<Tag>` collection, a dictionary value) and inherited base classes each
+get their own component schema and are renamed too. NSwag models an inherited type as
+`allOf: [{$ref base}, {own props}]`, so the processor renames a derived type's own keys on that
+inline `allOf` member as well as on the schema itself, and the base class gets its own renamed
+component (#260).
+
 ## Ignored properties omitted from schemas
 
 Properties excluded via `EntitySetProfile.Ignore(...)` never cross the wire (see
