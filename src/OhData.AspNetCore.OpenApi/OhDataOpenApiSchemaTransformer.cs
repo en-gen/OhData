@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Reflection;
+using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,14 +12,16 @@ using Microsoft.OpenApi;
 namespace OhData.AspNetCore;
 
 /// <summary>
-/// Microsoft.AspNetCore.OpenApi schema transformer that omits properties excluded via
-/// <c>EntitySetProfile.Ignore(...)</c> (#226) from generated schemas, so documents match the real
-/// wire shape (#228) — an ignored property never appears in a response and is never bound from a
-/// request body.
+/// Microsoft.AspNetCore.OpenApi schema transformer that keeps generated schemas faithful to the
+/// real wire shape: it omits properties excluded via <c>EntitySetProfile.Ignore(...)</c> (#226,
+/// #228), and renames the remaining property keys to the casing OhData's response serializer emits
+/// (#258) — PascalCase by default, or whatever
+/// <see cref="OhDataBuilder.WithJsonPropertyNamingPolicy"/> selected — instead of the host
+/// <c>HttpJsonOptions</c> casing the generator would otherwise use (camelCase by ASP.NET Core
+/// default).
 /// </summary>
 /// <remarks>
-/// Suppression is keyed by CLR model type (all profiles sharing a model type declare identical
-/// ignore sets — validated at startup). Register alongside
+/// Both behaviors are keyed by CLR model type. Register alongside
 /// <see cref="OhDataOpenApiOperationTransformer"/>:
 /// <code>
 /// builder.Services.AddOpenApi(o =&gt;
@@ -33,29 +35,58 @@ public sealed class OhDataOpenApiSchemaTransformer : IOpenApiSchemaTransformer
 {
     // Built once per transformer instance on first use. Cheap (one pass over the registered
     // profiles), and by the time any document request is served every mapped registration has
-    // been resolved (app.MapOhData() forces that at startup), so the map cannot be stale.
+    // been resolved (app.MapOhData() forces that at startup), so the maps cannot be stale.
     private IReadOnlyDictionary<Type, IReadOnlySet<string>>? _ignoredByType;
+    private IReadOnlyDictionary<Type, JsonNamingPolicy?>? _casingByType;
 
     /// <inheritdoc/>
     public Task TransformAsync(OpenApiSchema schema, OpenApiSchemaTransformerContext context, CancellationToken cancellationToken)
     {
-        IReadOnlyDictionary<Type, IReadOnlySet<string>> map = _ignoredByType ??=
-            IgnoredPropertyDocsMap.Build(context.ApplicationServices.GetService<OhDataRegistrationCollection>());
+        OhDataRegistrationCollection? registrations =
+            context.ApplicationServices.GetService<OhDataRegistrationCollection>();
+        IReadOnlyDictionary<Type, IReadOnlySet<string>> ignoredMap = _ignoredByType ??=
+            IgnoredPropertyDocsMap.Build(registrations);
+        IReadOnlyDictionary<Type, JsonNamingPolicy?> casingMap = _casingByType ??=
+            SchemaPropertyCasing.Build(registrations);
 
-        if (map.Count == 0 || !map.TryGetValue(context.JsonTypeInfo.Type, out IReadOnlySet<string>? ignored))
+        Type modelType = context.JsonTypeInfo.Type;
+        ignoredMap.TryGetValue(modelType, out IReadOnlySet<string>? ignored);
+        bool isOhDataType = casingMap.TryGetValue(modelType, out JsonNamingPolicy? policy);
+        if (ignored is null && !isOhDataType)
         {
             return Task.CompletedTask;
         }
 
-        // The ignored names are CLR property names ("CostBasis") while the schema keys follow the
-        // serializer's naming policy ("costBasis"). JsonTypeInfo carries both sides of that
-        // mapping: JsonPropertyInfo.Name is the resolved JSON name and AttributeProvider is the
-        // originating CLR member, so matching here is immune to the configured naming policy.
-        foreach (JsonPropertyInfo property in context.JsonTypeInfo.Properties
-            .Where(p => p.AttributeProvider is PropertyInfo clrProperty && ignored.Contains(clrProperty.Name)))
+        // JsonTypeInfo carries both sides of the CLR↔JSON mapping: JsonPropertyInfo.Name is the
+        // host-resolved schema key and AttributeProvider is the originating CLR member. So ignored
+        // properties (named by their CLR name) are matched immune to the host naming policy, and
+        // the surviving keys are renamed from the host casing to OhData's response casing.
+        foreach (JsonPropertyInfo property in context.JsonTypeInfo.Properties)
         {
-            schema.Properties?.Remove(property.Name);
-            schema.Required?.Remove(property.Name);
+            if (property.AttributeProvider is not PropertyInfo clrProperty) continue;
+
+            if (ignored is not null && ignored.Contains(clrProperty.Name))
+            {
+                schema.Properties?.Remove(property.Name);
+                schema.Required?.Remove(property.Name);
+                continue;
+            }
+
+            if (!isOhDataType) continue;
+
+            string responseName = SchemaPropertyCasing.ResolveResponseName(clrProperty, policy);
+            if (responseName == property.Name) continue;
+
+            if (schema.Properties is { } properties &&
+                properties.TryGetValue(property.Name, out IOpenApiSchema? value))
+            {
+                properties.Remove(property.Name);
+                properties[responseName] = value;
+            }
+            if (schema.Required is { } required && required.Remove(property.Name))
+            {
+                required.Add(responseName);
+            }
         }
 
         return Task.CompletedTask;

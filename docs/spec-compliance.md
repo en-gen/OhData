@@ -22,7 +22,9 @@ Response property names are serialized in **PascalCase by default** — the same
 declares in `$metadata` — so payload casing matches `$metadata` casing, as §4.4 requires. This makes
 OhData correct out of the box for case-sensitive OData-native clients (e.g. `Microsoft.OData.Client`).
 The casing is OhData-owned (not inherited from the host's `HttpJsonOptions`); switch to camelCase with
-`AddOhData(o => o.WithJsonPropertyNamingPolicy(JsonNamingPolicy.CamelCase))`. See
+`AddOhData(o => o.WithJsonPropertyNamingPolicy(JsonNamingPolicy.CamelCase))`. The OpenAPI/Swagger
+companion packages generate schema property names under this same policy, so the documented casing
+matches the wire. See
 [query-options.md → JSON property casing](query-options.md#json-property-casing).
 
 ## Protocol headers

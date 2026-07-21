@@ -81,7 +81,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   echoes, `$select`/`$expand` output, `$value`, and function/action results). To keep camelCase
   payloads, opt in explicitly: `AddOhData(o => o.WithJsonPropertyNamingPolicy(JsonNamingPolicy.CamelCase))`.
   The host's `HttpJsonOptions.PropertyNamingPolicy` is intentionally no longer consulted for OhData
-  responses (custom converters/encoder on it are still honoured).
+  responses (custom converters/encoder on it are still honoured). **The OpenAPI/Swagger companion
+  packages now generate schema property names under this same owned policy (#258)** — the three
+  schema generators (`OhDataOpenApiSchemaTransformer`, `OhDataNSwagSchemaProcessor`,
+  `OhDataSwaggerSchemaFilter`) previously derived schema casing from the host `HttpJsonOptions`
+  (camelCase), so a default app advertised camelCase schema names while emitting PascalCase payloads.
+  Schema keys now match the wire exactly (PascalCase by default, camelCase under the opt-in), with
+  `[JsonPropertyName]` renames winning in the schema just as they do on the wire.
 - **`AddProfile<T>()` renamed to `AddEntitySetProfile<T>()` (breaking).** Symmetric with the new
   `AddDeltaProfile<T>()`. No `[Obsolete]` alias — update call sites directly. The assembly scanner
   (`AddProfilesFrom` / `AddProfilesFromAssemblyOf` / `AddProfilesFromAssembly`) is unchanged in

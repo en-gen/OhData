@@ -34,6 +34,13 @@ output, `$value`, and bound/unbound function/action results.
 > (`$select=Name`, `$filter=…`, `$orderby=…`, `$expand=…`) and request bodies are matched
 > case-insensitively against the EDM, so a client may use either casing on the way in.
 
+The OpenAPI/Swagger companion packages (`OhData.AspNetCore.OpenApi`, `.NSwag`, `.Swashbuckle`)
+follow this same policy: generated schema property names match the wire casing exactly — PascalCase
+by default, camelCase when you opt in — instead of the host `HttpJsonOptions` casing the underlying
+generators would otherwise use. A `[JsonPropertyName]` rename still wins, in the schema and on the
+wire alike. So the generated document (and any client code generated from it) agrees with what
+responses actually emit.
+
 ## Handler paths
 
 ### `GetAll` - simple in-memory path
