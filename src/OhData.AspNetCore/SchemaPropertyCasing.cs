@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -93,9 +94,9 @@ internal static class SchemaPropertyCasing
 
         // Record before recursing so a cycle (Parent -> Child -> Parent) terminates.
         result[t] = policy;
-        foreach (PropertyInfo property in t.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+        foreach (PropertyInfo property in t.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(property => property.GetIndexParameters().Length == 0))
         {
-            if (property.GetIndexParameters().Length != 0) continue;
             Collect(property.PropertyType, policy, result);
         }
     }
@@ -136,13 +137,11 @@ internal static class SchemaPropertyCasing
         }
         else if (typeof(IEnumerable).IsAssignableFrom(type))
         {
-            foreach (Type i in type.GetInterfaces())
+            Type? enumerableInterface = type.GetInterfaces()
+                .FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IEnumerable<>));
+            if (enumerableInterface is not null)
             {
-                if (i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IEnumerable<>))
-                {
-                    element = i.GetGenericArguments()[0];
-                    break;
-                }
+                element = enumerableInterface.GetGenericArguments()[0];
             }
         }
 
