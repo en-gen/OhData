@@ -99,6 +99,16 @@ internal static class SchemaPropertyCasing
         {
             Collect(property.PropertyType, policy, result);
         }
+
+        // Also record the base class: NSwag emits an inherited base type as its own `allOf`
+        // component schema, so the base type needs its own casing entry or that component keeps
+        // host casing (#260). The IsLeaf guard stops the climb at object/framework bases, and the
+        // ContainsKey guard above breaks any cycle. GetProperties already returned inherited members
+        // (so their property types are covered), so this only adds the base type itself.
+        if (t.BaseType is Type baseType)
+        {
+            Collect(baseType, policy, result);
+        }
     }
 
     // A "leaf" is any type whose schema has no OhData-owned property casing to rename: primitives,
@@ -107,7 +117,7 @@ internal static class SchemaPropertyCasing
     // wandering into framework types. (A model type a consumer deliberately places under a
     // System.*/Microsoft.* namespace is the one blind spot; such a type would be treated as a leaf
     // and left at the generator's host casing.)
-    private static bool IsLeaf(Type type)
+    internal static bool IsLeaf(Type type)
     {
         if (type.IsPrimitive || type.IsEnum || type == typeof(string) || type == typeof(object)) return true;
         if (type == typeof(decimal) || type == typeof(DateTime) || type == typeof(DateTimeOffset) ||
