@@ -436,8 +436,10 @@ public sealed class EntitySetClient<T> where T : class
 
     // #253: resolve a member's OData name honoring [JsonPropertyName] (verbatim, ahead of the naming
     // policy — matching the server EDM and System.Text.Json), so query-option names match $metadata.
+    // #184: a navigation segment keeps its CLR name — the server does not rename nav identifiers — so
+    // ResolveSegment (not Resolve) is used for every $expand/$filter/$orderby path member.
     private string ResolveMemberName(System.Reflection.MemberInfo member) =>
-        Internal.ODataMemberName.Resolve(member, _options.JsonOptions.PropertyNamingPolicy);
+        Internal.ODataMemberName.ResolveSegment(member, _options.JsonOptions.PropertyNamingPolicy);
 
     /// <summary>
     /// Extracts the name of a single direct member of <typeparamref name="T"/> from

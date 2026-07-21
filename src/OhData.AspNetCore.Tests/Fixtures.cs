@@ -1756,6 +1756,37 @@ internal class RenamedStructCustomerProfile : EntitySetProfile<int, RenamedStruc
     }
 }
 
+// #253 (allowlist residual): a structural allowlist (SelectProperties/FilterProperties/
+// OrderByProperties) is captured as CLR names, but the EDM renames the property to its
+// [JsonPropertyName] value. Unless the allowlist is translated CLR→EDM before the model builder
+// sees it, the renamed-but-allowlisted property becomes NotFilterable/NotSortable/NotSelectable and
+// is unusable under BOTH its JSON name (rejected as non-allowlisted) and its CLR name (unknown).
+internal class RenamedAllowlistCustomerProfile : EntitySetProfile<int, RenamedStructCustomer>
+{
+    private static readonly List<RenamedStructCustomer> _data = new()
+    {
+        new() { Id = 1, Email = "ada@example.com", Name = "Ada" },
+        new() { Id = 2, Email = "ben@example.com", Name = "Ben" },
+    };
+
+    public RenamedAllowlistCustomerProfile() : base(x => x.Id)
+    {
+        EntitySetName = "RenamedAllowlistCustomers";
+        SelectEnabled = true;
+        FilterEnabled = true;
+        OrderByEnabled = true;
+
+        // Allowlists reference the renamed property by its CLR member. Only Email is allowlisted;
+        // Name is deliberately excluded so the allowlist can be shown to still gate correctly.
+        SelectProperties(x => x.Email);
+        FilterProperties(x => x.Email);
+        OrderByProperties(x => x.Email);
+
+        GetQueryable = (ct) => Task.FromResult(_data.AsQueryable());
+        GetById = (id, ct) => Task.FromResult(_data.FirstOrDefault(c => c.Id == id));
+    }
+}
+
 // A [JsonPropertyName] on the KEY property — the EDM key ref is renamed, but value-based key
 // routing (Widgets('A1')) is name-independent and must keep working.
 internal class RenamedKeyEntity

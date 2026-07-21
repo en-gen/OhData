@@ -627,16 +627,18 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         // if AdvancedConfigure wasn't overridden, work your magic
         var entityType = entitySet.EntityType;
 
-        if (SelectEnabled ?? defaults.SelectEnabled) entityType.Select(_selectProperties);
+        if (SelectEnabled ?? defaults.SelectEnabled) entityType.Select(ResolveStructuralAllowlistToEdmNames(_selectProperties));
         // Issue #183: pass an explicit max expansion depth so nested $expand
         // (e.g. $expand=A($expand=B($expand=C))) is not rejected by the model-bound default of 2.
         // The runtime recursion in OhDataEndpointFactory.ExpandLevelAsync bounds actual execution.
+        // #253: $expand identifiers stay on the CLR nav name (navigations are not renamed — see #184),
+        // so _expandProperties is passed through without EDM-name resolution.
         if (ExpandEnabled ?? defaults.ExpandEnabled)
             entityType.Expand(OhData.OhDataEndpointFactory.MaxNestedExpandDepth, _expandProperties!);
         if (FilterEnabled ?? defaults.FilterEnabled)
-            entityType.Filter(MergeAllowlistWithNavigationProperties(_filterProperties));
+            entityType.Filter(MergeAllowlistWithNavigationProperties(ResolveStructuralAllowlistToEdmNames(_filterProperties)));
         if (OrderByEnabled ?? defaults.OrderByEnabled)
-            entityType.OrderBy(MergeAllowlistWithNavigationProperties(_orderByProperties));
+            entityType.OrderBy(MergeAllowlistWithNavigationProperties(ResolveStructuralAllowlistToEdmNames(_orderByProperties)));
         if (CountEnabled ?? defaults.CountEnabled) entityType.Count();
 
         entityType.HasKey(_getKey);
@@ -705,6 +707,38 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     {
         if (allowlist is null || _navigationPropertyNames.Count == 0) return allowlist;
         return allowlist.Union(_navigationPropertyNames, StringComparer.Ordinal).ToArray();
+    }
+
+    /// <summary>
+    /// #253: translates a structural allowlist (SelectProperties/FilterProperties/OrderByProperties),
+    /// captured as CLR property names by <see cref="ExtractNames"/>, into the EDM names the model
+    /// builder validates against. A structural property carrying a
+    /// <c>[System.Text.Json.Serialization.JsonPropertyName]</c> is renamed in the EDM by
+    /// <c>OhDataBuilder.ApplyJsonPropertyNameRenames</c>, so a CLR-named allowlist entry would make
+    /// that renamed property <c>NotFilterable</c>/<c>NotSortable</c>/<c>NotSelectable</c> and thus
+    /// unusable under its actual (JSON) query name.
+    /// </summary>
+    /// <remarks>
+    /// A name that is not a structural property of <typeparamref name="TModel"/> is passed through
+    /// unchanged. This preserves navigation identifiers, which
+    /// <see cref="MergeAllowlistWithNavigationProperties"/> unions into the Filter/OrderBy list and
+    /// which intentionally keep their CLR name in the EDM (navigations are not renamed — see #184).
+    /// A name matching a declared navigation is therefore also passed through unchanged, even though
+    /// it resolves to a <see cref="PropertyInfo"/>.
+    /// </remarks>
+    private string[]? ResolveStructuralAllowlistToEdmNames(string[]? allowlist)
+    {
+        if (allowlist is null) return null;
+        string[] resolved = new string[allowlist.Length];
+        for (int i = 0; i < allowlist.Length; i++)
+        {
+            string name = allowlist[i];
+            resolved[i] = !_navigationPropertyNames.Contains(name) &&
+                          typeof(TModel).GetProperty(name) is PropertyInfo pi
+                ? OhData.ODataPropertyNaming.ResolveEdmName(pi)
+                : name;
+        }
+        return resolved;
     }
 
     /// <summary>

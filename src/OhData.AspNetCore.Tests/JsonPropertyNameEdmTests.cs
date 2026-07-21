@@ -278,6 +278,73 @@ public class JsonPropertyNameEdmTests
         Assert.True(first.TryGetProperty("emailAddress", out _));   // rename verbatim (not "emailaddress")
     }
 
+    // ── #253 residual: a renamed property in a structural ALLOWLIST stays usable ──
+    //
+    // SelectProperties/FilterProperties/OrderByProperties capture CLR names; the EDM renames the
+    // property to its [JsonPropertyName]. The allowlist must be translated CLR→EDM or the renamed
+    // property becomes unusable under both its JSON name (non-allowlisted) and its CLR name (unknown).
+
+    [Fact]
+    public async Task Allowlist_Filter_RenamedName_Works()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<RenamedAllowlistCustomerProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>(
+            "/odata/RenamedAllowlistCustomers?$filter=emailAddress eq 'ben@example.com'");
+
+        Assert.Equal(1, json.GetProperty("value").GetArrayLength());
+        Assert.Equal("Ben", json.GetProperty("value")[0].GetProperty("Name").GetString());
+    }
+
+    [Fact]
+    public async Task Allowlist_Filter_OldClrName_Returns400()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<RenamedAllowlistCustomerProfile>());
+        HttpResponseMessage response = await fx.Client.GetAsync(
+            "/odata/RenamedAllowlistCustomers?$filter=Email eq 'ben@example.com'");
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Allowlist_Select_RenamedName_PropertySurvives()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<RenamedAllowlistCustomerProfile>());
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>(
+            "/odata/RenamedAllowlistCustomers?$select=emailAddress");
+        JsonElement first = json.GetProperty("value")[0];
+
+        Assert.True(first.TryGetProperty("emailAddress", out var email), "renamed + allowlisted $select'd property must survive");
+        Assert.Equal("ada@example.com", email.GetString());
+    }
+
+    [Fact]
+    public async Task Allowlist_Select_OldClrName_Returns400()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<RenamedAllowlistCustomerProfile>());
+        HttpResponseMessage response = await fx.Client.GetAsync(
+            "/odata/RenamedAllowlistCustomers?$select=Email");
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Allowlist_OrderBy_RenamedName_Works()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<RenamedAllowlistCustomerProfile>());
+        var response = await fx.Client.GetAsync(
+            "/odata/RenamedAllowlistCustomers?$orderby=emailAddress desc");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Allowlist_StillGates_NonAllowlistedRenamedSibling_Returns400()
+    {
+        // Name is not in the allowlist: proves the translated allowlist is still exhaustive (the fix
+        // resolves names, it does not make the whole type permissive).
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<RenamedAllowlistCustomerProfile>());
+        HttpResponseMessage response = await fx.Client.GetAsync(
+            "/odata/RenamedAllowlistCustomers?$filter=Name eq 'Ada'");
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
     // ── ODataPropertyNaming helper: direct coverage of both resolve branches + miss ──
 
     [Fact]
