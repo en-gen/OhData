@@ -1738,7 +1738,11 @@ internal static class OhDataEndpointFactory
 
             foreach (string name in source.ETagPropertyNames)
             {
-                if (!structuralByName.TryGetValue(name, out StructuralPropertyInfo? etagProp))
+                // #253: structuralByName is keyed by the EDM name (which may be a [JsonPropertyName]
+                // rename), but UseETag selector names are CLR property names — match on the CLR name.
+                StructuralPropertyInfo? etagProp = structuralByName.Values
+                    .FirstOrDefault(p => string.Equals(p.Property.Name, name, StringComparison.Ordinal));
+                if (etagProp is null)
                 {
                     logger?.LogDebug(
                         "OhData: $select pushdown skipped for {EntitySet}: UseETag property '{Property}' is not a structural property.",
@@ -2010,8 +2014,9 @@ internal static class OhDataEndpointFactory
         foreach (IEdmStructuralProperty sp in edmType.StructuralProperties())
         {
             if (sp.Type.Definition is IEdmComplexType) return false; // owned-entity projection boundary
-            PropertyInfo? clrProp = elementType.GetProperty(
-                sp.Name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+            // #253: sp.Name is the EDM name, which may be a [JsonPropertyName] rename — resolve back
+            // to the CLR property by EDM name (falls back to a plain CLR-name match for un-renamed).
+            PropertyInfo? clrProp = ODataPropertyNaming.FindClrPropertyByEdmName(elementType, sp.Name);
             if (clrProp is null || clrProp.SetMethod is not { IsPublic: true }) return false;
         }
         return true;
@@ -2028,8 +2033,8 @@ internal static class OhDataEndpointFactory
         foreach (IEdmStructuralProperty sp in edmType.StructuralProperties()
             .Where(sp => sp.Type.Definition is not IEdmComplexType))
         {
-            PropertyInfo? clrProp = elementType.GetProperty(
-                sp.Name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+            // #253: sp.Name is the EDM name (possibly a [JsonPropertyName] rename) — resolve to CLR.
+            PropertyInfo? clrProp = ODataPropertyNaming.FindClrPropertyByEdmName(elementType, sp.Name);
             if (clrProp is { SetMethod.IsPublic: true }) yield return clrProp;
         }
     }
@@ -2236,7 +2241,8 @@ internal static class OhDataEndpointFactory
         if (model.FindDeclaredType(elem.FullName ?? elem.Name) is not IEdmEntityType entityType) return null;
         var keys = entityType.Key().ToList();
         if (keys.Count != 1) return null; // composite / keyless → leave order to the provider
-        return elem.GetProperty(keys[0].Name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+        // #253: the EDM key name may be a [JsonPropertyName] rename — resolve back to the CLR property.
+        return ODataPropertyNaming.FindClrPropertyByEdmName(elem, keys[0].Name);
     }
 
     // #206 phase 2 (optioned + multi-level expand): apply the JSON-side portion of a pushed expand's
@@ -2458,13 +2464,16 @@ internal static class OhDataEndpointFactory
             string propName = parts[0];
             bool descending = parts.Length > 1 && string.Equals(parts[1], "desc", StringComparison.OrdinalIgnoreCase);
 
-            PropertyInfo? prop = navItemType?.GetProperty(
-                propName, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
-            if (navItemType is not null && prop is null)
+            // #253: $orderby names are OData names — resolve to the CLR property by EDM name (honors
+            // [JsonPropertyName]) and reject the renamed property's CLR name exactly as the main path.
+            if (navItemType is not null && !ODataPropertyNaming.IsKnownEdmName(navItemType, propName))
             {
                 return (null, ODataError(400, "InvalidQueryOption",
                     $"Property '{propName}' does not exist on type '{navItemType.Name}'."));
             }
+            PropertyInfo? prop = navItemType is null
+                ? null
+                : ODataPropertyNaming.FindClrPropertyByEdmName(navItemType, propName);
 
             object? KeySelector(object item) => prop?.GetValue(item);
 
@@ -2516,7 +2525,11 @@ internal static class OhDataEndpointFactory
             {
                 foreach (string propName in selectedProps)
                 {
-                    if (navItemType.GetProperty(propName, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase) is null)
+                    // #253: $select names are OData names — validate against the EDM name (honors
+                    // [JsonPropertyName]) so a renamed child property's name is accepted and its CLR
+                    // name is rejected. The strip below keys off the payload (which is the rename too),
+                    // so accepting only the EDM name keeps the two in agreement (no silent drop).
+                    if (!ODataPropertyNaming.IsKnownEdmName(navItemType, propName))
                     {
                         return (null, ODataError(400, "InvalidQueryOption",
                             $"Property '{propName}' does not exist on type '{navItemType.Name}'."));
@@ -4058,8 +4071,10 @@ internal static class OhDataEndpointFactory
                     var patchDelta = new Microsoft.AspNetCore.OData.Deltas.Delta<TModel>();
                     foreach (var prop in body.EnumerateObject())
                     {
-                        var clrProp = typeof(TModel).GetProperty(prop.Name,
-                            BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance);
+                        // #253: request body keys are JSON names — a [JsonPropertyName]-renamed property
+                        // arrives under its JSON name, so resolve by EDM name (which honors the rename)
+                        // rather than a plain CLR-name lookup that would silently drop the renamed member.
+                        var clrProp = ODataPropertyNaming.FindClrPropertyByEdmName(typeof(TModel), prop.Name);
                         // #226: ignored properties get the same silent-skip as unknown members.
                         // This loop resolves members via CLR reflection (not the EDM), so EDM
                         // removal alone would not stop an ignored member from binding here.
@@ -4798,6 +4813,9 @@ internal static class OhDataEndpointFactory
             foreach (var propCapture in source.StructuralProperties)
             {
                 string propName = propCapture.Name;
+                // #253: propName is the OData/EDM name (route segment, error targets); the underlying
+                // Delta<TModel> keys by the CLR property name, which differs under [JsonPropertyName].
+                string clrPropName = propCapture.Property.Name;
                 bool propIsNullable = propCapture.IsNullable;
                 bool propIsComplex = propCapture.IsComplex;
                 Type propClrType = propCapture.ClrType;
@@ -4894,7 +4912,7 @@ internal static class OhDataEndpointFactory
                         }
 
                         var delta = new Microsoft.AspNetCore.OData.Deltas.Delta<TModel>();
-                        if (!delta.TrySetPropertyValue(propName, newValue))
+                        if (!delta.TrySetPropertyValue(clrPropName, newValue))
                         {
                             return ODataError(400, "InvalidBody",
                                 $"Could not set property '{propName}' to the supplied value.", target: propName);
@@ -4956,7 +4974,7 @@ internal static class OhDataEndpointFactory
                         if (etagCheck is not null) return etagCheck;
 
                         var delta = new Microsoft.AspNetCore.OData.Deltas.Delta<TModel>();
-                        delta.TrySetPropertyValue(propName, null);
+                        delta.TrySetPropertyValue(clrPropName, null);
                         object? result = await s.InvokePatchAsync(parsedKey!, delta, ct);
                         if (result is null)
                             return ODataError(404, "NotFound", $"{name} with key '{key}' was not found.");

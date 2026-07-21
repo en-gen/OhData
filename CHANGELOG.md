@@ -14,8 +14,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Query-pushdown and spec-correctness milestone: `$select` and `$expand` now push into the backing
 `IQueryable` (column-pruned `SELECT`s and SQL `JOIN`s on the EF Core path), response JSON defaults to
 PascalCase so payloads match `$metadata`, and a dependency-free delta mapper bridges DTO-backed entity
-sets. **Two breaking changes** ship here — the `AddProfile` → `AddEntitySetProfile` registration rename
-and the PascalCase-default casing flip; see **Breaking** below.
+sets. **Several breaking changes** ship here — the `AddProfile` → `AddEntitySetProfile` registration
+rename, the PascalCase-default casing flip (server and client), and `[JsonPropertyName]` now driving a
+structural property's OData name; see **Breaking** below.
 
 ### Breaking
 
@@ -42,7 +43,23 @@ and the PascalCase-default casing flip; see **Breaking** below.
 - **`OhData.Client` now defaults property casing to PascalCase (#263).** Request bodies and
   `$filter`/`$select`/`$expand`/`$orderby` property names now use the CLR/PascalCase names by default,
   matching OhData.AspNetCore's PascalCase-default responses and `$metadata`. **Migration:** to keep
-  camelCase, set `OhDataClientOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase`.
+  camelCase, set `o.JsonOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase` on the
+  `OhDataClientOptions` (mutate the existing `JsonOptions` in place so its other defaults —
+  case-insensitive reads, ignore-null-on-write — are preserved).
+- **`[JsonPropertyName]` now drives a structural property's OData name (#253).** A model property
+  carrying `[System.Text.Json.Serialization.JsonPropertyName("wireName")]` is now named `wireName` on
+  **every** OData surface — `$metadata`, the response payload, and the server-accepted
+  `$select`/`$filter`/`$orderby` spellings (and the property-route URL segment) — instead of the EDM
+  using the CLR name while only the payload used the rename. This closes a **silent data-loss** bug:
+  `$select=<ClrName>` (the only spelling the CLR-named EDM used to accept) returned a payload keyed by
+  the rename, so the `$select` post-strip dropped the property from the response entirely. The client
+  translators emit the rename too, so client-issued query options match. Navigation properties are
+  unaffected — their `$expand` identifier stays the CLR name (their JSON key was already the rename).
+  **Migration:** for a `[JsonPropertyName]`-renamed property, the OData/`$metadata`/query-option name
+  is now the JSON name, not the CLR name — update any `$select`/`$filter`/`$orderby`/`$metadata`-bound
+  client that referenced the old CLR name to use the JSON name (the old CLR name now returns `400`
+  as an unknown property). A rename that would collide with another property's OData name on the same
+  type now fails fast at startup.
 
 ### Added
 

@@ -12,7 +12,13 @@ namespace OhData.Abstractions;
 /// </summary>
 internal sealed record StructuralPropertyInfo
 {
-    /// <summary>The CLR property name, used as the route segment.</summary>
+    /// <summary>
+    /// The property's OData/EDM name — its <c>[JsonPropertyName]</c> value when present, else the CLR
+    /// name (#253). Used as the property route segment, the <c>$select</c>/<c>$filter</c>/<c>$orderby</c>
+    /// identifier, and the <c>$select</c> post-strip key, so it agrees with the response payload key.
+    /// Use <see cref="Property"/>'s <c>Name</c> for the underlying CLR property name (e.g. building a
+    /// <c>Delta&lt;TModel&gt;</c>, which keys by CLR name).
+    /// </summary>
     public required string Name { get; init; }
 
     /// <summary>The CLR type of the property.</summary>

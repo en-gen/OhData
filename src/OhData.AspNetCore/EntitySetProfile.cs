@@ -728,7 +728,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         {
             list.Add(new StructuralPropertyInfo
             {
-                Name = prop.Name,
+                // #253: the property's OData/EDM name is its [JsonPropertyName] when present, else
+                // the CLR name. This is the identifier used for the property route segment, the
+                // $select/$filter/$orderby allowlist, and the $select post-strip — so it agrees with
+                // the response payload key (which System.Text.Json also derives from [JsonPropertyName]).
+                Name = ODataPropertyNaming.ResolveEdmName(prop),
                 ClrType = prop.PropertyType,
                 IsKey = string.Equals(prop.Name, keyPropertyName, StringComparison.Ordinal),
                 IsNullable = IsNullableClrType(prop.PropertyType),
