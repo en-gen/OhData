@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
@@ -115,10 +116,10 @@ public sealed class OhDataOpenApiSchemaTransformer : IOpenApiSchemaTransformer
 
                 if (schema.Properties is { } props)
                 {
-                    foreach (JsonPropertyInfo property in typeInfo.Properties)
+                    foreach (JsonPropertyInfo property in typeInfo.Properties
+                        .Where(property => props.ContainsKey(property.Name)))
                     {
-                        if (props.TryGetValue(property.Name, out IOpenApiSchema? child) &&
-                            child is OpenApiSchema childSchema)
+                        if (props[property.Name] is OpenApiSchema childSchema)
                         {
                             RenameTree(childSchema, typeInfo.Options.GetTypeInfo(property.PropertyType),
                                 ignoredMap, casingMap, visited);

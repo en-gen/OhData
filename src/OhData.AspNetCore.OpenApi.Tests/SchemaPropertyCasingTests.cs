@@ -161,10 +161,7 @@ public sealed class SchemaPropertyCasingTests
         // so a derived type's own keys can live on an allOf member rather than top-level `properties`.
         if (resolvedSchema.TryGetProperty("allOf", out JsonElement allOf))
         {
-            foreach (JsonElement member in allOf.EnumerateArray())
-            {
-                if (SchemaDeclares(member, propertyName)) return true;
-            }
+            if (allOf.EnumerateArray().Any(member => SchemaDeclares(member, propertyName))) return true;
         }
         return false;
     }
@@ -182,14 +179,12 @@ public sealed class SchemaPropertyCasingTests
     private static JsonElement SchemaWithProperty(JsonDocument doc, string clrPropertyName)
     {
         JsonElement schemas = doc.RootElement.GetProperty("components").GetProperty("schemas");
-        foreach (JsonProperty component in schemas.EnumerateObject())
-        {
-            if (component.Value.TryGetProperty("properties", out JsonElement props) &&
+        foreach (JsonProperty component in schemas.EnumerateObject()
+            .Where(component => component.Value.TryGetProperty("properties", out JsonElement props) &&
                 props.EnumerateObject().Any(p =>
-                    string.Equals(p.Name, clrPropertyName, System.StringComparison.OrdinalIgnoreCase)))
-            {
-                return component.Value;
-            }
+                    string.Equals(p.Name, clrPropertyName, System.StringComparison.OrdinalIgnoreCase))))
+        {
+            return component.Value;
         }
         throw new Xunit.Sdk.XunitException($"No component schema declares a '{clrPropertyName}' property.");
     }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -72,10 +73,7 @@ public sealed class OhDataNSwagSchemaProcessor : ISchemaProcessor
         // plus its inline allOf members. Referenced ($ref) allOf members hold the base type's props,
         // which the base's own schema pass renames, so they are skipped here.
         List<JsonSchema> bearers = new() { context.Schema };
-        foreach (JsonSchema member in context.Schema.AllOf)
-        {
-            if (!member.HasReference) bearers.Add(member);
-        }
+        bearers.AddRange(context.Schema.AllOf.Where(member => !member.HasReference));
 
         foreach (PropertyInfo property in modelType.GetProperties(BindingFlags.Public | BindingFlags.Instance))
         {
