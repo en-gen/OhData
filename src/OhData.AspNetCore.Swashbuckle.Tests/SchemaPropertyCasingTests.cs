@@ -155,11 +155,8 @@ public sealed class SchemaPropertyCasingTests
         if (SchemaDeclares(resolvedSchema, propertyName)) return true;
         // A generator may model an inherited type as `allOf: [{$ref base}, {properties: own props}]`,
         // so a derived type's own keys can live on an allOf member rather than top-level `properties`.
-        if (resolvedSchema.TryGetProperty("allOf", out JsonElement allOf))
-        {
-            if (allOf.EnumerateArray().Any(member => SchemaDeclares(member, propertyName))) return true;
-        }
-        return false;
+        return resolvedSchema.TryGetProperty("allOf", out JsonElement allOf)
+            && allOf.EnumerateArray().Any(member => SchemaDeclares(member, propertyName));
     }
 
     private static bool SchemaDeclares(JsonElement schema, string propertyName)

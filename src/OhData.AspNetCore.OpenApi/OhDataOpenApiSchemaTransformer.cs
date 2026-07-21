@@ -117,13 +117,11 @@ public sealed class OhDataOpenApiSchemaTransformer : IOpenApiSchemaTransformer
                 if (schema.Properties is { } props)
                 {
                     foreach (JsonPropertyInfo property in typeInfo.Properties
-                        .Where(property => props.ContainsKey(property.Name)))
+                        .Where(property => props.TryGetValue(property.Name, out IOpenApiSchema? child)
+                            && child is OpenApiSchema))
                     {
-                        if (props[property.Name] is OpenApiSchema childSchema)
-                        {
-                            RenameTree(childSchema, typeInfo.Options.GetTypeInfo(property.PropertyType),
-                                ignoredMap, casingMap, visited);
-                        }
+                        RenameTree((OpenApiSchema)props[property.Name],
+                            typeInfo.Options.GetTypeInfo(property.PropertyType), ignoredMap, casingMap, visited);
                     }
                 }
 
