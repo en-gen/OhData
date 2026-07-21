@@ -17,7 +17,8 @@ var client = new OhDataClient("https://api.example.com/odata");
 // Or wrap a caller-supplied HttpClient (recommended for IHttpClientFactory)
 var client = new OhDataClient(httpClient);
 
-// With custom JSON options
+// With custom JSON options — e.g. opt into camelCase for a camelCase-configured server
+// (the default is PascalCase, matching the OhData server's default $metadata/responses)
 var client = new OhDataClient(httpClient, new OhDataClientOptions
 {
     JsonOptions = new JsonSerializerOptions
@@ -73,7 +74,7 @@ var cheap  = await base.Filter(x => x.Price < 10).ToListAsync();
 var pricey = await base.Filter(x => x.Price > 100).OrderBy(x => x.Name).ToListAsync();
 ```
 
-**Property-name casing.** Every typed (expression-based) builder — `Filter`, `Select`, `OrderBy`/`OrderByDescending`/`ThenBy`/`ThenByDescending`, and `Expand` — runs each property name through `OhDataClientOptions.JsonOptions.PropertyNamingPolicy` before emitting it. The default policy is camelCase (matching the OhData server's JSON casing), so `x => x.Price > 10` emits `$filter=price gt 10`. Set `PropertyNamingPolicy = null` to emit the CLR PascalCase names for servers with PascalCase metadata. The raw-string overloads (`Filter(string)`, `Select(params string[])`, `Expand(params string[])`) are never rewritten — those names are sent exactly as you typed them. For readability, the examples below show the CLR property names; with the default options they are emitted camelCase.
+**Property-name casing.** Every typed (expression-based) builder — `Filter`, `Select`, `OrderBy`/`OrderByDescending`/`ThenBy`/`ThenByDescending`, and `Expand` — runs each property name through `OhDataClientOptions.JsonOptions.PropertyNamingPolicy` before emitting it. The default policy is `null` (PascalCase — the CLR names), matching the OhData server's PascalCase-default `$metadata` and responses, so `x => x.Price > 10` emits `$filter=Price gt 10`. Set `PropertyNamingPolicy = JsonNamingPolicy.CamelCase` to emit camelCase for a server configured for camelCase. The raw-string overloads (`Filter(string)`, `Select(params string[])`, `Expand(params string[])`) are never rewritten — those names are sent exactly as you typed them. The examples below show the CLR property names, which are what the default options emit.
 
 ### `$filter`
 
@@ -533,7 +534,7 @@ use `DateTimeOffset`, which always carries its own offset and passes through unc
 
 ### `JsonOptions`
 
-Applied to both request serialization and response deserialization. Defaults: camelCase naming, case-insensitive reads, null values omitted on write.
+Applied to both request serialization and response deserialization. Defaults: PascalCase naming (`PropertyNamingPolicy = null`, matching the OhData server's PascalCase default), case-insensitive reads, null values omitted on write. Set `PropertyNamingPolicy = JsonNamingPolicy.CamelCase` to target a camelCase server.
 
 ```csharp
 var client = new OhDataClient(httpClient, new OhDataClientOptions

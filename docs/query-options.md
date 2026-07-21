@@ -30,6 +30,13 @@ builder.Services.AddOhData(o =>
 every response path: collection and single-entity reads, POST/PUT/PATCH echoes, `$select`/`$expand`
 output, `$value`, and bound/unbound function/action results.
 
+> **Known limitation of the camelCase opt-in:** `$metadata` always uses the PascalCase CLR/EDM
+> property names (the EDM has no naming policy). Opting into camelCase therefore desyncs your
+> payload casing from `$metadata` — a case-sensitive OData-native client that reads `$metadata` to
+> learn property names will not match the camelCase keys on the wire. The PascalCase default keeps
+> payloads and `$metadata` in agreement (OData §4.4); opt into camelCase only when your clients bind
+> case-insensitively.
+
 > Note: this affects **response** casing only. OData query-option property references
 > (`$select=Name`, `$filter=…`, `$orderby=…`, `$expand=…`) and request bodies are matched
 > case-insensitively against the EDM, so a client may use either casing on the way in.

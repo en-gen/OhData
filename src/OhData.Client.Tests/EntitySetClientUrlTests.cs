@@ -31,7 +31,7 @@ public class EntitySetClientUrlTests
     [Fact]
     public void Filter_AppendsFilterParam() =>
         Assert.Equal(
-            "Widgets?$filter=price%20gt%2010",
+            "Widgets?$filter=Price%20gt%2010",
             Builder().Filter(x => x.Price > 10).BuildCollectionUrl());
 
     [Fact]
@@ -43,7 +43,7 @@ public class EntitySetClientUrlTests
     [Fact]
     public void Select_Expression() =>
         Assert.Equal(
-            "Widgets?$select=id%2Cname",
+            "Widgets?$select=Id%2CName",
             Builder().Select(x => new { x.Id, x.Name }).BuildCollectionUrl());
 
     [Fact]
@@ -53,25 +53,25 @@ public class EntitySetClientUrlTests
             Builder().Select("Id", "Name").BuildCollectionUrl());
 
     // C6/S10 casing consistency: EntitySetClient's default JsonOptions.PropertyNamingPolicy is
-    // CamelCase (matching the OhData server's own JSON casing), and OrderBy/ThenBy now honor it
-    // like Filter and Select(expression) already did — previously OrderBy alone emitted
-    // PascalCase CLR member names regardless of the configured naming policy.
+    // null (PascalCase/CLR names, matching the OhData server's default PascalCase EDM), and
+    // OrderBy/ThenBy honor it like Filter and Select(expression) do — previously OrderBy alone
+    // emitted PascalCase CLR member names regardless of the configured naming policy.
     [Fact]
     public void OrderBy_Ascending() =>
         Assert.Equal(
-            "Widgets?$orderby=name",
+            "Widgets?$orderby=Name",
             Builder().OrderBy(x => x.Name).BuildCollectionUrl());
 
     [Fact]
     public void OrderBy_Descending() =>
         Assert.Equal(
-            "Widgets?$orderby=price%20desc",
+            "Widgets?$orderby=Price%20desc",
             Builder().OrderByDescending(x => x.Price).BuildCollectionUrl());
 
     [Fact]
     public void ThenBy_AppendsToOrderBy() =>
         Assert.Equal(
-            "Widgets?$orderby=name%2Cprice%20desc",
+            "Widgets?$orderby=Name%2CPrice%20desc",
             Builder().OrderBy(x => x.Name).ThenByDescending(x => x.Price).BuildCollectionUrl());
 
     [Fact]
@@ -105,7 +105,7 @@ public class EntitySetClientUrlTests
     [Fact]
     public void CountUrl_WithFilter() =>
         Assert.Equal(
-            "Widgets/$count?$filter=id%20eq%201",
+            "Widgets/$count?$filter=Id%20eq%201",
             Builder().Filter(x => x.Id == 1).BuildCountUrl());
 
     // ── Keyed URL: all supported key types ──────────────────────────────────────
@@ -279,19 +279,19 @@ public class EntitySetClientUrlTests
     [Fact]
     public void OrderBy_NavigationPath_ProducesSlashSeparatedPath() =>
         Assert.Contains(
-            "$orderby=category%2Fname",
+            "$orderby=Category%2FName",
             ProductBuilder().OrderBy(x => x.Category.Name).BuildCollectionUrl());
 
     [Fact]
     public void OrderByDescending_NavigationPath() =>
         Assert.Contains(
-            "$orderby=category%2Fname%20desc",
+            "$orderby=Category%2FName%20desc",
             ProductBuilder().OrderByDescending(x => x.Category.Name).BuildCollectionUrl());
 
     [Fact]
     public void ThenBy_NavigationPath() =>
         Assert.Contains(
-            "$orderby=name%2Ccategory%2Fname",
+            "$orderby=Name%2CCategory%2FName",
             ProductBuilder().OrderBy(x => x.Name).ThenBy(x => x.Category.Name).BuildCollectionUrl());
 
     // ── M-9: Select with navigation path ────────────────────────────────────────
@@ -299,13 +299,13 @@ public class EntitySetClientUrlTests
     [Fact]
     public void Select_SingleExpr_NavigationPath_ProducesSlashSeparatedPath() =>
         Assert.Contains(
-            "$select=category%2Fname",
+            "$select=Category%2FName",
             ProductBuilder().Select(x => x.Category.Name).BuildCollectionUrl());
 
     [Fact]
     public void Select_SingleExpr_DeepNavigationPath() =>
         Assert.Contains(
-            "$select=category%2Fregion",
+            "$select=Category%2FRegion",
             ProductBuilder().Select(x => x.Category.Region).BuildCollectionUrl());
 
     [Fact]
@@ -318,13 +318,13 @@ public class EntitySetClientUrlTests
     [Fact]
     public void Select_TwoDirectMemberExpressions_ProducesCorrectUrl() =>
         Assert.Equal(
-            "Widgets?$select=id%2Cname",
+            "Widgets?$select=Id%2CName",
             Builder().Select(x => x.Id, x => x.Name).BuildCollectionUrl());
 
     [Fact]
     public void Select_ThreeDirectMemberExpressions_ProducesCorrectUrl() =>
         Assert.Equal(
-            "Widgets?$select=id%2Cname%2Cprice",
+            "Widgets?$select=Id%2CName%2CPrice",
             Builder().Select(x => x.Id, x => x.Name, x => x.Price).BuildCollectionUrl());
 
     [Fact]
@@ -342,7 +342,7 @@ public class EntitySetClientUrlTests
         // policy like Filter/Select do — the raw-string Expand overload (see
         // Expand_CalledTwice_AccumulatesNavigations below) intentionally does not.
         string url = ProductBuilder().Expand(x => x.Category).BuildCollectionUrl();
-        Assert.Equal("Products?$expand=category", url);
+        Assert.Equal("Products?$expand=Category", url);
     }
 
     [Fact]
@@ -450,12 +450,22 @@ public class EntitySetClientUrlTests
     // OrderBy/ThenBy/Expand/Select(params expr[]) did not, so mixing options on the same
     // query produced a URL with inconsistent casing (fine against OhData's case-insensitive
     // resolver, but broken against a strict/case-sensitive OData 4.0 service). All five now
-    // go through the same `_options.JsonOptions.PropertyNamingPolicy` pipeline.
+    // go through the same `_options.JsonOptions.PropertyNamingPolicy` pipeline. The default
+    // policy is null (PascalCase); a camelCase server is an explicit opt-in — both modes are
+    // covered below.
 
     [Fact]
-    public void AllTypedOptionBuilders_AgreeOnCasing_WithDefaultCamelCasePolicy()
+    public void AllTypedOptionBuilders_AgreeOnCasing_WithExplicitCamelCasePolicy()
     {
-        string url = Builder()
+        var options = new OhDataClientOptions
+        {
+            JsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase },
+        };
+        var client = new OhDataClient(
+            new HttpClient { BaseAddress = new Uri("http://localhost/") }, options);
+        var builder = client.For<Widget>("Widgets");
+
+        string url = builder
             .Filter(x => x.Price > 1)
             .Select(x => x.Name)
             .OrderBy(x => x.Price)
@@ -467,17 +477,11 @@ public class EntitySetClientUrlTests
     }
 
     [Fact]
-    public void AllTypedOptionBuilders_AgreeOnCasing_WithNullPolicy_EmitPascalCase()
+    public void AllTypedOptionBuilders_AgreeOnCasing_WithDefaultNullPolicy_EmitPascalCase()
     {
-        var options = new OhDataClientOptions
-        {
-            JsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = null },
-        };
-        var client = new OhDataClient(
-            new HttpClient { BaseAddress = new Uri("http://localhost/") }, options);
-        var builder = client.For<Widget>("Widgets");
-
-        string url = builder
+        // Builder() uses the client's default options — PropertyNamingPolicy is null
+        // (PascalCase) by default, so every typed query-option builder must emit CLR names.
+        string url = Builder()
             .Filter(x => x.Price > 1)
             .Select(x => x.Name)
             .OrderBy(x => x.Price)

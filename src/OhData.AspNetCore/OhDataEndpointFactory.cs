@@ -1163,9 +1163,12 @@ internal static class OhDataEndpointFactory
     // (PropertyNamingPolicy = null) — OhData's default — so it can never silently reintroduce
     // camelCase. JsonArray/JsonObject nodes pre-serialised here are written as-is by Results.Ok,
     // bypassing the ASP.NET Core pipeline, so casing must be baked in at this stage.
+    // PropertyNameCaseInsensitive mirrors the host-options behavior so write-body binding through
+    // this fallback stays case-insensitive (the server binds request bodies regardless of casing).
     private static readonly JsonSerializerOptions _pascalCaseSerializerOptions = new()
     {
         PropertyNamingPolicy = null,
+        PropertyNameCaseInsensitive = true,
     };
 
     // Unified collection pipeline: Serialize → ETag → Expand → Select.
