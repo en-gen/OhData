@@ -312,12 +312,10 @@ internal static class DeltaMappingCompiler
         if (enumerableType.IsGenericType && enumerableType.GetGenericTypeDefinition() == typeof(IEnumerable<>))
             return enumerableType.GetGenericArguments()[0];
 
-        foreach (Type i in enumerableType.GetInterfaces())
-        {
-            if (i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IEnumerable<>))
-                return i.GetGenericArguments()[0];
-        }
-        return typeof(object); // bare non-generic IEnumerable — unknown element, flag conservatively
+        Type? generic = enumerableType.GetInterfaces()
+            .FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IEnumerable<>));
+        // bare non-generic IEnumerable — unknown element, flag conservatively
+        return generic is null ? typeof(object) : generic.GetGenericArguments()[0];
     }
 
     private static PropertyInfo[] PublicInstanceProperties(Type type) =>
