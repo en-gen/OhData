@@ -59,7 +59,7 @@ public class DeepInsertTests
         // #240: the POST echo omits the un-expanded navigation entirely (matching a read of the
         // same type), rather than leaking it as an explicit null.
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.False(json.TryGetProperty("lines", out _));
+        Assert.False(json.TryGetProperty("Lines", out _));
     }
 
     [Fact]
@@ -80,7 +80,7 @@ public class DeepInsertTests
 
         // #240: the stripped single-valued navigation is omitted from the echo, not echoed as null.
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.False(json.TryGetProperty("category", out _));
+        Assert.False(json.TryGetProperty("Category", out _));
     }
 
     [Fact]
@@ -103,7 +103,7 @@ public class DeepInsertTests
         Assert.Equal(new[] { "rush", "gift-wrap" }, DeepInsertDefaultProfile.LastReceivedByHandler!.Tags);
 
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal(2, json.GetProperty("tags").GetArrayLength());
+        Assert.Equal(2, json.GetProperty("Tags").GetArrayLength());
     }
 
     // ── Opt-in (AllowDeepInsert = true): full graph passed through, echoed in response ──
@@ -133,11 +133,11 @@ public class DeepInsertTests
 
         // §11.4.2.2: the 201 response echoes the created graph, nested values serialized inline.
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
-        var lines = json.GetProperty("lines");
+        var lines = json.GetProperty("Lines");
         Assert.Equal(2, lines.GetArrayLength());
-        Assert.Equal("WIDGET-1", lines[0].GetProperty("sku").GetString());
-        Assert.Equal("GADGET-9", lines[1].GetProperty("sku").GetString());
-        Assert.Equal("Electronics", json.GetProperty("category").GetProperty("name").GetString());
+        Assert.Equal("WIDGET-1", lines[0].GetProperty("Sku").GetString());
+        Assert.Equal("GADGET-9", lines[1].GetProperty("Sku").GetString());
+        Assert.Equal("Electronics", json.GetProperty("Category").GetProperty("Name").GetString());
     }
 
     [Fact]
@@ -234,8 +234,8 @@ public class DeepInsertTests
         });
         Assert.Equal(HttpStatusCode.Created, createResponse.StatusCode);
         var created = await createResponse.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal(1, created.GetProperty("lines").GetArrayLength());
-        int orderId = created.GetProperty("id").GetInt32();
+        Assert.Equal(1, created.GetProperty("Lines").GetArrayLength());
+        int orderId = created.GetProperty("Id").GetInt32();
 
         // POST-to-nav (PostChild, §11.4.2.1) still works on the same profile.
         var postChildResponse = await fx.Client.PostAsJsonAsync(

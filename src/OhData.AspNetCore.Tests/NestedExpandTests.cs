@@ -113,14 +113,14 @@ public class NestedExpandTests
         var json = await fx.Client.GetFromJsonAsync<JsonElement>(
             "/odata/NestMovies(1)?$expand=Studio($expand=Movies)");
 
-        var studio = json.GetProperty("studio");
-        Assert.Equal("Studio A", studio.GetProperty("name").GetString());
+        var studio = json.GetProperty("Studio");
+        Assert.Equal("Studio A", studio.GetProperty("Name").GetString());
 
         // The grandchild collection — the studio's movies — must be loaded, not empty.
-        var movies = studio.GetProperty("movies");
+        var movies = studio.GetProperty("Movies");
         Assert.Equal(JsonValueKind.Array, movies.ValueKind);
         Assert.Equal(2, movies.GetArrayLength());
-        string?[] titles = movies.EnumerateArray().Select(m => m.GetProperty("title").GetString()).OrderBy(t => t).ToArray();
+        string?[] titles = movies.EnumerateArray().Select(m => m.GetProperty("Title").GetString()).OrderBy(t => t).ToArray();
         Assert.Equal(new[] { "M1", "M2" }, titles);
     }
 
@@ -133,8 +133,8 @@ public class NestedExpandTests
             "/odata/NestMovies?$expand=Studio($expand=Movies)");
 
         var first = json.GetProperty("value").EnumerateArray()
-            .First(m => m.GetProperty("id").GetInt32() == 1);
-        var movies = first.GetProperty("studio").GetProperty("movies");
+            .First(m => m.GetProperty("Id").GetInt32() == 1);
+        var movies = first.GetProperty("Studio").GetProperty("Movies");
         Assert.Equal(2, movies.GetArrayLength());
     }
 
@@ -148,9 +148,9 @@ public class NestedExpandTests
         var json = await fx.Client.GetFromJsonAsync<JsonElement>(
             "/odata/NestMovies(1)?$expand=Studio");
 
-        var studio = json.GetProperty("studio");
-        Assert.Equal("Studio A", studio.GetProperty("name").GetString());
-        Assert.False(studio.TryGetProperty("movies", out _),
+        var studio = json.GetProperty("Studio");
+        Assert.Equal("Studio A", studio.GetProperty("Name").GetString());
+        Assert.False(studio.TryGetProperty("Movies", out _),
             "The nested studio's un-expanded 'movies' navigation must be omitted.");
     }
 
@@ -162,14 +162,14 @@ public class NestedExpandTests
         var json = await fx.Client.GetFromJsonAsync<JsonElement>(
             "/odata/NestMovies(1)?$expand=Studio($expand=Movies($select=Title))");
 
-        var movies = json.GetProperty("studio").GetProperty("movies");
+        var movies = json.GetProperty("Studio").GetProperty("Movies");
         Assert.Equal(2, movies.GetArrayLength());
         foreach (var movie in movies.EnumerateArray())
         {
-            Assert.True(movie.TryGetProperty("title", out _));
+            Assert.True(movie.TryGetProperty("Title", out _));
             // Nested $select=Title must strip everything else on each related movie.
-            Assert.False(movie.TryGetProperty("id", out _));
-            Assert.False(movie.TryGetProperty("studioId", out _));
+            Assert.False(movie.TryGetProperty("Id", out _));
+            Assert.False(movie.TryGetProperty("StudioId", out _));
         }
     }
 
@@ -181,10 +181,10 @@ public class NestedExpandTests
         var json = await fx.Client.GetFromJsonAsync<JsonElement>(
             "/odata/NestMovies(1)?$expand=Studio($select=Name)");
 
-        var studio = json.GetProperty("studio");
-        Assert.Equal("Studio A", studio.GetProperty("name").GetString());
+        var studio = json.GetProperty("Studio");
+        Assert.Equal("Studio A", studio.GetProperty("Name").GetString());
         // Only Name was selected on the expanded studio; Id must be stripped.
-        Assert.False(studio.TryGetProperty("id", out _));
+        Assert.False(studio.TryGetProperty("Id", out _));
     }
 
     [Fact]
@@ -197,14 +197,14 @@ public class NestedExpandTests
         var json = await fx.Client.GetFromJsonAsync<JsonElement>(
             "/odata/NestStudios(1)?$expand=Movies($expand=Studio($expand=Movies))");
 
-        var movies = json.GetProperty("movies");
+        var movies = json.GetProperty("Movies");
         Assert.Equal(2, movies.GetArrayLength());
 
         var firstMovie = movies.EnumerateArray().First();
-        var depth2Studio = firstMovie.GetProperty("studio");
-        Assert.Equal("Studio A", depth2Studio.GetProperty("name").GetString());
+        var depth2Studio = firstMovie.GetProperty("Studio");
+        Assert.Equal("Studio A", depth2Studio.GetProperty("Name").GetString());
 
-        var depth3Movies = depth2Studio.GetProperty("movies");
+        var depth3Movies = depth2Studio.GetProperty("Movies");
         Assert.Equal(2, depth3Movies.GetArrayLength());
     }
 

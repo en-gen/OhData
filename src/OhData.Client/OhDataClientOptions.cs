@@ -4,15 +4,18 @@ using System.Text.Json.Serialization;
 namespace OhData.Client;
 
 /// <summary>
-/// Configuration for <see cref="OhDataClient"/>. All properties have sensible defaults
-/// that match the OhData server's out-of-box behaviour (camelCase JSON, case-insensitive reads).
+/// Configuration for <see cref="OhDataClient"/>. All properties have sensible defaults that
+/// interoperate with an OhData server out of the box: case-insensitive reads bind the server's
+/// PascalCase response payloads, and the camelCase query options / request bodies these defaults
+/// produce are accepted case-insensitively by the server.
 /// </summary>
 public sealed class OhDataClientOptions
 {
     /// <summary>
     /// JSON serializer options used for all request bodies and response deserialization.
-    /// Defaults to camelCase output + case-insensitive reads + ignore-null-on-write,
-    /// matching OhData server defaults.
+    /// Defaults to camelCase output + case-insensitive reads + ignore-null-on-write. The
+    /// case-insensitive reads bind an OhData server's PascalCase responses (its default), and the
+    /// server accepts the camelCase request bodies / query options these defaults emit.
     /// </summary>
     /// <remarks>
     /// You can replace this with a custom <see cref="JsonSerializerOptions"/> instance,

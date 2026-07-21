@@ -23,8 +23,8 @@ public class NavigationOmissionTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<OmitNavMovieProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/OmitNavMovies(1)");
 
-        Assert.False(json.TryGetProperty("cast", out _), "un-expanded collection nav 'cast' must be omitted");
-        Assert.Equal("Ascent", json.GetProperty("title").GetString());
+        Assert.False(json.TryGetProperty("Cast", out _), "un-expanded collection nav 'cast' must be omitted");
+        Assert.Equal("Ascent", json.GetProperty("Title").GetString());
     }
 
     [Fact]
@@ -37,7 +37,7 @@ public class NavigationOmissionTests
 
         foreach (var item in value.EnumerateArray())
         {
-            Assert.False(item.TryGetProperty("cast", out _), "un-expanded collection nav 'cast' must be omitted");
+            Assert.False(item.TryGetProperty("Cast", out _), "un-expanded collection nav 'cast' must be omitted");
         }
     }
 
@@ -49,7 +49,7 @@ public class NavigationOmissionTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<OmitNavMovieProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/OmitNavMovies(1)");
 
-        Assert.False(json.TryGetProperty("studio", out _), "un-expanded single nav 'studio' must be omitted");
+        Assert.False(json.TryGetProperty("Studio", out _), "un-expanded single nav 'studio' must be omitted");
     }
 
     [Fact]
@@ -60,7 +60,7 @@ public class NavigationOmissionTests
 
         foreach (var item in json.GetProperty("value").EnumerateArray())
         {
-            Assert.False(item.TryGetProperty("studio", out _), "un-expanded single nav 'studio' must be omitted");
+            Assert.False(item.TryGetProperty("Studio", out _), "un-expanded single nav 'studio' must be omitted");
         }
     }
 
@@ -72,10 +72,10 @@ public class NavigationOmissionTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<OmitNavMovieProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/OmitNavMovies(1)?$expand=Cast");
 
-        Assert.True(json.TryGetProperty("cast", out var cast), "expanded 'cast' must be present");
+        Assert.True(json.TryGetProperty("Cast", out var cast), "expanded 'cast' must be present");
         Assert.Equal(JsonValueKind.Array, cast.ValueKind);
         Assert.Equal(2, cast.GetArrayLength());
-        Assert.Equal("Ada", cast[0].GetProperty("name").GetString());
+        Assert.Equal("Ada", cast[0].GetProperty("Name").GetString());
     }
 
     [Fact]
@@ -84,9 +84,9 @@ public class NavigationOmissionTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<OmitNavMovieProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/OmitNavMovies(1)?$expand=Studio");
 
-        Assert.True(json.TryGetProperty("studio", out var studio), "expanded 'studio' must be present");
+        Assert.True(json.TryGetProperty("Studio", out var studio), "expanded 'studio' must be present");
         Assert.Equal(JsonValueKind.Object, studio.ValueKind);
-        Assert.Equal("Skyline", studio.GetProperty("name").GetString());
+        Assert.Equal("Skyline", studio.GetProperty("Name").GetString());
     }
 
     [Fact]
@@ -95,8 +95,8 @@ public class NavigationOmissionTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<OmitNavMovieProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/OmitNavMovies?$expand=Cast");
 
-        var movie1 = json.GetProperty("value").EnumerateArray().First(m => m.GetProperty("id").GetInt32() == 1);
-        Assert.True(movie1.TryGetProperty("cast", out var cast), "expanded 'cast' must be present");
+        var movie1 = json.GetProperty("value").EnumerateArray().First(m => m.GetProperty("Id").GetInt32() == 1);
+        Assert.True(movie1.TryGetProperty("Cast", out var cast), "expanded 'cast' must be present");
         Assert.Equal(2, cast.GetArrayLength());
     }
 
@@ -108,9 +108,9 @@ public class NavigationOmissionTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<OmitNavMovieProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/OmitNavMovies(1)?$expand=Studio");
 
-        Assert.True(json.TryGetProperty("studio", out _), "expanded 'studio' must be present");
+        Assert.True(json.TryGetProperty("Studio", out _), "expanded 'studio' must be present");
         // 'cast' was NOT expanded and must not ride along.
-        Assert.False(json.TryGetProperty("cast", out _), "un-expanded sibling nav 'cast' must be omitted");
+        Assert.False(json.TryGetProperty("Cast", out _), "un-expanded sibling nav 'cast' must be omitted");
     }
 
     [Fact]
@@ -121,8 +121,8 @@ public class NavigationOmissionTests
 
         foreach (var item in json.GetProperty("value").EnumerateArray())
         {
-            Assert.True(item.TryGetProperty("cast", out _), "expanded 'cast' must be present");
-            Assert.False(item.TryGetProperty("studio", out _), "un-expanded sibling nav 'studio' must be omitted");
+            Assert.True(item.TryGetProperty("Cast", out _), "expanded 'cast' must be present");
+            Assert.False(item.TryGetProperty("Studio", out _), "un-expanded sibling nav 'studio' must be omitted");
         }
     }
 
@@ -134,11 +134,11 @@ public class NavigationOmissionTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<OmitNavMovieProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/OmitNavMovies(1)?$expand=Studio");
 
-        var studio = json.GetProperty("studio");
-        Assert.Equal("Skyline", studio.GetProperty("name").GetString());
+        var studio = json.GetProperty("Studio");
+        Assert.Equal("Skyline", studio.GetProperty("Name").GetString());
         // The studio carries a populated Movies back-reference on the CLR object, but it was not
         // expanded at this level and must be omitted from the expanded studio (issue #176 face 3).
-        Assert.False(studio.TryGetProperty("movies", out _), "expanded studio's own un-expanded nav 'movies' must be omitted");
+        Assert.False(studio.TryGetProperty("Movies", out _), "expanded studio's own un-expanded nav 'movies' must be omitted");
     }
 
     [Fact]
@@ -148,10 +148,10 @@ public class NavigationOmissionTests
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/OmitNavMovies?$expand=Studio");
 
         foreach (var studio in json.GetProperty("value").EnumerateArray()
-            .Select(item => item.GetProperty("studio"))
+            .Select(item => item.GetProperty("Studio"))
             .Where(studio => studio.ValueKind != JsonValueKind.Null))
         {
-            Assert.False(studio.TryGetProperty("movies", out _), "expanded studio's own un-expanded nav 'movies' must be omitted");
+            Assert.False(studio.TryGetProperty("Movies", out _), "expanded studio's own un-expanded nav 'movies' must be omitted");
         }
     }
 
@@ -166,7 +166,7 @@ public class NavigationOmissionTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<OmitNavMovieProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/OmitNavMovies(3)?$expand=Studio");
 
-        Assert.True(json.TryGetProperty("studio", out var studio), "expanded single nav must be present even when null");
+        Assert.True(json.TryGetProperty("Studio", out var studio), "expanded single nav must be present even when null");
         Assert.Equal(JsonValueKind.Null, studio.ValueKind);
     }
 }

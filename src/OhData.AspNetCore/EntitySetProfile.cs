@@ -219,7 +219,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// (OData §11.2.1 — Requesting a Collection). The framework applies <c>$filter</c>,
     /// <c>$orderby</c>, <c>$skip</c>, and <c>$top</c> via <c>ApplyTo</c>, enabling full SQL
     /// pushdown when backed by EF Core. <c>$select</c> is applied via JSON post-processing
-    /// to preserve camelCase naming.
+    /// to preserve the configured JSON naming policy (PascalCase by default).
     /// </summary>
     /// <remarks>
     /// Leaving this <c>null</c> (the default) means no <c>GET /{EntitySet}</c> route is registered,

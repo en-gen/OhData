@@ -278,8 +278,8 @@ public class CoverageGapTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NameSelectOnlyProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NameSelectWidgets?$select=Name");
         var first = json.GetProperty("value")[0];
-        Assert.True(first.TryGetProperty("name", out _));
-        Assert.False(first.TryGetProperty("id", out _));
+        Assert.True(first.TryGetProperty("Name", out _));
+        Assert.False(first.TryGetProperty("Id", out _));
     }
 
     // ── OrderByProperties expression overload ─────────────────────────────────
@@ -291,7 +291,7 @@ public class CoverageGapTests
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NameOrderByWidgets?$orderby=Name");
         var value = json.GetProperty("value");
         string?[] names = Enumerable.Range(0, value.GetArrayLength())
-            .Select(i => value[i].GetProperty("name").GetString())
+            .Select(i => value[i].GetProperty("Name").GetString())
             .ToArray();
         Assert.Equal(names.OrderBy(n => n).ToArray(), names);
     }
@@ -304,8 +304,8 @@ public class CoverageGapTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<StringSelectOnlyProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/StringSelectWidgets?$select=Name");
         var first = json.GetProperty("value")[0];
-        Assert.True(first.TryGetProperty("name", out _));
-        Assert.False(first.TryGetProperty("id", out _));
+        Assert.True(first.TryGetProperty("Name", out _));
+        Assert.False(first.TryGetProperty("Id", out _));
     }
 
     // ── OrderByProperties string overload ─────────────────────────────────────
@@ -317,7 +317,7 @@ public class CoverageGapTests
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/StringOrderByWidgets?$orderby=Name");
         var value = json.GetProperty("value");
         string?[] names = Enumerable.Range(0, value.GetArrayLength())
-            .Select(i => value[i].GetProperty("name").GetString())
+            .Select(i => value[i].GetProperty("Name").GetString())
             .ToArray();
         Assert.Equal(names.OrderBy(n => n).ToArray(), names);
     }

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.OData.Edm;
@@ -25,6 +26,10 @@ public sealed class OhDataBuilder
     private string _prefix = "/odata";
     private readonly string _name;
     private readonly EntitySetDefaults _defaults = new();
+    // #252: OhData owns its response casing independently of the host's HttpJsonOptions.
+    // null = PascalCase (the CLR names $metadata declares, OData §4.4). This is the source of
+    // truth for every OhData response path; the host's PropertyNamingPolicy is not inherited.
+    private JsonNamingPolicy? _jsonPropertyNamingPolicy;
 
     // Tracks profile types registered across all OhData registrations on this IServiceCollection.
     // Stored as a singleton marker so it is shared between all OhDataBuilder instances.
@@ -82,6 +87,28 @@ public sealed class OhDataBuilder
     public OhDataBuilder WithDefaults(Action<EntitySetDefaults> configure)
     {
         configure(_defaults);
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the JSON property-naming policy applied to every OData response payload in this
+    /// registration (collection/GetById reads, POST/PUT/PATCH echoes, <c>$select</c>/<c>$expand</c>
+    /// output, <c>$value</c>, and function/action results).
+    /// </summary>
+    /// <remarks>
+    /// Defaults to <c>null</c> — <b>PascalCase</b>, the CLR property names OhData's <c>$metadata</c>
+    /// declares — so payload casing matches the EDM (OData §4.4). OhData owns this default
+    /// independently of the host's <c>HttpJsonOptions.SerializerOptions.PropertyNamingPolicy</c>,
+    /// which is intentionally not inherited. Pass <see cref="JsonNamingPolicy.CamelCase"/> to emit
+    /// camelCase payloads instead; an explicit value here always wins.
+    /// </remarks>
+    /// <param name="policy">
+    /// The naming policy, or <c>null</c> for PascalCase (the default). For example
+    /// <see cref="JsonNamingPolicy.CamelCase"/>.
+    /// </param>
+    public OhDataBuilder WithJsonPropertyNamingPolicy(JsonNamingPolicy? policy)
+    {
+        _jsonPropertyNamingPolicy = policy;
         return this;
     }
 
@@ -250,6 +277,7 @@ public sealed class OhDataBuilder
         string capturedPrefix = _prefix;
         string capturedName = _name;
         var capturedDefaults = _defaults;
+        var capturedNamingPolicy = _jsonPropertyNamingPolicy;
 
         _services.AddKeyedSingleton<OhDataRegistration>(capturedName, (sp, _) =>
         {
@@ -412,7 +440,8 @@ public sealed class OhDataBuilder
                 string.Join(", ", profiles.Select(p => p.EntitySetName)),
                 capturedPrefix);
 
-            var reg = new OhDataRegistration(capturedPrefix, edmModel, profiles, capturedUnbound);
+            var reg = new OhDataRegistration(
+                capturedPrefix, edmModel, profiles, capturedUnbound, capturedNamingPolicy);
             // Also register in the collection for named access
             sp.GetRequiredService<OhDataRegistrationCollection>().Add(capturedName, reg);
             return reg;

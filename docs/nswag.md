@@ -70,6 +70,16 @@ applies them explicitly from `IEndpointSummaryMetadata`/`IEndpointDescriptionMet
 metadata, without overwriting a summary/description NSwag already populated from another source
 (e.g. XML doc comments).
 
+## Schema property casing matches the wire
+
+OhData owns its response JSON casing — PascalCase by default, independent of the host's
+`HttpJsonOptions` (see [query-options.md → JSON property casing](query-options.md#json-property-casing)).
+`OhDataNSwagSchemaProcessor` renames each generated schema property key to that same response casing,
+so the document advertises exactly what responses emit rather than the host serializer's casing
+(camelCase by ASP.NET Core default). A `[JsonPropertyName]` rename wins over the policy — in the
+schema and on the wire alike. Renaming is keyed by CLR model type (the same key the ignore
+suppression below uses).
+
 ## Ignored properties omitted from schemas
 
 Properties excluded via `EntitySetProfile.Ignore(...)` never cross the wire (see
@@ -77,10 +87,10 @@ Properties excluded via `EntitySetProfile.Ignore(...)` never cross the wire (see
 which still has the property. `OhDataNSwagSchemaProcessor` implements NJsonSchema's
 `ISchemaProcessor` and removes each ignored member from its model type's generated schema (request
 and response alike, since both share the component schema), so the document matches the real wire
-shape. Matching respects `[JsonPropertyName]` and the System.Text.Json naming policy the document
-generator is configured with — the profile ignores the CLR name (`CostBasis`), the schema key is
-the JSON name (`costBasis`). Suppression is keyed by CLR model type, so a same-named property on a
-different (un-ignored) type is untouched.
+shape. Matching is by CLR member (honoring `[JsonPropertyName]`), immune to the naming policy — the
+profile ignores the CLR name (`CostBasis`), and the surviving keys are emitted in OhData's response
+casing (`CostBasis` by default; `costBasis` under a camelCase opt-in). Suppression is keyed by CLR
+model type, so a same-named property on a different (un-ignored) type is untouched.
 
 ## Versioned registrations
 

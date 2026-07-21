@@ -329,8 +329,8 @@ public class SelectPushdownTests : IAsyncLifetime
         // Belt-and-braces: the pushdown host actually returns real values for selected
         // properties (guards against a projection that silently materializes defaults).
         string body = await _on.Client.GetStringAsync("/odata/PushProducts?$select=name,price&$orderby=id");
-        Assert.Contains("\"name\":\"Widget\"", body);
+        Assert.Contains("\"Name\":\"Widget\"", body);
         Assert.Contains("19.99", body);
-        Assert.DoesNotContain("\"sku\"", body); // unselected — trimmed as always
+        Assert.DoesNotContain("\"Sku\"", body); // unselected — trimmed as always
     }
 }

@@ -324,9 +324,9 @@ public sealed class ExpandPushdownSqliteTests : IAsyncLifetime
         string sql = ExpandPushdownSqliteHarness.LastSelectAgainst(_sink, "PushParents");
         Assert.Contains("\"PushChildren\"", sql);
 
-        // Wire: each parent carries its expanded children, camelCase (#179).
+        // Wire: each parent carries its expanded children, PascalCase (#179).
         string body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("\"children\"", body);
+        Assert.Contains("\"Children\"", body);
         Assert.Contains("\"C1a\"", body);
         Assert.Contains("\"C2a\"", body);
     }
@@ -344,8 +344,8 @@ public sealed class ExpandPushdownSqliteTests : IAsyncLifetime
         Assert.Contains("\"PushChildren\"", sql);
 
         string body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("\"children\"", body);
-        Assert.Contains("\"name\":\"P1\"", body);
+        Assert.Contains("\"Children\"", body);
+        Assert.Contains("\"Name\":\"P1\"", body);
     }
 
     [Fact]
@@ -356,7 +356,7 @@ public sealed class ExpandPushdownSqliteTests : IAsyncLifetime
         Assert.Equal(System.Net.HttpStatusCode.OK, resp.StatusCode);
 
         string body = await resp.Content.ReadAsStringAsync();
-        Assert.DoesNotContain("\"children\"", body);
+        Assert.DoesNotContain("\"Children\"", body);
     }
 
     [Fact]
@@ -373,7 +373,7 @@ public sealed class ExpandPushdownSqliteTests : IAsyncLifetime
         string body = await resp.Content.ReadAsStringAsync();
         // H1 → its target; H2 → null related entity.
         Assert.Contains("\"T100\"", body);
-        Assert.Contains("\"target\":null", body);
+        Assert.Contains("\"Target\":null", body);
     }
 
     [Fact]
@@ -392,10 +392,10 @@ public sealed class ExpandPushdownSqliteTests : IAsyncLifetime
             "a $levels self-referential expand must self-JOIN the OrgNodes table");
 
         string body = await resp.Content.ReadAsStringAsync();
-        // Root's children were JOIN-loaded (camelCase): Root → [Leaf], and Leaf (level 2) → [] (bounded).
-        Assert.Contains("\"name\":\"Root\"", body);
-        Assert.Contains("\"name\":\"Leaf\"", body);
-        Assert.Contains("\"children\":[]", body); // the deepest loaded level terminates as an empty page
+        // Root's children were JOIN-loaded (PascalCase): Root → [Leaf], and Leaf (level 2) → [] (bounded).
+        Assert.Contains("\"Name\":\"Root\"", body);
+        Assert.Contains("\"Name\":\"Leaf\"", body);
+        Assert.Contains("\"Children\":[]", body); // the deepest loaded level terminates as an empty page
     }
 }
 
@@ -438,7 +438,7 @@ public sealed class ExpandPushdownDelegateNavTests : IAsyncLifetime
         Assert.True(_counter.ChildrenCalls > 0, "a delegate-backed nav must expand through its delegate");
 
         string body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("\"children\"", body);
+        Assert.Contains("\"Children\"", body);
         Assert.Contains("\"C1a\"", body);
     }
 }

@@ -114,8 +114,8 @@ public class QueryOptionEnforcementTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllOnProfile>());
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/AllOnWidgets?$orderby=Name");
         JsonElement values = json.GetProperty("value");
-        Assert.Equal("Alpha", values[0].GetProperty("name").GetString());
-        Assert.Equal("Beta", values[1].GetProperty("name").GetString());
+        Assert.Equal("Alpha", values[0].GetProperty("Name").GetString());
+        Assert.Equal("Beta", values[1].GetProperty("Name").GetString());
     }
 
     [Fact]
@@ -124,8 +124,8 @@ public class QueryOptionEnforcementTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllOnProfile>());
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/AllOnWidgets?$orderby=Name desc");
         JsonElement values = json.GetProperty("value");
-        Assert.Equal("Beta", values[0].GetProperty("name").GetString());
-        Assert.Equal("Alpha", values[1].GetProperty("name").GetString());
+        Assert.Equal("Beta", values[0].GetProperty("Name").GetString());
+        Assert.Equal("Alpha", values[1].GetProperty("Name").GetString());
     }
 
     [Fact]
@@ -134,8 +134,8 @@ public class QueryOptionEnforcementTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllOnProfile>());
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/AllOnWidgets?$select=Name");
         JsonElement first = json.GetProperty("value")[0];
-        Assert.True(first.TryGetProperty("name", out _));
-        Assert.False(first.TryGetProperty("id", out _));
+        Assert.True(first.TryGetProperty("Name", out _));
+        Assert.False(first.TryGetProperty("Id", out _));
     }
 
     [Fact]
@@ -293,7 +293,7 @@ public class QueryOptionEnforcementTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ExpandAllowlistProfile>());
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ExpandAllowlistParents?$expand=Children");
         JsonElement first = json.GetProperty("value")[0];
-        Assert.True(first.TryGetProperty("children", out JsonElement children));
+        Assert.True(first.TryGetProperty("Children", out JsonElement children));
         Assert.Equal(1, children.GetArrayLength());
     }
 
@@ -324,7 +324,7 @@ public class QueryOptionEnforcementTests
         JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
         JsonElement values = json.GetProperty("value");
         Assert.Equal(1, values.GetArrayLength());
-        Assert.Equal("Foo", values[0].GetProperty("name").GetString());
+        Assert.Equal("Foo", values[0].GetProperty("Name").GetString());
     }
 
     [Fact]
@@ -351,7 +351,7 @@ public class QueryOptionEnforcementTests
         JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
         JsonElement values = json.GetProperty("value");
         Assert.Equal(1, values.GetArrayLength());
-        Assert.Equal("Alice", values[0].GetProperty("customerName").GetString());
+        Assert.Equal("Alice", values[0].GetProperty("CustomerName").GetString());
     }
 
     [Fact]
@@ -388,8 +388,8 @@ public class QueryOptionEnforcementTests
             "/odata/NavPathOrderByParents?$orderby=Category/Name");
         JsonElement values = json.GetProperty("value");
         Assert.Equal(2, values.GetArrayLength());
-        Assert.Equal("Bar", values[0].GetProperty("name").GetString());  // Category.Name "Alpha" < "Zeta"
-        Assert.Equal("Foo", values[1].GetProperty("name").GetString());
+        Assert.Equal("Bar", values[0].GetProperty("Name").GetString());  // Category.Name "Alpha" < "Zeta"
+        Assert.Equal("Foo", values[1].GetProperty("Name").GetString());
     }
 
     [Fact]
@@ -440,8 +440,8 @@ public class QueryOptionEnforcementTests
         Assert.Equal(2, json.GetProperty("@odata.count").GetInt64());
         JsonElement values = json.GetProperty("value");
         Assert.Equal(1, values.GetArrayLength());
-        Assert.Equal("Child2", values[0].GetProperty("name").GetString());
-        Assert.False(values[0].TryGetProperty("id", out _));
+        Assert.Equal("Child2", values[0].GetProperty("Name").GetString());
+        Assert.False(values[0].TryGetProperty("Id", out _));
     }
 
     // ── GetById: $select/$expand flags enforced; $expand implemented ─────────────
@@ -471,8 +471,8 @@ public class QueryOptionEnforcementTests
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavEnforcementProfile>());
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavEnforcementParents(1)?$expand=Children");
-        Assert.Equal(1, json.GetProperty("id").GetInt32());
-        Assert.True(json.TryGetProperty("children", out JsonElement children),
+        Assert.Equal(1, json.GetProperty("Id").GetInt32());
+        Assert.True(json.TryGetProperty("Children", out JsonElement children),
             "$expand=Children on GetById must inline the navigation property");
         Assert.Equal(2, children.GetArrayLength());
         // Context must be the single-entity shape.
@@ -486,9 +486,9 @@ public class QueryOptionEnforcementTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavEnforcementProfile>());
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>(
             "/odata/NavEnforcementParents(1)?$select=Name&$expand=Children");
-        Assert.True(json.TryGetProperty("name", out _));
-        Assert.False(json.TryGetProperty("id", out _), "Id was not selected and must be stripped");
-        Assert.True(json.TryGetProperty("children", out JsonElement children));
+        Assert.True(json.TryGetProperty("Name", out _));
+        Assert.False(json.TryGetProperty("Id", out _), "Id was not selected and must be stripped");
+        Assert.True(json.TryGetProperty("Children", out JsonElement children));
         Assert.Equal(2, children.GetArrayLength());
         // Projected single-entity context (JSON §10.8) includes the expanded nav property.
         Assert.EndsWith("$metadata#NavEnforcementParents(Name,Children)/$entity", json.GetProperty("@odata.context").GetString());
@@ -510,7 +510,7 @@ public class QueryOptionEnforcementTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<BatchNavEnforcementProfile>());
         BatchNavEnforcementProfile.BatchCalls = 0;
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/BatchNavParents(1)?$expand=Children");
-        Assert.True(json.TryGetProperty("children", out JsonElement children));
+        Assert.True(json.TryGetProperty("Children", out JsonElement children));
         Assert.Equal(2, children.GetArrayLength());
         Assert.Equal(1, BatchNavEnforcementProfile.BatchCalls);
     }

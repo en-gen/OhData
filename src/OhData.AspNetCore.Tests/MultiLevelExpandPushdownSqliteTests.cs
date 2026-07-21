@@ -429,14 +429,14 @@ public sealed class MultiLevelExpandPushdownSqliteTests : IAsyncLifetime
         Assert.Contains("\"Chapters\"", sql);
 
         string body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("\"books\":", body);
-        Assert.Contains("\"chapters\":", body);
+        Assert.Contains("\"Books\":", body);
+        Assert.Contains("\"Chapters\":", body);
         Assert.Contains("\"Zeta\"", body);
         Assert.Contains("\"Alpha\"", body);
     }
 
     [Fact]
-    public async Task ThreeLevel_NestedExpand_PushesEveryLevel_CamelCase()
+    public async Task ThreeLevel_NestedExpand_PushesEveryLevel_PascalCase()
     {
         _sink.Clear();
         HttpResponseMessage resp = await _fx.Client.GetAsync(
@@ -449,13 +449,13 @@ public sealed class MultiLevelExpandPushdownSqliteTests : IAsyncLifetime
         Assert.Contains("\"Pages\"", sql);
 
         string body = await resp.Content.ReadAsStringAsync();
-        // camelCase preserved 3 levels deep — no PascalCase leak from a SelectExpandWrapper.
-        Assert.Contains("\"books\":", body);
-        Assert.Contains("\"chapters\":", body);
-        Assert.Contains("\"pages\":", body);
-        Assert.Contains("\"number\":1", body);
-        Assert.DoesNotContain("\"Chapters\":", body); // no PascalCase nav key
-        Assert.DoesNotContain("\"Number\":", body);
+        // PascalCase preserved 3 levels deep — no camelCase leak from a SelectExpandWrapper.
+        Assert.Contains("\"Books\":", body);
+        Assert.Contains("\"Chapters\":", body);
+        Assert.Contains("\"Pages\":", body);
+        Assert.Contains("\"Number\":1", body);
+        Assert.DoesNotContain("\"chapters\":", body); // no camelCase nav key
+        Assert.DoesNotContain("\"number\":", body);
     }
 
     [Fact]
@@ -479,10 +479,10 @@ public sealed class MultiLevelExpandPushdownSqliteTests : IAsyncLifetime
         int alpha = body.IndexOf("Alpha", StringComparison.Ordinal);
         int zeta = body.IndexOf("Zeta", StringComparison.Ordinal);
         Assert.True(alpha >= 0 && zeta >= 0 && alpha < zeta, "level-2 nested $orderby must order chapters asc");
-        Assert.DoesNotContain("\"ordinal\":", body); // pruned by level-2 $select
+        Assert.DoesNotContain("\"Ordinal\":", body); // pruned by level-2 $select
         // Level-3 $select=number keeps number, prunes text.
-        Assert.Contains("\"number\":1", body);
-        Assert.DoesNotContain("\"text\":", body);
+        Assert.Contains("\"Number\":1", body);
+        Assert.DoesNotContain("\"Text\":", body);
     }
 
     [Fact]
@@ -614,9 +614,9 @@ public sealed class MultiLevelExpandPushdownSqliteTests : IAsyncLifetime
         Assert.Contains("\"Credits\"", sql);
 
         string body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("\"editor\":", body);
+        Assert.Contains("\"Editor\":", body);
         Assert.Contains("\"copyedit\"", body);   // level-3 credit under the single-valued editor
-        Assert.Contains("\"editor\":null", body); // B2 has no editor → null reference preserved
+        Assert.Contains("\"Editor\":null", body); // B2 has no editor → null reference preserved
     }
 
     [Fact]
@@ -636,7 +636,7 @@ public sealed class MultiLevelExpandPushdownSqliteTests : IAsyncLifetime
 
         string body = await resp.Content.ReadAsStringAsync();
         Assert.Contains("\"St1\"", body);
-        Assert.Contains("\"aisles\":[]", body); // deferred delegate-less parent stays EDM-only (empty)
+        Assert.Contains("\"Aisles\":[]", body); // deferred delegate-less parent stays EDM-only (empty)
     }
 
     [Fact]
@@ -664,8 +664,8 @@ public sealed class MultiLevelExpandPushdownSqliteTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         string body = await resp.Content.ReadAsStringAsync();
-        // B1 has 2 chapters → the nested count is emitted on the deeper level, camelCase key.
-        Assert.Contains("\"chapters@odata.count\":2", body);
+        // B1 has 2 chapters → the nested count is emitted on the deeper level, PascalCase key.
+        Assert.Contains("\"Chapters@odata.count\":2", body);
     }
 }
 

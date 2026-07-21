@@ -235,10 +235,10 @@ internal sealed class MsClientFixture : IAsyncDisposable
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
         builder.Services.AddLogging(b => b.ClearProviders());
-        // MS OData Client expects PascalCase property names (per OData 4.0 spec).
-        // Override ASP.NET Core's default camelCase to produce a spec-compliant server.
-        builder.Services.ConfigureHttpJsonOptions(o =>
-            o.SerializerOptions.PropertyNamingPolicy = null);
+        // MS OData Client expects PascalCase property names (per OData 4.0 spec). Since #252 that
+        // is OhData's default — payloads match $metadata (OData §4.4) with no host JSON config —
+        // so the former ConfigureHttpJsonOptions(PropertyNamingPolicy = null) override is redundant
+        // and has been removed. This fixture now proves the server is spec-compliant out of the box.
         builder.Services.AddOhData(o =>
         {
             o.WithPrefix(Prefix);

@@ -29,7 +29,7 @@ public class GetAllTopSkipTests
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/Widgets?$skip=1");
         var value = json.GetProperty("value");
         Assert.Equal(1, value.GetArrayLength());
-        Assert.Equal(2, value[0].GetProperty("id").GetInt32());
+        Assert.Equal(2, value[0].GetProperty("Id").GetInt32());
     }
 
     [Fact]
@@ -39,8 +39,8 @@ public class GetAllTopSkipTests
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/GetAllMaxTopWidgets?$skip=2&$top=3");
         var value = json.GetProperty("value");
         Assert.Equal(3, value.GetArrayLength());
-        Assert.Equal(3, value[0].GetProperty("id").GetInt32());
-        Assert.Equal(5, value[2].GetProperty("id").GetInt32());
+        Assert.Equal(3, value[0].GetProperty("Id").GetInt32());
+        Assert.Equal(5, value[2].GetProperty("Id").GetInt32());
     }
 
     [Fact]

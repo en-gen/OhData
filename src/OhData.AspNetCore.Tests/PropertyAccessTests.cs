@@ -56,15 +56,16 @@ public class PropertyAccessTests
     [Fact]
     public async Task GetProperty_Complex_ReturnsNestedObjectRespectingNamingPolicy()
     {
-        // The default ASP.NET Core JsonOptions naming policy is camelCase — verifying the nested
-        // complex value's keys are lowercased proves the envelope goes through the standard
-        // Results.Ok/JsonOptions pipeline rather than a hand-rolled serializer.
+        // #252: a complex-typed property read is serialized through OhData's owned options, so its
+        // nested member names follow the default PascalCase policy (matching $metadata / §4.4) —
+        // NOT the host's HttpJsonOptions naming policy.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<PropertyAccessProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/PropertyAccessItems(1)/Size");
         var sizeValue = json.GetProperty("value");
-        Assert.True(sizeValue.TryGetProperty("width", out var width));
+        Assert.True(sizeValue.TryGetProperty("Width", out var width));
         Assert.Equal(10.5m, width.GetDecimal());
-        Assert.True(sizeValue.TryGetProperty("height", out _));
+        Assert.True(sizeValue.TryGetProperty("Height", out _));
+        Assert.False(sizeValue.TryGetProperty("width", out _));
     }
 
     // ── Null property → 204 ─────────────────────────────────────────────────────

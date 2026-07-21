@@ -78,8 +78,10 @@ builder.Services.AddSwaggerGen(c =>
 ```
 
 `OhDataSwaggerSchemaFilter` (same package) omits properties excluded via
-`EntitySetProfile.Ignore(...)` from generated schemas, so documents match the real wire shape —
-see [ignoring-properties.md](ignoring-properties.md#openapi--swagger-documents). Each filter is
+`EntitySetProfile.Ignore(...)` from generated schemas, and renames the surviving property keys to
+OhData's response casing (PascalCase by default), so documents match the real wire shape — see
+[ignoring-properties.md](ignoring-properties.md#openapi--swagger-documents) and
+[query-options.md → JSON property casing](query-options.md#json-property-casing). Each filter is
 independent; register only the one you need, or both.
 
 Write routes get a real request-body schema and collection GET routes get a typed
