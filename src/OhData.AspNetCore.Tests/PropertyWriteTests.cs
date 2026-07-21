@@ -88,10 +88,12 @@ public class PropertyWriteTests
             "/odata/PropertyWriteItems(6)/Size", new { value = new { width = 7.5m, height = 8.25m } });
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
 
+        // #252: the complex property read echoes nested member names in PascalCase (owned options).
+        // The request body above uses lowercase keys, proving request binding stays case-insensitive.
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/PropertyWriteItems(6)/Size");
         var size = json.GetProperty("value");
-        Assert.Equal(7.5m, size.GetProperty("width").GetDecimal());
-        Assert.Equal(8.25m, size.GetProperty("height").GetDecimal());
+        Assert.Equal(7.5m, size.GetProperty("Width").GetDecimal());
+        Assert.Equal(8.25m, size.GetProperty("Height").GetDecimal());
     }
 
     // ── PATCH: primitive happy paths (semantically identical to PUT) ───────────

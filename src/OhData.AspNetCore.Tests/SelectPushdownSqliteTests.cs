@@ -237,8 +237,8 @@ public class SelectPushdownOwnedTypeTests : IAsyncLifetime
         var resp = await _fx.Client.GetAsync("/odata/SqliteOwnedItems?$select=dims");
         Assert.Equal(System.Net.HttpStatusCode.OK, resp.StatusCode);
         string body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("\"width\":2.5", body);
-        Assert.DoesNotContain("\"name\"", body); // $select trim still applies
+        Assert.Contains("\"Width\":2.5", body);
+        Assert.DoesNotContain("\"Name\"", body); // $select trim still applies
     }
 
     [Fact]
@@ -249,7 +249,7 @@ public class SelectPushdownOwnedTypeTests : IAsyncLifetime
         // what matters here is the request contract: 200 with the selected data, never a 500.
         var resp = await _fx.Client.GetAsync("/odata/SqliteOwnedItems?$select=name");
         Assert.Equal(System.Net.HttpStatusCode.OK, resp.StatusCode);
-        Assert.Contains("\"name\":\"Crate\"", await resp.Content.ReadAsStringAsync());
+        Assert.Contains("\"Name\":\"Crate\"", await resp.Content.ReadAsStringAsync());
     }
 }
 

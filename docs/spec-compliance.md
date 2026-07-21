@@ -16,6 +16,15 @@ certification claim.
 | **Intermediate conformance** (functions/actions, `$expand`, `$search`, batch requests, deep insert) | ⚠️ Substantially met, with named exceptions: **JSON batch requests are not supported** (see Known Limitations below); `@odata.bind` (link an existing entity inline during insert) returns `501 Not Implemented` rather than being honored; `PATCH` partial-merge on a complex property and raw `/$value` property *writes* are documented non-goals (see Individual property access below) |
 | **OData 4.01 / Advanced conformance** (`$compute`, aliases, cross joins, and other 4.01-only additions) | ❌ Not targeted - `$compute` is unimplemented because the pinned `Microsoft.AspNetCore.OData` package range predates 4.01 support (see Known Limitations); no other 4.01/Advanced feature is attempted |
 
+## JSON payload casing (§4.4)
+
+Response property names are serialized in **PascalCase by default** — the same identifiers the EDM
+declares in `$metadata` — so payload casing matches `$metadata` casing, as §4.4 requires. This makes
+OhData correct out of the box for case-sensitive OData-native clients (e.g. `Microsoft.OData.Client`).
+The casing is OhData-owned (not inherited from the host's `HttpJsonOptions`); switch to camelCase with
+`AddOhData(o => o.WithJsonPropertyNamingPolicy(JsonNamingPolicy.CamelCase))`. See
+[query-options.md → JSON property casing](query-options.md#json-property-casing).
+
 ## Protocol headers
 
 | Feature | Section | Status | Notes |

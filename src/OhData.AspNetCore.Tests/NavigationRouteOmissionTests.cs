@@ -28,8 +28,8 @@ public class NavigationRouteOmissionTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavLeakFilmProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavLeakFilms(1)/Studio");
 
-        Assert.Equal("Skyline", json.GetProperty("name").GetString());
-        Assert.False(json.TryGetProperty("films", out _),
+        Assert.Equal("Skyline", json.GetProperty("Name").GetString());
+        Assert.False(json.TryGetProperty("Films", out _),
             "the studio's own un-expanded nav 'films' must be omitted on the single-valued nav GET");
     }
 
@@ -46,8 +46,8 @@ public class NavigationRouteOmissionTests
         foreach (var studio in value.EnumerateArray())
         {
             // Over-strip guard: structural data survives.
-            Assert.False(string.IsNullOrEmpty(studio.GetProperty("name").GetString()));
-            Assert.False(studio.TryGetProperty("films", out _),
+            Assert.False(string.IsNullOrEmpty(studio.GetProperty("Name").GetString()));
+            Assert.False(studio.TryGetProperty("Films", out _),
                 "each co-studio's own un-expanded nav 'films' must be omitted on the nav-collection GET");
         }
     }
@@ -60,9 +60,9 @@ public class NavigationRouteOmissionTests
 
         foreach (var studio in json.GetProperty("value").EnumerateArray())
         {
-            Assert.True(studio.TryGetProperty("name", out _), "$select'd 'name' must be present");
-            Assert.False(studio.TryGetProperty("id", out _), "unselected 'id' must be projected out");
-            Assert.False(studio.TryGetProperty("films", out _), "un-expanded nav 'films' must be omitted");
+            Assert.True(studio.TryGetProperty("Name", out _), "$select'd 'name' must be present");
+            Assert.False(studio.TryGetProperty("Id", out _), "unselected 'id' must be projected out");
+            Assert.False(studio.TryGetProperty("Films", out _), "un-expanded nav 'films' must be omitted");
         }
     }
 
@@ -78,10 +78,10 @@ public class NavigationRouteOmissionTests
         Assert.Equal(2, value.GetArrayLength());
         foreach (var film in value.EnumerateArray())
         {
-            Assert.False(string.IsNullOrEmpty(film.GetProperty("title").GetString())); // over-strip guard
-            Assert.False(film.TryGetProperty("studio", out _),
+            Assert.False(string.IsNullOrEmpty(film.GetProperty("Title").GetString())); // over-strip guard
+            Assert.False(film.TryGetProperty("Studio", out _),
                 "un-expanded single nav 'studio' must be omitted on the bound-op collection result");
-            Assert.False(film.TryGetProperty("coStudios", out _),
+            Assert.False(film.TryGetProperty("CoStudios", out _),
                 "un-expanded collection nav 'coStudios' must be omitted on the bound-op collection result");
             Assert.True(film.TryGetProperty("@odata.etag", out var etag),
                 "@odata.etag must be injected on bound-op collection results (UseETag), matching the normal collection path");
@@ -97,10 +97,10 @@ public class NavigationRouteOmissionTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavLeakFilmProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavLeakFilms/GetFeatured");
 
-        Assert.Equal("Ascent", json.GetProperty("title").GetString()); // over-strip guard
-        Assert.False(json.TryGetProperty("studio", out _),
+        Assert.Equal("Ascent", json.GetProperty("Title").GetString()); // over-strip guard
+        Assert.False(json.TryGetProperty("Studio", out _),
             "un-expanded single nav 'studio' must be omitted on the bound-op single result");
-        Assert.False(json.TryGetProperty("coStudios", out _),
+        Assert.False(json.TryGetProperty("CoStudios", out _),
             "un-expanded collection nav 'coStudios' must be omitted on the bound-op single result");
         Assert.True(json.TryGetProperty("@odata.etag", out var etag),
             "@odata.etag must be injected on bound-op single results (UseETag), matching GetById");
@@ -120,9 +120,9 @@ public class NavigationRouteOmissionTests
         // Neither carries the un-expanded navs; both carry the same structural data.
         foreach (var doc in new[] { topLevel, boundOp })
         {
-            Assert.False(doc.TryGetProperty("studio", out _));
-            Assert.False(doc.TryGetProperty("coStudios", out _));
-            Assert.Equal("Ascent", doc.GetProperty("title").GetString());
+            Assert.False(doc.TryGetProperty("Studio", out _));
+            Assert.False(doc.TryGetProperty("CoStudios", out _));
+            Assert.Equal("Ascent", doc.GetProperty("Title").GetString());
         }
     }
 }

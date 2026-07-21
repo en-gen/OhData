@@ -27,7 +27,7 @@ public class SpecPrecisionPassTests
         var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(json.TryGetProperty("@odata.context", out var context));
         Assert.Contains("$metadata#NavRefSingleParents(1)/PrimaryChild/$entity", context.GetString());
-        Assert.Equal("OnlyChild", json.GetProperty("name").GetString());
+        Assert.Equal("OnlyChild", json.GetProperty("Name").GetString());
     }
 
     // ── M4: nav-collection /$count on a missing parent uses the OData error envelope ──
@@ -118,8 +118,8 @@ public class SpecPrecisionPassTests
         var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(json.TryGetProperty("@odata.context", out var context));
         Assert.EndsWith("$metadata#Widgets(Name)/$entity", context.GetString());
-        Assert.True(json.TryGetProperty("name", out _));
-        Assert.False(json.TryGetProperty("id", out _), "Unselected 'id' should be stripped from the body.");
+        Assert.True(json.TryGetProperty("Name", out _));
+        Assert.False(json.TryGetProperty("Id", out _), "Unselected 'Id' should be stripped from the body.");
     }
 
     [Fact]
@@ -130,7 +130,7 @@ public class SpecPrecisionPassTests
         var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(json.TryGetProperty("@odata.context", out var context));
         Assert.EndsWith("$metadata#Widgets/$entity", context.GetString());
-        Assert.True(json.TryGetProperty("id", out _));
+        Assert.True(json.TryGetProperty("Id", out _));
     }
 
     [Fact]
@@ -234,7 +234,7 @@ public class SpecPrecisionPassTests
         Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
 
         var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal("Created", json.GetProperty("name").GetString());
+        Assert.Equal("Created", json.GetProperty("Name").GetString());
     }
 
     [Fact]

@@ -221,8 +221,8 @@ public class ConcurrencyTests
             }
             else
             {
-                Assert.True(root.TryGetProperty("id", out _));
-                Assert.True(root.TryGetProperty("name", out _));
+                Assert.True(root.TryGetProperty("Id", out _));
+                Assert.True(root.TryGetProperty("Name", out _));
             }
         }
     }
@@ -399,7 +399,7 @@ public class ConcurrencyTests
         var results = await Task.WhenAll(tasks);
 
         var instanceIds = results
-            .Select(json => json.GetProperty("value")[0].GetProperty("name").GetString()!)
+            .Select(json => json.GetProperty("value")[0].GetProperty("Name").GetString()!)
             .ToList();
 
         Assert.Equal(concurrency, instanceIds.Count);

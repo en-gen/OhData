@@ -43,8 +43,8 @@ public class NavigationPostTests
         Assert.True(json.TryGetProperty("@odata.context", out _));
         Assert.True(json.TryGetProperty("@odata.id", out var odataId));
         Assert.Contains("NavPostHappyChildren(500)", odataId.GetString());
-        Assert.Equal("NewChild", json.GetProperty("name").GetString());
-        Assert.Equal(1, json.GetProperty("parentId").GetInt32());
+        Assert.Equal("NewChild", json.GetProperty("Name").GetString());
+        Assert.Equal(1, json.GetProperty("ParentId").GetInt32());
     }
 
     [Fact]
@@ -62,7 +62,7 @@ public class NavigationPostTests
 
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.False(json.TryGetProperty("@odata.id", out _));
-        Assert.Equal("NewChild", json.GetProperty("name").GetString());
+        Assert.Equal("NewChild", json.GetProperty("Name").GetString());
     }
 
     // ── Prefer: return=minimal ───────────────────────────────────────────────────

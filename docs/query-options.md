@@ -2,6 +2,38 @@
 
 OhData supports the OData 4.0 system query options. Which ones are applied depends on the collection handler you choose for the entity set.
 
+## JSON property casing
+
+By default OhData serializes response property names in **PascalCase** — the CLR property names,
+which are exactly the identifiers declared in `$metadata` (the EDM). Payload casing therefore
+matches `$metadata` casing, satisfying OData §4.4 and letting case-sensitive OData-native clients
+(e.g. `Microsoft.OData.Client`) bind properties out of the box.
+
+This default is **owned by OhData**, not inherited from the host's
+`HttpJsonOptions.SerializerOptions.PropertyNamingPolicy`. Configuring `ConfigureHttpJsonOptions`
+does *not* change OhData response casing (any custom converters/encoder you register there are
+still honoured — only the property-naming policy is OhData's own).
+
+To emit **camelCase** payloads instead, opt in explicitly on the registration:
+
+```csharp
+using System.Text.Json;
+
+builder.Services.AddOhData(o =>
+{
+    o.WithJsonPropertyNamingPolicy(JsonNamingPolicy.CamelCase);
+    o.AddEntitySetProfile<ProductProfile>();
+});
+```
+
+`WithJsonPropertyNamingPolicy(null)` is the default (PascalCase). The policy applies uniformly to
+every response path: collection and single-entity reads, POST/PUT/PATCH echoes, `$select`/`$expand`
+output, `$value`, and bound/unbound function/action results.
+
+> Note: this affects **response** casing only. OData query-option property references
+> (`$select=Name`, `$filter=…`, `$orderby=…`, `$expand=…`) and request bodies are matched
+> case-insensitively against the EDM, so a client may use either casing on the way in.
+
 ## Handler paths
 
 ### `GetAll` - simple in-memory path
@@ -293,7 +325,8 @@ GET /odata/Products?$select=Id,Name,Price
 ```
 
 The response shape is produced by JSON post-processing (unselected properties are removed from
-the serialized entity), which is what keeps the output camelCase-consistent.
+the serialized entity), which is what keeps the output consistent with the configured naming
+policy (PascalCase by default — see [JSON property casing](#json-property-casing)).
 
 ### Projection pushdown (#206)
 
@@ -427,11 +460,11 @@ Pushdown is **on by default** (`EntitySetDefaults.ExpandPushdownEnabled`, per-pr
 
 #### Nested options on a pushed `$expand`
 
-A pushed (delegate-less) `$expand` honors the nested options of the expanded collection. `$filter`, `$orderby`, and `$top`/`$skip` are pushed down to SQL as a **filtered / ordered / paged `Include`** (translated by Microsoft's own OData `FilterBinder`/`OrderByBinder`, so the semantics match a top-level `$filter`/`$orderby`), producing a single JOIN'd query — no per-parent N+1. `$count` and `$select` are then applied to the (camelCase) serialized result.
+A pushed (delegate-less) `$expand` honors the nested options of the expanded collection. `$filter`, `$orderby`, and `$top`/`$skip` are pushed down to SQL as a **filtered / ordered / paged `Include`** (translated by Microsoft's own OData `FilterBinder`/`OrderByBinder`, so the semantics match a top-level `$filter`/`$orderby`), producing a single JOIN'd query — no per-parent N+1. `$count` and `$select` are then applied to the serialized result (in whatever naming policy is configured — PascalCase by default).
 
 | Nested option (on a delegate-less pushed nav) | Supported | How |
 |---|---|---|
-| `$select` — `Children($select=name)` | ✅ | JSON projection of the expanded elements (camelCase preserved) |
+| `$select` — `Children($select=name)` | ✅ | JSON projection of the expanded elements (configured naming policy preserved) |
 | `$filter` — `Children($filter=active eq true)` | ✅ | filtered `Include` (SQL `WHERE` in the JOIN) |
 | `$orderby` — `Children($orderby=name desc)` | ✅ | ordered `Include` (SQL `ORDER BY` in the JOIN) |
 | `$top` / `$skip` — `Children($orderby=name;$top=5)` | ✅ | paged `Include` (SQL `ROW_NUMBER` window) |

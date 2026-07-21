@@ -130,7 +130,7 @@ public class MalformedPayloadTests
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal("second", json.GetProperty("name").GetString());
+        Assert.Equal("second", json.GetProperty("Name").GetString());
     }
 
     [Fact]
@@ -287,7 +287,7 @@ public class MalformedPayloadTests
             new StringContent("{\"name\":\"first\",\"name\":\"second\"}", Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal("second", json.GetProperty("name").GetString());
+        Assert.Equal("second", json.GetProperty("Name").GetString());
     }
 
     [Fact]

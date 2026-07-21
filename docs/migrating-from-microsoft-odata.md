@@ -296,7 +296,7 @@ today — pulled directly from the "not targeted" / "known limitations" sections
   complex property is supported; a `PATCH` that should merge only some of a nested object's fields
   returns `400 Bad Request` rather than performing the merge.
 - **SQL column projection for `$select`.** OhData applies `$select` by trimming the JSON response
-  after the full row is fetched (to preserve camelCase naming — see `docs/architecture.md`), not
+  after the full row is fetched (to preserve the configured naming policy — see `docs/architecture.md`), not
   by projecting only the selected columns in the SQL query. If your `$select` usage exists
   specifically to reduce database I/O for wide tables, that benefit does not carry over.
 - **Per-operation authorization.** `Microsoft.AspNetCore.OData` lets you put `[Authorize]` on

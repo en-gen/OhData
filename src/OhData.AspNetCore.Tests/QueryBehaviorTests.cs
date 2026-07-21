@@ -243,8 +243,8 @@ public class QueryBehaviorTests
         JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
         JsonElement values = json.GetProperty("value");
         Assert.Equal(1, values.GetArrayLength());
-        Assert.Equal(2, values[0].GetProperty("id").GetInt32());
-        Assert.Equal("Beta Widget", values[0].GetProperty("name").GetString());
+        Assert.Equal(2, values[0].GetProperty("Id").GetInt32());
+        Assert.Equal("Beta Widget", values[0].GetProperty("Name").GetString());
     }
 
     [Fact]

@@ -71,6 +71,17 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Behavior change: default JSON response casing is now PascalCase, not camelCase (#252).**
+  OhData now serializes response property names in **PascalCase** by default — matching the
+  CLR/`$metadata` (EDM) casing — so payload identifiers agree with `$metadata` (OData §4.4
+  conformance) and OData-native clients (e.g. `Microsoft.OData.Client`, case-sensitive by default)
+  bind correctly out of the box. Previously OhData passively inherited ASP.NET Core minimal-API's
+  camelCase `HttpJsonOptions` default; that inheritance is gone — OhData owns this default
+  independently and applies it to every response path (collection/GetById reads, POST/PUT/PATCH
+  echoes, `$select`/`$expand` output, `$value`, and function/action results). To keep camelCase
+  payloads, opt in explicitly: `AddOhData(o => o.WithJsonPropertyNamingPolicy(JsonNamingPolicy.CamelCase))`.
+  The host's `HttpJsonOptions.PropertyNamingPolicy` is intentionally no longer consulted for OhData
+  responses (custom converters/encoder on it are still honoured).
 - **`AddProfile<T>()` renamed to `AddEntitySetProfile<T>()` (breaking).** Symmetric with the new
   `AddDeltaProfile<T>()`. No `[Obsolete]` alias — update call sites directly. The assembly scanner
   (`AddProfilesFrom` / `AddProfilesFromAssemblyOf` / `AddProfilesFromAssembly`) is unchanged in

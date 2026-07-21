@@ -284,8 +284,8 @@ public class EndpointMappingTests
         var response = await fx.Client.PatchAsJsonAsync("/odata/PatchItems(1)", new { name = "Changed" });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        Assert.Equal("Changed", json.GetProperty("name").GetString());
-        Assert.Equal(9.99m, json.GetProperty("price").GetDecimal());
+        Assert.Equal("Changed", json.GetProperty("Name").GetString());
+        Assert.Equal(9.99m, json.GetProperty("Price").GetDecimal());
     }
 
     [Fact]
@@ -295,8 +295,8 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<PatchItemProfile>(), configureServices: s => s.AddSingleton(new PatchItemStore()));
         await fx.Client.PatchAsJsonAsync("/odata/PatchItems(2)", new { name = "Renamed" });
         var json = await fx.Client.GetFromJsonAsync<System.Text.Json.JsonElement>("/odata/PatchItems(2)");
-        Assert.Equal("Renamed", json.GetProperty("name").GetString());
-        Assert.Equal(19.99m, json.GetProperty("price").GetDecimal());
+        Assert.Equal("Renamed", json.GetProperty("Name").GetString());
+        Assert.Equal(19.99m, json.GetProperty("Price").GetDecimal());
     }
 
     [Fact]
@@ -316,12 +316,12 @@ public class EndpointMappingTests
     [Fact]
     public async Task Select_SingleProperty_OnlySelectedPropertyPresent()
     {
-        // $select uses JsonSerializer with camelCase to match the rest of the OData response.
+        // $select uses JsonSerializer with PascalCase to match the rest of the OData response.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<QueryableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets?$select=Name");
         var firstItem = json.GetProperty("value")[0];
-        Assert.True(firstItem.TryGetProperty("name", out _));
-        Assert.False(firstItem.TryGetProperty("id", out _));
+        Assert.True(firstItem.TryGetProperty("Name", out _));
+        Assert.False(firstItem.TryGetProperty("Id", out _));
     }
 
     [Fact]
@@ -330,8 +330,8 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<QueryableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets?$select=Id");
         var firstItem = json.GetProperty("value")[0];
-        Assert.True(firstItem.TryGetProperty("id", out _));
-        Assert.False(firstItem.TryGetProperty("name", out _));
+        Assert.True(firstItem.TryGetProperty("Id", out _));
+        Assert.False(firstItem.TryGetProperty("Name", out _));
     }
 
     [Fact]
@@ -340,20 +340,20 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<QueryableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets?$select=Id,Name");
         var firstItem = json.GetProperty("value")[0];
-        Assert.True(firstItem.TryGetProperty("id", out _));
-        Assert.True(firstItem.TryGetProperty("name", out _));
+        Assert.True(firstItem.TryGetProperty("Id", out _));
+        Assert.True(firstItem.TryGetProperty("Name", out _));
     }
 
     [Fact]
     public async Task Select_NoSelectParam_ReturnsAllProperties()
     {
-        // Without $select, Widget objects are serialized directly by ASP.NET Core JSON
-        // (camelCase by default), so check for camelCase property names.
+        // Without $select, Widget objects are serialized by OhData's serializer
+        // (PascalCase by default), so check for PascalCase property names.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<QueryableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets");
         var firstItem = json.GetProperty("value")[0];
-        Assert.True(firstItem.TryGetProperty("id", out _) || firstItem.TryGetProperty("Id", out _));
-        Assert.True(firstItem.TryGetProperty("name", out _) || firstItem.TryGetProperty("Name", out _));
+        Assert.True(firstItem.TryGetProperty("Id", out _) || firstItem.TryGetProperty("id", out _));
+        Assert.True(firstItem.TryGetProperty("Name", out _) || firstItem.TryGetProperty("name", out _));
     }
 
     [Fact]
@@ -363,7 +363,7 @@ public class EndpointMappingTests
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets?$select=Name");
         var values = json.GetProperty("value");
         string?[] names = Enumerable.Range(0, values.GetArrayLength())
-            .Select(i => values[i].GetProperty("name").GetString())
+            .Select(i => values[i].GetProperty("Name").GetString())
             .ToArray();
         Assert.Contains("Sprocket", names);
         Assert.Contains("Cog", names);
@@ -373,23 +373,23 @@ public class EndpointMappingTests
     [Fact]
     public async Task Select_GetAllPath_SingleProperty_OnlySelectedPropertyPresent()
     {
-        // $select uses camelCase serialization so the output matches the rest of the response.
+        // $select uses PascalCase serialization so the output matches the rest of the response.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/Widgets?$select=Name");
         var firstItem = json.GetProperty("value")[0];
-        Assert.True(firstItem.TryGetProperty("name", out _));
-        Assert.False(firstItem.TryGetProperty("id", out _));
+        Assert.True(firstItem.TryGetProperty("Name", out _));
+        Assert.False(firstItem.TryGetProperty("Id", out _));
     }
 
     [Fact]
     public async Task Select_GetAllPath_LowercaseInput_NormalizedToEdmName()
     {
         // The OData parser normalizes $select=name to EDM identifier "Name" — behaves like $select=Name.
-        // Output uses camelCase ("name") to be consistent with non-$select responses.
+        // Output uses PascalCase ("Name") to be consistent with non-$select responses.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/Widgets?$select=name");
         var firstItem = json.GetProperty("value")[0];
-        Assert.True(firstItem.TryGetProperty("name", out _));
+        Assert.True(firstItem.TryGetProperty("Name", out _));
     }
 
     [Fact]
@@ -416,15 +416,15 @@ public class EndpointMappingTests
     }
 
     [Fact]
-    public async Task Select_GetAll_PropertyCasingMatchesCamelCase()
+    public async Task Select_GetAll_PropertyCasingMatchesPascalCase()
     {
-        // $select uses JsonSerializer with camelCase so the output is consistent with
-        // non-$select OData responses (which ASP.NET Core serializes as camelCase).
+        // $select uses JsonSerializer with PascalCase so the output is consistent with
+        // non-$select OData responses (which OhData serializes as PascalCase to match $metadata).
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/Widgets?$select=Name");
         var first = json.GetProperty("value")[0];
-        Assert.True(first.TryGetProperty("name", out _));   // camelCase
-        Assert.False(first.TryGetProperty("Name", out _));  // NOT PascalCase
+        Assert.True(first.TryGetProperty("Name", out _));   // PascalCase
+        Assert.False(first.TryGetProperty("name", out _));  // NOT camelCase
     }
     // â"€â"€ EF Core InMemory + ISelectExpandWrapper â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
@@ -432,12 +432,12 @@ public class EndpointMappingTests
     public async Task Select_EfCoreInMemory_SingleProperty_OnlySelectedPropertyPresent()
     {
         // Verifies that $select works with the GetQueryable (EF Core) path.
-        // Output uses camelCase to be consistent with non-$select responses.
+        // Output uses PascalCase to be consistent with non-$select responses.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<EfCoreWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<System.Text.Json.JsonElement>("/odata/EfWidgets?$select=Name");
         var firstItem = json.GetProperty("value")[0];
-        Assert.True(firstItem.TryGetProperty("name", out _));
-        Assert.False(firstItem.TryGetProperty("id", out _));
+        Assert.True(firstItem.TryGetProperty("Name", out _));
+        Assert.False(firstItem.TryGetProperty("Id", out _));
     }
 
     [Fact]
@@ -447,7 +447,7 @@ public class EndpointMappingTests
         var json = await fx.Client.GetFromJsonAsync<System.Text.Json.JsonElement>("/odata/EfWidgets?$select=Name");
         var values = json.GetProperty("value");
         string?[] names = System.Linq.Enumerable.Range(0, values.GetArrayLength())
-            .Select(i => values[i].GetProperty("name").GetString())
+            .Select(i => values[i].GetProperty("Name").GetString())
             .ToArray();
         Assert.Contains("Sprocket", names);
         Assert.Contains("Cog", names);
@@ -600,8 +600,8 @@ public class EndpointMappingTests
         Assert.True(json.TryGetProperty("@odata.context", out _), $"Expected @odata.context in envelope. Body was: {body}");
         Assert.True(json.TryGetProperty("value", out var value), $"Expected 'value' key. Body was: {body}");
         Assert.Equal(1, value.GetArrayLength());
-        // Items serialized using ASP.NET Core's camelCase serializer
-        Assert.Equal("Alpha", value[0].GetProperty("name").GetString());
+        // Items serialized using OhData's PascalCase serializer
+        Assert.Equal("Alpha", value[0].GetProperty("Name").GetString());
     }
 
     [Fact]
@@ -647,7 +647,7 @@ public class EndpointMappingTests
         Assert.Equal(HttpStatusCode.NoContent, addResp.StatusCode);
         var listResp = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/BoundWidgets");
         string?[] names = listResp.GetProperty("value").EnumerateArray()
-            .Select(x => x.GetProperty("name").GetString()).ToArray();
+            .Select(x => x.GetProperty("Name").GetString()).ToArray();
         Assert.All(names, n => Assert.EndsWith("!", n));
     }
 
@@ -873,28 +873,28 @@ public class EndpointMappingTests
     [Fact]
     public async Task Select_PascalCase_PropertyIncluded_OthersExcluded()
     {
-        // $select=Name returns only the name property (in camelCase to be consistent
+        // $select=Name returns only the name property (in PascalCase to be consistent
         // with the rest of the OData response serialization).
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<QueryableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets?$select=Name");
         var items = json.GetProperty("value");
         Assert.True(items.GetArrayLength() > 0);
         var first = items[0];
-        Assert.True(first.TryGetProperty("name", out _), "Expected 'name' property to be present (camelCase)");
-        Assert.False(first.TryGetProperty("id", out _), "Expected 'id' to be excluded");
+        Assert.True(first.TryGetProperty("Name", out _), "Expected 'Name' property to be present (PascalCase)");
+        Assert.False(first.TryGetProperty("Id", out _), "Expected 'Id' to be excluded");
     }
 
     [Fact]
     public async Task Select_LowercaseInput_NormalizedToEdmName_PropertyIncluded()
     {
         // The Microsoft.OData parser normalizes $select=name to EDM identifier "Name",
-        // so the result is the same as $select=Name — output is camelCase "name".
+        // so the result is the same as $select=Name — output is PascalCase "Name".
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<QueryableWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/QueryableWidgets?$select=name");
         var items = json.GetProperty("value");
         Assert.True(items.GetArrayLength() > 0);
         var first = items[0];
-        Assert.True(first.TryGetProperty("name", out _), "Expected 'name' present — OData parser normalizes to EDM name, output is camelCase");
+        Assert.True(first.TryGetProperty("Name", out _), "Expected 'Name' present — OData parser normalizes to EDM name, output is PascalCase");
     }
 
     // ── M2: Authorization double-configure guards ─────────────────────────────
@@ -1330,7 +1330,7 @@ public class EndpointMappingTests
 
         var getResp = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/EntityBoundWidgets");
         string?[] names = getResp.GetProperty("value").EnumerateArray()
-            .Select(x => x.GetProperty("name").GetString()).ToArray();
+            .Select(x => x.GetProperty("Name").GetString()).ToArray();
         Assert.Contains("Renamed", names);
     }
 
@@ -1386,7 +1386,7 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ExpandableParentProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ExpandableParents?$expand=Children");
         var first = json.GetProperty("value")[0];
-        Assert.True(first.TryGetProperty("children", out var children));
+        Assert.True(first.TryGetProperty("Children", out var children));
         Assert.Equal(JsonValueKind.Array, children.ValueKind);
     }
 
@@ -1396,7 +1396,7 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ExpandableParentProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ExpandableParents?$expand=Children");
         var first = json.GetProperty("value")[0];
-        var children = first.GetProperty("children");
+        var children = first.GetProperty("Children");
         Assert.True(children.GetArrayLength() > 0);
     }
 
@@ -1560,7 +1560,7 @@ public class EndpointMappingTests
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavOrderByProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavOrderByParents(1)/Children?$orderby=Name");
-        string?[] names = json.GetProperty("value").EnumerateArray().Select(v => v.GetProperty("name").GetString()).ToArray();
+        string?[] names = json.GetProperty("value").EnumerateArray().Select(v => v.GetProperty("Name").GetString()).ToArray();
         Assert.Equal(new[] { "Alpha", "Bravo", "Charlie", "Delta" }, names);
     }
 
@@ -1569,7 +1569,7 @@ public class EndpointMappingTests
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavOrderByProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavOrderByParents(1)/Children?$orderby=Name desc");
-        string?[] names = json.GetProperty("value").EnumerateArray().Select(v => v.GetProperty("name").GetString()).ToArray();
+        string?[] names = json.GetProperty("value").EnumerateArray().Select(v => v.GetProperty("Name").GetString()).ToArray();
         Assert.Equal(new[] { "Delta", "Charlie", "Bravo", "Alpha" }, names);
     }
 
@@ -1580,7 +1580,7 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavOrderByProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>(
             "/odata/NavOrderByParents(1)/Children?$orderby=Category asc,Name desc");
-        string?[] names = json.GetProperty("value").EnumerateArray().Select(v => v.GetProperty("name").GetString()).ToArray();
+        string?[] names = json.GetProperty("value").EnumerateArray().Select(v => v.GetProperty("Name").GetString()).ToArray();
         Assert.Equal(new[] { "Delta", "Alpha", "Charlie", "Bravo" }, names);
     }
 
@@ -1601,7 +1601,7 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavOrderByProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>(
             "/odata/NavOrderByParents(1)/Children?$orderby=Name&$skip=1&$top=2");
-        string?[] names = json.GetProperty("value").EnumerateArray().Select(v => v.GetProperty("name").GetString()).ToArray();
+        string?[] names = json.GetProperty("value").EnumerateArray().Select(v => v.GetProperty("Name").GetString()).ToArray();
         Assert.Equal(new[] { "Bravo", "Charlie" }, names);
     }
 
@@ -1743,7 +1743,7 @@ public class EndpointMappingTests
         var value = json.GetProperty("value");
         Assert.True(value.GetArrayLength() > 0);
         var first = value[0];
-        Assert.True(first.TryGetProperty("children", out var children));
+        Assert.True(first.TryGetProperty("Children", out var children));
         Assert.Equal(JsonValueKind.Array, children.ValueKind);
     }
 
@@ -1756,7 +1756,7 @@ public class EndpointMappingTests
         // Both parents should have their children expanded
         for (int i = 0; i < value.GetArrayLength(); i++)
         {
-            Assert.True(value[i].TryGetProperty("children", out var children));
+            Assert.True(value[i].TryGetProperty("Children", out var children));
             Assert.Equal(JsonValueKind.Array, children.ValueKind);
         }
     }
@@ -1803,8 +1803,8 @@ public class EndpointMappingTests
         var value = json.GetProperty("value");
         Assert.True(value.GetArrayLength() > 0);
         var first = value[0];
-        Assert.True(first.TryGetProperty("name", out _), "Expected 'name' property (camelCase) to be present");
-        Assert.False(first.TryGetProperty("id", out _), "Expected 'id' to be excluded by $select");
+        Assert.True(first.TryGetProperty("Name", out _), "Expected 'Name' property (PascalCase) to be present");
+        Assert.False(first.TryGetProperty("Id", out _), "Expected 'Id' to be excluded by $select");
     }
 
     [Fact]
@@ -1815,9 +1815,9 @@ public class EndpointMappingTests
         var value = json.GetProperty("value");
         Assert.True(value.GetArrayLength() > 0);
         var first = value[0];
-        Assert.True(first.TryGetProperty("id", out _), "Expected 'id' to be present");
-        Assert.True(first.TryGetProperty("name", out _), "Expected 'name' to be present");
-        Assert.False(first.TryGetProperty("parentId", out _), "Expected 'parentId' to be excluded");
+        Assert.True(first.TryGetProperty("Id", out _), "Expected 'Id' to be present");
+        Assert.True(first.TryGetProperty("Name", out _), "Expected 'Name' to be present");
+        Assert.False(first.TryGetProperty("ParentId", out _), "Expected 'ParentId' to be excluded");
     }
 
     // ── L-3: $select with invalid property on nav collection returns 400 ─────────
@@ -1854,7 +1854,7 @@ public class EndpointMappingTests
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataWidgets?$filter=Name%20eq%20'Cog'");
         var value = json.GetProperty("value");
         Assert.Equal(1, value.GetArrayLength());
-        Assert.Equal("Cog", value[0].GetProperty("name").GetString());
+        Assert.Equal("Cog", value[0].GetProperty("Name").GetString());
     }
 
     [Fact]
@@ -1883,7 +1883,7 @@ public class EndpointMappingTests
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataWidgets?$orderby=Name");
         var value = json.GetProperty("value");
         string?[] names = Enumerable.Range(0, value.GetArrayLength())
-            .Select(i => value[i].GetProperty("name").GetString())
+            .Select(i => value[i].GetProperty("Name").GetString())
             .ToArray();
         Assert.Equal(names.OrderBy(n => n).ToArray(), names);
     }
@@ -1913,7 +1913,7 @@ public class EndpointMappingTests
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ODataWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataWidgets(1)");
-        Assert.Equal("Sprocket", json.GetProperty("name").GetString());
+        Assert.Equal("Sprocket", json.GetProperty("Name").GetString());
     }
 
     // ── ODataQueryResult<TModel> (H-1 / M-6) ─────────────────────────────────
@@ -1964,8 +1964,8 @@ public class EndpointMappingTests
         Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
 
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal("Modified", json.GetProperty("name").GetString());
-        Assert.Equal(1, json.GetProperty("id").GetInt32());
+        Assert.Equal("Modified", json.GetProperty("Name").GetString());
+        Assert.Equal(1, json.GetProperty("Id").GetInt32());
     }
 
     [Fact]
@@ -1984,7 +1984,7 @@ public class EndpointMappingTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeltaPatchWidgetProfile>());
         await fx.Client.PatchAsJsonAsync("/odata/DeltaWidgets(2)", new { Name = "PatchedCog" });
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/DeltaWidgets(2)");
-        Assert.Equal("PatchedCog", json.GetProperty("name").GetString());
+        Assert.Equal("PatchedCog", json.GetProperty("Name").GetString());
     }
 
     // ── Batch 4: 406 Not Acceptable ──────────────────────────────────────────
@@ -2239,9 +2239,9 @@ public class EndpointMappingTests
             // $select=name should not strip @odata.etag (metadata properties are immune)
             Assert.True(item.TryGetProperty("@odata.etag", out _),
                 "@odata.etag must not be removed by $select");
-            // id should be stripped by $select
-            Assert.False(item.TryGetProperty("id", out _),
-                "id should be removed by $select=name");
+            // Id should be stripped by $select
+            Assert.False(item.TryGetProperty("Id", out _),
+                "Id should be removed by $select=name");
         }
     }
 
@@ -2707,7 +2707,7 @@ public class EndpointMappingTests
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/AdvancedWidgets(1)");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal("Alpha", json.GetProperty("name").GetString());
+        Assert.Equal("Alpha", json.GetProperty("Name").GetString());
     }
 
     // ── M-3: $select on navigation collection ────────────────────────────────
@@ -2715,15 +2715,15 @@ public class EndpointMappingTests
     [Fact]
     public async Task Navigation_Select_FiltersToRequestedProperty()
     {
-        // $select=Name should include camelCase "name" but exclude "id" and "parentId"
+        // $select=Name should include PascalCase "Name" but exclude "Id" and "ParentId"
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavQueryProfile>());
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/NavQueryParents(1)/Children?$select=Name");
         JsonElement value = json.GetProperty("value");
         Assert.True(value.GetArrayLength() > 0);
         JsonElement first = value[0];
-        Assert.True(first.TryGetProperty("name", out _), "Expected 'name' property to be present");
-        Assert.False(first.TryGetProperty("id", out _), "Expected 'id' to be excluded by $select");
-        Assert.False(first.TryGetProperty("parentId", out _), "Expected 'parentId' to be excluded by $select");
+        Assert.True(first.TryGetProperty("Name", out _), "Expected 'Name' property to be present");
+        Assert.False(first.TryGetProperty("Id", out _), "Expected 'Id' to be excluded by $select");
+        Assert.False(first.TryGetProperty("ParentId", out _), "Expected 'ParentId' to be excluded by $select");
     }
 
     [Fact]
@@ -2861,8 +2861,8 @@ public class EndpointMappingTests
             Assert.True(item.TryGetProperty("@odata.etag", out _),
                 "@odata.etag should be present on each item when GetETag is configured");
             // The expanded navigation should be present.
-            Assert.True(item.TryGetProperty("children", out _),
-                "Expanded 'children' navigation property must be present");
+            Assert.True(item.TryGetProperty("Children", out _),
+                "Expanded 'Children' navigation property must be present");
         }
     }
 
@@ -2875,8 +2875,8 @@ public class EndpointMappingTests
         var value = json.GetProperty("value");
         Assert.True(value.GetArrayLength() > 0);
         var first = value[0];
-        Assert.True(first.TryGetProperty("id", out _), "id must be present (selected)");
-        Assert.False(first.TryGetProperty("name", out _), "name must be absent (not selected)");
+        Assert.True(first.TryGetProperty("Id", out _), "Id must be present (selected)");
+        Assert.False(first.TryGetProperty("Name", out _), "Name must be absent (not selected)");
         Assert.True(first.TryGetProperty("@odata.etag", out _),
             "@odata.etag must survive $select");
     }
@@ -2894,10 +2894,10 @@ public class EndpointMappingTests
         Assert.True(value.GetArrayLength() > 0);
         var first = value[0];
         // Selected properties present.
-        Assert.True(first.TryGetProperty("id", out _), "id must be selected");
-        Assert.True(first.TryGetProperty("name", out _), "name must be selected");
+        Assert.True(first.TryGetProperty("Id", out _), "Id must be selected");
+        Assert.True(first.TryGetProperty("Name", out _), "Name must be selected");
         // Expanded navigation present (listed in $select so it survives post-processing).
-        Assert.True(first.TryGetProperty("children", out _), "children must be expanded");
+        Assert.True(first.TryGetProperty("Children", out _), "Children must be expanded");
         // ETag must survive the combined pipeline.
         Assert.True(first.TryGetProperty("@odata.etag", out _),
             "@odata.etag must survive expand + select");
