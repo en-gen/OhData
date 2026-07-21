@@ -9,6 +9,37 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-07-21
+
+Query-pushdown and spec-correctness milestone: `$select` and `$expand` now push into the backing
+`IQueryable` (column-pruned `SELECT`s and SQL `JOIN`s on the EF Core path), response JSON defaults to
+PascalCase so payloads match `$metadata`, and a dependency-free delta mapper bridges DTO-backed entity
+sets. **Two breaking changes** ship here — the `AddProfile` → `AddEntitySetProfile` registration rename
+and the PascalCase-default casing flip; see **Breaking** below.
+
+### Breaking
+
+- **`AddProfile<T>()` is renamed to `AddEntitySetProfile<T>()` (#243).** Hard rename, no `[Obsolete]`
+  alias — the old name is removed. **Migration:** rename every `builder.AddProfile<MyProfile>()` call
+  site to `builder.AddEntitySetProfile<MyProfile>()`. The `AddProfilesFrom*` assembly scanners are
+  unchanged in signature (they now discover both `EntitySetProfile` and the new `DeltaProfile` in one
+  pass), so registrations that rely on scanning need no edit. `AddDeltaProfile<T>()` is the new sibling
+  for delta profiles.
+- **Default response JSON casing flipped camelCase → PascalCase (#252, #258, #260).** OhData now owns
+  its response property-name casing independently of the host's ASP.NET Core `HttpJsonOptions`,
+  defaulting to **PascalCase** — the CLR/EDM names `$metadata` declares (OData §4.4) — so payloads match
+  the model and strict case-sensitive OData-native clients (e.g. `Microsoft.OData.Client`) bind out of
+  the box. The host's `HttpJsonOptions.PropertyNamingPolicy` is no longer inherited (its custom
+  converters/encoder still are). The flip applies to every response path (collection/GetById reads,
+  POST/PUT/PATCH echoes, `$select`/`$expand` output, `$value`, and function/action results). **This also
+  flips OpenAPI/Swagger schema property casing to PascalCase** — the three schema generators
+  (`OhDataOpenApiSchemaTransformer`, `OhDataNSwagSchemaProcessor`, `OhDataSwaggerSchemaFilter`) now follow
+  OhData's owned policy across nested complex types and inherited base classes, closing the earlier
+  doc-vs-wire drift (`[JsonPropertyName]` renames win in the schema as on the wire). **Migration:** to
+  keep the previous camelCase wire/OpenAPI shape, opt back in explicitly with
+  `AddOhData(o => o.WithJsonPropertyNamingPolicy(JsonNamingPolicy.CamelCase))`. Note that opting into
+  camelCase desyncs payload casing from `$metadata`, which always uses the PascalCase CLR/EDM names.
+
 ### Added
 
 - **Dependency-free delta mapping (#243).** `DeltaProfile` + the injected `IDeltaFactory` give
@@ -49,8 +80,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Microsoft's own OData `FilterBinder`/`OrderByBinder`, never a bespoke translator — so a single
   JOIN'd query loads exactly the requested related rows (no per-parent N+1). `$count` emits an
   inline `Nav@odata.count` (the full filtered count, paging applied after counting per §11.2.4.2)
-  and `$select` projects the expanded elements. Output stays camelCase plain-POCO — no
-  `SelectExpandWrapper` ever reaches the serializer, so no PascalCase leak. `$search`/`$compute`/`$apply`
+  and `$select` projects the expanded elements. Output follows the configured naming policy (PascalCase
+  by default) — no `SelectExpandWrapper` ever reaches the serializer. `$search`/`$compute`/`$apply`
   on the expand item is deferred (the navigation stays EDM-only for that request); see
   `docs/query-options.md`.
 - **Multi-level `$expand` and `$levels` pushdown (#206).** A nested `$expand` is now pushed
@@ -62,40 +93,48 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   navigation is never EF-included at any depth** and its delegate is never bypassed (the
   delegate-safety invariant holds recursively). `$levels=N` / `$levels=max` recursively expand a
   **self-referential** navigation (a tree/hierarchy) as a bounded, cycle-free projection, capped at
-  `MaxExpansionDepth` (`$levels=max` resolves to exactly that value). camelCase plain-POCO output is
-  preserved at every depth, and any level that fails to translate degrades gracefully to EDM-only
-  (never a `500`).
+  `MaxExpansionDepth` (`$levels=max` resolves to exactly that value). Output follows the configured
+  naming policy (PascalCase by default) at every depth, and any level that fails to translate degrades
+  gracefully to EDM-only (never a `500`).
 - **`MaxExpansionDepth` advertised in `$metadata` (#206).** Each entity set now carries an
   `Org.OData.Capabilities.V1.ExpandRestrictions/MaxLevels` vocabulary annotation equal to its resolved
   `MaxExpansionDepth`, so clients can discover the server's `$expand`/`$levels` ceiling from the CSDL.
+- **Per-operation authorization reflected in OpenAPI/NSwag docs (#219, opt-in).** Opt-in operation
+  transformers in the OpenApi and NSwag companion packages reflect OhData's per-operation authorization
+  (#199) into the generated document: each secured operation gets an operation-level security
+  requirement referencing a security scheme the app already defined, plus documented `401` and `403`
+  responses. Detection uses standard ASP.NET Core endpoint metadata (`IAuthorizeData` present,
+  `IAllowAnonymous` absent), so it covers both the legacy profile-wide auth and the per-route model.
+  OhData never defines the security scheme — the author supplies the scheme id when registering the
+  transformer/processor — keeping it off by default. An `AllowAnonymous` route wins over
+  `RequireAuthorization`, and an app-defined `401` is not clobbered.
+- **Auth-requirements documentation filter (#220, opt-in).** An opt-in OpenAPI/NSwag operation filter
+  that appends a human-readable authorization-requirements section (required roles, claim types/values,
+  and named policy names) to each operation's description, drawn from OhData's structured per-operation
+  auth data (#199). Off by default. Claim **values** are a mild info-disclosure surface, so they are
+  emitted only at the `Full` disclosure level; the default `Kinds` level surfaces requirement kinds and
+  their non-secret identifiers (claim types, role names, policy names) but not values. Register at most
+  one filter instance (the append is idempotent per instance). Core exposes the resolved requirements as
+  `OhDataOperationAuthMetadata` endpoint metadata plus a shared `OhDataAuthRequirementsText` renderer, so
+  both companions produce identical text.
+- **New runnable sample: `samples/OhData.Sample.EfCoreSqlite` (#209).** A clone-and-run EF Core SQLite
+  sample demonstrating SQL pushdown (`$filter`/`$orderby`/`$select` translating to a single query), a
+  DTO-projection entity set (`ProductSummaries` over a Products-join-Categories projection so wire-model
+  filters/sorts push through the projection into one JOIN), and a many-to-many relationship with a
+  suppressed join table (`Product` ↔ `Tag` via EF skip navigations, the join entity never reaching the
+  wire). The README shows the real captured SQL for each.
 
 ### Changed
 
-- **Behavior change: default JSON response casing is now PascalCase, not camelCase (#252).**
-  OhData now serializes response property names in **PascalCase** by default — matching the
-  CLR/`$metadata` (EDM) casing — so payload identifiers agree with `$metadata` (OData §4.4
-  conformance) and OData-native clients (e.g. `Microsoft.OData.Client`, case-sensitive by default)
-  bind correctly out of the box. Previously OhData passively inherited ASP.NET Core minimal-API's
-  camelCase `HttpJsonOptions` default; that inheritance is gone — OhData owns this default
-  independently and applies it to every response path (collection/GetById reads, POST/PUT/PATCH
-  echoes, `$select`/`$expand` output, `$value`, and function/action results). To keep camelCase
-  payloads, opt in explicitly: `AddOhData(o => o.WithJsonPropertyNamingPolicy(JsonNamingPolicy.CamelCase))`.
-  The host's `HttpJsonOptions.PropertyNamingPolicy` is intentionally no longer consulted for OhData
-  responses (custom converters/encoder on it are still honoured). **The OpenAPI/Swagger companion
-  packages now generate schema property names under this same owned policy (#258)** — the three
-  schema generators (`OhDataOpenApiSchemaTransformer`, `OhDataNSwagSchemaProcessor`,
-  `OhDataSwaggerSchemaFilter`) previously derived schema casing from the host `HttpJsonOptions`
-  (camelCase), so a default app advertised camelCase schema names while emitting PascalCase payloads.
-  Schema keys now match the wire exactly (PascalCase by default, camelCase under the opt-in), with
-  `[JsonPropertyName]` renames winning in the schema just as they do on the wire. This coverage
-  follows the whole response graph, not only the top-level entity: **nested complex types** (a nested
-  object property, a collection of a complex type, a dictionary value) and **inherited base classes**
-  are renamed too, across all three generators (#260).
-- **`AddProfile<T>()` renamed to `AddEntitySetProfile<T>()` (breaking).** Symmetric with the new
-  `AddDeltaProfile<T>()`. No `[Obsolete]` alias — update call sites directly. The assembly scanner
-  (`AddProfilesFrom` / `AddProfilesFromAssemblyOf` / `AddProfilesFromAssembly`) is unchanged in
-  signature but now discovers `DeltaProfile` subclasses alongside `EntitySetProfile` subclasses in
-  one pass.
+- **POST/PUT/PATCH responses now OMIT un-expanded navigation properties (#240).** POST `201` echoes
+  and PUT/PATCH return-representation bodies previously serialized un-expanded navigations as explicit
+  `null`/`[]`, while read responses (#176/#179) omit them — so `POST /X` echoed `"Category": null` where
+  `GET /X(id)` omitted the member. The write-path response builders now run the same
+  un-expanded-navigation omission as reads, so a write response and a read of the same entity have
+  identical shape. **This is a response-shape change:** clients that relied on the empty `null`/`[]`
+  navigation placeholders in write responses will no longer receive those keys — request the navigation
+  with `$expand` to include it. A deep-insert (`AllowDeepInsert = true`) POST is exempt: it still echoes
+  its created graph inline per §11.4.2.2, the one place a POST legitimately returns nested navigations.
 - **`EntitySetDefaults.MaxExpansionDepth` default is now `3` (was `12`) (#206).** With multi-level and
   `$levels` pushdown, the depth limit is a meaningful request ceiling (it caps `$levels=max` and
   rejects deeper `$expand`/`$levels` with `400`), so the default is a conservative `3`. Raise it per
@@ -108,6 +147,17 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Server paging now emits a stabilizing `ORDER BY` before `Skip`/`Take` (#241).** On the
+  `GetQueryable` path, server paging previously applied `Take`/`LIMIT` with no `ORDER BY` when the
+  client omitted `$orderby`, raising EF warning 10102 and leaving page order across `@odata.nextLink`
+  formally undefined (rows could repeat or be skipped between pages on providers without a guaranteed
+  scan order). The path now guarantees a deterministic total order before any `Skip`/`Take`: a present
+  `$orderby` gets the entity key appended as a final tiebreaker (stable even when sorting on a non-unique
+  column); an absent `$orderby` over an unordered source orders by the entity key ascending (OData Part 1
+  §11.2.6.2); and a profile that pre-orders its own `IQueryable` is left untouched (its intended order is
+  never silently overridden). The stabilizing order is injected only when a row-limiting operator
+  actually runs. The Priority-1 path (which materializes the profile's own `ApplyTo` result before the
+  framework's cap) is unchanged.
 - **Nested `$top` inside `$expand` no longer returns `400` (#206).** Navigation-target types now
   clear Microsoft's model-bound `MaxTop = 0` default (`SetMaxTop(null)`), which previously rejected
   `$expand=Children($top=N)` with "The limit of '0' for Top query has been exceeded." OhData still
@@ -115,8 +165,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`$select` projection pushdown (#206, phase 1).** On the `GetQueryable` path, an eligible
   `$select` now composes a member-init projection onto the profile's queryable, so LINQ
   providers emit a **column-pruned `SELECT`** instead of reading every column. Wire output is
-  byte-identical with or without pushdown (the existing camelCase JSON pipeline runs
-  unchanged); the projected set is the selected properties plus the entity key and any
+  byte-identical with or without pushdown (the configured naming-policy JSON pipeline — PascalCase by
+  default — runs unchanged); the projected set is the selected properties plus the entity key and any
   `UseETag` properties. On by default (`EntitySetDefaults.SelectPushdownEnabled` /
   per-profile `SelectPushdownEnabled`), with silent Debug-logged fallback to the full fetch
   for ineligible requests (no parameterless constructor, setterless projected member,
@@ -938,7 +988,8 @@ post-release-prep audit fix wave (below) found before the tag was actually cut.
 
 ---
 
-[Unreleased]: https://github.com/en-gen/OhData/compare/v1.4.0...develop
+[Unreleased]: https://github.com/en-gen/OhData/compare/v1.5.0...develop
+[1.5.0]: https://github.com/en-gen/OhData/releases/tag/v1.5.0
 [1.4.0]: https://github.com/en-gen/OhData/releases/tag/v1.4.0
 [1.3.0]: https://github.com/en-gen/OhData/releases/tag/v1.3.0
 [1.2.0]: https://github.com/en-gen/OhData/releases/tag/v1.2.0
