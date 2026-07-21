@@ -2,7 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
-using OhData.Abstractions;
+using OhData;
 
 namespace OhData.Sample.EfCoreSqlite;
 

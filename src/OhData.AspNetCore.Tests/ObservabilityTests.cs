@@ -7,7 +7,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using OhData.Abstractions;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.Tests;

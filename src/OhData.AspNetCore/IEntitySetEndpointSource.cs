@@ -5,7 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.OData.Deltas;
 
-namespace OhData.Abstractions;
+namespace OhData;
 
 /// <summary>
 /// Holds per-profile authorization configuration. Applied by the factory in OhData.AspNetCore.

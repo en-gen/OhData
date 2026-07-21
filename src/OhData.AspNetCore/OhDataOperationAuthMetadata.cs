@@ -1,7 +1,6 @@
 using System.Collections.Generic;
-using OhData.Abstractions;
 
-namespace OhData.AspNetCore;
+namespace OhData;
 
 /// <summary>
 /// Endpoint metadata carrying the resolved per-operation authorization requirements (#199) for a

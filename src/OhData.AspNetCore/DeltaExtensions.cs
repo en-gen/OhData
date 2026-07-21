@@ -3,7 +3,7 @@ using System.Linq;
 using System.Linq.Expressions;
 using Microsoft.AspNetCore.OData.Deltas;
 
-namespace OhData.Abstractions;
+namespace OhData;
 
 /// <summary>
 /// Expression-based, refactor-safe sugar over <c>Delta&lt;T&gt;</c>'s changed-property surface —

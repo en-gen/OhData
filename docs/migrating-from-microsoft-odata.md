@@ -150,7 +150,8 @@ public class ProductsController : ODataController
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
-using OhData.AspNetCore;
+// AddOhData / MapOhData live in Microsoft.Extensions.DependencyInjection /
+// Microsoft.AspNetCore.Builder, so no OhData-specific using is required here.
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -171,7 +172,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
-using OhData.Abstractions;
+using OhData;
 
 namespace MyApi.Profiles;
 

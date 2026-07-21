@@ -1,4 +1,4 @@
-namespace OhData.Abstractions;
+namespace OhData;
 
 /// <summary>
 /// Marker interface for entity set profiles. Constrains <c>OhDataBuilder.AddEntitySetProfile&lt;TProfile&gt;()</c>

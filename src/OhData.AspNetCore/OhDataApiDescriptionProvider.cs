@@ -4,7 +4,7 @@ using System.Linq;
 using Microsoft.AspNetCore.Mvc.ApiExplorer;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
 
-namespace OhData.AspNetCore;
+namespace OhData;
 
 /// <summary>
 /// Plain marker metadata attached to OhData write routes (entity POST/PUT/PATCH, nav-POST,

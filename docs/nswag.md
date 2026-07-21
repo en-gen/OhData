@@ -15,7 +15,7 @@ processor needs the host's `IServiceProvider` to reach the OhData registrations,
 service-provider overload of `AddOpenApiDocument`:
 
 ```csharp
-using OhData.AspNetCore;
+using OhData.AspNetCore.NSwag;
 
 builder.Services.AddOpenApiDocument((s, sp) =>
 {

@@ -8,7 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using OhData.AspNetCore;
+using OhData;
 
 namespace OhData.AspNetCore.Tests;
 

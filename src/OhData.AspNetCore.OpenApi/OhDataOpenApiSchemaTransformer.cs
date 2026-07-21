@@ -9,8 +9,9 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.OpenApi;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.OpenApi;
+using OhData;
 
-namespace OhData.AspNetCore;
+namespace OhData.AspNetCore.OpenApi;
 
 /// <summary>
 /// Microsoft.AspNetCore.OpenApi schema transformer that keeps generated schemas faithful to the

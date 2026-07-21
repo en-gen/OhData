@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
 
-namespace OhData.AspNetCore;
+namespace OhData;
 
 /// <summary>
 /// Documentation-only shape of the OData collection response envelope emitted by collection

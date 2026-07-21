@@ -1,7 +1,8 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Routing;
+using OhData;
 
-namespace OhData.AspNetCore.Versioning;
+namespace Microsoft.AspNetCore.Builder;
 
 /// <summary>
 /// Extension methods on <see cref="IEndpointRouteBuilder"/> for mapping versioned OhData endpoints.

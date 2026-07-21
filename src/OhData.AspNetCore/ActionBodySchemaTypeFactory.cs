@@ -7,7 +7,7 @@ using System.Text;
 using System.Text.Json.Serialization;
 using System.Threading;
 
-namespace OhData.AspNetCore;
+namespace OhData;
 
 /// <summary>
 /// Issue #184: synthesizes a documentation-only POCO type whose public read/write properties mirror

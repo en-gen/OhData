@@ -3,8 +3,9 @@ using System.Linq;
 using Microsoft.AspNetCore.Mvc.ApiExplorer;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using OhData;
 
-namespace OhData.AspNetCore;
+namespace Microsoft.Extensions.DependencyInjection;
 
 /// <summary>
 /// Extension methods on <see cref="Microsoft.Extensions.DependencyInjection.IServiceCollection"/>

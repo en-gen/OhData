@@ -2,7 +2,7 @@ using System;
 using System.Globalization;
 using Microsoft.AspNetCore.Http;
 
-namespace OhData.AspNetCore;
+namespace OhData;
 
 /// <summary>
 /// Validates the <c>OData-MaxVersion</c> request header per OData 4.0 Protocol §8.2.7:

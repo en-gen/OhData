@@ -707,7 +707,7 @@ internal sealed class FilterTranslator : ExpressionVisitor
 
         if (expr is MemberExpression member && TryGetPropertyPath(member.Expression!, out string? parent))
         {
-            string memberName = _namingPolicy?.ConvertName(member.Member.Name) ?? member.Member.Name;
+            string memberName = ODataMemberName.Resolve(member.Member, _namingPolicy);
             path = parent.Length == 0
                 ? memberName
                 : $"{parent}/{memberName}";

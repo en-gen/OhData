@@ -9,7 +9,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using NSwag.Generation.AspNetCore;
-using OhData.AspNetCore;
+using OhData;
 
 namespace OhData.AspNetCore.NSwag.Tests;
 

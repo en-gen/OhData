@@ -1,6 +1,6 @@
 using Microsoft.AspNetCore.OData.Deltas;
 
-namespace OhData.Abstractions;
+namespace OhData;
 
 /// <summary>
 /// A dependency-free, convention-first delta mapper. Injected once (DI singleton) and called for

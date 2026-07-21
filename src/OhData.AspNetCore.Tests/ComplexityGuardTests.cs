@@ -3,8 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
-using OhData.Abstractions;
-using OhData.Abstractions.AspNetCore.OData;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.Tests;

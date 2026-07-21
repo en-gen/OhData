@@ -3,8 +3,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.OpenApi;
 using Microsoft.OpenApi;
+using OhData;
 
-namespace OhData.AspNetCore;
+namespace OhData.AspNetCore.OpenApi;
 
 /// <summary>
 /// Opt-in Microsoft.AspNetCore.OpenApi operation transformer that appends a human-readable

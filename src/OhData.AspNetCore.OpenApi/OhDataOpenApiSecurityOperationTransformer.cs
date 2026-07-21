@@ -6,8 +6,9 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.OpenApi;
 using Microsoft.OpenApi;
+using OhData;
 
-namespace OhData.AspNetCore;
+namespace OhData.AspNetCore.OpenApi;
 
 /// <summary>
 /// Opt-in Microsoft.AspNetCore.OpenApi operation transformer that reflects OhData's per-operation

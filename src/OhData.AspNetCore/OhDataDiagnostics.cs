@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 
-namespace OhData.AspNetCore;
+namespace OhData;
 
 /// <summary>
 /// #200: BCL-only observability primitives. A single <see cref="System.Diagnostics.ActivitySource"/>

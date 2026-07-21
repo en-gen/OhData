@@ -14,8 +14,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.OData;
 using Microsoft.OData.Client;
 using Microsoft.OData.ModelBuilder;
-using OhData.Abstractions;
-using OhData.AspNetCore;
+using OhData;
 
 namespace OhData.Client.Benchmarks;
 

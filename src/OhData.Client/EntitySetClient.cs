@@ -192,12 +192,13 @@ public sealed class EntitySetClient<T> where T : class
     }
 
     // NOTE ON CASING: OrderBy/ThenBy/Expand/Select(params Expression[]) below all derive
-    // property names from CLR reflection (member.Member.Name), same as Filter and the
-    // single-expression Select. All of them run each path segment through
-    // _options.JsonOptions.PropertyNamingPolicy (null => PascalCase/CLR names by default) so every
-    // query option is internally consistent. The default matches the server's PascalCase EDM
-    // one-for-one; the server also matches query-option property names case-insensitively, so a
-    // camelCase opt-in still binds. Only the
+    // property names from CLR reflection, same as Filter and the single-expression Select. Each path
+    // segment goes through ODataMemberName.Resolve: a [System.Text.Json.Serialization.JsonPropertyName]
+    // on the member wins verbatim (#253 — matching the server's EDM name and System.Text.Json),
+    // otherwise the name runs through _options.JsonOptions.PropertyNamingPolicy (null => PascalCase/CLR
+    // names by default) so every query option is internally consistent. The default matches the
+    // server's PascalCase EDM one-for-one; the server also matches query-option property names
+    // case-insensitively, so a camelCase opt-in still binds. Only the
     // raw-string overloads (Select(string[]), Expand(string[]), Filter(string)) are left
     // untouched — the caller supplied those names explicitly and already knows the exact
     // casing the target server expects.
@@ -420,7 +421,7 @@ public sealed class EntitySetClient<T> where T : class
     {
         if (expr is MemberExpression member)
         {
-            string memberName = ApplyNamingPolicy(member.Member.Name);
+            string memberName = ResolveMemberName(member.Member);
 
             if (member.Expression is ParameterExpression p && p == param)
                 return memberName;
@@ -433,7 +434,10 @@ public sealed class EntitySetClient<T> where T : class
             $"Expected a property-access expression (e.g. x => x.Name), got: '{expr}'.");
     }
 
-    private string ApplyNamingPolicy(string name) => _options.JsonOptions.PropertyNamingPolicy?.ConvertName(name) ?? name;
+    // #253: resolve a member's OData name honoring [JsonPropertyName] (verbatim, ahead of the naming
+    // policy — matching the server EDM and System.Text.Json), so query-option names match $metadata.
+    private string ResolveMemberName(System.Reflection.MemberInfo member) =>
+        Internal.ODataMemberName.Resolve(member, _options.JsonOptions.PropertyNamingPolicy);
 
     /// <summary>
     /// Extracts the name of a single direct member of <typeparamref name="T"/> from
@@ -455,7 +459,7 @@ public sealed class EntitySetClient<T> where T : class
             && member.Expression is ParameterExpression p
             && p == expr.Parameters[0])
         {
-            return ApplyNamingPolicy(member.Member.Name);
+            return ResolveMemberName(member.Member);
         }
 
         throw new ArgumentException(errorMessage);
