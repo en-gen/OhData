@@ -164,9 +164,9 @@ categories live in their own table:
 
 ```json
 {"@odata.context":"http://localhost:5220/odata/$metadata#ProductSummaries","value":[
-  {"id":3,"name":"Adjustable Wrench","price":12.25,"categoryName":"Tools"},
-  {"id":2,"name":"Ball-Peen Hammer","price":17.49,"categoryName":"Tools"},
-  {"id":1,"name":"Claw Hammer","price":14.99,"categoryName":"Tools"}]}
+  {"Id":3,"Name":"Adjustable Wrench","Price":12.25,"CategoryName":"Tools"},
+  {"Id":2,"Name":"Ball-Peen Hammer","Price":17.49,"CategoryName":"Tools"},
+  {"Id":1,"Name":"Claw Hammer","Price":14.99,"CategoryName":"Tools"}]}
 ```
 
 Only `GetQueryable` is assigned, so `ProductSummaries` is read-only by construction — no
@@ -191,10 +191,10 @@ The `$expand=Tags` response inlines each product's tags:
 
 ```json
 {"@odata.context":"http://localhost:5220/odata/$metadata#Products","value":[
-  {"id":1,"name":"Claw Hammer","price":14.99,"stock":42,"categoryId":1,
-   "tags":[{"id":1,"label":"bestseller"},{"id":3,"label":"heavy-duty"}]},
-  {"id":2,"name":"Ball-Peen Hammer","price":17.49,"stock":18,"categoryId":1,"tags":[]},
-  {"id":3,"name":"Adjustable Wrench","price":12.25,"stock":31,"categoryId":1,"tags":[]}]}
+  {"Id":1,"Name":"Claw Hammer","Price":14.99,"Stock":42,"CategoryId":1,
+   "Tags":[{"Id":1,"Label":"bestseller"},{"Id":3,"Label":"heavy-duty"}]},
+  {"Id":2,"Name":"Ball-Peen Hammer","Price":17.49,"Stock":18,"CategoryId":1,"Tags":[]},
+  {"Id":3,"Name":"Adjustable Wrench","Price":12.25,"Stock":31,"CategoryId":1,"Tags":[]}]}
 ```
 
 and the console shows the tags for the whole page loaded by **one** query that joins through
