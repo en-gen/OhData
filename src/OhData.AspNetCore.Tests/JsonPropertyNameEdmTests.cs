@@ -277,4 +277,28 @@ public class JsonPropertyNameEdmTests
         Assert.True(first.TryGetProperty("name", out _));           // un-renamed → camelCase
         Assert.True(first.TryGetProperty("emailAddress", out _));   // rename verbatim (not "emailaddress")
     }
+
+    // ── ODataPropertyNaming helper: direct coverage of both resolve branches + miss ──
+
+    [Fact]
+    public void FindClrPropertyByEdmName_RenamedName_ResolvesToClrProperty()
+    {
+        // The [JsonPropertyName] "emailAddress" resolves back to the CLR "Email" property.
+        var clr = ODataPropertyNaming.FindClrPropertyByEdmName(typeof(RenamedStructCustomer), "emailAddress");
+        Assert.Equal("Email", clr?.Name);
+    }
+
+    [Fact]
+    public void FindClrPropertyByEdmName_UnrenamedClrName_ResolvesViaFallback()
+    {
+        // A caller holding a plain CLR name (no rename) still resolves via the fallback pass.
+        var clr = ODataPropertyNaming.FindClrPropertyByEdmName(typeof(RenamedStructCustomer), "Name");
+        Assert.Equal("Name", clr?.Name);
+    }
+
+    [Fact]
+    public void FindClrPropertyByEdmName_UnknownName_ReturnsNull()
+    {
+        Assert.Null(ODataPropertyNaming.FindClrPropertyByEdmName(typeof(RenamedStructCustomer), "NoSuchProperty"));
+    }
 }
