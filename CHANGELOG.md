@@ -87,7 +87,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `OhDataSwaggerSchemaFilter`) previously derived schema casing from the host `HttpJsonOptions`
   (camelCase), so a default app advertised camelCase schema names while emitting PascalCase payloads.
   Schema keys now match the wire exactly (PascalCase by default, camelCase under the opt-in), with
-  `[JsonPropertyName]` renames winning in the schema just as they do on the wire.
+  `[JsonPropertyName]` renames winning in the schema just as they do on the wire. This coverage
+  follows the whole response graph, not only the top-level entity: **nested complex types** (a nested
+  object property, a collection of a complex type, a dictionary value) and **inherited base classes**
+  are renamed too, across all three generators (#260).
 - **`AddProfile<T>()` renamed to `AddEntitySetProfile<T>()` (breaking).** Symmetric with the new
   `AddDeltaProfile<T>()`. No `[Obsolete]` alias — update call sites directly. The assembly scanner
   (`AddProfilesFrom` / `AddProfilesFromAssemblyOf` / `AddProfilesFromAssembly`) is unchanged in
