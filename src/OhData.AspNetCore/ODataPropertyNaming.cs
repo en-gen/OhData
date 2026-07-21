@@ -42,23 +42,14 @@ internal static class ODataPropertyNaming
     /// </summary>
     internal static PropertyInfo? FindClrPropertyByEdmName(Type type, string edmName)
     {
-        PropertyInfo[] props = type.GetProperties(BindingFlags.Public | BindingFlags.Instance);
+        PropertyInfo[] props = type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(p => p.GetIndexParameters().Length == 0)
+            .ToArray();
 
-        // Prefer a property whose resolved EDM name matches (covers [JsonPropertyName] renames).
-        foreach (PropertyInfo p in props.Where(p => p.GetIndexParameters().Length == 0))
-        {
-            if (string.Equals(ResolveEdmName(p), edmName, StringComparison.OrdinalIgnoreCase))
-                return p;
-        }
-
-        // Fallback: a caller that already holds a CLR name (e.g. an un-renamed property).
-        foreach (PropertyInfo p in props.Where(p => p.GetIndexParameters().Length == 0))
-        {
-            if (string.Equals(p.Name, edmName, StringComparison.OrdinalIgnoreCase))
-                return p;
-        }
-
-        return null;
+        // Prefer a property whose resolved EDM name matches (covers [JsonPropertyName] renames);
+        // fall back to a caller that already holds a CLR name (e.g. an un-renamed property).
+        return props.FirstOrDefault(p => string.Equals(ResolveEdmName(p), edmName, StringComparison.OrdinalIgnoreCase))
+            ?? props.FirstOrDefault(p => string.Equals(p.Name, edmName, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
@@ -69,14 +60,8 @@ internal static class ODataPropertyNaming
     /// validate a query option, so a <c>[JsonPropertyName]</c>-renamed property's CLR name is rejected
     /// exactly as the main <c>$select</c>/<c>$orderby</c> parser rejects it.
     /// </summary>
-    internal static bool IsKnownEdmName(Type type, string edmName)
-    {
-        foreach (PropertyInfo p in type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-                     .Where(p => p.GetIndexParameters().Length == 0))
-        {
-            if (string.Equals(ResolveEdmName(p), edmName, StringComparison.OrdinalIgnoreCase))
-                return true;
-        }
-        return false;
-    }
+    internal static bool IsKnownEdmName(Type type, string edmName) =>
+        type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(p => p.GetIndexParameters().Length == 0)
+            .Any(p => string.Equals(ResolveEdmName(p), edmName, StringComparison.OrdinalIgnoreCase));
 }
