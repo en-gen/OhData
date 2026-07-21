@@ -552,12 +552,11 @@ public sealed class OhDataBuilder
         foreach (StructuralTypeConfiguration structuralType in builder.StructuralTypes)
         {
             var seen = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (PropertyConfiguration property in structuralType.Properties)
+            // Navigation properties keep their CLR name as the EDM/$expand identifier (their JSON
+            // key is still renamed by ResolveNavigationJsonKey — see #184 / RenamedNavigationTests).
+            foreach (PropertyConfiguration property in structuralType.Properties
+                         .Where(p => p.Kind != PropertyKind.Navigation))
             {
-                // Navigation properties keep their CLR name as the EDM/$expand identifier (their JSON
-                // key is still renamed by ResolveNavigationJsonKey — see #184 / RenamedNavigationTests).
-                if (property.Kind == PropertyKind.Navigation) continue;
-
                 string edmName = property.PropertyInfo is { } clr
                     ? ODataPropertyNaming.ResolveEdmName(clr)
                     : property.Name;

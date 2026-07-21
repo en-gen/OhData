@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Reflection;
 using System.Text.Json.Serialization;
 
@@ -44,17 +45,15 @@ internal static class ODataPropertyNaming
         PropertyInfo[] props = type.GetProperties(BindingFlags.Public | BindingFlags.Instance);
 
         // Prefer a property whose resolved EDM name matches (covers [JsonPropertyName] renames).
-        foreach (PropertyInfo p in props)
+        foreach (PropertyInfo p in props.Where(p => p.GetIndexParameters().Length == 0))
         {
-            if (p.GetIndexParameters().Length != 0) continue;
             if (string.Equals(ResolveEdmName(p), edmName, StringComparison.OrdinalIgnoreCase))
                 return p;
         }
 
         // Fallback: a caller that already holds a CLR name (e.g. an un-renamed property).
-        foreach (PropertyInfo p in props)
+        foreach (PropertyInfo p in props.Where(p => p.GetIndexParameters().Length == 0))
         {
-            if (p.GetIndexParameters().Length != 0) continue;
             if (string.Equals(p.Name, edmName, StringComparison.OrdinalIgnoreCase))
                 return p;
         }
@@ -72,9 +71,9 @@ internal static class ODataPropertyNaming
     /// </summary>
     internal static bool IsKnownEdmName(Type type, string edmName)
     {
-        foreach (PropertyInfo p in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+        foreach (PropertyInfo p in type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                     .Where(p => p.GetIndexParameters().Length == 0))
         {
-            if (p.GetIndexParameters().Length != 0) continue;
             if (string.Equals(ResolveEdmName(p), edmName, StringComparison.OrdinalIgnoreCase))
                 return true;
         }

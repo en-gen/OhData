@@ -193,7 +193,7 @@ public class JsonPropertyNameEdmTests
     public async Task Patch_RenamedName_BindsAndPersists()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<RenamedStructCustomerProfile>());
-        var patch = new HttpRequestMessage(new HttpMethod("PATCH"), "/odata/RenamedStructCustomers(2)")
+        using var patch = new HttpRequestMessage(new HttpMethod("PATCH"), "/odata/RenamedStructCustomers(2)")
         {
             Content = JsonContent.Create(new System.Collections.Generic.Dictionary<string, object?>
             {
