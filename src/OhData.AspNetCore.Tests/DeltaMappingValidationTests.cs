@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.OData.Deltas;
@@ -60,6 +61,73 @@ public sealed class DmDuplicateTargetProfile : DeltaProfile
         For<DmDupTargetDto, DmDupTargetEntity>()
             .Rename(d => d.A, e => e.Name)
             .Rename(d => d.B, e => e.Name);
+}
+
+// ── BUG1: navigation/collection auto-map must fail fast (scalars/structural only) ─
+public class DmNavChild { public int Id { get; set; } }
+public class DmNavModel
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public List<DmNavChild> Children { get; set; } = new();   // SAME-typed collection on both sides
+}
+public class DmNavEntity
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public List<DmNavChild> Children { get; set; } = new();
+}
+// Children is a navigation-collection with an identical entity counterpart: without the invariant it
+// would auto-map (identity-compatible) and silently write the collection onto Delta<TEntity>.
+public sealed class DmNavCollectionProfile : DeltaProfile
+{
+    public DmNavCollectionProfile() => For<DmNavModel, DmNavEntity>();
+}
+// Ignore()ing the collection resolves it — the mapping compiles clean.
+public sealed class DmNavCollectionIgnoredProfile : DeltaProfile
+{
+    public DmNavCollectionIgnoredProfile() => For<DmNavModel, DmNavEntity>().Ignore(d => d.Children);
+}
+
+// Collection-shaped scalars and value types must stay mappable, not be misclassified as navigations.
+public class DmScalarModel
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";                    // IEnumerable<char> but a scalar
+    public byte[] Blob { get; set; } = Array.Empty<byte>();    // Edm.Binary scalar (an array)
+    public DmStatus Status { get; set; }                       // enum
+    public Guid Ref { get; set; }
+    public DateTime When { get; set; }
+    public DateTimeOffset WhenOffset { get; set; }
+    public decimal Amount { get; set; }
+    public int? Maybe { get; set; }                            // nullable value type
+}
+public class DmScalarEntity
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public byte[] Blob { get; set; } = Array.Empty<byte>();
+    public DmStatus Status { get; set; }
+    public Guid Ref { get; set; }
+    public DateTime When { get; set; }
+    public DateTimeOffset WhenOffset { get; set; }
+    public decimal Amount { get; set; }
+    public int? Maybe { get; set; }
+}
+public sealed class DmScalarsProfile : DeltaProfile
+{
+    public DmScalarsProfile() => For<DmScalarModel, DmScalarEntity>();   // all pure convention
+}
+
+// ── BUG2: a property in both Rename() and Ignore() must fail fast ─────────────────
+public class DmRiDto { public int Id { get; set; } public string Name { get; set; } = ""; }
+public class DmRiEntity { public int Id { get; set; } public string Label { get; set; } = ""; }
+public sealed class DmRenameIgnoreConflictProfile : DeltaProfile
+{
+    public DmRenameIgnoreConflictProfile() =>
+        For<DmRiDto, DmRiEntity>()
+            .Rename(d => d.Name, e => e.Label)
+            .Ignore(d => d.Name);
 }
 
 public class DeltaMappingValidationTests
@@ -167,5 +235,78 @@ public class DeltaMappingValidationTests
     {
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             TestHostBuilder.BuildAsync(o => o.AddDeltaProfile<DmUnmappedProfile>()));
+    }
+
+    // ── BUG1: navigation/collection auto-map is rejected at startup ───────────────
+    [Fact]
+    public void NavigationCollection_AutoMap_FailsFastAtStartup()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() => BuildFactory(typeof(DmNavCollectionProfile)));
+        Assert.Contains("Children", ex.Message);
+        Assert.Contains("navigation/collection", ex.Message);
+        Assert.Contains("Ignore() it or map it explicitly with Convert()", ex.Message);
+    }
+
+    // ── BUG1: the same navigation/collection fails fast at MapOhData() too ────────
+    [Fact]
+    public async Task NavigationCollection_AutoMap_FailsFastAtMapOhData()
+    {
+        InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            TestHostBuilder.BuildAsync(o => o.AddDeltaProfile<DmNavCollectionProfile>()));
+        Assert.Contains("navigation/collection", ex.Message);
+    }
+
+    // ── BUG1: Ignore()ing the navigation/collection compiles clean ───────────────
+    [Fact]
+    public void NavigationCollection_Ignored_CompilesClean()
+    {
+        IDeltaFactory factory = BuildFactory(typeof(DmNavCollectionIgnoredProfile));
+        var delta = new Delta<DmNavModel>();
+        delta.TrySetPropertyValue(nameof(DmNavModel.Name), "ok");
+
+        Delta<DmNavEntity> entityDelta = factory.Create<DmNavModel, DmNavEntity>(delta);
+
+        // Name still maps; the ignored collection is absent from the updatable allowlist.
+        Assert.Equal(new[] { "Name" }, entityDelta.GetChangedPropertyNames());
+        Assert.False(entityDelta.TrySetPropertyValue("Children", new List<DmNavChild>()));
+    }
+
+    // ── BUG1: collection-shaped scalars / value types still auto-map ─────────────
+    [Fact]
+    public void CollectionShapedScalars_StillAutoMap()
+    {
+        IDeltaFactory factory = BuildFactory(typeof(DmScalarsProfile));   // compiles clean = no false positive
+        var model = new DmScalarModel
+        {
+            Id = 1,
+            Name = "n",
+            Blob = new byte[] { 1, 2, 3 },
+            Status = DmStatus.Archived,
+            Ref = Guid.NewGuid(),
+            When = new DateTime(2026, 7, 21, 0, 0, 0, DateTimeKind.Utc),
+            WhenOffset = new DateTimeOffset(2026, 7, 21, 0, 0, 0, TimeSpan.Zero),
+            Amount = 9.5m,
+            Maybe = 4,
+        };
+
+        var entity = new DmScalarEntity();
+        factory.Create<DmScalarModel, DmScalarEntity>(model).Patch(entity);
+
+        Assert.Equal("n", entity.Name);
+        Assert.Equal(new byte[] { 1, 2, 3 }, entity.Blob);   // byte[] mapped, not rejected as a collection
+        Assert.Equal(DmStatus.Archived, entity.Status);
+        Assert.Equal(model.Ref, entity.Ref);
+        Assert.Equal(model.When, entity.When);
+        Assert.Equal(model.WhenOffset, entity.WhenOffset);
+        Assert.Equal(9.5m, entity.Amount);
+        Assert.Equal(4, entity.Maybe);
+    }
+
+    // ── BUG2: a property in both Rename() and Ignore() fails fast ────────────────
+    [Fact]
+    public void RenameAndIgnoreSameProperty_FailsFast()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() => BuildFactory(typeof(DmRenameIgnoreConflictProfile)));
+        Assert.Contains("both Ignore() and Rename()", ex.Message);
     }
 }
