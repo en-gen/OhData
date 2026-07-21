@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
+using System.Reflection;
+using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.OpenApi;
 using Swashbuckle.AspNetCore.SwaggerGen;
@@ -8,14 +9,15 @@ using Swashbuckle.AspNetCore.SwaggerGen;
 namespace OhData.AspNetCore;
 
 /// <summary>
-/// Swashbuckle schema filter that omits properties excluded via
-/// <c>EntitySetProfile.Ignore(...)</c> (#226) from generated schemas, so documents match the real
-/// wire shape (#228) — an ignored property never appears in a response and is never bound from a
-/// request body.
+/// Swashbuckle schema filter that keeps generated schemas faithful to the real wire shape: it omits
+/// properties excluded via <c>EntitySetProfile.Ignore(...)</c> (#226, #228), and renames the
+/// remaining property keys to the casing OhData's response serializer emits (#258) — PascalCase by
+/// default, or whatever <see cref="OhDataBuilder.WithJsonPropertyNamingPolicy"/> selected — instead
+/// of the host <c>HttpJsonOptions</c> casing the generator would otherwise use (camelCase by
+/// ASP.NET Core default).
 /// </summary>
 /// <remarks>
-/// Suppression is keyed by CLR model type (all profiles sharing a model type declare identical
-/// ignore sets — validated at startup). Register alongside
+/// Both behaviors are keyed by CLR model type. Register alongside
 /// <see cref="OhDataSwaggerOperationFilter"/>:
 /// <code>
 /// builder.Services.AddSwaggerGen(c =&gt;
@@ -32,8 +34,9 @@ public sealed class OhDataSwaggerSchemaFilter : ISchemaFilter
 
     // Built once per filter instance on first use. Cheap (one pass over the registered
     // profiles), and by the time any document request is served every mapped registration has
-    // been resolved (app.MapOhData() forces that at startup), so the map cannot be stale.
+    // been resolved (app.MapOhData() forces that at startup), so the maps cannot be stale.
     private IReadOnlyDictionary<Type, IReadOnlySet<string>>? _ignoredByType;
+    private IReadOnlyDictionary<Type, JsonNamingPolicy?>? _casingByType;
 
     /// <summary>
     /// Creates the filter. Both parameters are DI-injected when the filter is registered via
@@ -53,30 +56,56 @@ public sealed class OhDataSwaggerSchemaFilter : ISchemaFilter
     /// <inheritdoc/>
     public void Apply(IOpenApiSchema schema, SchemaFilterContext context)
     {
-        IReadOnlyDictionary<Type, IReadOnlySet<string>> map = _ignoredByType ??=
-            IgnoredPropertyDocsMap.Build(_services.GetService<OhDataRegistrationCollection>());
+        OhDataRegistrationCollection? registrations = _services.GetService<OhDataRegistrationCollection>();
+        IReadOnlyDictionary<Type, IReadOnlySet<string>> ignoredMap = _ignoredByType ??=
+            IgnoredPropertyDocsMap.Build(registrations);
+        IReadOnlyDictionary<Type, JsonNamingPolicy?> casingMap = _casingByType ??=
+            SchemaPropertyCasing.Build(registrations);
 
         // Only the concrete schema type is mutable; references ($ref placeholders) resolve to a
         // concrete schema that gets its own Apply call.
         if (schema is not OpenApiSchema concreteSchema) return;
 
-        if (map.Count == 0 || !map.TryGetValue(context.Type, out IReadOnlySet<string>? ignored))
+        ignoredMap.TryGetValue(context.Type, out IReadOnlySet<string>? ignored);
+        bool isOhDataType = casingMap.TryGetValue(context.Type, out JsonNamingPolicy? policy);
+        if (ignored is null && !isOhDataType)
         {
             return;
         }
 
-        // The ignored names are CLR property names ("CostBasis") while the schema keys follow the
-        // serializer's naming policy ("costBasis"). Swashbuckle's data contract carries both sides
-        // of that mapping (DataProperty.MemberInfo → DataProperty.Name), so matching here is
-        // immune to the configured naming policy.
+        // Swashbuckle's data contract carries both sides of the CLR↔JSON mapping
+        // (DataProperty.MemberInfo → DataProperty.Name), so ignored properties are matched immune
+        // to the host naming policy and the surviving keys are renamed from the host casing to
+        // OhData's response casing.
         DataContract contract = _dataContractResolver.GetDataContractForType(context.Type);
         if (contract.ObjectProperties is null) return;
 
-        foreach (DataProperty property in contract.ObjectProperties
-            .Where(p => p.MemberInfo is not null && ignored.Contains(p.MemberInfo.Name)))
+        foreach (DataProperty property in contract.ObjectProperties)
         {
-            concreteSchema.Properties?.Remove(property.Name);
-            concreteSchema.Required?.Remove(property.Name);
+            if (property.MemberInfo is null) continue;
+
+            if (ignored is not null && ignored.Contains(property.MemberInfo.Name))
+            {
+                concreteSchema.Properties?.Remove(property.Name);
+                concreteSchema.Required?.Remove(property.Name);
+                continue;
+            }
+
+            if (!isOhDataType || property.MemberInfo is not PropertyInfo clrProperty) continue;
+
+            string responseName = SchemaPropertyCasing.ResolveResponseName(clrProperty, policy);
+            if (responseName == property.Name) continue;
+
+            if (concreteSchema.Properties is { } properties &&
+                properties.TryGetValue(property.Name, out IOpenApiSchema? value))
+            {
+                properties.Remove(property.Name);
+                properties[responseName] = value;
+            }
+            if (concreteSchema.Required is { } required && required.Remove(property.Name))
+            {
+                required.Add(responseName);
+            }
         }
     }
 }

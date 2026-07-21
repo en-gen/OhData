@@ -394,19 +394,33 @@ internal static class OhDataEndpointFactory
     {
         string prefix = registration.Prefix;
         var group = routes.MapGroup(prefix);
-        // Resolve JsonOptions once at startup so handlers don't pay DI lookup per request.
-        var startupJsonOptions = routes.ServiceProvider
+        // Resolve the host's JsonOptions once at startup so handlers don't pay a DI lookup per
+        // request. Any custom converters/encoder the host registered are honoured; only the
+        // property-naming policy is OhData-owned (see below).
+        var hostJsonOptions = routes.ServiceProvider
             .GetService<IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions>>()
             ?.Value?.SerializerOptions;
+
+        // #252: OhData owns its response casing. Derive a registration-scoped options instance from
+        // the host's (preserving its converters/encoder) but force PropertyNamingPolicy to OhData's
+        // own setting — null (PascalCase) by default so payloads match $metadata (OData §4.4),
+        // JsonNamingPolicy.CamelCase when the profile opts in via WithJsonPropertyNamingPolicy.
+        // The host's camelCase HttpJsonOptions default is deliberately NOT inherited: since
+        // camelCase is ASP.NET Core's own default it cannot be distinguished from an explicit
+        // choice, so OhData's setting is the single source of truth.
+        var startupJsonOptions = new JsonSerializerOptions(hostJsonOptions ?? _pascalCaseSerializerOptions)
+        {
+            PropertyNamingPolicy = registration.JsonPropertyNamingPolicy,
+        };
 
         // #226: registration-wide ignored-property suppression. Validates same-model-type
         // conflicts, then — only when at least one profile declares ignores — derives a single
         // options instance whose resolver modifier removes the ignored members. When no profile
-        // ignores anything the original options are threaded through unchanged (zero delta).
+        // ignores anything the owned options are threaded through unchanged.
         var ignoredByType = IgnoredPropertyJsonOptions.BuildIgnoredPropertyMap(registration.Profiles);
-        JsonSerializerOptions? effectiveJsonOptions = ignoredByType.Count == 0
+        JsonSerializerOptions effectiveJsonOptions = ignoredByType.Count == 0
             ? startupJsonOptions
-            : IgnoredPropertyJsonOptions.Build(startupJsonOptions ?? _camelCaseSerializerOptions, ignoredByType);
+            : IgnoredPropertyJsonOptions.Build(startupJsonOptions, ignoredByType);
 
         // Resolved once here (rather than down at the per-profile loop) so the group-level
         // exception filter below can log through the same "OhData" category every other
@@ -788,7 +802,7 @@ internal static class OhDataEndpointFactory
                         }
                     }
                     object? result = await opCapture.Invoke(args, ct);
-                    return result is not null ? Results.Ok(result) : Results.NoContent();
+                    return result is not null ? Results.Json(result, jsonOptions ?? _pascalCaseSerializerOptions) : Results.NoContent();
                 }).Produces(400);
                 AddUnboundOperationProduces(rb, opCapture);
                 // Issue #181: document the function's query-string parameters.
@@ -846,7 +860,7 @@ internal static class OhDataEndpointFactory
                         }
                     }
                     object? result = await opCapture.Invoke(args, ct);
-                    return result is not null ? Results.Ok(result) : Results.NoContent();
+                    return result is not null ? Results.Json(result, jsonOptions ?? _pascalCaseSerializerOptions) : Results.NoContent();
                 }).Produces(400).Produces(415);
                 AddUnboundOperationProduces(rb, opCapture);
                 // Leg 2: an action's parameters are deserialized by name out of a JSON body object
@@ -1144,18 +1158,19 @@ internal static class OhDataEndpointFactory
 
     // -- JsonNode $select post-processing helpers ---------------------------------
 
-    // Fallback serializer used when no JsonOptions are configured: camelCase to match
-    // ASP.NET Core's default HttpJsonOptions (PropertyNamingPolicy = CamelCase).
-    // JsonArray nodes pre-serialised here are written as-is by Results.Ok, bypassing
-    // the ASP.NET Core pipeline, so casing must be baked in at this stage.
-    private static readonly JsonSerializerOptions _camelCaseSerializerOptions = new()
+    // #252: fallback serializer used only if a code path is somehow reached without the owned
+    // options (they are threaded through every handler, so this is defensive). PascalCase
+    // (PropertyNamingPolicy = null) — OhData's default — so it can never silently reintroduce
+    // camelCase. JsonArray/JsonObject nodes pre-serialised here are written as-is by Results.Ok,
+    // bypassing the ASP.NET Core pipeline, so casing must be baked in at this stage.
+    private static readonly JsonSerializerOptions _pascalCaseSerializerOptions = new()
     {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        PropertyNamingPolicy = null,
     };
 
     // Unified collection pipeline: Serialize → ETag → Expand → Select.
-    // Serialises exactly once using the configured jsonOptions (falls back to camelCase
-    // when jsonOptions is null, matching ASP.NET Core's default naming policy).
+    // Serialises exactly once using the owned jsonOptions (defensively falls back to the
+    // PascalCase _pascalCaseSerializerOptions if ever null — in practice it is always supplied).
     private static async Task<(JsonArray Items, List<string>? SelectedProps)> ApplyCollectionPipelineAsync(
         object[] originalItems,
         ODataQueryOptions options,
@@ -1169,7 +1184,7 @@ internal static class OhDataEndpointFactory
         HashSet<string>? pushedLevelsNavNames = null)
     {
         // Stage 1: Serialize once using the configured naming policy.
-        var serializerOptions = jsonOptions ?? _camelCaseSerializerOptions;
+        var serializerOptions = jsonOptions ?? _pascalCaseSerializerOptions;
         JsonArray json = JsonSerializer.SerializeToNode(originalItems, serializerOptions)!.AsArray();
 
         // Stage 2: Inject @odata.etag using the original (pre-expand) items for ETag computation.
@@ -1846,7 +1861,8 @@ internal static class OhDataEndpointFactory
     // $expand'd, resolved for pushdown. Carries the startup binding plus the request's parsed nested
     // clauses. Filter/OrderBy/Skip/Top are pushed to SQL via BuildShapedNavAccess; Count and
     // NestedSelect are applied afterward on the serialized JSON (ShapePushedExpandsInJson) so the
-    // wire stays camelCase plain-POCO — no SelectExpandWrapper ever reaches the serializer. When
+    // wire stays a plain POCO in the configured naming policy (PascalCase by default) — no
+    // SelectExpandWrapper ever reaches the serializer. When
     // Count is requested, Skip/Top are DEFERRED to the JSON pass instead of SQL so the emitted
     // Nav@odata.count reflects the full filtered collection (OData §11.2.4.2), not the page.
     // <para>#206 (recursion): <c>Children</c> holds each pushed nested $expand one level deeper —
@@ -2221,7 +2237,8 @@ internal static class OhDataEndpointFactory
     }
 
     // #206 phase 2 (optioned + multi-level expand): apply the JSON-side portion of a pushed expand's
-    // nested options to the already-serialized (camelCase) parent objects — $count (emit
+    // nested options to the already-serialized parent objects (in the configured naming policy —
+    // PascalCase by default) — $count (emit
     // Nav@odata.count), the count-deferred $skip/$top paging, nested $select projection, and
     // (recursively) the same shaping for each deeper pushed level. Filter/OrderBy (and paging when
     // $count is absent) were already applied in SQL by BuildShapedNavAccess, so this touches only the
@@ -2425,7 +2442,8 @@ internal static class OhDataEndpointFactory
     // $top/$skip are already applied on this path (property-name based, not pushed down to the
     // handler or to SQL). Supports multiple sort keys ("Prop1 asc,Prop2 desc") and is
     // case-insensitive on the property name so it works the same whether the client sends the
-    // CLR (PascalCase) name or the camelCase name the response serializer emits. An unknown
+    // CLR (PascalCase) name or the name the response serializer emits under the configured
+    // naming policy. An unknown
     // property name returns (null, 400 InvalidQueryOption), mirroring the $select validation below.
     private static (IEnumerable<object>? Items, IResult? Error) ApplyNavOrderBy(
         IEnumerable<object> items, Type? navItemType, string orderByParam)
@@ -2463,7 +2481,7 @@ internal static class OhDataEndpointFactory
         long? navCount, object[] itemArray, HttpContext ctx, Type? navItemType,
         JsonSerializerOptions? jsonOptions, IEdmEntityType? navElementEdmType)
     {
-        var navSerializerOptions = jsonOptions ?? _camelCaseSerializerOptions;
+        var navSerializerOptions = jsonOptions ?? _pascalCaseSerializerOptions;
 
         // #179: serialize the items up front (previously the no-$select path returned the raw CLR
         // objects) so un-expanded navigations on the nav element type can be stripped. Nav-collection
@@ -3358,7 +3376,7 @@ internal static class OhDataEndpointFactory
                     // null, so a request that abandoned pushdown does no shaping here.
                     if (engagedExpandNavs is { Count: > 0 })
                     {
-                        ShapePushedExpandsInJson(finalItems, engagedExpandNavs, jsonOptions ?? _camelCaseSerializerOptions);
+                        ShapePushedExpandsInJson(finalItems, engagedExpandNavs, jsonOptions ?? _pascalCaseSerializerOptions);
                     }
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
@@ -4693,7 +4711,12 @@ internal static class OhDataEndpointFactory
                                 ["@odata.context"] = $"{baseUrl}/$metadata#{name}({key})/{propCapture.Name}",
                                 ["value"] = value,
                             };
-                            return Results.Ok(envelope);
+                            // #252: serialize through the owned options so a complex-typed property's
+                            // nested member names follow OhData's casing (PascalCase by default) instead
+                            // of leaking the host's HttpJsonOptions policy via the Results.Ok pipeline.
+                            // (Envelope keys are Dictionary keys — unaffected by PropertyNamingPolicy —
+                            // and primitive values have no member names, so both are unchanged.)
+                            return Results.Json(envelope, jsonOptions ?? _pascalCaseSerializerOptions);
                         }
                         catch (FormatException ex)
                         {
@@ -5268,7 +5291,7 @@ internal static class OhDataEndpointFactory
             // entity set's own type but takes no $expand, so every declared navigation is omitted
             // (§4.5.1 / §11.2.4.2) and @odata.etag is injected per item when UseETag is set —
             // previously the raw CLR graph was handed to Results.Ok, leaking navs and dropping ETags.
-            var serializerOptions = jsonOptions ?? _camelCaseSerializerOptions;
+            var serializerOptions = jsonOptions ?? _pascalCaseSerializerOptions;
             var json = JsonSerializer.SerializeToNode(coll, serializerOptions)!.AsArray();
             if (source.HasETag)
             {
@@ -5309,8 +5332,10 @@ internal static class OhDataEndpointFactory
             });
         }
 
-        // Primitive/other — no context wrapping
-        return Results.Ok(result);
+        // Primitive/other (e.g. a non-TModel DTO) — no context wrapping. Serialize through the
+        // owned options so its property names follow OhData's casing (#252) rather than leaking the
+        // host's HttpJsonOptions naming policy via the ASP.NET Core Results.Ok serialization path.
+        return Results.Json(result, jsonOptions ?? _pascalCaseSerializerOptions);
     }
 
     // m5: CLR type -> Edm primitive type name, used to build the individual-value response

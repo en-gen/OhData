@@ -348,9 +348,9 @@ public sealed class OptionedExpandPushdownSqliteTests : IAsyncLifetime
         Assert.Equal(System.Net.HttpStatusCode.OK, resp.StatusCode);
 
         string body = await resp.Content.ReadAsStringAsync();
-        // camelCase nav key → children@odata.count. P1 has 4 children, P2 has 1.
-        Assert.Contains("\"children@odata.count\":4", body);
-        Assert.Contains("\"children@odata.count\":1", body);
+        // PascalCase nav key → Children@odata.count. P1 has 4 children, P2 has 1.
+        Assert.Contains("\"Children@odata.count\":4", body);
+        Assert.Contains("\"Children@odata.count\":1", body);
     }
 
     [Fact]
@@ -361,7 +361,7 @@ public sealed class OptionedExpandPushdownSqliteTests : IAsyncLifetime
 
         string body = await resp.Content.ReadAsStringAsync();
         // P1 count is the full filtered set (4), not the page.
-        Assert.Contains("\"children@odata.count\":4", body);
+        Assert.Contains("\"Children@odata.count\":4", body);
         // Only P1's first 2 by name asc: Alpha, Bravo.
         Assert.Contains("\"Alpha\"", body);
         Assert.Contains("\"Bravo\"", body);
@@ -385,7 +385,7 @@ public sealed class OptionedExpandPushdownSqliteTests : IAsyncLifetime
 
         string body = await resp.Content.ReadAsStringAsync();
         // Full filtered count is reported; the page is P1's first two children by key (Id 10, 11).
-        Assert.Contains("\"children@odata.count\":4", body);
+        Assert.Contains("\"Children@odata.count\":4", body);
         Assert.Contains("\"Alpha\"", body);  // Id 10
         Assert.Contains("\"Bravo\"", body);  // Id 11
         Assert.DoesNotContain("\"Charlie\"", body); // Id 12 — paged out deterministically
@@ -393,19 +393,19 @@ public sealed class OptionedExpandPushdownSqliteTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task NestedSelect_ProjectsExpandedElements_CamelCase()
+    public async Task NestedSelect_ProjectsExpandedElements_PascalCase()
     {
         _sink.Clear();
         var resp = await _fx.Client.GetAsync("/odata/OeParents?$orderby=id&$expand=Children($select=name)");
         Assert.Equal(System.Net.HttpStatusCode.OK, resp.StatusCode);
 
         string body = await resp.Content.ReadAsStringAsync();
-        // camelCase nav element property preserved; non-selected structural props pruned.
-        Assert.Contains("\"children\":", body);
-        Assert.Contains("\"name\":\"Alpha\"", body);
-        Assert.DoesNotContain("\"Name\":", body);  // no PascalCase leak from a SelectExpandWrapper
-        Assert.DoesNotContain("\"active\":", body); // pruned by nested $select
-        Assert.DoesNotContain("\"rank\":", body);   // pruned by nested $select
+        // PascalCase nav element property preserved; non-selected structural props pruned.
+        Assert.Contains("\"Children\":", body);
+        Assert.Contains("\"Name\":\"Alpha\"", body);
+        Assert.DoesNotContain("\"name\":", body);  // no camelCase leak from a SelectExpandWrapper
+        Assert.DoesNotContain("\"Active\":", body); // pruned by nested $select
+        Assert.DoesNotContain("\"Rank\":", body);   // pruned by nested $select
     }
 
     [Fact]
@@ -423,15 +423,15 @@ public sealed class OptionedExpandPushdownSqliteTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task SingleValuedNestedSelect_ProjectsReference_CamelCase()
+    public async Task SingleValuedNestedSelect_ProjectsReference_PascalCase()
     {
         var resp = await _fx.Client.GetAsync("/odata/OeRefHolders?$orderby=id&$expand=Target($select=name)");
         Assert.Equal(System.Net.HttpStatusCode.OK, resp.StatusCode);
 
         string body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("\"name\":\"T500\"", body); // selected, camelCase
+        Assert.Contains("\"Name\":\"T500\"", body); // selected, PascalCase
         Assert.DoesNotContain("\"XYZ\"", body);     // Code pruned by nested $select
-        Assert.Contains("\"target\":null", body);   // H2 has no target → null parity preserved
+        Assert.Contains("\"Target\":null", body);   // H2 has no target → null parity preserved
     }
 }
 
@@ -473,7 +473,7 @@ public sealed class OptionedExpandSafetyTests : IAsyncLifetime
         Assert.True(_counter.DelegatedCalls > 0, "a delegate-backed nav must expand through its delegate");
 
         string body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("\"name\":\"Del-A\"", body);
+        Assert.Contains("\"Name\":\"Del-A\"", body);
     }
 
     [Fact]

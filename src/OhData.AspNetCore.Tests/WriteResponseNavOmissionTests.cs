@@ -88,9 +88,9 @@ public class WriteResponseNavOmissionTests
 
     private static void AssertNavsOmittedButScalarsPresent(JsonElement body, string expectedTitle)
     {
-        Assert.False(body.TryGetProperty("studio", out _), "write response must omit un-expanded single nav 'studio'");
-        Assert.False(body.TryGetProperty("cast", out _), "write response must omit un-expanded collection nav 'cast'");
-        Assert.Equal(expectedTitle, body.GetProperty("title").GetString()); // scalars still present (no over-strip)
+        Assert.False(body.TryGetProperty("Studio", out _), "write response must omit un-expanded single nav 'studio'");
+        Assert.False(body.TryGetProperty("Cast", out _), "write response must omit un-expanded collection nav 'cast'");
+        Assert.Equal(expectedTitle, body.GetProperty("Title").GetString()); // scalars still present (no over-strip)
     }
 
     [Fact]
@@ -155,7 +155,7 @@ public class WriteResponseNavOmissionTests
         using var getDoc = JsonDocument.Parse(await (await fx.Client.GetAsync(
             "/odata/WriteNavMovies(1)")).Content.ReadAsStringAsync());
 
-        foreach (string nav in new[] { "studio", "cast" })
+        foreach (string nav in new[] { "Studio", "Cast" })
         {
             Assert.False(postDoc.RootElement.TryGetProperty(nav, out _), $"POST echo must omit '{nav}'");
             Assert.False(getDoc.RootElement.TryGetProperty(nav, out _), $"GET must omit '{nav}'");

@@ -90,7 +90,7 @@ file static class PagingTestData
             Assert.Equal(System.Net.HttpStatusCode.OK, resp.StatusCode);
             using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
             foreach (var el in doc.RootElement.GetProperty("value").EnumerateArray())
-                ids.Add(el.GetProperty("id").GetInt32());
+                ids.Add(el.GetProperty("Id").GetInt32());
             path = doc.RootElement.TryGetProperty("@odata.nextLink", out var nl)
                 ? new Uri(nl.GetString()!).PathAndQuery
                 : null;
@@ -221,7 +221,7 @@ public class PagingPreOrderedSourceSqliteTests : IAsyncLifetime
 
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
         int[] firstPage = doc.RootElement.GetProperty("value")
-            .EnumerateArray().Select(e => e.GetProperty("id").GetInt32()).ToArray();
+            .EnumerateArray().Select(e => e.GetProperty("Id").GetInt32()).ToArray();
 
         // The profile ordered by Id DESC; the first page must be [5, 4], not the ascending [1, 2].
         Assert.Equal(new[] { 5, 4 }, firstPage);

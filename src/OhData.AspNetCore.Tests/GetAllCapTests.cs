@@ -48,7 +48,7 @@ public class GetAllCapTests
         {
             var json = await GetJsonAsync(fx, relative);
             foreach (var el in json.GetProperty("value").EnumerateArray())
-                seen.Add(el.GetProperty("id").GetInt32());
+                seen.Add(el.GetProperty("Id").GetInt32());
             relative = json.TryGetProperty("@odata.nextLink", out var nl)
                 ? new Uri(nl.GetString()!).PathAndQuery
                 : null;

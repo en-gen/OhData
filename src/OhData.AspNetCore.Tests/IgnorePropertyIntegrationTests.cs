@@ -176,26 +176,26 @@ public class IgnorePropertyIntegrationTests : IAsyncLifetime
     public async Task CollectionGet_OmitsIgnoredMembers()
     {
         string json = await _fx.Client.GetStringAsync("/odata/IgnProducts");
-        Assert.Contains("\"name\"", json);
-        Assert.DoesNotContain("costBasis", json, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("audit", json, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\"Name\"", json);
+        Assert.DoesNotContain("CostBasis", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Audit", json, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
     public async Task SingleGet_OmitsIgnoredMembers()
     {
         string json = await _fx.Client.GetStringAsync("/odata/IgnProducts(1)");
-        Assert.Contains("\"name\"", json);
-        Assert.DoesNotContain("costBasis", json, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("audit", json, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\"Name\"", json);
+        Assert.DoesNotContain("CostBasis", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Audit", json, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
     public async Task ExpandedChild_HidesItsOwnIgnoredMembers()
     {
         string json = await _fx.Client.GetStringAsync("/odata/IgnProducts?$expand=Tags");
-        Assert.Contains("\"label\"", json);
-        Assert.DoesNotContain("internalCode", json, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\"Label\"", json);
+        Assert.DoesNotContain("InternalCode", json, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("SECRET-", json);
     }
 
@@ -203,15 +203,15 @@ public class IgnorePropertyIntegrationTests : IAsyncLifetime
     public async Task NavigationGet_HidesChildIgnoredMembers()
     {
         string json = await _fx.Client.GetStringAsync("/odata/IgnProducts(1)/Tags");
-        Assert.Contains("\"label\"", json);
-        Assert.DoesNotContain("internalCode", json, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\"Label\"", json);
+        Assert.DoesNotContain("InternalCode", json, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
     public async Task ControlEntity_SameNamedProperty_NotSuppressed()
     {
         string json = await _fx.Client.GetStringAsync("/odata/IgnControls(1)");
-        Assert.Contains("costBasis", json); // per-type suppression only
+        Assert.Contains("CostBasis", json); // per-type suppression only
     }
 
     // ---- query options ----

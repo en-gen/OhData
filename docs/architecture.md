@@ -141,7 +141,7 @@ When `$select` is active, the framework:
 2. Serializes to `JsonNode`
 3. Removes non-selected property nodes from each item
 
-This is done instead of using `ISelectExpandWrapper.ToDictionary()` because OData's wrapper produces PascalCase keys while normal serialization produces camelCase - the `JsonNode` approach preserves the existing naming policy.
+This is done instead of using `ISelectExpandWrapper.ToDictionary()` because OData's wrapper always produces PascalCase keys regardless of the configured naming policy - the `JsonNode` approach preserves whatever policy OhData is serializing with. Since #252 that policy is **PascalCase by default** (matching `$metadata`), so the two happen to agree by default; but a profile that opts into camelCase (`WithJsonPropertyNamingPolicy(JsonNamingPolicy.CamelCase)`) would diverge from the wrapper, which is exactly the inconsistency the `JsonNode` post-processing avoids.
 
 ## Route templates and `MapGroup`
 

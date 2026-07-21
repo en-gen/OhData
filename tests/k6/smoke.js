@@ -41,7 +41,7 @@ export function setup() {
   );
   check(postMovieRes, { 'setup POST movie 201': (r) => r.status === 201 });
   const testMovieId = postMovieRes.status === 201
-    ? JSON.parse(postMovieRes.body).id
+    ? JSON.parse(postMovieRes.body).Id
     : null;
 
   // Create a second movie for DELETE test
@@ -55,7 +55,7 @@ export function setup() {
   );
   check(postDeleteRes, { 'setup POST delete-target 201': (r) => r.status === 201 });
   const deleteMovieId = postDeleteRes.status === 201
-    ? JSON.parse(postDeleteRes.body).id
+    ? JSON.parse(postDeleteRes.body).Id
     : null;
 
   return { testMovieId, deleteMovieId };
@@ -95,19 +95,19 @@ export default function (data) {
     // terminator, returning 400 with an empty body.
     const cases = [
       // Comparison operators
-      { qs: "$filter=Year%20eq%201994",          label: 'eq numeric',     expect: (v) => v.length >= 3 && v.every(m => m.year === 1994) },
-      { qs: "$filter=Year%20ne%201994",          label: 'ne numeric',     expect: (v) => v.every(m => m.year !== 1994) },
-      { qs: "$filter=Rating%20gt%209",           label: 'gt numeric',     expect: (v) => v.length >= 1 && v.every(m => m.rating > 9) },
-      { qs: "$filter=Rating%20lt%207",           label: 'lt numeric',     expect: (v) => v.every(m => m.rating < 7) },
-      { qs: "$filter=Rating%20ge%209.3",         label: 'ge numeric',     expect: (v) => v.length >= 2 && v.every(m => m.rating >= 9.3) },
-      { qs: "$filter=Rating%20le%209.3",         label: 'le numeric',     expect: (v) => v.every(m => m.rating <= 9.3) },
+      { qs: "$filter=Year%20eq%201994",          label: 'eq numeric',     expect: (v) => v.length >= 3 && v.every(m => m.Year === 1994) },
+      { qs: "$filter=Year%20ne%201994",          label: 'ne numeric',     expect: (v) => v.every(m => m.Year !== 1994) },
+      { qs: "$filter=Rating%20gt%209",           label: 'gt numeric',     expect: (v) => v.length >= 1 && v.every(m => m.Rating > 9) },
+      { qs: "$filter=Rating%20lt%207",           label: 'lt numeric',     expect: (v) => v.every(m => m.Rating < 7) },
+      { qs: "$filter=Rating%20ge%209.3",         label: 'ge numeric',     expect: (v) => v.length >= 2 && v.every(m => m.Rating >= 9.3) },
+      { qs: "$filter=Rating%20le%209.3",         label: 'le numeric',     expect: (v) => v.every(m => m.Rating <= 9.3) },
       // String functions
-      { qs: "$filter=contains(Title,'God')",     label: 'contains',       expect: (v) => v.length >= 1 && v.every(m => m.title.includes('God')) },
-      { qs: "$filter=startswith(Title,'The')",   label: 'startswith',     expect: (v) => v.length >= 1 && v.every(m => m.title.startsWith('The')) },
-      { qs: "$filter=endswith(Title,'er')",      label: 'endswith',       expect: (v) => v.length >= 1 && v.every(m => m.title.endsWith('er')) },
+      { qs: "$filter=contains(Title,'God')",     label: 'contains',       expect: (v) => v.length >= 1 && v.every(m => m.Title.includes('God')) },
+      { qs: "$filter=startswith(Title,'The')",   label: 'startswith',     expect: (v) => v.length >= 1 && v.every(m => m.Title.startsWith('The')) },
+      { qs: "$filter=endswith(Title,'er')",      label: 'endswith',       expect: (v) => v.length >= 1 && v.every(m => m.Title.endsWith('er')) },
       // Logical combinations
-      { qs: "$filter=Year%20gt%202000%20and%20Rating%20gt%208",   label: 'and',   expect: (v) => v.length >= 1 && v.every(m => m.year > 2000 && m.rating > 8) },
-      { qs: "$filter=Year%20lt%201980%20or%20Year%20gt%202020",   label: 'or',    expect: (v) => v.length >= 1 && v.every(m => m.year < 1980 || m.year > 2020) },
+      { qs: "$filter=Year%20gt%202000%20and%20Rating%20gt%208",   label: 'and',   expect: (v) => v.length >= 1 && v.every(m => m.Year > 2000 && m.Rating > 8) },
+      { qs: "$filter=Year%20lt%201980%20or%20Year%20gt%202020",   label: 'or',    expect: (v) => v.length >= 1 && v.every(m => m.Year < 1980 || m.Year > 2020) },
     ];
 
     for (const tc of cases) {
@@ -128,7 +128,7 @@ export default function (data) {
       'orderby rating asc ordered': (r) => {
         const v = JSON.parse(r.body).value;
         for (let i = 1; i < v.length; i++) {
-          if (v[i].rating < v[i - 1].rating) return false;
+          if (v[i].Rating < v[i - 1].Rating) return false;
         }
         return true;
       },
@@ -141,7 +141,7 @@ export default function (data) {
       'orderby rating desc ordered': (r) => {
         const v = JSON.parse(r.body).value;
         for (let i = 1; i < v.length; i++) {
-          if (v[i].rating > v[i - 1].rating) return false;
+          if (v[i].Rating > v[i - 1].Rating) return false;
         }
         return true;
       },
@@ -161,11 +161,11 @@ export default function (data) {
       '$select single 200': (r) => r.status === 200,
       '$select single has title': (r) => {
         const v = JSON.parse(r.body).value;
-        return v.length > 0 && v[0].title !== undefined;
+        return v.length > 0 && v[0].Title !== undefined;
       },
       '$select single no rating': (r) => {
         const v = JSON.parse(r.body).value;
-        return v.length > 0 && v[0].rating === undefined;
+        return v.length > 0 && v[0].Rating === undefined;
       },
     });
 
@@ -174,11 +174,11 @@ export default function (data) {
       '$select multi 200': (r) => r.status === 200,
       '$select multi has title and year': (r) => {
         const v = JSON.parse(r.body).value;
-        return v.length > 0 && v[0].title !== undefined && v[0].year !== undefined;
+        return v.length > 0 && v[0].Title !== undefined && v[0].Year !== undefined;
       },
       '$select multi no genreCode': (r) => {
         const v = JSON.parse(r.body).value;
-        return v.length > 0 && v[0].genreCode === undefined;
+        return v.length > 0 && v[0].GenreCode === undefined;
       },
     });
   });
@@ -235,8 +235,8 @@ export default function (data) {
     const foundRes = http.get(`${BASE_URL}/v1/Movies(${SEEDED_MOVIE_ID})`);
     check(foundRes, {
       'GetById existing 200': (r) => r.status === 200,
-      'GetById body has id': (r) => JSON.parse(r.body).id === SEEDED_MOVIE_ID,
-      'GetById The Godfather title': (r) => JSON.parse(r.body).title === 'The Godfather',
+      'GetById body has id': (r) => JSON.parse(r.body).Id === SEEDED_MOVIE_ID,
+      'GetById The Godfather title': (r) => JSON.parse(r.body).Title === 'The Godfather',
     });
 
     const notFoundRes = http.get(`${BASE_URL}/v1/Movies(${MISSING_ID})`);
@@ -266,14 +266,14 @@ export default function (data) {
     check(res, {
       'POST 201': (r) => r.status === 201,
       'POST Location header': (r) => r.headers['Location'] !== undefined || r.headers['location'] !== undefined,
-      'POST body has id': (r) => JSON.parse(r.body).id !== undefined,
-      'POST body has title': (r) => JSON.parse(r.body).title === 'NewMovie',
+      'POST body has id': (r) => JSON.parse(r.body).Id !== undefined,
+      'POST body has title': (r) => JSON.parse(r.body).Title === 'NewMovie',
     });
 
     // Clean up the created entity
     if (res.status === 201) {
       const created = JSON.parse(res.body);
-      http.del(`${BASE_URL}/v1/Movies(${created.id})`);
+      http.del(`${BASE_URL}/v1/Movies(${created.Id})`);
     }
   });
 
@@ -293,8 +293,8 @@ export default function (data) {
     );
     check(res, {
       'PUT 200': (r) => r.status === 200,
-      'PUT body title updated': (r) => JSON.parse(r.body).title === 'UpdatedMovie',
-      'PUT body rating updated': (r) => JSON.parse(r.body).rating === 7.5,
+      'PUT body title updated': (r) => JSON.parse(r.body).Title === 'UpdatedMovie',
+      'PUT body rating updated': (r) => JSON.parse(r.body).Rating === 7.5,
     });
   });
 
@@ -309,8 +309,8 @@ export default function (data) {
     );
     check(res, {
       'PATCH 200': (r) => r.status === 200,
-      'PATCH rating changed': (r) => JSON.parse(r.body).rating === 6.25,
-      'PATCH title unchanged': (r) => JSON.parse(r.body).title !== undefined,
+      'PATCH rating changed': (r) => JSON.parse(r.body).Rating === 6.25,
+      'PATCH title unchanged': (r) => JSON.parse(r.body).Title !== undefined,
     });
   });
 

@@ -75,3 +75,7 @@ One caveat: an OpenAPI document holds a single component schema per CLR type, so
 registrations expose the same model type with *different* ignore sets (legal — see Rules above),
 the schemas omit the **union** of the sets, preferring to under-document a property one
 registration exposes over listing a name another registration deliberately hides.
+
+Those same schema hooks also rename each surviving property key to OhData's response casing
+(PascalCase by default; see [query-options.md → JSON property casing](query-options.md#json-property-casing)),
+so the documented casing matches the wire.

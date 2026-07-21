@@ -190,7 +190,7 @@ public class EntityIdUrlFormattingTests
         var getResp = await fx.Client.GetAsync(resp.Headers.Location!.AbsoluteUri);
         Assert.Equal(HttpStatusCode.OK, getResp.StatusCode);
         var json = await getResp.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal(unicodeKey, json.GetProperty("id").GetString());
+        Assert.Equal(unicodeKey, json.GetProperty("Id").GetString());
     }
 
     [Fact]
