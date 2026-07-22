@@ -1,0 +1,104 @@
+# UNIFIED nested toc for the whole OhData documentation site (issue #208).
+#
+# WHY THIS EXISTS: in the DocFX modern template the ROOT toc (docs-site/toc.yml) renders as the
+# horizontal TOP NAVBAR, while a page's *owning* nested toc renders in the LEFT SIDEBAR — but only
+# when the two differ (verified against generated HTML: modern hides the sidebar when a page's
+# docfx:tocrel equals its docfx:navrel). To get ONE left tree on EVERY page — Home included — we
+# keep the root toc empty (navbar = just logo/search/theme/GitHub, no section tabs) and route ALL
+# content, plus the home page, into guide/ so this toc (output guide/toc.html) is their nearest
+# owning toc and modern renders it on the left.
+#
+# SINGLE-SOURCING: content is still single-sourced. This toc lives one level deep
+# (docs-site/guide/), so the repo's docs/ guides are referenced as ../../docs/*.md and the local
+# draft pages (sources at docs-site/ root) as ../*.md. No content is copied or moved; only OUTPUT
+# is relocated under guide/ (docfx.json `dest`), and DocFX rewrites relative links to match.
+#
+# Group nodes (Getting started, Modeling, Client, Companions, ...) have items but no href, so the
+# modern template renders them as expandable/collapsible section headers.
+
+- name: Home
+  href: ../index.md
+
+- name: Server
+  items:
+    - name: Getting started
+      items:
+        - name: Installation & quick start
+          href: ../getting-started.md
+        - name: EF Core + SQLite tutorial
+          href: ../ef-core-sqlite.md
+        - name: Migrating from Microsoft.AspNetCore.OData
+          href: ../../docs/migrating-from-microsoft-odata.md
+    - name: Concepts
+      items:
+        - name: Architecture
+          href: ../../docs/architecture.md
+    - name: Modeling
+      items:
+        - name: Navigation routing & $ref
+          href: ../../docs/navigation-routing.md
+        - name: Property access & $value
+          href: ../../docs/property-access.md
+        - name: Ignoring properties
+          href: ../../docs/ignoring-properties.md
+        - name: Bound functions & actions
+          href: ../../docs/bound-operations.md
+    - name: Querying
+      items:
+        - name: Query options
+          href: ../../docs/query-options.md
+    - name: Writing data
+      items:
+        - name: Deep insert
+          href: ../../docs/deep-insert.md
+        - name: Delta mapping
+          href: ../../docs/delta-mapping.md
+        - name: ETags & concurrency
+          href: ../../docs/etags.md
+    - name: Security
+      items:
+        - name: Authorization
+          href: ../../docs/authorization.md
+    - name: Advanced
+      items:
+        - name: API versioning
+          href: ../../docs/versioning.md
+    - name: Operations
+      items:
+        - name: Deployment
+          href: ../../docs/deployment.md
+        - name: Observability
+          href: ../../docs/observability.md
+    - name: Reference
+      items:
+        - name: OData 4.0 spec compliance
+          href: ../../docs/spec-compliance.md
+        # Kept reachable here (as in the original site's "Reference" group): the benchmarks report
+        # and the generated .NET API reference. `../api/` is a FOLDER href to the metadata-generated
+        # api/ toc, which carries its own left sidebar when opened.
+        - name: Performance & benchmarks
+          href: https://github.com/en-gen/OhData/blob/develop/src/OhData.Server.Benchmarks/docs/server-comparison-report.md
+        - name: API reference
+          href: ../api/
+
+- name: Client
+  items:
+    - name: Overview & setup
+      href: ../../docs/client/index.md
+    - name: Querying
+      href: ../../docs/client/querying.md
+    - name: Terminal operations
+      href: ../../docs/client/terminal-operations.md
+    - name: Single-entity operations
+      href: ../../docs/client/single-entity.md
+    - name: Error handling & literal types
+      href: ../../docs/client/errors-and-types.md
+
+- name: Companions
+  items:
+    - name: OpenAPI (built-in AddOpenApi)
+      href: ../../docs/openapi.md
+    - name: NSwag
+      href: ../../docs/nswag.md
+    - name: Swashbuckle
+      href: ../../docs/swashbuckle.md

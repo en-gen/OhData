@@ -1,8 +1,0 @@
-# NESTED toc for the "Client" product tab (issue #208) - renders in the modern LEFT SIDEBAR.
-#
-# Owns the OhData.Client guides. Pages output into this client/ folder (docfx.json `dest`),
-# so client/toc.html is their owning toc and the modern template renders it on the left.
-# Single-sourced from the repo's docs/ folder; one level deep, so hrefs are ../../docs/*.md.
-
-- name: Client guide
-  href: ../../docs/client.md

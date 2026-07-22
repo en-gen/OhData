@@ -23,63 +23,78 @@
     "content": [
       {
         "//": [
-          "Root of the site: the landing page and the ROOT toc.yml. In the DocFX modern",
-          "template the ROOT toc renders as the horizontal TOP NAVBAR (via docfx:navrel),",
-          "NOT the left sidebar. So the root toc is kept minimal (Home + three product",
-          "tabs) and index.md stays at output root as the landing page. The product",
-          "subfolders and api/** are excluded here so each is owned by its own nested toc.",
+          "ROOT of the site: only the (empty) root toc.yml. In the DocFX modern template the",
+          "ROOT toc renders as the horizontal TOP NAVBAR (via docfx:navrel), NOT the left",
+          "sidebar. It is kept EMPTY so the navbar carries just the logo/appName, search,",
+          "theme toggle, and the auto-detected GitHub link - no section tabs. The whole",
+          "section tree lives in the single unified nested toc under guide/ (see below).",
           "",
-          "LEFT SIDEBAR MECHANISM: the modern template renders a page's owning toc",
-          "(docfx:tocrel) in the LEFT SIDEBAR only when it differs from the root toc",
-          "(docfx:navrel). We create that difference by OUTPUTTING each product's guides",
-          "into its own subfolder (server/ client/ companions/, via `dest`) next to a",
-          "nested toc.yml - so every guide page's nearest toc is its product toc, which",
-          "the template puts on the left. Source files are NOT moved; only output is",
-          "relocated, so relative links and the ../docs single-sourcing are auto-rewritten",
-          "by DocFX and keep resolving."
+          "LEFT SIDEBAR MECHANISM (verified against generated HTML): the modern template",
+          "renders a page's owning toc (docfx:tocrel) in the LEFT SIDEBAR only when it",
+          "differs from the root/navbar toc (docfx:navrel). We create that difference for",
+          "EVERY page - the home included - by OUTPUTTING all content under guide/ (via",
+          "`dest`), beside guide/toc.yml. So each page's nearest toc is the unified guide",
+          "toc, which the template puts on the left. A root-level page cannot get a sidebar",
+          "(its nearest toc IS the navbar toc), which is why the home is output under guide/",
+          "and the output root instead serves a small redirect (see the resource below).",
+          "Source files are NOT moved; only output is relocated, so relative links and the",
+          "../docs single-sourcing are auto-rewritten by DocFX and keep resolving."
         ],
-        "files": [ "index.md", "toc.yml" ],
-        "exclude": [ "_site/**", "api/**", "server/**", "client/**", "companions/**" ]
+        "files": [ "toc.yml" ],
+        "exclude": [ "_site/**", "api/**", "guide/**" ]
       },
       {
         "//": [
-          "Nested product tocs (the LEFT SIDEBAR trees). These live at docs-site/<product>/",
-          "and are mapped WITHOUT `dest` so each outputs to <product>/toc.html - the nested",
-          "toc that owns that product's pages. (Adding dest here would double the path to",
-          "<product>/<product>/toc.html.)"
+          "The single UNIFIED nested toc (the LEFT SIDEBAR tree: Home + Server/Client/",
+          "Companions groups). Lives at docs-site/guide/ and is mapped WITHOUT `dest` so it",
+          "outputs to guide/toc.html - the nested toc that owns every content page below.",
+          "(Adding dest here would double the path to guide/guide/toc.html.)"
         ],
-        "files": [ "server/toc.yml", "client/toc.yml", "companions/toc.yml" ]
+        "files": [ "guide/toc.yml" ]
       },
       {
-        "//": "SERVER tab - the two local draft pages, output into server/ beside server/toc.html.",
+        "//": [
+          "HOME (hero) - output into guide/ so it is owned by guide/toc.html and inherits the",
+          "left sidebar. The `_layout: landing` was dropped so it renders in the standard doc",
+          "layout with the sidebar present; the hero content is unchanged."
+        ],
+        "files": [ "index.md" ],
+        "dest": "guide"
+      },
+      {
+        "//": "SERVER group - the two local draft pages, output into guide/server/.",
         "files": [ "getting-started.md", "ef-core-sqlite.md" ],
-        "dest": "server"
+        "dest": "guide/server"
       },
       {
         "//": [
-          "SERVER tab - single-sourced OhData.AspNetCore guides from ../docs. Everything",
-          "except the Client page (client.md), the Companions pages (openapi/nswag.md) and",
-          "the contributor-only releasing.md, which is intentionally omitted from public nav."
+          "SERVER group - single-sourced OhData.AspNetCore guides from ../docs, output into",
+          "guide/server/. Everything except the Client pages (client/**), the Companions",
+          "pages (openapi/nswag/swashbuckle.md) and the contributor-only releasing.md, which",
+          "is intentionally omitted from public nav."
         ],
         "src": "../docs",
         "files": [ "**/*.md" ],
         "exclude": [
           "design/**", "superpowers/**",
-          "client.md", "openapi.md", "nswag.md", "releasing.md"
+          "client/**", "openapi.md", "nswag.md", "swashbuckle.md", "releasing.md"
         ],
-        "dest": "server"
+        "dest": "guide/server"
       },
       {
-        "//": "CLIENT tab - the single-sourced client guide, output into client/.",
+        "//": [
+          "CLIENT group - the single-sourced client guide, split across ../docs/client/*.md,",
+          "output into guide/client/ (dest 'guide' preserves the client/ path segment)."
+        ],
         "src": "../docs",
-        "files": [ "client.md" ],
-        "dest": "client"
+        "files": [ "client/**/*.md" ],
+        "dest": "guide"
       },
       {
-        "//": "COMPANIONS tab - the single-sourced OpenAPI/NSwag guides, output into companions/.",
+        "//": "COMPANIONS group - OpenAPI/NSwag/Swashbuckle guides, output into guide/companions/.",
         "src": "../docs",
-        "files": [ "openapi.md", "nswag.md" ],
-        "dest": "companions"
+        "files": [ "openapi.md", "nswag.md", "swashbuckle.md" ],
+        "dest": "guide/companions"
       },
       {
         "files": [ "api/**.yml", "api/index.md" ]
@@ -89,6 +104,15 @@
       {
         "src": "../assets",
         "files": [ "icon.svg", "icon-64.png", "icon-512.png", "social-card.png" ]
+      },
+      {
+        "//": [
+          "Site-root redirect. The home (with hero + sidebar) is output at guide/index.html;",
+          "this bare meta-refresh page is copied to _site/index.html so the site root bounces",
+          "into it. Copied verbatim (resource, not run through the template)."
+        ],
+        "src": "_redirect",
+        "files": [ "index.html" ]
       }
     ],
     "output": "_site",
