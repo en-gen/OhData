@@ -94,7 +94,7 @@
 
 - name: Companions
   items:
-    - name: OpenAPI
+    - name: AspNetCore OpenAPI
       href: ../../docs/openapi.md
     - name: NSwag
       href: ../../docs/nswag.md
