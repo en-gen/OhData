@@ -119,8 +119,9 @@ register one line — the core package has no dependency on any OpenAPI stack:
 | `EnGen.OhData.AspNetCore.Swashbuckle` | `builder.Services.AddSwaggerGen(c => c.OperationFilter<OhDataSwaggerOperationFilter>());` |
 | `EnGen.OhData.AspNetCore.NSwag` | `builder.Services.AddOpenApiDocument(s => s.OperationProcessors.Add(new OhDataNSwagOperationProcessor()));` |
 
-See [docs/openapi.md](docs/openapi.md), [docs/nswag.md](docs/nswag.md), and
-[docs/versioning.md](docs/versioning.md) (Swashbuckle multi-doc setup) for details.
+See [docs/openapi.md](docs/openapi.md), [docs/swashbuckle.md](docs/swashbuckle.md),
+[docs/nswag.md](docs/nswag.md), and [docs/versioning.md](docs/versioning.md) (multi-doc / versioned
+setup) for details.
 
 ### Beyond the basics
 
@@ -339,8 +340,9 @@ The full documentation — getting started, the EF Core + SQLite walkthrough, an
 | Authorization | [docs/authorization.md](docs/authorization.md) |
 | API versioning | [docs/versioning.md](docs/versioning.md) |
 | OpenAPI (built-in `AddOpenApi`) integration | [docs/openapi.md](docs/openapi.md) |
+| Swashbuckle integration | [docs/swashbuckle.md](docs/swashbuckle.md) |
 | NSwag integration | [docs/nswag.md](docs/nswag.md) |
-| Client guide | [docs/client.md](docs/client.md) |
+| Client guide | [docs/client/index.md](docs/client/index.md) |
 | OData 4.0 spec compliance | [docs/spec-compliance.md](docs/spec-compliance.md) |
 | Framework architecture | [docs/architecture.md](docs/architecture.md) |
 | Migrating from Microsoft.AspNetCore.OData | [docs/migrating-from-microsoft-odata.md](docs/migrating-from-microsoft-odata.md) |
