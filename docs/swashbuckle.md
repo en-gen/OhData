@@ -12,13 +12,24 @@ dotnet add package EnGen.OhData.AspNetCore.Swashbuckle
 
 ## Registration
 
-Register `OhDataSwaggerOperationFilter` (query parameters) and `OhDataSwaggerSchemaFilter`
-(schema fidelity for `Ignore(...)`d properties and response casing — see
-[below](#ignored-properties-and-schema-casing)) with Swashbuckle's generator:
+The recommended one-liner is `c.AddOhData()`. It is the canonical wiring recipe — you do not need to
+know the filter class names:
 
 ```csharp
 using OhData.AspNetCore.Swashbuckle;
 
+builder.Services.AddSwaggerGen(c => c.AddOhData());
+```
+
+This registers **both** the operation filter (documents the OData query parameters) and the schema
+filter (schema fidelity for `Ignore(...)`d properties and response casing — see
+[below](#ignored-properties-and-schema-casing)).
+
+### À la carte
+
+Each filter is independent. To register only one, call it directly instead of `AddOhData()`:
+
+```csharp
 builder.Services.AddSwaggerGen(c =>
 {
     c.OperationFilter<OhDataSwaggerOperationFilter>();
@@ -26,8 +37,7 @@ builder.Services.AddSwaggerGen(c =>
 });
 ```
 
-Each filter is independent — register only the one you need, or both. The one-line minimum is just
-the operation filter:
+The one-line minimum is just the operation filter:
 
 ```csharp
 builder.Services.AddSwaggerGen(c => c.OperationFilter<OhDataSwaggerOperationFilter>());

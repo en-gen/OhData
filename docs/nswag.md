@@ -8,15 +8,40 @@ dotnet add package EnGen.OhData.AspNetCore.NSwag
 
 ## Registration
 
-Register `OhDataNSwagOperationProcessor` (query parameters) and `OhDataNSwagSchemaProcessor`
-(schema fidelity for `Ignore(...)`d properties — see
-[below](#ignored-properties-omitted-from-schemas)) with NSwag's document generator. The schema
-processor needs the host's `IServiceProvider` to reach the OhData registrations, so use the
-service-provider overload of `AddOpenApiDocument`:
+The recommended one-liner is `s.AddOhData(sp)`. It is the canonical wiring recipe — you do not need
+to know the processor class names. The schema processor needs the host's `IServiceProvider` to reach
+the OhData registrations, so call it from the service-provider overload of `AddOpenApiDocument` and
+pass `sp` through:
 
 ```csharp
 using OhData.AspNetCore.NSwag;
 
+builder.Services.AddOpenApiDocument((s, sp) => s.AddOhData(sp));
+```
+
+This registers **both** the operation processor (documents the OData query parameters) and the
+schema processor (schema fidelity for `Ignore(...)`d properties — see
+[below](#ignored-properties-omitted-from-schemas)).
+
+To also surface OhData's per-operation authorization in the document (#219/#220), pass the opt-in
+parameters — `securitySchemeId` emits an operation-level `security` requirement plus `401`/`403`
+responses referencing a scheme your app already defines, and `authRequirements` appends a
+human-readable requirements section to each secured operation's description:
+
+```csharp
+builder.Services.AddOpenApiDocument((s, sp) => s.AddOhData(sp,
+    authRequirements: AuthRequirementDisclosure.Kinds,
+    securitySchemeId: "Bearer"));
+```
+
+Both default to off (`null`). See [authorization.md](authorization.md) for the auth-reflection
+boundary — OhData references the scheme by id but never defines it.
+
+### À la carte
+
+Each processor is independent. To register only one, add it directly instead of `AddOhData(sp)`:
+
+```csharp
 builder.Services.AddOpenApiDocument((s, sp) =>
 {
     s.OperationProcessors.Add(new OhDataNSwagOperationProcessor());
@@ -24,8 +49,8 @@ builder.Services.AddOpenApiDocument((s, sp) =>
 });
 ```
 
-(Each processor is independent — if no profile uses `Ignore(...)` you can register only the
-operation processor with the single-argument overload, as before.)
+If no profile uses `Ignore(...)` you can register only the operation processor with the
+single-argument `AddOpenApiDocument(s => ...)` overload.
 
 Minimal API endpoints need ASP.NET Core's `ApiExplorer` enabled for NSwag to discover them at all (this is the same prerequisite the Swashbuckle integration relies on):
 

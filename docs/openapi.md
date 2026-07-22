@@ -11,24 +11,52 @@ dotnet add package EnGen.OhData.AspNetCore.OpenApi
 
 ## Registration
 
+The recommended one-liner is `o.AddOhData()`. It is the canonical wiring recipe — you do not need
+to know the transformer class names:
+
 ```csharp
 using OhData.AspNetCore.OpenApi;
 
-builder.Services.AddOpenApi(o =>
-{
-    o.AddOperationTransformer<OhDataOpenApiOperationTransformer>();
-    o.AddSchemaTransformer<OhDataOpenApiSchemaTransformer>();
-});
+builder.Services.AddOpenApi(o => o.AddOhData());
 
 // ...
 
 app.MapOpenApi();
 ```
 
-The operation transformer documents the OData query parameters; the schema transformer keeps
-generated schemas honest for profiles that use `Ignore(...)` (see
-[below](#ignored-properties-omitted-from-schemas)). Each is independent — register only the one
-you need, or both.
+This registers **both** the operation transformer (documents the OData query parameters) and the
+schema transformer (keeps generated schemas honest for profiles that use `Ignore(...)` — see
+[below](#ignored-properties-omitted-from-schemas)).
+
+To also surface OhData's per-operation authorization in the document (#219/#220), pass the opt-in
+parameters — `securitySchemeId` emits an operation-level `security` requirement plus `401`/`403`
+responses referencing a scheme your app already defines, and `authRequirements` appends a
+human-readable requirements section to each secured operation's description:
+
+```csharp
+builder.Services.AddOpenApi(o => o.AddOhData(
+    authRequirements: AuthRequirementDisclosure.Kinds,
+    securitySchemeId: "Bearer"));
+```
+
+Both default to off (`null`). See [authorization.md](authorization.md) for the auth-reflection
+boundary — OhData references the scheme by id but never defines it.
+
+### À la carte
+
+Each transformer is independent. To register only one, call it directly instead of `AddOhData()`:
+
+```csharp
+builder.Services.AddOpenApi(o =>
+{
+    o.AddOperationTransformer<OhDataOpenApiOperationTransformer>();
+    o.AddSchemaTransformer<OhDataOpenApiSchemaTransformer>();
+});
+```
+
+The opt-in auth transformers have à la carte equivalents too —
+`o.AddOperationTransformer(new OhDataOpenApiSecurityOperationTransformer("Bearer"))` and
+`o.AddOperationTransformer(new OhDataOpenApiAuthRequirementsOperationTransformer(AuthRequirementDisclosure.Kinds))`.
 
 ## What gets documented
 

@@ -111,13 +111,18 @@ Only routes with a handler assigned are registered. Unassigned handlers produce 
 Each OpenAPI stack has an optional companion package that documents the OData query parameters
 (`$filter`, `$orderby`, `$top`, `$skip`, `$select`, `$expand`, `$count`, `$search`) on OhData
 endpoints, driven by each entity set's capability flags. Install the one matching your stack and
-register one line — the core package has no dependency on any OpenAPI stack:
+call its one-line `AddOhData()` — the canonical wiring recipe that registers both the operation and
+schema components; the core package has no dependency on any OpenAPI stack:
 
 | Package | Registration |
 |---|---|
-| `EnGen.OhData.AspNetCore.OpenApi` | `builder.Services.AddOpenApi(o => o.AddOperationTransformer<OhDataOpenApiOperationTransformer>());` |
-| `EnGen.OhData.AspNetCore.Swashbuckle` | `builder.Services.AddSwaggerGen(c => c.OperationFilter<OhDataSwaggerOperationFilter>());` |
-| `EnGen.OhData.AspNetCore.NSwag` | `builder.Services.AddOpenApiDocument(s => s.OperationProcessors.Add(new OhDataNSwagOperationProcessor()));` |
+| `EnGen.OhData.AspNetCore.OpenApi` | `builder.Services.AddOpenApi(o => o.AddOhData());` |
+| `EnGen.OhData.AspNetCore.Swashbuckle` | `builder.Services.AddSwaggerGen(c => c.AddOhData());` |
+| `EnGen.OhData.AspNetCore.NSwag` | `builder.Services.AddOpenApiDocument((s, sp) => s.AddOhData(sp));` |
+
+On the OpenApi and NSwag variants, `AddOhData` takes optional `authRequirements` / `securitySchemeId`
+parameters to also reflect OhData's per-operation authorization (security requirement + `401`/`403`)
+into the document.
 
 See [docs/openapi.md](docs/openapi.md), [docs/swashbuckle.md](docs/swashbuckle.md),
 [docs/nswag.md](docs/nswag.md), and [docs/versioning.md](docs/versioning.md) (multi-doc / versioned
