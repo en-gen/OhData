@@ -273,4 +273,3 @@ also demonstrates, with live SQL for each:
 
 - [Query options](../docs/query-options.md) — the full query surface and the capability flags that gate it.
 - [Navigation & `$ref` routing](../docs/navigation-routing.md) — navigation routes, `$ref`, and the batch `$expand` pattern used here.
-- [Deployment](../docs/deployment.md) — packaging an OhData service for production.

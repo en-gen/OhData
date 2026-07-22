@@ -70,14 +70,17 @@
         "//": [
           "SERVER group - single-sourced OhData.AspNetCore guides from ../docs, output into",
           "guide/server/. Everything except the Client pages (client/**), the Companions",
-          "pages (openapi/nswag/swashbuckle.md) and the contributor-only releasing.md, which",
-          "is intentionally omitted from public nav."
+          "pages (openapi/nswag/swashbuckle.md), the contributor-only releasing.md, and",
+          "deployment.md - the docsite documents how to implement the framework, not how to",
+          "deploy it, so the Dockerfile/render.yaml guide stays in the repo (docs/deployment.md)",
+          "but is intentionally omitted from the public docsite nav."
         ],
         "src": "../docs",
         "files": [ "**/*.md" ],
         "exclude": [
           "design/**", "superpowers/**",
-          "client/**", "openapi.md", "nswag.md", "swashbuckle.md", "releasing.md"
+          "client/**", "openapi.md", "nswag.md", "swashbuckle.md", "releasing.md",
+          "deployment.md"
         ],
         "dest": "guide/server"
       },

@@ -65,8 +65,6 @@
           href: ../../docs/versioning.md
     - name: Operations
       items:
-        - name: Deployment
-          href: ../../docs/deployment.md
         - name: Observability
           href: ../../docs/observability.md
     - name: Reference
