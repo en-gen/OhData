@@ -436,6 +436,8 @@ public sealed class EntitySetClient<T> where T : class
 
     // #253: resolve a member's OData name honoring [JsonPropertyName] (verbatim, ahead of the naming
     // policy — matching the server EDM and System.Text.Json), so query-option names match $metadata.
+    // #253 completion: this applies uniformly to navigation AND structural members — the server renames
+    // nav identifiers too, so a renamed nav is emitted under its JSON name on every path segment.
     private string ResolveMemberName(System.Reflection.MemberInfo member) =>
         Internal.ODataMemberName.Resolve(member, _options.JsonOptions.PropertyNamingPolicy);
 
