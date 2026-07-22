@@ -139,7 +139,7 @@ their respective docs) since neither doc stack surfaces it automatically.
 ## Same convention as the Swashbuckle companion
 
 This package is the `Microsoft.AspNetCore.OpenApi` counterpart to
-[`EnGen.OhData.AspNetCore.Swashbuckle`](versioning.md#openapi--swagger-partitioning) (see
-[versioning.md](versioning.md) for the Swashbuckle `IOperationFilter` equivalent). Both packages
-read the same `OhDataQueryOptionsMetadata` endpoint metadata and apply the same gating rules, so
-switching between the two OpenAPI generation pipelines does not change what gets documented.
+[`EnGen.OhData.AspNetCore.Swashbuckle`](swashbuckle.md) (see [swashbuckle.md](swashbuckle.md) for
+the Swashbuckle `IOperationFilter`/`ISchemaFilter` equivalents). Both packages read the same
+`OhDataQueryOptionsMetadata` endpoint metadata and apply the same gating rules, so switching
+between the two OpenAPI generation pipelines does not change what gets documented.

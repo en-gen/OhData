@@ -1,31 +1,11 @@
-# ROOT toc for the OhData documentation site (issue #208) - the TOP NAVBAR.
+# ROOT toc for the OhData documentation site (issue #208) — the TOP NAVBAR.
 #
-# WHY THIS IS MINIMAL: in the DocFX modern template the ROOT toc is what renders as the
-# horizontal TOP NAVBAR (the template loads it via the `docfx:navrel` meta and walks its
-# top level into the navbar). It is NOT the left sidebar. The left sidebar is driven by a
-# page's *owning* toc (`docfx:tocrel`); the template shows it only when that owning toc
-# differs from the root toc. See docfx.json for the full mechanism.
-#
-# INFORMATION ARCHITECTURE: three PRODUCT tabs plus Home. Each product tab points at a
-# NESTED toc (server/ client/ companions/); DocFX renders that nested toc in the modern
-# LEFT SIDEBAR for every page in that product, giving the reference "top tabs + left tree
-# + right affix" layout. The section trees live in those nested tocs, NOT here (putting
-# them here would render them back on the top bar).
-
-- name: Home
-  href: index.md
-
-# Each entry uses a FOLDER href (e.g. server/) - NOT server/toc.yml. A folder href is a toc
-# REFERENCE: DocFX links the tab to the nested toc's first topic and emits a `tocHref` that
-# points at the nested toc, so that toc stays independent and its pages keep it as their
-# owning toc (docfx:tocrel) -> it renders in the LEFT SIDEBAR. (A `server/toc.yml` href is
-# instead a toc INCLUSION: it inlines the nested items into the root toc, which would make
-# the root toc own the pages and put the whole tree back on the top navbar.)
-- name: Server
-  href: server/
-
-- name: Client
-  href: client/
-
-- name: Companions
-  href: companions/
+# Deliberately EMPTY. In the DocFX modern template the root toc renders as the horizontal top
+# navbar; keeping it empty leaves the navbar with just the logo/appName, search box, theme toggle,
+# and the auto-detected GitHub link — and NO horizontal section tabs. The entire section tree
+# (Server / Client / Companions, plus Home) lives in the single unified nested toc at guide/toc.yml,
+# which the modern template renders in the LEFT SIDEBAR on every content page. Every page — the home
+# included — is output under guide/ (docfx.json `dest`) so guide/toc.html is its owning toc and the
+# sidebar shows (a page whose owning toc equals this root/navbar toc gets no sidebar, which is why
+# the home is not left at the output root). The site root serves a small redirect into guide/.
+[]

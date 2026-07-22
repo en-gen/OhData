@@ -51,7 +51,13 @@ app.MapOhData("v1").WithOpenApi().WithGroupName("v1");
 app.MapOhData("v2").WithOpenApi().WithGroupName("v2");
 ```
 
-With Swashbuckle, add a `DocInclusionPredicate` so each endpoint appears in the correct doc:
+With Swashbuckle, add a `DocInclusionPredicate` so each endpoint appears in the correct doc. To
+have Swagger UI also show the OData query parameters on each collection GET endpoint (driven by the
+per-entity-set capability flags and `MaxTop`), register `OhDataSwaggerOperationFilter` — and
+`OhDataSwaggerSchemaFilter` for schema fidelity — from the
+[`EnGen.OhData.AspNetCore.Swashbuckle`](swashbuckle.md) companion package inside the same
+`AddSwaggerGen` call. Both filters read the same endpoint metadata regardless of which document an
+operation is partitioned into, so they apply per document without extra configuration:
 
 ```csharp
 builder.Services.AddSwaggerGen(c =>
@@ -60,36 +66,14 @@ builder.Services.AddSwaggerGen(c =>
     c.SwaggerDoc("v2", new OpenApiInfo { Title = "My API", Version = "v2" });
     c.DocInclusionPredicate((docName, apiDesc) =>
         apiDesc.GroupName is null || apiDesc.GroupName == docName);
-});
-```
 
-Register `OhDataSwaggerOperationFilter` (from the [`EnGen.OhData.AspNetCore.Swashbuckle`](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.Swashbuckle) companion package — the core server package carries no Swashbuckle dependency) to have Swagger UI show `$filter`/`$orderby`/`$top`/`$skip`/`$select`/`$expand`/`$count`/`$search` as documented query parameters on each collection GET endpoint, driven by the per-entity-set capability flags (`FilterEnabled`, `OrderByEnabled`, etc.) and `MaxTop`:
-
-```
-dotnet add package EnGen.OhData.AspNetCore.Swashbuckle
-```
-
-```csharp
-builder.Services.AddSwaggerGen(c =>
-{
     c.OperationFilter<OhDataSwaggerOperationFilter>();
     c.SchemaFilter<OhDataSwaggerSchemaFilter>();
 });
 ```
 
-`OhDataSwaggerSchemaFilter` (same package) omits properties excluded via
-`EntitySetProfile.Ignore(...)` from generated schemas, and renames the surviving property keys to
-OhData's response casing (PascalCase by default), so documents match the real wire shape — see
-[ignoring-properties.md](ignoring-properties.md#openapi--swagger-documents) and
-[query-options.md → JSON property casing](query-options.md#json-property-casing). Each filter is
-independent; register only the one you need, or both.
-
-Write routes get a real request-body schema and collection GET routes get a typed
-`ODataCollectionResponse<T>` response automatically, via `OhDataApiDescriptionProvider` in the
-core package - no Swashbuckle-specific setup needed beyond `AddSwaggerGen` itself. See
-[openapi.md](openapi.md#request-bodies-on-write-routes) for details (applies identically to
-Swashbuckle). `WithSummary()`/`WithDescription()` on collection GET routes are applied by
-`OhDataSwaggerOperationFilter` explicitly - see [openapi.md](openapi.md#read-path-summaries).
+See [swashbuckle.md](swashbuckle.md) for the full filter setup, what gets documented, and the
+schema-casing/`Ignore(...)` behavior.
 
 ## Default (unnamed) registration
 

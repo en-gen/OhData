@@ -1,7 +1,3 @@
----
-_layout: landing
----
-
 # OhData
 
 **Ship an OData 4.0 API without learning OData.** Write one declarative profile class per entity
@@ -52,7 +48,7 @@ annotate a controller. Responses are PascalCase, matching `$metadata` per the sp
 - **Clean DTO write path.** Dependency-free delta mapping (`DeltaProfile` + `IDeltaFactory`) maps
   a wire DTO onto your persistence entity for PATCH/PUT while preserving the property allowlist —
   no AutoMapper, no reflection at request time.
-- **A typed client to match.** [`OhData.Client`](../docs/client.md) translates LINQ filter/select/expand
+- **A typed client to match.** [`OhData.Client`](../docs/client/index.md) translates LINQ filter/select/expand
   into OData query strings and follows `@odata.nextLink` automatically.
 
 ## Try it live

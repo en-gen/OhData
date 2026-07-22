@@ -118,7 +118,7 @@ if (!notModified)
 }
 ```
 
-See [client.md](client.md#conditional-get-with-if-none-match) for the full return-tuple semantics.
+See [the client guide](client/single-entity.md#conditional-get-with-if-none-match) for the full return-tuple semantics.
 
 ### Conditional write operations
 
