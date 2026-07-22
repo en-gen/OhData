@@ -4,8 +4,11 @@
 [![codecov](https://codecov.io/gh/en-gen/OhData/graph/badge.svg)](https://codecov.io/gh/en-gen/OhData)
 [![License: MIT](https://img.shields.io/github/license/en-gen/OhData)](LICENSE)
 [![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore?label=nuget)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore)
+[![Docs](https://img.shields.io/badge/docs-en--gen.github.io%2FOhData-2b6cb0)](https://en-gen.github.io/OhData/)
 
 Convention-based OData 4.0 server and typed client for ASP.NET Core. Define a profile class, assign handler delegates, and get a spec-faithful OData API - no controllers required (see [docs/spec-compliance.md](docs/spec-compliance.md) for exactly what's covered). Consume it from .NET with a fluent, LINQ-native client.
+
+📖 **Documentation site: [en-gen.github.io/OhData](https://en-gen.github.io/OhData/)** — getting started, the EF Core walkthrough, and every feature guide.
 
 Try it live — fire real `$filter`/`$orderby`/`$expand` queries (writes too) at a deployed OhData demo service from an interactive API reference, or hit the raw [v2 service document](https://ohdata.onrender.com/v2) directly:
 
@@ -321,6 +324,8 @@ and the full support policy.
 ---
 
 ## Documentation
+
+The full documentation — getting started, the EF Core + SQLite walkthrough, and every guide below — is published at **[en-gen.github.io/OhData](https://en-gen.github.io/OhData/)**. The same guides live in [`docs/`](docs/):
 
 | Topic | Guide |
 |-------|-------|
