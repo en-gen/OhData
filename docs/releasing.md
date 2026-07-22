@@ -63,13 +63,20 @@ reject the release.
 
 1. Update `CHANGELOG.md`: retitle the pending section to `## [X.Y.Z] - <today>` and leave a fresh empty
    `## [Unreleased]` above it. Merge via PR to `develop` as usual.
-2. Create the release branch: `git checkout -b release/X.Y.Z origin/develop && git push -u origin release/X.Y.Z`.
-3. Open a PR from `release/X.Y.Z` to **`main`** and merge it once green.
-4. Create a GitHub Release targeting `main` with tag `vX.Y.Z` (Releases > Draft a new release > publish).
+2. Docs-site gate: confirm this release's `docs-site/` and `docs/` reflect the API and features shipping
+   in `X.Y.Z` (renamed/removed symbols, new options), `docfx docs-site/docfx.json` builds with **zero
+   warnings**, and the stale-API scan passes. The scan and docfx build run automatically on the release
+   PR via [`.github/workflows/docs.yml`](https://github.com/en-gen/OhData/blob/develop/.github/workflows/docs.yml)
+   (`pull_request` trigger) — if it flags a removed/renamed token, update the docs or extend the denylist
+   in that workflow. Publishing the Release then rebuilds and deploys the site from the release commit, so
+   the live site always matches the latest release.
+3. Create the release branch: `git checkout -b release/X.Y.Z origin/develop && git push -u origin release/X.Y.Z`.
+4. Open a PR from `release/X.Y.Z` to **`main`** and merge it once green.
+5. Create a GitHub Release targeting `main` with tag `vX.Y.Z` (Releases > Draft a new release > publish).
    Paste the CHANGELOG section as the release notes.
-5. The `Publish to NuGet` workflow runs automatically. If the tag-validation step fails, the tag does not
+6. The `Publish to NuGet` workflow runs automatically. If the tag-validation step fails, the tag does not
    match what GitVersion computed on `main` — do not force it; fix the branch topology.
-6. Verify: package pages render (README, license, version) at
+7. Verify: package pages render (README, license, version) at
    `https://www.nuget.org/packages/EnGen.OhData.AspNetCore`, `.../EnGen.OhData.Client`,
    `.../EnGen.OhData.AspNetCore.Swashbuckle`, `.../EnGen.OhData.AspNetCore.OpenApi`, and
    `.../EnGen.OhData.AspNetCore.NSwag`;
@@ -77,8 +84,8 @@ reject the release.
    the NuGet symbol server; the GitHub Release page shows 10 attached assets (a `.nupkg` and a
    `.snupkg` per package, uploaded automatically by the workflow); and confirm build provenance with
    `gh attestation verify` (see below).
-7. Close the release branch out into `develop`. The release branch is merge-committed into **both**
-   `main` (step 3's PR) and `develop` — after the Release is published:
+8. Close the release branch out into `develop`. The release branch is merge-committed into **both**
+   `main` (step 4's PR) and `develop` — after the Release is published:
    - (a) Sync main back into the release branch: `git checkout release/X.Y.Z && git pull --ff-only &&
      git merge origin/main -m "chore: sync main into release/X.Y.Z" && git push`. This picks up
      main's merge commit (which the `vX.Y.Z` tag points at) and any hotfix that landed on main since
