@@ -159,7 +159,7 @@ Note the `SELECT` list: it contains exactly the four projected columns. `Stock` 
 `CategoryId` never leave the database, because the wire model doesn't have them — the
 projection prunes the SQL, and `$select` (try
 `?\$select=name,categoryName&\$orderby=name&\$top=3`) additionally prunes the JSON payload.
-The client sees a flat `{ id, name, price, categoryName }` resource and can't tell that
+The client sees a flat `{ Id, Name, Price, CategoryName }` resource and can't tell that
 categories live in their own table:
 
 ```json
@@ -221,7 +221,7 @@ Two different suppressions are at work here, and they live at different layers:
   entirely.
 - **OhData's profile `Ignore()`** (#226) hides things from the *wire* model: `TagProfile`
   ignores `Tag.Products` — the property must stay in the EF model (it's half of the skip
-  navigation), but a Tag serializes as just `{ id, label }`.
+  navigation), but a Tag serializes as just `{ Id, Label }`.
 
 Same word, different layers.
 

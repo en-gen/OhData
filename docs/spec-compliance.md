@@ -74,8 +74,8 @@ matches the wire. See
 | `$skip` | §11.2.6.4 | ✅ | On `GetAll`, applied as a post-materialization `Skip()` |
 | `$count` (inline and standalone) | §11.2.6.5 | ✅ | Reports the pre-paging total; on the `ODataEntitySetProfile` (`GetODataQueryable`) path a profile that applies its own `$top`/`$skip` must set `ODataQueryResult.TotalCount` or `@odata.count` falls back to the post-page item count |
 | `$search` | §11.2.6.6 | ✅ | Requires a `Search` handler; `400 Bad Request` (`UnsupportedQueryOption`) if unset |
-| `$select` | §11.2.4.1 | ✅ | JSON post-processing; SQL column projection not performed |
-| `$expand` | §11.2.4.2 | ✅ | Generic navigation-delegate expansion (registered via `HasMany`/`HasOptional`/`HasRequired`); the same pipeline runs identically on the `GetQueryable`, `GetAll`, and Priority-1 `ODataQueryOptions` paths **and on the single-entity `GET /Set({key})` route** (batch handlers included). No EF Core dependency - each expanded property is resolved by calling the registered navigation handler per entity (or once per page via a batch handler). |
+| `$select` | §11.2.4.1 | ✅ | On the `GetQueryable`/EF path an eligible `$select` pushes a column-pruned projection to SQL (#206, `SelectPushdownEnabled` — on by default); JSON post-processing applies the selection on the `GetAll`/Priority-1 paths and as the fallback for ineligible requests |
+| `$expand` | §11.2.4.2 | ✅ | The expansion pipeline runs identically on the `GetQueryable`, `GetAll`, and Priority-1 `ODataQueryOptions` paths **and on the single-entity `GET /Set({key})` route**. A **delegate-less** `HasMany`/`HasOptional`/`HasRequired` is folded into an EF Core SQL JOIN (#206, `ExpandPushdownEnabled` — on by default), including nested/multi-level/`$levels`; a **delegate-backed** navigation is resolved by its registered handler per entity (or once per page via a batch handler — no EF Core dependency). Ineligible pushdown (non-EF provider, cyclic, non-projectable) degrades to the delegate/EDM-only path. |
 | `$skiptoken` (server-driven paging) | §11.2.6.7 | ✅ | Base64-encoded raw skip offset (a 4-byte little-endian int) - not an opaque/obfuscated cursor. Predictable and forgeable by clients. |
 
 ## Entity operations
@@ -166,7 +166,7 @@ matches the wire. See
 
 | Feature | Notes |
 |---------|-------|
-| SQL column projection for `$select` | All columns fetched; `$select` trims response JSON only |
+| SQL column projection for `$select` | Pushed to SQL on the `GetQueryable`/EF path by default (#206); ineligible requests (no parameterless ctor, setterless projected member, non-EF provider, or `SelectPushdownEnabled = false`) fall back to fetching all columns + trimming the response JSON |
 | ETag check atomicity | GET-then-write has a race window; use a database-level mechanism for true atomistic concurrency |
 | `If-None-Match` on POST | Not implemented; validate in the `Post` handler if needed. (`If-None-Match: *` on PUT *is* implemented as a create-guard — see Request conditional headers above.) |
 | `$compute` | Unimplemented. `Microsoft.AspNetCore.OData` is pinned to `[9.4.*, 10)` on all target frameworks (including net10.0), which deliberately excludes the v10+ release that adds `$compute` support - the blocker is the package version pin, not the target framework. |

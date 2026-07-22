@@ -8,11 +8,12 @@
 		<Copyright>Copyright (c) en-gen and contributors</Copyright>
 		<PackageTags>odata;odata4;aspnetcore;openapi</PackageTags>
 		<!--
-		  Keep the original OhData.AspNetCore namespace: consistent with the
-		  Swashbuckle companion package, and preserving the namespace makes it
-		  a pure package-reference addition with no new using statements.
+		  This package's types live in their own OhData.AspNetCore.OpenApi
+		  namespace as of 1.5.0 (#264 split them out of the shared core). Match
+		  RootNamespace to that so a new file added here without an explicit
+		  namespace defaults into this package, not back into shared core.
 		-->
-		<RootNamespace>OhData.AspNetCore</RootNamespace>
+		<RootNamespace>OhData.AspNetCore.OpenApi</RootNamespace>
 		<EnablePackageValidation>true</EnablePackageValidation>
 		<PackageValidationBaselineVersion>1.4.0</PackageValidationBaselineVersion>
 	</PropertyGroup>

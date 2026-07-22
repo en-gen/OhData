@@ -73,9 +73,9 @@ internal static class BenchmarkHosts
     private static IEdmModel BuildEdmModel()
     {
         var modelBuilder = new ODataConventionModelBuilder();
-        // camelCase wire format to match OhData's default JSON casing — keeps the two
-        // servers' payloads and query-option property names symmetric.
-        modelBuilder.EnableLowerCamelCase();
+        // PascalCase wire format to match OhData's default JSON casing (1.5.0 flipped OhData's
+        // default to PascalCase) — ODataConventionModelBuilder is already PascalCase by default,
+        // so both hosts emit PascalCase and stay symmetric without any casing override here.
         modelBuilder.EntitySet<BenchWidget>(EntitySet);
         return modelBuilder.GetEdmModel();
     }

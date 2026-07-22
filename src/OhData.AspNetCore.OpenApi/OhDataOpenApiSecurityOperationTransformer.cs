@@ -66,28 +66,43 @@ public sealed class OhDataOpenApiSecurityOperationTransformer : IOpenApiOperatio
 
         // Standard ASP.NET Core semantics: an explicit IAllowAnonymous anywhere on the endpoint
         // wins over any IAuthorizeData, so those routes stay unsecured in the docs (#219).
-        bool secured = endpointMetadata.OfType<IAuthorizeData>().Any()
-            && !endpointMetadata.OfType<IAllowAnonymous>().Any();
-        if (!secured)
+        bool allowAnonymous = endpointMetadata.OfType<IAllowAnonymous>().Any();
+        bool coarseGated = endpointMetadata.OfType<IAuthorizeData>().Any() && !allowAnonymous;
+
+        // A pure resource-only rule (RequireResource() with no coarse gate) attaches
+        // OhDataOperationAuthMetadata but no IAuthorizeData, yet the runtime still returns 403 from
+        // its Layer B (instance-level) check. Document that 403 too — but emit no security *scheme*
+        // requirement, since a resource check has no scheme (#219). Never for anonymous routes.
+        bool resourceGated = !allowAnonymous
+            && endpointMetadata.OfType<OhDataOperationAuthMetadata>()
+                .Any(m => m.Requirements.Any(r => r.Kind == AuthRequirementKind.Resource));
+
+        if (!coarseGated && !resourceGated)
         {
             return Task.CompletedTask;
         }
 
-        // Operation-level security requirement referencing the app's scheme by id ($ref). OhData
-        // only names the scheme; the app owns its securitySchemes definition (#219 boundary).
-        operation.Security ??= new List<OpenApiSecurityRequirement>();
-        if (!operation.Security.Any(req => req.Keys.Any(k => k.Reference?.Id == _securitySchemeId)))
+        // Operation-level security requirement referencing the app's scheme by id ($ref). Only when
+        // a coarse gate is present — a pure resource check has no scheme to reference. OhData only
+        // names the scheme; the app owns its securitySchemes definition (#219 boundary).
+        if (coarseGated)
         {
-            operation.Security.Add(new OpenApiSecurityRequirement
+            operation.Security ??= new List<OpenApiSecurityRequirement>();
+            if (!operation.Security.Any(req => req.Keys.Any(k => k.Reference?.Id == _securitySchemeId)))
             {
-                [new OpenApiSecuritySchemeReference(_securitySchemeId, context.Document)] = _requiredScopes,
-            });
+                operation.Security.Add(new OpenApiSecurityRequirement
+                {
+                    [new OpenApiSecuritySchemeReference(_securitySchemeId, context.Document)] = _requiredScopes,
+                });
+            }
         }
 
-        // Document the auth-failure responses this route can now return. 403 also covers Layer B
-        // (resource/instance-level) denials, otherwise not expressible in OpenAPI (#219).
+        // Document the auth-failure responses this route can now return. 403 always applies (it also
+        // covers Layer B resource/instance-level denials, otherwise not expressible in OpenAPI). 401
+        // is emitted only for coarse-gated routes: a pure resource-only route has no endpoint gate to
+        // challenge on, so its Layer B check returns 403 (never 401) at runtime (#219).
         operation.Responses ??= new OpenApiResponses();
-        if (!operation.Responses.ContainsKey("401"))
+        if (coarseGated && !operation.Responses.ContainsKey("401"))
         {
             operation.Responses["401"] = new OpenApiResponse
             {
