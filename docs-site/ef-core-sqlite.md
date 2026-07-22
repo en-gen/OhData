@@ -1,9 +1,9 @@
 # EF Core + SQLite tutorial
 
-The [getting-started walkthrough](getting-started.md) put an in-memory list behind OhData. This
-tutorial puts a **real relational database** behind it — SQLite via EF Core — and shows the
-payoff: OData query options are not applied in memory, they are composed onto an `IQueryable` and
-**translated to SQL** by EF Core. `$filter`/`$orderby`/`$skip`/`$top` become
+The [getting-started walkthrough](getting-started.md) put EF Core's in-memory provider behind
+OhData. This tutorial puts a **real relational database** behind it — SQLite via EF Core — and
+shows the payoff: OData query options are not applied in memory, they are composed onto an
+`IQueryable` and **translated to SQL** by EF Core. `$filter`/`$orderby`/`$skip`/`$top` become
 `WHERE`/`ORDER BY`/`LIMIT`/`OFFSET` executed by the database.
 
 The complete, runnable version of everything below lives in
@@ -111,7 +111,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
         // you a standalone GET /odata/Products(1)/Category route.)
         HasRequired(x => x.Category);
 
-        GetQueryable = _ => Task.FromResult(db.Products.AsQueryable());
+        GetQueryable = _ => Task.FromResult<IQueryable<Product>>(db.Products);
         GetById      = (id, ct) => db.Products.SingleOrDefaultAsync(p => p.Id == id, ct);
 
         Post = async (product, ct) =>

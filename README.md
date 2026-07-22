@@ -64,13 +64,29 @@ public class ProductProfile : EntitySetProfile<int, Product>
         CountEnabled   = true;
         SelectEnabled  = true;
 
-        // IQueryable path: EF Core translates $filter/$orderby/$skip/$top into the SQL query
-        GetQueryable = (_) => Task.FromResult(db.Products.AsQueryable());
-        GetById      = (id, ct) => db.Products.FindAsync(id, ct).AsTask();
-        Post         = (p, ct) => { db.Products.Add(p); return db.SaveChangesAsync(ct).ContinueWith(_ => (Product?)p, ct); };
-        Put          = (id, p, ct) => { db.Products.Update(p); return db.SaveChangesAsync(ct).ContinueWith(_ => p, ct); };
-        Patch        = (id, delta, ct) => { var e = db.Products.Find(id); return Task.FromResult(e is null ? null : delta.Patch(e)); };
-        Delete       = (id, ct) => { /* remove by id */ return Task.FromResult(true); };
+        // IQueryable path: returning the un-materialized queryable is synchronous, so this one
+        // handler stays Task.FromResult; EF Core translates $filter/$orderby/$skip/$top and
+        // materializes the result asynchronously when the framework enumerates it.
+        GetQueryable = _ => Task.FromResult<IQueryable<Product>>(db.Products);
+        GetById      = async (id, ct) => await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
+        Post         = async (p, ct) => { db.Products.Add(p); await db.SaveChangesAsync(ct); return p; };
+        Put          = async (id, p, ct) => { db.Products.Update(p); await db.SaveChangesAsync(ct); return p; };
+        Patch        = async (id, delta, ct) =>
+        {
+            var e = await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
+            if (e is null) return null;
+            delta.Patch(e);
+            await db.SaveChangesAsync(ct);
+            return e;
+        };
+        Delete       = async (id, ct) =>
+        {
+            var e = await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
+            if (e is null) return false;
+            db.Products.Remove(e);
+            await db.SaveChangesAsync(ct);
+            return true;
+        };
     }
 }
 
@@ -137,13 +153,13 @@ public class OrdersProfile : EntitySetProfile<int, Order>
 {
     public OrdersProfile(AppDbContext db) : base(x => x.Id)
     {
-        GetQueryable = _ => Task.FromResult(db.Orders.AsQueryable());
+        GetQueryable = _ => Task.FromResult<IQueryable<Order>>(db.Orders);
 
         // Collection navigation. getAll gives the read routes; every parameter after it is
         // OPTIONAL - supply only the ones whose route you want:
         HasMany(
             navigation: x => x.Lines,
-            getAll:    (orderId, ct) => Task.FromResult(db.Lines.Where(l => l.OrderId == orderId).AsEnumerable()),
+            getAll:    async (orderId, ct) => await db.Lines.Where(l => l.OrderId == orderId).ToListAsync(ct),
                                           // GET /Orders({key})/Lines  (+ /Lines/$count)
             post:      (orderId, line, ct) => /* … */,   // optional → POST /Orders({key})/Lines  (create a related entity)
             addRef:    (orderId, lineId, ct) => /* … */, // optional → POST/PUT /Orders({key})/Lines/$ref  (link existing)
@@ -153,7 +169,8 @@ public class OrdersProfile : EntitySetProfile<int, Order>
         // Single-valued navigation → GET /Orders({key})/Customer.
         HasOptional(
             navigation: x => x.Customer,
-            get: (orderId, ct) => Task.FromResult(db.Orders.Find(orderId)?.Customer));
+            get: async (orderId, ct) =>
+                await db.Orders.Where(o => o.Id == orderId).Select(o => o.Customer).FirstOrDefaultAsync(ct));
 
         // ETag response header + If-Match concurrency on GET/PUT/PATCH/DELETE.
         UseETag(x => x.RowVersion);
