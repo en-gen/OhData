@@ -59,9 +59,6 @@ the raw [v2 service document](https://ohdata.onrender.com/v2) directly:
 - [Scalar API reference](https://ohdata.onrender.com/scalar/v2)
 - [Swagger UI](https://ohdata.onrender.com/swagger)
 
-(Free-tier hosting: the first load after a quiet spell takes a moment to wake up, and demo data
-is ephemeral.)
-
 ## Install
 
 ```bash
