@@ -15,8 +15,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using OhData.Abstractions;
-using OhData.AspNetCore;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.Tests;
@@ -296,7 +295,7 @@ public class AuthorizationMatrixTests
     [MemberData(nameof(AuthMatrixCases))]
     public async Task RequireAuthorization_Anonymous_Returns401_OnEveryRouteKind(string description, HttpMethod method, string path)
     {
-        await using var fx = await HeaderAuthTestHost.BuildAsync(o => o.AddProfile<AuthMatrixFullProfile>());
+        await using var fx = await HeaderAuthTestHost.BuildAsync(o => o.AddEntitySetProfile<AuthMatrixFullProfile>());
         var request = BuildRequest(method, path, BodyFor(description));
         var response = await fx.Client.SendAsync(request);
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
@@ -308,7 +307,7 @@ public class AuthorizationMatrixTests
     [MemberData(nameof(RoleMatrixCases))]
     public async Task RequireRoles_WrongRole_Returns403_OnEveryRouteKind(string description, HttpMethod method, string path)
     {
-        await using var fx = await HeaderAuthTestHost.BuildAsync(o => o.AddProfile<RoleMatrixFullProfile>());
+        await using var fx = await HeaderAuthTestHost.BuildAsync(o => o.AddEntitySetProfile<RoleMatrixFullProfile>());
         var request = BuildRequest(method, path, BodyFor(description));
         request.Headers.Add(HeaderAuthHandler.IdentityHeader, "alice");
         request.Headers.Add(HeaderAuthHandler.RolesHeader, "user"); // not "admin"
@@ -322,7 +321,7 @@ public class AuthorizationMatrixTests
     [MemberData(nameof(RoleMatrixCases))]
     public async Task RequireRoles_CorrectRole_Succeeds_OnEveryRouteKind(string description, HttpMethod method, string path)
     {
-        await using var fx = await HeaderAuthTestHost.BuildAsync(o => o.AddProfile<RoleMatrixFullProfile>());
+        await using var fx = await HeaderAuthTestHost.BuildAsync(o => o.AddEntitySetProfile<RoleMatrixFullProfile>());
         var request = BuildRequest(method, path, BodyFor(description));
         request.Headers.Add(HeaderAuthHandler.IdentityHeader, "bob");
         request.Headers.Add(HeaderAuthHandler.RolesHeader, "admin");
@@ -336,8 +335,8 @@ public class AuthorizationMatrixTests
     public async Task MixedRegistration_UnprotectedSet_StaysAnonymousAccessible_WhileProtectedSet401s()
     {
         await using var fx = await HeaderAuthTestHost.BuildAsync(o => o
-            .AddProfile<AuthMatrixFullProfile>()   // RequireAuthorization()
-            .AddProfile<WidgetProfile>());          // no auth configured
+            .AddEntitySetProfile<AuthMatrixFullProfile>()   // RequireAuthorization()
+            .AddEntitySetProfile<WidgetProfile>());          // no auth configured
 
         var unprotected = await fx.Client.GetAsync("/odata/Widgets");
         Assert.Equal(HttpStatusCode.OK, unprotected.StatusCode);
@@ -350,8 +349,8 @@ public class AuthorizationMatrixTests
     public async Task MixedRegistration_ProtectedSet_AllowsAuthenticatedAccess_WhileUnprotectedSetIgnoresHeaders()
     {
         await using var fx = await HeaderAuthTestHost.BuildAsync(o => o
-            .AddProfile<AuthMatrixFullProfile>()
-            .AddProfile<WidgetProfile>());
+            .AddEntitySetProfile<AuthMatrixFullProfile>()
+            .AddEntitySetProfile<WidgetProfile>());
 
         using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/AuthMatrixParents");
         request.Headers.Add(HeaderAuthHandler.IdentityHeader, "carol");
@@ -371,8 +370,8 @@ public class AuthorizationMatrixTests
     public async Task ServiceDocument_ReachableWithoutAuth_EvenWhenAllProfilesRequireAuth()
     {
         await using var fx = await HeaderAuthTestHost.BuildAsync(o => o
-            .AddProfile<AuthMatrixFullProfile>()
-            .AddProfile<RoleMatrixFullProfile>());
+            .AddEntitySetProfile<AuthMatrixFullProfile>()
+            .AddEntitySetProfile<RoleMatrixFullProfile>());
 
         var response = await fx.Client.GetAsync("/odata");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -387,8 +386,8 @@ public class AuthorizationMatrixTests
         // regardless of profile configuration. This may be a design question worth raising:
         // should $metadata be protectable when every entity set requires auth?
         await using var fx = await HeaderAuthTestHost.BuildAsync(o => o
-            .AddProfile<AuthMatrixFullProfile>()
-            .AddProfile<RoleMatrixFullProfile>());
+            .AddEntitySetProfile<AuthMatrixFullProfile>()
+            .AddEntitySetProfile<RoleMatrixFullProfile>());
 
         var response = await fx.Client.GetAsync("/odata/$metadata");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);

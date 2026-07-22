@@ -4,7 +4,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Threading.Tasks;
-using OhData.Abstractions;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.Tests;
@@ -37,9 +37,9 @@ public class UnimplementedQueryOptionTests
     public async Task UnimplementedOption_OnAnyCollectionPath_Returns400(string url, string option, string value)
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o
-            .AddProfile<WidgetProfile>()
-            .AddProfile<UnimplQueryableProfile>()
-            .AddProfile<ODataWidgetProfile>());
+            .AddEntitySetProfile<WidgetProfile>()
+            .AddEntitySetProfile<UnimplQueryableProfile>()
+            .AddEntitySetProfile<ODataWidgetProfile>());
 
         var resp = await fx.Client.GetAsync($"{url}?{option}={System.Uri.EscapeDataString(value)}");
 
@@ -58,9 +58,9 @@ public class UnimplementedQueryOptionTests
         // Control: an implemented option ($top) on the same routes must not be caught by the
         // unimplemented-option gate — the guard is scoped to the four unsupported options only.
         await using var fx = await TestHostBuilder.BuildAsync(o => o
-            .AddProfile<WidgetProfile>()
-            .AddProfile<UnimplQueryableProfile>()
-            .AddProfile<ODataWidgetProfile>());
+            .AddEntitySetProfile<WidgetProfile>()
+            .AddEntitySetProfile<UnimplQueryableProfile>()
+            .AddEntitySetProfile<ODataWidgetProfile>());
 
         var resp = await fx.Client.GetAsync($"{url}?$top=1");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);

@@ -1,6 +1,6 @@
 using Microsoft.AspNetCore.Authorization.Infrastructure;
 
-namespace OhData.AspNetCore;
+namespace OhData;
 
 /// <summary>
 /// The five OhData operation requirements used for resource-based (instance-level) authorization

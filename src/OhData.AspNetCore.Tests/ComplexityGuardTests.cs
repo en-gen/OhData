@@ -3,8 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
-using OhData.Abstractions;
-using OhData.Abstractions.AspNetCore.OData;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.Tests;
@@ -22,7 +21,7 @@ public class ComplexityGuardTests
     [Fact]
     public async Task Expand_WithinDepthLimit_Succeeds()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NodeProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NodeProfile>());
         // MaxExpansionDepth = 2 → two levels of nesting is allowed.
         var resp = await fx.Client.GetAsync($"{Url}?$expand=Children($expand=Children)");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
@@ -31,7 +30,7 @@ public class ComplexityGuardTests
     [Fact]
     public async Task Expand_ExceedsDepthLimit_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NodeProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NodeProfile>());
         // Three levels exceeds MaxExpansionDepth = 2.
         var resp = await fx.Client.GetAsync($"{Url}?$expand=Children($expand=Children($expand=Children))");
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
@@ -40,7 +39,7 @@ public class ComplexityGuardTests
     [Fact]
     public async Task Filter_ExceedsNodeCount_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NodeProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NodeProfile>());
         // MaxFilterNodeCount = 5; a compound and/or filter has more nodes than that.
         var resp = await fx.Client.GetAsync($"{Url}?$filter=Id eq 1 and Id eq 2 and Id eq 3");
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
@@ -49,7 +48,7 @@ public class ComplexityGuardTests
     [Fact]
     public async Task Filter_WithinNodeCount_Succeeds()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NodeProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NodeProfile>());
         var resp = await fx.Client.GetAsync($"{Url}?$filter=Id eq 1");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
     }
@@ -99,7 +98,7 @@ public class ComplexityGuardTests
     {
         // Registering a profile that sets all four per-profile limits exercises each init setter's
         // happy path and each `?? defaults` resolution's non-null branch during EDM build.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<AllLimitsProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllLimitsProfile>());
         var resp = await fx.Client.GetAsync("/odata/AllLimits");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
     }

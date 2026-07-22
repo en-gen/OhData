@@ -8,8 +8,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
-using OhData.Abstractions;
-using OhData.AspNetCore;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.Tests;
@@ -61,7 +60,7 @@ public class ActionBodyGuardTests
     public async Task CollectionBoundAction_BadBody_Returns400WithEnvelope(string body)
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<BoundOpsProfile>(),
+            o => o.AddEntitySetProfile<BoundOpsProfile>(),
             configureServices: s => s.AddSingleton(new BoundOpsStore()));
 
         var response = await fx.Client.PostAsync("/odata/BoundWidgets/AddSuffix", JsonBody(body));
@@ -73,7 +72,7 @@ public class ActionBodyGuardTests
     public async Task CollectionBoundAction_WrongContentType_Returns415WithEnvelope()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<BoundOpsProfile>(),
+            o => o.AddEntitySetProfile<BoundOpsProfile>(),
             configureServices: s => s.AddSingleton(new BoundOpsStore()));
 
         var response = await fx.Client.PostAsync(
@@ -88,7 +87,7 @@ public class ActionBodyGuardTests
         // Regression guard: an action with zero parameters never reads the body at all, so an
         // empty (or any) body/content-type must keep working exactly as before this fix.
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<BoundOpsProfile>(),
+            o => o.AddEntitySetProfile<BoundOpsProfile>(),
             configureServices: s => s.AddSingleton(new BoundOpsStore()));
 
         var response = await fx.Client.PostAsync("/odata/BoundWidgets/ClearAll", JsonBody(""));
@@ -106,7 +105,7 @@ public class ActionBodyGuardTests
     public async Task EntityBoundAction_BadBody_Returns400WithEnvelope(string body)
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<EntityBoundOpsProfile>(),
+            o => o.AddEntitySetProfile<EntityBoundOpsProfile>(),
             configureServices: s => s.AddSingleton(new EntityBoundOpsStore()));
 
         var response = await fx.Client.PostAsync("/odata/EntityBoundWidgets(1)/RenameWidget", JsonBody(body));
@@ -118,7 +117,7 @@ public class ActionBodyGuardTests
     public async Task EntityBoundAction_WrongContentType_Returns415WithEnvelope()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<EntityBoundOpsProfile>(),
+            o => o.AddEntitySetProfile<EntityBoundOpsProfile>(),
             configureServices: s => s.AddSingleton(new EntityBoundOpsStore()));
 
         var response = await fx.Client.PostAsync(
@@ -180,7 +179,7 @@ public class ActionBodyGuardTests
     {
         // NavQueryProfile ("NavQueryParents") has a collection nav ("Children") with addRef
         // configured -- reused as-is from EndpointMappingTests's own $ref coverage.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavQueryProfile>());
 
         var response = await fx.Client.PostAsync("/odata/NavQueryParents(1)/Children/$ref", JsonBody(body));
 
@@ -190,7 +189,7 @@ public class ActionBodyGuardTests
     [Fact]
     public async Task RefPost_WrongContentType_Returns415WithEnvelope()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavQueryProfile>());
 
         var response = await fx.Client.PostAsync(
             "/odata/NavQueryParents(1)/Children/$ref",
@@ -206,7 +205,7 @@ public class ActionBodyGuardTests
     [InlineData("\"just a string\"")]
     public async Task RefPut_BadBody_Returns400WithEnvelope(string body)
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<RefPutGuardProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<RefPutGuardProfile>());
 
         var response = await fx.Client.PutAsync("/odata/RefPutGuardParents(1)/PrimaryChild/$ref", JsonBody(body));
 
@@ -216,7 +215,7 @@ public class ActionBodyGuardTests
     [Fact]
     public async Task RefPut_WrongContentType_Returns415WithEnvelope()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<RefPutGuardProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<RefPutGuardProfile>());
 
         var response = await fx.Client.PutAsync(
             "/odata/RefPutGuardParents(1)/PrimaryChild/$ref",
@@ -229,7 +228,7 @@ public class ActionBodyGuardTests
     public async Task RefPost_ValidBody_StillReturns204()
     {
         // Regression guard: the happy path must still work after adding the body-shape guards.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavQueryProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavQueryProfile>());
 
         var response = await fx.Client.PostAsync(
             "/odata/NavQueryParents(1)/Children/$ref",
@@ -243,7 +242,7 @@ public class ActionBodyGuardTests
     [Fact]
     public async Task ThrowingGetAll_Returns500WithGenericEnvelope()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ThrowGuardProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ThrowGuardProfile>());
 
         var response = await fx.Client.GetAsync("/odata/ThrowGuardWidgets");
 
@@ -257,7 +256,7 @@ public class ActionBodyGuardTests
     [Fact]
     public async Task ThrowingBoundAction_Returns500WithGenericEnvelope()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ThrowGuardProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ThrowGuardProfile>());
 
         var response = await fx.Client.PostAsync("/odata/ThrowGuardWidgets/Boom", JsonBody("{}"));
 
@@ -271,7 +270,7 @@ public class ActionBodyGuardTests
     [Fact]
     public async Task ThrowingNavHandler_Returns500WithGenericEnvelope()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ThrowGuardProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ThrowGuardProfile>());
 
         var response = await fx.Client.GetAsync("/odata/ThrowGuardWidgets(1)/Children");
 
@@ -288,7 +287,7 @@ public class ActionBodyGuardTests
         // The exception filter must not interfere with routes that deliberately return an
         // ODataError IResult -- those are return values, never thrown, so they must reach the
         // client completely unaffected by the presence of the group-level exception filter.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ThrowGuardProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ThrowGuardProfile>());
 
         var response = await fx.Client.GetAsync("/odata/ThrowGuardWidgets(notanint)/Children");
 

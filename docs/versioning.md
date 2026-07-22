@@ -7,12 +7,12 @@ OhData supports multiple simultaneous registrations with independent prefixes, E
 ```csharp
 builder.Services.AddOhData("v1", o => o
     .WithPrefix("/v1")
-    .AddProfile<ProductProfileV1>());
+    .AddEntitySetProfile<ProductProfileV1>());
 
 builder.Services.AddOhData("v2", o => o
     .WithPrefix("/v2")
-    .AddProfile<ProductProfileV1>()
-    .AddProfile<CustomerProfileV2>());   // new entity set in v2
+    .AddEntitySetProfile<ProductProfileV1>()
+    .AddEntitySetProfile<CustomerProfileV2>());   // new entity set in v2
 
 app.MapOhData("v1");
 app.MapOhData("v2");
@@ -31,12 +31,12 @@ GET /v2/Customers      ← v2 only
 `AddOhDataVersion` and `MapOhDataVersion` are included in `EnGen.OhData.AspNetCore` and combine name and prefix into a single call:
 
 ```csharp
-using OhData.AspNetCore.Versioning;
-
-builder.Services.AddOhDataVersion("v1", "/v1", o => o.AddProfile<ProductProfileV1>());
+// AddOhDataVersion / MapOhDataVersion live in Microsoft.Extensions.DependencyInjection /
+// Microsoft.AspNetCore.Builder, so no OhData-specific using is required.
+builder.Services.AddOhDataVersion("v1", "/v1", o => o.AddEntitySetProfile<ProductProfileV1>());
 builder.Services.AddOhDataVersion("v2", "/v2", o => o
-    .AddProfile<ProductProfileV1>()
-    .AddProfile<CustomerProfileV2>());
+    .AddEntitySetProfile<ProductProfileV1>()
+    .AddEntitySetProfile<CustomerProfileV2>());
 
 app.MapOhDataVersion("v1");
 app.MapOhDataVersion("v2");
@@ -78,8 +78,10 @@ builder.Services.AddSwaggerGen(c =>
 ```
 
 `OhDataSwaggerSchemaFilter` (same package) omits properties excluded via
-`EntitySetProfile.Ignore(...)` from generated schemas, so documents match the real wire shape —
-see [ignoring-properties.md](ignoring-properties.md#openapi--swagger-documents). Each filter is
+`EntitySetProfile.Ignore(...)` from generated schemas, and renames the surviving property keys to
+OhData's response casing (PascalCase by default), so documents match the real wire shape — see
+[ignoring-properties.md](ignoring-properties.md#openapi--swagger-documents) and
+[query-options.md → JSON property casing](query-options.md#json-property-casing). Each filter is
 independent; register only the one you need, or both.
 
 Write routes get a real request-body schema and collection GET routes get a typed
@@ -94,8 +96,8 @@ Swashbuckle). `WithSummary()`/`WithDescription()` on collection GET routes are a
 Calling `AddOhData(...)` without a name uses the key `"__default__"` internally and coexists cleanly with named registrations:
 
 ```csharp
-builder.Services.AddOhData(o => o.WithPrefix("/odata").AddProfile<ProductProfile>());
-builder.Services.AddOhData("v2", o => o.WithPrefix("/v2").AddProfile<ProductProfileV2>());
+builder.Services.AddOhData(o => o.WithPrefix("/odata").AddEntitySetProfile<ProductProfile>());
+builder.Services.AddOhData("v2", o => o.WithPrefix("/v2").AddEntitySetProfile<ProductProfileV2>());
 
 app.MapOhData();       // maps __default__
 app.MapOhData("v2");   // maps v2

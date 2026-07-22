@@ -8,7 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using OhData.AspNetCore;
+using OhData;
 
 namespace OhData.AspNetCore.Tests;
 
@@ -20,6 +20,9 @@ internal sealed class TestFixture : IAsyncDisposable
 {
     private readonly WebApplication _app;
     public HttpClient Client { get; }
+
+    /// <summary>The running host, for tests that need its service provider (e.g. DB seeding).</summary>
+    internal WebApplication App => _app;
 
     internal TestFixture(WebApplication app)
     {

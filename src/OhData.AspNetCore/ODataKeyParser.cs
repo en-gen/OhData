@@ -2,7 +2,7 @@ using System;
 using System.ComponentModel;
 using System.Globalization;
 
-namespace OhData.AspNetCore;
+namespace OhData;
 
 internal static class ODataKeyParser
 {

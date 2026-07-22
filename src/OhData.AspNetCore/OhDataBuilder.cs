@@ -2,12 +2,16 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.OData.Edm;
+using Microsoft.OData.Edm.Csdl;
+using Microsoft.OData.Edm.Vocabularies;
+using Microsoft.OData.Edm.Vocabularies.V1;
 using Microsoft.OData.ModelBuilder;
-using OhData.Abstractions;
 
-namespace OhData.AspNetCore;
+namespace OhData;
 
 /// <summary>
 /// Fluent builder used inside <c>AddOhData(ohdata => { ... })</c> to register entity set profiles
@@ -21,6 +25,10 @@ public sealed class OhDataBuilder
     private string _prefix = "/odata";
     private readonly string _name;
     private readonly EntitySetDefaults _defaults = new();
+    // #252: OhData owns its response casing independently of the host's HttpJsonOptions.
+    // null = PascalCase (the CLR names $metadata declares, OData §4.4). This is the source of
+    // truth for every OhData response path; the host's PropertyNamingPolicy is not inherited.
+    private JsonNamingPolicy? _jsonPropertyNamingPolicy;
 
     // Tracks profile types registered across all OhData registrations on this IServiceCollection.
     // Stored as a singleton marker so it is shared between all OhDataBuilder instances.
@@ -38,6 +46,19 @@ public sealed class OhDataBuilder
         // as an instance singleton so it is available before the container is built.
         if (!_services.Any(s => s.ServiceType == typeof(GlobalProfileRegistry)))
             _services.AddSingleton(new GlobalProfileRegistry());
+
+        // Delta-mapping infrastructure. The registry accumulates DeltaProfile types across every
+        // OhData registration (instance singleton, mutable before the container is built); the
+        // single IDeltaFactory reads it once, lazily, and compiles/validates every mapping (forced
+        // at MapOhData for startup fail-fast). Both registered idempotently so multiple AddOhData
+        // calls are no-ops here.
+        if (!_services.Any(s => s.ServiceType == typeof(DeltaProfileRegistry)))
+            _services.AddSingleton(new DeltaProfileRegistry());
+        if (!_services.Any(s => s.ServiceType == typeof(IDeltaFactory)))
+        {
+            _services.AddSingleton<IDeltaFactory>(sp =>
+                DeltaFactory.Build(sp, sp.GetRequiredService<DeltaProfileRegistry>()));
+        }
     }
 
     /// <summary>
@@ -69,15 +90,48 @@ public sealed class OhDataBuilder
     }
 
     /// <summary>
+    /// Sets the JSON property-naming policy applied to every OData response payload in this
+    /// registration (collection/GetById reads, POST/PUT/PATCH echoes, <c>$select</c>/<c>$expand</c>
+    /// output, <c>$value</c>, and function/action results).
+    /// </summary>
+    /// <remarks>
+    /// Defaults to <c>null</c> — <b>PascalCase</b>, the CLR property names OhData's <c>$metadata</c>
+    /// declares — so payload casing matches the EDM (OData §4.4). OhData owns this default
+    /// independently of the host's <c>HttpJsonOptions.SerializerOptions.PropertyNamingPolicy</c>,
+    /// which is intentionally not inherited. Pass <see cref="JsonNamingPolicy.CamelCase"/> to emit
+    /// camelCase payloads instead; an explicit value here always wins.
+    /// <para>
+    /// <b>Warning — this policy shapes payloads and OpenAPI schemas, NOT <c>$metadata</c>.</b> Opting
+    /// into camelCase makes response bodies and the generated OpenAPI schema camelCase, but
+    /// <c>$metadata</c> continues to advertise the EDM property names — PascalCase, or the
+    /// <c>[System.Text.Json.Serialization.JsonPropertyName]</c> value where one is present (§4.4).
+    /// The <c>$select</c>/<c>$filter</c>/<c>$orderby</c> parser resolves those EDM names
+    /// case-insensitively, so a camelCase query option still binds; but a strict OData-native client
+    /// that binds by the exact <c>$metadata</c> name will not match a camelCase payload key under this
+    /// opt-in. A <c>[JsonPropertyName]</c> rename is the ONE name used everywhere (metadata, payload,
+    /// query options, schema) regardless of this policy — the policy never re-cases a rename.
+    /// </para>
+    /// </remarks>
+    /// <param name="policy">
+    /// The naming policy, or <c>null</c> for PascalCase (the default). For example
+    /// <see cref="JsonNamingPolicy.CamelCase"/>.
+    /// </param>
+    public OhDataBuilder WithJsonPropertyNamingPolicy(JsonNamingPolicy? policy)
+    {
+        _jsonPropertyNamingPolicy = policy;
+        return this;
+    }
+
+    /// <summary>
     /// Registers an entity set profile. The profile is resolved from DI (scoped),
     /// so constructor injection of scoped services (e.g. DbContext) is supported.
     /// </summary>
-    public OhDataBuilder AddProfile<TProfile>() where TProfile : class, IEntitySetProfile
+    public OhDataBuilder AddEntitySetProfile<TProfile>() where TProfile : class, IEntitySetProfile
     {
         if (_profileTypes.Contains(typeof(TProfile)))
         {
             throw new InvalidOperationException(
-                $"OhData: profile type '{typeof(TProfile).Name}' is already registered. Remove the duplicate AddProfile call.");
+                $"OhData: profile type '{typeof(TProfile).Name}' is already registered. Remove the duplicate AddEntitySetProfile call.");
         }
 
         // Detect the same profile type being registered in a different OhData registration.
@@ -99,9 +153,45 @@ public sealed class OhDataBuilder
     }
 
     /// <summary>
+    /// Registers a <see cref="DeltaProfile"/>. Its mappings are compiled and validated once at
+    /// startup and exposed through the injected <see cref="IDeltaFactory"/>. The symmetric
+    /// counterpart to <see cref="AddEntitySetProfile{TProfile}"/>.
+    /// </summary>
+    public OhDataBuilder AddDeltaProfile<TProfile>() where TProfile : DeltaProfile
+    {
+        AddDeltaProfileType(typeof(TProfile), explicitCall: true);
+        return this;
+    }
+
+    // Routes a DeltaProfile type into the shared cross-registration registry and DI. Delta
+    // profiles are not tied to a single OhData registration (the IDeltaFactory is one global
+    // singleton), so uniqueness is tracked in the shared DeltaProfileRegistry rather than the
+    // per-builder _profileTypes list.
+    private void AddDeltaProfileType(Type type, bool explicitCall)
+    {
+        var registryDescriptor = _services.FirstOrDefault(s => s.ServiceType == typeof(DeltaProfileRegistry));
+        var registry = (DeltaProfileRegistry)registryDescriptor!.ImplementationInstance!;
+        if (registry.Types.Contains(type))
+        {
+            if (explicitCall)
+            {
+                throw new InvalidOperationException(
+                    $"OhData: delta profile type '{type.Name}' is already registered. " +
+                    "Remove the duplicate AddDeltaProfile call.");
+            }
+            return; // scan re-discovery of an already-registered type — skip idempotently
+        }
+
+        if (!_services.Any(s => s.ServiceType == type))
+            _services.AddScoped(type);
+        registry.Types.Add(type);
+    }
+
+    /// <summary>
     /// Scans the specified assemblies for <see cref="EntitySetProfile{TKey,TModel}"/> subclasses
-    /// and registers each discovered profile as if it had been passed to
-    /// <see cref="AddProfile{TProfile}"/> individually.
+    /// and <see cref="DeltaProfile"/> subclasses, registering each discovered profile as if it had
+    /// been passed to <see cref="AddEntitySetProfile{TProfile}"/> or
+    /// <see cref="AddDeltaProfile{TProfile}"/> individually.
     /// </summary>
     /// <param name="configure">
     /// Callback that receives a <see cref="ProfileScanner"/> and specifies which assemblies
@@ -121,7 +211,12 @@ public sealed class OhDataBuilder
         var scanner = new ProfileScanner(_profileTypes);
         configure(scanner);
         foreach (var type in scanner.Scan())
-            AddProfileType(type);
+        {
+            if (typeof(DeltaProfile).IsAssignableFrom(type))
+                AddDeltaProfileType(type, explicitCall: false);
+            else
+                AddProfileType(type);
+        }
         return this;
     }
 
@@ -192,6 +287,7 @@ public sealed class OhDataBuilder
         string capturedPrefix = _prefix;
         string capturedName = _name;
         var capturedDefaults = _defaults;
+        var capturedNamingPolicy = _jsonPropertyNamingPolicy;
 
         _services.AddKeyedSingleton<OhDataRegistration>(capturedName, (sp, _) =>
         {
@@ -336,16 +432,35 @@ public sealed class OhDataBuilder
             // StructuralTypes does NOT yet contain nav-target types at the point profiles finish
             // visiting the builder above -- they're discovered lazily inside GetEdmModel().
             var rootModelTypes = new HashSet<Type>(profiles.Select(p => p.ModelType));
-            modelBuilder.OnModelCreating = b => MarkNavigationTargetTypesFullyQueryable(b, rootModelTypes);
+            modelBuilder.OnModelCreating = b =>
+            {
+                // #253: rename every structural property whose CLR member carries a
+                // [JsonPropertyName] so the EDM/$metadata/query-option name IS the JSON name. Runs
+                // for EVERY structural type the builder discovered (root profile types AND nav-target
+                // types reached only through navigation), so a nested $expand($select=renamedChild)
+                // resolves against — and survives the strip under — the same name too.
+                ApplyJsonPropertyNameRenames(b);
+                MarkNavigationTargetTypesFullyQueryable(b, rootModelTypes);
+            };
 
             var edmModel = modelBuilder.GetEdmModel();
+
+            // #206: advertise the resolved MaxExpansionDepth per entity set as the
+            // Org.OData.Capabilities.V1.ExpandRestrictions/MaxLevels annotation, so a client can
+            // discover the server's $expand/$levels ceiling from $metadata before it 400s a too-deep
+            // request. Best-effort: the convention builder returns a concrete EdmModel (the only type
+            // that accepts vocabulary annotations); if that ever changes, the annotation is skipped
+            // rather than failing startup — the limit is still enforced at request time.
+            AnnotateExpandRestrictions(edmModel, profiles, logger);
+
             logger?.LogInformation(
                 "OhData: initialized {Count} entity set(s) [{Names}] at prefix '{Prefix}'",
                 profiles.Count,
                 string.Join(", ", profiles.Select(p => p.EntitySetName)),
                 capturedPrefix);
 
-            var reg = new OhDataRegistration(capturedPrefix, edmModel, profiles, capturedUnbound);
+            var reg = new OhDataRegistration(
+                capturedPrefix, edmModel, profiles, capturedUnbound, capturedNamingPolicy);
             // Also register in the collection for named access
             sp.GetRequiredService<OhDataRegistrationCollection>().Add(capturedName, reg);
             return reg;
@@ -357,6 +472,37 @@ public sealed class OhDataBuilder
             _services.AddSingleton<OhDataRegistration>(sp =>
                 sp.GetRequiredKeyedService<OhDataRegistration>(OhDataDefaults.DefaultRegistrationName));
         }
+    }
+
+    // #206: attach an Org.OData.Capabilities.V1.ExpandRestrictions vocabulary annotation carrying
+    // MaxLevels = the profile's resolved MaxExpansionDepth to each entity set, so the ceiling is
+    // discoverable from $metadata. Emitted inline (inside the EntitySet element) so a CSDL reader
+    // finds it without an out-of-line lookup. Best-effort and non-fatal: any missing model/term/set
+    // is skipped (the depth limit is still enforced by the request-time validator regardless).
+    private static void AnnotateExpandRestrictions(
+        IEdmModel edmModel, IReadOnlyList<IEntitySetEndpointSource> profiles, ILogger? logger)
+    {
+        if (edmModel is not EdmModel model) return;
+        IEdmTerm? term = CapabilitiesVocabularyModel.Instance
+            .FindDeclaredTerm("Org.OData.Capabilities.V1.ExpandRestrictions");
+        if (term is null) return;
+
+        IEdmEntityContainer? container = model.EntityContainer;
+        if (container is null) return;
+
+        foreach ((IEntitySetEndpointSource profile, IEdmEntitySet entitySet) in profiles
+            .Select(profile => (profile, entitySet: container.FindEntitySet(profile.EntitySetName)))
+            .Where(pair => pair.entitySet is not null)
+            .Select(pair => (pair.profile, pair.entitySet!)))
+        {
+            var record = new EdmRecordExpression(
+                new EdmPropertyConstructor("MaxLevels", new EdmIntegerConstant(profile.MaxExpansionDepth)));
+            var annotation = new EdmVocabularyAnnotation(entitySet, term, record);
+            annotation.SetSerializationLocation(model, EdmVocabularyAnnotationSerializationLocation.Inline);
+            model.AddVocabularyAnnotation(annotation);
+        }
+
+        logger?.LogDebug("OhData: advertised ExpandRestrictions/MaxLevels for {Count} entity set(s).", profiles.Count);
     }
 
     // Marks every structural type the builder discovered that is NOT one of the root profiles'
@@ -384,6 +530,51 @@ public sealed class OhDataBuilder
             // effectively-unlimited-but-not-infinite settings this framework uses elsewhere
             // (e.g. MaxAnyAllExpressionDepth = 1000 in OhDataEndpointFactory).
             query.SetExpand(properties: null, maxDepth: 1000, expandType: SelectExpandType.Allowed);
+            // #206 phase 2 (optioned expand): once ANY model-bound setting exists on a type,
+            // Microsoft's SelectExpand validator defaults its MaxTop to 0, which rejects a nested
+            // $top inside a $expand of THIS type ($expand=Children($top=N)) with "limit of 0 for
+            // Top". Nav-target types are the collection element types a nested $top pages, so clear
+            // that spurious ceiling (null = unlimited). OhData governs $top itself: the root path
+            // clamps to source.MaxTop, and the expand-pushdown path applies the nested $top directly.
+            query.SetMaxTop(null);
+        }
+    }
+
+    // #253: give every property carrying a [System.Text.Json.Serialization.JsonPropertyName] that
+    // attribute's value as its EDM name, so $metadata, $select/$filter/$orderby/$expand, the nav-path
+    // URL segments and the response payload all use one name per property. This applies UNIFORMLY to
+    // structural AND navigation properties (#253 completion — reverses #184): a renamed navigation is
+    // addressed by its JSON name on every OData surface, exactly like a renamed structural property
+    // (its JSON payload key, produced by ResolveNavigationJsonKey off the same [JsonPropertyName], then
+    // agrees with the EDM/$expand identifier). Fails fast when two properties on one type would resolve
+    // to the same EDM name (case-insensitive, the way OData resolves identifiers) — the collision check
+    // now spans navigations and structural properties together — since that ambiguity cannot be
+    // represented in the EDM or the URL space.
+    private static void ApplyJsonPropertyNameRenames(ODataModelBuilder builder)
+    {
+        foreach (StructuralTypeConfiguration structuralType in builder.StructuralTypes)
+        {
+            var seen = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            // Every property — structural and navigation alike — is renamed to its [JsonPropertyName].
+            foreach (PropertyConfiguration property in structuralType.Properties)
+            {
+                string edmName = property.PropertyInfo is { } clr
+                    ? ODataPropertyNaming.ResolveEdmName(clr)
+                    : property.Name;
+                if (!string.Equals(edmName, property.Name, StringComparison.Ordinal))
+                    property.Name = edmName;
+
+                if (seen.TryGetValue(edmName, out string? existing) &&
+                    !string.Equals(existing, property.PropertyInfo?.Name, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        $"OhData: type '{structuralType.ClrType.Name}' has two properties that resolve to " +
+                        $"the same OData name '{edmName}' ('{existing}' and " +
+                        $"'{property.PropertyInfo?.Name ?? edmName}'). A [JsonPropertyName] rename must not " +
+                        "collide with another property's OData name. Rename one of them.");
+                }
+                seen[edmName] = property.PropertyInfo?.Name ?? edmName;
+            }
         }
     }
 

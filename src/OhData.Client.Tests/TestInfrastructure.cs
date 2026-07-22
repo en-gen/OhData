@@ -11,8 +11,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using OhData.Abstractions;
-using OhData.AspNetCore;
+using OhData;
 
 namespace OhData.Client.Tests;
 
@@ -170,7 +169,7 @@ internal sealed class ClientTestFixture : IAsyncDisposable
         builder.Services.AddOhData(o =>
         {
             o.WithPrefix(prefix);
-            o.AddProfile<WidgetProfile>();
+            o.AddEntitySetProfile<WidgetProfile>();
         });
 
         var app = builder.Build();
@@ -215,8 +214,8 @@ internal sealed class ETagClientTestFixture : IAsyncDisposable
         builder.Services.AddOhData(o =>
         {
             o.WithPrefix(prefix);
-            o.AddProfile<WidgetProfile>();
-            o.AddProfile<ETagWidgetProfile>();
+            o.AddEntitySetProfile<WidgetProfile>();
+            o.AddEntitySetProfile<ETagWidgetProfile>();
         });
 
         var app = builder.Build();
@@ -285,7 +284,7 @@ internal sealed class TemporalClientTestFixture : IAsyncDisposable
         builder.Services.AddOhData(o =>
         {
             o.WithPrefix(prefix);
-            o.AddProfile<TemporalWidgetProfile>();
+            o.AddEntitySetProfile<TemporalWidgetProfile>();
         });
 
         var app = builder.Build();
@@ -362,7 +361,7 @@ internal sealed class TaggedItemClientTestFixture : IAsyncDisposable
         builder.Services.AddOhData(o =>
         {
             o.WithPrefix(prefix);
-            o.AddProfile<TaggedItemProfile>();
+            o.AddEntitySetProfile<TaggedItemProfile>();
         });
 
         var app = builder.Build();
@@ -402,7 +401,7 @@ internal sealed class PaginatedClientTestFixture : IAsyncDisposable
         builder.Services.AddOhData(o =>
         {
             o.WithPrefix(prefix);
-            o.AddProfile<PaginatedWidgetProfile>();
+            o.AddEntitySetProfile<PaginatedWidgetProfile>();
         });
 
         var app = builder.Build();

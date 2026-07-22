@@ -4,8 +4,7 @@ using System.Net.Http;
 using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.OData.Deltas;
-using OhData.Abstractions;
-using OhData.AspNetCore;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.OpenApi.Tests;
@@ -165,8 +164,8 @@ public sealed class OhDataRequestBodyAndResponseTests
 
     private static async Task<TestFixture> BuildAsync() => await TestHostBuilder.BuildAsync(o =>
     {
-        o.AddProfile<WriteSurfaceProfile>();
-        o.AddProfile<WriteSurfaceQueryableProfile>();
+        o.AddEntitySetProfile<WriteSurfaceProfile>();
+        o.AddEntitySetProfile<WriteSurfaceQueryableProfile>();
     });
 
     private static async Task<JsonDocument> BuildAndFetchAsync()

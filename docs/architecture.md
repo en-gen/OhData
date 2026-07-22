@@ -32,7 +32,7 @@ public class PersonProfile : EntitySetProfile<int, Person>
 ## Startup flow
 
 ```
-AddOhData(builder => builder.AddProfile<T>())
+AddOhData(builder => builder.AddEntitySetProfile<T>())
   │
   └─► OhDataBuilder collects profile types, prefix, and defaults
         │
@@ -84,7 +84,7 @@ See [docs/navigation-routing.md](navigation-routing.md) for `$ref`/POST-to-navig
 
 ## Registering profiles
 
-`AddProfile<TProfile>()` registers a single profile type explicitly - this is the form shown in the README quick start. For larger codebases, `OhDataBuilder` also supports assembly scanning so you don't have to list every profile by hand:
+`AddEntitySetProfile<TProfile>()` registers a single profile type explicitly - this is the form shown in the README quick start. For larger codebases, `OhDataBuilder` also supports assembly scanning so you don't have to list every profile by hand:
 
 ```csharp
 builder.Services.AddOhData(o => o
@@ -100,7 +100,7 @@ builder.Services.AddOhData(o => o
     .AddProfilesFromAssembly(typeof(Program).Assembly));
 ```
 
-All three forms discover every concrete (non-abstract) `EntitySetProfile<TKey,TModel>` subclass in the scanned assemblies and register each one exactly as if it had been passed to `AddProfile<TProfile>()` individually - same `AddScoped` lifetime, same cross-registration duplicate-type guard. A type already registered (via an earlier `AddProfile<T>()` or a previous scan) is skipped rather than registered twice. `AddProfilesFromAssemblyOf<T>()` is equivalent to `AddProfilesFrom(s => s.InAssemblyOf<T>())`, and `AddProfilesFromAssembly(...)` is equivalent to `AddProfilesFrom(s => s.In(assemblies))`. These can be mixed freely with explicit `AddProfile<T>()` calls in the same builder.
+All three forms discover every concrete (non-abstract) `EntitySetProfile<TKey,TModel>` subclass in the scanned assemblies and register each one exactly as if it had been passed to `AddEntitySetProfile<TProfile>()` individually - same `AddScoped` lifetime, same cross-registration duplicate-type guard. A type already registered (via an earlier `AddEntitySetProfile<T>()` or a previous scan) is skipped rather than registered twice. `AddProfilesFromAssemblyOf<T>()` is equivalent to `AddProfilesFrom(s => s.InAssemblyOf<T>())`, and `AddProfilesFromAssembly(...)` is equivalent to `AddProfilesFrom(s => s.In(assemblies))`. These can be mixed freely with explicit `AddEntitySetProfile<T>()` calls in the same builder.
 
 ## Type erasure via `IEntitySetEndpointSource`
 
@@ -141,7 +141,7 @@ When `$select` is active, the framework:
 2. Serializes to `JsonNode`
 3. Removes non-selected property nodes from each item
 
-This is done instead of using `ISelectExpandWrapper.ToDictionary()` because OData's wrapper produces PascalCase keys while normal serialization produces camelCase - the `JsonNode` approach preserves the existing naming policy.
+This is done instead of using `ISelectExpandWrapper.ToDictionary()` because OData's wrapper always produces PascalCase keys regardless of the configured naming policy - the `JsonNode` approach preserves whatever policy OhData is serializing with. Since #252 that policy is **PascalCase by default** (matching `$metadata`), so the two happen to agree by default; but a profile that opts into camelCase (`WithJsonPropertyNamingPolicy(JsonNamingPolicy.CamelCase)`) would diverge from the wrapper, which is exactly the inconsistency the `JsonNode` post-processing avoids.
 
 ## Route templates and `MapGroup`
 

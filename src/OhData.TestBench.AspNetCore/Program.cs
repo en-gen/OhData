@@ -3,8 +3,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
-using OhData.AspNetCore;
-using OhData.AspNetCore.Versioning;
+using OhData;
+using OhData.AspNetCore.Swashbuckle;
 using OhData.TestBench.AspNetCore;
 using Scalar.AspNetCore;
 
@@ -41,14 +41,14 @@ builder.Services.AddSwaggerGen(c =>
 //                                   Studio entity sets those navigations point at.
 //
 builder.Services.AddOhDataVersion("v1", "/v1", o =>
-    o.AddProfile<MovieProfile>()
-     .AddProfile<GenreProfile>());
+    o.AddEntitySetProfile<MovieProfile>()
+     .AddEntitySetProfile<GenreProfile>());
 
 builder.Services.AddOhDataVersion("v2", "/v2", o =>
-    o.AddProfile<MovieProfileV2>()
-     .AddProfile<GenreProfileV2>()
-     .AddProfile<ActorProfile>()
-     .AddProfile<StudioProfile>());
+    o.AddEntitySetProfile<MovieProfileV2>()
+     .AddEntitySetProfile<GenreProfileV2>()
+     .AddEntitySetProfile<ActorProfile>()
+     .AddEntitySetProfile<StudioProfile>());
 
 // ── App pipeline ──────────────────────────────────────────────────────────────
 var app = builder.Build();

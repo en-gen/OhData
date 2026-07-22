@@ -14,8 +14,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.AspNetCore.OData.Deltas;
 using Microsoft.Extensions.Logging;
-using OhData.Abstractions;
-using OhData.AspNetCore;
+using OhData;
 using OhData.Client;
 using Xunit;
 
@@ -102,7 +101,7 @@ internal sealed class CompatibilityTestFixture : IAsyncDisposable
         builder.Services.AddOhData(o =>
         {
             o.WithPrefix(Prefix);
-            o.AddProfile<WidgetProfile>();
+            o.AddEntitySetProfile<WidgetProfile>();
         });
 
         var app = builder.Build();

@@ -11,8 +11,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
-using OhData.Abstractions;
-using OhData.AspNetCore;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.Tests;
@@ -30,7 +29,7 @@ public class NavigationPostTests
     [Fact]
     public async Task Post_CreatesChild_Returns201WithBodyAndLocation()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPostHappyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavPostHappyProfile>());
 
         var response = await fx.Client.PostAsJsonAsync(
             "/odata/NavPostHappyParents(1)/Children", new { name = "NewChild" });
@@ -43,8 +42,8 @@ public class NavigationPostTests
         Assert.True(json.TryGetProperty("@odata.context", out _));
         Assert.True(json.TryGetProperty("@odata.id", out var odataId));
         Assert.Contains("NavPostHappyChildren(500)", odataId.GetString());
-        Assert.Equal("NewChild", json.GetProperty("name").GetString());
-        Assert.Equal(1, json.GetProperty("parentId").GetInt32());
+        Assert.Equal("NewChild", json.GetProperty("Name").GetString());
+        Assert.Equal(1, json.GetProperty("ParentId").GetInt32());
     }
 
     [Fact]
@@ -52,7 +51,7 @@ public class NavigationPostTests
     {
         // When refTargetEntitySet isn't configured, the framework cannot compute a child
         // @odata.id/Location — documented as omitted rather than guessed.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPostNoRefProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavPostNoRefProfile>());
 
         var response = await fx.Client.PostAsJsonAsync(
             "/odata/NavPostNoRefParents(1)/Children", new { name = "NewChild" });
@@ -62,7 +61,7 @@ public class NavigationPostTests
 
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.False(json.TryGetProperty("@odata.id", out _));
-        Assert.Equal("NewChild", json.GetProperty("name").GetString());
+        Assert.Equal("NewChild", json.GetProperty("Name").GetString());
     }
 
     // ── Prefer: return=minimal ───────────────────────────────────────────────────
@@ -70,7 +69,7 @@ public class NavigationPostTests
     [Fact]
     public async Task Post_ReturnMinimal_Returns204WithODataEntityId()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPostMinimalProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavPostMinimalProfile>());
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "/odata/NavPostMinimalParents(1)/Children")
         {
@@ -93,7 +92,7 @@ public class NavigationPostTests
     [Fact]
     public async Task Post_ParentNotFound_Returns404()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPostParentMissingProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavPostParentMissingProfile>());
 
         var response = await fx.Client.PostAsJsonAsync(
             "/odata/NavPostMissingParents(999)/Children", new { name = "X" });
@@ -109,7 +108,7 @@ public class NavigationPostTests
     [Fact]
     public async Task Post_MalformedBody_Returns400WithODataErrorBody()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPostValidationProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavPostValidationProfile>());
 
         using var content = new StringContent("{ broken json", Encoding.UTF8, "application/json");
         var response = await fx.Client.PostAsync("/odata/NavPostValidationParents(1)/Children", content);
@@ -127,7 +126,7 @@ public class NavigationPostTests
     [Fact]
     public async Task Post_EmptyBody_Returns400WithODataErrorBody()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPostValidationProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavPostValidationProfile>());
 
         using var content = new StringContent("", Encoding.UTF8, "application/json");
         var response = await fx.Client.PostAsync("/odata/NavPostValidationParents(1)/Children", content);
@@ -140,7 +139,7 @@ public class NavigationPostTests
     [Fact]
     public async Task Post_WrongContentType_Returns415WithODataErrorBody()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPostValidationProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavPostValidationProfile>());
 
         using var content = new StringContent("{\"name\":\"X\"}", Encoding.UTF8, "text/plain");
         var response = await fx.Client.PostAsync("/odata/NavPostValidationParents(1)/Children", content);
@@ -154,7 +153,7 @@ public class NavigationPostTests
     [Fact]
     public async Task Post_BadKeyFormat_Returns400WithODataErrorBody()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPostValidationProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavPostValidationProfile>());
 
         var response = await fx.Client.PostAsJsonAsync(
             "/odata/NavPostValidationParents(abc)/Children", new { name = "X" });
@@ -169,7 +168,7 @@ public class NavigationPostTests
     [Fact]
     public async Task Post_NoHandlerConfigured_RouteNotRegistered()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPostNoHandlerProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavPostNoHandlerProfile>());
 
         var response = await fx.Client.PostAsJsonAsync(
             "/odata/NavPostNoHandlerParents(1)/Children", new { name = "X" });
@@ -191,7 +190,7 @@ public class NavigationPostTests
     [Fact]
     public async Task Post_AuthRequired_AnonymousReturns401()
     {
-        await using var fx = await HeaderAuthTestHost.BuildAsync(o => o.AddProfile<NavPostAuthProfile>());
+        await using var fx = await HeaderAuthTestHost.BuildAsync(o => o.AddEntitySetProfile<NavPostAuthProfile>());
 
         var response = await fx.Client.PostAsJsonAsync(
             "/odata/NavPostAuthParents(1)/Children", new { name = "X" });
@@ -202,7 +201,7 @@ public class NavigationPostTests
     [Fact]
     public async Task Post_AuthRequired_AuthenticatedReturns201()
     {
-        await using var fx = await HeaderAuthTestHost.BuildAsync(o => o.AddProfile<NavPostAuthProfile>());
+        await using var fx = await HeaderAuthTestHost.BuildAsync(o => o.AddEntitySetProfile<NavPostAuthProfile>());
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "/odata/NavPostAuthParents(1)/Children")
         {
@@ -220,7 +219,7 @@ public class NavigationPostTests
     [Fact]
     public async Task Post_CoexistsWithBatchNavHandlerOnSameProfile()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPostWithBatchProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavPostWithBatchProfile>());
 
         var postResponse = await fx.Client.PostAsJsonAsync(
             "/odata/NavPostBatchParents(1)/Children", new { name = "NewChild" });
@@ -241,8 +240,8 @@ public class NavigationPostTests
     [Fact]
     public async Task Metadata_UnchangedByPostChildHandler()
     {
-        await using var withPost = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPostMetadataWithPostProfile>());
-        await using var withoutPost = await TestHostBuilder.BuildAsync(o => o.AddProfile<NavPostMetadataBaselineProfile>());
+        await using var withPost = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavPostMetadataWithPostProfile>());
+        await using var withoutPost = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavPostMetadataBaselineProfile>());
 
         string metaWithPost = await withPost.Client.GetStringAsync("/odata/$metadata");
         string metaWithoutPost = await withoutPost.Client.GetStringAsync("/odata/$metadata");
@@ -536,7 +535,7 @@ public class NavigationPostTests
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
         builder.Services.AddLogging();
-        builder.Services.AddOhData(o => o.AddProfile<NavPostActionCollisionProfile>());
+        builder.Services.AddOhData(o => o.AddEntitySetProfile<NavPostActionCollisionProfile>());
         var app = builder.Build();
 
         var ex = Assert.Throws<InvalidOperationException>(() => app.MapOhData());

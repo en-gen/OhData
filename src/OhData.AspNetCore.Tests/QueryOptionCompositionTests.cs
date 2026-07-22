@@ -14,7 +14,7 @@ namespace OhData.AspNetCore.Tests;
 /// Composition coverage: $filter + $orderby + $top + $skip + $count used together,
 /// multi-key $orderby with nulls, $select combined with $filter, and $expand combined
 /// with $select and $filter — on the GetQueryable path. Also covers edge semantics
-/// ($top=0, $skip beyond collection size) and the camelCase casing contract under
+/// ($top=0, $skip beyond collection size) and the PascalCase casing contract under
 /// combined query options.
 /// </summary>
 public class QueryOptionCompositionTests
@@ -24,14 +24,14 @@ public class QueryOptionCompositionTests
 
     private static async Task<TestFixture> BuildAsync() =>
         await TestHostBuilder.BuildAsync(o => o
-            .AddProfile<QueryOptionProfile>()
-            .AddProfile<QueryOptionExpandProfile>());
+            .AddEntitySetProfile<QueryOptionProfile>()
+            .AddEntitySetProfile<QueryOptionExpandProfile>());
 
     private static async Task<int[]> GetOrderedIdsAsync(HttpClient client, string query)
     {
         JsonElement json = await client.GetFromJsonAsync<JsonElement>(query);
         return json.GetProperty("value").EnumerateArray()
-            .Select(e => e.GetProperty("id").GetInt32())
+            .Select(e => e.GetProperty("Id").GetInt32())
             .ToArray();
     }
 
@@ -53,7 +53,7 @@ public class QueryOptionCompositionTests
             $"{Url}?$filter=IsActive eq true&$orderby=Price desc&$skip=2&$top=3&$count=true");
 
         int[] actualPage = json.GetProperty("value").EnumerateArray()
-            .Select(e => e.GetProperty("id").GetInt32()).ToArray();
+            .Select(e => e.GetProperty("Id").GetInt32()).ToArray();
 
         Assert.Equal(expectedPage, actualPage); // exact order, exact rows
         Assert.Equal(expectedCount, json.GetProperty("@odata.count").GetInt64());
@@ -126,7 +126,7 @@ public class QueryOptionCompositionTests
             $"{Url}?$filter=IsActive eq true&$select=Id,Name&$top=50");
 
         JsonElement[] values = json.GetProperty("value").EnumerateArray().ToArray();
-        int[] actual = values.Select(e => e.GetProperty("id").GetInt32()).ToArray();
+        int[] actual = values.Select(e => e.GetProperty("Id").GetInt32()).ToArray();
 
         Assert.Equal(expected.OrderBy(x => x), actual.OrderBy(x => x));
         Assert.NotEmpty(actual);
@@ -134,9 +134,9 @@ public class QueryOptionCompositionTests
         // IsActive was used to filter but was not selected, so it must be absent from the body.
         foreach (JsonElement item in values)
         {
-            Assert.False(item.TryGetProperty("isActive", out _));
-            Assert.True(item.TryGetProperty("id", out _));
-            Assert.True(item.TryGetProperty("name", out _));
+            Assert.False(item.TryGetProperty("IsActive", out _));
+            Assert.True(item.TryGetProperty("Id", out _));
+            Assert.True(item.TryGetProperty("Name", out _));
         }
     }
 
@@ -153,17 +153,17 @@ public class QueryOptionCompositionTests
             $"{ExpandUrl}?$filter=IsActive eq true&$select=Id,Name&$expand=Children");
 
         JsonElement[] values = json.GetProperty("value").EnumerateArray().ToArray();
-        int[] ids = values.Select(e => e.GetProperty("id").GetInt32()).OrderBy(x => x).ToArray();
+        int[] ids = values.Select(e => e.GetProperty("Id").GetInt32()).OrderBy(x => x).ToArray();
         Assert.Equal(new[] { 1, 3 }, ids);
 
-        JsonElement parentAlpha = values.First(e => e.GetProperty("id").GetInt32() == 1);
-        Assert.True(parentAlpha.TryGetProperty("children", out JsonElement childrenAlpha),
+        JsonElement parentAlpha = values.First(e => e.GetProperty("Id").GetInt32() == 1);
+        Assert.True(parentAlpha.TryGetProperty("Children", out JsonElement childrenAlpha),
             "$expand=Children must be honored even though 'Children' was not in $select");
         Assert.Equal(2, childrenAlpha.GetArrayLength());
-        Assert.False(parentAlpha.TryGetProperty("isActive", out _), "IsActive was not selected and must be absent");
+        Assert.False(parentAlpha.TryGetProperty("IsActive", out _), "IsActive was not selected and must be absent");
 
-        JsonElement parentGamma = values.First(e => e.GetProperty("id").GetInt32() == 3);
-        Assert.True(parentGamma.TryGetProperty("children", out JsonElement childrenGamma));
+        JsonElement parentGamma = values.First(e => e.GetProperty("Id").GetInt32() == 3);
+        Assert.True(parentGamma.TryGetProperty("Children", out JsonElement childrenGamma));
         Assert.Equal(0, childrenGamma.GetArrayLength()); // Parent Gamma has no children in the fixture
     }
 
@@ -208,7 +208,7 @@ public class QueryOptionCompositionTests
     // ── 9. Casing contract under composition ─────────────────────────────────────
 
     [Fact]
-    public async Task Composition_FilterOrderBySelect_ResponseBody_IsCamelCase()
+    public async Task Composition_FilterOrderBySelect_ResponseBody_IsPascalCase()
     {
         await using TestFixture fx = await BuildAsync();
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>(
@@ -217,14 +217,14 @@ public class QueryOptionCompositionTests
         {
             foreach (JsonProperty prop in item.EnumerateObject())
             {
-                Assert.False(char.IsUpper(prop.Name[0]), $"property '{prop.Name}' leaked PascalCase casing");
+                Assert.True(char.IsUpper(prop.Name[0]), $"property '{prop.Name}' leaked camelCase casing");
             }
-            Assert.True(item.TryGetProperty("createdUtc", out _));
+            Assert.True(item.TryGetProperty("CreatedUtc", out _));
         }
     }
 
     [Fact]
-    public async Task Composition_ExpandSelectFilter_ResponseBody_IsCamelCase()
+    public async Task Composition_ExpandSelectFilter_ResponseBody_IsPascalCase()
     {
         await using TestFixture fx = await BuildAsync();
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>(
@@ -233,13 +233,13 @@ public class QueryOptionCompositionTests
         {
             foreach (JsonProperty prop in item.EnumerateObject())
             {
-                Assert.False(char.IsUpper(prop.Name[0]), $"property '{prop.Name}' leaked PascalCase casing");
+                Assert.True(char.IsUpper(prop.Name[0]), $"property '{prop.Name}' leaked camelCase casing");
             }
-            if (item.TryGetProperty("children", out JsonElement children) && children.GetArrayLength() > 0)
+            if (item.TryGetProperty("Children", out JsonElement children) && children.GetArrayLength() > 0)
             {
                 foreach (JsonProperty childProp in children[0].EnumerateObject())
                 {
-                    Assert.False(char.IsUpper(childProp.Name[0]), $"child property '{childProp.Name}' leaked PascalCase casing");
+                    Assert.True(char.IsUpper(childProp.Name[0]), $"child property '{childProp.Name}' leaked camelCase casing");
                 }
             }
         }

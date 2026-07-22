@@ -11,8 +11,7 @@ using Microsoft.AspNetCore.Authorization.Infrastructure;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
-using OhData.Abstractions;
-using OhData.AspNetCore;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.Tests;
@@ -172,7 +171,7 @@ public class PerOperationResourceAuthTests
     [InlineData(null, false)]
     public async Task GetById_OwnerOnly(string? identity, bool passes)
     {
-        await using var fx = await ResourceAuthTestHost.BuildAsync(o => o.AddProfile<ResourceCrudProfile>());
+        await using var fx = await ResourceAuthTestHost.BuildAsync(o => o.AddEntitySetProfile<ResourceCrudProfile>());
         var resp = await fx.Client.SendAsync(Req(HttpMethod.Get, "/odata/ResItems(1)", identity));
         if (passes) Assert.True(Passed(resp.StatusCode), $"got {(int)resp.StatusCode}");
         else Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
@@ -185,7 +184,7 @@ public class PerOperationResourceAuthTests
     [InlineData("bob", true)]
     public async Task Put_OwnerOnly(string identity, bool forbidden)
     {
-        await using var fx = await ResourceAuthTestHost.BuildAsync(o => o.AddProfile<ResourceCrudProfile>());
+        await using var fx = await ResourceAuthTestHost.BuildAsync(o => o.AddEntitySetProfile<ResourceCrudProfile>());
         var resp = await fx.Client.SendAsync(Req(HttpMethod.Put, "/odata/ResItems(1)", identity, "{\"id\":1,\"owner\":\"alice\",\"name\":\"X\"}"));
         if (forbidden) Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
         else Assert.True(Passed(resp.StatusCode), $"got {(int)resp.StatusCode}");
@@ -196,7 +195,7 @@ public class PerOperationResourceAuthTests
     [InlineData("bob", true)]
     public async Task Delete_OwnerOnly(string identity, bool forbidden)
     {
-        await using var fx = await ResourceAuthTestHost.BuildAsync(o => o.AddProfile<ResourceCrudProfile>());
+        await using var fx = await ResourceAuthTestHost.BuildAsync(o => o.AddEntitySetProfile<ResourceCrudProfile>());
         var resp = await fx.Client.SendAsync(Req(HttpMethod.Delete, "/odata/ResItems(1)", identity));
         if (forbidden) Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
         else Assert.True(Passed(resp.StatusCode), $"got {(int)resp.StatusCode}");
@@ -209,7 +208,7 @@ public class PerOperationResourceAuthTests
     [InlineData("bob", true)]    // creating a row owned by "alice" → forbidden
     public async Task Post_ChecksIncomingEntity(string identity, bool forbidden)
     {
-        await using var fx = await ResourceAuthTestHost.BuildAsync(o => o.AddProfile<ResourceCrudProfile>());
+        await using var fx = await ResourceAuthTestHost.BuildAsync(o => o.AddEntitySetProfile<ResourceCrudProfile>());
         var resp = await fx.Client.SendAsync(Req(HttpMethod.Post, "/odata/ResItems", identity, "{\"owner\":\"alice\",\"name\":\"N\"}"));
         if (forbidden) Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
         else Assert.True(Passed(resp.StatusCode), $"got {(int)resp.StatusCode}");
@@ -223,7 +222,7 @@ public class PerOperationResourceAuthTests
     public async Task RequireResourceNamedPolicy_OwnerOnly(string identity, bool forbidden)
     {
         await using var fx = await ResourceAuthTestHost.BuildAsync(
-            o => o.AddProfile<ResourcePolicyProfile>(),
+            o => o.AddEntitySetProfile<ResourcePolicyProfile>(),
             policies: p => p.AddPolicy("OwnerPolicy", b => b.AddRequirements(new SameOwnerRequirement())));
         var resp = await fx.Client.SendAsync(Req(HttpMethod.Put, "/odata/ResPolItems(1)", identity, "{\"id\":1,\"owner\":\"alice\",\"name\":\"X\"}"));
         if (forbidden) Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
@@ -236,7 +235,7 @@ public class PerOperationResourceAuthTests
     public async Task NoHandlerRegistered_FailsClosed()
     {
         await using var fx = await ResourceAuthTestHost.BuildAsync(
-            o => o.AddProfile<ResourceCrudProfile>(), registerHandler: false);
+            o => o.AddEntitySetProfile<ResourceCrudProfile>(), registerHandler: false);
         var resp = await fx.Client.SendAsync(Req(HttpMethod.Get, "/odata/ResItems(1)", "alice"));
         Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
     }
@@ -246,7 +245,7 @@ public class PerOperationResourceAuthTests
     [Fact]
     public async Task MissingEntity_Returns404()
     {
-        await using var fx = await ResourceAuthTestHost.BuildAsync(o => o.AddProfile<ResourceCrudProfile>());
+        await using var fx = await ResourceAuthTestHost.BuildAsync(o => o.AddEntitySetProfile<ResourceCrudProfile>());
         var resp = await fx.Client.SendAsync(Req(HttpMethod.Get, "/odata/ResItems(999)", "alice"));
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
@@ -256,7 +255,7 @@ public class PerOperationResourceAuthTests
     [Fact]
     public async Task BadKeyFormat_Returns400()
     {
-        await using var fx = await ResourceAuthTestHost.BuildAsync(o => o.AddProfile<ResourceCrudProfile>());
+        await using var fx = await ResourceAuthTestHost.BuildAsync(o => o.AddEntitySetProfile<ResourceCrudProfile>());
         var resp = await fx.Client.SendAsync(Req(HttpMethod.Get, "/odata/ResItems(not-an-int)", "alice"));
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
     }
@@ -268,7 +267,7 @@ public class PerOperationResourceAuthTests
     [InlineData("bob", false)]
     public async Task EntityBoundInvoke_OwnerOnly(string identity, bool passes)
     {
-        await using var fx = await ResourceAuthTestHost.BuildAsync(o => o.AddProfile<ResourceInvokeProfile>());
+        await using var fx = await ResourceAuthTestHost.BuildAsync(o => o.AddEntitySetProfile<ResourceInvokeProfile>());
         var resp = await fx.Client.SendAsync(Req(HttpMethod.Get, "/odata/ResInvoke(1)/GetTag", identity));
         if (passes) Assert.True(Passed(resp.StatusCode), $"got {(int)resp.StatusCode}");
         else Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
@@ -280,6 +279,6 @@ public class PerOperationResourceAuthTests
     public async Task ResourceWrite_WithoutGetById_ThrowsAtStartup()
     {
         await Assert.ThrowsAsync<InvalidOperationException>(async () =>
-            await ResourceAuthTestHost.BuildAsync(o => o.AddProfile<ResourceNoGetByIdProfile>()));
+            await ResourceAuthTestHost.BuildAsync(o => o.AddEntitySetProfile<ResourceNoGetByIdProfile>()));
     }
 }

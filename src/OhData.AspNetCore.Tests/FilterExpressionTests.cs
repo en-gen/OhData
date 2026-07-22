@@ -14,7 +14,7 @@ namespace OhData.AspNetCore.Tests;
 /// Full $filter expression-language coverage on the GetQueryable path: logical operators,
 /// arithmetic, canonical string/date/math functions, and any/all lambdas. These are
 /// contract tests proving OhData wires Microsoft.OData's ODataQueryOptions.ApplyTo
-/// correctly end-to-end (correct results, camelCase JSON, 400 on unsupported input) —
+/// correctly end-to-end (correct results, PascalCase JSON, 400 on unsupported input) —
 /// not tests of Microsoft.OData's parser/translator internals.
 ///
 /// Every test computes its expected result via a plain LINQ "oracle" over
@@ -28,13 +28,13 @@ public class FilterExpressionTests
     private const string Url = "/odata/QueryOptionItems";
 
     private static async Task<TestFixture> BuildAsync() =>
-        await TestHostBuilder.BuildAsync(o => o.AddProfile<QueryOptionProfile>());
+        await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<QueryOptionProfile>());
 
     private static async Task<int[]> GetIdsAsync(HttpClient client, string query)
     {
         JsonElement json = await client.GetFromJsonAsync<JsonElement>(query);
         return json.GetProperty("value").EnumerateArray()
-            .Select(e => e.GetProperty("id").GetInt32())
+            .Select(e => e.GetProperty("Id").GetInt32())
             .ToArray();
     }
 
@@ -487,8 +487,8 @@ public class FilterExpressionTests
 
     private static async Task<TestFixture> BuildRoundingAsync() =>
         await TestHostBuilder.BuildAsync(o => o
-            .AddProfile<RoundingModeProfile>()
-            .AddProfile<RoundingModeBankersProfile>());
+            .AddEntitySetProfile<RoundingModeProfile>()
+            .AddEntitySetProfile<RoundingModeBankersProfile>());
 
     [Theory]
     [InlineData(2.5, 3)]
@@ -661,38 +661,40 @@ public class FilterExpressionTests
     // ── 9. Casing contract ───────────────────────────────────────────────────────
 
     [Fact]
-    public async Task Filter_ResponseBody_IsCamelCase()
+    public async Task Filter_ResponseBody_IsPascalCase()
     {
         await using TestFixture fx = await BuildAsync();
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>(
             $"{Url}?$filter=contains(Name,'Widget')");
         JsonElement first = json.GetProperty("value")[0];
-        string[] expectedProps = { "id", "name", "category", "price", "weight", "quantity", "isActive", "createdUtc", "updatedAt", "rank", "tags" };
+        // #252: default payload casing is PascalCase (the CLR names $metadata declares, §4.4).
+        string[] expectedProps = { "Id", "Name", "Category", "Price", "Weight", "Quantity", "IsActive", "CreatedUtc", "UpdatedAt", "Rank", "Tags" };
         foreach (string prop in expectedProps)
         {
-            Assert.True(first.TryGetProperty(prop, out _), $"expected camelCase property '{prop}'");
+            Assert.True(first.TryGetProperty(prop, out _), $"expected PascalCase property '{prop}'");
         }
-        // No PascalCase leakage.
+        // No camelCase leakage.
         foreach (JsonProperty prop in first.EnumerateObject())
         {
-            Assert.False(char.IsUpper(prop.Name[0]), $"property '{prop.Name}' leaked PascalCase casing");
+            Assert.True(char.IsUpper(prop.Name[0]), $"property '{prop.Name}' leaked camelCase casing");
         }
     }
 
     [Fact]
-    public async Task Filter_WithSelect_ResponseBody_IsCamelCase()
+    public async Task Filter_WithSelect_ResponseBody_IsPascalCase()
     {
         await using TestFixture fx = await BuildAsync();
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>(
             $"{Url}?$filter=IsActive eq true&$select=Name,Price");
         JsonElement first = json.GetProperty("value")[0];
-        Assert.True(first.TryGetProperty("name", out _));
-        Assert.True(first.TryGetProperty("price", out _));
-        Assert.False(first.TryGetProperty("Name", out _));
-        Assert.False(first.TryGetProperty("Price", out _));
+        // #252: default payload casing is PascalCase, matching $metadata (OData §4.4).
+        Assert.True(first.TryGetProperty("Name", out _));
+        Assert.True(first.TryGetProperty("Price", out _));
+        Assert.False(first.TryGetProperty("name", out _));
+        Assert.False(first.TryGetProperty("price", out _));
         // The filtered-on property (IsActive) was not selected, so it should be absent —
         // but it must still have been usable to filter (see next test for the assertion
         // that filtering still worked correctly).
-        Assert.False(first.TryGetProperty("isActive", out _));
+        Assert.False(first.TryGetProperty("IsActive", out _));
     }
 }

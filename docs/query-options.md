@@ -2,6 +2,52 @@
 
 OhData supports the OData 4.0 system query options. Which ones are applied depends on the collection handler you choose for the entity set.
 
+## JSON property casing
+
+By default OhData serializes response property names in **PascalCase** — the CLR property names,
+which are exactly the identifiers declared in `$metadata` (the EDM). Payload casing therefore
+matches `$metadata` casing, satisfying OData §4.4 and letting case-sensitive OData-native clients
+(e.g. `Microsoft.OData.Client`) bind properties out of the box.
+
+This default is **owned by OhData**, not inherited from the host's
+`HttpJsonOptions.SerializerOptions.PropertyNamingPolicy`. Configuring `ConfigureHttpJsonOptions`
+does *not* change OhData response casing (any custom converters/encoder you register there are
+still honoured — only the property-naming policy is OhData's own).
+
+To emit **camelCase** payloads instead, opt in explicitly on the registration:
+
+```csharp
+using System.Text.Json;
+
+builder.Services.AddOhData(o =>
+{
+    o.WithJsonPropertyNamingPolicy(JsonNamingPolicy.CamelCase);
+    o.AddEntitySetProfile<ProductProfile>();
+});
+```
+
+`WithJsonPropertyNamingPolicy(null)` is the default (PascalCase). The policy applies uniformly to
+every response path: collection and single-entity reads, POST/PUT/PATCH echoes, `$select`/`$expand`
+output, `$value`, and bound/unbound function/action results.
+
+> **Known limitation of the camelCase opt-in:** `$metadata` always uses the PascalCase CLR/EDM
+> property names (the EDM has no naming policy). Opting into camelCase therefore desyncs your
+> payload casing from `$metadata` — a case-sensitive OData-native client that reads `$metadata` to
+> learn property names will not match the camelCase keys on the wire. The PascalCase default keeps
+> payloads and `$metadata` in agreement (OData §4.4); opt into camelCase only when your clients bind
+> case-insensitively.
+
+> Note: this affects **response** casing only. OData query-option property references
+> (`$select=Name`, `$filter=…`, `$orderby=…`, `$expand=…`) and request bodies are matched
+> case-insensitively against the EDM, so a client may use either casing on the way in.
+
+The OpenAPI/Swagger companion packages (`OhData.AspNetCore.OpenApi`, `.NSwag`, `.Swashbuckle`)
+follow this same policy: generated schema property names match the wire casing exactly — PascalCase
+by default, camelCase when you opt in — instead of the host `HttpJsonOptions` casing the underlying
+generators would otherwise use. A `[JsonPropertyName]` rename still wins, in the schema and on the
+wire alike. So the generated document (and any client code generated from it) agrees with what
+responses actually emit.
+
 ## Handler paths
 
 ### `GetAll` - simple in-memory path
@@ -59,6 +105,10 @@ GetODataQueryable = async (opts, ct) =>
 The framework does not prescribe how `items` or `totalCount` are obtained. That is entirely up to the profile. Some data sources support retrieving both in a single operation (window functions, `COUNT(*) OVER()`); others require two separate requests. Either approach satisfies the contract — the framework only requires that `TotalCount` reflect the number of matching records **before** paging was applied.
 
 If `TotalCount` is not set and the client sends `$count=true`, the count in the response will reflect only the current page size, which is incorrect per the OData spec. Prefer always supplying `TotalCount` when using this handler.
+
+### Deterministic paging is the profile's responsibility
+
+On this path the profile — not the framework — owns query application, including `$skip`. When you return a lazily-translated `IQueryable` (e.g. an EF Core queryable) and rely on the framework's `MaxTop`/`Prefer: maxpagesize` cap plus its `@odata.nextLink` continuation, **you must give that queryable a stable, total order** — a terminal `OrderBy` (typically the entity key), or by applying the client's `$orderby`. Without one, the emitted `LIMIT`/`OFFSET` runs over an undefined row order, so a row can appear on two pages or be skipped between them, and EF Core logs warning `10102` ("row limiting operation without OrderBy"). The framework does not inject an order for you here: it can't do so safely once you've applied your own `$skip` (ordering a sliced subset is wrong), and a stable key column is your decision, not the framework's. (The `GetQueryable` path is different — there the framework owns the whole pipeline and orders paged results by the entity key automatically.)
 
 > **Note:** `GetODataQueryable` is available on `ODataEntitySetProfile<TKey, TModel>`, not the base `EntitySetProfile<TKey, TModel>`. It requires the `OhData.AspNetCore` package. An `IQueryable<TModel>` is implicitly convertible to `ODataQueryResult<TModel>` for backward compatibility with handlers that return a bare queryable.
 
@@ -169,7 +219,7 @@ RoundingMode = RoundingMode.BankersRounding;
 // Or globally across all profiles in the registration:
 builder.Services.AddOhData(o => o
     .WithDefaults(d => d.RoundingMode = RoundingMode.BankersRounding)
-    .AddProfile<ProductProfile>());
+    .AddEntitySetProfile<ProductProfile>());
 ```
 
 **Provider-translation caveat:** the two-argument `Math.Round(value, MidpointRounding)` overload
@@ -225,7 +275,7 @@ MaxTop = 100;
 // Or globally across all profiles in the registration:
 builder.Services.AddOhData(o => o
     .WithDefaults(d => d.MaxTop = 500)
-    .AddProfile<ProductProfile>());
+    .AddEntitySetProfile<ProductProfile>());
 ```
 
 **`MaxTop` defaults to `1000`** (`EntitySetDefaults.MaxTop`) when not overridden per-profile or globally - server-side paging is always active on the `GetQueryable`/`GetAll`/Priority-1 paths, even if you never configure it explicitly.
@@ -288,7 +338,47 @@ Enabled via `SelectEnabled = true`. Reduces the response payload to the specifie
 GET /odata/Products?$select=Id,Name,Price
 ```
 
-The framework fetches the full entity from the data source and removes unselected properties from the JSON response. SQL-level column projection is not currently performed.
+The response shape is produced by JSON post-processing (unselected properties are removed from
+the serialized entity), which is what keeps the output consistent with the configured naming
+policy (PascalCase by default — see [JSON property casing](#json-property-casing)).
+
+### Projection pushdown (#206)
+
+On the `GetQueryable` path, an eligible `$select` additionally pushes a **column projection**
+down to the data source: the framework composes a member-init projection
+(`x => new TModel { Id = x.Id, Name = x.Name }`) onto the queryable before enumeration, so LINQ
+providers emit a column-pruned `SELECT` instead of reading every column. The wire output is
+**byte-identical** with or without pushdown — the projection changes the SQL, never the
+response.
+
+The projected member set is the selected structural properties **plus the entity key** (needed
+for `@odata.id` and `$expand` correlation) **plus any `UseETag` properties** (so `@odata.etag`
+values are unchanged). Nested `$select` paths (`$select=address/city`) project the whole
+top-level member.
+
+Pushdown is **on by default** (`EntitySetDefaults.SelectPushdownEnabled`, per-profile
+`SelectPushdownEnabled` override) and falls back silently to the full fetch — with a
+Debug-level log naming the reason — when a request is ineligible:
+
+- the model has no public parameterless constructor (e.g. positional records),
+- a projected member is **complex-typed** (phase-1 boundary: projecting an EF-*owned* complex
+  property under a tracking queryable throws inside EF; `byte[]` counts as primitive, so
+  rowversion ETag inputs keep pushdown),
+- a projected member has no public setter (init-only setters are fine; this arises via
+  `UseETag` selectors over get-only computed properties, since the EDM excludes get-only
+  properties from `$select` itself),
+- `UseETag` was configured with a non-direct (computed) selector, making the ETag property
+  names unknowable,
+- the model has structural properties whose names differ only by case (the name lookup is
+  case-insensitive, so such models are pushdown-ineligible outright),
+- or the profile/server opted out via `SelectPushdownEnabled = false` (do this for exotic
+  `IQueryable` providers that cannot translate member-init projections; every EF Core
+  relational provider and InMemory can).
+
+`GetAll` (no queryable) and `GetById` (no collection query) have no pushdown path. On the
+Priority-1 `GetODataQueryable` path the profile owns the `ApplyTo` call, so — like
+`RoundingMode` — the framework does not project automatically; a Priority-1 handler that wants
+column pruning applies its own `Select` projection (it already owns the whole query pipeline).
 
 Restrict which properties may be selected:
 
@@ -311,7 +401,7 @@ GET /odata/Orders?$expand=Lines,Customer
 GET /odata/Orders(3f2a...)?$expand=Lines        ← single-entity route too
 ```
 
-`$expand` does **not** use EF Core's `Include()` or push the join into SQL. Instead, for each requested navigation property the framework invokes a registered navigation route handler. This is a generic mechanism with no EF Core dependency, and it behaves identically on the `GetQueryable`, `GetAll`, and Priority-1 (`IODataEntitySetEndpointSource`) paths. See [navigation-routing.md](navigation-routing.md) for details.
+For a navigation **declared with a delegate**, `$expand` does **not** use EF Core's `Include()` or push the join into SQL. Instead the framework invokes that navigation's registered handler. This is a generic mechanism with no EF Core dependency, and it behaves identically on the `GetQueryable`, `GetAll`, and Priority-1 (`IODataEntitySetEndpointSource`) paths. See [navigation-routing.md](navigation-routing.md) for details. A navigation **declared without a delegate** takes a different path — SQL-JOIN pushdown — described in [Delegate-less navigations JOIN automatically](#expand-pushdown-delegate-less-navigations-join-automatically-206) below.
 
 There are two ways to register the handler, and they have very different `$expand` performance:
 
@@ -352,8 +442,6 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
 
 Registering only the batch overload is enough - the framework auto-derives a single-key handler from it, so the standalone `GET /Orders(id)/Lines` route, nav `$count`, and `$ref` endpoints all keep working without writing a second handler. You may still register both explicitly (e.g. if the single-key path warrants a different query shape), in which case the per-entity handler you supply is used for those standalone routes and the batch handler is used only for `$expand`.
 
-`$expand` requires a navigation route handler (batch or per-entity - the same one used for the standalone `GET /Orders(id)/Lines` route) to be registered - a navigation property declared with `HasMany(x => x.Lines)` alone (no handler) is visible in `$metadata` but is silently skipped when a client tries to `$expand` it.
-
 Restrict which navigation properties may be expanded:
 
 ```csharp
@@ -361,6 +449,60 @@ ExpandProperties(x => x.Lines, x => x.Customer);
 ```
 
 Expanding a navigation property outside the allowlist returns `400 Bad Request` (`InvalidQueryOption`).
+
+<a id="expand-pushdown-delegate-less-navigations-join-automatically-206"></a>
+### `$expand` pushdown: delegate-less navigations JOIN automatically (#206)
+
+> **The one rule to remember:** writing an expand delegate opts a navigation **out** of pushdown; a bare declaration opts it **in**.
+>
+> **Mental model:** write a delegate only when expansion needs real logic (filtering, ordering, authorization, a custom query shape). A plain relationship gets SQL-JOIN expansion for free.
+
+A navigation declared **without** any expand delegate — a bare `HasMany(x => x.Lines)` / `HasOptional(x => x.Ref)` / `HasRequired(x => x.Ref)` with no `getAll`/`get`/`batchGetAll`/`batchGet` — is now **SQL-JOIN-expandable automatically**. On the EF Core-backed `GetQueryable` path, `$expand`'ing such a navigation folds it into the collection query's projection (`x => new Order { …, Lines = x.Lines.ToList() }`), so **one JOIN'd query** loads the page and all its related rows — no delegate to write, no N+1. This is why the earlier caveat ("a `HasMany(x => x.Lines)` alone is silently skipped under `$expand`") no longer holds: a bare declaration is a first-class, pushed expansion.
+
+The behavior is decided **purely by whether a delegate exists** — there is no global flag to flip and no per-navigation opt-in:
+
+| Declaration | `$expand` path | Why |
+|---|---|---|
+| `HasMany(x => x.Lines)` — **no delegate** | **SQL-JOIN pushdown** (one query) | There is no delegate to bypass; the `Include`/JOIN *is* the definition of the expansion. |
+| `HasMany(x => x.Lines, getAll: …)` / `batchGetAll: …` — **has a delegate** | **Delegate** (never pushed down) | The delegate may filter/order/authorize; pushing it down would change results or leak rows, so it is always honored. |
+
+This is **not** "byte-identical to the delegate path" — for a pushed navigation there is no delegate to compare against; the JOIN *is* the source of the related rows. (The un-pushed, delegate path stays exactly as documented above.)
+
+Pushdown is **on by default** (`EntitySetDefaults.ExpandPushdownEnabled`, per-profile `ExpandPushdownEnabled` override). It engages **only** on the EF Core-backed `GetQueryable` path and **only** for a navigation whose related type has no back-reference cycle. Whenever pushdown is ineligible for a request — a non-EF provider, a cyclic navigation, a deferred nested option (see the table below), or a projection/translation/serialization failure — it **falls back silently**: the delegate-less navigation simply stays EDM-only for that request (as it was before this feature), the request still succeeds (never a `500`), and the reason is `Debug`-logged. A delegate-backed navigation is **never** affected — it always expands through its delegate. Set `ExpandPushdownEnabled = false` (per profile or in `WithDefaults`) to keep every delegate-less navigation unexpandable.
+
+`$expand` pushdown composes with `$select` pushdown: `?$select=name&$expand=Lines` prunes the parent's column list *and* JOINs the lines in the same single query. The two capabilities are **independent** — disabling `SelectPushdownEnabled` does not disable `$expand` pushdown, and an `$expand` push never column-prunes the parent on its own.
+
+#### Nested options on a pushed `$expand`
+
+A pushed (delegate-less) `$expand` honors the nested options of the expanded collection. `$filter`, `$orderby`, and `$top`/`$skip` are pushed down to SQL as a **filtered / ordered / paged `Include`** (translated by Microsoft's own OData `FilterBinder`/`OrderByBinder`, so the semantics match a top-level `$filter`/`$orderby`), producing a single JOIN'd query — no per-parent N+1. `$count` and `$select` are then applied to the serialized result (in whatever naming policy is configured — PascalCase by default).
+
+| Nested option (on a delegate-less pushed nav) | Supported | How |
+|---|---|---|
+| `$select` — `Children($select=name)` | ✅ | JSON projection of the expanded elements (configured naming policy preserved) |
+| `$filter` — `Children($filter=active eq true)` | ✅ | filtered `Include` (SQL `WHERE` in the JOIN) |
+| `$orderby` — `Children($orderby=name desc)` | ✅ | ordered `Include` (SQL `ORDER BY` in the JOIN) |
+| `$top` / `$skip` — `Children($orderby=name;$top=5)` | ✅ | paged `Include` (SQL `ROW_NUMBER` window) |
+| `$count` — `Children($count=true)` | ✅ | inline `Children@odata.count` = full filtered count (paging is applied after counting, per §11.2.4.2) |
+| **nested `$expand`** — `Children($expand=Grandkids)` | ✅ | multi-level pushdown: folded into the same query as an `Include`→`ThenInclude` JOIN when every level is delegate-less (see [Multi-level `$expand`](#multi-level-expand-and-levels-206) below) |
+| `$levels` — `Children($levels=2)` / `Children($levels=max)` | ✅ | recursive self-referential expand, bounded by `MaxExpansionDepth` (see below) |
+| `$search` / `$compute` / `$apply` | ❌ (deferred) | not implemented on the pushdown path |
+
+A deferred nested option is not an error: the request still returns `200`, but the delegate-less navigation that carried it stays EDM-only (empty) for that request. Nested options on a **delegate-backed** navigation follow the delegate path and are subject to that path's own support (see [navigation-routing.md](navigation-routing.md)); they never engage pushdown.
+
+<a id="multi-level-expand-and-levels-206"></a>
+#### Multi-level `$expand` and `$levels` (#206)
+
+A nested `$expand` is pushed **recursively**: `?$expand=Books($expand=Chapters($expand=Pages))` folds all three levels into one JOIN'd query (EF Core `Include`→`ThenInclude`), applying each level's own nested `$filter`/`$orderby`/`$top`/`$skip`/`$count`/`$select`. A branch is pushed only when it is **delegate-less at every level**; the moment a level's navigation carries a delegate (or is cyclic / a non-projectable type), that whole branch is deferred off pushdown and resolves through the existing path — a **delegate-backed navigation is never EF-included at any depth**, so the delegate is never bypassed. A delegate-backed navigation reached directly from the root (or under delegate-backed ancestors) still expands through its delegate exactly as before; a delegate navigation nested *beneath* a delegate-less pushed one stays empty (it is never JOIN-loaded).
+
+`$levels=N` recursively expands a **self-referential** navigation (a tree/hierarchy) `N` levels deep — `?$expand=Children($levels=2)` — as a bounded, cycle-free projection (each level is a fresh POCO; the deepest loaded level terminates the recursion). `$levels=max` resolves to the configured `MaxExpansionDepth`. Both are capped at `MaxExpansionDepth`: a `$levels` (or a nested `$expand`) that resolves deeper is rejected with `400` before any handler runs (see [Complexity limits](#complexity-limits-202)). A `$levels` expand that *also* carries other nested options (`$filter`/`$select`/…) is deferred off pushdown (a rare combination) and stays EDM-only.
+
+The ceiling is advertised in `$metadata` as the `Org.OData.Capabilities.V1.ExpandRestrictions/MaxLevels` annotation on each entity set, so a client can discover it before issuing a request.
+
+**Caveats.**
+
+- **Nested options are not gated by the parent profile's property allowlists.** `FilterProperties`/`OrderByProperties`/`SelectProperties` restrict the *root* entity set only; a navigation-target type has no allowlist surface of its own and is treated as fully queryable (this is the same design decision that lets nav-path `$filter` work — see `MarkNavigationTargetTypesFullyQueryable`). So `$expand=Children($filter=…)`/`($orderby=…)`/`($select=…)` may reference any column of the child type regardless of what the parent restricted. Model your navigation targets accordingly (e.g. don't expose a sensitive column on a type reachable via a delegate-less navigation you `$expand`), or write an expand **delegate** for that navigation (which opts it out of pushdown and lets you enforce your own shaping).
+- **`$count` on a pushed expand materializes the full filtered child collection.** To report `Nav@odata.count` accurately, the whole filtered set is loaded before `$top`/`$skip` paging is applied — the same amount of data a bare `$expand=Nav` already loads. `$top`/`$skip` *without* `$count` push the paging into SQL and transfer only the page. There is no per-navigation `MaxTop` ceiling on a nested `$top`.
+- **Nested paging without a nested `$orderby` is stabilized by the child's key.** When `$top`/`$skip` are pushed to SQL without a nested `$orderby`, the navigation element's single key is appended as a deterministic tiebreaker (mirroring the root path). A composite-keyed child type is left to the provider's order.
 
 To also expose navigation as a standalone HTTP route (`GET /Orders(id)/Lines`), provide a handler to `HasMany` - see [navigation-routing.md](navigation-routing.md).
 
@@ -372,7 +514,7 @@ Four ceilings bound how expensive a single request's query options may be. Each 
 
 | Limit | Default | Bounds |
 |---|---|---|
-| `MaxExpansionDepth` | `12` | Nesting depth of `$expand`. **Enforced** as of #202 — a deeper `$expand` returns `400` rather than a silently-truncated result. `12` is the framework's internal nested-expand ceiling, so the intended use is to *lower* this to harden; raising it above 12 has no effect. |
+| `MaxExpansionDepth` | `3` | Nesting depth of `$expand`, and the ceiling `$levels` is resolved and capped to (`$levels=max` becomes exactly this value). **Enforced** as of #202 — a deeper `$expand`/`$levels` returns `400` rather than a silently-truncated result. Advertised per entity set in `$metadata` as `Org.OData.Capabilities.V1.ExpandRestrictions/MaxLevels` (#206). Raise it to allow deeper graph/hierarchy queries, or lower it to harden. |
 | `MaxFilterNodeCount` | `10000` | Number of nodes in a `$filter` expression tree. |
 | `MaxOrderByNodeCount` | `1000` | Number of nodes in an `$orderby`. |
 | `MaxAnyAllExpressionDepth` | `1000` | Nesting depth of `any()`/`all()` lambdas in a `$filter`. |
@@ -380,7 +522,7 @@ Four ceilings bound how expensive a single request's query options may be. Each 
 ```csharp
 builder.Services.AddOhData(o => o
     .WithDefaults(d => { d.MaxExpansionDepth = 3; d.MaxFilterNodeCount = 200; })
-    .AddProfile<OrderProfile>());
+    .AddEntitySetProfile<OrderProfile>());
 
 public class OrderProfile : EntitySetProfile<int, Order>
 {

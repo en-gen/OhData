@@ -1,7 +1,8 @@
 using System;
 using Microsoft.Extensions.DependencyInjection;
+using OhData;
 
-namespace OhData.AspNetCore.Versioning;
+namespace Microsoft.Extensions.DependencyInjection;
 
 /// <summary>
 /// Extension methods on <see cref="Microsoft.Extensions.DependencyInjection.IServiceCollection"/>

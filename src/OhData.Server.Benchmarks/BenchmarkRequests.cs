@@ -8,8 +8,8 @@ namespace OhData.Server.Benchmarks;
 /// <summary>
 /// The exact requests exercised by both the smoke check and the benchmarks — one definition so
 /// what is verified for correctness is precisely what is measured. All URLs are relative to the
-/// per-host <c>/odata/</c> base address and are identical for both servers (camelCase property
-/// names in query options match both wire formats).
+/// per-host <c>/odata/</c> base address and are identical for both servers (both hosts emit
+/// PascalCase post-flip, and the query-option property names below match both wire formats).
 /// </summary>
 internal static class BenchmarkRequests
 {

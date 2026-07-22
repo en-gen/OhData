@@ -1,8 +1,9 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using OhData;
 
-namespace OhData.AspNetCore;
+namespace Microsoft.AspNetCore.Builder;
 
 /// <summary>
 /// Extension methods on <see cref="IEndpointRouteBuilder"/> for mapping OhData endpoints.
@@ -25,6 +26,9 @@ public static class EndpointRouteBuilderExtensions
     public static RouteGroupBuilder MapOhData(this IEndpointRouteBuilder routes, string name)
     {
         var registration = routes.ServiceProvider.GetRequiredKeyedService<OhDataRegistration>(name);
+        // Force delta-mapping compilation now so any unmapped/incompatible mapping fails fast at
+        // startup (MapOhData) rather than at first request. No-op when no DeltaProfile is registered.
+        _ = routes.ServiceProvider.GetService<OhData.IDeltaFactory>();
         return OhDataEndpointFactory.MapAll(routes, registration);
     }
 }

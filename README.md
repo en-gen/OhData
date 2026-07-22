@@ -14,6 +14,8 @@ Try it live — fire real `$filter`/`$orderby`/`$expand` queries (writes too) at
 
 (Free-tier hosting: the first load after a quiet spell takes a moment to wake up, and demo data is ephemeral — anything you write disappears whenever the instance recycles.)
 
+Or run it locally: the clone-and-run [EF Core + SQLite sample](samples/OhData.Sample.EfCoreSqlite/) puts a real relational database behind OhData and logs the SQL, so you can watch `$filter`/`$orderby`/`$top` become `WHERE`/`ORDER BY`/`LIMIT`.
+
 ## Getting Started
 
 Install the server package:
@@ -59,7 +61,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
         CountEnabled   = true;
         SelectEnabled  = true;
 
-        // IQueryable path: $filter/$orderby/$skip/$top push down to SQL via EF Core
+        // IQueryable path: EF Core translates $filter/$orderby/$skip/$top into the SQL query
         GetQueryable = (_) => Task.FromResult(db.Products.AsQueryable());
         GetById      = (id, ct) => db.Products.FindAsync(id, ct).AsTask();
         Post         = (p, ct) => { db.Products.Add(p); return db.SaveChangesAsync(ct).ContinueWith(_ => (Product?)p, ct); };
@@ -72,7 +74,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
 // 3. Register in Program.cs
 builder.Services.AddOhData(o => o
     .WithPrefix("/odata")
-    .AddProfile<ProductProfile>()                              // list profiles explicitly
+    .AddEntitySetProfile<ProductProfile>()                              // list profiles explicitly
     // ...or scan assemblies for every EntitySetProfile they contain:
     .AddProfilesFromAssembly(Assembly.GetExecutingAssembly())  // by assembly instance
     .AddProfilesFromAssemblyOf<ProductProfile>());             // by marker type
@@ -119,20 +121,51 @@ See [docs/openapi.md](docs/openapi.md), [docs/nswag.md](docs/nswag.md), and
 
 ### Beyond the basics
 
-The rest of the surface rides other profile declarations - navigation properties (`HasMany`/`HasOptional`/`HasRequired`), `UseETag`, and `BindFunction`/`BindAction` - rather than the plain CRUD handlers above:
+The rest of the surface rides other profile declarations - navigation properties (`HasMany`/`HasOptional`/`HasRequired`), `UseETag`, and `BindFunction`/`BindAction` - rather than the plain CRUD handlers above. Each declaration registers its routes; the trailing comments show what you get:
 
-| Method | Route | Registered by |
-|--------|-------|---------------|
-| `GET` | `/odata/Orders({key})/Lines` | `HasMany`/`HasOptional`/`HasRequired` with a `getAll`/`get`/`batchGetAll`/`batchGet` delegate |
-| `GET` | `/odata/Orders({key})/Lines/$count` | same, for collection navigations |
-| `POST` | `/odata/Orders({key})/Lines` | `HasMany` with a `post` delegate - creates a related entity |
-| `GET`/`POST`/`PUT`/`DELETE` | `/odata/Orders({key})/Lines/$ref` | `HasMany`/`HasOptional` with `addRef`/`setRef`/`removeRef` |
-| `GET` | `/odata/Products/{FunctionName}` | `BindFunction` (collection-bound) |
-| `POST` | `/odata/Products/{ActionName}` | `BindAction` (collection-bound) |
-| `GET` | `/odata/Products({key})/{FunctionName}` | `BindEntityFunction` |
-| `POST` | `/odata/Products({key})/{ActionName}` | `BindEntityAction` |
+```csharp
+public class OrdersProfile : EntitySetProfile<int, Order>
+{
+    public OrdersProfile(AppDbContext db) : base(x => x.Id)
+    {
+        GetQueryable = _ => Task.FromResult(db.Orders.AsQueryable());
 
-See [docs/navigation-routing.md](docs/navigation-routing.md), [docs/property-access.md](docs/property-access.md), [docs/deep-insert.md](docs/deep-insert.md), and [docs/bound-operations.md](docs/bound-operations.md) for the full details behind each row.
+        // Collection navigation. getAll gives the read routes; every parameter after it is
+        // OPTIONAL - supply only the ones whose route you want:
+        HasMany(
+            navigation: x => x.Lines,
+            getAll:    (orderId, ct) => Task.FromResult(db.Lines.Where(l => l.OrderId == orderId).AsEnumerable()),
+                                          // GET /Orders({key})/Lines  (+ /Lines/$count)
+            post:      (orderId, line, ct) => /* … */,   // optional → POST /Orders({key})/Lines  (create a related entity)
+            addRef:    (orderId, lineId, ct) => /* … */, // optional → POST/PUT /Orders({key})/Lines/$ref  (link existing)
+            removeRef: (orderId, lineId, ct) => /* … */, // optional → DELETE   /Orders({key})/Lines/$ref  (unlink)
+            refTargetEntitySet: "Lines");                // optional → $ref routes emit @odata.id links
+
+        // Single-valued navigation → GET /Orders({key})/Customer.
+        HasOptional(
+            navigation: x => x.Customer,
+            get: (orderId, ct) => Task.FromResult(db.Orders.Find(orderId)?.Customer));
+
+        // ETag response header + If-Match concurrency on GET/PUT/PATCH/DELETE.
+        UseETag(x => x.RowVersion);
+
+        // Bound operations become routes. The entity-bound pair takes the key as its first parameter.
+        BindFunction(Discounted);       // GET  /Orders/Discounted?minOff=…
+        BindAction(Archive);            // POST /Orders/Archive
+        BindEntityFunction(Total);      // GET  /Orders({key})/Total
+        BindEntityAction(Approve);      // POST /Orders({key})/Approve
+    }
+
+    static Task<IEnumerable<Order>> Discounted(decimal minOff) => /* … */;
+    static Task Archive() => /* … */;
+    static Task<decimal> Total(int key) => /* … */;          // first parameter is the entity key
+    static Task Approve(int key, string note) => /* … */;    // first parameter is the entity key
+}
+```
+
+`HasMany(x => x.Lines)` on its own — with no handlers — registers no routes at all; it just declares the navigation for `$metadata` and `$expand`. The same optional-parameter pattern applies to `HasOptional`/`HasRequired`.
+
+See [docs/navigation-routing.md](docs/navigation-routing.md), [docs/property-access.md](docs/property-access.md), [docs/deep-insert.md](docs/deep-insert.md), and [docs/bound-operations.md](docs/bound-operations.md) for the full details behind each declaration.
 
 And to *shrink* the surface instead of growing it: `Ignore(x => x.CostBasis)` hides a property
 from `$metadata`, query options, routes, and every request/response body — without touching the
@@ -157,7 +190,30 @@ ConfigureAuthorization(auth => auth
     .Invoke("Approve", i => i.RequirePolicy("Approvers")));
 ```
 
-`.RequireResource()` adds **instance-level** (owner/tenant) checks: OhData loads the entity and evaluates ASP.NET Core resource-based authorization against it, so you write a standard `AuthorizationHandler<OperationAuthorizationRequirement, TModel>`. Profiles stay free of ASP.NET Core types - requirements are stored as plain policy/role/claim names. See [docs/authorization.md](docs/authorization.md).
+The requirements above are coarse — they answer "can this *kind* of user touch this operation." `.RequireResource()` adds the **instance-level** check "can this user touch *this row*" (owner checks, tenant isolation). OhData loads the `{key}` entity and hands it to ASP.NET Core's native resource-based authorization, so you write one standard handler:
+
+```csharp
+// profile: an Update must come from an Editor who also owns the row
+ConfigureAuthorization(auth => auth
+    .Update(u => u.RequireRole("Editors").RequireResource()));
+
+// handler: the resource IS the loaded entity; requirement.Name selects the operation
+public sealed class OrderAuthorizationHandler
+    : AuthorizationHandler<OperationAuthorizationRequirement, Order>
+{
+    protected override Task HandleRequirementAsync(
+        AuthorizationHandlerContext ctx, OperationAuthorizationRequirement req, Order order)
+    {
+        if (req.Name == OhDataOperations.Update.Name &&
+            order.OwnerId == ctx.User.FindFirst("sub")?.Value)
+            ctx.Succeed(req);   // this Editor owns this order → allow
+        return Task.CompletedTask;
+    }
+}
+// Program.cs:  services.AddScoped<IAuthorizationHandler, OrderAuthorizationHandler>();
+```
+
+So a request to `PATCH /odata/Orders(42)` runs the role check (must be an `Editors` member) **and** loads order 42 and asks the handler whether this caller owns it — both must pass. The check covers property/navigation/`$ref` routes too (the resource is the parent entity in the path), so there's no bypass. `.RequireResource("PolicyName")` evaluates a **named policy** against the entity instead. Profiles stay free of ASP.NET Core types — requirements are stored as plain policy/role/claim names. See [docs/authorization.md](docs/authorization.md).
 
 ---
 
@@ -237,12 +293,30 @@ for the full methodology, raw output, and known asymmetries between the two pipe
 
 ## Battle-testing
 
-1,100 automated tests protect the framework end to end: 778 in `OhData.AspNetCore.Tests` (server
-routing, query options, navigation, ETags, authorization, malformed-payload hardening), 267 in
-`OhData.Client.Tests`, 30 in `OhData.MicrosoftODataClient.Tests` (compatibility against the
-official `Microsoft.OData.Client`), and 25 across the OpenAPI-integration suites
-(`OhData.AspNetCore.OpenApi.Tests`, `OhData.AspNetCore.NSwag.Tests`). Run them yourself with the
-commands in [CLAUDE.md](CLAUDE.md#build--test).
+OhData sits on your request path, so it's tested like it belongs there:
+
+- **Integration tests, not mocks.** The server suite spins up a real ASP.NET Core host and drives it over HTTP — every route, every query option, navigation and `$ref` link management, ETag concurrency, and per-operation *and* instance-level authorization. A large share is deliberately **adversarial**: malformed JSON bodies, hostile and oversized query options, and concurrent or cancelled requests, each asserted to fail cleanly with the correct OData error envelope rather than a 500.
+- **Proven against a real database.** EF Core + SQLite tests capture the SQL the provider actually emits and assert that `$filter`/`$orderby`/`$select` are translated *into the SQL query itself* — executed by the database, not by fetching every row and filtering in memory.
+- **Exercised end-to-end, client and server together.** OhData's own typed client is integration-tested against a live server spun up in-process, so every query, write, and concurrency path round-trips through the real HTTP pipeline. A separate suite drives the server through the official `Microsoft.OData.Client`, proving on-the-wire interoperability with a widely used third-party consumer — conformance you can see, not conformance on paper.
+- **OpenAPI across every supported stack.** The generated document is tested against the built-in `AddOpenApi`, NSwag, and Swashbuckle, so it's correct whichever you wire up.
+- **Load and performance, on every change.** CI runs a [k6](https://k6.io/) load test against a live server on each build, and BenchmarkDotNet suites track server and client throughput and allocations so a regression shows up in review, not in production.
+
+Run the whole thing yourself with `dotnet test src/OhData.sln`.
+
+## Versioning & support
+
+OhData follows [SemVer](https://semver.org/): patch releases fix bugs, minor releases add
+functionality without breaking the public API, and any breaking change means a major version.
+The no-breaking-changes half of that contract is **enforced at build time**, not just promised —
+every release is diffed against the previously published API surface via .NET package validation
+(`PackageValidationBaselineVersion`), so an unintended breaking change fails the release build.
+Behavior changes that don't break the API are called out explicitly in the
+[CHANGELOG](CHANGELOG.md).
+
+**The latest 1.x release is the supported version.** Fixes — including security fixes — ship as a
+new release on top of it; older releases receive no back-ports. `develop` carries pre-release
+work and is not for production use. See [SECURITY.md](SECURITY.md) for vulnerability reporting
+and the full support policy.
 
 ---
 
@@ -254,6 +328,7 @@ commands in [CLAUDE.md](CLAUDE.md#build--test).
 | Navigation property routing, `$ref`, and POST-to-navigation | [docs/navigation-routing.md](docs/navigation-routing.md) |
 | Individual property access, reads/writes, and `/$value` | [docs/property-access.md](docs/property-access.md) |
 | Deep insert (nested related entities in POST) | [docs/deep-insert.md](docs/deep-insert.md) |
+| Delta mapping (DTO → entity write path, dependency-free) | [docs/delta-mapping.md](docs/delta-mapping.md) |
 | Bound functions and actions | [docs/bound-operations.md](docs/bound-operations.md) |
 | ETags and optimistic concurrency | [docs/etags.md](docs/etags.md) |
 | Authorization | [docs/authorization.md](docs/authorization.md) |

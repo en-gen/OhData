@@ -2,8 +2,15 @@
 
 ## Supported versions
 
-OhData is pre-1.0. Only the latest commit on `develop` is actively maintained.
-No back-ports to older commits will be made.
+OhData ships stable 1.x releases to NuGet. **The latest released version is supported**;
+security fixes are published as a new release on top of it (patch or minor, per SemVer).
+Older releases receive no back-ports — upgrade to the latest release to receive fixes.
+
+| Version | Supported |
+|---|---|
+| Latest 1.x release | ✅ |
+| Older 1.x releases | ❌ (upgrade) |
+| Pre-release commits on `develop` | ❌ (not for production) |
 
 ## Reporting a vulnerability
 
@@ -30,7 +37,8 @@ to be prepared and released before disclosing publicly.
 
 ## Scope
 
-This policy covers the `EnGen.OhData.AspNetCore` and `EnGen.OhData.Client` NuGet packages and
+This policy covers every published `EnGen.OhData.*` NuGet package (`AspNetCore`, `Client`, and
+the `AspNetCore.Swashbuckle`/`AspNetCore.OpenApi`/`AspNetCore.NSwag` companions) and
 the code in this repository. It does not cover vulnerabilities in upstream
 dependencies (e.g. `Microsoft.AspNetCore.OData`) -- report those to their
 respective maintainers.

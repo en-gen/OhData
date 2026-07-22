@@ -3,8 +3,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
-using OhData.Abstractions;
-using OhData.AspNetCore;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.NSwag.Tests;
@@ -23,8 +22,8 @@ public sealed class IgnoredPropertySchemaTests
         JsonElement op = GetOperation(doc, "/odata/IgnoredSchemaProducts", "post");
 
         JsonElement schema = RequestSchema(op.GetProperty("requestBody"));
-        Assert.False(SchemaHasProperty(doc, schema, "costBasis"));
-        Assert.False(SchemaHasProperty(doc, schema, "internalNotes"));
+        Assert.False(SchemaHasProperty(doc, schema, "CostBasis"));
+        Assert.False(SchemaHasProperty(doc, schema, "InternalNotes"));
     }
 
     [Fact]
@@ -34,8 +33,8 @@ public sealed class IgnoredPropertySchemaTests
         JsonElement op = GetOperation(doc, "/odata/IgnoredSchemaProducts", "post");
 
         JsonElement schema = RequestSchema(op.GetProperty("requestBody"));
-        Assert.True(SchemaHasProperty(doc, schema, "id"));
-        Assert.True(SchemaHasProperty(doc, schema, "name"));
+        Assert.True(SchemaHasProperty(doc, schema, "Id"));
+        Assert.True(SchemaHasProperty(doc, schema, "Name"));
     }
 
     [Fact]
@@ -45,8 +44,8 @@ public sealed class IgnoredPropertySchemaTests
         JsonElement op = GetOperation(doc, "/odata/IgnoredSchemaProducts", "get");
 
         JsonElement item = CollectionItemSchema(doc, op);
-        Assert.False(HasProperty(item, "costBasis"));
-        Assert.True(HasProperty(item, "name"));
+        Assert.False(HasProperty(item, "CostBasis"));
+        Assert.True(HasProperty(item, "Name"));
     }
 
     [Fact]
@@ -59,8 +58,8 @@ public sealed class IgnoredPropertySchemaTests
 
         JsonElement schema = RequestSchema(op.GetProperty("requestBody"));
         Assert.False(SchemaHasProperty(doc, schema, "marginPct"));
-        Assert.False(SchemaHasProperty(doc, schema, "unitMargin"));
-        Assert.True(SchemaHasProperty(doc, schema, "id"));
+        Assert.False(SchemaHasProperty(doc, schema, "UnitMargin"));
+        Assert.True(SchemaHasProperty(doc, schema, "Id"));
     }
 
     [Fact]
@@ -72,7 +71,7 @@ public sealed class IgnoredPropertySchemaTests
         JsonElement op = GetOperation(doc, "/odata/IgnoredSchemaAudits", "post");
 
         JsonElement schema = RequestSchema(op.GetProperty("requestBody"));
-        Assert.True(SchemaHasProperty(doc, schema, "costBasis"));
+        Assert.True(SchemaHasProperty(doc, schema, "CostBasis"));
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
@@ -81,9 +80,9 @@ public sealed class IgnoredPropertySchemaTests
     {
         await using TestFixture fx = await NSwagTestHostBuilder.BuildAsync(o =>
         {
-            o.AddProfile<ProductProfile>();
-            o.AddProfile<AuditEntryProfile>();
-            o.AddProfile<RenamedProfile>();
+            o.AddEntitySetProfile<ProductProfile>();
+            o.AddEntitySetProfile<AuditEntryProfile>();
+            o.AddEntitySetProfile<RenamedProfile>();
         });
         return await fx.GetDocumentAsync();
     }
@@ -115,11 +114,15 @@ public sealed class IgnoredPropertySchemaTests
     private static bool SchemaHasProperty(JsonDocument doc, JsonElement schema, string propertyName) =>
         HasProperty(Resolve(doc, schema), propertyName);
 
-    /// <summary>Case-insensitive, since OpenAPI schema property names follow the response's JSON casing.</summary>
+    /// <summary>
+    /// Case-<b>sensitive</b> (#258): OpenAPI schema property names must match the response's JSON
+    /// casing exactly (PascalCase by default), so the assertions above prove the casing rather than
+    /// passing under a lenient compare.
+    /// </summary>
     private static bool HasProperty(JsonElement resolvedSchema, string propertyName)
     {
         if (!resolvedSchema.TryGetProperty("properties", out JsonElement props)) return false;
-        return props.EnumerateObject().Any(p => string.Equals(p.Name, propertyName, System.StringComparison.OrdinalIgnoreCase));
+        return props.EnumerateObject().Any(p => string.Equals(p.Name, propertyName, System.StringComparison.Ordinal));
     }
 
     private static JsonElement Resolve(JsonDocument doc, JsonElement schema)

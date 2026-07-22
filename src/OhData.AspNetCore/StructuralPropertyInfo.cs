@@ -1,6 +1,7 @@
 using System;
+using System.Reflection;
 
-namespace OhData.Abstractions;
+namespace OhData;
 
 /// <summary>
 /// Describes a structural (non-navigation) property of an entity's CLR model, used to register
@@ -11,7 +12,13 @@ namespace OhData.Abstractions;
 /// </summary>
 internal sealed record StructuralPropertyInfo
 {
-    /// <summary>The CLR property name, used as the route segment.</summary>
+    /// <summary>
+    /// The property's OData/EDM name — its <c>[JsonPropertyName]</c> value when present, else the CLR
+    /// name (#253). Used as the property route segment, the <c>$select</c>/<c>$filter</c>/<c>$orderby</c>
+    /// identifier, and the <c>$select</c> post-strip key, so it agrees with the response payload key.
+    /// Use <see cref="Property"/>'s <c>Name</c> for the underlying CLR property name (e.g. building a
+    /// <c>Delta&lt;TModel&gt;</c>, which keys by CLR name).
+    /// </summary>
     public required string Name { get; init; }
 
     /// <summary>The CLR type of the property.</summary>
@@ -45,4 +52,12 @@ internal sealed record StructuralPropertyInfo
     /// invoked via per-request reflection.
     /// </summary>
     public required Func<object, object?> Accessor { get; init; }
+
+    /// <summary>
+    /// The reflected property, used by the <c>$select</c> projection-pushdown builder (#206)
+    /// as the <c>Expression.Bind</c> target. Setter usability for pushdown eligibility is
+    /// <c>Property.SetMethod is { IsPublic: true }</c> — init-only setters qualify; get-only
+    /// computed properties do not.
+    /// </summary>
+    public required PropertyInfo Property { get; init; }
 }

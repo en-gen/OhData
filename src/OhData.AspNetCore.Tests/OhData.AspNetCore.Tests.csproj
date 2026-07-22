@@ -16,6 +16,9 @@
 
 	<ItemGroup>
 		<PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.*" />
+		<PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.*" />
+		<!-- Transitive pin: clears GHSA-2m69-gcr7-jv3q (SQLitePCLRaw < 2.1.12) under TreatWarningsAsErrors. -->
+		<PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
 		<PackageReference Include="coverlet.collector" Version="6.0.4">
 			<IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
 			<PrivateAssets>all</PrivateAssets>
