@@ -1,92 +1,31 @@
-# Site navigation for the OhData documentation site (issue #208).
+# ROOT toc for the OhData documentation site (issue #208) - the TOP NAVBAR.
 #
-# Content is single-sourced: every href prefixed with ../docs/ resolves to a file under the
-# repository's docs/ folder, glob-referenced in place by docfx.json (no copies). Editing
-# docs/*.md updates the site automatically. The ../docs/ prefix is required because DocFX keys
-# files by their path from the common base directory (the repo root), so from docs-site/ the
-# guides live one level up under docs/. Output URLs are still flat (e.g. /architecture.html).
+# WHY THIS IS MINIMAL: in the DocFX modern template the ROOT toc is what renders as the
+# horizontal TOP NAVBAR (the template loads it via the `docfx:navrel` meta and walks its
+# top level into the navbar). It is NOT the left sidebar. The left sidebar is driven by a
+# page's *owning* toc (`docfx:tocrel`); the template shows it only when that owning toc
+# differs from the root toc. See docfx.json for the full mechanism.
 #
-# The three draft pages (index.md, getting-started.md, ef-core-sqlite.md) live in docs-site/
-# itself and are referenced without the prefix.
+# INFORMATION ARCHITECTURE: three PRODUCT tabs plus Home. Each product tab points at a
+# NESTED toc (server/ client/ companions/); DocFX renders that nested toc in the modern
+# LEFT SIDEBAR for every page in that product, giving the reference "top tabs + left tree
+# + right affix" layout. The section trees live in those nested tocs, NOT here (putting
+# them here would render them back on the top bar).
 
 - name: Home
   href: index.md
 
-- name: Getting Started
-  items:
-    - name: Installation & quick start
-      href: getting-started.md
-    - name: EF Core + SQLite tutorial
-      href: ef-core-sqlite.md
-    - name: Migrating from Microsoft.AspNetCore.OData
-      href: ../docs/migrating-from-microsoft-odata.md
-
-- name: Concepts
-  items:
-    - name: Architecture
-      href: ../docs/architecture.md
-
-- name: Guides
-  items:
-    - name: Querying
-      items:
-        - name: Query options
-          href: ../docs/query-options.md
-    - name: Modeling
-      items:
-        - name: Navigation & $ref routing
-          href: ../docs/navigation-routing.md
-        - name: Individual property access
-          href: ../docs/property-access.md
-        - name: Bound functions & actions
-          href: ../docs/bound-operations.md
-        - name: Ignoring properties
-          href: ../docs/ignoring-properties.md
-    - name: Writing data
-      items:
-        - name: Deep insert
-          href: ../docs/deep-insert.md
-        - name: Delta mapping
-          href: ../docs/delta-mapping.md
-        - name: ETags & concurrency
-          href: ../docs/etags.md
-    - name: Security
-      items:
-        - name: Authorization
-          href: ../docs/authorization.md
-    - name: API documentation
-      items:
-        - name: OpenAPI (AddOpenApi)
-          href: ../docs/openapi.md
-        - name: NSwag
-          href: ../docs/nswag.md
-    - name: Advanced
-      items:
-        - name: API versioning
-          href: ../docs/versioning.md
+# Each entry uses a FOLDER href (e.g. server/) - NOT server/toc.yml. A folder href is a toc
+# REFERENCE: DocFX links the tab to the nested toc's first topic and emits a `tocHref` that
+# points at the nested toc, so that toc stays independent and its pages keep it as their
+# owning toc (docfx:tocrel) -> it renders in the LEFT SIDEBAR. (A `server/toc.yml` href is
+# instead a toc INCLUSION: it inlines the nested items into the root toc, which would make
+# the root toc own the pages and put the whole tree back on the top navbar.)
+- name: Server
+  href: server/
 
 - name: Client
-  items:
-    - name: OhData.Client guide
-      href: ../docs/client.md
+  href: client/
 
-- name: Operations
-  items:
-    - name: Deployment
-      href: ../docs/deployment.md
-    - name: Observability
-      href: ../docs/observability.md
-
-- name: Reference
-  items:
-    - name: OData 4.0 spec compliance
-      href: ../docs/spec-compliance.md
-    - name: Performance & benchmarks
-      href: https://github.com/en-gen/OhData/blob/develop/src/OhData.Server.Benchmarks/docs/server-comparison-report.md
-    - name: API reference
-      href: api/
-
-- name: Contributing
-  items:
-    - name: Releasing to NuGet
-      href: ../docs/releasing.md
+- name: Companions
+  href: companions/
