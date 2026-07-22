@@ -142,22 +142,24 @@ Any disabled capability returns `400 Bad Request` (`UnsupportedQueryOption`, wit
 
 The single-entity route `GET /Products(1)` honors the same gates for the options it supports: `$select` requires `SelectEnabled` and `$expand` requires `ExpandEnabled`. When `ExpandEnabled` is on, `$expand` on the single-entity route inlines the requested navigation properties using the same navigation-route handlers (batch handlers included) as the collection route.
 
-### Production pattern: `IDbContextFactory`
+### Advanced: independent contexts with `IDbContextFactory`
 
-Profiles are singletons, so a scoped `DbContext` cannot be injected directly. Use `IDbContextFactory<T>`:
+Profiles are registered **scoped**, so the request-scoped `DbContext` injects directly into the
+constructor — that is the pattern shown above and the default to reach for. Use
+`IDbContextFactory<T>` only when a handler needs a **fresh, independently-scoped** context, for
+example to run queries concurrently (a single `DbContext` instance is not thread-safe). Create it
+per call and dispose it with `await using`:
 
 ```csharp
 public class ProductProfile : EntitySetProfile<int, Product>
 {
     public ProductProfile(IDbContextFactory<AppDbContext> factory) : base(x => x.Id)
     {
-        FilterEnabled  = true;
-        OrderByEnabled = true;
-
-        GetQueryable = async (_) =>
+        // Simple materializing read path (no deferred IQueryable to keep alive).
+        GetAll = async ct =>
         {
-            var db = await factory.CreateDbContextAsync();
-            return db.Products;
+            await using var db = await factory.CreateDbContextAsync(ct);
+            return await db.Products.ToListAsync(ct);
         };
     }
 }
@@ -165,6 +167,12 @@ public class ProductProfile : EntitySetProfile<int, Product>
 // Registration:
 builder.Services.AddDbContextFactory<AppDbContext>(o => o.UseSqlServer(connectionString));
 ```
+
+Pair the factory with a **materializing** handler like `GetAll`, not `GetQueryable`: a
+factory-created context can't back a deferred `IQueryable` without leaking (the framework enumerates
+it after your method returns, so there is no safe point to dispose). The `GetQueryable` +
+request-scoped `DbContext` pairing above remains the default when you want `$filter`/`$select`/
+`$expand` pushed down to SQL.
 
 ---
 
