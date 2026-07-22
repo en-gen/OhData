@@ -1946,15 +1946,17 @@ internal static class OhDataEndpointFactory
             if (remainingDepth < 2) return false;
             if (!IsMemberInitProjectable(binding.ElementType, model)) return false;
 
-            // Delegate-safety at depth: resolve the element type's own profile (if any). A nested nav
-            // that the element type's profile declares WITH a delegate must never be EF-included, so
-            // the whole parent branch is deferred (it then resolves via the existing delegate/EDM path).
-            // When the element type is not its own entity set (no profile), no delegate can exist for
-            // its navigations, so they are inherently delegate-less and eligible if otherwise pushable.
-            IEntitySetEndpointSource? childSource = FindStartupSourceForClrType(binding.ElementType, registration);
-            var childRouteBacked = childSource is not null
-                ? new HashSet<string>(childSource.NavigationRoutes.Select(r => r.PropertyName), StringComparer.OrdinalIgnoreCase)
-                : null;
+            // Delegate-safety at depth: gather the delegate-backed navigation names of EVERY profile
+            // whose entity set exposes this element CLR type (not just the first one). A nested nav that
+            // ANY such profile declares WITH a delegate must never be EF-included, so the whole parent
+            // branch is deferred (it then resolves via the existing delegate/EDM path). Unioning across
+            // all matching profiles keeps the delegate-safety invariant registration-order-independent:
+            // the same CLR model type can be exposed by 2+ entity sets with DIFFERENT nav-delegate
+            // config, and a delegate-carrying set must not be bypassed just because a delegate-less set
+            // over the same type happened to register first. When the element type is not exposed by any
+            // entity set (no profile), no delegate can exist for its navigations, so they are inherently
+            // delegate-less and eligible if otherwise pushable.
+            HashSet<string>? childRouteBacked = DelegateBackedNavNamesForClrType(binding.ElementType, registration);
 
             foreach (ExpandedNavigationSelectItem childItem in childItems)
             {
@@ -1985,17 +1987,29 @@ internal static class OhDataEndpointFactory
         return true;
     }
 
-    // #206 phase 2 (multi-level expand): the request-scoped startup source (structural metadata only —
-    // NavigationRoutes etc.) whose entity set's CLR model type is <paramref name="clrType"/>, or null
-    // when that type is not exposed as its own entity set. Used at query-plan time to decide whether a
-    // nested navigation is delegate-backed; only structural facts are read, so the startup singleton
-    // source suffices (no request scope needed). Returns the FIRST profile whose model type matches —
-    // OhData allows at most one entity set per CLR model type in practice (set names are de-duplicated
-    // at startup), so a single match is expected; a null result means the type is a nav-target only
-    // (no profile), hence no delegate can exist for its navigations.
-    private static IEntitySetEndpointSource? FindStartupSourceForClrType(Type clrType, OhDataRegistration registration)
+    // #206 phase 2 (multi-level expand): the UNION of delegate-backed navigation-property names across
+    // every startup source whose entity set's CLR model type is <paramref name="clrType"/>, or null when
+    // that type is not exposed by any entity set (a nav-target-only type — no profile, hence no delegate
+    // can exist for its navigations). Used at query-plan time to decide whether a nested navigation is
+    // delegate-backed; only structural facts (NavigationRoutes) are read, so the startup singleton
+    // sources suffice (no request scope needed).
+    //
+    // The union — not a single FirstOrDefault — is load-bearing for the delegate-safety invariant: OhData
+    // de-duplicates entity-set NAMES at startup, but the SAME CLR model type may be exposed by 2+ entity
+    // sets carrying DIFFERENT nav-delegate config. If any one of them route-backs a given navigation, that
+    // navigation must be treated as delegate-backed everywhere (branch deferred, never EF-included), so a
+    // delegate-carrying set is never bypassed merely because a delegate-less set over the same type
+    // registered first. The union is scoped to the SAME clrType and (by name membership at the call site)
+    // the SAME navigation, so an unrelated nav on a different type never widens the deferral.
+    private static HashSet<string>? DelegateBackedNavNamesForClrType(Type clrType, OhDataRegistration registration)
     {
-        return registration.Profiles.FirstOrDefault(p => p.ModelType == clrType);
+        HashSet<string>? names = null;
+        foreach (IEntitySetEndpointSource p in registration.Profiles.Where(p => p.ModelType == clrType))
+        {
+            foreach (NavigationRouteDefinition r in p.NavigationRoutes)
+                (names ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase)).Add(r.PropertyName);
+        }
+        return names;
     }
 
     // #206 phase 2 (multi-level expand): true when an element type can be projected into a fresh
