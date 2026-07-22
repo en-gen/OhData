@@ -53,7 +53,7 @@ responses actually emit.
 ### `GetAll` - simple in-memory path
 
 ```csharp
-GetAll = (ct) => Task.FromResult<IEnumerable<Product>>(myList);
+GetAll = async (ct) => await db.Products.ToListAsync(ct);
 ```
 
 Returns all items. The framework does **not** apply `$filter` or `$orderby` to the returned collection - and it does not silently ignore them either. If the client sends either of these, the request is rejected with `400 Bad Request` (`UnsupportedQueryOption`), regardless of the capability flags - `GetAll` has no `ApplyTo`/`IQueryable` pipeline to push them down to.
@@ -115,7 +115,7 @@ On this path the profile — not the framework — owns query application, inclu
 ### `GetQueryable` - IQueryable with pushdown (recommended for databases)
 
 ```csharp
-GetQueryable = (_) => Task.FromResult(db.Products.AsQueryable());
+GetQueryable = _ => Task.FromResult<IQueryable<Product>>(db.Products);
 ```
 
 Returns a base `IQueryable<TModel>`. The framework applies `$filter`, `$orderby`, `$skip`, and `$top` via `ApplyTo(IQueryable)`. With EF Core these become SQL clauses - only matching rows are fetched.
@@ -133,7 +133,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
         SelectEnabled  = true;   // allow $select
         ExpandEnabled  = true;   // allow $expand
 
-        GetQueryable = (_) => Task.FromResult(db.Products.AsQueryable());
+        GetQueryable = _ => Task.FromResult<IQueryable<Product>>(db.Products);
     }
 }
 ```
@@ -157,7 +157,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
         GetQueryable = async (_) =>
         {
             var db = await factory.CreateDbContextAsync();
-            return db.Products.AsQueryable();
+            return db.Products;
         };
     }
 }
@@ -431,9 +431,9 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
 
         // Per-entity form: one query PER order (N+1 under $expand).
         HasOptional(x => x.Customer,
-            get: (orderId, ct) => Task.FromResult(db.Customers.Find(orderId)));
+            get: async (orderId, ct) => await db.Customers.FindAsync([orderId], ct));
 
-        GetQueryable = (_) => Task.FromResult(db.Orders.AsQueryable());
+        GetQueryable = _ => Task.FromResult<IQueryable<Order>>(db.Orders);
     }
 }
 ```
@@ -539,10 +539,9 @@ The node-count defaults are unchanged from what OhData already applied (they wer
 Register a `Search` handler to support free-text search:
 
 ```csharp
-Search = (term, ct) => Task.FromResult<IEnumerable<Product>>(
-    db.Products
-      .Where(p => p.Name.Contains(term) || p.Description.Contains(term))
-      .ToList());
+Search = async (term, ct) => await db.Products
+    .Where(p => p.Name.Contains(term) || p.Description.Contains(term))
+    .ToListAsync(ct);
 ```
 
 ```
