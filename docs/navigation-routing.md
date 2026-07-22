@@ -23,7 +23,7 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
         HasMany(x => x.Lines);
         HasOptional(x => x.Customer);
 
-        GetQueryable = (_) => Task.FromResult(db.Orders.AsQueryable());
+        GetQueryable = _ => Task.FromResult<IQueryable<Order>>(db.Orders);
     }
 }
 ```
@@ -41,9 +41,8 @@ Pass a handler delegate to register a `GET /Parents({key})/Children` route:
 
 ```csharp
 HasMany(x => x.Lines,
-    getAll: (orderId, ct) =>
-        Task.FromResult<IEnumerable<OrderLine>>(
-            db.OrderLines.Where(l => l.OrderId == orderId).ToList()));
+    getAll: async (orderId, ct) =>
+        await db.OrderLines.Where(l => l.OrderId == orderId).ToListAsync(ct));
 ```
 
 This registers: `GET /odata/Orders({key})/Lines`
@@ -52,8 +51,11 @@ For single-entity navigations (`HasOptional`, `HasRequired`):
 
 ```csharp
 HasOptional(x => x.Customer,
-    get: (orderId, ct) =>
-        Task.FromResult(db.Customers.Find(order.CustomerId)));
+    get: async (orderId, ct) =>
+    {
+        var order = await db.Orders.FindAsync([orderId], ct);
+        return order is null ? null : await db.Customers.FindAsync([order.CustomerId], ct);
+    });
 ```
 
 This registers: `GET /odata/Orders({key})/Customer`
@@ -159,18 +161,18 @@ For many-to-many or reference relationships, OhData supports `$ref` link managem
 
 ```csharp
 HasMany(x => x.Tags,
-    getAll: (productId, ct) => Task.FromResult<IEnumerable<Tag>>(
-        db.ProductTags.Where(pt => pt.ProductId == productId).Select(pt => pt.Tag).ToList()),
-    addRef: (productId, tagId, ct) =>
+    getAll: async (productId, ct) => await db.ProductTags
+        .Where(pt => pt.ProductId == productId).Select(pt => pt.Tag).ToListAsync(ct),
+    addRef: async (productId, tagId, ct) =>
     {
         db.ProductTags.Add(new ProductTag { ProductId = productId, TagId = int.Parse(tagId) });
-        return db.SaveChangesAsync(ct);
+        await db.SaveChangesAsync(ct);
     },
-    removeRef: (productId, tagId, ct) =>
+    removeRef: async (productId, tagId, ct) =>
     {
-        var link = db.ProductTags.Find(productId, int.Parse(tagId));
+        var link = await db.ProductTags.FindAsync([productId, int.Parse(tagId)], ct);
         if (link is not null) db.ProductTags.Remove(link);
-        return db.SaveChangesAsync(ct);
+        await db.SaveChangesAsync(ct);
     });
 ```
 
@@ -212,8 +214,8 @@ to one that already exists (`$ref` above is for the latter; OData §11.4.2.1):
 
 ```csharp
 HasMany(x => x.Lines,
-    getAll: (orderId, ct) =>
-        Task.FromResult<IEnumerable<OrderLine>>(db.OrderLines.Where(l => l.OrderId == orderId).ToList()),
+    getAll: async (orderId, ct) =>
+        await db.OrderLines.Where(l => l.OrderId == orderId).ToListAsync(ct),
     post: async (orderId, line, ct) =>
     {
         if (!await db.Orders.AnyAsync(o => o.Id == orderId, ct)) return null; // parent not found → 404

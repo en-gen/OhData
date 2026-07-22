@@ -38,13 +38,13 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
 
         HasMany(x => x.Lines, batchGetAll: (orderIds, ct) => ...);
 
-        Post = (order, _) =>
+        Post = async (order, ct) =>
         {
             order.Id = Guid.NewGuid();
-            db.Orders.Add(order);       // adds the whole graph — order + order.Lines
-            db.SaveChanges();           // ONE atomic write; EF Core's relationship fixup
-                                         // assigns each line's OrderId from the tracked nav
-            return Task.FromResult<Order?>(order);
+            db.Orders.Add(order);            // adds the whole graph — order + order.Lines
+            await db.SaveChangesAsync(ct);   // ONE atomic write; EF Core's relationship fixup
+                                             // assigns each line's OrderId from the tracked nav
+            return order;
         };
     }
 }
@@ -66,13 +66,13 @@ collection navigations (`Order.Lines`) and single-valued navigations (`Order.Cat
 
 ```csharp
 // AllowDeepInsert left at its default (false):
-Post = (order, _) =>
+Post = async (order, ct) =>
 {
     // order.Lines is null here even if the request body included a "lines" array —
     // the framework stripped it before this handler ran.
     db.Orders.Add(order);
-    db.SaveChanges();
-    return Task.FromResult<Order?>(order);
+    await db.SaveChangesAsync(ct);
+    return order;
 };
 ```
 

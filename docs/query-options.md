@@ -115,7 +115,7 @@ On this path the profile — not the framework — owns query application, inclu
 ### `GetQueryable` - IQueryable with pushdown (recommended for databases)
 
 ```csharp
-GetQueryable = (_) => Task.FromResult(db.Products.AsQueryable());
+GetQueryable = _ => Task.FromResult<IQueryable<Product>>(db.Products);
 ```
 
 Returns a base `IQueryable<TModel>`. The framework applies `$filter`, `$orderby`, `$skip`, and `$top` via `ApplyTo(IQueryable)`. With EF Core these become SQL clauses - only matching rows are fetched.
@@ -133,7 +133,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
         SelectEnabled  = true;   // allow $select
         ExpandEnabled  = true;   // allow $expand
 
-        GetQueryable = (_) => Task.FromResult(db.Products.AsQueryable());
+        GetQueryable = _ => Task.FromResult<IQueryable<Product>>(db.Products);
     }
 }
 ```
@@ -142,22 +142,24 @@ Any disabled capability returns `400 Bad Request` (`UnsupportedQueryOption`, wit
 
 The single-entity route `GET /Products(1)` honors the same gates for the options it supports: `$select` requires `SelectEnabled` and `$expand` requires `ExpandEnabled`. When `ExpandEnabled` is on, `$expand` on the single-entity route inlines the requested navigation properties using the same navigation-route handlers (batch handlers included) as the collection route.
 
-### Production pattern: `IDbContextFactory`
+### Advanced: independent contexts with `IDbContextFactory`
 
-Profiles are singletons, so a scoped `DbContext` cannot be injected directly. Use `IDbContextFactory<T>`:
+Profiles are registered **scoped**, so the request-scoped `DbContext` injects directly into the
+constructor — that is the pattern shown above and the default to reach for. Use
+`IDbContextFactory<T>` only when a handler needs a **fresh, independently-scoped** context, for
+example to run queries concurrently (a single `DbContext` instance is not thread-safe). Create it
+per call and dispose it with `await using`:
 
 ```csharp
 public class ProductProfile : EntitySetProfile<int, Product>
 {
     public ProductProfile(IDbContextFactory<AppDbContext> factory) : base(x => x.Id)
     {
-        FilterEnabled  = true;
-        OrderByEnabled = true;
-
-        GetQueryable = async (_) =>
+        // Simple materializing read path (no deferred IQueryable to keep alive).
+        GetAll = async ct =>
         {
-            var db = await factory.CreateDbContextAsync();
-            return db.Products.AsQueryable();
+            await using var db = await factory.CreateDbContextAsync(ct);
+            return await db.Products.ToListAsync(ct);
         };
     }
 }
@@ -165,6 +167,12 @@ public class ProductProfile : EntitySetProfile<int, Product>
 // Registration:
 builder.Services.AddDbContextFactory<AppDbContext>(o => o.UseSqlServer(connectionString));
 ```
+
+Pair the factory with a **materializing** handler like `GetAll`, not `GetQueryable`: a
+factory-created context can't back a deferred `IQueryable` without leaking (the framework enumerates
+it after your method returns, so there is no safe point to dispose). The `GetQueryable` +
+request-scoped `DbContext` pairing above remains the default when you want `$filter`/`$select`/
+`$expand` pushed down to SQL.
 
 ---
 
@@ -431,9 +439,9 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
 
         // Per-entity form: one query PER order (N+1 under $expand).
         HasOptional(x => x.Customer,
-            get: (orderId, ct) => Task.FromResult(db.Customers.Find(orderId)));
+            get: async (orderId, ct) => await db.Customers.FindAsync([orderId], ct));
 
-        GetQueryable = (_) => Task.FromResult(db.Orders.AsQueryable());
+        GetQueryable = _ => Task.FromResult<IQueryable<Order>>(db.Orders);
     }
 }
 ```
@@ -539,10 +547,9 @@ The node-count defaults are unchanged from what OhData already applied (they wer
 Register a `Search` handler to support free-text search:
 
 ```csharp
-Search = (term, ct) => Task.FromResult<IEnumerable<Product>>(
-    db.Products
-      .Where(p => p.Name.Contains(term) || p.Description.Contains(term))
-      .ToList());
+Search = async (term, ct) => await db.Products
+    .Where(p => p.Name.Contains(term) || p.Description.Contains(term))
+    .ToListAsync(ct);
 ```
 
 ```

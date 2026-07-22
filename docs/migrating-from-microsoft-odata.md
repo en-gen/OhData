@@ -186,7 +186,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
         SelectEnabled = true;
         MaxTop = 100;
 
-        GetQueryable = _ => Task.FromResult(db.Products.AsQueryable());
+        GetQueryable = _ => Task.FromResult<IQueryable<Product>>(db.Products);
         GetById = (id, ct) => db.Products.FindAsync(new object[] { id }, ct).AsTask();
 
         Post = async (product, ct) =>
