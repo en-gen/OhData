@@ -53,7 +53,7 @@ responses actually emit.
 ### `GetAll` - simple in-memory path
 
 ```csharp
-GetAll = async (ct) => await db.Products.ToListAsync(ct);
+GetAll = (ct) => Task.FromResult<IEnumerable<Product>>(myList);
 ```
 
 Returns all items. The framework does **not** apply `$filter` or `$orderby` to the returned collection - and it does not silently ignore them either. If the client sends either of these, the request is rejected with `400 Bad Request` (`UnsupportedQueryOption`), regardless of the capability flags - `GetAll` has no `ApplyTo`/`IQueryable` pipeline to push them down to.
