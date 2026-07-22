@@ -1,11 +1,5 @@
 # Getting started
 
-> **DRAFT — needs maintainer review**
->
-> This narrative walkthrough was assembled for the documentation site (issue #208) from the
-> `README.md` quick-start snippets. Verify the code compiles against the current API and that
-> package/route names are accurate before publishing.
-
 This guide takes you from an empty project to a running, queryable OData API in about ten
 minutes. It uses an in-memory list to stay focused on OhData itself; for a real database, follow
 the [EF Core + SQLite tutorial](ef-core-sqlite.md) next.
@@ -52,7 +46,7 @@ unassigned and there is no `DELETE` route at all.
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
-using OhData.Abstractions;
+using OhData;
 
 namespace ShopApi;
 
@@ -111,16 +105,18 @@ public class ProductProfile : EntitySetProfile<int, Product>
 Two calls: `AddOhData` collects your profiles and prefix at DI-build time; `MapOhData` registers
 the routes after `app.Build()`.
 
+`AddOhData` and `MapOhData` live in the framework's `Microsoft.Extensions.DependencyInjection`
+and `Microsoft.AspNetCore.Builder` namespaces, so no extra `using` is needed for them.
+
 ```csharp
 // Program.cs
-using OhData.AspNetCore;
 using ShopApi;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddOhData(o => o
     .WithPrefix("/odata")
-    .AddProfile<ProductProfile>());
+    .AddEntitySetProfile<ProductProfile>());
     // ...or scan an assembly: .AddProfilesFromAssemblyOf<ProductProfile>()
 
 var app = builder.Build();
@@ -143,19 +139,27 @@ Then exercise the OData surface (adjust the port to what `dotnet run` prints):
 curl "http://localhost:5000/odata/"
 curl "http://localhost:5000/odata/\$metadata"
 
-# The collection, plus query options (percent-encode spaces as %20)
+# The collection, plus query options (percent-encode spaces as %20). Property names in
+# $filter/$orderby/$select are the canonical PascalCase names from $metadata; matching is
+# case-insensitive, but the responses come back PascalCase, so prefer the canonical form.
 curl "http://localhost:5000/odata/Products"
-curl "http://localhost:5000/odata/Products?\$filter=price%20gt%2013&\$orderby=name"
-curl "http://localhost:5000/odata/Products?\$select=name,price&\$top=2"
+curl "http://localhost:5000/odata/Products?\$filter=Price%20gt%2013&\$orderby=Name"
+curl "http://localhost:5000/odata/Products?\$select=Name,Price&\$top=2"
 curl "http://localhost:5000/odata/Products/\$count"
 
 # A single entity
 curl "http://localhost:5000/odata/Products(1)"
 
-# Create one
+# Create one (request bodies bind case-insensitively, so either casing is accepted)
 curl -X POST "http://localhost:5000/odata/Products" \
      -H "Content-Type: application/json" \
-     -d '{"name":"Stud Finder","price":29.99}'
+     -d '{"Name":"Stud Finder","Price":29.99}'
+```
+
+The created row comes back in the canonical PascalCase shape that matches `$metadata`:
+
+```json
+{ "@odata.context": "http://localhost:5000/odata/$metadata#Products/$entity", "Id": 4, "Name": "Stud Finder", "Price": 29.99 }
 ```
 
 Because you assigned `GetQueryable`, `GetById`, `Post`, and `Delete` — but not `Put` or `Patch` —

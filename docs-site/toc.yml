@@ -42,15 +42,12 @@
           href: ../docs/bound-operations.md
         - name: Ignoring properties
           href: ../docs/ignoring-properties.md
-        # TODO(#243): wire the new delta-mapping guide here once the concurrent docs branch
-        # lands docs/<delta-mapping>.md. Placeholder entry below — uncomment and set the href
-        # to the real filename (../docs/<name>.md) at PR reconciliation time.
-        # - name: Delta mapping
-        #   href: ../docs/delta-mapping.md
     - name: Writing data
       items:
         - name: Deep insert
           href: ../docs/deep-insert.md
+        - name: Delta mapping
+          href: ../docs/delta-mapping.md
         - name: ETags & concurrency
           href: ../docs/etags.md
     - name: Security

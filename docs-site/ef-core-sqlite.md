@@ -1,11 +1,5 @@
 # EF Core + SQLite tutorial
 
-> **DRAFT — needs maintainer review**
->
-> This tutorial was written for the documentation site (issue #208) from the runnable
-> [`samples/OhData.Sample.EfCoreSqlite/`](https://github.com/en-gen/OhData/tree/develop/samples/OhData.Sample.EfCoreSqlite)
-> project. Verify the code against the current sample and framework API before publishing.
-
 The [getting-started walkthrough](getting-started.md) put an in-memory list behind OhData. This
 tutorial puts a **real relational database** behind it — SQLite via EF Core — and shows the
 payoff: OData query options are not applied in memory, they are composed onto an `IQueryable` and
@@ -94,7 +88,7 @@ processing entirely.
 ```csharp
 // ProductProfile.cs
 using Microsoft.EntityFrameworkCore;
-using OhData.Abstractions;
+using OhData;
 
 namespace ShopApi;
 
@@ -109,20 +103,13 @@ public class ProductProfile : EntitySetProfile<int, Product>
         // silently capped); a request with no $top is server-paged to 50 with an @odata.nextLink.
         MaxTop = 50;
 
-        // Batch-loaded $expand=Category: the batchGet delegate is called ONCE per page with all
-        // the product keys — one SQL query, not one per row (no N+1). The framework auto-derives
-        // the per-entity handler, so GET /odata/Products(1)/Category works too.
-        HasRequired(
-            navigation: x => x.Category,
-            batchGet: async (productIds, ct) =>
-            {
-                var idSet = productIds.ToHashSet();
-                return await db.Products
-                    .Where(p => idSet.Contains(p.Id))
-                    .Join(db.Categories, p => p.CategoryId, c => c.Id, (p, c) => new { p.Id, Category = c })
-                    .ToDictionaryAsync(x => x.Id, x => x.Category, ct);
-            },
-            refTargetEntitySet: "Categories");
+        // Delegate-less navigation: declaring the relationship with NO delegate opts $expand=Category
+        // into SQL-JOIN pushdown (#206). On the EF Core-backed GetQueryable path the framework folds
+        // it into an Include, so one JOIN'd query loads the page AND its categories — no delegate to
+        // write, no N+1. (Supply a get/batchGet delegate only when expansion needs custom logic —
+        // filtering, ordering, authorization; that opts the nav back OUT of pushdown and also gives
+        // you a standalone GET /odata/Products(1)/Category route.)
+        HasRequired(x => x.Category);
 
         GetQueryable = _ => Task.FromResult(db.Products.AsQueryable());
         GetById      = (id, ct) => db.Products.SingleOrDefaultAsync(p => p.Id == id, ct);
@@ -160,10 +147,12 @@ A `CategoryProfile` follows the same shape with `GetQueryable`/`GetById`. Leavin
 
 ## 4. Wire it up, with SQL logging on
 
+`AddOhData`/`MapOhData` live in the framework's `Microsoft.Extensions.DependencyInjection` and
+`Microsoft.AspNetCore.Builder` namespaces, so they need no dedicated `using`.
+
 ```csharp
 // Program.cs
 using Microsoft.EntityFrameworkCore;
-using OhData.AspNetCore;
 using ShopApi;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -175,8 +164,8 @@ builder.Services.AddDbContext<ShopDbContext>(o =>
 // one DbContext per request, the normal ASP.NET Core lifetime.
 builder.Services.AddOhData(o => o
     .WithPrefix("/odata")
-    .AddProfile<ProductProfile>()
-    .AddProfile<CategoryProfile>());
+    .AddEntitySetProfile<ProductProfile>()
+    .AddEntitySetProfile<CategoryProfile>());
 
 var app = builder.Build();
 
@@ -216,11 +205,13 @@ dotnet ef migrations add InitialCreate
 
 ## 6. Watch OData become SQL
 
-Run it and fire a query with all three of filter, order, and page:
+Run it and fire a query with all three of filter, order, and page. Property names in the query
+options are the canonical PascalCase names from `$metadata` (matching is case-insensitive, but the
+responses come back PascalCase, so prefer the canonical form):
 
 ```bash
 dotnet run
-curl "http://localhost:5220/odata/Products?\$filter=price%20gt%2010&\$orderby=name&\$top=5"
+curl "http://localhost:5220/odata/Products?\$filter=Price%20gt%2010&\$orderby=Name&\$top=5"
 ```
 
 The console prints the single SQL statement the whole OData query produced — the database does
@@ -236,15 +227,33 @@ LIMIT @TypedProperty1
 
 - `$skip` adds `OFFSET`.
 - `$count` (`/odata/Products/$count?$filter=...`) becomes `SELECT COUNT(*)` with the same `WHERE`.
-- `$expand=Category` on a page issues **one** batched `JOIN ... WHERE "p"."Id" IN (...)` for the
-  whole page, not a query per row.
+- `$select` pushes a **column-pruned projection** — `?$select=Name,Price` narrows the `SELECT`
+  list to just those columns (plus the key), so the database reads and returns less. The wire
+  output is byte-identical to selecting client-side; only the SQL changes.
+- `$expand=Category` folds the delegate-less navigation into a **single JOIN'd query** (EF Core
+  `Include`) — the page and its categories load together, no query-per-row.
+
+Expanding is one `Include`-backed statement:
 
 ```bash
-curl "http://localhost:5220/odata/Products?\$orderby=name&\$top=3&\$expand=Category"
+curl "http://localhost:5220/odata/Products?\$orderby=Name&\$top=3&\$expand=Category"
 ```
 
-That is the entire point of the `GetQueryable` path: the filtering, ordering, and paging happen
-**inside the database**, and adding `$expand` doesn't reintroduce N+1.
+```sql
+SELECT "p"."Id", "p"."CategoryId", "p"."Name", "p"."Price", "p"."Stock",
+       "c"."Id", "c"."Name"
+FROM "Products" AS "p"
+INNER JOIN "Categories" AS "c" ON "p"."CategoryId" = "c"."Id"
+ORDER BY "p"."Name"
+LIMIT @TypedProperty
+```
+
+Nested and multi-level expands push the same way: `$expand=Category($expand=…)` becomes an
+`Include`→`ThenInclude` chain, and a self-referential `$levels=N` folds N levels into one query
+(bounded by `MaxExpansionDepth`). That is the entire point of the `GetQueryable` path: the
+filtering, ordering, paging, projection, **and** expansion happen **inside the database**, so
+adding `$expand` never reintroduces N+1. (A navigation declared *with* a delegate keeps using
+that handler instead — see the [`$expand` pushdown reference](../docs/query-options.md#expand-pushdown-delegate-less-navigations-join-automatically-206).)
 
 ## Going further with the sample
 
