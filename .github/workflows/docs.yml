@@ -1,0 +1,77 @@
+name: Docs site
+
+# Builds the DocFX documentation site (docs-site/) and deploys it to GitHub Pages.
+#
+# IMPORTANT: this workflow does NOT publish anything until the maintainer enables GitHub Pages
+# for the repository (Settings -> Pages -> Build and deployment -> Source: "GitHub Actions").
+# Until then the "deploy" job's actions/deploy-pages step has no Pages site to publish to and
+# the run will fail at that step by design — the build job still validates the site on every
+# push. Enabling Pages is a deliberate one-time maintainer action; nothing here enables it, and
+# no custom domain / CNAME is configured.
+
+on:
+  push:
+    branches: [develop]        # the repository default branch; switch to your release branch (e.g. main) if you prefer to publish only stable docs
+    paths:
+      - 'docs/**'
+      - 'docs-site/**'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+# Least-privilege token: read the repo, write the Pages deployment, mint the OIDC token that
+# actions/deploy-pages exchanges with GitHub Pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never run two Pages deployments at once; let an in-progress deploy finish rather than cancelling.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0        # GitVersion.MsBuild (see src/Directory.Build.props) needs full history
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.x
+
+      # DocFX generates the C# API reference from build output + XML doc comments, so the
+      # solution is restored and built first. (GenerateDocumentationFile is on repo-wide in
+      # src/Directory.Build.props, so the XML docs are produced by this build.)
+      - name: Restore
+        run: dotnet restore src/OhData.sln
+
+      - name: Build (produces XML docs for the API reference)
+        run: dotnet build src/OhData.sln --no-restore -c Release
+
+      - name: Install DocFX
+        run: dotnet tool install -g docfx
+
+      - name: Build docs site
+        run: docfx docs-site/docfx.json      # emits static HTML into docs-site/_site
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs-site/_site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

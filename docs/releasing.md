@@ -1,6 +1,6 @@
 # Releasing OhData to NuGet
 
-The publish pipeline is [`.github/workflows/publish.yml`](../.github/workflows/publish.yml): it fires when a
+The publish pipeline is [`.github/workflows/publish.yml`](https://github.com/en-gen/OhData/blob/develop/.github/workflows/publish.yml): it fires when a
 GitHub Release is **published**, validates the release tag against the GitVersion-computed version, builds,
 runs all test suites, packs every published package (`EnGen.OhData.AspNetCore`, `EnGen.OhData.Client`, and
 the `Swashbuckle`/`OpenApi`/`NSwag` companions, each with `.snupkg` symbols), runs a package-quality gate,
@@ -56,7 +56,7 @@ The workflow side is already wired: `permissions: id-token: write` on the publis
 
 ## Release procedure (GitFlow + GitVersion)
 
-GitVersion ([`GitVersion.yml`](../GitVersion.yml), `GitFlow/v1`) computes versions from branch topology.
+GitVersion ([`GitVersion.yml`](https://github.com/en-gen/OhData/blob/develop/GitVersion.yml), `GitFlow/v1`) computes versions from branch topology.
 `develop` computes `X.Y.Z-alpha.N`; the **release version is carried by a `release/X.Y.Z` branch name**.
 A direct `develop -> main` merge computes the wrong version and the workflow's tag-validation step will
 reject the release.
