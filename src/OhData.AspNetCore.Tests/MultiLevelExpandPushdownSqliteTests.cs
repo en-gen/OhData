@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -666,6 +667,48 @@ public sealed class MultiLevelExpandPushdownSqliteTests : IAsyncLifetime
         string body = await resp.Content.ReadAsStringAsync();
         // B1 has 2 chapters → the nested count is emitted on the deeper level, PascalCase key.
         Assert.Contains("\"Chapters@odata.count\":2", body);
+    }
+
+    // Regression (§11.2.4.2): a nested <Nav>@odata.count must survive when the ENCLOSING expand
+    // level also carries a $select. The inline control-info key "Chapters@odata.count" starts with
+    // the nav letter (not '@'), so the enclosing level's $select strip used to delete it. It must be
+    // kept because its base name "Chapters" is a selected/expanded property at that level.
+    [Fact]
+    public async Task NestedCount_SurvivesWhenEnclosingLevelHasSelect()
+    {
+        _sink.Clear();
+        HttpResponseMessage resp = await _fx.Client.GetAsync(
+            "/odata/Authors?$orderby=id&$expand=Books($select=Title;$expand=Chapters($count=true))");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        // The enclosing Books level applied $select=Title, yet the deeper count still rides along.
+        Assert.Contains("\"Chapters@odata.count\":2", body); // B1 (id 10) has 2 chapters
+        Assert.Contains("\"Chapters@odata.count\":0", body); // B2 (id 11) has 0 chapters
+        Assert.Contains("\"Title\":\"B1\"", body);
+        Assert.Contains("\"Chapters\":", body); // the expanded nav itself survived the select
+        // Negative: a NON-selected structural property of Books is still stripped — the fix rescues
+        // ONLY inline annotations of selected properties, it did not turn the strip into keep-all.
+        Assert.DoesNotContain("\"Year\":", body);
+    }
+
+    // Nested $count under an enclosing $select must still report the FULL, pre-window total even when
+    // a nested $top windows the array — the count is the filtered collection size, not the page size.
+    [Fact]
+    public async Task NestedCount_WithNestedTop_ReportsFullPreWindowCount_UnderEnclosingSelect()
+    {
+        _sink.Clear();
+        HttpResponseMessage resp = await _fx.Client.GetAsync(
+            "/odata/Authors?$orderby=id&$expand=Books($select=Title;$expand=Chapters($count=true;$top=1))");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        using JsonDocument doc = JsonDocument.Parse(body);
+        JsonElement books = doc.RootElement.GetProperty("value")[0].GetProperty("Books");
+
+        JsonElement b1 = books.EnumerateArray().Single(b => b.GetProperty("Title").GetString() == "B1");
+        Assert.Equal(2, b1.GetProperty("Chapters@odata.count").GetInt32()); // full total survives...
+        Assert.Equal(1, b1.GetProperty("Chapters").GetArrayLength());        // ...even though $top windowed the array
     }
 }
 
