@@ -260,7 +260,7 @@ public sealed class RenamedNavigationUniformNamingTests : IAsyncLifetime
     [Fact]
     public async Task NavPath_JsonSegment_Post_CreatesRelatedEntity()
     {
-        var content = new StringContent("{\"Text\":\"added\"}", Encoding.UTF8, "application/json");
+        using var content = new StringContent("{\"Text\":\"added\"}", Encoding.UTF8, "application/json");
         HttpResponseMessage response = await _fx.Client.PostAsync("/odata/UniBlogs(1)/remarks", content);
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
