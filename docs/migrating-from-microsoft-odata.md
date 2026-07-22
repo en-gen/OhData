@@ -296,10 +296,12 @@ today — pulled directly from the "not targeted" / "known limitations" sections
 - **`PATCH` partial-merge on a complex (nested object) property.** `PUT` full-replacement of a
   complex property is supported; a `PATCH` that should merge only some of a nested object's fields
   returns `400 Bad Request` rather than performing the merge.
-- **SQL column projection for `$select`.** OhData applies `$select` by trimming the JSON response
-  after the full row is fetched (to preserve the configured naming policy — see `docs/architecture.md`), not
-  by projecting only the selected columns in the SQL query. If your `$select` usage exists
-  specifically to reduce database I/O for wide tables, that benefit does not carry over.
+- **SQL column projection for `$select`.** On the `GetQueryable`/EF path, an eligible `$select` pushes a
+  column-pruned projection to SQL by default (#206, `SelectPushdownEnabled`), so the database-I/O benefit
+  for wide tables carries over. Ineligible requests (a model with no parameterless constructor, a
+  setterless projected member, a non-EF provider, or `SelectPushdownEnabled = false`) fall back to
+  fetching the full row and trimming the JSON response (preserving the configured naming policy — see
+  `docs/architecture.md`).
 - **Per-operation authorization.** `Microsoft.AspNetCore.OData` lets you put `[Authorize]` on
   individual controller actions. OhData matches this with `ConfigureAuthorization(...)` — authorize
   `Read`/`Create`/`Update`/`Delete`/`Invoke` independently, with per-category requirements that mirror

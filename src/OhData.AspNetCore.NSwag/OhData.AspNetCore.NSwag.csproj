@@ -8,12 +8,12 @@
 		<Copyright>Copyright (c) en-gen and contributors</Copyright>
 		<PackageTags>odata;odata4;aspnetcore;swagger;nswag;openapi</PackageTags>
 		<!--
-		  Keep the OhData.AspNetCore namespace: this mirrors the Swashbuckle
-		  companion package's RootNamespace trick, so consumers of either
-		  companion package see the operation type living alongside the rest
-		  of the OhData surface.
+		  This package's types live in their own OhData.AspNetCore.NSwag
+		  namespace as of 1.5.0 (#264 split them out of the shared core). Match
+		  RootNamespace to that so a new file added here without an explicit
+		  namespace defaults into this package, not back into shared core.
 		-->
-		<RootNamespace>OhData.AspNetCore</RootNamespace>
+		<RootNamespace>OhData.AspNetCore.NSwag</RootNamespace>
 		<EnablePackageValidation>true</EnablePackageValidation>
 		<PackageValidationBaselineVersion>1.4.0</PackageValidationBaselineVersion>
 	</PropertyGroup>

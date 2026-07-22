@@ -178,6 +178,30 @@ public sealed class OhDataNSwagSecurityOperationProcessorTests
         Assert.False(op.GetProperty("responses").TryGetProperty("401", out _));
     }
 
+    // ── 10. Pure resource-only route: 403 documented, but no scheme + no 401 ───
+    //
+    // A category gated ONLY by RequireResource() (Layer B, instance-level) attaches
+    // OhDataOperationAuthMetadata but no IAuthorizeData — yet the runtime still returns 403 from
+    // the in-handler resource check. The processor must document that 403, while emitting no
+    // security scheme requirement (there is no scheme for a pure resource check) and no 401 (a
+    // resource-only route has no endpoint gate to challenge on, so it never returns 401).
+
+    [Fact]
+    public async Task ResourceOnlyOperation_Documents403_ButNoSchemeAndNo401()
+    {
+        await using var fx = await BuildAsync(o => o.AddEntitySetProfile<ResourceOnlyProfile>());
+        using JsonDocument doc = await fx.GetDocumentAsync();
+
+        JsonElement op = GetOperation(doc, "/odata/ResourceOnlyWidgets({key})", "patch");
+
+        Assert.True(op.GetProperty("responses").TryGetProperty("403", out _),
+            "resource-only route must document the 403 its Layer B check returns");
+        Assert.False(op.TryGetProperty("security", out JsonElement sec) && sec.GetArrayLength() > 0,
+            "pure resource check has no scheme — no security requirement must be emitted");
+        Assert.False(op.GetProperty("responses").TryGetProperty("401", out _),
+            "resource-only route returns 403 not 401 at runtime, so 401 must not be documented");
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────────
 
     private static async Task<TestFixture> BuildAsync(
@@ -321,6 +345,25 @@ public sealed class OhDataNSwagSecurityOperationProcessorTests
                 .Create(c => c.AllowAnonymous()));
             GetQueryable = (ct) => Task.FromResult(Store.AsQueryable());
             Post = (model, ct) => Task.FromResult<Widget?>(model);
+        }
+    }
+
+    // Update is gated purely by RequireResource() (no coarse gate) — attaches
+    // OhDataOperationAuthMetadata with a Resource requirement but no IAuthorizeData.
+    private class ResourceOnlyProfile : EntitySetProfile<int, Widget>
+    {
+        public ResourceOnlyProfile() : base(x => x.Id)
+        {
+            EntitySetName = "ResourceOnlyWidgets";
+            ConfigureAuthorization(a => a.Update(u => u.RequireResource()));
+            GetById = (id, ct) => Task.FromResult(Store.FirstOrDefault(w => w.Id == id));
+            Patch = (id, delta, ct) =>
+            {
+                Widget? existing = Store.FirstOrDefault(w => w.Id == id);
+                if (existing is null) return Task.FromResult<Widget?>(null);
+                delta.Patch(existing);
+                return Task.FromResult<Widget?>(existing);
+            };
         }
     }
 }

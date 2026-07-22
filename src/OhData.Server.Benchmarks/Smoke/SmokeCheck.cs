@@ -101,8 +101,8 @@ internal static class SmokeCheck
                     .Select(kv => kv.Key)
                     .OrderBy(k => k, StringComparer.Ordinal)
                     .ToArray();
-                Assert(props.SequenceEqual(new[] { "id", "name" }),
-                    $"{label} $select shape was [{string.Join(",", props)}], expected [id,name]");
+                Assert(props.SequenceEqual(new[] { "Id", "Name" }),
+                    $"{label} $select shape was [{string.Join(",", props)}], expected [Id,Name]");
             }
         }
         );
@@ -158,8 +158,8 @@ internal static class SmokeCheck
             var a = await SendJsonAsync(oh, BenchmarkRequests.CreatePatch(), HttpStatusCode.OK);
             var b = await SendJsonAsync(ms, BenchmarkRequests.CreatePatch(), HttpStatusCode.OK);
             AssertSameEntity(a, b, expectedId: BenchmarkData.LookupId);
-            Assert((string)a["name"]! == "Patched-Smoke", $"OhData PATCH did not apply delta: name={a["name"]}");
-            Assert((string)b["name"]! == "Patched-Smoke", $"MS OData PATCH did not apply delta: name={b["name"]}");
+            Assert((string)a["Name"]! == "Patched-Smoke", $"OhData PATCH did not apply delta: name={a["Name"]}");
+            Assert((string)b["Name"]! == "Patched-Smoke", $"MS OData PATCH did not apply delta: name={b["Name"]}");
         }
         );
 
@@ -206,7 +206,7 @@ internal static class SmokeCheck
     }
 
     private static IEnumerable<long> GetIds(JsonNode envelope) =>
-        ((JsonArray)envelope["value"]!).Select(item => (long)item!["id"]!);
+        ((JsonArray)envelope["value"]!).Select(item => (long)item!["Id"]!);
 
     private static void AssertSameIds(JsonNode a, JsonNode b, int expectedCount)
     {
@@ -220,13 +220,13 @@ internal static class SmokeCheck
 
     private static void AssertSameEntity(JsonNode a, JsonNode b, int expectedId)
     {
-        foreach (string prop in new[] { "id", "name", "category", "price", "isActive" })
+        foreach (string prop in new[] { "Id", "Name", "Category", "Price", "IsActive" })
         {
             string? valA = a[prop]?.ToJsonString();
             string? valB = b[prop]?.ToJsonString();
             Assert(valA is not null && valA == valB, $"property '{prop}' differs: OhData={valA} MS={valB}");
         }
-        Assert((long)a["id"]! == expectedId, $"expected id {expectedId}, got {a["id"]}");
+        Assert((long)a["Id"]! == expectedId, $"expected id {expectedId}, got {a["Id"]}");
     }
 
     private static void Assert(bool condition, string message)
