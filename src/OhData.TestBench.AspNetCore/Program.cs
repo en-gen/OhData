@@ -24,10 +24,10 @@ builder.Services.AddSwaggerGen(c =>
     // Route each endpoint to the doc matching its group name
     c.DocInclusionPredicate((docName, apiDesc) =>
         apiDesc.GroupName is null || apiDesc.GroupName == docName);
-    c.OperationFilter<OhDataSwaggerOperationFilter>();
-    // #228: keeps generated schemas honest for profiles that use Ignore(...) — a no-op while no
-    // TestBench profile ignores anything, but registered here to demonstrate the recommended setup.
-    c.SchemaFilter<OhDataSwaggerSchemaFilter>();
+    // One-line canonical registration: wires both the OData query-parameter operation filter and
+    // the schema-fidelity filter (#228 — a no-op while no TestBench profile ignores anything, but
+    // registered here to demonstrate the recommended setup).
+    c.AddOhData();
 });
 
 // ── OhData versioned registrations ───────────────────────────────────────────
