@@ -248,7 +248,7 @@ Two things worth calling out about the "after" side:
   won all 11 measured scenarios — writes (POST/PUT/PATCH) were roughly 5-6× faster with up to
   7.7× fewer bytes allocated; reads were 2-3.7× faster. Full methodology, the complete results
   table, and the known asymmetries between the two pipelines are in
-  [src/OhData.Server.Benchmarks/docs/server-comparison-report.md](../src/OhData.Server.Benchmarks/docs/server-comparison-report.md).
+  [src/OhData.Server.Benchmarks/docs/server-comparison-report.md](https://github.com/en-gen/OhData/blob/develop/src/OhData.Server.Benchmarks/docs/server-comparison-report.md).
   Reproduce it yourself with `dotnet run -c Release --project src/OhData.Server.Benchmarks -- --filter "*"`.
 - **Minimal-API idiom.** No controllers, no `[FromBody]`/`[EnableQuery]` attributes, no
   `SingleResult.Create` ceremony. A profile is a plain class; the handler surface (`GetAll`,
@@ -322,4 +322,4 @@ depends on any of them today, budget time to rework that part of the integration
 - [docs/navigation-routing.md](navigation-routing.md) — `HasMany`/`HasOptional`/`HasRequired`, `$ref`, batch `$expand`
 - [docs/bound-operations.md](bound-operations.md) — `BindFunction`/`BindAction`/`BindEntityFunction`/`BindEntityAction`
 - [docs/authorization.md](authorization.md) — `RequireAuthorization`/`RequireRoles`
-- [src/OhData.Server.Benchmarks/docs/server-comparison-report.md](../src/OhData.Server.Benchmarks/docs/server-comparison-report.md) — the benchmark referenced above
+- [src/OhData.Server.Benchmarks/docs/server-comparison-report.md](https://github.com/en-gen/OhData/blob/develop/src/OhData.Server.Benchmarks/docs/server-comparison-report.md) — the benchmark referenced above
