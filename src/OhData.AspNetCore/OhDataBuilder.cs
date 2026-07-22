@@ -540,22 +540,23 @@ public sealed class OhDataBuilder
         }
     }
 
-    // #253: give every structural property carrying a [System.Text.Json.Serialization.JsonPropertyName]
-    // that attribute's value as its EDM name, so $metadata, $select/$filter/$orderby and the response
-    // payload all use one name per property. Navigation properties are intentionally left on their CLR
-    // name (the $expand identifier stays the CLR name — see RenamedNavigationTests / #184 — while the
-    // nav's JSON key is still the rename via ResolveNavigationJsonKey). Fails fast when two properties
-    // on one type would resolve to the same EDM name (case-insensitive, the way OData resolves
-    // identifiers), since that ambiguity cannot be represented in the EDM or the URL space.
+    // #253: give every property carrying a [System.Text.Json.Serialization.JsonPropertyName] that
+    // attribute's value as its EDM name, so $metadata, $select/$filter/$orderby/$expand, the nav-path
+    // URL segments and the response payload all use one name per property. This applies UNIFORMLY to
+    // structural AND navigation properties (#253 completion — reverses #184): a renamed navigation is
+    // addressed by its JSON name on every OData surface, exactly like a renamed structural property
+    // (its JSON payload key, produced by ResolveNavigationJsonKey off the same [JsonPropertyName], then
+    // agrees with the EDM/$expand identifier). Fails fast when two properties on one type would resolve
+    // to the same EDM name (case-insensitive, the way OData resolves identifiers) — the collision check
+    // now spans navigations and structural properties together — since that ambiguity cannot be
+    // represented in the EDM or the URL space.
     private static void ApplyJsonPropertyNameRenames(ODataModelBuilder builder)
     {
         foreach (StructuralTypeConfiguration structuralType in builder.StructuralTypes)
         {
             var seen = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            // Navigation properties keep their CLR name as the EDM/$expand identifier (their JSON
-            // key is still renamed by ResolveNavigationJsonKey — see #184 / RenamedNavigationTests).
-            foreach (PropertyConfiguration property in structuralType.Properties
-                         .Where(p => p.Kind != PropertyKind.Navigation))
+            // Every property — structural and navigation alike — is renamed to its [JsonPropertyName].
+            foreach (PropertyConfiguration property in structuralType.Properties)
             {
                 string edmName = property.PropertyInfo is { } clr
                     ? ODataPropertyNaming.ResolveEdmName(clr)

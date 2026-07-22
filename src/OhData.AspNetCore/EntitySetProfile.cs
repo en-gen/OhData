@@ -56,6 +56,26 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     // and navigation routes are disjoint by construction (never both claim the same route).
     private readonly HashSet<string> _navigationPropertyNames = new(StringComparer.Ordinal);
 
+    // #253 completion: the EDM (JSON) names of the declared navigations — each CLR nav name resolved
+    // through its [JsonPropertyName] (an un-renamed nav is its own CLR name). This is the identifier a
+    // navigation exposes on every OData surface (the EDM navigation, the $expand/$filter/$orderby
+    // identifier, the nav-path URL segment). _navigationPropertyNames stays CLR-named for CLR
+    // reflection (structural-property exclusion, deep-insert strip, Ignore() intersection); this
+    // EDM-named view is used wherever a navigation identifier meets the wire. Computed lazily after
+    // all navigations are declared.
+    private HashSet<string>? _navigationEdmNames;
+    private HashSet<string> NavigationEdmNames => _navigationEdmNames ??= _navigationPropertyNames
+        .Select(ResolveNavEdmName)
+        .ToHashSet(StringComparer.Ordinal);
+
+    // #253 completion: the EDM (JSON) name of a navigation from its CLR member name — its
+    // [JsonPropertyName] value when present, else the CLR name unchanged. Used for the nav-route URL
+    // segment and the EDM-named navigation view.
+    private static string ResolveNavEdmName(string clrNavName) =>
+        typeof(TModel).GetProperty(clrNavName) is PropertyInfo pi
+            ? OhData.ODataPropertyNaming.ResolveEdmName(pi)
+            : clrNavName;
+
     // Names of properties excluded from the OData surface via Ignore() (#226). Structural
     // properties, the EDM, response serialization, and request binding all consult this set.
     private readonly HashSet<string> _ignoredPropertyNames = new(StringComparer.Ordinal);
@@ -631,10 +651,14 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         // Issue #183: pass an explicit max expansion depth so nested $expand
         // (e.g. $expand=A($expand=B($expand=C))) is not rejected by the model-bound default of 2.
         // The runtime recursion in OhDataEndpointFactory.ExpandLevelAsync bounds actual execution.
-        // #253: $expand identifiers stay on the CLR nav name (navigations are not renamed — see #184),
-        // so _expandProperties is passed through without EDM-name resolution.
+        // #253 completion: $expand identifiers are EDM names, so a [JsonPropertyName]-renamed navigation
+        // is expanded by its JSON name. Resolve the CLR-captured allowlist to EDM names before handing
+        // it to the model builder (an un-renamed nav resolves to its own CLR name unchanged).
         if (ExpandEnabled ?? defaults.ExpandEnabled)
-            entityType.Expand(OhData.OhDataEndpointFactory.MaxNestedExpandDepth, _expandProperties!);
+        {
+            entityType.Expand(OhData.OhDataEndpointFactory.MaxNestedExpandDepth,
+                ResolveStructuralAllowlistToEdmNames(_expandProperties)!);
+        }
         if (FilterEnabled ?? defaults.FilterEnabled)
             entityType.Filter(MergeAllowlistWithNavigationProperties(ResolveStructuralAllowlistToEdmNames(_filterProperties)));
         if (OrderByEnabled ?? defaults.OrderByEnabled)
@@ -706,25 +730,28 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private string[]? MergeAllowlistWithNavigationProperties(string[]? allowlist)
     {
         if (allowlist is null || _navigationPropertyNames.Count == 0) return allowlist;
-        return allowlist.Union(_navigationPropertyNames, StringComparer.Ordinal).ToArray();
+        // #253 completion: navigation identifiers are EDM names, so a [JsonPropertyName]-renamed nav
+        // must be unioned under its JSON name (matching the renamed EDM navigation) — otherwise a
+        // filter/orderby path hopping through it would 400. NavigationEdmNames resolves each CLR nav
+        // name to its EDM name (an un-renamed nav is its own CLR name).
+        return allowlist.Union(NavigationEdmNames, StringComparer.Ordinal).ToArray();
     }
 
     /// <summary>
-    /// #253: translates a structural allowlist (SelectProperties/FilterProperties/OrderByProperties),
-    /// captured as CLR property names by <see cref="ExtractNames"/>, into the EDM names the model
-    /// builder validates against. A structural property carrying a
+    /// #253: translates an allowlist (SelectProperties/FilterProperties/OrderByProperties/
+    /// ExpandProperties), captured as CLR property names by <see cref="ExtractNames"/>, into the EDM
+    /// names the model builder validates against. A property carrying a
     /// <c>[System.Text.Json.Serialization.JsonPropertyName]</c> is renamed in the EDM by
     /// <c>OhDataBuilder.ApplyJsonPropertyNameRenames</c>, so a CLR-named allowlist entry would make
-    /// that renamed property <c>NotFilterable</c>/<c>NotSortable</c>/<c>NotSelectable</c> and thus
-    /// unusable under its actual (JSON) query name.
+    /// that renamed property <c>NotFilterable</c>/<c>NotSortable</c>/<c>NotSelectable</c>/
+    /// <c>NotExpandable</c> and thus unusable under its actual (JSON) query name.
     /// </summary>
     /// <remarks>
-    /// A name that is not a structural property of <typeparamref name="TModel"/> is passed through
-    /// unchanged. This preserves navigation identifiers, which
-    /// <see cref="MergeAllowlistWithNavigationProperties"/> unions into the Filter/OrderBy list and
-    /// which intentionally keep their CLR name in the EDM (navigations are not renamed — see #184).
-    /// A name matching a declared navigation is therefore also passed through unchanged, even though
-    /// it resolves to a <see cref="PropertyInfo"/>.
+    /// #253 completion: this applies UNIFORMLY to structural AND navigation entries (reverses #184) —
+    /// a renamed navigation in an <c>ExpandProperties</c> allowlist (or hopped through in a Filter/
+    /// OrderBy path) resolves to its JSON name, matching the renamed EDM navigation. A name that is not
+    /// a public property of <typeparamref name="TModel"/> is passed through unchanged (e.g. a deep path
+    /// segment the caller pre-resolved).
     /// </remarks>
     private string[]? ResolveStructuralAllowlistToEdmNames(string[]? allowlist)
     {
@@ -733,8 +760,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         for (int i = 0; i < allowlist.Length; i++)
         {
             string name = allowlist[i];
-            resolved[i] = !_navigationPropertyNames.Contains(name) &&
-                          typeof(TModel).GetProperty(name) is PropertyInfo pi
+            resolved[i] = typeof(TModel).GetProperty(name) is PropertyInfo pi
                 ? OhData.ODataPropertyNaming.ResolveEdmName(pi)
                 : name;
         }
@@ -1038,7 +1064,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         string? childKeyPropName = DetectChildKeyProperty<TNavigation>(refTargetEntitySet);
         _navRoutes.Add(new NavigationRouteDefinition
         {
-            PropertyName = propName,
+            PropertyName = ResolveNavEdmName(propName),
             IsCollection = false,
             Handler = get is not null
                 ? async (key, ct) => (object?)await get((TKey)key, ct)
@@ -1101,7 +1127,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         string? childKeyPropName = DetectChildKeyProperty<TNavigation>(refTargetEntitySet);
         _navRoutes.Add(new NavigationRouteDefinition
         {
-            PropertyName = propName,
+            PropertyName = ResolveNavEdmName(propName),
             IsCollection = false,
             Handler = get is not null
                 ? async (key, ct) => (object?)await get((TKey)key, ct)
@@ -1166,7 +1192,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         string propName = GetNavigationPropertyName(navigation.Body);
         _navRoutes.Add(new NavigationRouteDefinition
         {
-            PropertyName = propName,
+            PropertyName = ResolveNavEdmName(propName),
             IsCollection = true,
             NavItemType = typeof(TNavigation),
             Handler = async (key, ct) => (object?)await getAll((TKey)key, ct)
@@ -1220,7 +1246,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
         _navRoutes.Add(new NavigationRouteDefinition
         {
-            PropertyName = propName,
+            PropertyName = ResolveNavEdmName(propName),
             IsCollection = true,
             NavItemType = typeof(TNavigation),
             Handler = getAll is not null
@@ -1274,7 +1300,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         string? childKeyPropName = DetectChildKeyProperty<TNavigation>(refTargetEntitySet);
         _navRoutes.Add(new NavigationRouteDefinition
         {
-            PropertyName = propName,
+            PropertyName = ResolveNavEdmName(propName),
             IsCollection = false,
             Handler = get is not null
                 ? async (key, ct) => (object?)await get((TKey)key, ct)
@@ -1339,7 +1365,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
         _navRoutes.Add(new NavigationRouteDefinition
         {
-            PropertyName = propName,
+            PropertyName = ResolveNavEdmName(propName),
             IsCollection = true,
             NavItemType = typeof(TNavigation),
             BatchHandler = batch,
@@ -1400,7 +1426,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
         _navRoutes.Add(new NavigationRouteDefinition
         {
-            PropertyName = propName,
+            PropertyName = ResolveNavEdmName(propName),
             IsCollection = false,
             BatchHandler = batch,
             Handler = async (key, ct) =>
@@ -1462,7 +1488,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
         _navRoutes.Add(new NavigationRouteDefinition
         {
-            PropertyName = propName,
+            PropertyName = ResolveNavEdmName(propName),
             IsCollection = false,
             BatchHandler = batch,
             Handler = async (key, ct) =>
@@ -1827,7 +1853,10 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     IReadOnlyList<StructuralPropertyInfo> IEntitySetEndpointSource.StructuralProperties =>
         _structuralProperties ??= BuildStructuralProperties();
     bool IEntitySetEndpointSource.AllowDeepInsert => _resolvedAllowDeepInsert;
-    IReadOnlyCollection<string> IEntitySetEndpointSource.NavigationPropertyNames => _navigationPropertyNames;
+    // #253 completion: navigations are addressed by their EDM (JSON) names on the OData surface. This
+    // exposed view is consumed by the $expand pushdown provenance/keying and the deep-insert strip
+    // (which resolves each CLR property to its EDM name before testing membership).
+    IReadOnlyCollection<string> IEntitySetEndpointSource.NavigationPropertyNames => NavigationEdmNames;
     IReadOnlyCollection<string> IEntitySetEndpointSource.IgnoredPropertyNames => _ignoredPropertyNames;
     string IEntitySetEndpointSource.KeyPropertyName => GetNavigationPropertyName(_getKey.Body);
     bool IEntitySetEndpointSource.IsAdvancedConfigureOverridden => _isAdvancedConfigureOverridden;

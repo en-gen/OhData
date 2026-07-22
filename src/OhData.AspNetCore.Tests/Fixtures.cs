@@ -1634,12 +1634,12 @@ internal class RenamedNavStudio
 }
 
 /// <summary>
-/// #184 fixture. Both navigations carry a per-property <c>[JsonPropertyName]</c> rename, so
+/// #184 / #253 fixture. Both navigations carry a per-property <c>[JsonPropertyName]</c> rename, so
 /// System.Text.Json serialises them under keys ("starring", "producedBy") that the naming policy
-/// would never produce from the CLR names ("Cast", "Studio"). Before the fix, omission keyed off
-/// the policy-converted name and so left the renamed nav leaking inline, while <c>$expand</c> wrote
-/// a second, differently-cased key. The EDM (and hence <c>$expand</c>) still uses the CLR property
-/// name; only the JSON key is renamed.
+/// would never produce from the CLR names ("Cast", "Studio"). #253 completion: the EDM navigation is
+/// renamed to the JSON name too, so <c>$expand</c>/<c>$metadata</c>/the URL segment and the payload
+/// key all use the JSON name (reverses #184's "$expand keeps the CLR name"). The old CLR name is no
+/// longer a valid <c>$expand</c> identifier.
 /// </summary>
 internal class RenamedNavMovie
 {

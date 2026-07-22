@@ -66,12 +66,12 @@ public class JsonPropertyNameTranslationTests
         Assert.Equal("emailAddress eq 'ada@example.com'", result);
     }
 
-    // ── #184 residual: NAVIGATION identifiers keep their CLR name ───────────────────
+    // ── #253 completion: NAVIGATION identifiers are renamed too (reverses #184) ──────
     //
-    // The server intentionally does NOT apply the [JsonPropertyName] rename to navigation
-    // identifiers ($expand/$filter/$orderby hop) — only the nav's JSON payload key is renamed. The
-    // client must therefore emit the CLR name for a nav segment, or a substantively-renamed
-    // navigation 400s at the server. A structural leaf, by contrast, keeps its rename.
+    // The server now applies the [JsonPropertyName] rename to navigation identifiers uniformly —
+    // $expand/$filter/$orderby hop, URL segment, $metadata and payload key all use the JSON name. The
+    // client must therefore emit the JSON name for a nav segment, exactly as for a structural leaf, or
+    // a substantively-renamed navigation 400s at the server.
 
     private sealed class Category
     {
@@ -103,33 +103,33 @@ public class JsonPropertyNameTranslationTests
             .For<Order>("Orders");
 
     [Fact]
-    public void Expand_RenamedToOneNavigation_EmitsClrIdentifier()
+    public void Expand_RenamedToOneNavigation_EmitsJsonIdentifier()
     {
-        // $expand=Category, NOT $expand=cat — the nav identifier is not renamed server-side.
+        // $expand=cat, NOT $expand=Category — the nav identifier is renamed server-side (#253).
         string url = OrderBuilder().Expand(x => x.Category).BuildCollectionUrl();
-        Assert.Equal("Orders?$expand=Category", url);
+        Assert.Equal("Orders?$expand=cat", url);
     }
 
     [Fact]
-    public void Expand_RenamedToManyNavigation_EmitsClrIdentifier()
+    public void Expand_RenamedToManyNavigation_EmitsJsonIdentifier()
     {
         string url = OrderBuilder().Expand(x => x.Tags).BuildCollectionUrl();
-        Assert.Equal("Orders?$expand=Tags", url);
+        Assert.Equal("Orders?$expand=tagList", url);
     }
 
     [Fact]
-    public void Filter_RenamedNavigationHop_KeepsClrNav_RenamesStructuralLeaf()
+    public void Filter_RenamedNavigationHop_RenamesNavAndStructuralLeaf()
     {
-        // Nav hop "Category" stays CLR; the structural leaf "Name" keeps its rename ("categoryName").
+        // Nav hop "Category" → "cat"; the structural leaf "Name" → "categoryName". Both renamed.
         Expression<Func<Order, bool>> predicate = x => x.Category.Name == "Books";
         string result = FilterTranslator.Translate(predicate);
-        Assert.Equal("Category/categoryName eq 'Books'", result);
+        Assert.Equal("cat/categoryName eq 'Books'", result);
     }
 
     [Fact]
-    public void OrderBy_RenamedNavigationHop_KeepsClrNav_RenamesStructuralLeaf()
+    public void OrderBy_RenamedNavigationHop_RenamesNavAndStructuralLeaf()
     {
         string url = OrderBuilder().OrderBy(x => x.Category.Name).BuildCollectionUrl();
-        Assert.Equal("Orders?$orderby=Category%2FcategoryName", url);
+        Assert.Equal("Orders?$orderby=cat%2FcategoryName", url);
     }
 }
