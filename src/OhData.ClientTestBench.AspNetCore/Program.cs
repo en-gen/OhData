@@ -11,8 +11,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using OhData.Abstractions;
-using OhData.AspNetCore;
+using OhData;
 using OhData.Client;
 
 namespace OhData.ClientTestBench;
@@ -131,7 +130,7 @@ internal static class Program
         builder.Services.AddOhData(o =>
         {
             o.WithPrefix(prefix);
-            o.AddProfile<WidgetProfile>();
+            o.AddEntitySetProfile<WidgetProfile>();
         });
 
         var app = builder.Build();

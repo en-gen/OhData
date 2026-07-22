@@ -3,8 +3,9 @@ using System.Linq;
 using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.OpenApi;
 using Swashbuckle.AspNetCore.SwaggerGen;
+using OhData;
 
-namespace OhData.AspNetCore;
+namespace OhData.AspNetCore.Swashbuckle;
 
 /// <summary>
 /// Swashbuckle operation filter that adds OData query parameters to collection endpoints

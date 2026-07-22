@@ -6,7 +6,7 @@ using System.Net.Http;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using OhData.Abstractions;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.Tests;
@@ -132,9 +132,9 @@ public class IgnorePropertyIntegrationTests : IAsyncLifetime
     public async Task InitializeAsync()
     {
         _fx = await TestHostBuilder.BuildAsync(b => b
-            .AddProfile<IgnProductProfile>()
-            .AddProfile<IgnTagProfile>()
-            .AddProfile<IgnControlProfile>());
+            .AddEntitySetProfile<IgnProductProfile>()
+            .AddEntitySetProfile<IgnTagProfile>()
+            .AddEntitySetProfile<IgnControlProfile>());
     }
 
     public async Task DisposeAsync() => await _fx.DisposeAsync();
@@ -176,26 +176,26 @@ public class IgnorePropertyIntegrationTests : IAsyncLifetime
     public async Task CollectionGet_OmitsIgnoredMembers()
     {
         string json = await _fx.Client.GetStringAsync("/odata/IgnProducts");
-        Assert.Contains("\"name\"", json);
-        Assert.DoesNotContain("costBasis", json, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("audit", json, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\"Name\"", json);
+        Assert.DoesNotContain("CostBasis", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Audit", json, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
     public async Task SingleGet_OmitsIgnoredMembers()
     {
         string json = await _fx.Client.GetStringAsync("/odata/IgnProducts(1)");
-        Assert.Contains("\"name\"", json);
-        Assert.DoesNotContain("costBasis", json, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("audit", json, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\"Name\"", json);
+        Assert.DoesNotContain("CostBasis", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Audit", json, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
     public async Task ExpandedChild_HidesItsOwnIgnoredMembers()
     {
         string json = await _fx.Client.GetStringAsync("/odata/IgnProducts?$expand=Tags");
-        Assert.Contains("\"label\"", json);
-        Assert.DoesNotContain("internalCode", json, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\"Label\"", json);
+        Assert.DoesNotContain("InternalCode", json, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("SECRET-", json);
     }
 
@@ -203,15 +203,15 @@ public class IgnorePropertyIntegrationTests : IAsyncLifetime
     public async Task NavigationGet_HidesChildIgnoredMembers()
     {
         string json = await _fx.Client.GetStringAsync("/odata/IgnProducts(1)/Tags");
-        Assert.Contains("\"label\"", json);
-        Assert.DoesNotContain("internalCode", json, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\"Label\"", json);
+        Assert.DoesNotContain("InternalCode", json, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
     public async Task ControlEntity_SameNamedProperty_NotSuppressed()
     {
         string json = await _fx.Client.GetStringAsync("/odata/IgnControls(1)");
-        Assert.Contains("costBasis", json); // per-type suppression only
+        Assert.Contains("CostBasis", json); // per-type suppression only
     }
 
     // ---- query options ----
@@ -335,8 +335,8 @@ public class IgnorePropertyStartupValidationTests
     {
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             TestHostBuilder.BuildAsync(b => b
-                .AddProfile<IgnConflictA>()
-                .AddProfile<IgnConflictB>()));
+                .AddEntitySetProfile<IgnConflictA>()
+                .AddEntitySetProfile<IgnConflictB>()));
         Assert.Contains("ConflictA", ex.Message);
         Assert.Contains("ConflictB", ex.Message);
         Assert.Contains(nameof(IgnProduct), ex.Message);
@@ -348,7 +348,7 @@ public class IgnorePropertyStartupValidationTests
         // OhDataBuilder wraps seal-time (VisitModelBuilder) failures in an "OhData: failed to
         // build EDM for profile ..." InvalidOperationException; the conflict detail is inner.
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            TestHostBuilder.BuildAsync(b => b.AddProfile<IgnNavConflictProfile>()));
+            TestHostBuilder.BuildAsync(b => b.AddEntitySetProfile<IgnNavConflictProfile>()));
         Assert.IsType<InvalidOperationException>(ex.InnerException);
         Assert.Contains("Tags", ex.InnerException!.Message);
         Assert.Contains("Ignore()", ex.InnerException.Message);
@@ -358,7 +358,7 @@ public class IgnorePropertyStartupValidationTests
     public async Task HasManyThenIgnore_SameProperty_ThrowsAtStartup()
     {
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            TestHostBuilder.BuildAsync(b => b.AddProfile<IgnNavConflictReversedProfile>()));
+            TestHostBuilder.BuildAsync(b => b.AddEntitySetProfile<IgnNavConflictReversedProfile>()));
         Assert.IsType<InvalidOperationException>(ex.InnerException);
         Assert.Contains("Tags", ex.InnerException!.Message);
         Assert.Contains("Ignore()", ex.InnerException.Message);

@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace OhData.Abstractions;
+namespace OhData;
 
 /// <summary>
 /// Single-use accumulator behind <c>EntitySetProfile.ConfigureAuthorization</c>. Collects one

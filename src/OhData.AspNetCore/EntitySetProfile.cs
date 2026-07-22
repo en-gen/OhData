@@ -13,7 +13,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.OData.Deltas;
 using Microsoft.OData.ModelBuilder;
 
-namespace OhData.Abstractions;
+namespace OhData;
 
 /// <summary>
 /// Base class for defining an OData entity set. Derive from this class in your application
@@ -55,6 +55,26 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     // are computed as "typeof(TModel) public readable properties minus this set", so structural
     // and navigation routes are disjoint by construction (never both claim the same route).
     private readonly HashSet<string> _navigationPropertyNames = new(StringComparer.Ordinal);
+
+    // #253 completion: the EDM (JSON) names of the declared navigations — each CLR nav name resolved
+    // through its [JsonPropertyName] (an un-renamed nav is its own CLR name). This is the identifier a
+    // navigation exposes on every OData surface (the EDM navigation, the $expand/$filter/$orderby
+    // identifier, the nav-path URL segment). _navigationPropertyNames stays CLR-named for CLR
+    // reflection (structural-property exclusion, deep-insert strip, Ignore() intersection); this
+    // EDM-named view is used wherever a navigation identifier meets the wire. Computed lazily after
+    // all navigations are declared.
+    private HashSet<string>? _navigationEdmNames;
+    private HashSet<string> NavigationEdmNames => _navigationEdmNames ??= _navigationPropertyNames
+        .Select(ResolveNavEdmName)
+        .ToHashSet(StringComparer.Ordinal);
+
+    // #253 completion: the EDM (JSON) name of a navigation from its CLR member name — its
+    // [JsonPropertyName] value when present, else the CLR name unchanged. Used for the nav-route URL
+    // segment and the EDM-named navigation view.
+    private static string ResolveNavEdmName(string clrNavName) =>
+        typeof(TModel).GetProperty(clrNavName) is PropertyInfo pi
+            ? OhData.ODataPropertyNaming.ResolveEdmName(pi)
+            : clrNavName;
 
     // Names of properties excluded from the OData surface via Ignore() (#226). Structural
     // properties, the EDM, response serialization, and request binding all consult this set.
@@ -117,6 +137,33 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected bool? PropertyAccessEnabled { get; init; }
 
     /// <summary>
+    /// Controls whether <c>$select</c> projection pushdown applies on this entity set's
+    /// <c>GetQueryable</c> path (#206). When enabled and a request's <c>$select</c> is
+    /// eligible, the framework composes a member-init projection onto the queryable so the
+    /// LINQ provider emits a column-pruned <c>SELECT</c>; wire output is byte-identical either
+    /// way. Inherits from <see cref="EntitySetDefaults"/> (default <c>true</c>) when
+    /// <c>null</c>. Disable for <c>IQueryable</c> providers that cannot translate member-init.
+    /// </summary>
+    protected bool? SelectPushdownEnabled { get; init; }
+
+    /// <summary>
+    /// Controls whether <c>$expand</c> Include pushdown applies on this entity set's
+    /// <c>GetQueryable</c> path (#206 phase 2). When enabled and a request's top-level
+    /// <c>$expand</c> names a navigation declared <b>without</b> a custom expand delegate (a bare
+    /// <see cref="HasMany{T}(System.Linq.Expressions.Expression{System.Func{TModel, System.Collections.Generic.IEnumerable{T}}})"/>
+    /// / <c>HasOptional</c> / <c>HasRequired</c>), the framework folds that navigation into the
+    /// collection query's projection so an EF Core-backed source loads the related rows via a
+    /// single JOIN'd query instead of leaving the navigation unexpandable. The expand's nested
+    /// options are honored: <c>$filter</c>/<c>$orderby</c>/<c>$top</c>/<c>$skip</c> push to SQL as a
+    /// filtered/ordered/paged <c>Include</c>, and <c>$count</c>/<c>$select</c> shape the result;
+    /// a nested <c>$expand</c> (multi-level) or <c>$levels</c> is not pushed (see docs/query-options.md).
+    /// A navigation declared <b>with</b> a delegate always expands through its delegate and is never
+    /// pushed down. Inherits from <see cref="EntitySetDefaults"/> (default <c>true</c>) when <c>null</c>.
+    /// Disable to keep every delegate-less navigation unexpandable.
+    /// </summary>
+    protected bool? ExpandPushdownEnabled { get; init; }
+
+    /// <summary>
     /// Controls whether this entity set's structural property routes
     /// (<c>GET /{EntitySet}({key})/{Property}</c>, <c>.../{Property}/$value</c>, and the
     /// <c>PUT</c>/<c>PATCH</c>/<c>DELETE</c> property writes) appear in the generated API
@@ -131,9 +178,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Controls the midpoint-rounding behavior of the OData <c>round()</c> canonical function
     /// (Part 2 §5.1.1.9) on the <c>GetQueryable</c> pushdown path. Inherits from
     /// <c>EntitySetDefaults.RoundingMode</c> (default
-    /// <c>OhData.Abstractions.RoundingMode.SpecCompliant</c>) when <c>null</c>. See
-    /// <c>OhData.Abstractions.RoundingMode</c> for the EF Core provider-translation caveat that
-    /// motivates <c>OhData.Abstractions.RoundingMode.BankersRounding</c>.
+    /// <c>OhData.RoundingMode.SpecCompliant</c>) when <c>null</c>. See
+    /// <c>OhData.RoundingMode</c> for the EF Core provider-translation caveat that
+    /// motivates <c>OhData.RoundingMode.BankersRounding</c>.
     /// <para>
     /// Only reaches the base-class <c>GetQueryable</c> path (and its <c>$count</c> companion),
     /// where the framework owns the <c>ApplyTo</c> call. On the Priority-1
@@ -192,7 +239,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// (OData §11.2.1 — Requesting a Collection). The framework applies <c>$filter</c>,
     /// <c>$orderby</c>, <c>$skip</c>, and <c>$top</c> via <c>ApplyTo</c>, enabling full SQL
     /// pushdown when backed by EF Core. <c>$select</c> is applied via JSON post-processing
-    /// to preserve camelCase naming.
+    /// to preserve the configured JSON naming policy (PascalCase by default).
     /// </summary>
     /// <remarks>
     /// Leaving this <c>null</c> (the default) means no <c>GET /{EntitySet}</c> route is registered,
@@ -308,8 +355,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private int? _maxOrderByNodeCount;
     private int? _maxAnyAllExpressionDepth;
 
-    /// <summary>#202: maximum nested <c>$expand</c> depth for this set (400 beyond it). Inherits
-    /// <see cref="EntitySetDefaults.MaxExpansionDepth"/> (default 12) when null. Must be positive.</summary>
+    /// <summary>#202/#206: maximum nested <c>$expand</c> depth for this set, and the ceiling
+    /// <c>$levels</c> is resolved/capped to (400 beyond it). Inherits
+    /// <see cref="EntitySetDefaults.MaxExpansionDepth"/> (default 3) when null. Must be positive.</summary>
     protected int? MaxExpansionDepth
     {
         get => _maxExpansionDepth;
@@ -370,6 +418,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private bool _resolvedExpandEnabled;
     private bool _resolvedCountEnabled;
     private bool _resolvedPropertyAccessEnabled;
+    private bool _resolvedSelectPushdownEnabled;
+    private bool _resolvedExpandPushdownEnabled;
     private bool _resolvedPropertyRouteDocsEnabled;
     private List<StructuralPropertyInfo>? _structuralProperties;
 
@@ -418,6 +468,14 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// </param>
     protected void UseETag(params Expression<Func<TModel, object?>>[] propertySelectors)
     {
+        // #206: capture the ETag property NAMES (direct-member selectors only) for the
+        // $select projection-pushdown eligibility check — the projection must include every
+        // ETag input so @odata.etag values are identical with and without pushdown. Runs
+        // BEFORE the compiled-delegate cache early return below, which would otherwise skip
+        // this on every construction after the first. A selector that is not a direct member
+        // access makes the names unknowable → null → pushdown ineligible while ETags are on.
+        _etagPropertyNames = TryExtractDirectMemberNames(propertySelectors);
+
         // Reuse the cached compiled delegate if available (avoids recompiling on every scoped construction).
         if (s_etagCache.TryGetValue(GetType(), out var cached))
         {
@@ -459,6 +517,32 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
         // Cache for per-request instances — this delegate only accesses model properties.
         s_etagCache.TryAdd(GetType(), _getETag);
+    }
+
+    private IReadOnlyCollection<string>? _etagPropertyNames;
+
+    /// <summary>
+    /// Extracts CLR property names when EVERY selector is a direct member access on the lambda
+    /// parameter (after Convert-stripping); returns <c>null</c> as soon as any selector is
+    /// computed/nested — the caller treats null as "names unknowable".
+    /// </summary>
+    private static IReadOnlyCollection<string>? TryExtractDirectMemberNames(
+        Expression<Func<TModel, object?>>[] selectors)
+    {
+        var names = new List<string>(selectors.Length);
+        foreach (Expression body in selectors
+            .Select(s => s.Body)
+            .Select(b => b is UnaryExpression unary &&
+                (unary.NodeType == ExpressionType.Convert || unary.NodeType == ExpressionType.ConvertChecked)
+                ? unary.Operand
+                : b))
+        {
+            if (body is not MemberExpression member || member.Expression is not ParameterExpression)
+                return null;
+            names.Add(member.Member.Name);
+        }
+
+        return names;
     }
 
     private bool _authRequired;
@@ -529,6 +613,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _resolvedExpandEnabled = ExpandEnabled ?? defaults.ExpandEnabled;
         _resolvedCountEnabled = CountEnabled ?? defaults.CountEnabled;
         _resolvedPropertyAccessEnabled = PropertyAccessEnabled ?? defaults.PropertyAccessEnabled;
+        _resolvedSelectPushdownEnabled = SelectPushdownEnabled ?? defaults.SelectPushdownEnabled;
+        _resolvedExpandPushdownEnabled = ExpandPushdownEnabled ?? defaults.ExpandPushdownEnabled;
         _resolvedPropertyRouteDocsEnabled = PropertyRouteDocsEnabled ?? defaults.PropertyRouteDocsEnabled;
         _resolvedAllowDeepInsert = AllowDeepInsert ?? defaults.AllowDeepInsert;
         _resolvedRoundingMode = RoundingMode ?? defaults.RoundingMode;
@@ -561,16 +647,22 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         // if AdvancedConfigure wasn't overridden, work your magic
         var entityType = entitySet.EntityType;
 
-        if (SelectEnabled ?? defaults.SelectEnabled) entityType.Select(_selectProperties);
+        if (SelectEnabled ?? defaults.SelectEnabled) entityType.Select(ResolveStructuralAllowlistToEdmNames(_selectProperties));
         // Issue #183: pass an explicit max expansion depth so nested $expand
         // (e.g. $expand=A($expand=B($expand=C))) is not rejected by the model-bound default of 2.
         // The runtime recursion in OhDataEndpointFactory.ExpandLevelAsync bounds actual execution.
+        // #253 completion: $expand identifiers are EDM names, so a [JsonPropertyName]-renamed navigation
+        // is expanded by its JSON name. Resolve the CLR-captured allowlist to EDM names before handing
+        // it to the model builder (an un-renamed nav resolves to its own CLR name unchanged).
         if (ExpandEnabled ?? defaults.ExpandEnabled)
-            entityType.Expand(OhData.AspNetCore.OhDataEndpointFactory.MaxNestedExpandDepth, _expandProperties!);
+        {
+            entityType.Expand(OhData.OhDataEndpointFactory.MaxNestedExpandDepth,
+                ResolveStructuralAllowlistToEdmNames(_expandProperties)!);
+        }
         if (FilterEnabled ?? defaults.FilterEnabled)
-            entityType.Filter(MergeAllowlistWithNavigationProperties(_filterProperties));
+            entityType.Filter(MergeAllowlistWithNavigationProperties(ResolveStructuralAllowlistToEdmNames(_filterProperties)));
         if (OrderByEnabled ?? defaults.OrderByEnabled)
-            entityType.OrderBy(MergeAllowlistWithNavigationProperties(_orderByProperties));
+            entityType.OrderBy(MergeAllowlistWithNavigationProperties(ResolveStructuralAllowlistToEdmNames(_orderByProperties)));
         if (CountEnabled ?? defaults.CountEnabled) entityType.Count();
 
         entityType.HasKey(_getKey);
@@ -638,7 +730,41 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private string[]? MergeAllowlistWithNavigationProperties(string[]? allowlist)
     {
         if (allowlist is null || _navigationPropertyNames.Count == 0) return allowlist;
-        return allowlist.Union(_navigationPropertyNames, StringComparer.Ordinal).ToArray();
+        // #253 completion: navigation identifiers are EDM names, so a [JsonPropertyName]-renamed nav
+        // must be unioned under its JSON name (matching the renamed EDM navigation) — otherwise a
+        // filter/orderby path hopping through it would 400. NavigationEdmNames resolves each CLR nav
+        // name to its EDM name (an un-renamed nav is its own CLR name).
+        return allowlist.Union(NavigationEdmNames, StringComparer.Ordinal).ToArray();
+    }
+
+    /// <summary>
+    /// #253: translates an allowlist (SelectProperties/FilterProperties/OrderByProperties/
+    /// ExpandProperties), captured as CLR property names by <see cref="ExtractNames"/>, into the EDM
+    /// names the model builder validates against. A property carrying a
+    /// <c>[System.Text.Json.Serialization.JsonPropertyName]</c> is renamed in the EDM by
+    /// <c>OhDataBuilder.ApplyJsonPropertyNameRenames</c>, so a CLR-named allowlist entry would make
+    /// that renamed property <c>NotFilterable</c>/<c>NotSortable</c>/<c>NotSelectable</c>/
+    /// <c>NotExpandable</c> and thus unusable under its actual (JSON) query name.
+    /// </summary>
+    /// <remarks>
+    /// #253 completion: this applies UNIFORMLY to structural AND navigation entries (reverses #184) —
+    /// a renamed navigation in an <c>ExpandProperties</c> allowlist (or hopped through in a Filter/
+    /// OrderBy path) resolves to its JSON name, matching the renamed EDM navigation. A name that is not
+    /// a public property of <typeparamref name="TModel"/> is passed through unchanged (e.g. a deep path
+    /// segment the caller pre-resolved).
+    /// </remarks>
+    private string[]? ResolveStructuralAllowlistToEdmNames(string[]? allowlist)
+    {
+        if (allowlist is null) return null;
+        string[] resolved = new string[allowlist.Length];
+        for (int i = 0; i < allowlist.Length; i++)
+        {
+            string name = allowlist[i];
+            resolved[i] = typeof(TModel).GetProperty(name) is PropertyInfo pi
+                ? OhData.ODataPropertyNaming.ResolveEdmName(pi)
+                : name;
+        }
+        return resolved;
     }
 
     /// <summary>
@@ -662,12 +788,17 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         {
             list.Add(new StructuralPropertyInfo
             {
-                Name = prop.Name,
+                // #253: the property's OData/EDM name is its [JsonPropertyName] when present, else
+                // the CLR name. This is the identifier used for the property route segment, the
+                // $select/$filter/$orderby allowlist, and the $select post-strip — so it agrees with
+                // the response payload key (which System.Text.Json also derives from [JsonPropertyName]).
+                Name = ODataPropertyNaming.ResolveEdmName(prop),
                 ClrType = prop.PropertyType,
                 IsKey = string.Equals(prop.Name, keyPropertyName, StringComparison.Ordinal),
                 IsNullable = IsNullableClrType(prop.PropertyType),
                 IsComplex = !IsPrimitiveODataClrType(prop.PropertyType),
                 Accessor = CompileStructuralAccessor(prop),
+                Property = prop,
             });
         }
 
@@ -882,6 +1013,18 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// </summary>
     /// <typeparam name="TNavigation">The CLR type of the related entity.</typeparam>
     /// <param name="navigation">Expression selecting the navigation property.</param>
+    /// <remarks>
+    /// #206 phase 2 (Option A1) — <c>$expand</c> pushdown: declaring this navigation <b>without</b>
+    /// a delegate opts it <b>into</b> Include pushdown. When an EF Core-backed <c>GetQueryable</c>
+    /// source is <c>$expand</c>'d on it, the framework folds the navigation into the collection
+    /// query's projection so the related entity loads via a single JOIN'd query (SQL pushdown) —
+    /// no delegate needed. Supplying a <c>get</c>/<c>batchGet</c> delegate (the other overloads)
+    /// opts the navigation <b>out</b> of pushdown: the delegate then owns expansion (so it can
+    /// filter/order/authorize). Mental model: write a delegate only when expansion needs real
+    /// logic; a plain relationship gets SQL-JOIN expansion for free. A pushed single-valued
+    /// reference honors a nested <c>$select</c> (<c>Ref($select=name)</c>); <c>$filter</c>/
+    /// <c>$orderby</c>/<c>$top</c>/<c>$skip</c>/<c>$count</c> do not apply to a single entity.
+    /// </remarks>
     protected void HasOptional<TNavigation>(Expression<Func<TModel, TNavigation>> navigation)
         where TNavigation : class
     {
@@ -921,7 +1064,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         string? childKeyPropName = DetectChildKeyProperty<TNavigation>(refTargetEntitySet);
         _navRoutes.Add(new NavigationRouteDefinition
         {
-            PropertyName = propName,
+            PropertyName = ResolveNavEdmName(propName),
             IsCollection = false,
             Handler = get is not null
                 ? async (key, ct) => (object?)await get((TKey)key, ct)
@@ -936,6 +1079,18 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// </summary>
     /// <typeparam name="TNavigation">The CLR type of the related entity.</typeparam>
     /// <param name="navigation">Expression selecting the navigation property.</param>
+    /// <remarks>
+    /// #206 phase 2 (Option A1) — <c>$expand</c> pushdown: declaring this navigation <b>without</b>
+    /// a delegate opts it <b>into</b> Include pushdown. When an EF Core-backed <c>GetQueryable</c>
+    /// source is <c>$expand</c>'d on it, the framework folds the navigation into the collection
+    /// query's projection so the related entity loads via a single JOIN'd query (SQL pushdown) —
+    /// no delegate needed. Supplying a <c>get</c>/<c>batchGet</c> delegate (the other overloads)
+    /// opts the navigation <b>out</b> of pushdown: the delegate then owns expansion (so it can
+    /// filter/order/authorize). Mental model: write a delegate only when expansion needs real
+    /// logic; a plain relationship gets SQL-JOIN expansion for free. A pushed single-valued
+    /// reference honors a nested <c>$select</c> (<c>Ref($select=name)</c>); <c>$filter</c>/
+    /// <c>$orderby</c>/<c>$top</c>/<c>$skip</c>/<c>$count</c> do not apply to a single entity.
+    /// </remarks>
     protected void HasRequired<TNavigation>(Expression<Func<TModel, TNavigation>> navigation)
         where TNavigation : class
     {
@@ -972,7 +1127,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         string? childKeyPropName = DetectChildKeyProperty<TNavigation>(refTargetEntitySet);
         _navRoutes.Add(new NavigationRouteDefinition
         {
-            PropertyName = propName,
+            PropertyName = ResolveNavEdmName(propName),
             IsCollection = false,
             Handler = get is not null
                 ? async (key, ct) => (object?)await get((TKey)key, ct)
@@ -989,6 +1144,24 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// </summary>
     /// <typeparam name="TNavigation">The CLR type of the related entities.</typeparam>
     /// <param name="navigation">Expression selecting the collection navigation property.</param>
+    /// <remarks>
+    /// #206 phase 2 (Option A1) — <c>$expand</c> pushdown: declaring this navigation <b>without</b>
+    /// a delegate opts it <b>into</b> Include pushdown. When an EF Core-backed <c>GetQueryable</c>
+    /// source is <c>$expand</c>'d on it, the framework folds the navigation into the collection
+    /// query's projection (<c>x =&gt; new TModel { …, Nav = x.Nav.ToList() }</c>) so the related
+    /// rows load via a single JOIN'd query (SQL pushdown) — no delegate, no N+1. Supplying a
+    /// <c>getAll</c>/<c>batchGetAll</c> delegate (the other overloads) opts the navigation
+    /// <b>out</b> of pushdown: the delegate then owns expansion (so it can filter/order/authorize).
+    /// Mental model: write a delegate only when expansion needs real logic; a plain relationship
+    /// gets SQL-JOIN expansion for free.
+    /// <para>
+    /// A pushed collection honors the expand's nested options: <c>$filter</c>/<c>$orderby</c>/
+    /// <c>$top</c>/<c>$skip</c> push to SQL as a filtered/ordered/paged <c>Include</c> (bound by
+    /// Microsoft's own <c>FilterBinder</c>/<c>OrderByBinder</c>), and <c>$count</c>/<c>$select</c>
+    /// shape the result. A <b>nested</b> <c>$expand</c> (multi-level) or <c>$levels</c> is NOT
+    /// pushed — the navigation then stays EDM-only for that request. See docs/query-options.md.
+    /// </para>
+    /// </remarks>
     protected void HasMany<TNavigation>(Expression<Func<TModel, IEnumerable<TNavigation>>> navigation)
         where TNavigation : class
     {
@@ -1019,7 +1192,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         string propName = GetNavigationPropertyName(navigation.Body);
         _navRoutes.Add(new NavigationRouteDefinition
         {
-            PropertyName = propName,
+            PropertyName = ResolveNavEdmName(propName),
             IsCollection = true,
             NavItemType = typeof(TNavigation),
             Handler = async (key, ct) => (object?)await getAll((TKey)key, ct)
@@ -1073,7 +1246,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
         _navRoutes.Add(new NavigationRouteDefinition
         {
-            PropertyName = propName,
+            PropertyName = ResolveNavEdmName(propName),
             IsCollection = true,
             NavItemType = typeof(TNavigation),
             Handler = getAll is not null
@@ -1127,7 +1300,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         string? childKeyPropName = DetectChildKeyProperty<TNavigation>(refTargetEntitySet);
         _navRoutes.Add(new NavigationRouteDefinition
         {
-            PropertyName = propName,
+            PropertyName = ResolveNavEdmName(propName),
             IsCollection = false,
             Handler = get is not null
                 ? async (key, ct) => (object?)await get((TKey)key, ct)
@@ -1192,7 +1365,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
         _navRoutes.Add(new NavigationRouteDefinition
         {
-            PropertyName = propName,
+            PropertyName = ResolveNavEdmName(propName),
             IsCollection = true,
             NavItemType = typeof(TNavigation),
             BatchHandler = batch,
@@ -1253,7 +1426,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
         _navRoutes.Add(new NavigationRouteDefinition
         {
-            PropertyName = propName,
+            PropertyName = ResolveNavEdmName(propName),
             IsCollection = false,
             BatchHandler = batch,
             Handler = async (key, ct) =>
@@ -1315,7 +1488,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
         _navRoutes.Add(new NavigationRouteDefinition
         {
-            PropertyName = propName,
+            PropertyName = ResolveNavEdmName(propName),
             IsCollection = false,
             BatchHandler = batch,
             Handler = async (key, ct) =>
@@ -1651,7 +1824,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         return s_keyToUrlCache.GetOrAdd(GetType(), _ =>
         {
             var compiled = _getKey.Compile();
-            return model => OhData.AspNetCore.ODataEntityKeyUrlFormatter.Format(compiled(model)!);
+            return model => OhData.ODataEntityKeyUrlFormatter.Format(compiled(model)!);
         });
     }
     string IEntitySetEndpointSource.InvokeGetKeyForUrl(object model)
@@ -1673,11 +1846,17 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     bool IEntitySetEndpointSource.CountEnabled => _resolvedCountEnabled;
     bool IEntitySetEndpointSource.PropertyAccessEnabled => _resolvedPropertyAccessEnabled;
     bool IEntitySetEndpointSource.PropertyRouteDocsEnabled => _resolvedPropertyRouteDocsEnabled;
+    bool IEntitySetEndpointSource.SelectPushdownEnabled => _resolvedSelectPushdownEnabled;
+    bool IEntitySetEndpointSource.ExpandPushdownEnabled => _resolvedExpandPushdownEnabled;
+    IReadOnlyCollection<string>? IEntitySetEndpointSource.ETagPropertyNames => _etagPropertyNames;
     RoundingMode IEntitySetEndpointSource.RoundingMode => _resolvedRoundingMode;
     IReadOnlyList<StructuralPropertyInfo> IEntitySetEndpointSource.StructuralProperties =>
         _structuralProperties ??= BuildStructuralProperties();
     bool IEntitySetEndpointSource.AllowDeepInsert => _resolvedAllowDeepInsert;
-    IReadOnlyCollection<string> IEntitySetEndpointSource.NavigationPropertyNames => _navigationPropertyNames;
+    // #253 completion: navigations are addressed by their EDM (JSON) names on the OData surface. This
+    // exposed view is consumed by the $expand pushdown provenance/keying and the deep-insert strip
+    // (which resolves each CLR property to its EDM name before testing membership).
+    IReadOnlyCollection<string> IEntitySetEndpointSource.NavigationPropertyNames => NavigationEdmNames;
     IReadOnlyCollection<string> IEntitySetEndpointSource.IgnoredPropertyNames => _ignoredPropertyNames;
     string IEntitySetEndpointSource.KeyPropertyName => GetNavigationPropertyName(_getKey.Body);
     bool IEntitySetEndpointSource.IsAdvancedConfigureOverridden => _isAdvancedConfigureOverridden;

@@ -3,7 +3,7 @@ using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace OhData.Abstractions;
+namespace OhData;
 
 internal static class AsyncDispatchHelper
 {

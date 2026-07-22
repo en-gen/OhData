@@ -1,4 +1,4 @@
-namespace OhData.Abstractions;
+namespace OhData;
 
 /// <summary>
 /// Controls the midpoint-rounding behavior of the OData <c>round()</c> canonical function

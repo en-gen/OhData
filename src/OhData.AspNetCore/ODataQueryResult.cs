@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 
-namespace OhData.Abstractions.AspNetCore.OData;
+namespace OhData;
 
 /// <summary>
 /// Wraps the result of a <c>GetODataQueryable</c> handler, allowing profiles to return

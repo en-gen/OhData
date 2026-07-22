@@ -10,8 +10,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using OhData.Abstractions;
-using OhData.AspNetCore;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.Tests;
@@ -158,7 +157,7 @@ public class MetadataCsdlTests
     [Fact]
     public async Task Metadata_IsWellFormedXml_WithEdmxEnvelopeAndCorrectNamespaces()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<CsdlSpotCheckProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<CsdlSpotCheckProfile>());
         var (doc, _) = await GetMetadataAsync(fx.Client);
 
         Assert.Equal(Edmx + "Edmx", doc.Root!.Name);
@@ -171,7 +170,7 @@ public class MetadataCsdlTests
     [Fact]
     public async Task Metadata_ContentType_IsApplicationXml()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<CsdlSpotCheckProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<CsdlSpotCheckProfile>());
         var response = await fx.Client.GetAsync("/odata/$metadata");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
@@ -183,7 +182,7 @@ public class MetadataCsdlTests
     [Fact]
     public async Task Metadata_Encoding_PrologBytesAndCharsetAllUtf8()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<CsdlSpotCheckProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<CsdlSpotCheckProfile>());
         var response = await fx.Client.GetAsync("/odata/$metadata");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
@@ -206,7 +205,7 @@ public class MetadataCsdlTests
     [Fact]
     public async Task Metadata_EntityType_KeyPropertyRef_MatchesKeySelector()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<CsdlSpotCheckProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<CsdlSpotCheckProfile>());
         var (doc, _) = await GetMetadataAsync(fx.Client);
 
         var entityType = FindEntityType(doc, nameof(CsdlSpotCheckItem));
@@ -227,7 +226,7 @@ public class MetadataCsdlTests
     public async Task Metadata_EntityType_PropertyType_And_Nullability_MatchModel(
         string propertyName, string expectedEdmType, bool expectedNullable)
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<CsdlSpotCheckProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<CsdlSpotCheckProfile>());
         var (doc, _) = await GetMetadataAsync(fx.Client);
 
         var entityType = FindEntityType(doc, nameof(CsdlSpotCheckItem));
@@ -248,8 +247,8 @@ public class MetadataCsdlTests
     public async Task Metadata_NavigationProperty_CollectionNav_HasCollectionType()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o
-            .AddProfile<CsdlParentProfile>()
-            .AddProfile<CsdlChildProfile>());
+            .AddEntitySetProfile<CsdlParentProfile>()
+            .AddEntitySetProfile<CsdlChildProfile>());
         var (doc, _) = await GetMetadataAsync(fx.Client);
 
         var parentType = FindEntityType(doc, nameof(CsdlParentItem));
@@ -266,8 +265,8 @@ public class MetadataCsdlTests
     public async Task Metadata_NavigationProperty_OptionalSingleNav_IsNullable()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o
-            .AddProfile<CsdlParentProfile>()
-            .AddProfile<CsdlChildProfile>());
+            .AddEntitySetProfile<CsdlParentProfile>()
+            .AddEntitySetProfile<CsdlChildProfile>());
         var (doc, _) = await GetMetadataAsync(fx.Client);
 
         var parentType = FindEntityType(doc, nameof(CsdlParentItem));
@@ -284,8 +283,8 @@ public class MetadataCsdlTests
     public async Task Metadata_NavigationProperty_RequiredSingleNav_IsNotNullable()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o
-            .AddProfile<CsdlParentProfile>()
-            .AddProfile<CsdlChildProfile>());
+            .AddEntitySetProfile<CsdlParentProfile>()
+            .AddEntitySetProfile<CsdlChildProfile>());
         var (doc, _) = await GetMetadataAsync(fx.Client);
 
         var parentType = FindEntityType(doc, nameof(CsdlParentItem));
@@ -301,8 +300,8 @@ public class MetadataCsdlTests
     public async Task Metadata_EntityContainer_ContainsEntitySetForEachProfile()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o
-            .AddProfile<CsdlParentProfile>()
-            .AddProfile<CsdlChildProfile>());
+            .AddEntitySetProfile<CsdlParentProfile>()
+            .AddEntitySetProfile<CsdlChildProfile>());
         var (doc, _) = await GetMetadataAsync(fx.Client);
 
         var container = FindEntityContainer(doc);
@@ -319,8 +318,8 @@ public class MetadataCsdlTests
         // entity sets in this host, so the framework should emit NavigationPropertyBinding
         // elements linking each nav property to its target set.
         await using var fx = await TestHostBuilder.BuildAsync(o => o
-            .AddProfile<CsdlParentProfile>()
-            .AddProfile<CsdlChildProfile>());
+            .AddEntitySetProfile<CsdlParentProfile>()
+            .AddEntitySetProfile<CsdlChildProfile>());
         var (doc, _) = await GetMetadataAsync(fx.Client);
 
         var container = FindEntityContainer(doc);
@@ -339,7 +338,7 @@ public class MetadataCsdlTests
     {
         // CsdlChildProfile is NOT registered here — only the nav property's declaring type is.
         // The framework cannot bind to an entity set that doesn't exist in this registration.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<CsdlParentProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<CsdlParentProfile>());
         var (doc, _) = await GetMetadataAsync(fx.Client);
 
         var container = FindEntityContainer(doc);
@@ -353,7 +352,7 @@ public class MetadataCsdlTests
     [Fact]
     public async Task Metadata_BoundFunction_CollectionLevel_IsBoundTrue_WithCollectionBindingParameter()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<CsdlSpotCheckProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<CsdlSpotCheckProfile>());
         var (doc, _) = await GetMetadataAsync(fx.Client);
 
         var fn = Schemas(doc).Elements(Edm + "Function")
@@ -376,7 +375,7 @@ public class MetadataCsdlTests
     [Fact]
     public async Task Metadata_BoundAction_CollectionLevel_IsBoundTrue_NoReturnType()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<CsdlSpotCheckProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<CsdlSpotCheckProfile>());
         var (doc, _) = await GetMetadataAsync(fx.Client);
 
         var action = Schemas(doc).Elements(Edm + "Action")
@@ -390,7 +389,7 @@ public class MetadataCsdlTests
     public async Task Metadata_BoundFunction_EntityLevel_BindingParameterIsSingleEntityType()
     {
         // Entity-bound functions/actions bind to the single entity type, not Collection(...).
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<CsdlSpotCheckProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<CsdlSpotCheckProfile>());
         var (doc, _) = await GetMetadataAsync(fx.Client);
 
         var fn = Schemas(doc).Elements(Edm + "Function")
@@ -410,7 +409,7 @@ public class MetadataCsdlTests
     [Fact]
     public async Task Metadata_BoundAction_EntityLevel_HasKeyBindingParameterPlusNamedParameter()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<CsdlSpotCheckProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<CsdlSpotCheckProfile>());
         var (doc, _) = await GetMetadataAsync(fx.Client);
 
         var action = Schemas(doc).Elements(Edm + "Action")
@@ -431,7 +430,7 @@ public class MetadataCsdlTests
     public async Task Metadata_UnboundFunction_RegisteredAsFunctionImport_IncludedInServiceDocument()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o
-            .AddProfile<CsdlSpotCheckProfile>()
+            .AddEntitySetProfile<CsdlSpotCheckProfile>()
             .AddFunction((Func<int, int>)(x => x * 2), "UnboundDouble"));
         var (doc, _) = await GetMetadataAsync(fx.Client);
 
@@ -451,7 +450,7 @@ public class MetadataCsdlTests
     public async Task Metadata_UnboundAction_RegisteredAsActionImport()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o
-            .AddProfile<CsdlSpotCheckProfile>()
+            .AddEntitySetProfile<CsdlSpotCheckProfile>()
             .AddAction((Action<string>)(s => { }), "UnboundNoop"));
         var (doc, _) = await GetMetadataAsync(fx.Client);
 
@@ -473,8 +472,8 @@ public class MetadataCsdlTests
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
         builder.Services.AddLogging();
-        builder.Services.AddOhData("v1", o => o.WithPrefix("/v1").AddProfile<CsdlV1Profile>());
-        builder.Services.AddOhData("v2", o => o.WithPrefix("/v2").AddProfile<CsdlV2Profile>());
+        builder.Services.AddOhData("v1", o => o.WithPrefix("/v1").AddEntitySetProfile<CsdlV1Profile>());
+        builder.Services.AddOhData("v2", o => o.WithPrefix("/v2").AddEntitySetProfile<CsdlV2Profile>());
         await using var app = builder.Build();
         app.MapOhData("v1");
         app.MapOhData("v2");

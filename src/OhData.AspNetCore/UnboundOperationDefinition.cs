@@ -5,7 +5,7 @@ using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace OhData.Abstractions;
+namespace OhData;
 
 /// <summary>
 /// Describes an unbound function or action that lives at the service root level

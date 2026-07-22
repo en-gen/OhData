@@ -12,7 +12,7 @@ dotnet add package EnGen.OhData.AspNetCore.OpenApi
 ## Registration
 
 ```csharp
-using OhData.AspNetCore;
+using OhData.AspNetCore.OpenApi;
 
 builder.Services.AddOpenApi(o =>
 {
@@ -96,6 +96,23 @@ before entity properties. `$ref` routes similarly document `ODataRefResponse`/
 `ODataRefCollectionResponse`, and structural-property GET routes document
 `ODataPropertyResponse<T>`.
 
+## Schema property casing matches the wire
+
+OhData owns its response JSON casing — PascalCase by default, independent of the host's
+`HttpJsonOptions` (see [query-options.md → JSON property casing](query-options.md#json-property-casing)).
+`OhDataOpenApiSchemaTransformer` renames each generated schema property key to that same
+response casing, so the document advertises exactly what responses emit rather than the host
+serializer's casing (camelCase by ASP.NET Core default). A `[JsonPropertyName]` rename wins over the
+policy — in the schema and on the wire alike — matching the response precedence. Renaming is keyed by
+CLR model type (the same key the ignore suppression below uses).
+
+Renaming follows the whole response graph, not just the top-level entity: nested complex types (a
+`HomeAddress` property, a `List<Tag>` collection, a dictionary value) and inherited base classes each
+get their own component schema, and every one of them is renamed to the response casing. The
+transformer drives that descent itself — because renaming a property key removes the host-cased key
+the runtime uses to locate a child schema, so left to its own traversal the runtime would stop at any
+renamed complex property and leave nested-only component schemas at host casing (#260).
+
 ## Ignored properties omitted from schemas
 
 Properties excluded via `EntitySetProfile.Ignore(...)` never cross the wire (see
@@ -103,9 +120,10 @@ Properties excluded via `EntitySetProfile.Ignore(...)` never cross the wire (see
 type — which still has the property. `OhDataOpenApiSchemaTransformer` implements
 `IOpenApiSchemaTransformer` and removes each ignored member from its model type's generated schema
 (request and response alike, since both share the component schema), so the document matches the
-real wire shape. Matching respects the serializer naming policy — the profile ignores the CLR name
-(`CostBasis`), the schema key is the JSON name (`costBasis`). Suppression is keyed by CLR model
-type, so a same-named property on a different (un-ignored) type is untouched.
+real wire shape. Matching is by CLR member, immune to the naming policy — the profile ignores the
+CLR name (`CostBasis`), and the surviving keys are emitted in OhData's response casing (`CostBasis`
+by default; `costBasis` under a camelCase opt-in). Suppression is keyed by CLR model type, so a
+same-named property on a different (un-ignored) type is untouched.
 
 ## Read-path summaries
 

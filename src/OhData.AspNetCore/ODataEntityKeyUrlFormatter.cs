@@ -1,7 +1,7 @@
 using System;
 using System.Globalization;
 
-namespace OhData.AspNetCore;
+namespace OhData;
 
 /// <summary>
 /// Formats a CLR key value into a canonical OData entity-id URL segment suitable for embedding

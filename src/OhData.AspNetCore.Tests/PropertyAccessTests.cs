@@ -7,8 +7,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
-using OhData.Abstractions;
-using OhData.AspNetCore;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.Tests;
@@ -25,7 +24,7 @@ public class PropertyAccessTests
     [Fact]
     public async Task GetProperty_String_Returns200WithEnvelope()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<PropertyAccessProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<PropertyAccessProfile>());
         var response = await fx.Client.GetAsync("/odata/PropertyAccessItems(1)/Name");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
@@ -39,7 +38,7 @@ public class PropertyAccessTests
     [Fact]
     public async Task GetProperty_Decimal_ReturnsCorrectValue()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<PropertyAccessProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<PropertyAccessProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/PropertyAccessItems(1)/Price");
         Assert.Equal(9.99m, json.GetProperty("value").GetDecimal());
     }
@@ -47,7 +46,7 @@ public class PropertyAccessTests
     [Fact]
     public async Task GetProperty_DateTime_ReturnsCorrectValue()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<PropertyAccessProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<PropertyAccessProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/PropertyAccessItems(1)/ReleasedAt");
         var expected = PropertyAccessProfile.Store[0].ReleasedAt;
         Assert.Equal(expected, json.GetProperty("value").GetDateTime());
@@ -56,15 +55,16 @@ public class PropertyAccessTests
     [Fact]
     public async Task GetProperty_Complex_ReturnsNestedObjectRespectingNamingPolicy()
     {
-        // The default ASP.NET Core JsonOptions naming policy is camelCase — verifying the nested
-        // complex value's keys are lowercased proves the envelope goes through the standard
-        // Results.Ok/JsonOptions pipeline rather than a hand-rolled serializer.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<PropertyAccessProfile>());
+        // #252: a complex-typed property read is serialized through OhData's owned options, so its
+        // nested member names follow the default PascalCase policy (matching $metadata / §4.4) —
+        // NOT the host's HttpJsonOptions naming policy.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<PropertyAccessProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/PropertyAccessItems(1)/Size");
         var sizeValue = json.GetProperty("value");
-        Assert.True(sizeValue.TryGetProperty("width", out var width));
+        Assert.True(sizeValue.TryGetProperty("Width", out var width));
         Assert.Equal(10.5m, width.GetDecimal());
-        Assert.True(sizeValue.TryGetProperty("height", out _));
+        Assert.True(sizeValue.TryGetProperty("Height", out _));
+        Assert.False(sizeValue.TryGetProperty("width", out _));
     }
 
     // ── Null property → 204 ─────────────────────────────────────────────────────
@@ -72,7 +72,7 @@ public class PropertyAccessTests
     [Fact]
     public async Task GetProperty_NullValue_Returns204()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<PropertyAccessProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<PropertyAccessProfile>());
         var response = await fx.Client.GetAsync("/odata/PropertyAccessItems(2)/Description");
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
     }
@@ -82,7 +82,7 @@ public class PropertyAccessTests
     [Fact]
     public async Task GetProperty_UnknownPropertyName_Returns404()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<PropertyAccessProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<PropertyAccessProfile>());
         var response = await fx.Client.GetAsync("/odata/PropertyAccessItems(1)/NotAProperty");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -90,7 +90,7 @@ public class PropertyAccessTests
     [Fact]
     public async Task GetProperty_EntityMissing_Returns404()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<PropertyAccessProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<PropertyAccessProfile>());
         var response = await fx.Client.GetAsync("/odata/PropertyAccessItems(999)/Name");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -100,7 +100,7 @@ public class PropertyAccessTests
     [Fact]
     public async Task GetPropertyValue_String_ReturnsRawTextPlain()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<PropertyAccessProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<PropertyAccessProfile>());
         var response = await fx.Client.GetAsync("/odata/PropertyAccessItems(1)/Name/$value");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("text/plain", response.Content.Headers.ContentType?.MediaType);
@@ -111,7 +111,7 @@ public class PropertyAccessTests
     [Fact]
     public async Task GetPropertyValue_Decimal_ReturnsInvariantCultureRaw()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<PropertyAccessProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<PropertyAccessProfile>());
         var response = await fx.Client.GetAsync("/odata/PropertyAccessItems(1)/Price/$value");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         string body = await response.Content.ReadAsStringAsync();
@@ -121,7 +121,7 @@ public class PropertyAccessTests
     [Fact]
     public async Task GetPropertyValue_NullProperty_Returns404()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<PropertyAccessProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<PropertyAccessProfile>());
         var response = await fx.Client.GetAsync("/odata/PropertyAccessItems(2)/Description/$value");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -129,7 +129,7 @@ public class PropertyAccessTests
     [Fact]
     public async Task GetPropertyValue_ComplexProperty_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<PropertyAccessProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<PropertyAccessProfile>());
         var response = await fx.Client.GetAsync("/odata/PropertyAccessItems(1)/Size/$value");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
@@ -137,7 +137,7 @@ public class PropertyAccessTests
     [Fact]
     public async Task GetPropertyValue_EntityMissing_Returns404()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<PropertyAccessProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<PropertyAccessProfile>());
         var response = await fx.Client.GetAsync("/odata/PropertyAccessItems(999)/Name/$value");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -147,7 +147,7 @@ public class PropertyAccessTests
     [Fact]
     public async Task PropertyAccessDisabled_RouteAbsent_Returns404()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<PropertyAccessDisabledProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<PropertyAccessDisabledProfile>());
         var response = await fx.Client.GetAsync("/odata/PropertyAccessDisabledItems(1)/Name");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -159,7 +159,7 @@ public class PropertyAccessTests
     {
         // EmptyProfile configures no handlers at all, so GetById is absent and no property
         // routes should be registered regardless of PropertyAccessEnabled's resolved value.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<EmptyProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<EmptyProfile>());
         var response = await fx.Client.GetAsync("/odata/EmptyWidgets(1)/Name");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -173,7 +173,7 @@ public class PropertyAccessTests
         // Structural properties are computed as CLR properties minus navigation names, so
         // "Children" is never a candidate for a property route — the existing nav route keeps
         // serving its collection envelope unchanged.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ParentWithChildrenProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ParentWithChildrenProfile>());
         var navResponse = await fx.Client.GetAsync("/odata/Parents(1)/Children");
         Assert.Equal(HttpStatusCode.OK, navResponse.StatusCode);
         var navJson = await navResponse.Content.ReadFromJsonAsync<JsonElement>();
@@ -194,7 +194,7 @@ public class PropertyAccessTests
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
         builder.Services.AddLogging();
-        builder.Services.AddOhData(o => o.AddProfile<PropertyCollisionProfile>());
+        builder.Services.AddOhData(o => o.AddEntitySetProfile<PropertyCollisionProfile>());
         var app = builder.Build();
 
         var ex = Assert.Throws<InvalidOperationException>(() => app.MapOhData());
@@ -207,7 +207,7 @@ public class PropertyAccessTests
     [Fact]
     public async Task GetProperty_WithETag_SetsETagHeaderAndHonorsIfNoneMatch()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagWidgetProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagWidgetProfile>());
         var first = await fx.Client.GetAsync("/odata/ETagWidgets(1)/Name");
         Assert.Equal(HttpStatusCode.OK, first.StatusCode);
         Assert.NotNull(first.Headers.ETag);
@@ -224,7 +224,7 @@ public class PropertyAccessTests
     public async Task GetProperty_Unauthenticated_Returns401()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<AuthorizedWidgetProfile>(),
+            o => o.AddEntitySetProfile<AuthorizedWidgetProfile>(),
             addAuth: true);
         var response = await fx.Client.GetAsync("/odata/AuthorizedWidgets(1)/Name");
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);

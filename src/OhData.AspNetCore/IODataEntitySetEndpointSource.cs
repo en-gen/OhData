@@ -1,9 +1,8 @@
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.OData.Query;
-using OhData.Abstractions;
 
-namespace OhData.Abstractions.AspNetCore.OData;
+namespace OhData;
 
 internal interface IODataEntitySetEndpointSource : IEntitySetEndpointSource
 {

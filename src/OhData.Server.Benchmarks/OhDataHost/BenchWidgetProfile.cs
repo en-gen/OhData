@@ -3,7 +3,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.OData.Deltas;
-using OhData.Abstractions;
+using OhData;
 using OhData.Server.Benchmarks.Model;
 
 namespace OhData.Server.Benchmarks.OhDataHost;

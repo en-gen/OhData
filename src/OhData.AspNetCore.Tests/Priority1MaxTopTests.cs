@@ -8,7 +8,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.OData.Query;
-using OhData.Abstractions.AspNetCore.OData;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.Tests;
@@ -29,7 +29,7 @@ public class Priority1MaxTopTests
     [Fact]
     public async Task NoTop_CapsToMaxTop_AndEmitsNextLink()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<Priority1MaxTopProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<Priority1MaxTopProfile>());
         var json = await GetJsonAsync(fx, Url);
 
         // 25 items in the store, MaxTop = 10 → first page is exactly 10, with a continuation link.
@@ -43,7 +43,7 @@ public class Priority1MaxTopTests
     [Fact]
     public async Task TopExceedsMaxTop_Returns400()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<Priority1MaxTopProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<Priority1MaxTopProfile>());
         var resp = await fx.Client.GetAsync($"{Url}?$top=50");
 
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
@@ -54,7 +54,7 @@ public class Priority1MaxTopTests
     [Fact]
     public async Task TopWithinMaxTop_Honored_NoFrameworkNextLink()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<Priority1MaxTopProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<Priority1MaxTopProfile>());
         var json = await GetJsonAsync(fx, $"{Url}?$top=5");
 
         // Client capped explicitly below MaxTop; the framework must not add a continuation link.
@@ -65,7 +65,7 @@ public class Priority1MaxTopTests
     [Fact]
     public async Task NextLink_Continuation_WalksTheWholeCollection()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<Priority1MaxTopProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<Priority1MaxTopProfile>());
 
         var seen = new List<int>();
         string? relative = Url;
@@ -74,7 +74,7 @@ public class Priority1MaxTopTests
         {
             var json = await GetJsonAsync(fx, relative);
             foreach (var el in json.GetProperty("value").EnumerateArray())
-                seen.Add(el.GetProperty("id").GetInt32());
+                seen.Add(el.GetProperty("Id").GetInt32());
 
             relative = json.TryGetProperty("@odata.nextLink", out var nl)
                 ? new Uri(nl.GetString()!).PathAndQuery
@@ -89,7 +89,7 @@ public class Priority1MaxTopTests
     [Fact]
     public async Task PreferMaxPageSize_BelowMaxTop_Clamps_AndEchoesPreferenceApplied()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<Priority1MaxTopProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<Priority1MaxTopProfile>());
         using var request = new HttpRequestMessage(HttpMethod.Get, Url);
         request.Headers.Add("Prefer", "maxpagesize=3");
         var resp = await fx.Client.SendAsync(request);
@@ -103,7 +103,7 @@ public class Priority1MaxTopTests
     [Fact]
     public async Task PreferMaxPageSize_AboveMaxTop_ClampedToMaxTop()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<Priority1MaxTopProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<Priority1MaxTopProfile>());
         using var request = new HttpRequestMessage(HttpMethod.Get, Url);
         request.Headers.Add("Prefer", "maxpagesize=100");
         var resp = await fx.Client.SendAsync(request);
@@ -119,7 +119,7 @@ public class Priority1MaxTopTests
     {
         // A profile that pages itself and returns its own NextLink is trusted — the framework
         // must not re-cap or replace the link.
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ODataQueryNextLinkProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ODataQueryNextLinkProfile>());
         var json = await GetJsonAsync(fx, "/odata/ODataNextLinkWidgets");
         Assert.Equal("http://next", json.GetProperty("@odata.nextLink").GetString());
     }

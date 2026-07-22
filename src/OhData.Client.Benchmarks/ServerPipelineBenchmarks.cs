@@ -15,8 +15,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using OhData.Abstractions;
-using OhData.AspNetCore;
+using OhData;
 using Microsoft.AspNetCore.OData.Deltas;
 
 namespace OhData.Client.Benchmarks;
@@ -43,7 +42,7 @@ public class ServerPipelineBenchmarks
         builder.Services.AddOhData(o =>
         {
             o.WithPrefix("/odata");
-            o.AddProfile<PipelineWidgetProfile>();
+            o.AddEntitySetProfile<PipelineWidgetProfile>();
         });
 
         _serverApp = builder.Build();

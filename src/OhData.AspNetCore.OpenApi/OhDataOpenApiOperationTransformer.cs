@@ -5,8 +5,9 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.AspNetCore.OpenApi;
 using Microsoft.OpenApi;
+using OhData;
 
-namespace OhData.AspNetCore;
+namespace OhData.AspNetCore.OpenApi;
 
 /// <summary>
 /// Microsoft.AspNetCore.OpenApi operation transformer that adds OData query parameters to

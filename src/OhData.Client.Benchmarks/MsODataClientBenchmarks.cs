@@ -14,8 +14,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.OData;
 using Microsoft.OData.Client;
 using Microsoft.OData.ModelBuilder;
-using OhData.Abstractions;
-using OhData.AspNetCore;
+using OhData;
 
 namespace OhData.Client.Benchmarks;
 
@@ -228,7 +227,7 @@ public class MsODataClientBenchmarks
         builder.Services.AddOhData(o =>
         {
             o.WithPrefix(Prefix);
-            o.AddProfile<MsBenchWidgetProfile>();
+            o.AddEntitySetProfile<MsBenchWidgetProfile>();
         });
 
         _serverApp = builder.Build();

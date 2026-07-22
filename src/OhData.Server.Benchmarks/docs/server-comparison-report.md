@@ -93,8 +93,9 @@ Global total time: 00:05:08 (22 benchmarks). Smoke check (all 11 scenarios) pass
   used verbatim against both hosts, and by both the smoke check and the benchmarks.
 - **Paging parity:** OhData `MaxTop = 100` vs MS `[EnableQuery(PageSize = 100, MaxTop = 100)]` —
   both return a 100-item first page with an `@odata.nextLink` for unpaged collection queries.
-- **Wire-format parity:** MS host uses `EnableLowerCamelCase()` so both servers emit camelCase
-  JSON and accept the same camelCase property names in `$filter`/`$orderby`/`$select`.
+- **Wire-format parity:** both servers emit PascalCase JSON (OhData's 1.5.0 default, and
+  `ODataConventionModelBuilder`'s own default on the MS host) and accept the same property names
+  in `$filter`/`$orderby`/`$select`.
 - **Correctness gate:** `Program.Main` runs `SmokeCheck` before any measurement — all 11
   scenarios must return semantically equivalent responses (status codes, item id sequences,
   `$select` shapes, `@odata.count` values, entity payload equality) on both hosts or the run
@@ -141,7 +142,7 @@ the same dataset as iteration N — the same discipline used in
    pay for entity serialization in the response.
 3. **`$select` implementations differ.** OhData applies `$select` via JsonNode post-processing;
    MS OData uses `ISelectExpandWrapper`. The observable output shape was asserted equal
-   (`id`,`name` only, camelCase) by the smoke check; the internal strategy is part of what is
+   (`Id`,`Name` only, PascalCase) by the smoke check; the internal strategy is part of what is
    being measured.
 4. **Stable-ordering insertion.** With `PageSize` set, MS OData appends a stable `$orderby` on
    the key for unpaged queries; OhData takes the source order (which is id order for this

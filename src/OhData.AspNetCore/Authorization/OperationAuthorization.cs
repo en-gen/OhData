@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace OhData.Abstractions;
+namespace OhData;
 
 /// <summary>
 /// The coarse operation categories an OhData route can fall into, used to target per-operation

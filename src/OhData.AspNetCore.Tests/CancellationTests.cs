@@ -5,8 +5,7 @@ using System.Net.Http.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
-using OhData.Abstractions;
-using OhData.AspNetCore;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.Tests;
@@ -104,7 +103,7 @@ public class CancellationTests
     {
         var coord = new CancellationCoordinator();
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<CancellableWidgetProfile>(),
+            o => o.AddEntitySetProfile<CancellableWidgetProfile>(),
             configureServices: s => s.AddSingleton(coord));
 
         using var cts = new CancellationTokenSource();
@@ -122,7 +121,7 @@ public class CancellationTests
     {
         var coord = new CancellationCoordinator();
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<CancellableWidgetProfile>(),
+            o => o.AddEntitySetProfile<CancellableWidgetProfile>(),
             configureServices: s => s.AddSingleton(coord));
 
         using var cts = new CancellationTokenSource();
@@ -140,7 +139,7 @@ public class CancellationTests
     {
         var coord = new CancellationCoordinator();
         await using var fx = await TestHostBuilder.BuildAsync(
-            o => o.AddProfile<CancellableWidgetProfile>(),
+            o => o.AddEntitySetProfile<CancellableWidgetProfile>(),
             configureServices: s => s.AddSingleton(coord));
 
         using var cts = new CancellationTokenSource();

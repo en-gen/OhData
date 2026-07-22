@@ -3,8 +3,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.OData.Deltas;
-using OhData.Abstractions;
-using OhData.AspNetCore;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.Swashbuckle.Tests;
@@ -153,8 +152,8 @@ public sealed class OhDataRequestBodyAndResponseTests
     {
         await using TestFixture fx = await SwashbuckleTestHostBuilder.BuildAsync(o =>
         {
-            o.AddProfile<WriteSurfaceProfile>();
-            o.AddProfile<WriteSurfaceQueryableProfile>();
+            o.AddEntitySetProfile<WriteSurfaceProfile>();
+            o.AddEntitySetProfile<WriteSurfaceQueryableProfile>();
         });
         return await fx.GetDocumentAsync();
     }

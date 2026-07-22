@@ -20,7 +20,7 @@ public class SelectUnexpandedNavContextTests
     [Fact]
     public async Task GetById_SelectUnexpandedNav_ContextKeepsProjection_BodyHasNoContentMembers()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagExpandSelectProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagExpandSelectProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ETagExpandSelectParents(1)?$select=Children");
 
         // Context URL keeps the (Children) projection (§10.8) — it faithfully reflects $select.
@@ -34,15 +34,15 @@ public class SelectUnexpandedNavContextTests
         {
             Assert.StartsWith("@", member.Name);
         }
-        Assert.False(json.TryGetProperty("children", out _), "un-expanded selected nav must not appear inline");
-        Assert.False(json.TryGetProperty("name", out _), "unselected structural property must be stripped");
-        Assert.False(json.TryGetProperty("id", out _), "unselected structural property must be stripped");
+        Assert.False(json.TryGetProperty("Children", out _), "un-expanded selected nav must not appear inline");
+        Assert.False(json.TryGetProperty("Name", out _), "unselected structural property must be stripped");
+        Assert.False(json.TryGetProperty("Id", out _), "unselected structural property must be stripped");
     }
 
     [Fact]
     public async Task GetById_SelectStructuralPlusUnexpandedNav_KeepsStructuralOmitsNav()
     {
-        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<ETagExpandSelectProfile>());
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagExpandSelectProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ETagExpandSelectParents(1)?$select=Name,Children");
 
         // Both selected items appear in the projected context, in request order.
@@ -50,7 +50,7 @@ public class SelectUnexpandedNavContextTests
         Assert.EndsWith("#ETagExpandSelectParents(Name,Children)/$entity", context);
 
         // The selected structural property is present; the selected-but-un-expanded nav is not.
-        Assert.Equal("P1", json.GetProperty("name").GetString());
-        Assert.False(json.TryGetProperty("children", out _), "un-expanded selected nav must not appear inline");
+        Assert.Equal("P1", json.GetProperty("Name").GetString());
+        Assert.False(json.TryGetProperty("Children", out _), "un-expanded selected nav must not appear inline");
     }
 }

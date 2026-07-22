@@ -2,8 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
-using OhData.Abstractions;
-using OhData.AspNetCore;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.Swashbuckle.Tests;
@@ -19,7 +18,7 @@ public sealed class OhDataSwaggerOperationFilterTests
     [Fact]
     public async Task AllFlagsEnabled_AllODataParametersPresent()
     {
-        await using TestFixture fx = await SwashbuckleTestHostBuilder.BuildAsync(o => o.AddProfile<AllFlagsProfile>());
+        await using TestFixture fx = await SwashbuckleTestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllFlagsProfile>());
         using JsonDocument doc = await fx.GetDocumentAsync();
 
         string[] names = ParameterNames(doc, "/odata/AllFlagsWidgets");
@@ -32,7 +31,7 @@ public sealed class OhDataSwaggerOperationFilterTests
     [Fact]
     public async Task NoFlags_OnlyTopAndSkipPresent()
     {
-        await using TestFixture fx = await SwashbuckleTestHostBuilder.BuildAsync(o => o.AddProfile<NoFlagsProfile>());
+        await using TestFixture fx = await SwashbuckleTestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NoFlagsProfile>());
         using JsonDocument doc = await fx.GetDocumentAsync();
 
         string[] names = ParameterNames(doc, "/odata/NoFlagsWidgets");
@@ -42,7 +41,7 @@ public sealed class OhDataSwaggerOperationFilterTests
     [Fact]
     public async Task MaxTopSet_TopDescriptionContainsCap()
     {
-        await using TestFixture fx = await SwashbuckleTestHostBuilder.BuildAsync(o => o.AddProfile<MaxTopProfile>());
+        await using TestFixture fx = await SwashbuckleTestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<MaxTopProfile>());
         using JsonDocument doc = await fx.GetDocumentAsync();
 
         string description = ParameterDescription(doc, "/odata/MaxTopWidgets", "$top");

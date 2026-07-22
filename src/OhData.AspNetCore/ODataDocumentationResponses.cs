@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
 
-namespace OhData.AspNetCore;
+namespace OhData;
 
 /// <summary>
 /// Documentation-only shape of the single structural-property response envelope emitted by

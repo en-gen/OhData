@@ -9,8 +9,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
-using OhData.Abstractions;
-using OhData.AspNetCore;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.Tests;
@@ -80,7 +79,7 @@ public class QueryBehaviorTests
     [Fact]
     public async Task BoundFunction_OptionalParam_WhenOmitted_UsesDefault()
     {
-        await using TestFixture fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<OptionalParamProfile>());
+        await using TestFixture fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<OptionalParamProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/OptionalParamWidgets/Greet");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         string body = await response.Content.ReadAsStringAsync();
@@ -90,7 +89,7 @@ public class QueryBehaviorTests
     [Fact]
     public async Task BoundFunction_OptionalParam_WhenProvided_UsesProvided()
     {
-        await using TestFixture fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<OptionalParamProfile>());
+        await using TestFixture fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<OptionalParamProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/OptionalParamWidgets/Greet?name=Alice");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         string body = await response.Content.ReadAsStringAsync();
@@ -101,7 +100,7 @@ public class QueryBehaviorTests
     public async Task BoundAction_OptionalParams_WhenOmitted_UsesDefaults()
     {
         OptionalParamProfile.LastGreeting = null;
-        await using TestFixture fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<OptionalParamProfile>());
+        await using TestFixture fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<OptionalParamProfile>());
         HttpResponseMessage response = await fx.Client.PostAsync(
             "/odata/OptionalParamWidgets/Configure",
             new StringContent("{}", System.Text.Encoding.UTF8, "application/json"));
@@ -137,7 +136,7 @@ public class QueryBehaviorTests
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
         builder.Services.AddLogging();
-        builder.Services.AddOhData(o => o.AddProfile<LambdaBoundFunctionProfile>());
+        builder.Services.AddOhData(o => o.AddEntitySetProfile<LambdaBoundFunctionProfile>());
         var app = builder.Build();
 
         // MapOhData() resolves the OhDataRegistration keyed singleton, which builds the EDM
@@ -159,7 +158,7 @@ public class QueryBehaviorTests
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
         builder.Services.AddLogging();
-        builder.Services.AddOhData(o => o.AddProfile<LambdaBoundActionProfile>());
+        builder.Services.AddOhData(o => o.AddEntitySetProfile<LambdaBoundActionProfile>());
         var app = builder.Build();
 
         var ex = Assert.Throws<InvalidOperationException>(() => app.MapOhData());
@@ -177,7 +176,7 @@ public class QueryBehaviorTests
     [Fact]
     public async Task MaxPageSize_Zero_TreatedAsNoLimit_ReturnsAllItems()
     {
-        await using TestFixture fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<LargeStoreProfile>());
+        await using TestFixture fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<LargeStoreProfile>());
         var req = new HttpRequestMessage(HttpMethod.Get, "/odata/LargeStoreWidgets");
         req.Headers.Add("Prefer", "maxpagesize=0");
         HttpResponseMessage response = await fx.Client.SendAsync(req);
@@ -189,7 +188,7 @@ public class QueryBehaviorTests
     [Fact]
     public async Task MaxPageSize_Negative_TreatedAsNoLimit_ReturnsAllItems()
     {
-        await using TestFixture fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<LargeStoreProfile>());
+        await using TestFixture fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<LargeStoreProfile>());
         var req = new HttpRequestMessage(HttpMethod.Get, "/odata/LargeStoreWidgets");
         req.Headers.Add("Prefer", "maxpagesize=-1");
         HttpResponseMessage response = await fx.Client.SendAsync(req);
@@ -201,7 +200,7 @@ public class QueryBehaviorTests
     [Fact]
     public async Task MaxPageSize_NonNumeric_TreatedAsNoLimit_ReturnsAllItems()
     {
-        await using TestFixture fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<LargeStoreProfile>());
+        await using TestFixture fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<LargeStoreProfile>());
         var req = new HttpRequestMessage(HttpMethod.Get, "/odata/LargeStoreWidgets");
         req.Headers.Add("Prefer", "maxpagesize=abc");
         HttpResponseMessage response = await fx.Client.SendAsync(req);
@@ -215,7 +214,7 @@ public class QueryBehaviorTests
     [Fact]
     public async Task SkipToken_Corrupted_Returns400()
     {
-        await using TestFixture fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<LargeStoreProfile>());
+        await using TestFixture fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<LargeStoreProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/LargeStoreWidgets?$skiptoken=!!!notbase64!!!");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
@@ -224,7 +223,7 @@ public class QueryBehaviorTests
     public async Task SkipToken_ValidBase64ButWrongLength_Returns400()
     {
         // "YQ==" is valid base64 for 1 byte — BitConverter.ToInt32 needs 4 bytes
-        await using TestFixture fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<LargeStoreProfile>());
+        await using TestFixture fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<LargeStoreProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/LargeStoreWidgets?$skiptoken=YQ%3D%3D");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
@@ -234,7 +233,7 @@ public class QueryBehaviorTests
     [Fact]
     public async Task Search_WithFilter_BothApplied()
     {
-        await using TestFixture fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<SearchAndFilterProfile>());
+        await using TestFixture fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<SearchAndFilterProfile>());
         // $search=Widget matches items 1 ("Alpha Widget") and 2 ("Beta Widget")
         // $filter=Id gt 1 further restricts to item 2 only ("Beta Widget")
         HttpResponseMessage response = await fx.Client.GetAsync(
@@ -243,14 +242,14 @@ public class QueryBehaviorTests
         JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
         JsonElement values = json.GetProperty("value");
         Assert.Equal(1, values.GetArrayLength());
-        Assert.Equal(2, values[0].GetProperty("id").GetInt32());
-        Assert.Equal("Beta Widget", values[0].GetProperty("name").GetString());
+        Assert.Equal(2, values[0].GetProperty("Id").GetInt32());
+        Assert.Equal("Beta Widget", values[0].GetProperty("Name").GetString());
     }
 
     [Fact]
     public async Task Search_WithoutFilter_ReturnsAllMatches()
     {
-        await using TestFixture fx = await TestHostBuilder.BuildAsync(o => o.AddProfile<SearchAndFilterProfile>());
+        await using TestFixture fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<SearchAndFilterProfile>());
         // $search=Alpha matches items 1 ("Alpha Widget") and 3 ("Alpha Gadget")
         HttpResponseMessage response = await fx.Client.GetAsync("/odata/SearchFilterWidgets?$search=Alpha");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);

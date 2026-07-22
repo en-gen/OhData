@@ -21,7 +21,7 @@ the authoritative list of what OhData does and does not implement.
 | Plain `IEnumerable<T>`/`List<T>` action return | `GetAll` delegate | No query options are applied to `GetAll` — it is the deliberately "dumb" path. Use `GetQueryable` if you want `$filter`/`$orderby`/`$top`/`$skip` to work. |
 | `ODataConventionModelBuilder` + `modelBuilder.EntitySet<T>("Name")` in `Program.cs` | Implicit: entity set name defaults to a pluralized form of the model type name. Override with `EntitySetName = "..."` in the profile constructor | No central model-builder file; each profile owns its own slice of the EDM. |
 | `modelBuilder.EntityType<T>().HasMany(...)` / `HasOptional(...)` for navigation | `HasMany(...)` / `HasOptional(...)` / `HasRequired(...)` called in the profile constructor | Same vocabulary, but the call also optionally registers the `GET .../{Nav}` route and `$ref` routes via delegate parameters — one declaration does both jobs. |
-| `services.AddControllers().AddOData(o => o.AddRouteComponents(prefix, model))` + `app.MapControllers()` | `services.AddOhData(o => o.WithPrefix(prefix).AddProfile<T>())` + `app.MapOhData()` | `AddOhData` is `AddScoped`, not singleton, per profile, so constructor injection of a scoped `DbContext` is safe without extra plumbing. |
+| `services.AddControllers().AddOData(o => o.AddRouteComponents(prefix, model))` + `app.MapControllers()` | `services.AddOhData(o => o.WithPrefix(prefix).AddEntitySetProfile<T>())` + `app.MapOhData()` | `AddOhData` is `AddScoped`, not singleton, per profile, so constructor injection of a scoped `DbContext` is safe without extra plumbing. |
 | `Delta<T>` parameter on a `Patch` action | `Delta<TModel>` parameter on the `Patch` delegate | **Same type** — `Microsoft.AspNetCore.OData.Deltas.Delta<T>`. OhData does not reinvent partial-update semantics; it reuses the type MS OData ships, including `delta.Patch(existing)` and `GetChangedPropertyNames()`. |
 | Multiple `AddRouteComponents` calls / a versioning library for `/v1`, `/v2` prefixes | `AddOhData("v1", ...)` / `AddOhData("v2", ...)` named registrations, or the `AddOhDataVersion`/`MapOhDataVersion` convenience pair | Each named registration is fully isolated: its own EDM model, its own profile set, its own prefix. See [docs/versioning.md](versioning.md). |
 | `[Authorize]` / `[Authorize(Policy = "...")]` on the controller, or on individual actions | `RequireAuthorization()` / `RequireAuthorization("PolicyName")` / `RequireRoles(...)` for the whole set, or `ConfigureAuthorization(auth => auth.Read(...).Writes(...)...)` for **per-operation** granularity — plus `.RequireResource()` for instance-level (owner) checks | Same ASP.NET Core auth pipeline underneath — OhData calls `RequireAuthorization` on the generated endpoints for you. See [docs/authorization.md](authorization.md). |
@@ -150,14 +150,15 @@ public class ProductsController : ODataController
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
-using OhData.AspNetCore;
+// AddOhData / MapOhData live in Microsoft.Extensions.DependencyInjection /
+// Microsoft.AspNetCore.Builder, so no OhData-specific using is required here.
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddDbContext<AppDbContext>(o => o.UseInMemoryDatabase("Store"));
 builder.Services.AddOhData(o => o
     .WithPrefix("/odata")
-    .AddProfile<ProductProfile>());
+    .AddEntitySetProfile<ProductProfile>());
 
 var app = builder.Build();
 app.MapOhData();
@@ -171,7 +172,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
-using OhData.Abstractions;
+using OhData;
 
 namespace MyApi.Profiles;
 
@@ -295,10 +296,12 @@ today — pulled directly from the "not targeted" / "known limitations" sections
 - **`PATCH` partial-merge on a complex (nested object) property.** `PUT` full-replacement of a
   complex property is supported; a `PATCH` that should merge only some of a nested object's fields
   returns `400 Bad Request` rather than performing the merge.
-- **SQL column projection for `$select`.** OhData applies `$select` by trimming the JSON response
-  after the full row is fetched (to preserve camelCase naming — see `docs/architecture.md`), not
-  by projecting only the selected columns in the SQL query. If your `$select` usage exists
-  specifically to reduce database I/O for wide tables, that benefit does not carry over.
+- **SQL column projection for `$select`.** On the `GetQueryable`/EF path, an eligible `$select` pushes a
+  column-pruned projection to SQL by default (#206, `SelectPushdownEnabled`), so the database-I/O benefit
+  for wide tables carries over. Ineligible requests (a model with no parameterless constructor, a
+  setterless projected member, a non-EF provider, or `SelectPushdownEnabled = false`) fall back to
+  fetching the full row and trimming the JSON response (preserving the configured naming policy — see
+  `docs/architecture.md`).
 - **Per-operation authorization.** `Microsoft.AspNetCore.OData` lets you put `[Authorize]` on
   individual controller actions. OhData matches this with `ConfigureAuthorization(...)` — authorize
   `Read`/`Create`/`Update`/`Delete`/`Invoke` independently, with per-category requirements that mirror

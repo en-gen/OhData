@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
-using OhData.Abstractions;
+using OhData;
 
 namespace OhData.AspNetCore.Tests;
 
@@ -175,7 +175,7 @@ internal class RoundingModeBankersProfile : EntitySetProfile<int, RoundingModeIt
     {
         EntitySetName = "RoundingModeBankersItems";
         FilterEnabled = true;
-        RoundingMode = OhData.Abstractions.RoundingMode.BankersRounding;
+        RoundingMode = OhData.RoundingMode.BankersRounding;
 
         GetQueryable = (ct) => Task.FromResult(RoundingModeData.Items.AsQueryable());
         GetById = (id, ct) => Task.FromResult(RoundingModeData.Items.FirstOrDefault(x => x.Id == id));

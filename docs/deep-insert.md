@@ -108,7 +108,7 @@ profile (the profile value overrides the global default):
 ```csharp
 builder.Services.AddOhData(o => o
     .WithDefaults(d => d.MaxRequestBodyBytes = 1_000_000) // 1 MB app-wide default
-    .AddProfile<OrderProfile>());
+    .AddEntitySetProfile<OrderProfile>());
 
 public class OrderProfile : EntitySetProfile<int, Order>
 {

@@ -1,7 +1,7 @@
 using System;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
-using OhData.AspNetCore;
+using OhData;
 using Xunit;
 
 namespace OhData.AspNetCore.Tests;
@@ -13,7 +13,7 @@ public class OhDataBuilderTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddOhData(o => o.AddProfile<WidgetProfile>());
+        services.AddOhData(o => o.AddEntitySetProfile<WidgetProfile>());
 
         var provider = services.BuildServiceProvider();
         var registration = provider.GetRequiredService<OhDataRegistration>();
@@ -27,7 +27,7 @@ public class OhDataBuilderTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddOhData(o => o.AddProfile<WidgetProfile>());
+        services.AddOhData(o => o.AddEntitySetProfile<WidgetProfile>());
 
         var registration = services.BuildServiceProvider().GetRequiredService<OhDataRegistration>();
 
@@ -39,7 +39,7 @@ public class OhDataBuilderTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddOhData(o => o.WithPrefix("/api/v2").AddProfile<WidgetProfile>());
+        services.AddOhData(o => o.WithPrefix("/api/v2").AddEntitySetProfile<WidgetProfile>());
 
         var registration = services.BuildServiceProvider().GetRequiredService<OhDataRegistration>();
 
@@ -52,8 +52,8 @@ public class OhDataBuilderTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddOhData(o => o
-            .AddProfile<WidgetProfile>()
-            .AddProfile<EmptyProfile>());
+            .AddEntitySetProfile<WidgetProfile>()
+            .AddEntitySetProfile<EmptyProfile>());
 
         var registration = services.BuildServiceProvider().GetRequiredService<OhDataRegistration>();
 
@@ -65,7 +65,7 @@ public class OhDataBuilderTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddOhData(o => o.AddProfile<WidgetProfile>());
+        services.AddOhData(o => o.AddEntitySetProfile<WidgetProfile>());
 
         var registration = services.BuildServiceProvider().GetRequiredService<OhDataRegistration>();
 
@@ -77,7 +77,7 @@ public class OhDataBuilderTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddOhData(o => o.WithPrefix("/api/").AddProfile<WidgetProfile>());
+        services.AddOhData(o => o.WithPrefix("/api/").AddEntitySetProfile<WidgetProfile>());
 
         var registration = services.BuildServiceProvider().GetRequiredService<OhDataRegistration>();
 
@@ -92,21 +92,21 @@ public class OhDataBuilderTests
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddOhData(o => o
-                .AddProfile<WidgetProfile>()
-                .AddProfile<WidgetProfile>()); // same name twice
+                .AddEntitySetProfile<WidgetProfile>()
+                .AddEntitySetProfile<WidgetProfile>()); // same name twice
             services.BuildServiceProvider().GetRequiredService<OhDataRegistration>();
         });
     }
 
     [Fact]
-    public void AddProfile_Duplicate_Throws()
+    public void AddEntitySetProfile_Duplicate_Throws()
     {
         var services = new ServiceCollection();
         Assert.Throws<InvalidOperationException>(() =>
             services.AddOhData(o =>
             {
-                o.AddProfile<WidgetProfile>();
-                o.AddProfile<WidgetProfile>(); // duplicate — should throw
+                o.AddEntitySetProfile<WidgetProfile>();
+                o.AddEntitySetProfile<WidgetProfile>(); // duplicate — should throw
             }));
     }
 
@@ -115,8 +115,8 @@ public class OhDataBuilderTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddOhData("v1", o => o.WithPrefix("/v1").AddProfile<WidgetProfile>());
-        services.AddOhData("v2", o => o.WithPrefix("/v2").AddProfile<EmptyProfile>());
+        services.AddOhData("v1", o => o.WithPrefix("/v1").AddEntitySetProfile<WidgetProfile>());
+        services.AddOhData("v2", o => o.WithPrefix("/v2").AddEntitySetProfile<EmptyProfile>());
         var provider = services.BuildServiceProvider();
         var v1 = provider.GetRequiredKeyedService<OhDataRegistration>("v1");
         var v2 = provider.GetRequiredKeyedService<OhDataRegistration>("v2");
@@ -135,7 +135,7 @@ public class OhDataBuilderTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddOhData(o => o
-            .AddProfile<WidgetProfile>() // EntitySetName = "Widgets", has GetAll (GET /Widgets)
+            .AddEntitySetProfile<WidgetProfile>() // EntitySetName = "Widgets", has GetAll (GET /Widgets)
             .AddFunction((Func<string, Task<string>>)Echo, "Widgets")); // also GET /Widgets
 
         var ex = Assert.Throws<InvalidOperationException>(() =>
@@ -150,7 +150,7 @@ public class OhDataBuilderTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddOhData(o => o
-            .AddProfile<WidgetProfile>() // EntitySetName = "Widgets", has Post (POST /Widgets)
+            .AddEntitySetProfile<WidgetProfile>() // EntitySetName = "Widgets", has Post (POST /Widgets)
             .AddAction((Func<int, int, Task<int>>)Add, "Widgets")); // also POST /Widgets
 
         var ex = Assert.Throws<InvalidOperationException>(() =>
@@ -167,7 +167,7 @@ public class OhDataBuilderTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddOhData(o => o
-            .AddProfile<EmptyProfile>() // EntitySetName = "EmptyWidgets"
+            .AddEntitySetProfile<EmptyProfile>() // EntitySetName = "EmptyWidgets"
             .AddFunction((Func<string, Task<string>>)Echo, "EmptyWidgets"));
 
         var registration = services.BuildServiceProvider().GetRequiredService<OhDataRegistration>();
@@ -180,7 +180,7 @@ public class OhDataBuilderTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddOhData(o => o
-            .AddProfile<WidgetProfile>()
+            .AddEntitySetProfile<WidgetProfile>()
             .AddFunction((Func<string, Task<string>>)Echo, "Greet")
             .AddFunction((Func<string, Task<string>>)Echo, "Greet")); // duplicate function name
 
@@ -196,7 +196,7 @@ public class OhDataBuilderTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddOhData(o => o
-            .AddProfile<WidgetProfile>()
+            .AddEntitySetProfile<WidgetProfile>()
             .AddAction((Func<int, int, Task<int>>)Add, "Sum")
             .AddAction((Func<int, int, Task<int>>)Add, "Sum")); // duplicate action name
 
@@ -213,7 +213,7 @@ public class OhDataBuilderTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddOhData(o => o
-            .AddProfile<EmptyProfile>()
+            .AddEntitySetProfile<EmptyProfile>()
             .AddFunction((Func<string, Task<string>>)Echo, "Widgets")
             .AddAction((Func<int, int, Task<int>>)Add, "Widgets"));
 

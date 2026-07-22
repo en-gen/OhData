@@ -6,8 +6,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.OData.Deltas;
 using Microsoft.AspNetCore.OData.Query;
 using Microsoft.EntityFrameworkCore;
-using OhData.Abstractions;
-using OhData.Abstractions.AspNetCore.OData;
+using OhData;
 
 namespace OhData.AspNetCore.Tests;
 
@@ -1635,12 +1634,12 @@ internal class RenamedNavStudio
 }
 
 /// <summary>
-/// #184 fixture. Both navigations carry a per-property <c>[JsonPropertyName]</c> rename, so
+/// #184 / #253 fixture. Both navigations carry a per-property <c>[JsonPropertyName]</c> rename, so
 /// System.Text.Json serialises them under keys ("starring", "producedBy") that the naming policy
-/// would never produce from the CLR names ("Cast", "Studio"). Before the fix, omission keyed off
-/// the policy-converted name and so left the renamed nav leaking inline, while <c>$expand</c> wrote
-/// a second, differently-cased key. The EDM (and hence <c>$expand</c>) still uses the CLR property
-/// name; only the JSON key is renamed.
+/// would never produce from the CLR names ("Cast", "Studio"). #253 completion: the EDM navigation is
+/// renamed to the JSON name too, so <c>$expand</c>/<c>$metadata</c>/the URL segment and the payload
+/// key all use the JSON name (reverses #184's "$expand keeps the CLR name"). The old CLR name is no
+/// longer a valid <c>$expand</c> identifier.
 /// </summary>
 internal class RenamedNavMovie
 {
@@ -1691,5 +1690,176 @@ internal class RenamedNavMovieProfile : EntitySetProfile<int, RenamedNavMovie>
             navigation: x => x.Cast!,
             getAll: (movieId, ct) => Task.FromResult<IEnumerable<RenamedNavActor>>(
                 _movies.FirstOrDefault(m => m.Id == movieId)?.Cast ?? Enumerable.Empty<RenamedNavActor>()));
+    }
+}
+
+// ── #253: [JsonPropertyName] on STRUCTURAL properties → one OData/EDM name ──────
+//
+// A structural property carrying [JsonPropertyName] must expose that name on EVERY surface:
+// $metadata, the response payload, and $select/$filter/$orderby (server-accepted). Before the
+// fix the EDM used the CLR name while the payload used the rename, so $select=<clrName> — the
+// only spelling the EDM accepted — dropped the property from the response (silent data loss).
+
+internal class RenamedStructCustomer
+{
+    public int Id { get; set; }
+
+    [System.Text.Json.Serialization.JsonPropertyName("emailAddress")]
+    public string Email { get; set; } = "";
+
+    public string Name { get; set; } = "";
+
+    public IEnumerable<RenamedStructOrder>? Orders { get; set; }
+}
+
+internal class RenamedStructOrder
+{
+    public int Id { get; set; }
+
+    // Renamed structural property on a nav-target type — exercises the nested $select drop.
+    [System.Text.Json.Serialization.JsonPropertyName("displayLabel")]
+    public string Label { get; set; } = "";
+}
+
+internal class RenamedStructCustomerProfile : EntitySetProfile<int, RenamedStructCustomer>
+{
+    private static readonly List<RenamedStructCustomer> _data = new()
+    {
+        new() { Id = 1, Email = "ada@example.com", Name = "Ada",
+            Orders = new List<RenamedStructOrder> { new() { Id = 10, Label = "First" } } },
+        new() { Id = 2, Email = "ben@example.com", Name = "Ben",
+            Orders = new List<RenamedStructOrder> { new() { Id = 20, Label = "Second" } } },
+    };
+
+    public RenamedStructCustomerProfile() : base(x => x.Id)
+    {
+        EntitySetName = "RenamedStructCustomers";
+        SelectEnabled = true;
+        FilterEnabled = true;
+        OrderByEnabled = true;
+        ExpandEnabled = true;
+
+        GetQueryable = (ct) => Task.FromResult(_data.AsQueryable());
+        GetById = (id, ct) => Task.FromResult(_data.FirstOrDefault(c => c.Id == id));
+        Patch = (id, delta, ct) =>
+        {
+            var existing = _data.FirstOrDefault(c => c.Id == id);
+            if (existing is null) return Task.FromResult<RenamedStructCustomer?>(null);
+            delta.Patch(existing);
+            return Task.FromResult<RenamedStructCustomer?>(existing);
+        };
+
+        HasMany(
+            navigation: x => x.Orders!,
+            getAll: (custId, ct) => Task.FromResult<IEnumerable<RenamedStructOrder>>(
+                _data.FirstOrDefault(c => c.Id == custId)?.Orders ?? Enumerable.Empty<RenamedStructOrder>()));
+    }
+}
+
+// #253 (allowlist residual): a structural allowlist (SelectProperties/FilterProperties/
+// OrderByProperties) is captured as CLR names, but the EDM renames the property to its
+// [JsonPropertyName] value. Unless the allowlist is translated CLR→EDM before the model builder
+// sees it, the renamed-but-allowlisted property becomes NotFilterable/NotSortable/NotSelectable and
+// is unusable under BOTH its JSON name (rejected as non-allowlisted) and its CLR name (unknown).
+internal class RenamedAllowlistCustomerProfile : EntitySetProfile<int, RenamedStructCustomer>
+{
+    private static readonly List<RenamedStructCustomer> _data = new()
+    {
+        new() { Id = 1, Email = "ada@example.com", Name = "Ada" },
+        new() { Id = 2, Email = "ben@example.com", Name = "Ben" },
+    };
+
+    public RenamedAllowlistCustomerProfile() : base(x => x.Id)
+    {
+        EntitySetName = "RenamedAllowlistCustomers";
+        SelectEnabled = true;
+        FilterEnabled = true;
+        OrderByEnabled = true;
+
+        // Allowlists reference the renamed property by its CLR member. Only Email is allowlisted;
+        // Name is deliberately excluded so the allowlist can be shown to still gate correctly.
+        SelectProperties(x => x.Email);
+        FilterProperties(x => x.Email);
+        OrderByProperties(x => x.Email);
+
+        GetQueryable = (ct) => Task.FromResult(_data.AsQueryable());
+        GetById = (id, ct) => Task.FromResult(_data.FirstOrDefault(c => c.Id == id));
+    }
+}
+
+// A [JsonPropertyName] on the KEY property — the EDM key ref is renamed, but value-based key
+// routing (Widgets('A1')) is name-independent and must keep working.
+internal class RenamedKeyEntity
+{
+    [System.Text.Json.Serialization.JsonPropertyName("code")]
+    public string Key { get; set; } = "";
+
+    public string Name { get; set; } = "";
+}
+
+internal class RenamedKeyProfile : EntitySetProfile<string, RenamedKeyEntity>
+{
+    private static readonly List<RenamedKeyEntity> _data = new()
+    {
+        new() { Key = "A1", Name = "Alpha" },
+        new() { Key = "B2", Name = "Beta" },
+    };
+
+    public RenamedKeyProfile() : base(x => x.Key)
+    {
+        EntitySetName = "RenamedKeyEntities";
+        SelectEnabled = true;
+        GetQueryable = (ct) => Task.FromResult(_data.AsQueryable());
+        GetById = (k, ct) => Task.FromResult(_data.FirstOrDefault(e => e.Key == k));
+    }
+}
+
+// A rename that collides with a sibling property's OData name — must fail fast at startup.
+internal class CollidingRenameEntity
+{
+    public int Id { get; set; }
+
+    [System.Text.Json.Serialization.JsonPropertyName("Name")]
+    public string Email { get; set; } = "";
+
+    public string Name { get; set; } = "";
+}
+
+internal class CollidingRenameProfile : EntitySetProfile<int, CollidingRenameEntity>
+{
+    public CollidingRenameProfile() : base(x => x.Id)
+    {
+        EntitySetName = "CollidingRenames";
+        GetById = (id, ct) => Task.FromResult<CollidingRenameEntity?>(null);
+    }
+}
+
+// Interaction of [JsonPropertyName] with Ignore() (#226): the ignored property is gone from the
+// OData surface entirely; the other renamed property still exposes its rename.
+internal class RenamedIgnoreEntity
+{
+    public int Id { get; set; }
+
+    [System.Text.Json.Serialization.JsonPropertyName("publicEmail")]
+    public string Email { get; set; } = "";
+
+    [System.Text.Json.Serialization.JsonPropertyName("secretNote")]
+    public string InternalNotes { get; set; } = "";
+}
+
+internal class RenamedIgnoreProfile : EntitySetProfile<int, RenamedIgnoreEntity>
+{
+    private static readonly List<RenamedIgnoreEntity> _data = new()
+    {
+        new() { Id = 1, Email = "e@x.com", InternalNotes = "hidden" },
+    };
+
+    public RenamedIgnoreProfile() : base(x => x.Id)
+    {
+        EntitySetName = "RenamedIgnores";
+        SelectEnabled = true;
+        Ignore(x => x.InternalNotes);
+        GetQueryable = (ct) => Task.FromResult(_data.AsQueryable());
+        GetById = (id, ct) => Task.FromResult(_data.FirstOrDefault(e => e.Id == id));
     }
 }
