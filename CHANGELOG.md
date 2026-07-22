@@ -9,6 +9,25 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **One-line `AddOhData()` companion registration (#285).** Each OpenAPI-companion package now ships
+  a single convenience extension that is the canonical wiring recipe for that doc stack — implementors
+  no longer need to know the transformer/filter/processor class names:
+  - `EnGen.OhData.AspNetCore.OpenApi`: `OpenApiOptions.AddOhData(...)` registers both the operation
+    and schema transformers; optional `authRequirements` / `securitySchemeId` (+ `requiredScopes`)
+    parameters also wire the opt-in per-operation auth-requirements and security transformers
+    (#219/#220).
+  - `EnGen.OhData.AspNetCore.NSwag`: `AspNetCoreOpenApiDocumentGeneratorSettings.AddOhData(sp, ...)`
+    registers both the operation and schema processors; same optional `authRequirements` /
+    `securitySchemeId` (+ `requiredScopes`) parameters as the OpenApi variant.
+  - `EnGen.OhData.AspNetCore.Swashbuckle`: `SwaggerGenOptions.AddOhData()` registers both the
+    operation and schema filters (this package has no auth/security filters, so no auth parameters).
+
+  Each method returns the options/settings object for chaining. The explicit per-class registration
+  remains available as an à la carte alternative. Docs now lead with `AddOhData()` as the
+  recommended registration. Additive API only — no runtime behavior change.
+
 ## [1.5.0] - 2026-07-21
 
 Query-pushdown and spec-correctness milestone: `$select` and `$expand` now push into the backing

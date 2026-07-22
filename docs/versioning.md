@@ -53,11 +53,11 @@ app.MapOhData("v2").WithOpenApi().WithGroupName("v2");
 
 With Swashbuckle, add a `DocInclusionPredicate` so each endpoint appears in the correct doc. To
 have Swagger UI also show the OData query parameters on each collection GET endpoint (driven by the
-per-entity-set capability flags and `MaxTop`), register `OhDataSwaggerOperationFilter` — and
-`OhDataSwaggerSchemaFilter` for schema fidelity — from the
+per-entity-set capability flags and `MaxTop`), call the one-line `c.AddOhData()` from the
 [`EnGen.OhData.AspNetCore.Swashbuckle`](swashbuckle.md) companion package inside the same
-`AddSwaggerGen` call. Both filters read the same endpoint metadata regardless of which document an
-operation is partitioned into, so they apply per document without extra configuration:
+`AddSwaggerGen` call — it registers both the operation filter and the schema-fidelity filter. Both
+read the same endpoint metadata regardless of which document an operation is partitioned into, so
+they apply per document without extra configuration:
 
 ```csharp
 builder.Services.AddSwaggerGen(c =>
@@ -67,8 +67,7 @@ builder.Services.AddSwaggerGen(c =>
     c.DocInclusionPredicate((docName, apiDesc) =>
         apiDesc.GroupName is null || apiDesc.GroupName == docName);
 
-    c.OperationFilter<OhDataSwaggerOperationFilter>();
-    c.SchemaFilter<OhDataSwaggerSchemaFilter>();
+    c.AddOhData();
 });
 ```
 
