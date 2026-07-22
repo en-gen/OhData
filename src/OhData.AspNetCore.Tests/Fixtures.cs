@@ -1634,12 +1634,12 @@ internal class RenamedNavStudio
 }
 
 /// <summary>
-/// #184 fixture. Both navigations carry a per-property <c>[JsonPropertyName]</c> rename, so
+/// #184 / #253 fixture. Both navigations carry a per-property <c>[JsonPropertyName]</c> rename, so
 /// System.Text.Json serialises them under keys ("starring", "producedBy") that the naming policy
-/// would never produce from the CLR names ("Cast", "Studio"). Before the fix, omission keyed off
-/// the policy-converted name and so left the renamed nav leaking inline, while <c>$expand</c> wrote
-/// a second, differently-cased key. The EDM (and hence <c>$expand</c>) still uses the CLR property
-/// name; only the JSON key is renamed.
+/// would never produce from the CLR names ("Cast", "Studio"). #253 completion: the EDM navigation is
+/// renamed to the JSON name too, so <c>$expand</c>/<c>$metadata</c>/the URL segment and the payload
+/// key all use the JSON name (reverses #184's "$expand keeps the CLR name"). The old CLR name is no
+/// longer a valid <c>$expand</c> identifier.
 /// </summary>
 internal class RenamedNavMovie
 {
@@ -1753,6 +1753,37 @@ internal class RenamedStructCustomerProfile : EntitySetProfile<int, RenamedStruc
             navigation: x => x.Orders!,
             getAll: (custId, ct) => Task.FromResult<IEnumerable<RenamedStructOrder>>(
                 _data.FirstOrDefault(c => c.Id == custId)?.Orders ?? Enumerable.Empty<RenamedStructOrder>()));
+    }
+}
+
+// #253 (allowlist residual): a structural allowlist (SelectProperties/FilterProperties/
+// OrderByProperties) is captured as CLR names, but the EDM renames the property to its
+// [JsonPropertyName] value. Unless the allowlist is translated CLR→EDM before the model builder
+// sees it, the renamed-but-allowlisted property becomes NotFilterable/NotSortable/NotSelectable and
+// is unusable under BOTH its JSON name (rejected as non-allowlisted) and its CLR name (unknown).
+internal class RenamedAllowlistCustomerProfile : EntitySetProfile<int, RenamedStructCustomer>
+{
+    private static readonly List<RenamedStructCustomer> _data = new()
+    {
+        new() { Id = 1, Email = "ada@example.com", Name = "Ada" },
+        new() { Id = 2, Email = "ben@example.com", Name = "Ben" },
+    };
+
+    public RenamedAllowlistCustomerProfile() : base(x => x.Id)
+    {
+        EntitySetName = "RenamedAllowlistCustomers";
+        SelectEnabled = true;
+        FilterEnabled = true;
+        OrderByEnabled = true;
+
+        // Allowlists reference the renamed property by its CLR member. Only Email is allowlisted;
+        // Name is deliberately excluded so the allowlist can be shown to still gate correctly.
+        SelectProperties(x => x.Email);
+        FilterProperties(x => x.Email);
+        OrderByProperties(x => x.Email);
+
+        GetQueryable = (ct) => Task.FromResult(_data.AsQueryable());
+        GetById = (id, ct) => Task.FromResult(_data.FirstOrDefault(c => c.Id == id));
     }
 }
 

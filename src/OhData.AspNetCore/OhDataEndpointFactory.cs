@@ -1337,9 +1337,11 @@ internal static class OhDataEndpointFactory
             // policy ("children" for camelCase, "Children" for PascalCase). Resolved off the actual
             // runtime entity type at this level. Must agree with OmitUnexpandedNavigations' key so
             // Stage 3.5 keeps (not strips) the expansion this injects.
-            PropertyInfo? expandClrProp = items[0].GetType().GetProperty(
-                propName, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
-            string expandKey = ResolveNavigationJsonKey(propName, expandClrProp, serializerOptions);
+            // #253 completion: propName is the EDM (JSON) nav name, so map JSON→CLR (a plain
+            // GetProperty(jsonName) would miss the renamed CLR member and mis-derive the key under a
+            // non-camelCase policy) before resolving the payload key off the CLR property.
+            PropertyInfo? expandClrProp = ODataPropertyNaming.FindClrPropertyByEdmName(items[0].GetType(), propName);
+            string expandKey = ResolveNavigationJsonKey(expandClrProp?.Name ?? propName, expandClrProp, serializerOptions);
 
             // Load the related entity/collection for every entity at this level, keeping the CLR
             // results (relatedByIndex[i]) so deeper levels can read their keys.
@@ -1556,9 +1558,13 @@ internal static class OhDataEndpointFactory
             // renamed nav (leaking it inline) and a sibling $expand would write a second,
             // differently-cased key. Falls back to the naming-policy name when unrenamed, so a
             // symmetric JsonNamingPolicy (snake_case, etc.) still round-trips exactly.
-            PropertyInfo? clrNavProp = clrType?.GetProperty(
-                navProp.Name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
-            string serializedKey = ResolveNavigationJsonKey(navProp.Name, clrNavProp, serializerOptions);
+            // #253 completion: navProp.Name is the EDM (JSON) navigation name, so map JSON→CLR to
+            // reach the renamed CLR member and derive the payload key off it (a plain
+            // GetProperty(jsonName) would miss it and mis-case the key under a non-camelCase policy).
+            PropertyInfo? clrNavProp = clrType is null
+                ? null
+                : ODataPropertyNaming.FindClrPropertyByEdmName(clrType, navProp.Name);
+            string serializedKey = ResolveNavigationJsonKey(clrNavProp?.Name ?? navProp.Name, clrNavProp, serializerOptions);
 
             SelectExpandClause? nested = null;
             bool explicitlyExpanded = expanded is not null &&
@@ -2304,7 +2310,10 @@ internal static class OhDataEndpointFactory
         {
             foreach (EngagedExpand e in level)
             {
-                if (e.Levels > 0) (names ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase)).Add(e.Binding.Property.Name);
+                // #253 completion: OmitUnexpandedNavigations matches against EDM (JSON) nav names, so
+                // record the binding's EDM name (a [JsonPropertyName]-renamed self-referential nav
+                // resolves to its JSON name, an un-renamed one to its CLR name).
+                if (e.Levels > 0) (names ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase)).Add(ODataPropertyNaming.ResolveEdmName(e.Binding.Property));
                 if (e.Children is { Count: > 0 }) Walk(e.Children);
             }
         }
@@ -2386,8 +2395,10 @@ internal static class OhDataEndpointFactory
     // back to its own parent (a bidirectional relationship) is excluded exactly as at the root.
     private static ExpandNavBinding? BuildExpandNavBinding(Type ownerType, string navPropertyName)
     {
-        PropertyInfo? navProp = ownerType.GetProperty(
-            navPropertyName, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+        // #253 completion: navPropertyName is the EDM (JSON) navigation name — a [JsonPropertyName]-
+        // renamed nav arrives here as its JSON name (from NavigationPropertyNames or the parser's
+        // resolved identifier), so map JSON→CLR to reach the actual CLR member EF Include needs.
+        PropertyInfo? navProp = ODataPropertyNaming.FindClrPropertyByEdmName(ownerType, navPropertyName);
         if (navProp is null || navProp.SetMethod is not { IsPublic: true }) return null;
 
         Type? elementType = NavElementClrType(navProp);
@@ -2417,8 +2428,9 @@ internal static class OhDataEndpointFactory
     // route-backed nav (checked by the caller), a non-self-referential target, or an unsettable property.
     private static ExpandNavBinding? BuildLevelsNavBinding(Type ownerType, string navPropertyName)
     {
-        PropertyInfo? navProp = ownerType.GetProperty(
-            navPropertyName, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+        // #253 completion: navPropertyName is the EDM (JSON) navigation name — map JSON→CLR so a
+        // renamed self-referential nav still resolves to its CLR member for the $levels projection.
+        PropertyInfo? navProp = ODataPropertyNaming.FindClrPropertyByEdmName(ownerType, navPropertyName);
         if (navProp is null || navProp.SetMethod is not { IsPublic: true }) return null;
 
         Type? elementType = NavElementClrType(navProp);
@@ -3831,9 +3843,12 @@ internal static class OhDataEndpointFactory
             // handler that doesn't expect a graph from silently persisting only part of one.
             // Properties without a public setter can't be deserialized into by STJ in the first
             // place, so they're excluded — nothing to strip.
+            // #253 completion: NavigationPropertyNames is the EDM (JSON) navigation name set, so resolve
+            // each CLR property to its EDM name before testing membership (a renamed nav's CLR name is
+            // not in the set — its JSON name is).
             PropertyInfo[] deepInsertNavPropsToStrip = typeof(TModel)
                 .GetProperties(BindingFlags.Public | BindingFlags.Instance)
-                .Where(p => source.NavigationPropertyNames.Contains(p.Name) && p.SetMethod is not null)
+                .Where(p => source.NavigationPropertyNames.Contains(ODataPropertyNaming.ResolveEdmName(p)) && p.SetMethod is not null)
                 .ToArray();
 
             // If-None-Match on POST is not supported: the framework cannot extract the key from

@@ -57,8 +57,9 @@ public class RenamedNavigationTests
     public async Task GetById_ExpandRenamedCollection_PresentUnderRenamedKeyOnly()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<RenamedNavMovieProfile>());
-        // $expand uses the EDM/CLR property name (Cast), while the JSON key is the rename (starring).
-        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/RenamedNavMovies(1)?$expand=Cast");
+        // #253 completion: $expand uses the EDM (JSON) navigation name (starring), which is also the
+        // response payload key. The old CLR name (Cast) is no longer a valid $expand identifier.
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/RenamedNavMovies(1)?$expand=starring");
 
         Assert.True(json.TryGetProperty("starring", out var starring), "expanded nav must be present under renamed key 'starring'");
         Assert.Equal(JsonValueKind.Array, starring.ValueKind);
@@ -72,7 +73,7 @@ public class RenamedNavigationTests
     public async Task GetById_ExpandRenamedSingle_PresentUnderRenamedKeyOnly()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<RenamedNavMovieProfile>());
-        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/RenamedNavMovies(1)?$expand=Studio");
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/RenamedNavMovies(1)?$expand=producedBy");
 
         Assert.True(json.TryGetProperty("producedBy", out var producedBy), "expanded nav must be present under renamed key 'producedBy'");
         Assert.Equal(JsonValueKind.Object, producedBy.ValueKind);
@@ -84,7 +85,7 @@ public class RenamedNavigationTests
     public async Task GetAll_ExpandRenamedCollection_PresentUnderRenamedKey()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<RenamedNavMovieProfile>());
-        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/RenamedNavMovies?$expand=Cast");
+        var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/RenamedNavMovies?$expand=starring");
 
         var movie1 = json.GetProperty("value").EnumerateArray().First(m => m.GetProperty("Id").GetInt32() == 1);
         Assert.True(movie1.TryGetProperty("starring", out var starring), "expanded nav present under renamed key");
