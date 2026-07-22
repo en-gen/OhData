@@ -2,12 +2,20 @@ name: Docs site
 
 # Builds the DocFX documentation site (docs-site/) and deploys it to GitHub Pages.
 #
+# Triggers:
+#   - pull_request (docs paths) → build + stale-API scan ONLY (no deploy). This is the
+#     release gate: a broken docfx build, a dead xref, or a docs page that references a
+#     removed/renamed API BLOCKS the merge instead of failing after the fact.
+#   - push to develop (docs paths) → build + deploy (continuous preview of the docs site).
+#   - release published (vX.Y.Z)  → build + deploy from the release commit, so the live
+#     site always reflects the latest published release, never a release-stale develop.
+#
 # IMPORTANT: this workflow does NOT publish anything until the maintainer enables GitHub Pages
 # for the repository (Settings -> Pages -> Build and deployment -> Source: "GitHub Actions").
 # Until then the "deploy" job's actions/deploy-pages step has no Pages site to publish to and
 # the run will fail at that step by design — the build job still validates the site on every
-# push. Enabling Pages is a deliberate one-time maintainer action; nothing here enables it, and
-# no custom domain / CNAME is configured.
+# push, PR, and release. Enabling Pages is a deliberate one-time maintainer action; nothing
+# here enables it, and no custom domain / CNAME is configured.
 
 on:
   push:
@@ -16,6 +24,13 @@ on:
       - 'docs/**'
       - 'docs-site/**'
       - '.github/workflows/docs.yml'
+  pull_request:                # validate-only: build + stale-API scan, never deploy (see the deploy job's `if`)
+    paths:
+      - 'docs/**'
+      - 'docs-site/**'
+      - '.github/workflows/docs.yml'
+  release:
+    types: [published]         # every published vX.Y.Z rebuilds + deploys the site from the release commit
   workflow_dispatch:
 
 # Least-privilege token: read the repo, write the Pages deployment, mint the OIDC token that
@@ -54,19 +69,68 @@ jobs:
       - name: Install DocFX
         run: dotnet tool install -g docfx
 
+      # --- Stale-API scan --------------------------------------------------------------
+      # Fails the docs build if the Markdown SOURCE references an API token that was removed
+      # or renamed in a past release, so the site can never again ship describing symbols
+      # that no longer exist. (This gate exists because the 1.5.0 rename
+      # AddProfile -> AddEntitySetProfile, the OhData.Abstractions namespace removal, and the
+      # OhData.AspNetCore -> OhData type move all reached the live docs site a full release
+      # late.)
+      #
+      # DENYLIST — one `-e '<extended-regex>'` per removed/renamed token. Each entry is an
+      # UNAMBIGUOUS 1.5.0 symbol that must never appear in current docs:
+      #   \.AddProfile[<(]         renamed to AddEntitySetProfile. Anchored on the receiver
+      #                            dot so it matches real call sites (o.AddProfile<Foo>()) but
+      #                            NOT the prose that documents the rename
+      #                            (`AddProfile<T>()` in docs/delta-mapping.md); the [<(] also
+      #                            keeps it from matching AddProfilesFromAssemblyOf.
+      #   OhData\.Abstractions     namespace removed (folded into OhData).
+      #   using OhData\.AspNetCore; types moved to the OhData namespace. The trailing ';'
+      #                            avoids matching the .OpenApi/.NSwag/.Swashbuckle companion
+      #                            usings and the EnGen.OhData.AspNetCore package-id prose.
+      #
+      # HOW TO EXTEND when you rename/remove public API in a future release: add one
+      # `-e '<extended-regex>'` line below for the OLD token. Make the pattern specific enough
+      # that it can only match the dead symbol, not legitimate prose that happens to mention it
+      # (anchor on a receiver dot, a trailing ';', a '<'/'(' etc.), and note the release that
+      # removed it.
+      #
+      # Scope: docs/ and docs-site/ Markdown only, EXCLUDING design notes and superpowers plans
+      # (historical/internal — allowed to reference old APIs) and any generated _site/.
+      - name: Stale-API scan (docs must not reference removed/renamed API)
+        run: |
+          if hits=$(grep -rnE --include='*.md' \
+                --exclude-dir=design --exclude-dir=superpowers --exclude-dir=_site \
+                -e '\.AddProfile[<(]' \
+                -e 'OhData\.Abstractions' \
+                -e 'using OhData\.AspNetCore;' \
+                docs docs-site); then
+            echo "::error::docs reference removed/renamed API — update the docs or extend the denylist in .github/workflows/docs.yml"
+            echo "$hits"
+            exit 1
+          fi
+          echo "Stale-API scan OK — no removed/renamed API tokens in docs."
+
       - name: Build docs site
         run: docfx docs-site/docfx.json      # emits static HTML into docs-site/_site
 
+      # Pages-artifact steps feed the deploy job; on pull_request we validate only (build +
+      # scan + docfx), so skip them there. Deploy itself is separately guarded below.
       - name: Configure Pages
+        if: github.event_name != 'pull_request'
         uses: actions/configure-pages@v5
 
       - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
         with:
           path: docs-site/_site
 
   deploy:
     needs: build
+    # Deploy on develop push and on a published release, but NEVER on a pull_request
+    # (PRs validate only). workflow_dispatch keeps its existing manual-deploy behavior.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
