@@ -328,6 +328,32 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     }
     private int? _resolvedMaxTop;
 
+    private int? _maxExpandTop;
+
+    /// <summary>
+    /// #254: per-navigation ceiling on a <b>nested</b> <c>$top</c> inside a <c>$expand</c>
+    /// (<c>?$expand=Children($top=N)</c>), and the bound on how many related entities a nested
+    /// <c>$count</c> may materialize. A nested <c>$top</c> greater than this is rejected with
+    /// <c>400 Bad Request</c> before any handler runs; a nested <c>$count</c> whose related
+    /// collection exceeds it is likewise rejected with <c>400</c> rather than silently truncated
+    /// (OData §11.2.4.2 requires <c>Nav@odata.count</c> to report the full filtered collection).
+    /// Inherits from <see cref="EntitySetDefaults.MaxExpandTop"/> (default <c>1000</c>) when
+    /// <c>null</c>. The <b>root</b> entity set's resolved value governs at every nesting depth, the
+    /// same rule <see cref="MaxExpansionDepth"/> follows. Must be a positive integer or <c>null</c>
+    /// (no ceiling).
+    /// </summary>
+    protected int? MaxExpandTop
+    {
+        get => _maxExpandTop;
+        init
+        {
+            if (value is <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxExpandTop), value, "MaxExpandTop must be a positive integer or null.");
+            _maxExpandTop = value;
+        }
+    }
+    private int? _resolvedMaxExpandTop;
+
     private long? _maxRequestBodyBytes;
 
     /// <summary>
@@ -600,6 +626,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         var entitySet = builder.EntitySet<TModel>(EntitySetName);
 
         _resolvedMaxTop = MaxTop ?? defaults.MaxTop;
+        _resolvedMaxExpandTop = MaxExpandTop ?? defaults.MaxExpandTop;
         _resolvedMaxRequestBodyBytes = MaxRequestBodyBytes ?? defaults.MaxRequestBodyBytes;
         _resolvedMaxExpansionDepth = MaxExpansionDepth ?? defaults.MaxExpansionDepth;
         _resolvedMaxFilterNodeCount = MaxFilterNodeCount ?? defaults.MaxFilterNodeCount;
@@ -1831,6 +1858,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         => LazyInitializer.EnsureInitialized(ref _keyToUrl, CompileKeyToUrl)((TModel)model);
 
     int? IEntitySetEndpointSource.MaxTop => _resolvedMaxTop;
+    int? IEntitySetEndpointSource.MaxExpandTop => _resolvedMaxExpandTop;
     long? IEntitySetEndpointSource.MaxRequestBodyBytes => _resolvedMaxRequestBodyBytes;
     int IEntitySetEndpointSource.MaxExpansionDepth => _resolvedMaxExpansionDepth;
     int IEntitySetEndpointSource.MaxFilterNodeCount => _resolvedMaxFilterNodeCount;
