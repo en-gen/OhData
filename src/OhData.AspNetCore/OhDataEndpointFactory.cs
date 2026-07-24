@@ -1858,7 +1858,8 @@ internal static class OhDataEndpointFactory
                     bindings.Add(Expression.Bind(nav.Binding.Property, access));
                 }
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException
+                or Microsoft.OData.ODataException)
             {
                 // FAIL LOUD (owner directive, post-#298/#300 review): a nested expand option
                 // Microsoft's own binder cannot translate into an expression must not silently
@@ -1870,6 +1871,14 @@ internal static class OhDataEndpointFactory
                 // operator can still see which clause tripped it; the client-facing message stays
                 // generic (never ex.Message/stack trace, which could leak internal details) per this
                 // file's existing InternalServerError convention (S7).
+                //
+                // Narrowed (adversarial review, post-branch): this step is pure in-memory expression
+                // construction via Microsoft's FilterBinder/OrderByBinder (see BindNavShape) — no
+                // database I/O happens here, so there is no transient/provider fault class to worry
+                // about. The filter is narrowed anyway, for consistency with the execution-time catch
+                // below and so a genuine framework bug (e.g. a NullReferenceException from a binder
+                // defect) surfaces as a 500 for investigation rather than being mislabeled a 400
+                // "your query is bad" response.
                 logger?.LogDebug(ex,
                     "OhData: $expand pushdown failed for {EntitySet}: a nested expand option could not be bound.",
                     source.EntitySetName);
@@ -3633,7 +3642,8 @@ internal static class OhDataEndpointFactory
                             {
                                 items = pushedQuery.ToArray();
                             }
-                            catch (Exception ex) when (ex is not OperationCanceledException)
+                            catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException
+                                or Microsoft.OData.ODataException)
                             {
                                 // FAIL LOUD (owner directive, post-#298/#300 review): a folded $expand
                                 // projection that fails to translate at the provider must not silently
@@ -3647,6 +3657,24 @@ internal static class OhDataEndpointFactory
                                 // before); the client-facing message stays generic (never ex.Message/
                                 // stack trace, which could leak provider/schema details) per this file's
                                 // existing InternalServerError convention (S7).
+                                //
+                                // Narrowed (adversarial review MEDIUM, post-branch): this catch runs at
+                                // QUERY-EXECUTION time (pushedQuery.ToArray() above), unlike the build-time
+                                // catch in TryApplySelectProjection — so, unlike that one, this site CAN see
+                                // real provider/infrastructure faults (DB command timeouts, connection
+                                // drops, deadlocks: SqliteException/SqlException/other DbException,
+                                // TimeoutException). Those are transient server-side faults, not "the client
+                                // asked for something untranslatable" — they must propagate to the
+                                // group-level exception filter and come back as 500 (retryable), never be
+                                // relabeled 400 (which tells client retry logic NOT to retry). EF Core
+                                // raises an untranslatable-query failure as InvalidOperationException
+                                // (message "...could not be translated...", empirically confirmed via this
+                                // file's own ExpandPushdownFailLoudTests reproducer on SQLite); NotSupportedException
+                                // covers the same LINQ-translation-failure family for other providers/shapes.
+                                // ODataException is kept because Microsoft's own binder can also throw from
+                                // this call chain. OperationCanceledException was never caught here (dropped
+                                // from the filter along with everything else not in the allowlist above) and
+                                // still propagates to ASP.NET Core's own client-disconnect handling.
                                 logger?.LogDebug(ex,
                                     "OhData: $expand pushdown query failed to translate for {EntitySet}.",
                                     source.EntitySetName);
