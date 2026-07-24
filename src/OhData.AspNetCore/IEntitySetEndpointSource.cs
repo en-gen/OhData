@@ -46,6 +46,14 @@ internal interface IEntitySetEndpointSource
     IReadOnlyList<BoundOperationDefinition> BoundActions { get; }
 
     int? MaxTop { get; }
+
+    /// <summary>
+    /// #254: ceiling on a <b>nested</b> <c>$top</c> inside a <c>$expand</c>, and the bound on how
+    /// many related entities a nested <c>$count</c> may materialize. Resolved from the profile flag /
+    /// <c>EntitySetDefaults</c> (default <c>1000</c>); <c>null</c> means no ceiling. The <b>root</b>
+    /// entity set's value governs at every nesting depth (as <see cref="MaxExpansionDepth"/> does).
+    /// </summary>
+    int? MaxExpandTop { get; }
     long? MaxRequestBodyBytes { get; }
     int MaxExpansionDepth { get; }
     int MaxFilterNodeCount { get; }

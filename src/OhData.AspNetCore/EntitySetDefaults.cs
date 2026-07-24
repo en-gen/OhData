@@ -57,6 +57,32 @@ public sealed class EntitySetDefaults
         }
     }
 
+    private int? _maxExpandTop = 1000;
+
+    /// <summary>
+    /// #254: default per-navigation ceiling on a <b>nested</b> <c>$top</c> inside a <c>$expand</c>
+    /// (<c>?$expand=Children($top=N)</c>), and the bound on how many related entities a nested
+    /// <c>$count</c> may materialize. Defaults to <c>1000</c> (mirroring <see cref="MaxTop"/>).
+    /// Profile-level <c>MaxExpandTop</c> overrides this value; the <b>root</b> entity set's resolved
+    /// value governs at every nesting depth (the same rule as <see cref="MaxExpansionDepth"/>).
+    /// A nested <c>$top</c> greater than the ceiling is rejected with <c>400 Bad Request</c>
+    /// (<c>InvalidQueryOption</c>) before any handler runs, at any depth and on any read path.
+    /// A nested <c>$count</c> whose related collection exceeds the ceiling is also rejected with
+    /// <c>400</c> rather than silently truncated, because OData §11.2.4.2 requires
+    /// <c>Nav@odata.count</c> to report the FULL filtered collection, not the returned page.
+    /// Must be a positive integer or <c>null</c> (no ceiling).
+    /// </summary>
+    public int? MaxExpandTop
+    {
+        get => _maxExpandTop;
+        set
+        {
+            if (value is <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxExpandTop), value, "MaxExpandTop must be a positive integer or null.");
+            _maxExpandTop = value;
+        }
+    }
+
     private long? _maxRequestBodyBytes;
 
     /// <summary>

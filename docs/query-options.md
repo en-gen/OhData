@@ -489,10 +489,10 @@ A pushed (delegate-less) `$expand` honors the nested options of the expanded col
 | `$select` — `Children($select=name)` | ✅ | JSON projection of the expanded elements (configured naming policy preserved) |
 | `$filter` — `Children($filter=active eq true)` | ✅ | filtered `Include` (SQL `WHERE` in the JOIN) |
 | `$orderby` — `Children($orderby=name desc)` | ✅ | ordered `Include` (SQL `ORDER BY` in the JOIN) |
-| `$top` / `$skip` — `Children($orderby=name;$top=5)` | ✅ | paged `Include` (SQL `ROW_NUMBER` window) |
-| `$count` — `Children($count=true)` | ✅ | inline `Children@odata.count` = full filtered count (paging is applied after counting, per §11.2.4.2) |
+| `$top` / `$skip` — `Children($orderby=name;$top=5)` | ✅ | paged `Include` (SQL `ROW_NUMBER` window); `$top` is capped by [`MaxExpandTop`](#complexity-limits-202) |
+| `$count` — `Children($count=true)` | ✅ | inline `Children@odata.count` = full filtered count (paging is applied after counting, per §11.2.4.2); bounded by [`MaxExpandTop`](#complexity-limits-202) |
 | **nested `$expand`** — `Children($expand=Grandkids)` | ✅ | multi-level pushdown: folded into the same query as an `Include`→`ThenInclude` JOIN when every level is delegate-less (see [Multi-level `$expand`](#multi-level-expand-and-levels-206) below) |
-| `$levels` — `Children($levels=2)` / `Children($levels=max)` | ✅ | recursive self-referential expand, bounded by `MaxExpansionDepth` (see below) |
+| `$levels` — `Children($levels=2)` / `Children($levels=max)` | ✅ | recursive self-referential expand, bounded by `MaxExpansionDepth`; may carry `$filter`/`$orderby`/`$skip`/`$top`/`$count`/`$select`, applied at **every** level (see below) |
 | `$search` / `$compute` / `$apply` | ❌ (deferred) | not implemented on the pushdown path |
 
 A deferred nested option is not an error: the request still returns `200`, but the delegate-less navigation that carried it stays EDM-only (empty) for that request. Nested options on a **delegate-backed** navigation follow the delegate path and are subject to that path's own support (see [navigation-routing.md](navigation-routing.md)); they never engage pushdown.
@@ -502,14 +502,21 @@ A deferred nested option is not an error: the request still returns `200`, but t
 
 A nested `$expand` is pushed **recursively**: `?$expand=Books($expand=Chapters($expand=Pages))` folds all three levels into one JOIN'd query (EF Core `Include`→`ThenInclude`), applying each level's own nested `$filter`/`$orderby`/`$top`/`$skip`/`$count`/`$select`. A branch is pushed only when it is **delegate-less at every level**; the moment a level's navigation carries a delegate (or is cyclic / a non-projectable type), that whole branch is deferred off pushdown and resolves through the existing path — a **delegate-backed navigation is never EF-included at any depth**, so the delegate is never bypassed. A delegate-backed navigation reached directly from the root (or under delegate-backed ancestors) still expands through its delegate exactly as before; a delegate navigation nested *beneath* a delegate-less pushed one stays empty (it is never JOIN-loaded).
 
-`$levels=N` recursively expands a **self-referential** navigation (a tree/hierarchy) `N` levels deep — `?$expand=Children($levels=2)` — as a bounded, cycle-free projection (each level is a fresh POCO; the deepest loaded level terminates the recursion). `$levels=max` resolves to the configured `MaxExpansionDepth`. Both are capped at `MaxExpansionDepth`: a `$levels` (or a nested `$expand`) that resolves deeper is rejected with `400` before any handler runs (see [Complexity limits](#complexity-limits-202)). A `$levels` expand that *also* carries other nested options (`$filter`/`$select`/…) is deferred off pushdown (a rare combination) and stays EDM-only.
+`$levels=N` recursively expands a **self-referential** navigation (a tree/hierarchy) `N` levels deep — `?$expand=Children($levels=2)` — as a bounded, cycle-free projection (each level is a fresh POCO; the deepest loaded level terminates the recursion). `$levels=max` resolves to the configured `MaxExpansionDepth`. Both are capped at `MaxExpansionDepth`: a `$levels` (or a nested `$expand`) that resolves deeper is rejected with `400` before any handler runs (see [Complexity limits](#complexity-limits-202)).
+
+A `$levels` expand may **also carry `$filter`, `$orderby`, `$skip`, `$top`, `$count`, and `$select`** (#254). Those options apply **at every level of the recursion**, not just the first — the semantics Microsoft's own OData stack implements (`$levels=N` is rewritten into `N` nested expands each carrying the same options) and the reading the spec's equivalence example implies. So `?$expand=Children($levels=2;$filter=active eq true)` prunes inactive nodes at both levels (an inactive node's whole subtree disappears with it), `($levels=2;$count=true)` emits `Children@odata.count` on every level, and `($levels=2;$select=name)` keeps the self-navigation itself at every level while pruning the other properties.
+
+One caveat: a nested `$top`/`$skip` on a self-referential navigation is currently rejected by the underlying OData validator (the navigation's target type is its own entity set, whose model-bound `MaxTop` defaults to `0`) — see [#296](https://github.com/en-gen/OhData/issues/296). That is a pre-existing limitation independent of `$levels`; the other options are unaffected.
+
+The one combination still **deferred** off pushdown is a `$levels` expand carrying its **own nested `$expand`** (`Children($levels=2;$expand=Tags)`): depth accounting between the `$levels` budget and the nested branch's own remaining depth is ambiguous against `MaxExpansionDepth`. As with any deferral the request still returns `200`; the navigation just stays EDM-only for that request.
 
 The ceiling is advertised in `$metadata` as the `Org.OData.Capabilities.V1.ExpandRestrictions/MaxLevels` annotation on each entity set, so a client can discover it before issuing a request.
 
 **Caveats.**
 
 - **Nested options are not gated by the parent profile's property allowlists.** `FilterProperties`/`OrderByProperties`/`SelectProperties` restrict the *root* entity set only; a navigation-target type has no allowlist surface of its own and is treated as fully queryable (this is the same design decision that lets nav-path `$filter` work — see `MarkNavigationTargetTypesFullyQueryable`). So `$expand=Children($filter=…)`/`($orderby=…)`/`($select=…)` may reference any column of the child type regardless of what the parent restricted. Model your navigation targets accordingly (e.g. don't expose a sensitive column on a type reachable via a delegate-less navigation you `$expand`), or write an expand **delegate** for that navigation (which opts it out of pushdown and lets you enforce your own shaping).
-- **`$count` on a pushed expand materializes the full filtered child collection.** To report `Nav@odata.count` accurately, the whole filtered set is loaded before `$top`/`$skip` paging is applied — the same amount of data a bare `$expand=Nav` already loads. `$top`/`$skip` *without* `$count` push the paging into SQL and transfer only the page. There is no per-navigation `MaxTop` ceiling on a nested `$top`.
+- **`$count` on a pushed expand materializes the full filtered child collection, bounded by `MaxExpandTop`.** To report `Nav@odata.count` accurately, the whole filtered set is loaded before `$top`/`$skip` paging is applied — the same amount of data a bare `$expand=Nav` already loads. `$top`/`$skip` *without* `$count` push the paging into SQL and transfer only the page. As of #254 that materialization is **bounded**: the framework composes a `Take(MaxExpandTop + 1)` into the SQL, and a related collection larger than the ceiling is rejected with `400` (`InvalidQueryOption`) rather than reported with a truncated count — §11.2.4.2 requires `Nav@odata.count` to be the count of the **full filtered** collection, so silent truncation would be a lie. Narrow the collection with a nested `$filter`, or raise/remove `MaxExpandTop`. (Under `$levels` the ceiling is enforced per level after materialization rather than as a SQL `LIMIT`: windowing *and* projecting a further collection at each level requires SQL `APPLY`/`LATERAL`, which not every provider — SQLite among them — supports.)
+- **An omitted nested `$top` is deliberately left unbounded** (`$expand=Nav` with no `$count`). Silently windowing an expanded collection without a `Nav@odata.nextLink` to continue from would be a worse spec violation than the cost; nested server-driven paging is not implemented. `MaxExpandTop` bounds an *explicit* nested `$top` and the nested-`$count` materialization only.
 - **Nested paging without a nested `$orderby` is stabilized by the child's key.** When `$top`/`$skip` are pushed to SQL without a nested `$orderby`, the navigation element's single key is appended as a deterministic tiebreaker (mirroring the root path). A composite-keyed child type is left to the provider's order.
 
 To also expose navigation as a standalone HTTP route (`GET /Orders(id)/Lines`), provide a handler to `HasMany` - see [navigation-routing.md](navigation-routing.md).
@@ -518,11 +525,12 @@ To also expose navigation as a standalone HTTP route (`GET /Orders(id)/Lines`), 
 
 ## Complexity limits (#202)
 
-Four ceilings bound how expensive a single request's query options may be. Each is configurable globally via `WithDefaults` or per entity set on the profile (the profile value overrides the global default); a request that exceeds a limit is rejected with `400` before any handler runs. They apply on all three collection read paths (`GetQueryable`, `GetAll`, Priority-1).
+Five ceilings bound how expensive a single request's query options may be. Each is configurable globally via `WithDefaults` or per entity set on the profile (the profile value overrides the global default); a request that exceeds a limit is rejected with `400` before any handler runs. They apply on all three collection read paths (`GetQueryable`, `GetAll`, Priority-1).
 
 | Limit | Default | Bounds |
 |---|---|---|
 | `MaxExpansionDepth` | `3` | Nesting depth of `$expand`, and the ceiling `$levels` is resolved and capped to (`$levels=max` becomes exactly this value). **Enforced** as of #202 — a deeper `$expand`/`$levels` returns `400` rather than a silently-truncated result. Advertised per entity set in `$metadata` as `Org.OData.Capabilities.V1.ExpandRestrictions/MaxLevels` (#206). Raise it to allow deeper graph/hierarchy queries, or lower it to harden. |
+| `MaxExpandTop` | `1000` | Per-navigation ceiling on a **nested** `$top` inside a `$expand` (`?$expand=Children($top=N)`), and the bound on how many related entities a nested `$count` may materialize (#254). An over-large nested `$top` returns `400` (`InvalidQueryOption`) at any depth, on any read path, and whether or not the navigation would have been pushed down — the same "what may a client ask for" rule as the root `MaxTop`. A nested `$count` whose related collection exceeds the ceiling also returns `400` rather than a truncated count (§11.2.4.2). The **root** entity set's resolved value governs at every nesting depth, exactly like `MaxExpansionDepth`. Set to `null` for no ceiling. |
 | `MaxFilterNodeCount` | `10000` | Number of nodes in a `$filter` expression tree. |
 | `MaxOrderByNodeCount` | `1000` | Number of nodes in an `$orderby`. |
 | `MaxAnyAllExpressionDepth` | `1000` | Nesting depth of `any()`/`all()` lambdas in a `$filter`. |
@@ -538,7 +546,13 @@ public class OrderProfile : EntitySetProfile<int, Order>
 }
 ```
 
-The node-count defaults are unchanged from what OhData already applied (they were previously hardcoded); #202 makes them lowerable. Note that `$top`/`$skip` are governed separately by `MaxTop` (see above), not by these node counts.
+The node-count defaults are unchanged from what OhData already applied (they were previously hardcoded); #202 makes them lowerable. Note that a **root** `$top`/`$skip` is governed separately by `MaxTop` (see above), not by these node counts; a **nested** `$top` inside a `$expand` is governed by `MaxExpandTop`.
+
+```csharp
+builder.Services.AddOhData(o => o
+    .WithDefaults(d => d.MaxExpandTop = 200)   // or null to remove the ceiling entirely
+    .AddEntitySetProfile<OrderProfile>());
+```
 
 ---
 
