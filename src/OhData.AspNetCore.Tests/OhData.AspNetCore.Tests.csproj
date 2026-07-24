@@ -19,7 +19,7 @@
 		<PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.*" />
 		<!-- Transitive pin: clears GHSA-2m69-gcr7-jv3q (SQLitePCLRaw < 2.1.12) under TreatWarningsAsErrors. -->
 		<PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
-		<PackageReference Include="coverlet.collector" Version="6.0.4">
+		<PackageReference Include="coverlet.collector" Version="10.0.1">
 			<IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
 			<PrivateAssets>all</PrivateAssets>
 		</PackageReference>
