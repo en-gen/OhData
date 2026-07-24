@@ -1114,6 +1114,37 @@ internal static class OhDataEndpointFactory
         options.SelectExpand?.Validate(settings);
     }
 
+    // #254 (E1): enforce the per-navigation MaxExpandTop ceiling on an EXPLICIT nested $top at every
+    // depth of the $expand tree, before any handler or query runs. Runs IN ADDITION TO (never instead
+    // of) ValidatePropertyAllowlists on each collection read path.
+    //
+    // Deliberately depth- AND pushdown-independent: a nested $top is rejected on a delegate-backed
+    // navigation too. That mirrors the root MaxTop, which 400s an over-large $top on every read path
+    // regardless of how the collection is ultimately loaded — the ceiling is a statement about what
+    // the client may ask for, not about how the server would have served it.
+    //
+    // Returns the 400 OData error to return, or null when every nested $top is within the ceiling
+    // (including the no-ceiling case, MaxExpandTop = null).
+    private static IResult? ValidateNestedTopCeiling(SelectExpandClause? clause, int? cap)
+    {
+        if (clause is null || cap is not int max) return null;
+
+        foreach (ExpandedNavigationSelectItem item in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
+        {
+            if (item.TopOption is long top && top > max)
+            {
+                string nav = item.PathToNavigationProperty.FirstSegment.Identifier;
+                return ODataError(400, "InvalidQueryOption",
+                    $"The value of '$top' ({top}) on the expanded navigation '{nav}' exceeds the maximum allowed value ({max}).");
+            }
+
+            IResult? deeper = ValidateNestedTopCeiling(item.SelectAndExpand, cap);
+            if (deeper is not null) return deeper;
+        }
+
+        return null;
+    }
+
     /// <remarks>
     /// This check is advisory, not atomic. Between the ETag read and the caller's write,
     /// another request may modify the resource. For true atomic concurrency, use
@@ -1820,7 +1851,10 @@ internal static class OhDataEndpointFactory
             {
                 foreach (EngagedExpand nav in expandNavs)
                 {
-                    Expression access = BuildShapedNavAccess(x, nav, (IEdmModel)edmModel!, (ODataQuerySettings)binderSettings!);
+                    // #254: the ROOT entity set's resolved MaxExpandTop governs at every depth (the
+                    // same rule MaxExpansionDepth follows), so it is read from `source` once here.
+                    Expression access = BuildShapedNavAccess(
+                        x, nav, (IEdmModel)edmModel!, (ODataQuerySettings)binderSettings!, source.MaxExpandTop);
                     bindings.Add(Expression.Bind(nav.Binding.Property, access));
                 }
             }
@@ -1905,7 +1939,8 @@ internal static class OhDataEndpointFactory
     // TryBuildEngagedExpand), so a pushed branch can never EF-include a delegate navigation — the
     // delegate-safety invariant holds at any depth by construction. <c>Levels</c> (&gt; 0) marks a
     // <c>$levels=N</c> self-referential expand recursed N deep against the same <c>Binding</c>;
-    // <c>Children</c> is then null (the recursion re-uses this binding).</para>
+    // <c>Children</c> is then null (the recursion re-uses this binding), while
+    // Filter/OrderBy/Skip/Top/Count/NestedSelect — when present (#254) — apply at EVERY level.</para>
     private readonly record struct EngagedExpand(
         ExpandNavBinding Binding,
         FilterClause? Filter,
@@ -1925,8 +1960,9 @@ internal static class OhDataEndpointFactory
     // or a non-member-init-projectable type (the parent is deferred wholesale so a pushed branch is
     // delegate-less AND projectable end-to-end); an intermediate level whose element type cannot be
     // member-init-projected. The nested options $filter/$orderby/$top/$skip/$count/$select are honored
-    // at every level. $levels is handled by the caller via BuildLevelsNavBinding; a $levels item that
-    // also carries other nested options is deferred (only structural recursion is pushed for $levels).
+    // at every level. $levels is handled by the caller via BuildLevelsNavBinding; #254 lets a $levels
+    // item carry $filter/$orderby/$skip/$top/$count/$select (applied at every level of the recursion),
+    // while a $levels item carrying its own nested $expand is still deferred.
     // <paramref name="remainingDepth"/> is the resolved MaxExpansionDepth budget for the whole chain
     // (Microsoft's SelectExpandQueryValidator already 400s a request nesting deeper, so this is a
     // belt-and-suspenders cap that never partially applies a too-deep graph).
@@ -1941,25 +1977,48 @@ internal static class OhDataEndpointFactory
             return false; // $search/$compute/$apply inside an expand — not implemented on the pushdown path
         }
 
-        // $levels: pure structural recursion only (the caller resolved the self-referential binding
-        // via BuildLevelsNavBinding). A $levels expand combined with other nested options is deferred
-        // to keep the recursion simple and cycle-safe — a rare combination, and graceful (EDM-only).
+        // $levels: bounded self-referential recursion (the caller resolved the self-referential binding
+        // via BuildLevelsNavBinding).
+        //
+        // #254 (item 2): the recursion now carries the item's other nested options —
+        // $filter/$orderby/$skip/$top/$count/$select — applied at EVERY level, matching what ODL itself
+        // does (SelectExpandQueryOption.ProcessLevels rewrites $levels=N into N nested expand items each
+        // holding the SAME Filter/OrderBy/Top/Skip/Count and the same nested $select clause).
+        //
+        // STILL DEFERRED: a $levels item that also carries its own nested $expand. Depth accounting
+        // between the $levels budget and the nested branch's own remainingDepth is ambiguous against
+        // MaxExpansionDepth, so the whole branch stays EDM-only (graceful, never a 500).
         if (item.LevelsOption is not null)
         {
             SelectExpandClause? lc = item.SelectAndExpand;
-            bool hasOtherOptions =
-                item.FilterOption is not null || item.OrderByOption is not null ||
-                item.CountOption == true || item.SkipOption is not null || item.TopOption is not null ||
-                (lc is not null && (ExtractSelectedProperties((SelectExpandClause)lc) is not null ||
-                                    lc.SelectedItems.OfType<ExpandedNavigationSelectItem>().Any()));
-            if (hasOtherOptions) return false;
+            if (lc is not null && lc.SelectedItems.OfType<ExpandedNavigationSelectItem>().Any())
+                return false; // $levels + nested $expand — deferred
 
             int levels = item.LevelsOption.IsMaxLevel ? remainingDepth : (int)item.LevelsOption.Level;
             levels = Math.Min(levels, remainingDepth);
             if (levels < 1) return false;
             if (!IsMemberInitProjectable(binding.ElementType, model)) return false;
 
-            engaged = new EngagedExpand(binding, null, null, null, null, false, null, Children: null, Levels: levels);
+            int? levelsSkip = item.SkipOption is long lsk ? (int)Math.Min(lsk, int.MaxValue) : null;
+            int? levelsTop = item.TopOption is long ltp ? (int)Math.Min(ltp, int.MaxValue) : null;
+            List<string>? levelsSelect = lc is not null ? ExtractSelectedProperties((SelectExpandClause)lc) : null;
+            if (levelsSelect is not null)
+            {
+                // THE $levels + $select TRAP: the recursion is IMPLICIT in ODL — the nested clause of a
+                // $levels item holds NO ExpandedNavigationSelectItem for the self-navigation — so
+                // ExtractSelectedProperties never sees it and the strip would delete the self-nav key
+                // (and its Nav@odata.count) at every level. Append the self-nav's EDM name so
+                // StripToSelectedProperties/KeepUnderSelect keep both. Resolved through
+                // ODataPropertyNaming.ResolveEdmName (never the raw CLR name) so a [JsonPropertyName]-
+                // renamed self-navigation keeps working — the same call CollectPushedLevelsNavNames uses.
+                string selfNavEdmName = ODataPropertyNaming.ResolveEdmName(binding.Property);
+                if (!levelsSelect.Contains(selfNavEdmName, StringComparer.OrdinalIgnoreCase))
+                    levelsSelect.Add(selfNavEdmName);
+            }
+
+            engaged = new EngagedExpand(
+                binding, item.FilterOption, item.OrderByOption, levelsSkip, levelsTop,
+                item.CountOption == true, levelsSelect, Children: null, Levels: levels);
             return true;
         }
 
@@ -2094,12 +2153,21 @@ internal static class OhDataEndpointFactory
     // inside the caller's try/catch: a binder that cannot bind a clause throws, and the caller then
     // abandons pushdown for the request (the nav stays EDM-only) rather than surfacing a 500.
     private static Expression BuildShapedNavAccess(
-        Expression owner, EngagedExpand engaged, IEdmModel model, ODataQuerySettings binderSettings)
+        Expression owner, EngagedExpand engaged, IEdmModel model, ODataQuerySettings binderSettings,
+        int? maxExpandTop)
     {
         ExpandNavBinding nav = engaged.Binding;
 
         if (engaged.Levels > 0)
-            return BuildLevelsNavAccess(owner, engaged, engaged.Levels, model);
+        {
+            // #254 (item 2): a $levels expand may now carry $filter/$orderby/$skip/$top/$count. Bind
+            // the Where/OrderBy lambdas ONCE here and reuse them at every level of the recursion — the
+            // nav element type is invariant under $levels (BuildLevelsNavBinding requires
+            // elementType == ownerType) and expression trees are immutable, so re-binding per level
+            // would allocate identical nodes for no benefit.
+            NavShapeBindings levelsBound = BindNavShape(engaged, nav.ElementType, model, binderSettings);
+            return BuildLevelsNavAccess(owner, engaged, engaged.Levels, model, levelsBound);
+        }
 
         Expression access = Expression.Property(owner, nav.Property);
         Type elem = nav.ElementType;
@@ -2111,7 +2179,7 @@ internal static class OhDataEndpointFactory
             // reference (EF outer join loads the full related entity).
             if (engaged.Children is { Count: > 0 })
             {
-                Expression init = BuildMemberInit(access, elem, engaged.Children, model, binderSettings);
+                Expression init = BuildMemberInit(access, elem, engaged.Children, model, binderSettings, maxExpandTop);
                 return Expression.Condition(
                     Expression.Equal(access, Expression.Constant(null, elem)),
                     Expression.Constant(null, elem), init);
@@ -2119,7 +2187,8 @@ internal static class OhDataEndpointFactory
             return access;
         }
 
-        access = ApplyNavFilterOrderPaging(access, engaged, elem, model, binderSettings);
+        access = ApplyNavShape(
+            access, engaged, elem, model, BindNavShape(engaged, elem, model, binderSettings), maxExpandTop);
 
         // Fold a nested $expand into an element-wise projection so the deeper delegate-less navigations
         // load in the same JOIN'd query (EF ThenInclude). Without children this is byte-identical to the
@@ -2128,37 +2197,66 @@ internal static class OhDataEndpointFactory
         {
             ParameterExpression n = Expression.Parameter(elem, "n");
             LambdaExpression proj = Expression.Lambda(
-                BuildMemberInit(n, elem, engaged.Children, model, binderSettings), n);
+                BuildMemberInit(n, elem, engaged.Children, model, binderSettings, maxExpandTop), n);
             access = Expression.Call(_enumerableSelect.MakeGenericMethod(elem, elem), access, proj);
         }
 
         return Expression.Call(_enumerableToList.MakeGenericMethod(elem), access);
     }
 
-    // #206 phase 2 (optioned expand): apply a collection expand's nested $filter/$orderby/$skip/$top to
-    // the navigation-access expression, returning the shaped (un-materialized) IEnumerable. Extracted
-    // from BuildShapedNavAccess so the single-level, nested, and $levels paths share one implementation.
-    private static Expression ApplyNavFilterOrderPaging(
-        Expression access, EngagedExpand engaged, Type elem, IEdmModel model, ODataQuerySettings binderSettings)
+    // #254 (item 2): the OData-bound lambdas for one engaged expand's nested $filter/$orderby, split
+    // out of the shaping step (BindNavShape → ApplyNavShape) so the $levels recursion can bind ONCE
+    // and apply at every level. Null members mean "the request carried no such clause".
+    private readonly record struct NavShapeBindings(
+        LambdaExpression? Predicate,
+        IReadOnlyList<(LambdaExpression Key, bool Descending)>? OrderBy);
+
+    // #206 phase 2 (optioned expand) / #254: bind a collection expand's nested $filter/$orderby with
+    // Microsoft's own FilterBinder/OrderByBinder. A fresh QueryBinderContext per bind: it holds the
+    // binder's `$it` lambda parameter and other per-clause state, so filter and orderby each get their
+    // own rather than sharing one. Throws (via the binders) on a clause that cannot be bound — the
+    // caller's try/catch then abandons pushdown for the request.
+    private static NavShapeBindings BindNavShape(
+        EngagedExpand engaged, Type elem, IEdmModel model, ODataQuerySettings binderSettings)
     {
-        // A fresh QueryBinderContext per bind: it holds the binder's `$it` lambda parameter and other
-        // per-clause state, so filter and orderby each get their own rather than sharing one.
+        LambdaExpression? predicate = null;
         if (engaged.Filter is not null)
         {
             var ctx = new QueryBinderContext(model, binderSettings, elem);
-            var predicate = (LambdaExpression)_filterBinder.BindFilter(engaged.Filter, ctx);
-            access = Expression.Call(_enumerableWhere.MakeGenericMethod(elem), access, predicate);
+            predicate = (LambdaExpression)_filterBinder.BindFilter(engaged.Filter, ctx);
         }
 
+        List<(LambdaExpression, bool)>? orderBy = null;
         if (engaged.OrderBy is not null)
         {
             var ctx = new QueryBinderContext(model, binderSettings, elem);
             OrderByBinderResult? result = _orderByBinder.BindOrderBy(engaged.OrderBy, ctx);
-            bool first = true;
             for (OrderByBinderResult? cur = result; cur is not null; cur = cur.ThenBy)
             {
-                var keySelector = (LambdaExpression)cur.OrderByExpression;
-                bool descending = cur.Direction == OrderByDirection.Descending;
+                orderBy ??= new List<(LambdaExpression, bool)>();
+                orderBy.Add(((LambdaExpression)cur.OrderByExpression, cur.Direction == OrderByDirection.Descending));
+            }
+        }
+
+        return new NavShapeBindings(predicate, orderBy);
+    }
+
+    // #206 phase 2 (optioned expand) / #254: compose the already-bound nested $filter/$orderby plus the
+    // nested $skip/$top (and the #254 MaxExpandTop count bound) onto the navigation-access expression,
+    // returning the shaped (un-materialized) IEnumerable. Pure expression assembly — no binding — so
+    // the $levels recursion can call it once per level with the same NavShapeBindings.
+    private static Expression ApplyNavShape(
+        Expression access, EngagedExpand engaged, Type elem, IEdmModel model,
+        in NavShapeBindings bound, int? maxExpandTop)
+    {
+        if (bound.Predicate is not null)
+            access = Expression.Call(_enumerableWhere.MakeGenericMethod(elem), access, bound.Predicate);
+
+        if (bound.OrderBy is { Count: > 0 })
+        {
+            bool first = true;
+            foreach ((LambdaExpression keySelector, bool descending) in bound.OrderBy)
+            {
                 MethodInfo op = (first, descending) switch
                 {
                     (true, false) => _enumerableOrderBy,
@@ -2171,30 +2269,44 @@ internal static class OhDataEndpointFactory
             }
         }
 
+        // #254: with $count, the materialization is bounded to MaxExpandTop + 1 rows — one more than
+        // the ceiling, so a collection that is exactly at the ceiling still counts exactly while one
+        // that exceeds it is detectable (and 400s) in the JSON pass. Computed here so the bound is a
+        // real SQL LIMIT/ROW_NUMBER rather than a post-materialization trim.
+        int? countBound = engaged.Count && maxExpandTop is int cap
+            ? (int)Math.Min((long)cap + 1, int.MaxValue)
+            : null;
+
         // Whenever paging is in play — pushed to SQL now (no $count) OR deferred to the JSON window
         // (with $count) — stabilize the order so WHICH rows land in the page is deterministic. Mirrors
         // the root path's EnsureStableOrder (#241): append the nav element's single key as a FINAL
         // tiebreaker (a ThenBy after an explicit nested $orderby so a non-unique sort column still pages
         // stably, or the sole OrderBy when none was given). Applied even under $count so the deferred
-        // JSON window (ShapePushedExpandsInJson) pages over a deterministic SQL order. A
-        // composite/unresolvable key is left to the provider (best-effort, never throws).
-        bool paging = (engaged.Skip is int s && s > 0) || engaged.Top is int;
+        // JSON window (ShapePushedExpandsInJson) pages over a deterministic SQL order, and under the
+        // #254 count bound so the bounded row set is deterministic too. A composite/unresolvable key is
+        // left to the provider (best-effort, never throws).
+        bool paging = (engaged.Skip is int s && s > 0) || engaged.Top is int || countBound is not null;
         if (paging && TryGetKeyClrProperty(model, elem) is { } keyProp)
         {
             ParameterExpression e = Expression.Parameter(elem, "e");
             LambdaExpression keySelector = Expression.Lambda(Expression.Property(e, keyProp), e);
-            MethodInfo tiebreak = engaged.OrderBy is null ? _enumerableOrderBy : _enumerableThenBy;
+            MethodInfo tiebreak = bound.OrderBy is { Count: > 0 } ? _enumerableThenBy : _enumerableOrderBy;
             access = Expression.Call(tiebreak.MakeGenericMethod(elem, keyProp.PropertyType), access, keySelector);
         }
 
         // Skip/Take push to SQL only when $count is absent; with $count the full (ordered) filtered set
-        // is materialized so the JSON pass can count it before paging (see EngagedExpand remarks).
+        // is materialized so the JSON pass can count it before paging (see EngagedExpand remarks) —
+        // bounded by countBound (#254) so an unbounded child collection can no longer be materialized.
         if (!engaged.Count)
         {
             if (engaged.Skip is int sk && sk > 0)
                 access = Expression.Call(_enumerableSkip.MakeGenericMethod(elem), access, Expression.Constant(sk));
             if (engaged.Top is int tp)
                 access = Expression.Call(_enumerableTake.MakeGenericMethod(elem), access, Expression.Constant(tp));
+        }
+        else if (countBound is int rowBound)
+        {
+            access = Expression.Call(_enumerableTake.MakeGenericMethod(elem), access, Expression.Constant(rowBound));
         }
 
         return access;
@@ -2208,12 +2320,15 @@ internal static class OhDataEndpointFactory
     // Callers gate on IsMemberInitProjectable so every scalar bind is settable and non-complex.
     private static Expression BuildMemberInit(
         Expression source, Type elemType, IReadOnlyList<EngagedExpand> children,
-        IEdmModel model, ODataQuerySettings binderSettings)
+        IEdmModel model, ODataQuerySettings binderSettings, int? maxExpandTop)
     {
         var bindings = new List<MemberBinding>();
         AddScalarBindings(bindings, source, elemType, model);
         foreach (EngagedExpand child in children)
-            bindings.Add(Expression.Bind(child.Binding.Property, BuildShapedNavAccess(source, child, model, binderSettings)));
+        {
+            bindings.Add(Expression.Bind(child.Binding.Property,
+                BuildShapedNavAccess(source, child, model, binderSettings, maxExpandTop)));
+        }
         return Expression.MemberInit(Expression.New(elemType), bindings);
     }
 
@@ -2231,11 +2346,18 @@ internal static class OhDataEndpointFactory
     // Returns the value assigned to <paramref name="owner"/>.Nav: each level is projected into a FRESH
     // member-init recursing the SAME navigation one level shallower, and the deepest level empties the
     // self-navigation (an empty collection / a null reference) so the graph is finite — no parent<->child
-    // object cycle can form for System.Text.Json. Any nested $filter/$orderby is intentionally NOT
-    // applied under $levels (TryBuildEngagedExpand defers a $levels that carries other options), so this
-    // stays a pure structural recursion — the common "load this hierarchy N deep" case.
+    // object cycle can form for System.Text.Json.
+    //
+    // #254 (item 2): the expand's nested $filter/$orderby/$skip/$top are applied at EVERY level of the
+    // recursion, matching the semantics ODL itself implements — Microsoft's
+    // SelectExpandQueryOption.ProcessLevels rewrites $levels=N into N nested
+    // ExpandedNavigationSelectItems each carrying the SAME Filter/OrderBy/Top/Skip/Count options. The
+    // <paramref name="bound"/> lambdas were bound ONCE by the caller: the nav element type is invariant
+    // under $levels, so the same LambdaExpression is valid (and immutable) at every level. A nested
+    // $expand under $levels is still deferred off pushdown by TryBuildEngagedExpand.
     private static Expression BuildLevelsNavAccess(
-        Expression owner, EngagedExpand engaged, int remaining, IEdmModel model)
+        Expression owner, EngagedExpand engaged, int remaining, IEdmModel model,
+        in NavShapeBindings bound)
     {
         ExpandNavBinding nav = engaged.Binding;
         Type elem = nav.ElementType; // == owner's type (a true self-reference; see BuildLevelsNavBinding)
@@ -2243,11 +2365,21 @@ internal static class OhDataEndpointFactory
 
         if (nav.IsCollection)
         {
+            // #254: the MaxExpandTop count bound is deliberately NOT pushed into SQL here (hence the
+            // null). Inside a $levels projection every level both WINDOWS a collection and projects a
+            // further collection out of it, which EF Core can only translate with SQL APPLY/LATERAL —
+            // SQLite and other providers without APPLY fail to translate, and the request would then
+            // silently degrade to EDM-only (no data AND no count). The ceiling is still enforced at
+            // EVERY level, in the JSON pass (ShapeLevelsInJson → WriteNestedCountAndWindow): a breach
+            // is a 400, never a truncated count. What is given up is only the SQL-side cost bound —
+            // consistent with E3, which already leaves an omitted nested $top unbounded.
+            access = ApplyNavShape(access, engaged, elem, model, bound, maxExpandTop: null);
+
             ParameterExpression n = Expression.Parameter(elem, "n");
             var bindings = new List<MemberBinding>();
             AddScalarBindings(bindings, n, elem, model);
             Expression deeper = remaining > 1
-                ? BuildLevelsNavAccess(n, engaged, remaining - 1, model)
+                ? BuildLevelsNavAccess(n, engaged, remaining - 1, model, bound)
                 // Leaf: an empty page of the self-navigation (Take(0)) so it serializes as [] rather
                 // than null, and the recursion terminates without loading a further level.
                 : Expression.Call(
@@ -2260,11 +2392,14 @@ internal static class OhDataEndpointFactory
             return Expression.Call(_enumerableToList.MakeGenericMethod(elem), projected);
         }
 
-        // Single-valued self-reference (e.g. a Manager chain): a null-guarded fresh member-init.
+        // Single-valued self-reference (e.g. a Manager chain): a null-guarded fresh member-init. The
+        // OData parser rejects $filter/$orderby/$skip/$top/$count on a single-valued navigation, so
+        // there is nothing to shape here — only a nested $select can reach this shape, and that is
+        // applied on the serialized JSON (ShapeLevelsInJson).
         var refBindings = new List<MemberBinding>();
         AddScalarBindings(refBindings, access, elem, model);
         Expression refDeeper = remaining > 1
-            ? BuildLevelsNavAccess(access, engaged, remaining - 1, model)
+            ? BuildLevelsNavAccess(access, engaged, remaining - 1, model, bound)
             : Expression.Constant(null, elem);
         refBindings.Add(Expression.Bind(nav.Property, refDeeper));
         Expression refInit = Expression.MemberInit(Expression.New(elem), refBindings);
@@ -2294,8 +2429,9 @@ internal static class OhDataEndpointFactory
     // navs that actually need post-serialization shaping. Reuses StripToSelectedProperties so nested
     // $select casing/annotation handling is identical to the root-level strip.
     private static void ShapePushedExpandsInJson(
-        JsonArray parents, IReadOnlyList<EngagedExpand> engaged, JsonSerializerOptions serializerOptions) =>
-        ShapePushedExpandsInJson(parents.OfType<JsonObject>(), engaged, serializerOptions);
+        JsonArray parents, IReadOnlyList<EngagedExpand> engaged, JsonSerializerOptions serializerOptions,
+        int? maxExpandTop) =>
+        ShapePushedExpandsInJson(parents.OfType<JsonObject>(), engaged, serializerOptions, maxExpandTop);
 
     // #206 ($levels): the CLR property names of every navigation this request pushed with $levels,
     // walked recursively through the engaged tree. OmitUnexpandedNavigations uses this to keep the
@@ -2322,15 +2458,25 @@ internal static class OhDataEndpointFactory
     }
 
     private static void ShapePushedExpandsInJson(
-        IEnumerable<JsonObject> parents, IReadOnlyList<EngagedExpand> engaged, JsonSerializerOptions serializerOptions)
+        IEnumerable<JsonObject> parents, IReadOnlyList<EngagedExpand> engaged,
+        JsonSerializerOptions serializerOptions, int? maxExpandTop)
     {
         foreach (EngagedExpand e in engaged)
         {
             // A level with a nested $count/$select OR deeper pushed children needs JSON work; a pure
-            // leaf whose options were fully handled in SQL is skipped. ($levels shaping is structural
-            // only — it carries no Count/NestedSelect/Children, so it is a no-op here.)
+            // leaf whose options were fully handled in SQL is skipped. (A purely structural $levels
+            // recursion carries no Count/NestedSelect/Children either, so it is skipped here too.)
             bool hasChildren = e.Children is { Count: > 0 };
             if (!e.Count && e.NestedSelect is null && !hasChildren) continue;
+
+            // #254 (item 2): a $levels expand may now carry $count/$select. Its recursion is implicit
+            // (there is no per-level EngagedExpand — the SAME binding repeats), so shape every level by
+            // walking the serialized graph down the self-navigation.
+            if (e.Levels > 0)
+            {
+                ShapeLevelsInJson(parents, e, e.Levels, serializerOptions, maxExpandTop);
+                continue;
+            }
 
             PropertyInfo prop = e.Binding.Property;
             string key = ResolveNavigationJsonKey(prop.Name, prop, serializerOptions);
@@ -2340,39 +2486,97 @@ internal static class OhDataEndpointFactory
                 JsonNode? node = parent[key];
                 if (e.Binding.IsCollection && node is JsonArray arr)
                 {
-                    if (e.Count)
-                    {
-                        // Count reflects the full filtered collection (paging was deferred to here).
-                        parent[$"{key}@odata.count"] = arr.Count;
-                        int skip = e.Skip is int sk && sk > 0 ? Math.Min(sk, arr.Count) : 0;
-                        int end = e.Top is int tp ? Math.Min(arr.Count, skip + Math.Max(tp, 0)) : arr.Count;
-                        if (skip > 0 || end < arr.Count)
-                        {
-                            // Rebuild to the [skip, end) window in one O(n) pass (Clear detaches the
-                            // captured nodes so they can be re-added) rather than repeated RemoveAt(0).
-                            var window = new List<JsonNode?>(end - skip);
-                            for (int i = skip; i < end; i++) window.Add(arr[i]);
-                            arr.Clear();
-                            foreach (JsonNode? node2 in window) arr.Add(node2);
-                        }
-                    }
+                    if (e.Count) WriteNestedCountAndWindow(parent, key, arr, e, maxExpandTop);
                     // Recurse into deeper pushed levels on the (paged) elements BEFORE this level's
                     // $select strip — the strip keeps expanded-nav names (ExtractSelectedProperties), so
                     // the children survive, and shaping deeper counts/selects sees the full child graph.
                     if (hasChildren)
-                        ShapePushedExpandsInJson(arr.OfType<JsonObject>(), e.Children!, serializerOptions);
+                        ShapePushedExpandsInJson(arr.OfType<JsonObject>(), e.Children!, serializerOptions, maxExpandTop);
                     if (e.NestedSelect is not null)
                         StripToSelectedProperties(arr.OfType<JsonObject>(), e.NestedSelect);
                 }
                 else if (!e.Binding.IsCollection && node is JsonObject one)
                 {
                     if (hasChildren)
-                        ShapePushedExpandsInJson(new[] { one }, e.Children!, serializerOptions);
+                        ShapePushedExpandsInJson(new[] { one }, e.Children!, serializerOptions, maxExpandTop);
                     if (e.NestedSelect is not null)
                         StripToSelectedProperties(new[] { one }, e.NestedSelect);
                 }
             }
         }
+    }
+
+    // #206 phase 2 (optioned expand) / #254: emit <c>Nav@odata.count</c> for one pushed collection
+    // expand and apply its count-deferred $skip/$top window.
+    //
+    // OData §11.2.4.2 requires the emitted count to be the FULL filtered collection, not the page —
+    // which is exactly why the #254 ceiling breach is a 400 rather than a silent truncation: the
+    // materialization was bounded to MaxExpandTop + 1 rows in SQL (ApplyNavShape), so seeing more than
+    // MaxExpandTop rows here means the true count is unknowable within the configured budget. The
+    // ODataException is caught by the collection route's existing handler and returned as a 400
+    // InvalidQueryOption — no IResult threading through this void recursive walk.
+    private static void WriteNestedCountAndWindow(
+        JsonObject parent, string key, JsonArray arr, EngagedExpand e, int? maxExpandTop)
+    {
+        if (maxExpandTop is int cap && arr.Count > cap)
+        {
+            throw new Microsoft.OData.ODataException(
+                $"The nested '$count' on '{key}' cannot be computed: the related collection exceeds the " +
+                $"maximum of {cap} entities. Narrow it with a nested $filter.");
+        }
+
+        // Count reflects the full filtered collection (paging was deferred to here).
+        parent[$"{key}@odata.count"] = arr.Count;
+        int skip = e.Skip is int sk && sk > 0 ? Math.Min(sk, arr.Count) : 0;
+        int end = e.Top is int tp ? Math.Min(arr.Count, skip + Math.Max(tp, 0)) : arr.Count;
+        if (skip > 0 || end < arr.Count)
+        {
+            // Rebuild to the [skip, end) window in one O(n) pass (Clear detaches the captured nodes so
+            // they can be re-added) rather than repeated RemoveAt(0).
+            var window = new List<JsonNode?>(end - skip);
+            for (int i = skip; i < end; i++) window.Add(arr[i]);
+            arr.Clear();
+            foreach (JsonNode? node in window) arr.Add(node);
+        }
+    }
+
+    // #254 (item 2): apply a $levels expand's nested $count/$select at EVERY level of the recursion.
+    // <paramref name="parents"/> are the serialized entities at the current level and
+    // <paramref name="remaining"/> the levels still loaded beneath them. Descends the SAME navigation
+    // key each time — the $levels recursion re-uses one EngagedExpand rather than a per-level tree.
+    //
+    // The nested $select strip is applied to a level only AFTER descending into it, so the deeper
+    // level's own Nav@odata.count is already written and survives the strip: NestedSelect carries the
+    // self-navigation's EDM name (appended at plan time in TryBuildEngagedExpand), which is exactly
+    // what KeepUnderSelect keys the "Nav@odata.count" inline-control-information rule off.
+    private static void ShapeLevelsInJson(
+        IEnumerable<JsonObject> parents, EngagedExpand e, int remaining,
+        JsonSerializerOptions serializerOptions, int? maxExpandTop)
+    {
+        if (remaining < 1) return;
+
+        PropertyInfo prop = e.Binding.Property;
+        string key = ResolveNavigationJsonKey(prop.Name, prop, serializerOptions);
+
+        var next = new List<JsonObject>();
+        foreach (JsonObject parent in parents)
+        {
+            JsonNode? node = parent[key];
+            if (e.Binding.IsCollection && node is JsonArray arr)
+            {
+                if (e.Count) WriteNestedCountAndWindow(parent, key, arr, e, maxExpandTop);
+                next.AddRange(arr.OfType<JsonObject>());
+            }
+            else if (!e.Binding.IsCollection && node is JsonObject one)
+            {
+                next.Add(one);
+            }
+        }
+
+        if (next.Count == 0) return;
+
+        ShapeLevelsInJson(next, e, remaining - 1, serializerOptions, maxExpandTop);
+        if (e.NestedSelect is not null) StripToSelectedProperties(next, e.NestedSelect);
     }
 
     // #206 phase 2 (Option A1): builds the startup-time $expand pushdown binding for one
@@ -3014,6 +3218,10 @@ internal static class OhDataEndpointFactory
                     // profile's own ApplyTo call has no opportunity to reject a disallowed
                     // property since it never calls Validate() itself.
                     ValidatePropertyAllowlists(options, cachedValidationSettings);
+                    // #254: reject a nested $top above MaxExpandTop at any depth.
+                    IResult? nestedTopError = ValidateNestedTopCeiling(
+                        options.SelectExpand?.SelectExpandClause, source.MaxExpandTop);
+                    if (nestedTopError is not null) return nestedTopError;
                     // #195: reject $top > MaxTop before invoking the profile. The Priority-1 path
                     // delegates query application to the profile, so without this guard a client
                     // could request an arbitrarily large page. Mirrors the Priority-2 path.
@@ -3146,6 +3354,10 @@ internal static class OhDataEndpointFactory
                     // B1 fix: enforce FilterProperties/OrderByProperties/SelectProperties/
                     // ExpandProperties allowlists before any ApplyTo call below.
                     ValidatePropertyAllowlists(options, cachedValidationSettings);
+                    // #254: reject a nested $top above MaxExpandTop at any depth.
+                    IResult? nestedTopError = ValidateNestedTopCeiling(
+                        options.SelectExpand?.SelectExpandClause, source.MaxExpandTop);
+                    if (nestedTopError is not null) return nestedTopError;
 
                     // Gap 4: $search on GetQueryable path — delegate to the Search handler, then
                     // apply remaining OData query options on top of the in-memory result set.
@@ -3438,7 +3650,9 @@ internal static class OhDataEndpointFactory
                     // null, so a request that abandoned pushdown does no shaping here.
                     if (engagedExpandNavs is { Count: > 0 })
                     {
-                        ShapePushedExpandsInJson(finalItems, engagedExpandNavs, jsonOptions ?? _pascalCaseSerializerOptions);
+                        ShapePushedExpandsInJson(
+                            finalItems, engagedExpandNavs, jsonOptions ?? _pascalCaseSerializerOptions,
+                            source.MaxExpandTop);
                     }
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
@@ -3519,6 +3733,12 @@ internal static class OhDataEndpointFactory
                     IResult? capabilityError = CheckCollectionQueryOptionCapabilities(ctx, source, checkFilterOrderBy: false);
                     if (capabilityError is not null) return capabilityError;
                     ValidatePropertyAllowlists(options, cachedValidationSettings);
+                    // #254: reject a nested $top above MaxExpandTop at any depth. GetAll expands
+                    // through delegates only (nested $top is not applied there), but the ceiling is a
+                    // statement about what the client may ask for — same as the root MaxTop above.
+                    IResult? nestedTopError = ValidateNestedTopCeiling(
+                        options.SelectExpand?.SelectExpandClause, source.MaxExpandTop);
+                    if (nestedTopError is not null) return nestedTopError;
 
                     // Post-materialization paging for GetAll, applied AFTER the handler call (GetAll
                     // or Search) fills the array and BEFORE $select/$expand serialization.

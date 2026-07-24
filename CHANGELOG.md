@@ -9,7 +9,45 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **`MaxExpandTop` bounds nested `$top` and nested `$count` — default `1000` (#254).** New ceiling on
+  `EntitySetDefaults` and `EntitySetProfile`, shaped exactly like `MaxTop` (positive integer or `null`
+  for no ceiling; profile overrides the global default). The **root** entity set's resolved value
+  governs at every nesting depth, the same rule `MaxExpansionDepth` follows. Two enforcement points:
+  - an **explicit nested `$top`** above the ceiling (`?$expand=Children($top=5000)`) is rejected with
+    `400 InvalidQueryOption` before any handler runs — at any depth, on all three collection read
+    paths, and whether or not the navigation would have been pushed down (a delegate-backed navigation
+    is rejected too, mirroring the root `MaxTop`, which rejects regardless of read path);
+  - a **nested `$count`** materialization is bounded in SQL to `MaxExpandTop + 1` rows, and a related
+    collection larger than the ceiling returns `400` rather than a truncated count — OData §11.2.4.2
+    requires `Nav@odata.count` to report the full filtered collection, so silent truncation is not an
+    option. (Under `$levels` the ceiling is enforced per level after materialization instead of as a
+    SQL `LIMIT`: windowing *and* projecting a further collection at each level requires SQL
+    `APPLY`/`LATERAL`, which not every provider supports.)
+
+  **BEHAVIOR CHANGE:** requests that previously returned `200` now return `400` — a nested `$top`
+  above `1000`, or a nested `$count` over a related collection with more than `1000` rows. Set
+  `WithDefaults(d => d.MaxExpandTop = N)` to raise it, or `= null` to restore the previous unbounded
+  behavior. An **omitted** nested `$top` without `$count` stays unbounded by design: silently
+  windowing an expanded collection with no `Nav@odata.nextLink` would be a worse spec violation than
+  the cost.
+
 ### Added
+
+- **`$levels` may now carry other nested expand options (#254).** A `$levels=N` / `$levels=max`
+  self-referential expand combined with `$filter`, `$orderby`, `$skip`, `$top`, `$count`, or `$select`
+  is no longer deferred off the pushdown path — it pushes, with those options applied at **every level
+  of the recursion**, matching the semantics Microsoft's own OData stack implements (`$levels=N` is
+  rewritten into `N` nested expands each carrying the same options). So
+  `?$expand=Children($levels=2;$filter=active eq true)` filters at both levels (a filtered-out node's
+  whole subtree disappears with it), `($levels=2;$count=true)` emits `Children@odata.count` at every
+  level, and `($levels=2;$select=name)` keeps the self-navigation itself at every level while pruning
+  the other properties. A `$levels` expand carrying its **own nested `$expand`** remains deferred
+  (depth accounting between the `$levels` budget and the nested branch's remaining depth is ambiguous
+  against `MaxExpansionDepth`). The delegate-safety invariant is unchanged: a self-referential
+  navigation declared **with** a delegate is still never EF-included by the `$levels` path, whatever
+  nested options ride along.
 
 - **One-line `AddOhData()` companion registration (#285).** Each OpenAPI-companion package now ships
   a single convenience extension that is the canonical wiring recipe for that doc stack — implementors
