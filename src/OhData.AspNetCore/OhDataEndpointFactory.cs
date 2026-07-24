@@ -1860,14 +1860,23 @@ internal static class OhDataEndpointFactory
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                // A nested expand clause Microsoft's binder cannot translate (an unusual $filter/
-                // $orderby shape) must not become a 500: abandon pushdown by returning the query
-                // unchanged. The caller detects this by reference equality and falls back, so the
-                // delegate-less navigation stays EDM-only for the request.
+                // FAIL LOUD (owner directive, post-#298/#300 review): a nested expand option
+                // Microsoft's own binder cannot translate into an expression must not silently
+                // degrade the response to EDM-only under a 200 — that is exactly the class of bug
+                // #298/#300 reported (the parent collection itself came back wrong/empty because a
+                // downstream shape could not be translated). The client asked for a $expand nested
+                // option this server cannot honor against this model; that is a 400, not a
+                // silently-wrong 200. Logged at Debug (same diagnostic detail as before) so the
+                // operator can still see which clause tripped it; the client-facing message stays
+                // generic (never ex.Message/stack trace, which could leak internal details) per this
+                // file's existing InternalServerError convention (S7).
                 logger?.LogDebug(ex,
-                    "OhData: $expand pushdown skipped for {EntitySet}: a nested expand option could not be bound; delegate-less navigations stay EDM-only for this request.",
+                    "OhData: $expand pushdown failed for {EntitySet}: a nested expand option could not be bound.",
                     source.EntitySetName);
-                return query;
+                throw new Microsoft.OData.ODataException(
+                    $"The '$expand' on '{source.EntitySetName}' could not be processed: a nested expand " +
+                    "option could not be translated. Simplify the nested $filter/$orderby, or write an " +
+                    "expand delegate for this navigation to take full control of its query shape.");
             }
         }
 
@@ -2245,9 +2254,17 @@ internal static class OhDataEndpointFactory
     // nested $skip/$top (and the #254 MaxExpandTop count bound) onto the navigation-access expression,
     // returning the shaped (un-materialized) IEnumerable. Pure expression assembly — no binding — so
     // the $levels recursion can call it once per level with the same NavShapeBindings.
+    //
+    // <paramref name="deferPagingToJson"/> (#300): true ONLY for the $levels recursion (set by its sole
+    // caller, BuildLevelsNavAccess). Inside that recursion every level BOTH windows a collection AND
+    // projects a further (self-referential) collection out of it — the same "double collection on one
+    // level" shape #298 hit for $count — which requires SQL APPLY/LATERAL that not every provider (SQLite
+    // among them) translates. When true, no SQL Skip/Take (nor the #298 count-bound Take below) is
+    // composed at all; the caller windows in the JSON pass instead (ShapeLevelsInJson), exactly like the
+    // count bound already deferred there via <paramref name="maxExpandTop"/> being null on that call.
     private static Expression ApplyNavShape(
         Expression access, EngagedExpand engaged, Type elem, IEdmModel model,
-        in NavShapeBindings bound, int? maxExpandTop)
+        in NavShapeBindings bound, int? maxExpandTop, bool deferPagingToJson = false)
     {
         if (bound.Predicate is not null)
             access = Expression.Call(_enumerableWhere.MakeGenericMethod(elem), access, bound.Predicate);
@@ -2269,21 +2286,28 @@ internal static class OhDataEndpointFactory
             }
         }
 
-        // #254: with $count, the materialization is bounded to MaxExpandTop + 1 rows — one more than
-        // the ceiling, so a collection that is exactly at the ceiling still counts exactly while one
-        // that exceeds it is detectable (and 400s) in the JSON pass. Computed here so the bound is a
-        // real SQL LIMIT/ROW_NUMBER rather than a post-materialization trim.
-        int? countBound = engaged.Count && maxExpandTop is int cap
+        // #298 fix: the SQL Take(cap+1) count bound is only safe to compose when this level is a
+        // projection LEAF (no nested $expand children of its own). A level WITH children is further
+        // projected element-wise a few lines below in BuildShapedNavAccess (the .Select(...) that folds
+        // the deeper navigation) — windowing THIS level's collection and ALSO projecting a further
+        // collection out of each of its elements in the same query is the "double collection" shape that
+        // requires SQL APPLY/LATERAL, which not every provider translates (SQLite among them); composing
+        // the bound there risked exactly the untranslatable shape #298 reported. For a level with
+        // children the ceiling is still enforced — just in the JSON pass (WriteNestedCountAndWindow)
+        // instead of as a SQL LIMIT, the same trade the $levels path already takes below.
+        bool isProjectionLeaf = engaged.Children is not { Count: > 0 };
+        int? countBound = !deferPagingToJson && isProjectionLeaf && engaged.Count && maxExpandTop is int cap
             ? (int)Math.Min((long)cap + 1, int.MaxValue)
             : null;
 
         // Whenever paging is in play — pushed to SQL now (no $count) OR deferred to the JSON window
-        // (with $count) — stabilize the order so WHICH rows land in the page is deterministic. Mirrors
-        // the root path's EnsureStableOrder (#241): append the nav element's single key as a FINAL
-        // tiebreaker (a ThenBy after an explicit nested $orderby so a non-unique sort column still pages
-        // stably, or the sole OrderBy when none was given). Applied even under $count so the deferred
-        // JSON window (ShapePushedExpandsInJson) pages over a deterministic SQL order, and under the
-        // #254 count bound so the bounded row set is deterministic too. A composite/unresolvable key is
+        // (with $count, or under #300's deferPagingToJson) — stabilize the order so WHICH rows land in
+        // the page is deterministic. Mirrors the root path's EnsureStableOrder (#241): append the nav
+        // element's single key as a FINAL tiebreaker (a ThenBy after an explicit nested $orderby so a
+        // non-unique sort column still pages stably, or the sole OrderBy when none was given). Applied
+        // even when Skip/Take/countBound end up NOT composed to SQL (deferPagingToJson, or a
+        // countBound-suppressing children level) so the deferred JSON window (ShapePushedExpandsInJson /
+        // ShapeLevelsInJson) still pages over a deterministic SQL order. A composite/unresolvable key is
         // left to the provider (best-effort, never throws).
         bool paging = (engaged.Skip is int s && s > 0) || engaged.Top is int || countBound is not null;
         if (paging && TryGetKeyClrProperty(model, elem) is { } keyProp)
@@ -2294,19 +2318,27 @@ internal static class OhDataEndpointFactory
             access = Expression.Call(tiebreak.MakeGenericMethod(elem, keyProp.PropertyType), access, keySelector);
         }
 
-        // Skip/Take push to SQL only when $count is absent; with $count the full (ordered) filtered set
-        // is materialized so the JSON pass can count it before paging (see EngagedExpand remarks) —
-        // bounded by countBound (#254) so an unbounded child collection can no longer be materialized.
-        if (!engaged.Count)
+        // #300 fix: inside the $levels recursion (deferPagingToJson), no SQL Skip/Take is composed at
+        // all — every level both windows a collection and projects a further (self-referential)
+        // collection out of it, the same untranslatable APPLY/LATERAL shape as the #298 count case.
+        // $skip/$top are applied instead in the JSON pass (ShapeLevelsInJson), exactly as the count
+        // bound already deferred (maxExpandTop: null) for this path. Outside $levels, Skip/Take push to
+        // SQL only when $count is absent; with $count the full (ordered) filtered set is materialized
+        // so the JSON pass can count it before paging (see EngagedExpand remarks) — bounded by
+        // countBound (#254/#298) so an unbounded child collection can no longer be materialized.
+        if (!deferPagingToJson)
         {
-            if (engaged.Skip is int sk && sk > 0)
-                access = Expression.Call(_enumerableSkip.MakeGenericMethod(elem), access, Expression.Constant(sk));
-            if (engaged.Top is int tp)
-                access = Expression.Call(_enumerableTake.MakeGenericMethod(elem), access, Expression.Constant(tp));
-        }
-        else if (countBound is int rowBound)
-        {
-            access = Expression.Call(_enumerableTake.MakeGenericMethod(elem), access, Expression.Constant(rowBound));
+            if (!engaged.Count)
+            {
+                if (engaged.Skip is int sk && sk > 0)
+                    access = Expression.Call(_enumerableSkip.MakeGenericMethod(elem), access, Expression.Constant(sk));
+                if (engaged.Top is int tp)
+                    access = Expression.Call(_enumerableTake.MakeGenericMethod(elem), access, Expression.Constant(tp));
+            }
+            else if (countBound is int rowBound)
+            {
+                access = Expression.Call(_enumerableTake.MakeGenericMethod(elem), access, Expression.Constant(rowBound));
+            }
         }
 
         return access;
@@ -2365,15 +2397,18 @@ internal static class OhDataEndpointFactory
 
         if (nav.IsCollection)
         {
-            // #254: the MaxExpandTop count bound is deliberately NOT pushed into SQL here (hence the
-            // null). Inside a $levels projection every level both WINDOWS a collection and projects a
-            // further collection out of it, which EF Core can only translate with SQL APPLY/LATERAL —
-            // SQLite and other providers without APPLY fail to translate, and the request would then
-            // silently degrade to EDM-only (no data AND no count). The ceiling is still enforced at
-            // EVERY level, in the JSON pass (ShapeLevelsInJson → WriteNestedCountAndWindow): a breach
-            // is a 400, never a truncated count. What is given up is only the SQL-side cost bound —
-            // consistent with E3, which already leaves an omitted nested $top unbounded.
-            access = ApplyNavShape(access, engaged, elem, model, bound, maxExpandTop: null);
+            // #254/#300: NEITHER the MaxExpandTop count bound NOR $skip/$top are pushed into SQL here
+            // (hence maxExpandTop: null AND deferPagingToJson: true). Inside a $levels projection every
+            // level both WINDOWS a collection and projects a further (self-referential) collection out
+            // of it, which EF Core can only translate with SQL APPLY/LATERAL — SQLite and other
+            // providers without APPLY fail to translate, and the request would then silently degrade to
+            // EDM-only (no data AND no count/window — #300 was exactly this for $skip/$top). The
+            // ceiling and the $skip/$top window are both enforced/applied instead at EVERY level, in the
+            // JSON pass (ShapeLevelsInJson → WriteNestedCountAndWindow / ApplyNestedWindow): a count
+            // breach is a 400, never a truncated count, and $skip/$top window the already-materialized
+            // array. What is given up is only the SQL-side cost bound — consistent with E3, which
+            // already leaves an omitted nested $top unbounded.
+            access = ApplyNavShape(access, engaged, elem, model, bound, maxExpandTop: null, deferPagingToJson: true);
 
             ParameterExpression n = Expression.Parameter(elem, "n");
             var bindings = new List<MemberBinding>();
@@ -2465,9 +2500,13 @@ internal static class OhDataEndpointFactory
         {
             // A level with a nested $count/$select OR deeper pushed children needs JSON work; a pure
             // leaf whose options were fully handled in SQL is skipped. (A purely structural $levels
-            // recursion carries no Count/NestedSelect/Children either, so it is skipped here too.)
+            // recursion carries no Count/NestedSelect/Children either, so it is skipped here too —
+            // UNLESS it carries a nested $skip/$top: #300 fixed BuildLevelsNavAccess to no longer push
+            // those to SQL for the $levels path, so a $levels item with $skip/$top and nothing else
+            // now needs the JSON pass too, or the window would silently never be applied.)
             bool hasChildren = e.Children is { Count: > 0 };
-            if (!e.Count && e.NestedSelect is null && !hasChildren) continue;
+            bool levelsNeedsJsonPaging = e.Levels > 0 && (e.Skip is int || e.Top is int);
+            if (!e.Count && e.NestedSelect is null && !hasChildren && !levelsNeedsJsonPaging) continue;
 
             // #254 (item 2): a $levels expand may now carry $count/$select. Its recursion is implicit
             // (there is no per-level EngagedExpand — the SAME binding repeats), so shape every level by
@@ -2527,6 +2566,14 @@ internal static class OhDataEndpointFactory
 
         // Count reflects the full filtered collection (paging was deferred to here).
         parent[$"{key}@odata.count"] = arr.Count;
+        ApplyNestedWindow(arr, e);
+    }
+
+    // #298/#300: the $skip/$top window shared by the $count case above (WriteNestedCountAndWindow) and
+    // the $levels no-$count case (ShapeLevelsInJson) below — split out so there is exactly one place
+    // that windows a JsonArray in-place, rather than two copies of the same [skip, end) rebuild.
+    private static void ApplyNestedWindow(JsonArray arr, EngagedExpand e)
+    {
         int skip = e.Skip is int sk && sk > 0 ? Math.Min(sk, arr.Count) : 0;
         int end = e.Top is int tp ? Math.Min(arr.Count, skip + Math.Max(tp, 0)) : arr.Count;
         if (skip > 0 || end < arr.Count)
@@ -2564,7 +2611,12 @@ internal static class OhDataEndpointFactory
             JsonNode? node = parent[key];
             if (e.Binding.IsCollection && node is JsonArray arr)
             {
+                // #300: $skip/$top on a $levels expand are never pushed to SQL (ApplyNavShape's
+                // deferPagingToJson) — they must be windowed here regardless of whether $count also
+                // rides along. WriteNestedCountAndWindow does count-emission + windowing when $count
+                // is requested; a bare ApplyNestedWindow otherwise (no Nav@odata.count to write).
                 if (e.Count) WriteNestedCountAndWindow(parent, key, arr, e, maxExpandTop);
+                else if (e.Skip is int || e.Top is int) ApplyNestedWindow(arr, e);
                 next.AddRange(arr.OfType<JsonObject>());
             }
             else if (!e.Binding.IsCollection && node is JsonObject one)
@@ -3583,14 +3635,27 @@ internal static class OhDataEndpointFactory
                             }
                             catch (Exception ex) when (ex is not OperationCanceledException)
                             {
-                                // A provider that cannot translate the folded projection must not
-                                // become a 500: fall back to the full fetch + $select pushdown,
-                                // which is the pre-#206-phase-2 behavior (delegate-less nav → EDM-only).
+                                // FAIL LOUD (owner directive, post-#298/#300 review): a folded $expand
+                                // projection that fails to translate at the provider must not silently
+                                // degrade to 200 with the affected navigations quietly empty — that was
+                                // the exact root cause of #298 ($count + nested $expand) and #300
+                                // ($levels + $skip/$top), both now fixed at the source (ApplyNavShape no
+                                // longer composes the untranslatable SQL shape for those two cases). Any
+                                // OTHER combination this provider still cannot translate is a genuine
+                                // capability gap, not something to paper over with missing data — 400,
+                                // not a silently-wrong 200. Logged at Debug (same diagnostic detail as
+                                // before); the client-facing message stays generic (never ex.Message/
+                                // stack trace, which could leak provider/schema details) per this file's
+                                // existing InternalServerError convention (S7).
                                 logger?.LogDebug(ex,
-                                    "OhData: $expand pushdown query failed to translate for {EntitySet}; falling back (delegate-less navigations stay EDM-only for this request).",
+                                    "OhData: $expand pushdown query failed to translate for {EntitySet}.",
                                     source.EntitySetName);
-                                engagedExpandNavs = null;
-                                items = ApplySelectPushdown(filtered).ToArray();
+                                throw new Microsoft.OData.ODataException(
+                                    $"The '$expand' on '{source.EntitySetName}' could not be processed: " +
+                                    "the query shape produced by the requested nested options could not " +
+                                    "be translated by the underlying data provider. Simplify the nested " +
+                                    "$filter/$orderby/$top/$skip/$count combination, or write an expand " +
+                                    "delegate for this navigation to take full control of its query shape.");
                             }
                         }
                     }
@@ -3634,9 +3699,10 @@ internal static class OhDataEndpointFactory
                             "OhData: $expand pushdown produced a serialization cycle for {EntitySet}; falling back (delegate-less navigations stay EDM-only for this request).",
                             source.EntitySetName);
                         // Disengage shaping BEFORE the fallback re-fetch — like the ineligible-projection
-                        // and translation-failure fallbacks above — so ShapePushedExpandsInJson does not
-                        // run against the degraded (EDM-only) data and emit a bogus Nav@odata.count. The
-                        // re-fetch folds no navigations, so it cannot trip the cycle again.
+                        // fallback above (the translation-failure case above now fails loud with a 400
+                        // instead of falling back — see its own catch) — so ShapePushedExpandsInJson does
+                        // not run against the degraded (EDM-only) data and emit a bogus Nav@odata.count.
+                        // The re-fetch folds no navigations, so it cannot trip the cycle again.
                         engagedExpandNavs = null;
                         pushedLevelsNavNames = null; // nothing pushed after the fallback re-fetch
                         items = ApplySelectPushdown(filtered).ToArray();
@@ -3973,6 +4039,13 @@ internal static class OhDataEndpointFactory
                         options = new ODataQueryOptions<TModel>(cachedODataQueryContext, ctx.Request);
                         // B1 fix: enforce SelectProperties/ExpandProperties allowlists.
                         ValidatePropertyAllowlists(options, cachedValidationSettings);
+                        // #301: reject a nested $top above MaxExpandTop at any depth. GetById shares
+                        // the same $expand inlining pipeline as the collection routes (batch handlers
+                        // included, per the docs) but was missing this ceiling — mirrors the three
+                        // collection-route call sites (Priority-1, GetQueryable, GetAll).
+                        IResult? nestedTopError = ValidateNestedTopCeiling(
+                            options.SelectExpand?.SelectExpandClause, source.MaxExpandTop);
+                        if (nestedTopError is not null) return nestedTopError;
                         selectedProps = options.SelectExpand?.SelectExpandClause is not null
                             ? ExtractSelectedProperties(options.SelectExpand.SelectExpandClause)
                             : null;

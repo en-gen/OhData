@@ -19,19 +19,45 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     `400 InvalidQueryOption` before any handler runs — at any depth, on all three collection read
     paths, and whether or not the navigation would have been pushed down (a delegate-backed navigation
     is rejected too, mirroring the root `MaxTop`, which rejects regardless of read path);
-  - a **nested `$count`** materialization is bounded in SQL to `MaxExpandTop + 1` rows, and a related
-    collection larger than the ceiling returns `400` rather than a truncated count — OData §11.2.4.2
-    requires `Nav@odata.count` to report the full filtered collection, so silent truncation is not an
-    option. (Under `$levels` the ceiling is enforced per level after materialization instead of as a
-    SQL `LIMIT`: windowing *and* projecting a further collection at each level requires SQL
-    `APPLY`/`LATERAL`, which not every provider supports.)
+  - a **nested `$count`** materialization is bounded in SQL to `MaxExpandTop + 1` rows **at a
+    projection leaf** (a level with no nested `$expand` of its own), and a related collection larger
+    than the ceiling returns `400` rather than a truncated count — OData §11.2.4.2 requires
+    `Nav@odata.count` to report the full filtered collection, so silent truncation is not an option.
+    (At a level that also carries its own nested `$expand`, or anywhere inside a `$levels` recursion,
+    the ceiling is enforced per level after an *unbounded* materialization instead of as a SQL `LIMIT`:
+    windowing a collection *and* projecting a further collection out of it in the same query requires
+    SQL `APPLY`/`LATERAL`, which not every provider supports. The check is always correct either way —
+    never a truncated count — [#299](https://github.com/en-gen/OhData/issues/299) tracks tightening the
+    unbounded-materialize-then-`400` *cost* of the second case, which stays open.)
+
+  Also (unreleased, so not itself a change from any published version, but worth calling out
+  explicitly): nested paging (`$skip`/`$top`) with no nested `$orderby` now appends the child entity's
+  key as a deterministic tiebreaker before paging (mirroring the existing root-level stabilization) —
+  this **reorders** the expanded array from whatever order the provider happened to return to explicit
+  child-key order whenever a nested `$top`/`$skip` is present without an accompanying `$orderby`.
 
   **BEHAVIOR CHANGE:** requests that previously returned `200` now return `400` — a nested `$top`
   above `1000`, or a nested `$count` over a related collection with more than `1000` rows. Set
   `WithDefaults(d => d.MaxExpandTop = N)` to raise it, or `= null` to restore the previous unbounded
-  behavior. An **omitted** nested `$top` without `$count` stays unbounded by design: silently
-  windowing an expanded collection with no `Nav@odata.nextLink` would be a worse spec violation than
-  the cost.
+  behavior (a profile-level `MaxExpandTop = null` means *inherit* the resolved default instead — it
+  does not itself remove the ceiling). An **omitted** nested `$top` without `$count` stays unbounded by
+  design: silently windowing an expanded collection with no `Nav@odata.nextLink` would be a worse spec
+  violation than the cost.
+
+- **#298 / #300 fixes: two silent-degrade regressions in the #254 pushdown, both now fixed.** Post-merge
+  adversarial review of #297 found that (a) `$count=true` on a pushed expand level that ALSO carried a
+  nested `$expand` (e.g. `Books($count=true;$expand=Chapters)`) composed an untranslatable SQL shape
+  (windowing a collection **and** projecting a further collection out of it — `APPLY`/`LATERAL`) that
+  degraded the whole request to `200` with the affected data silently empty; and (b) inside a `$levels`
+  recursion, an explicit nested `$skip`/`$top` hit the identical untranslatable shape, so
+  `$expand=Children($levels=2;$skip=1)` also silently came back empty under a `200`. Both are fixed by
+  no longer composing the untranslatable SQL bound in either case — the `MaxExpandTop` ceiling (case a)
+  and the `$skip`/`$top` window (case b) are applied instead in the JSON pass, exactly the trade the
+  `$levels` count path already made. **FAIL LOUD:** additionally, any OTHER expand-pushdown shape the
+  provider cannot translate now returns `400 InvalidQueryOption` instead of silently degrading to
+  EDM-only under a `200` — this closes the general class of bug #298/#300 belonged to, not just the two
+  specific shapes. `docs/query-options.md` and #301 (the same `MaxExpandTop` nested-`$top` ceiling,
+  previously missing on `GET /{Set}({key})`) are also part of this fix.
 
 ### Added
 
