@@ -201,31 +201,20 @@ public sealed class IncludeFallbackServeTests : IAsyncLifetime
         }
     }
 
-    [Fact]
-    public async Task NoParameterlessCtor_NestedFilter_FailsLoud400()
+    [Theory]
+    [InlineData("$expand=Children($filter=contains(name,'C1'))", "$filter")]
+    [InlineData("$expand=Children($orderby=name desc)", "$orderby")]
+    public async Task NoParameterlessCtor_NestedFilterOrOrderBy_FailsLoud400(string query, string optionToken)
     {
-        HttpResponseMessage resp = await _fx.Client.GetAsync(
-            "/odata/NoCtorParents?$expand=Children($filter=contains(name,'C1'))");
+        HttpResponseMessage resp = await _fx.Client.GetAsync($"/odata/NoCtorParents?{query}");
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
 
         string body = await resp.Content.ReadAsStringAsync();
         Assert.Contains("\"error\"", body);
         Assert.Contains("InvalidQueryOption", body);
-        Assert.Contains("$filter", body);
+        Assert.Contains(optionToken, body);
         Assert.DoesNotContain("Sqlite", body);
         Assert.DoesNotContain("SQLITE", body);
-    }
-
-    [Fact]
-    public async Task NoParameterlessCtor_NestedOrderBy_FailsLoud400()
-    {
-        HttpResponseMessage resp = await _fx.Client.GetAsync(
-            "/odata/NoCtorParents?$expand=Children($orderby=name desc)");
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-
-        string body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("InvalidQueryOption", body);
-        Assert.Contains("$orderby", body);
     }
 }
 
