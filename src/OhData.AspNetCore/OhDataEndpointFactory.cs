@@ -3771,10 +3771,12 @@ internal static class OhDataEndpointFactory
                             {
                                 throw new Microsoft.OData.ODataException(
                                     $"The '$expand' on '{source.EntitySetName}' could not be processed: " +
-                                    "a nested $filter/$orderby on $expand requires a projection this " +
-                                    "model shape doesn't support. Add a public parameterless " +
-                                    "constructor to the model, or write an expand delegate for this " +
-                                    "navigation.");
+                                    "a nested $filter/$orderby on $expand requires a projection-eligible " +
+                                    "model, which this one isn't (an eligible model has a public " +
+                                    "parameterless constructor, settable non-complex properties, and — " +
+                                    "if it uses ETags — a direct UseETag selector over structural " +
+                                    "properties). Make the model projection-eligible, or write an " +
+                                    "expand delegate for this navigation.");
                             }
 
                             // #305 fold-in (review): validated here, OUTSIDE the try/catch around the
@@ -3787,8 +3789,10 @@ internal static class OhDataEndpointFactory
                                 throw new Microsoft.OData.ODataException(
                                     $"The '$expand' on '{nestedNav.Binding.Property.Name}' could not be " +
                                     "served without a projection-eligible model: a nested $expand or " +
-                                    "$levels under a plain Include fallback is not supported. Add a " +
-                                    "public parameterless constructor to the model to enable full " +
+                                    "$levels under a plain Include fallback is not supported. Make the " +
+                                    "model projection-eligible (a public parameterless constructor, " +
+                                    "settable non-complex properties, and — if it uses ETags — a direct " +
+                                    "UseETag selector over structural properties) to enable full " +
                                     "pushdown, or write an expand delegate for this navigation.");
                             }
 
