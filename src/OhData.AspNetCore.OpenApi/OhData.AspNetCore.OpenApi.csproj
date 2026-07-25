@@ -37,7 +37,7 @@
 		  vulnerable resolution. Remove when Microsoft.AspNetCore.OpenApi raises
 		  its own floor past 2.7.4.
 		-->
-		<PackageReference Include="Microsoft.OpenApi" Version="[2.7.5, 3)" />
+		<PackageReference Include="Microsoft.OpenApi" Version="[2.11.0, 3.0.0)" />
 	</ItemGroup>
 
 </Project>
