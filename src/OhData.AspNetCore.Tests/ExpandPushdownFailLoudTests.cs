@@ -1,28 +1,21 @@
+using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace OhData.AspNetCore.Tests;
 
-// FAIL LOUD (owner directive, post-#298/#300 adversarial review): when the SQL shape a pushed $expand
-// composes cannot be translated by the underlying provider, the request must now throw a clear 400
-// OData error instead of silently degrading to a 200 with the affected navigation(s) quietly empty.
-// #298 and #300 fixed the two SPECIFIC shapes that were reachable (nested $count with a nested $expand
-// child; $skip/$top inside a $levels recursion) by no longer composing the untranslatable SQL in the
-// first place. This suite proves the GENERAL mechanism: for any OTHER combination this provider still
-// cannot translate — a genuine capability gap, not something A/B could pre-empt — the request now fails
-// loud (400 InvalidQueryOption) rather than returning wrong/empty data under a 200.
-//
-// The reproducer below (Books($top=1;$expand=Chapters) — a nested $top or $skip alongside a nested
-// $expand, WITHOUT $count) is empirically confirmed (via a throwaway probe run against this same SQLite
-// harness before this file was written) to still trip an untranslatable SQL shape on SQLite: windowing
-// Books AND projecting Books' own further Chapters collection in the same query requires SQL
-// APPLY/LATERAL, exactly like the #298/#300 shapes, but this specific combination (no $count) is not
-// something A or B changed — it is genuinely out of this task's scope (which named only #298's $count
-// case and #300's $levels case), so it is exactly the kind of "any OTHER combination" case FAIL LOUD is
-// for. Before this fix it returned 200 with Books quietly empty; it must now be a 400.
+// #304 (owner-settled "make it work", #298-style): a nested $top/$skip alongside a nested $expand
+// child, WITHOUT $count (Books($top=1;$expand=Chapters)) used to compose an untranslatable SQL
+// APPLY/LATERAL shape — windowing Books AND projecting Books' own further Chapters collection in the
+// SAME query — for exactly the same reason #298 (the $count case) and #300 (the $levels case) hit it.
+// This suite used to prove that shape failed loud (400); #304 instead defers the window to the JSON
+// pass (ApplyNavShape no longer composes a SQL Skip/Take at a level with children; the window is
+// applied afterward in ShapePushedExpandsInJson), exactly like #298/#300 already did for their shapes —
+// so the request now WORKS (200), with the windowed parent present together with its own children.
 //
 // Reuses the Author/Book/Chapter fixtures and harness from MultiLevelExpandPushdownSqliteTests.cs (that
 // file itself must stay byte-unchanged).
@@ -50,44 +43,63 @@ public sealed class ExpandPushdownFailLoudTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task UntranslatableNestedTopWithChildren_FailsLoud_400_NotSilentEmpty200()
+    public async Task NestedTopWithChildren_NowWorks_200_WindowedParentWithItsChildren()
     {
         HttpResponseMessage resp = await _fx.Client.GetAsync(
             "/odata/Authors?$orderby=id&$expand=Books($top=1;$expand=Chapters)");
 
-        // Before this fix: 200, with Books silently empty (the fallback re-fetch dropped the folded
-        // navigations without telling the client). Now: a clear 400, never a lying 200.
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        // Before #304: 400 (the SQL shape was untranslatable). Now: 200, with the windowed Books entry
+        // present WITH its own Chapters — no lying empty/omitted navigation, no fail-loud 400 either.
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         string body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("\"error\"", body);
-        Assert.Contains("InvalidQueryOption", body);
-        Assert.Contains("Authors", body);
-        Assert.Contains("$expand", body);
-        // The message must stay generic — never the raw EF/provider exception text (which could leak
-        // schema/SQL details) — per this file's existing InternalServerError convention (S7).
-        Assert.DoesNotContain("Sqlite", body);
-        Assert.DoesNotContain("SQLITE", body);
+        using JsonDocument doc = JsonDocument.Parse(body);
+        JsonElement author = doc.RootElement.GetProperty("value").EnumerateArray().Single();
+        JsonElement books = author.GetProperty("Books");
+
+        // $top=1 windows Books to exactly one entry. Author 1's books are B1 (Id 10, Year 2001) and B2
+        // (Id 11, Year 1999); the deterministic tiebreaker (nav element's key, ascending) selects the
+        // lowest Id when no explicit $orderby was given on the nested clause — B1.
+        Assert.Equal(1, books.GetArrayLength());
+        JsonElement b1 = books.EnumerateArray().Single();
+        Assert.Equal("B1", b1.GetProperty("Title").GetString());
+
+        // The windowed parent's own children (Chapters) are present and correct — the whole point of
+        // #304 is that windowing a level no longer drops its nested $expand.
+        JsonElement chapters = b1.GetProperty("Chapters");
+        Assert.Equal(2, chapters.GetArrayLength());
+        Assert.Contains(chapters.EnumerateArray(), c => c.GetProperty("Heading").GetString() == "Zeta");
+        Assert.Contains(chapters.EnumerateArray(), c => c.GetProperty("Heading").GetString() == "Alpha");
     }
 
     [Fact]
-    public async Task UntranslatableNestedSkipWithChildren_FailsLoud_400()
+    public async Task NestedSkipWithChildren_NowWorks_200_WindowedParentWithItsChildren()
     {
         HttpResponseMessage resp = await _fx.Client.GetAsync(
             "/odata/Authors?$orderby=id&$expand=Books($skip=1;$expand=Chapters)");
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         string body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("InvalidQueryOption", body);
+        using JsonDocument doc = JsonDocument.Parse(body);
+        JsonElement author = doc.RootElement.GetProperty("value").EnumerateArray().Single();
+        JsonElement books = author.GetProperty("Books");
+
+        // $skip=1 over the deterministically-ordered (by Id) two books leaves exactly B2 (Id 11).
+        Assert.Equal(1, books.GetArrayLength());
+        JsonElement b2 = books.EnumerateArray().Single();
+        Assert.Equal("B2", b2.GetProperty("Title").GetString());
+
+        // B2 has no chapters in the shared fixture — an empty (not omitted) Chapters array proves the
+        // nested $expand still rode along on the skipped-to survivor.
+        Assert.Equal(0, b2.GetProperty("Chapters").GetArrayLength());
     }
 
     [Fact]
     public async Task FailLoud_DoesNotRegressTheFixedShapes()
     {
-        // Sanity check alongside the two tests above: the #298 ($count + children) and #300-adjacent
-        // ($top/$skip + children) shapes are NOT the same shape as far as translatability goes — #298's
-        // specific shape is now fixed (composes no SQL bound at a level with children), so it must still
-        // succeed even though the sibling $top/$skip-without-$count shape above still 400s.
+        // Sanity check alongside the two tests above: the #298 ($count + children) shape was already
+        // fixed before #304 (composes no SQL bound at a level with children) — it must still succeed
+        // now that the sibling $top/$skip-without-$count shape also works.
         HttpResponseMessage resp = await _fx.Client.GetAsync(
             "/odata/Authors?$orderby=id&$expand=Books($count=true;$expand=Chapters)");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
