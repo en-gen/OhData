@@ -2335,14 +2335,27 @@ internal static class OhDataEndpointFactory
         // SQL only when $count is absent; with $count the full (ordered) filtered set is materialized
         // so the JSON pass can count it before paging (see EngagedExpand remarks) — bounded by
         // countBound (#254/#298) so an unbounded child collection can no longer be materialized.
+        //
+        // #304 fix: the raw (no-$count) Skip/Take below is ALSO only safe at a projection LEAF, for
+        // exactly the same reason the #298 count bound is leaf-gated above — a level with children is
+        // further projected element-wise a few lines below in BuildShapedNavAccess, so windowing THIS
+        // level's collection and projecting a further collection out of each of its elements in the
+        // SAME query is the same untranslatable "double collection" SQL APPLY/LATERAL shape, just
+        // without $count in the mix. For a level with children the window is instead applied in the
+        // JSON pass (ShapePushedExpandsInJson → ApplyNestedWindow), bounded by the same MaxExpandTop
+        // ceiling WriteNestedCountAndWindow already enforces for the $count case.
         if (!deferPagingToJson)
         {
             if (!engaged.Count)
             {
-                if (engaged.Skip is int sk && sk > 0)
-                    access = Expression.Call(_enumerableSkip.MakeGenericMethod(elem), access, Expression.Constant(sk));
-                if (engaged.Top is int tp)
-                    access = Expression.Call(_enumerableTake.MakeGenericMethod(elem), access, Expression.Constant(tp));
+                if (isProjectionLeaf)
+                {
+                    if (engaged.Skip is int sk && sk > 0)
+                        access = Expression.Call(_enumerableSkip.MakeGenericMethod(elem), access, Expression.Constant(sk));
+                    if (engaged.Top is int tp)
+                        access = Expression.Call(_enumerableTake.MakeGenericMethod(elem), access, Expression.Constant(tp));
+                }
+                // else: a level WITH children — defer the $skip/$top window to the JSON pass (#304).
             }
             else if (countBound is int rowBound)
             {
@@ -2413,10 +2426,11 @@ internal static class OhDataEndpointFactory
             // providers without APPLY fail to translate, and the request would then silently degrade to
             // EDM-only (no data AND no count/window — #300 was exactly this for $skip/$top). The
             // ceiling and the $skip/$top window are both enforced/applied instead at EVERY level, in the
-            // JSON pass (ShapeLevelsInJson → WriteNestedCountAndWindow / ApplyNestedWindow): a count
-            // breach is a 400, never a truncated count, and $skip/$top window the already-materialized
-            // array. What is given up is only the SQL-side cost bound — consistent with E3, which
-            // already leaves an omitted nested $top unbounded.
+            // JSON pass (ShapeLevelsInJson → WriteNestedCountAndWindow / WriteNestedWindowOnly): a count
+            // breach OR a $skip/$top-only breach is a 400 (#316), never a truncated count nor an
+            // unbounded materialization, and $skip/$top window the already-materialized array. What is
+            // given up is only the SQL-side cost bound — consistent with E3, which already leaves an
+            // omitted nested $top unbounded.
             access = ApplyNavShape(access, engaged, elem, model, bound, maxExpandTop: null, deferPagingToJson: true);
 
             ParameterExpression n = Expression.Parameter(elem, "n");
@@ -2535,6 +2549,14 @@ internal static class OhDataEndpointFactory
                 if (e.Binding.IsCollection && node is JsonArray arr)
                 {
                     if (e.Count) WriteNestedCountAndWindow(parent, key, arr, e, maxExpandTop);
+                    // #304: a children level with $skip/$top but no $count was never SQL-windowed
+                    // (ApplyNavShape deferred it here) — apply that window now, BEFORE recursing into
+                    // children, so only the surviving (windowed) parents are shaped further. $skip=0 is
+                    // guarded out (mirrors ApplyNavShape's own `sk > 0` guard) so a no-op $skip=0 doesn't
+                    // trip the MaxExpandTop ceiling below — but $top is NOT guarded on > 0: $top=0 must
+                    // still window (to an empty array), never fall through to "no window at all".
+                    else if (hasChildren && ((e.Skip is int sk && sk > 0) || e.Top is int))
+                        WriteNestedWindowOnly(arr, key, e, maxExpandTop);
                     // Recurse into deeper pushed levels on the (paged) elements BEFORE this level's
                     // $select strip — the strip keeps expanded-nav names (ExtractSelectedProperties), so
                     // the children survive, and shaping deeper counts/selects sees the full child graph.
@@ -2554,27 +2576,51 @@ internal static class OhDataEndpointFactory
         }
     }
 
+    // #254/#304: the shared MaxExpandTop ceiling check for a collection level whose windowing was
+    // deferred to the JSON pass — because it couldn't be SQL-bounded, the full (filtered) collection had
+    // to be materialized first (see ApplyNavShape's isProjectionLeaf gate), so a collection larger than
+    // the configured budget is a DoS exposure the same way an unbounded nested $count materialization
+    // would be. <paramref name="verb"/> names what couldn't be computed/applied in the resulting message
+    // (e.g. "'$count'" or "'$top'/'$skip'") so the two call sites (count vs. plain windowing) get a
+    // distinct-but-same-family message. Throws Microsoft.OData.ODataException, caught by the collection
+    // route's existing handler and returned as a 400 InvalidQueryOption — no IResult threading through
+    // this void recursive walk.
+    private static void EnsureWithinExpandCeiling(JsonArray arr, string key, int? maxExpandTop, string verb)
+    {
+        if (maxExpandTop is int cap && arr.Count > cap)
+        {
+            throw new Microsoft.OData.ODataException(
+                $"The nested {verb} on '{key}' cannot be computed: the related collection exceeds the " +
+                $"maximum of {cap} entities. Narrow it with a nested $filter.");
+        }
+    }
+
     // #206 phase 2 (optioned expand) / #254: emit <c>Nav@odata.count</c> for one pushed collection
     // expand and apply its count-deferred $skip/$top window.
     //
     // OData §11.2.4.2 requires the emitted count to be the FULL filtered collection, not the page —
     // which is exactly why the #254 ceiling breach is a 400 rather than a silent truncation: the
     // materialization was bounded to MaxExpandTop + 1 rows in SQL (ApplyNavShape), so seeing more than
-    // MaxExpandTop rows here means the true count is unknowable within the configured budget. The
-    // ODataException is caught by the collection route's existing handler and returned as a 400
-    // InvalidQueryOption — no IResult threading through this void recursive walk.
+    // MaxExpandTop rows here means the true count is unknowable within the configured budget.
     private static void WriteNestedCountAndWindow(
         JsonObject parent, string key, JsonArray arr, EngagedExpand e, int? maxExpandTop)
     {
-        if (maxExpandTop is int cap && arr.Count > cap)
-        {
-            throw new Microsoft.OData.ODataException(
-                $"The nested '$count' on '{key}' cannot be computed: the related collection exceeds the " +
-                $"maximum of {cap} entities. Narrow it with a nested $filter.");
-        }
+        EnsureWithinExpandCeiling(arr, key, maxExpandTop, "'$count'");
 
         // Count reflects the full filtered collection (paging was deferred to here).
         parent[$"{key}@odata.count"] = arr.Count;
+        ApplyNestedWindow(arr, e);
+    }
+
+    // #304: a collection level with children carrying $skip/$top but NO $count (ApplyNavShape composed
+    // no SQL Skip/Take at all for this shape — see its isProjectionLeaf gate) — apply the deferred
+    // window here, in the JSON pass, BEFORE the caller recurses into children, so only the surviving
+    // (windowed) parents are shaped further. Enforces the same MaxExpandTop ceiling as
+    // WriteNestedCountAndWindow (the collection had to be fully materialized to window it here at all),
+    // but — unlike that method — never emits <c>@odata.count</c>: no $count was requested on this shape.
+    private static void WriteNestedWindowOnly(JsonArray arr, string key, EngagedExpand e, int? maxExpandTop)
+    {
+        EnsureWithinExpandCeiling(arr, key, maxExpandTop, "'$top'/'$skip'");
         ApplyNestedWindow(arr, e);
     }
 
@@ -2623,9 +2669,14 @@ internal static class OhDataEndpointFactory
                 // #300: $skip/$top on a $levels expand are never pushed to SQL (ApplyNavShape's
                 // deferPagingToJson) — they must be windowed here regardless of whether $count also
                 // rides along. WriteNestedCountAndWindow does count-emission + windowing when $count
-                // is requested; a bare ApplyNestedWindow otherwise (no Nav@odata.count to write).
+                // is requested; otherwise #316: WriteNestedWindowOnly (not a bare ApplyNestedWindow) so
+                // the same MaxExpandTop ceiling is enforced here too — without it, a $levels recursion
+                // with $skip/$top and no $count materialized every level's full collection with no
+                // bound at all. Same $skip=0 no-op guard as the #304 pushed-expand path above (mirrors
+                // ApplyNavShape's `sk > 0`); $top is never guarded on > 0 (a $top=0 window must still
+                // collapse to empty, not be skipped).
                 if (e.Count) WriteNestedCountAndWindow(parent, key, arr, e, maxExpandTop);
-                else if (e.Skip is int || e.Top is int) ApplyNestedWindow(arr, e);
+                else if ((e.Skip is int sk && sk > 0) || e.Top is int) WriteNestedWindowOnly(arr, key, e, maxExpandTop);
                 next.AddRange(arr.OfType<JsonObject>());
             }
             else if (!e.Binding.IsCollection && node is JsonObject one)
