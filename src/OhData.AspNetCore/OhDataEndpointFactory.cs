@@ -1249,7 +1249,7 @@ internal static class OhDataEndpointFactory
             }
 
             await ExpandLevelAsync(
-                rootItems, rootObjects, rootClause, requestSource, rootEdmType,
+                rootItems, rootObjects, rootClause, new[] { requestSource }, rootEdmType,
                 registration, requestServices, serializerOptions, depth: 1, ct);
         }
 
@@ -1342,7 +1342,7 @@ internal static class OhDataEndpointFactory
         IReadOnlyList<object> items,
         IReadOnlyList<JsonObject> jsonItems,
         SelectExpandClause clause,
-        IEntitySetEndpointSource levelSource,
+        IReadOnlyList<IEntitySetEndpointSource> levelSources,
         IEdmEntityType? levelEdmType,
         OhDataRegistration registration,
         IServiceProvider requestServices,
@@ -1350,18 +1350,20 @@ internal static class OhDataEndpointFactory
         int depth,
         CancellationToken ct)
     {
-        if (items.Count == 0 || depth > MaxNestedExpandDepth) return;
+        if (items.Count == 0 || depth > MaxNestedExpandDepth || levelSources.Count == 0) return;
 
         // Cache the key PropertyInfo once per level (M-3 perf parity with the old inline loop).
+        // #292: levelSources is a union of 2+ profiles only when the EDM couldn't disambiguate
+        // which entity set a navigation targets (see ResolveRequestSourcesForEdmType); those
+        // profiles all share the same CLR model type by construction, so the key property — a
+        // structural convention on that type, not part of any delegate/authorization boundary —
+        // is read off the first candidate.
         PropertyInfo? keyProp = items[0].GetType()
-            .GetProperty(levelSource.KeyPropertyName, BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance);
+            .GetProperty(levelSources[0].KeyPropertyName, BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance);
 
         foreach (ExpandedNavigationSelectItem expandItem in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
         {
             string propName = expandItem.PathToNavigationProperty.FirstSegment.Identifier;
-            NavigationRouteDefinition? navRoute = levelSource.NavigationRoutes.FirstOrDefault(n =>
-                string.Equals(n.PropertyName, propName, StringComparison.OrdinalIgnoreCase));
-            if (navRoute is null) continue; // no handler registered for this navigation — cannot load it
 
             // Derive the expand key the way the serializer named the parent's property: honor a
             // per-property [JsonPropertyName] rename first (#184), then fall back to the naming
@@ -1373,6 +1375,44 @@ internal static class OhDataEndpointFactory
             // non-camelCase policy) before resolving the payload key off the CLR property.
             PropertyInfo? expandClrProp = ODataPropertyNaming.FindClrPropertyByEdmName(items[0].GetType(), propName);
             string expandKey = ResolveNavigationJsonKey(expandClrProp?.Name ?? propName, expandClrProp, serializerOptions);
+
+            // #292: resolve which registered NavigationRouteDefinition (if any) legitimately
+            // serves this navigation at THIS level. levelSources is almost always a single
+            // profile; it only holds 2+ when the same CLR/EDM type is exposed by multiple entity
+            // sets and the EDM had no real navigation-source binding to tell them apart. Exactly
+            // one candidate defining a route for this nav name is unambiguous (the others simply
+            // have no opinion on it) — use it. Two or more candidates defining DIFFERENT routes
+            // for the SAME nav name is a genuine conflict: picking either risks running the wrong
+            // profile's delegate (or silently skipping the right one), so this fails closed by
+            // blanking the node below rather than guessing.
+            List<NavigationRouteDefinition> routeMatches = new();
+            foreach (IEntitySetEndpointSource candidate in levelSources)
+            {
+                NavigationRouteDefinition? match = candidate.NavigationRoutes.FirstOrDefault(n =>
+                    string.Equals(n.PropertyName, propName, StringComparison.OrdinalIgnoreCase));
+                if (match is not null) routeMatches.Add(match);
+            }
+
+            if (routeMatches.Count == 0) continue; // no handler registered anywhere — cannot load it
+
+            if (routeMatches.Count > 1)
+            {
+                // Fail closed (#292 item 3): whatever CLR value the PARENT level's own handler
+                // happened to populate here (e.g. an incidental EF Include, or relationship
+                // fixup from elsewhere in the same tracked DbContext) must not leak through
+                // un-vetted just because this level couldn't decide whose delegate — if any —
+                // is the authority for it. Blank instead of injecting/keeping either candidate's
+                // data or invoking either delegate.
+                bool isCollectionNav = (expandItem.PathToNavigationProperty.FirstSegment as NavigationPropertySegment)?
+                    .NavigationProperty?.Type.IsCollection() ?? false;
+                for (int i = 0; i < items.Count; i++)
+                {
+                    jsonItems[i][expandKey] = isCollectionNav ? new JsonArray() : null;
+                }
+                continue;
+            }
+
+            NavigationRouteDefinition navRoute = routeMatches[0];
 
             // Load the related entity/collection for every entity at this level, keeping the CLR
             // results (relatedByIndex[i]) so deeper levels can read their keys.
@@ -1459,23 +1499,31 @@ internal static class OhDataEndpointFactory
 
             if (hasNestedExpand)
             {
-                // Resolve the navigation target's entity set (its own NavigationRoutes drive the
-                // next level) and its request-scoped source (nav handlers may capture scoped
-                // dependencies such as a DbContext). Resolution is by EDM entity type rather than
-                // NavigationSource so it works whether or not an explicit nav-source binding exists.
-                IEdmEntityType? targetEdmType =
-                    (expandItem.PathToNavigationProperty.FirstSegment as NavigationPropertySegment)?.NavigationProperty?.ToEntityType();
-                IEntitySetEndpointSource? targetSource = ResolveRequestSourceForEdmType(targetEdmType, registration, requestServices);
+                // Resolve the navigation target's entity type and the request-scoped source(s)
+                // that legitimately serve the NEXT level's own NavigationRoutes (nav handlers may
+                // capture scoped dependencies such as a DbContext). #292: prefers the EDM's own
+                // navigation-source binding for THIS nav (expandItem.NavigationSource) when it
+                // names a real, unambiguous entity set; otherwise unions every profile exposing
+                // the same CLR/EDM type so the per-nav lookup above (routeMatches) can fail
+                // closed on conflicts instead of a single arbitrary FirstOrDefault picking
+                // whichever profile happens to be first in registration/iteration order.
+                IEdmNavigationProperty? navProp =
+                    (expandItem.PathToNavigationProperty.FirstSegment as NavigationPropertySegment)?.NavigationProperty;
+                IEdmEntityType? targetEdmType = navProp?.ToEntityType();
+                IReadOnlyList<IEntitySetEndpointSource> targetSources = ResolveRequestSourcesForEdmType(
+                    targetEdmType, expandItem.NavigationSource, registration, requestServices);
 
-                if (targetSource is not null)
+                if (targetSources.Count > 0)
                 {
                     await ExpandLevelAsync(
-                        childItems, childObjects, (SelectExpandClause)nestedClause, targetSource, targetEdmType,
+                        childItems, childObjects, (SelectExpandClause)nestedClause, targetSources, targetEdmType,
                         registration, requestServices, serializerOptions, depth + 1, ct);
                 }
-                // If the target set is not registered (no source), the deeper expansion cannot be
-                // loaded here; Stage 3.5's OmitUnexpandedNavigations still keeps the (empty) nav per
-                // the clause, mirroring the pre-#183 limitation for unregistered navigation targets.
+                // If no candidate set is registered/resolvable at all, the deeper expansion
+                // cannot be loaded here; Stage 3.5's OmitUnexpandedNavigations still keeps the
+                // (empty) nav per the clause, mirroring the pre-#183 limitation for unregistered
+                // navigation targets. This is safe precisely because zero candidates means no
+                // profile anywhere exposes the type, so no delegate-safety union applies to it.
             }
 
             // Apply this navigation's nested $select to the just-injected children (reuses the
@@ -1490,26 +1538,61 @@ internal static class OhDataEndpointFactory
         }
     }
 
-    // Finds the request-scoped endpoint source for a navigation target EDM entity type by matching
-    // it to a registered profile's entity set, then resolving that profile from the request scope
-    // (profiles are registered AddScoped). Returns null when no profile owns an entity set of that
-    // type — e.g. a navigation whose target type is present in the model but not exposed as its own
-    // entity set — in which case nested expansion of that navigation is not possible.
-    private static IEntitySetEndpointSource? ResolveRequestSourceForEdmType(
-        IEdmEntityType? targetEdmType, OhDataRegistration registration, IServiceProvider requestServices)
+    // #292: finds the request-scoped endpoint source(s) that legitimately serve a navigation
+    // target EDM entity type, replacing a plain FirstOrDefault-by-CLR-type that was registration-
+    // order dependent whenever the SAME type was exposed by 2+ entity sets (structurally the same
+    // shape of bug the #293 delegate-backed-nav union fixes on the pushdown path, but here on the
+    // Stage-3 delegate expansion path).
+    //
+    // 1) Prefer the EDM's OWN navigation-source binding (<paramref name="navigationSource"/>,
+    //    i.e. <c>expandItem.NavigationSource</c> at the call site) — OData's own answer to which
+    //    entity set a navigation path resolves to — but ONLY when it names a genuine, registered
+    //    entity set. Microsoft.OData.ModelBuilder's convention builder does not fail or guess when
+    //    a navigation's target CLR type is exposed by 2+ entity sets: it silently binds to an
+    //    <see cref="IEdmUnknownEntitySet"/> placeholder instead, whose Name is the NAVIGATION
+    //    PROPERTY's own name (not any real entity set's name — verified empirically: it is never
+    //    an IEdmEntitySet). Trusting that Name as if it were a real entity-set match would be
+    //    worse than the bug this fixes (it could coincidentally collide with an unrelated real set
+    //    of the same name), so an unresolved/unknown navigation source is treated exactly like "no
+    //    binding at all" and falls through to the union below.
+    // 2) With no trustworthy binding: union every profile whose entity set's EDM type is
+    //    <paramref name="targetEdmType"/>. This CAN legitimately return 2+ candidates — the
+    //    caller (ExpandLevelAsync) resolves per-navigation-name ambiguity from the full candidate
+    //    list rather than this method picking one, so a genuine conflict (two candidates routing
+    //    the same nav name differently) fails closed instead of being silently decided here.
+    //
+    // Returns an empty list when targetEdmType is null or no profile exposes it at all — e.g. a
+    // navigation whose target type is present in the model but never registered as its own entity
+    // set — in which case nested expansion of that navigation is not possible from any source.
+    private static IReadOnlyList<IEntitySetEndpointSource> ResolveRequestSourcesForEdmType(
+        IEdmEntityType? targetEdmType, IEdmNavigationSource? navigationSource,
+        OhDataRegistration registration, IServiceProvider requestServices)
     {
-        if (targetEdmType is null) return null;
+        if (targetEdmType is null) return Array.Empty<IEntitySetEndpointSource>();
+
+        if (navigationSource is IEdmEntitySet realBoundSet)
+        {
+            IEntitySetEndpointSource? bound = registration.Profiles.FirstOrDefault(p =>
+                string.Equals(p.EntitySetName, realBoundSet.Name, StringComparison.OrdinalIgnoreCase));
+            // A genuine EDM binding that doesn't match any currently-registered profile leaves
+            // nothing legitimate to resolve; falling back to the type-only union here would be
+            // guessing past an explicit (if stale) binding, so this returns empty rather than that.
+            return bound is not null && requestServices.GetService(bound.GetType()) is IEntitySetEndpointSource boundInstance
+                ? new[] { boundInstance }
+                : Array.Empty<IEntitySetEndpointSource>();
+        }
+
         string targetName = targetEdmType.FullTypeName();
+        List<IEntitySetEndpointSource> candidates = new();
         foreach (IEntitySetEndpointSource profile in registration.Profiles)
         {
             IEdmEntityType? setType = registration.EdmModel.EntityContainer?
                 .FindEntitySet(profile.EntitySetName)?.EntityType;
-            if (setType is not null && setType.FullTypeName() == targetName)
-            {
-                return requestServices.GetService(profile.GetType()) as IEntitySetEndpointSource;
-            }
+            if (setType is null || setType.FullTypeName() != targetName) continue;
+            if (requestServices.GetService(profile.GetType()) is IEntitySetEndpointSource instance)
+                candidates.Add(instance);
         }
-        return null;
+        return candidates;
     }
 
     // OData JSON Format v4.01 §4.5.1 / §11.2.4.2: a navigation property that was not requested
