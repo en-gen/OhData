@@ -171,6 +171,165 @@ internal static class DerivedTypeSqliteHarness
         .Last();
 }
 
+// Regression for the CRITICAL leak found by adversarial review on top of #293: widening
+// DelegateBackedNavNamesForClrType to assignability (above) closed the PUSHDOWN gate
+// (TryBuildEngagedExpand), but the DELEGATE-PATH resolver (ExpandLevelAsync's routeMatches-empty
+// branch) still only consulted whichever profiles ResolveRequestSourcesForEdmType matched by EXACT
+// EDM type name for the current level — which never includes a DERIVED-type profile, since a
+// derived CLR type gets its own, differently-named EDM entity type. So a navigation that is
+// delegate-backed ONLY by a derived-type profile (delegating a nav declared on the base type)
+// legitimately has zero routeMatches at that level, and the pre-fix code simply `continue`d past
+// it — leaving whatever EF-fixup/Include data the PARENT delegate's own query happened to populate
+// there to leak straight into the JSON, the derived-type profile's delegate (the real
+// authorization boundary) never running at all.
+//
+// DpBase declares Children. DpBaseProfile ("Things") is delegate-less for it. DpDerivedProfile
+// ("DerivedThings"), over the DERIVED DpDerived type, is the ONLY profile that route-backs
+// Children — the auth boundary. Unlike DtContainer.Things above (delegate-less, pushable),
+// DpRootProfile's OWN nav to Things IS delegate-backed, so the request goes through Stage 3
+// (ExpandLevelAsync) directly rather than the pushdown gate — the DELEGATE-PATH × DERIVED-TYPE
+// intersection the adversarial review flagged.
+public class DpBase
+{
+    public int Id { get; set; }
+    public int RootId { get; set; }
+    public string Name { get; set; } = "";
+    public List<DpChild> Children { get; set; } = new();
+}
+
+public sealed class DpDerived : DpBase
+{
+    public string Extra { get; set; } = "";
+}
+
+public sealed class DpChild
+{
+    public int Id { get; set; }
+    public int BaseId { get; set; }
+    public string Body { get; set; } = "";
+}
+
+public sealed class DpRoot
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public List<DpBase> Things { get; set; } = new();
+}
+
+public sealed class DerivedPathDbContext : DbContext
+{
+    public DerivedPathDbContext(DbContextOptions<DerivedPathDbContext> options) : base(options) { }
+
+    public DbSet<DpRoot> Roots => Set<DpRoot>();
+    public DbSet<DpBase> Things => Set<DpBase>();
+    public DbSet<DpChild> Children => Set<DpChild>();
+
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        // Roots.Things is served entirely by DpRootProfile's own getAll delegate below — not a
+        // real EF relationship — so EF must not try to auto-discover one.
+        b.Entity<DpRoot>().Ignore(r => r.Things);
+        b.Entity<DpBase>().HasMany(t => t.Children).WithOne().HasForeignKey(c => c.BaseId);
+    }
+}
+
+public sealed class DerivedPathDelegateCounter
+{
+    private int _childrenCalls;
+    public int ChildrenCalls => _childrenCalls;
+    public void CountChildrenCall() => Interlocked.Increment(ref _childrenCalls);
+}
+
+public sealed class DpRootProfile : EntitySetProfile<int, DpRoot>
+{
+    public DpRootProfile(DerivedPathDbContext db) : base(x => x.Id)
+    {
+        EntitySetName = "Roots";
+        ExpandEnabled = true;
+        OrderByEnabled = true;
+        GetQueryable = _ => Task.FromResult(db.Roots.AsQueryable());
+        // Delegate-BACKED: Include()s Children as an incidental implementation detail, simulating
+        // the realistic EF-fixup precondition — the already-populated CLR graph must not survive
+        // into the response just because the nested $expand=Children can't resolve a route here.
+        HasMany(x => x.Things,
+            getAll: (rootId, ct) => Task.FromResult<IEnumerable<DpBase>>(
+                db.Things.Include(t => t.Children).Where(t => t.RootId == rootId).ToList()));
+    }
+}
+
+// Delegate-LESS base-type profile. Things' own NavigationRoutes has no entry for Children at all.
+public sealed class DpBaseProfile : EntitySetProfile<int, DpBase>
+{
+    public DpBaseProfile(DerivedPathDbContext db) : base(x => x.Id)
+    {
+        EntitySetName = "Things";
+        ExpandEnabled = true;
+        OrderByEnabled = true;
+        GetQueryable = _ => Task.FromResult(db.Things.AsQueryable());
+        HasMany(x => x.Children); // delegate-LESS
+    }
+}
+
+// Delegate-BACKED DERIVED-type profile — the auth boundary for Children. Its ModelType (DpDerived)
+// differs from Things' own EDM entity type (DpBase), so ResolveRequestSourcesForEdmType's
+// exact-type-name union for the Things level never includes this profile — routeMatches at the
+// Children level is legitimately empty. Only DelegateBackedNavNamesForClrType's #293-widened,
+// assignability-aware check (consulted at the no-route site by this fix) can see it.
+public sealed class DpDerivedProfile : EntitySetProfile<int, DpDerived>
+{
+    public DpDerivedProfile(DerivedPathDbContext db, DerivedPathDelegateCounter counter) : base(x => x.Id)
+    {
+        EntitySetName = "DerivedThings";
+        ExpandEnabled = true;
+        HasMany(x => x.Children,
+            getAll: (baseId, ct) =>
+            {
+                counter.CountChildrenCall();
+                return Task.FromResult<IEnumerable<DpChild>>(
+                    db.Children.Where(c => c.BaseId == baseId).ToList());
+            });
+    }
+}
+
+internal static class DerivedPathSqliteHarness
+{
+    // thingsBeforeDerived toggles registration order — the leak must close regardless.
+    public static async Task<TestFixture> BuildAsync(
+        SqliteConnection connection, DerivedPathDelegateCounter counter, bool thingsBeforeDerived)
+    {
+        TestFixture fx = await TestHostBuilder.BuildAsync(
+            b =>
+            {
+                b.AddEntitySetProfile<DpRootProfile>();
+                if (thingsBeforeDerived)
+                {
+                    b.AddEntitySetProfile<DpBaseProfile>();
+                    b.AddEntitySetProfile<DpDerivedProfile>();
+                }
+                else
+                {
+                    b.AddEntitySetProfile<DpDerivedProfile>();
+                    b.AddEntitySetProfile<DpBaseProfile>();
+                }
+            },
+            configureServices: services =>
+            {
+                services.AddSingleton(counter);
+                services.AddDbContext<DerivedPathDbContext>(o => o.UseSqlite(connection));
+            });
+
+        using IServiceScope scope = fx.App.Services.CreateScope();
+        DerivedPathDbContext db = scope.ServiceProvider.GetRequiredService<DerivedPathDbContext>();
+        db.Database.EnsureCreated();
+
+        db.Roots.Add(new DpRoot { Id = 1, Name = "R1" });
+        db.Things.Add(new DpBase { Id = 10, RootId = 1, Name = "T1" });
+        db.Children.Add(new DpChild { Id = 100, BaseId = 10, Body = "dp-raw-child" });
+        db.SaveChanges();
+        return fx;
+    }
+}
+
 public sealed class DerivedTypeDelegateSafetyExpandTests
 {
     // The core #293 regression: a nested Things($expand=Children) must NEVER JOIN-load raw
@@ -204,5 +363,42 @@ public sealed class DerivedTypeDelegateSafetyExpandTests
         string body = await resp.Content.ReadAsStringAsync();
         Assert.Contains("\"Things\":[]", body);
         Assert.DoesNotContain("raw-child", body);
+    }
+
+    // CRITICAL regression (adversarial review, found on top of #293): the DELEGATE-PATH resolver
+    // (ExpandLevelAsync's no-route branch) must fail closed exactly like the pushdown gate already
+    // does. Roots.Things is delegate-BACKED (unlike Containers.Things above), so this goes through
+    // Stage 3 directly; DpDerivedProfile is the ONLY profile that route-backs Children, and it is
+    // invisible to ResolveRequestSourcesForEdmType's exact-type union for the Things level (a
+    // different EDM type). Before the fix, the no-route branch `continue`d past this, leaving the
+    // Root delegate's own Include()-populated Children data (real rows — unlike the pushdown case
+    // above, which defers to an empty Things) to leak straight into the JSON; the DerivedThings
+    // delegate never runs, so its authorization is silently bypassed. Must hold in BOTH
+    // registration orders.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task NestedExpand_DerivedProfileDelegate_DelegatePath_BlanksRatherThanLeaksFixup(
+        bool thingsBeforeDerived)
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        var counter = new DerivedPathDelegateCounter();
+        await using TestFixture fx = await DerivedPathSqliteHarness.BuildAsync(connection, counter, thingsBeforeDerived);
+
+        HttpResponseMessage resp = await fx.Client.GetAsync(
+            "/odata/Roots?$expand=Things($expand=Children)");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        string body = await resp.Content.ReadAsStringAsync();
+
+        // Things itself IS delegate-backed and genuinely loaded (unlike the pushdown-deferred,
+        // empty "Things":[] case above) — the leak under test is specifically in nested Children.
+        Assert.Contains("\"Id\":10", body);
+
+        // Fail closed: the DerivedThings delegate never ran, and the raw, Include-populated
+        // Children data must never leak through via un-vetted EF fixup.
+        Assert.Equal(0, counter.ChildrenCalls);
+        Assert.DoesNotContain("dp-raw-child", body);
+        Assert.Contains("\"Children\":[]", body);
     }
 }

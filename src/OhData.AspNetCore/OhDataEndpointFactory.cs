@@ -1393,7 +1393,53 @@ internal static class OhDataEndpointFactory
                 if (match is not null) routeMatches.Add(match);
             }
 
-            if (routeMatches.Count == 0) continue; // no handler registered anywhere — cannot load it
+            if (routeMatches.Count == 0)
+            {
+                // CRITICAL fail-closed fix (adversarial review, on top of #293): at depth > 1,
+                // levelSources only contains the profile(s) ResolveRequestSourcesForEdmType matched
+                // by EXACT EDM type name for THIS level — which never includes a profile declared
+                // over a DERIVED CLR type, since a derived type gets its own, differently-named EDM
+                // entity type. So a navigation that is delegate-backed ONLY by such a derived-type
+                // profile (delegating a nav declared on the base type) legitimately has zero
+                // routeMatches here even though it IS someone's authorization boundary. #293's
+                // DelegateBackedNavNamesForClrType is the single authoritative, assignability-aware
+                // "is this delegate-backed anywhere" check — reuse it here so the pushdown gate and
+                // this delegate path agree. levelSources all share one CLR model type by construction
+                // (see the keyProp comment above), and that shared type is a common ancestor of every
+                // possible runtime instance at this level, so checking it (rather than any single
+                // item's runtime type) catches a derived-type delegate regardless of which concrete
+                // type actually appears in the page.
+                //
+                // Scoped to depth > 1 (never the root, depth == 1): the root call always passes
+                // levelSources = [requestSource] — the EXACT entity set the URL explicitly named, not
+                // an inferred candidate. That set's own NavigationRoutes are the sole, authoritative
+                // answer for its OWN direct navigations (this is the same asymmetry the pushdown gate
+                // already relies on — TryBuildEngagedExpand decides a nav's OWN pushability from only
+                // its owning profile, and consults the union solely for the NEXT level down). Applying
+                // this check at depth == 1 would wrongly defer/blank a legitimately delegate-less (or
+                // already SQL-pushed) navigation just because some UNRELATED entity set happens to
+                // expose the same CLR type with a delegate on a same-named nav — exactly the false
+                // positive that regressed the $levels self-referential suite (LvNodes/LvShallowNodes/
+                // LvSecureNodes all share the exact LvNode CLR type) during development of this fix.
+                if (depth > 1 &&
+                    DelegateBackedNavNamesForClrType(levelSources[0].ModelType, registration) is { } backedElsewhere &&
+                    backedElsewhere.Contains(propName))
+                {
+                    // Unlike OmitUnexpandedNavigations' key REMOVAL (§11.2.4.2) for a nav that was
+                    // never $expand'd, this key IS in the $expand clause, so Stage 3.5 would KEEP
+                    // whatever the parent handler (or EF fixup/Include) already populated here.
+                    // Overwrite with an explicit empty value so a delegate-backed nav can never leak
+                    // fixup rows just because no route resolved for it at THIS level.
+                    bool isCollectionNavNoRoute = (expandItem.PathToNavigationProperty.FirstSegment as NavigationPropertySegment)?
+                        .NavigationProperty?.Type.IsCollection() ?? false;
+                    for (int i = 0; i < items.Count; i++)
+                    {
+                        jsonItems[i][expandKey] = isCollectionNavNoRoute ? new JsonArray() : null;
+                    }
+                }
+
+                continue; // no handler registered anywhere — cannot load it
+            }
 
             if (routeMatches.Count > 1)
             {
@@ -1403,6 +1449,10 @@ internal static class OhDataEndpointFactory
                 // un-vetted just because this level couldn't decide whose delegate — if any —
                 // is the authority for it. Blank instead of injecting/keeping either candidate's
                 // data or invoking either delegate.
+                //
+                // Same Stage-3.5 subtlety as the no-route branch above: this key IS in the $expand
+                // clause, so OmitUnexpandedNavigations would KEEP it — overwrite explicitly rather
+                // than rely on removal.
                 bool isCollectionNav = (expandItem.PathToNavigationProperty.FirstSegment as NavigationPropertySegment)?
                     .NavigationProperty?.Type.IsCollection() ?? false;
                 for (int i = 0; i < items.Count; i++)
@@ -1501,17 +1551,15 @@ internal static class OhDataEndpointFactory
             {
                 // Resolve the navigation target's entity type and the request-scoped source(s)
                 // that legitimately serve the NEXT level's own NavigationRoutes (nav handlers may
-                // capture scoped dependencies such as a DbContext). #292: prefers the EDM's own
-                // navigation-source binding for THIS nav (expandItem.NavigationSource) when it
-                // names a real, unambiguous entity set; otherwise unions every profile exposing
-                // the same CLR/EDM type so the per-nav lookup above (routeMatches) can fail
-                // closed on conflicts instead of a single arbitrary FirstOrDefault picking
+                // capture scoped dependencies such as a DbContext). #292: unions every profile
+                // exposing the same CLR/EDM type so the per-nav lookup above (routeMatches) can
+                // fail closed on conflicts instead of a single arbitrary FirstOrDefault picking
                 // whichever profile happens to be first in registration/iteration order.
                 IEdmNavigationProperty? navProp =
                     (expandItem.PathToNavigationProperty.FirstSegment as NavigationPropertySegment)?.NavigationProperty;
                 IEdmEntityType? targetEdmType = navProp?.ToEntityType();
                 IReadOnlyList<IEntitySetEndpointSource> targetSources = ResolveRequestSourcesForEdmType(
-                    targetEdmType, expandItem.NavigationSource, registration, requestServices);
+                    targetEdmType, registration, requestServices);
 
                 if (targetSources.Count > 0)
                 {
@@ -1544,43 +1592,31 @@ internal static class OhDataEndpointFactory
     // shape of bug the #293 delegate-backed-nav union fixes on the pushdown path, but here on the
     // Stage-3 delegate expansion path).
     //
-    // 1) Prefer the EDM's OWN navigation-source binding (<paramref name="navigationSource"/>,
-    //    i.e. <c>expandItem.NavigationSource</c> at the call site) — OData's own answer to which
-    //    entity set a navigation path resolves to — but ONLY when it names a genuine, registered
-    //    entity set. Microsoft.OData.ModelBuilder's convention builder does not fail or guess when
-    //    a navigation's target CLR type is exposed by 2+ entity sets: it silently binds to an
-    //    <see cref="IEdmUnknownEntitySet"/> placeholder instead, whose Name is the NAVIGATION
-    //    PROPERTY's own name (not any real entity set's name — verified empirically: it is never
-    //    an IEdmEntitySet). Trusting that Name as if it were a real entity-set match would be
-    //    worse than the bug this fixes (it could coincidentally collide with an unrelated real set
-    //    of the same name), so an unresolved/unknown navigation source is treated exactly like "no
-    //    binding at all" and falls through to the union below.
-    // 2) With no trustworthy binding: union every profile whose entity set's EDM type is
-    //    <paramref name="targetEdmType"/>. This CAN legitimately return 2+ candidates — the
-    //    caller (ExpandLevelAsync) resolves per-navigation-name ambiguity from the full candidate
-    //    list rather than this method picking one, so a genuine conflict (two candidates routing
-    //    the same nav name differently) fails closed instead of being silently decided here.
+    // Always the union: every profile whose entity set's EDM type is <paramref name="targetEdmType"/>.
+    // This CAN legitimately return 2+ candidates — the caller (ExpandLevelAsync) resolves
+    // per-navigation-name ambiguity from the full candidate list rather than this method picking
+    // one, so a genuine conflict (two candidates routing the same nav name differently) fails
+    // closed instead of being silently decided here.
+    //
+    // No branch preferring the EDM's own navigation-source binding (originally proposed in #292
+    // item 1, i.e. <c>expandItem.NavigationSource</c> at the call site): reviewed via reflection
+    // over Microsoft.OData.ModelBuilder + EntitySetProfile/IVisitModelBuilder, and there is no
+    // reachable API for a profile to create a genuine cross-entity-set navigation binding — the
+    // convention builder never produces a real <see cref="IEdmEntitySet"/> binding for a
+    // navigation, only either no binding or an <see cref="IEdmUnknownEntitySet"/> placeholder
+    // (whose Name is the navigation PROPERTY's own name, never a real entity set's). A binding
+    // branch is therefore structurally unreachable and provably redundant with the union below (a
+    // single legitimate candidate resolves identically either way; an ambiguous case already falls
+    // through to the union), so this is an intentional, reviewed deviation from #292's written
+    // step 1, not an oversight. If a real binding API is ever added, prefer it here first.
     //
     // Returns an empty list when targetEdmType is null or no profile exposes it at all — e.g. a
     // navigation whose target type is present in the model but never registered as its own entity
     // set — in which case nested expansion of that navigation is not possible from any source.
     private static IReadOnlyList<IEntitySetEndpointSource> ResolveRequestSourcesForEdmType(
-        IEdmEntityType? targetEdmType, IEdmNavigationSource? navigationSource,
-        OhDataRegistration registration, IServiceProvider requestServices)
+        IEdmEntityType? targetEdmType, OhDataRegistration registration, IServiceProvider requestServices)
     {
         if (targetEdmType is null) return Array.Empty<IEntitySetEndpointSource>();
-
-        if (navigationSource is IEdmEntitySet realBoundSet)
-        {
-            IEntitySetEndpointSource? bound = registration.Profiles.FirstOrDefault(p =>
-                string.Equals(p.EntitySetName, realBoundSet.Name, StringComparison.OrdinalIgnoreCase));
-            // A genuine EDM binding that doesn't match any currently-registered profile leaves
-            // nothing legitimate to resolve; falling back to the type-only union here would be
-            // guessing past an explicit (if stale) binding, so this returns empty rather than that.
-            return bound is not null && requestServices.GetService(bound.GetType()) is IEntitySetEndpointSource boundInstance
-                ? new[] { boundInstance }
-                : Array.Empty<IEntitySetEndpointSource>();
-        }
 
         string targetName = targetEdmType.FullTypeName();
         List<IEntitySetEndpointSource> candidates = new();

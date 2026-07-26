@@ -405,21 +405,33 @@ public sealed class MultiSetDelegateSafetyExpandTests
         Assert.Contains("\"tag1\"", body);
     }
 
-    // #292 regression: Shelves.Books is delegate-backed (unlike Library.Books), so it goes through
-    // Stage 3 (ExpandLevelAsync) directly rather than pushdown — exactly where
+    // #292 regression, merged: exercises BOTH the "exactly one legitimate route" outcome (Books)
+    // and the "two conflicting routes" fail-closed outcome (Books2) from a SINGLE request per
+    // registration order (both navs live on the same Shelves entity set and Stage 3 resolves each
+    // independently, so one request per order loses no coverage versus two).
+    //
+    // Books is delegate-backed (unlike Library.Books above), so it goes through Stage 3
+    // (ExpandLevelAsync) directly rather than pushdown — exactly where
     // ResolveRequestSourceForEdmType's registration-order-dependent FirstOrDefault lived. Books
-    // targets the SAME ambiguous MsBook type as the tests above (Books/FeaturedBooks), where
-    // EXACTLY ONE candidate (FeaturedBooks) route-backs the nested Reviews expand. The pre-fix
-    // FirstOrDefault, depending on iteration order, could resolve to the routeless Books profile —
-    // silently skipping the FeaturedBooks delegate while the Shelf handler's own incidental
-    // `Include(b => b.Reviews)` left raw review rows already populated on the CLR graph, which
-    // Stage 3.5 (OmitUnexpandedNavigations) would then keep untouched (it only strips UN-expanded
-    // navigations — the raw data leaks straight through with the delegate never having run). The
-    // fix must resolve to FeaturedBooks' delegate — and ONLY it — regardless of order.
+    // targets the ambiguous MsBook type where EXACTLY ONE candidate (FeaturedBooks) route-backs the
+    // nested Reviews expand. The pre-fix FirstOrDefault, depending on iteration order, could
+    // resolve to the routeless Books profile — silently skipping the FeaturedBooks delegate while
+    // the Shelf handler's own incidental `Include(b => b.Reviews)` left raw review rows already
+    // populated on the CLR graph, which Stage 3.5 (OmitUnexpandedNavigations) would then keep
+    // untouched (it only strips UN-expanded navigations — the raw data leaks straight through with
+    // the delegate never having run). The fix must resolve to FeaturedBooks' delegate — and ONLY
+    // it — regardless of order.
+    //
+    // Books2 targets the DOUBLY-ambiguous MsBook2 type, where TWO DIFFERENT profiles (BookAlphas,
+    // BookBetas) both route-back Reviews with distinct delegates — a genuine conflict with no way
+    // to legitimately choose between them. Neither may be picked arbitrarily; the fix must blank
+    // the Reviews node rather than let the Shelf handler's own incidental
+    // `Include(b => b.Reviews)` leak raw "book2-raw-review" data through, and neither delegate may
+    // run. Must hold in BOTH registration orders.
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task NestedExpand_AmbiguousBinding_ResolvesSoleRouteBackedProfile_RegardlessOfOrder(
+    public async Task NestedExpand_SoleRouteResolvesAndConflictBlanks_InOneRequest_RegardlessOfOrder(
         bool booksBeforeFeatured)
     {
         using var connection = new SqliteConnection("Data Source=:memory:");
@@ -429,46 +441,20 @@ public sealed class MultiSetDelegateSafetyExpandTests
             connection, counter, sink: null, booksBeforeFeatured);
 
         HttpResponseMessage resp = await fx.Client.GetAsync(
-            "/odata/Shelves?$expand=Books($expand=Reviews)");
+            "/odata/Shelves?$expand=Books($expand=Reviews),Books2($expand=Reviews)");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         string body = await resp.Content.ReadAsStringAsync();
 
-        // The ONE legitimate delegate (FeaturedBooks' Reviews handler) must have run — exactly
-        // once, for the one seeded book — in BOTH registration orders.
+        // Books: the ONE legitimate delegate (FeaturedBooks' Reviews handler) must have run —
+        // exactly once, for the one seeded book — in BOTH registration orders. Its OWN served data
+        // reaches the response (not merely "empty" — a genuinely resolvable route is HONORED, not
+        // deferred).
         Assert.Equal(1, counter.ReviewCalls);
-
-        // The delegate's OWN served data reaches the response (not merely "empty" — the whole
-        // point is that a genuinely resolvable route is HONORED, not deferred).
         Assert.Contains("raw-review", body);
-    }
 
-    // #292 regression (fail-closed side): Shelves.Books2 targets the DOUBLY-ambiguous MsBook2 type,
-    // where TWO DIFFERENT profiles (BookAlphas, BookBetas) both route-back Reviews with distinct
-    // delegates — a genuine conflict with no way to legitimately choose between them. Neither may
-    // be picked arbitrarily; the fix must blank the Reviews node rather than let the Shelf
-    // handler's own incidental `Include(b => b.Reviews)` leak raw "book2-raw-review" data through,
-    // and neither delegate may run. Must hold in BOTH registration orders.
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task NestedExpand_ConflictingRouteBackedProfiles_DefersBlank_NeverPicksEitherDelegate(
-        bool booksBeforeFeatured)
-    {
-        using var connection = new SqliteConnection("Data Source=:memory:");
-        connection.Open();
-        var counter = new MultiSetDelegateCounter();
-        await using TestFixture fx = await MultiSetSqliteHarness.BuildAsync(
-            connection, counter, sink: null, booksBeforeFeatured);
-
-        HttpResponseMessage resp = await fx.Client.GetAsync(
-            "/odata/Shelves?$expand=Books2($expand=Reviews)");
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-        string body = await resp.Content.ReadAsStringAsync();
-
-        // Neither BookAlphas' nor BookBetas' delegate ran.
+        // Books2: neither BookAlphas' nor BookBetas' delegate ran — fail closed, the raw,
+        // Include-populated Reviews data must never leak through.
         Assert.Equal(0, counter.Book2ReviewCalls);
-
-        // Fail closed: the raw, Include-populated Reviews data must never leak through.
         Assert.DoesNotContain("book2-raw-review", body);
         Assert.Contains("\"Reviews\":[]", body);
     }
