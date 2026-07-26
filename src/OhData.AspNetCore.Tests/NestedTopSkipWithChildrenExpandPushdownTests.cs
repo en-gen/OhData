@@ -12,13 +12,22 @@ namespace OhData.AspNetCore.Tests;
 // $expand (`Books($top=1;$expand=Chapters)`), WITHOUT $count, used to compose a SQL Skip/Take at the
 // SAME level that BuildShapedNavAccess then wrapped in a further element-wise Select projecting the
 // deeper navigation — the same "window this collection AND project a further collection out of it" SQL
-// APPLY/LATERAL shape #298 fixed for the $count case and #300 fixed for $levels. The fix: ApplyNavShape
-// composes NO SQL Skip/Take at a level with children (gated on isProjectionLeaf, mirroring #298's
-// countBound gate); the window is instead applied in the JSON pass (ShapePushedExpandsInJson →
-// ApplyNestedWindow), bounded by the same MaxExpandTop ceiling WriteNestedCountAndWindow already
-// enforces for the $count case. Reuses the Author/Book/Chapter/Page fixtures and harness from
-// MultiLevelExpandPushdownSqliteTests.cs (MlAuthorProfile registers "Authors" with a delegate-less,
-// pushable Books → Chapters → Pages chain) — that file itself must stay byte-unchanged.
+// APPLY/LATERAL shape #298 fixed for the $count case and #300 fixed for $levels. Before #304 this shape
+// failed loud with a 400 (proven by the now-retired ExpandPushdownFailLoudTests.cs, folded into this
+// file). The fix: ApplyNavShape composes NO SQL Skip/Take at a level with children (gated on
+// isProjectionLeaf, mirroring #298's countBound gate); the window is instead applied in the JSON pass
+// (ShapePushedExpandsInJson → ApplyNestedWindow), bounded by the same MaxExpandTop ceiling
+// WriteNestedCountAndWindow already enforces for the $count case. Reuses the Author/Book/Chapter/Page
+// fixtures and harness from MultiLevelExpandPushdownSqliteTests.cs (MlAuthorProfile registers "Authors"
+// with a delegate-less, pushable Books → Chapters → Pages chain) — that file itself must stay
+// byte-unchanged.
+//
+// Two review fold-ins also covered here:
+//  - #304 adversarial follow-up: a degenerate $skip=0 must be a no-op (mirroring ApplyNavShape's own
+//    `sk > 0` guard), NOT trip the MaxExpandTop ceiling — see Skip0_IsNoOp_DoesNotTripCeiling below.
+//  - #316: the SAME ceiling must also be enforced on the $levels JSON-windowing path
+//    (ShapeLevelsInJson) — see NestedTopSkipWithChildrenLevelsCeilingTests below, which reuses the
+//    $levels fixture from LevelsWithOptionsPushdownSqliteTests.cs rather than inventing a new DbContext.
 public sealed class NestedTopSkipWithChildrenExpandPushdownTests : IAsyncLifetime
 {
     private SqliteConnection _connection = null!;
@@ -161,6 +170,122 @@ public sealed class NestedTopSkipWithChildrenExpandPushdownTests : IAsyncLifetim
         Assert.Contains("Narrow it with a nested $filter", body);
         // The message must stay generic — never the raw EF/provider exception text (which could leak
         // schema/SQL details).
+        Assert.DoesNotContain("Sqlite", body);
+        Assert.DoesNotContain("SQLITE", body);
+    }
+
+    [Fact]
+    public async Task Skip0_WithNestedExpand_IsNoOp_DoesNotTripCeiling_Returns200()
+    {
+        // Adversarial fold-in: a no-op $skip=0 must NOT engage the deferred window at all (mirroring
+        // ApplyNavShape's own `sk > 0` guard) — otherwise Books($skip=0;$expand=Chapters) would trip the
+        // MaxExpandTop ceiling and 400, while the bare Books($expand=Chapters) (no window at all) 200s,
+        // an inconsistency between two requests that ask for the exact same data. Ceiling 1, Author 1
+        // has 2 Books — if $skip=0 were treated as "engage the window", this would 400 exactly like
+        // OverMaxExpandTop above; instead it must succeed with BOTH books and their chapters intact.
+        using var freshConnection = new SqliteConnection("Data Source=:memory:");
+        freshConnection.Open();
+        var freshCounter = new MultiLevelDelegateCounter();
+        await using TestFixture fxCapped = await MultiLevelSqliteHarness.BuildAsync(
+            freshConnection, freshCounter, sink: null, defaults: d => d.MaxExpandTop = 1);
+
+        HttpResponseMessage resp = await fxCapped.Client.GetAsync(
+            "/odata/Authors?$orderby=id&$expand=Books($skip=0;$expand=Chapters)");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        using JsonDocument doc = JsonDocument.Parse(body);
+        JsonElement author = doc.RootElement.GetProperty("value").EnumerateArray().Single();
+        JsonElement books = author.GetProperty("Books");
+
+        // Both of Author 1's books survive — $skip=0 windowed nothing away.
+        Assert.Equal(2, books.GetArrayLength());
+        JsonElement b1 = books.EnumerateArray().Single(b => b.GetProperty("Title").GetString() == "B1");
+        JsonElement b2 = books.EnumerateArray().Single(b => b.GetProperty("Title").GetString() == "B2");
+
+        // B1's own children (Chapters) are present — the whole point of #304, still true for the
+        // $skip=0 no-op path.
+        JsonElement chapters = b1.GetProperty("Chapters");
+        Assert.Equal(2, chapters.GetArrayLength());
+        Assert.Contains(chapters.EnumerateArray(), c => c.GetProperty("Heading").GetString() == "Zeta");
+        Assert.Contains(chapters.EnumerateArray(), c => c.GetProperty("Heading").GetString() == "Alpha");
+        // B2 has no chapters in the shared fixture — an empty (not omitted) array.
+        Assert.Equal(0, b2.GetProperty("Chapters").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Top0_WithNestedExpand_WindowsToEmpty_NeverAllRows()
+    {
+        // Correctness guard for the SAME fold-in as Skip0 above, but the opposite direction: unlike
+        // $skip=0 (a genuine no-op, guarded out), $top=0 is NOT guarded on > 0 — it must still window
+        // Books down to an EMPTY array. Guarding $top the same way as $skip would be a correctness bug:
+        // ApplyNestedWindow's `end` computation treats a MISSING $top as "no limit" (end = arr.Count),
+        // so skipping the window entirely for $top=0 would silently return ALL of Author 1's books
+        // instead of none.
+        HttpResponseMessage resp = await _fx.Client.GetAsync(
+            "/odata/Authors?$orderby=id&$expand=Books($top=0;$expand=Chapters)");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        using JsonDocument doc = JsonDocument.Parse(body);
+        JsonElement author = doc.RootElement.GetProperty("value").EnumerateArray().Single();
+        JsonElement books = author.GetProperty("Books");
+
+        // Empty (not omitted, and definitely not all 2 of Author 1's books).
+        Assert.Equal(0, books.GetArrayLength());
+    }
+
+    [Fact]
+    public async Task FailLoud_DoesNotRegressTheFixedShapes()
+    {
+        // Migrated from the now-retired ExpandPushdownFailLoudTests.cs: the #298 ($count + children)
+        // shape was already fixed before #304 (composes no SQL bound at a level with children) — it
+        // must still succeed now that the sibling $top/$skip-without-$count shape also works.
+        HttpResponseMessage resp = await _fx.Client.GetAsync(
+            "/odata/Authors?$orderby=id&$expand=Books($count=true;$expand=Chapters)");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+    }
+}
+
+// #316 fold-in: the SAME MaxExpandTop ceiling #304 enforces on the pushed-expand-with-children JSON
+// window (WriteNestedWindowOnly, via ShapePushedExpandsInJson, tested above) must ALSO be enforced on
+// the $levels JSON window (ShapeLevelsInJson) — before this fix, ShapeLevelsInJson called a bare
+// ApplyNestedWindow with no ceiling check at all, so a $levels expand with $skip/$top and no $count
+// could materialize an unbounded collection at every level of the recursion. Reuses the $levels fixture
+// (LvNode / LevelsOptionsSqliteHarness) from LevelsWithOptionsPushdownSqliteTests.cs rather than
+// inventing a new DbContext.
+//
+// Uses $skip, not $top: a nested $top on a SELF-REFERENTIAL navigation is rejected by Microsoft's own
+// SelectExpandQueryValidator before OhData's own ceiling check ever runs (the model-bound MaxTop on a
+// type used as both a root entity set AND its own nav target defaults to 0 — see
+// LevelsWithOptionsPushdownSqliteTests.NestedTop_OnSelfReferentialNav_RejectedByModelBoundValidator_WithAndWithoutLevels
+// for the pinned diagnosis of that PRE-EXISTING, unrelated limitation). $skip exercises the identical
+// WriteNestedWindowOnly guard ((sk > 0) || Top is int) without tripping that unrelated 400.
+public sealed class NestedTopSkipWithChildrenLevelsCeilingTests
+{
+    [Fact]
+    public async Task LevelsWithSkip_OverCeiling_NoCount_Returns400_ActionableCeilingMessage()
+    {
+        // MaxExpandTop=1: Root already has 2 Children (A, B) — over the ceiling at the very FIRST level
+        // of the recursion, so the breach is detected before ShapeLevelsInJson even recurses deeper.
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        var counter = new LevelsDelegateCounter();
+        await using TestFixture fx = await LevelsOptionsSqliteHarness.BuildAsync(
+            connection, counter, sink: null, defaults: d => d.MaxExpandTop = 1);
+
+        HttpResponseMessage resp = await fx.Client.GetAsync(
+            "/odata/LvNodes?$filter=parentId eq null&$expand=Children($levels=2;$skip=1)");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("\"error\"", body);
+        Assert.Contains("InvalidQueryOption", body);
+        Assert.Contains("Children", body);
+        Assert.Contains("cannot be computed", body);
+        Assert.Contains("maximum of 1", body);
+        Assert.Contains("Narrow it with a nested $filter", body);
+        // The message must stay generic — never the raw EF/provider exception text.
         Assert.DoesNotContain("Sqlite", body);
         Assert.DoesNotContain("SQLITE", body);
     }
