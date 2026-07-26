@@ -2106,10 +2106,23 @@ internal static class OhDataEndpointFactory
     // delegate-carrying set is never bypassed merely because a delegate-less set over the same type
     // registered first. The union is scoped to the SAME clrType and (by name membership at the call site)
     // the SAME navigation, so an unrelated nav on a different type never widens the deferral.
+    //
+    // #293: matching is by ASSIGNABILITY, not exact type identity (clrType == p.ModelType). A profile
+    // declared over a DERIVED type can attach a delegate to a navigation declared on a BASE type — the
+    // nested nav being evaluated here (childNavName at the call site) is reached through binding.ElementType,
+    // which is whatever CLR type the PARENT navigation's element type is (often the base). An exact-identity
+    // match would make that profile invisible to the union, treating the nav as delegate-less and letting it
+    // be EF-Included — a delegate bypass. Widening to either direction of assignability (clrType is a base of
+    // p.ModelType, OR clrType is itself a derived/equal type of p.ModelType) only ever ADDS candidates, so
+    // the worst case is an unrelated same-named navigation on an unrelated type in the inheritance chain
+    // forcing an unnecessary (but always SAFE) deferral — never a missed delegate. Over-matching costs a
+    // pushdown opportunity at worst; under-matching costs a security boundary, so the direction of error here
+    // is deliberately conservative.
     private static HashSet<string>? DelegateBackedNavNamesForClrType(Type clrType, OhDataRegistration registration)
     {
         HashSet<string>? names = null;
-        foreach (IEntitySetEndpointSource p in registration.Profiles.Where(p => p.ModelType == clrType))
+        foreach (IEntitySetEndpointSource p in registration.Profiles.Where(p =>
+                     clrType.IsAssignableFrom(p.ModelType) || p.ModelType.IsAssignableFrom(clrType)))
         {
             foreach (NavigationRouteDefinition r in p.NavigationRoutes)
                 (names ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase)).Add(r.PropertyName);
