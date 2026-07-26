@@ -2790,17 +2790,133 @@ internal static class OhDataEndpointFactory
     // LINQ-to-objects (or any non-EF) provider the same projection would read un-populated CLR
     // navigations and return empty/null data, so pushdown is gated to EF Core queryables and every
     // other provider takes the (delegate-less → EDM-only) fallback path.
-    private static bool IsEfCoreBacked(IQueryable query)
+    //
+    // #305 fold-in: also doubles as the EF Core assembly resolver for the Path A Include fallback
+    // below — the caller gates entry on the result being non-null (EF Core-backed) and reuses the
+    // SAME resolved assembly to locate EntityFrameworkQueryableExtensions.Include by REFLECTION: this
+    // package has no compile-time dependency on Microsoft.EntityFrameworkCore, so the Include-fallback
+    // machinery must locate EF Core's own extension methods off whatever assembly the host app
+    // actually loaded, never a `using Microsoft.EntityFrameworkCore;` reference. Previously this walk
+    // ran twice per request (once as a bool-returning gate, once again to fetch the assembly); now it
+    // runs once and the result is threaded through.
+    private static Assembly? ResolveEfCoreAssembly(IQueryable query)
     {
         for (Type? t = query.Provider.GetType(); t is not null; t = t.BaseType)
         {
             if (t.Namespace is { } ns &&
                 ns.StartsWith("Microsoft.EntityFrameworkCore", StringComparison.Ordinal))
             {
-                return true;
+                return t.Assembly;
             }
         }
+        return null;
+    }
+
+    // #305 Path A: reflection handle for EF Core's
+    // Include&lt;TEntity,TProperty&gt;(IQueryable&lt;TEntity&gt;, Expression&lt;Func&lt;TEntity,TProperty&gt;&gt;)
+    // — the two-generic-parameter, lambda-based overload (EF Core also exposes a one-generic-parameter
+    // STRING-path overload, excluded here by generic-arity). Cached per assembly: GetMethods()/LINQ
+    // filtering is not free, and this resolves on the hot GetQueryable pushdown path whenever the root
+    // projection is ineligible (see ApplyIncludeFallback).
+    private static readonly ConcurrentDictionary<Assembly, MethodInfo?> s_efIncludeMethodCache = new();
+
+    private static MethodInfo? ResolveEfIncludeMethod(Assembly efAssembly) =>
+        s_efIncludeMethodCache.GetOrAdd(efAssembly, static asm =>
+        {
+            Type? ext = asm.GetType("Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions");
+            return ext?.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                .FirstOrDefault(m => m.Name == "Include" && m.IsGenericMethodDefinition &&
+                    m.GetGenericArguments().Length == 2 && m.GetParameters().Length == 2 &&
+                    m.GetParameters()[0].ParameterType.IsGenericType &&
+                    m.GetParameters()[0].ParameterType.GetGenericTypeDefinition() == typeof(IQueryable<>));
+        });
+
+    // #305 Path A: true when ANY engaged expand — at any depth, including deferred nested children —
+    // carries a nested $filter/$orderby. Those are SQL-only (bound and composed by
+    // BindNavShape/ApplyNavShape/BuildShapedNavAccess onto the member-init projection); once the root
+    // projection is ineligible there is no member-init to compose them onto, and a plain EF Include
+    // cannot carry a predicate/ordering at all — so the caller fails loud instead of silently serving
+    // the navigation unfiltered/unsorted (which would be exactly the kind of wrong-data-under-200 #305
+    // reports, just for a different reason than the original silent-drop).
+    private static bool HasNestedFilterOrOrderBy(IReadOnlyList<EngagedExpand> engaged)
+    {
+        foreach (EngagedExpand e in engaged)
+        {
+            if (e.Filter is not null || e.OrderBy is not null) return true;
+            if (e.Children is { Count: > 0 } && HasNestedFilterOrOrderBy(e.Children)) return true;
+        }
         return false;
+    }
+
+    // #305 fold-in (review): the FIRST top-level engaged expand that carries a nested $expand or
+    // $levels — the scope ApplyIncludeFallback below does not serve (see its remarks). Checked by the
+    // caller BEFORE invoking ApplyIncludeFallback, and OUTSIDE the try/catch that wraps the actual
+    // Include construction+execution, so this validation's specific/actionable ODataException message
+    // reaches the client verbatim (via the route's outer ODataException handler) instead of being
+    // caught and overwritten by the generic provider-failure catch around the real Include call.
+    private static EngagedExpand? FindNestedExpandOrLevels(IReadOnlyList<EngagedExpand> engaged)
+    {
+        foreach (EngagedExpand e in engaged)
+        {
+            if (e.Children is { Count: > 0 } || e.Levels > 0) return e;
+        }
+        return null;
+    }
+
+    // #305 Path A: populate the request's engaged $expand navigations via EF Core's own Include when
+    // the root TModel projection is ineligible for a member-init Select (TryApplySelectProjection
+    // returned <paramref name="query"/> unchanged — no parameterless ctor / unknowable ETag / complex-or-
+    // unsettable structural member). Before #305 this dropped the navigations to EDM-only under a 200
+    // (the nav then serialized whatever the CLR property's default value was — typically an empty
+    // collection — silently wrong data). Resolved by reflection off the SAME EF Core assembly
+    // ResolveEfCoreAssembly already confirmed the query runs against.
+    //
+    // MaxExpandTop bounds materialization exactly like the member-init path: ApplyNavShape composes the
+    // same Skip/Take/count-bound (Take(cap+1)) windowing with the same deterministic tiebreak ordering —
+    // reused as-is here, never a "load all then trim".
+    //
+    // SCOPE (documented deviation from the fully general settled design — see the PR/report): only LEAF
+    // engaged expands (no nested $expand children, no $levels) are served this way; the caller has
+    // already rejected any nested $filter/$orderby (HasNestedFilterOrOrderBy) AND any nested $expand/
+    // $levels (FindNestedExpandOrLevels) before calling this method, so no such item reaches the loop
+    // below. A nested $expand or $levels fails loud rather than risk an unverified reflection-built
+    // ThenInclude/self-referential Include chain — untested by this fix's settled-design test list, and
+    // materially riskier than the member-init path: EF's automatic navigation-fixup can wire up a
+    // tracked self-referential navigation beyond the requested depth even when it was never explicitly
+    // Include'd, which the member-init projection (fresh POCOs, not EF-tracked) never risks. Both
+    // remain fully servable via full pushdown (add a parameterless ctor) or an expand delegate.
+    private static IQueryable<TModel> ApplyIncludeFallback<TModel>(
+        IQueryable<TModel> query, IReadOnlyList<EngagedExpand> engaged, MethodInfo includeMethod,
+        IEdmModel model, int? maxExpandTop)
+        where TModel : class
+    {
+        foreach (EngagedExpand e in engaged)
+        {
+            ParameterExpression owner = Expression.Parameter(typeof(TModel), "x");
+            Expression access = Expression.Property(owner, e.Binding.Property);
+            if (e.Binding.IsCollection)
+            {
+                // Filter/OrderBy are verified absent by the caller (HasNestedFilterOrOrderBy), so this
+                // reduces to exactly the Skip/Take/count-bound windowing ApplyNavShape composes on the
+                // (eligible) member-init projection path.
+                access = ApplyNavShape(access, e, e.Binding.ElementType, model, default, maxExpandTop);
+            }
+
+            LambdaExpression lambda = Expression.Lambda(access, owner);
+            MethodInfo closedInclude = includeMethod.MakeGenericMethod(typeof(TModel), access.Type);
+            try
+            {
+                query = (IQueryable<TModel>)closedInclude.Invoke(null, new object?[] { query, lambda })!;
+            }
+            catch (TargetInvocationException tie) when (tie.InnerException is not null)
+            {
+                // Unwrap: MethodInfo.Invoke always wraps the callee's own exception. The caller's catch
+                // narrows on the callee's REAL exception type (InvalidOperationException/
+                // NotSupportedException/ODataException), so it must see that type, not this wrapper.
+                throw tie.InnerException;
+            }
+        }
+        return query;
     }
 
     // M3: appends the OData JSON §10.7/§10.8 projection suffix to a context segment when a
@@ -3618,11 +3734,24 @@ internal static class OhDataEndpointFactory
                     // a $levels carrying extra options) or that fails (projection/translation/serialization
                     // cycle, unbindable clause) falls back: the navigation then stays EDM-only for this
                     // request, exactly as before pushdown existed.
+                    //
+                    // #305: deliberately NOT gated on pushdownCtorOk (unlike ApplySelectPushdown above).
+                    // Before #305, a root TModel without a parameterless ctor never even reached this
+                    // point — the projection would be ineligible anyway, so computing engagedExpandNavs
+                    // was pure waste. Now it feeds the Path A Include fallback below (ApplyIncludeFallback)
+                    // when TryApplySelectProjection turns out ineligible, so it must be computed
+                    // regardless of ctor eligibility; TryApplySelectProjection itself still bails
+                    // immediately on !hasParameterlessCtor (see its own hasParameterlessCtor check), so
+                    // this costs nothing extra for the ctor-eligible case.
                     List<EngagedExpand>? engagedExpandNavs = null;
+                    // #305 fold-in: resolve the EF Core assembly ONCE here (short-circuited exactly like
+                    // the old bool-returning IsEfCoreBacked gate it replaces) and reuse it below at the
+                    // Path A Include-fallback call site instead of re-walking query.Provider a second time.
+                    Assembly? efAssembly = null;
                     if (source.ExpandPushdownEnabled &&
-                        pushdownCtorOk && pushdownNamesUnambiguous &&
+                        pushdownNamesUnambiguous &&
                         options.SelectExpand?.SelectExpandClause is { } expandPlanClause &&
-                        IsEfCoreBacked(filtered))
+                        (efAssembly = ResolveEfCoreAssembly(filtered)) is not null)
                     {
                         foreach (ExpandedNavigationSelectItem expandItem in
                                  expandPlanClause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
@@ -3678,14 +3807,86 @@ internal static class OhDataEndpointFactory
 
                         if (ReferenceEquals(pushedQuery, filtered))
                         {
-                            // Projection ineligible (e.g. a complex/unsettable structural member) →
-                            // the navigations were NOT materialized. Abandon expand pushdown for this
-                            // request and take the fallback path, still honoring $select pushdown.
-                            logger?.LogDebug(
-                                "OhData: $expand pushdown skipped for {EntitySet}: the collection projection was ineligible; delegate-less navigations stay EDM-only for this request.",
-                                source.EntitySetName);
-                            engagedExpandNavs = null;
-                            items = ApplySelectPushdown(filtered).ToArray();
+                            // #305 Path A ("serve, not silently drop"): the root projection is
+                            // ineligible (e.g. no parameterless ctor / unknowable ETag / a complex-or-
+                            // unsettable structural member), so TryApplySelectProjection could not fold
+                            // engagedExpandNavs into a member-init Select. Before #305 this dropped to
+                            // EDM-only (engagedExpandNavs = null) — the navigations then serialized
+                            // whatever the CLR property's default value already was (typically an empty
+                            // collection) under a lying 200. Now: serve the SAME engaged navigations via
+                            // EF Core's own Include (bounded by MaxExpandTop exactly like the projection
+                            // path — see ApplyIncludeFallback), or fail loud (400) when the request needs
+                            // something a plain Include cannot carry (a nested $filter/$orderby) or that
+                            // this fix does not fold through Include (a nested $expand/$levels).
+                            if (HasNestedFilterOrOrderBy(engagedExpandNavs))
+                            {
+                                throw new Microsoft.OData.ODataException(
+                                    $"The '$expand' on '{source.EntitySetName}' could not be processed: " +
+                                    "a nested $filter/$orderby on $expand requires a projection-eligible " +
+                                    "model, which this one isn't (an eligible model has a public " +
+                                    "parameterless constructor, settable non-complex properties, and — " +
+                                    "if it uses ETags — a direct UseETag selector over structural " +
+                                    "properties). Make the model projection-eligible, or write an " +
+                                    "expand delegate for this navigation.");
+                            }
+
+                            // #305 fold-in (review): validated here, OUTSIDE the try/catch around the
+                            // actual Include construction+execution below, so this SPECIFIC actionable
+                            // message reaches the client via the route's outer ODataException handler
+                            // instead of being caught and overwritten by the generic provider-failure
+                            // catch that wraps the real Include call.
+                            if (FindNestedExpandOrLevels(engagedExpandNavs) is { } nestedNav)
+                            {
+                                throw new Microsoft.OData.ODataException(
+                                    $"The '$expand' on '{nestedNav.Binding.Property.Name}' could not be " +
+                                    "served without a projection-eligible model: a nested $expand or " +
+                                    "$levels under a plain Include fallback is not supported. Make the " +
+                                    "model projection-eligible (a public parameterless constructor, " +
+                                    "settable non-complex properties, and — if it uses ETags — a direct " +
+                                    "UseETag selector over structural properties) to enable full " +
+                                    "pushdown, or write an expand delegate for this navigation.");
+                            }
+
+                            MethodInfo? efInclude = efAssembly is not null ? ResolveEfIncludeMethod(efAssembly) : null;
+                            if (efInclude is null)
+                            {
+                                // The outer gate above already resolved efAssembly as non-null to reach
+                                // this branch, so this should not happen against a genuine EF Core
+                                // provider — fail loud rather than silently drop the navigations if it
+                                // ever does.
+                                throw new Microsoft.OData.ODataException(
+                                    $"The '$expand' on '{source.EntitySetName}' could not be processed: " +
+                                    "the underlying provider does not expose a usable Include API. " +
+                                    "Write an expand delegate for this navigation instead.");
+                            }
+
+                            try
+                            {
+                                IQueryable<TModel> included = ApplyIncludeFallback(
+                                    filtered, engagedExpandNavs, efInclude, registration.EdmModel,
+                                    source.MaxExpandTop);
+                                items = ApplySelectPushdown(included).ToArray();
+                                // engagedExpandNavs stays SET (not nulled): the existing
+                                // ShapePushedExpandsInJson pass below shapes nested
+                                // $count/$select/$top/$skip exactly as it does for the projection path.
+                            }
+                            catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException
+                                or Microsoft.OData.ODataException)
+                            {
+                                // Same narrowed catch discipline as the translation-failure site below
+                                // (S7: never leak ex.Message/provider details to the client): Include
+                                // construction/execution failing — e.g. TModel is not an EF entity in
+                                // this model, or this is not a tracking query — is a genuine capability
+                                // gap, not something to paper over with missing data.
+                                logger?.LogDebug(ex,
+                                    "OhData: $expand Include fallback failed for {EntitySet}.",
+                                    source.EntitySetName);
+                                throw new Microsoft.OData.ODataException(
+                                    $"The '$expand' on '{source.EntitySetName}' could not be processed: " +
+                                    "the navigations could not be loaded via the underlying provider's " +
+                                    "Include API. Write an expand delegate for this navigation to take " +
+                                    "full control of its query shape.");
+                            }
                         }
                         else
                         {
@@ -3767,25 +3968,21 @@ internal static class OhDataEndpointFactory
                     }
                     catch (JsonException ex) when (engagedExpandNavs is { Count: > 0 })
                     {
-                        // #206 phase 2 (adversarial-review hardening): the pushed graph tripped a
-                        // serialization cycle the static back-reference guard missed (e.g. EF
-                        // relationship fixup populated an untyped/base-typed back-navigation the
-                        // projection did not itself materialize). Degrade to the (delegate-less →
-                        // EDM-only) fallback instead of surfacing a 500: re-fetch WITHOUT the folded
-                        // navigations, then run the same pipeline. The row COUNT is unchanged, so the
-                        // nextLink computed above stays valid.
+                        // #305 Path B (FAIL LOUD, owner directive — supersedes the #206 fallback this
+                        // replaces): the pushed graph tripped a serialization cycle the static
+                        // back-reference guard (TypeHasNavigationTo) missed (e.g. EF relationship fixup
+                        // populated an untyped/base-typed back-navigation the projection did not itself
+                        // materialize). Re-fetching EDM-only used to silently drop the navigations under
+                        // a 200 — exactly the class of bug #305 reports. A true object-graph cycle
+                        // cannot be served at all, so rethrow: the group-level exception filter turns
+                        // this into a generic 500 InternalServerError, never leaking the exception
+                        // detail (or which navigation/shape tripped it) to the client. A separate
+                        // follow-up hardens TypeHasNavigationTo so this path becomes unreachable in
+                        // practice; until then, failing loud beats lying under a 200.
                         logger?.LogDebug(ex,
-                            "OhData: $expand pushdown produced a serialization cycle for {EntitySet}; falling back (delegate-less navigations stay EDM-only for this request).",
+                            "OhData: $expand pushdown produced a serialization cycle for {EntitySet}.",
                             source.EntitySetName);
-                        // Disengage shaping BEFORE the fallback re-fetch — like the ineligible-projection
-                        // fallback above (the translation-failure case above now fails loud with a 400
-                        // instead of falling back — see its own catch) — so ShapePushedExpandsInJson does
-                        // not run against the degraded (EDM-only) data and emit a bogus Nav@odata.count.
-                        // The re-fetch folds no navigations, so it cannot trip the cycle again.
-                        engagedExpandNavs = null;
-                        pushedLevelsNavNames = null; // nothing pushed after the fallback re-fetch
-                        items = ApplySelectPushdown(filtered).ToArray();
-                        (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct, pushedLevelsNavNames);
+                        throw;
                     }
 
                     // #206 phase 2 (optioned expand): apply the JSON-side portion of each pushed
