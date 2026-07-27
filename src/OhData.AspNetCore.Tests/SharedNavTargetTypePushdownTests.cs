@@ -157,19 +157,15 @@ public sealed class SharedNavTargetTypePushdownTests : IAsyncLifetime
         Assert.Contains("(2)", body);
     }
 
-    [Fact]
-    public async Task RootTop_AboveOwnMaxTop_OnSharedType_IsUnaffected_Returns400()
+    [Theory]
+    [InlineData(11, HttpStatusCode.BadRequest)] // SnChild's OWN root MaxTop (10) is unrelated to
+                                                // SnParentProfile.MaxExpandTop (2) above -- proves
+                                                // the fix did not weaken the shared type's own
+                                                // request-level $top as a root set.
+    [InlineData(3, HttpStatusCode.OK)]
+    public async Task RootTop_OnSharedType_RespectsOwnMaxTop(int top, HttpStatusCode expectedStatus)
     {
-        // SnChild's OWN root MaxTop (10) is unrelated to SnParentProfile.MaxExpandTop (2) above --
-        // proves the fix did not weaken the shared type's own request-level $top as a root set.
-        HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/SnChildren?$top=11");
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-    }
-
-    [Fact]
-    public async Task RootTop_WithinOwnMaxTop_OnSharedType_StillSucceeds()
-    {
-        HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/SnChildren?$top=3");
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        HttpResponseMessage resp = await _fx.Client.GetAsync($"/odata/SnChildren?$top={top}");
+        Assert.Equal(expectedStatus, resp.StatusCode);
     }
 }

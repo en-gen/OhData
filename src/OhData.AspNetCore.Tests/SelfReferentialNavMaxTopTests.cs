@@ -18,7 +18,7 @@ namespace OhData.AspNetCore.Tests;
 // SrnNodeProfile's Children navigation is DELEGATE-BACKED (HasMany(..., getAll:)). #294 (owner
 // decision, filed against the silent-wrong-data this exact combination produced during #296's review:
 // $top=2 silently returning all 3 children under an unsuspicious 200) means a delegate-backed
-// navigation now REJECTS any nested $top/$skip with 400 UnsupportedQueryOption instead of silently
+// navigation now REJECTS any nested $top/$skip with 400 InvalidQueryOption instead of silently
 // ignoring it -- the delegate owns its own query shape and nothing downstream re-windows its answer.
 // So on THIS delegate-backed shape, lifting #296's model-bound pre-rejection does NOT make an in-range
 // nested $top succeed; it only lets OhData's OWN checks run instead of Microsoft's model-bound one --
@@ -28,11 +28,14 @@ namespace OhData.AspNetCore.Tests;
 //
 // This file proves:
 //   1. an in-range nested $top against a delegate-backed self-referential nav 400s via #294's reject
-//      (UnsupportedQueryOption) -- not #296's old model-bound 400, and not the silent-wrong-data 200
+//      (InvalidQueryOption, thrown as Microsoft.OData.ODataException and caught by the route's
+//      existing handler) -- not #296's old model-bound 400, and not the silent-wrong-data 200
 //      that made #296 unshippable on its own;
 //   2. a nested $top ABOVE MaxExpandTop still 400s via the pre-existing ceiling check
 //      (ValidateNestedTopCeiling), which runs BEFORE #294's reject and takes precedence, so the
-//      over-ceiling case keeps its original InvalidQueryOption diagnostic rather than #294's.
+//      over-ceiling case keeps its own "exceeds the maximum allowed value" message rather than
+//      #294's "not supported on the delegate-backed navigation" one (both now share the same
+//      InvalidQueryOption code, so the message content is what distinguishes them in the test).
 public sealed class SrnNode
 {
     public int Id { get; set; }
@@ -92,14 +95,15 @@ public sealed class SelfReferentialNavMaxTopTests : IAsyncLifetime
         // #294: before that fix this used to succeed with 200 and return all 3 children regardless of
         // $top=2 -- the silent-wrong-data bug the adversarial review of #296 flagged, which is exactly
         // why #294 and #296 are shipped together. A delegate-backed navigation cannot be safely
-        // re-windowed by the framework, so a nested $top/$skip against one is now rejected outright
-        // (ExpandLevelAsync) instead of silently ignored.
+        // re-windowed by the framework, so a nested $top/$skip against one now throws
+        // Microsoft.OData.ODataException (ExpandLevelAsync), caught by the route's existing handler
+        // and surfaced as 400 InvalidQueryOption, instead of silently ignored.
         HttpResponseMessage resp = await _fx.Client.GetAsync(
             "/odata/SrnNodes?$filter=id eq 1&$expand=Children($top=2)");
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
 
         string body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("UnsupportedQueryOption", body);
+        Assert.Contains("InvalidQueryOption", body);
         Assert.Contains("Children", body);
     }
 
@@ -109,7 +113,8 @@ public sealed class SelfReferentialNavMaxTopTests : IAsyncLifetime
         // OhData's own MaxExpandTop ceiling (ValidateNestedTopCeiling) runs BEFORE #294's delegate
         // reject in the request pipeline and still bites here -- an over-ceiling nested $top 400s for
         // the pre-existing reason (InvalidQueryOption, "exceeds the maximum allowed value"), not
-        // #294's UnsupportedQueryOption, since the ceiling check short-circuits first regardless of
+        // #294's "not supported on the delegate-backed navigation" message (both share the
+        // InvalidQueryOption code now), since the ceiling check short-circuits first regardless of
         // whether the navigation is delegate-backed.
         HttpResponseMessage resp = await _fx.Client.GetAsync(
             "/odata/SrnNodes?$filter=id eq 1&$expand=Children($top=3)");

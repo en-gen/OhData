@@ -106,7 +106,7 @@ public sealed class GetByIdNestedTopCeilingTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
 
         string body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("UnsupportedQueryOption", body);
+        Assert.Contains("InvalidQueryOption", body);
         Assert.Contains("Children", body);
     }
 

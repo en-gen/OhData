@@ -1203,11 +1203,10 @@ internal static class OhDataEndpointFactory
     // Unified collection pipeline: Serialize → ETag → Expand → Select.
     // Serialises exactly once using the owned jsonOptions (defensively falls back to the
     // PascalCase _pascalCaseSerializerOptions if ever null — in practice it is always supplied).
-    // #294: ExpandError is non-null when a nested $top/$skip was rejected against a delegate-backed
-    // navigation somewhere in the expand tree (see ExpandLevelAsync) — callers must return it
-    // immediately instead of building a 200 envelope around whatever partial Items/SelectedProps
-    // this returns alongside it.
-    private static async Task<(JsonArray Items, List<string>? SelectedProps, IResult? ExpandError)> ApplyCollectionPipelineAsync(
+    // #294: a nested $top/$skip rejected against a delegate-backed navigation somewhere in the
+    // expand tree throws Microsoft.OData.ODataException out of ExpandLevelAsync — every caller of
+    // this method already catches that exception and converts it to 400 InvalidQueryOption.
+    private static async Task<(JsonArray Items, List<string>? SelectedProps)> ApplyCollectionPipelineAsync(
         object[] originalItems,
         ODataQueryOptions options,
         IEntitySetEndpointSource source,
@@ -1252,10 +1251,9 @@ internal static class OhDataEndpointFactory
                 }
             }
 
-            IResult? expandError = await ExpandLevelAsync(
+            await ExpandLevelAsync(
                 rootItems, rootObjects, rootClause, new[] { requestSource }, rootEdmType,
                 registration, requestServices, serializerOptions, depth: 1, ct);
-            if (expandError is not null) return (json, null, expandError);
         }
 
         // Stage 3.5: Omit navigation properties that were not $expand'd (issue #176).
@@ -1281,7 +1279,7 @@ internal static class OhDataEndpointFactory
             }
         }
 
-        return (json, selectedProps, null);
+        return (json, selectedProps);
     }
 
     // Removes every property not in <paramref name="selectedProps"/> from each object, leaving
@@ -1343,11 +1341,11 @@ internal static class OhDataEndpointFactory
     // per-entity Handler is called once per entity (N+1 within that one property). Nested levels
     // flatten every related entity across the page into a single set before recursing, so a
     // batch-capable navigation is still batched once per level rather than once per parent.
-    // #294: returns a non-null 400 OData error the instant a nested $top/$skip is found against a
-    // delegate-backed navigation anywhere in the expand tree (see the RunDelegate branch below);
-    // callers (ApplyCollectionPipelineAsync, and this method's own recursive call) must surface it
-    // immediately rather than continuing to shape/return a 200.
-    private static async Task<IResult?> ExpandLevelAsync(
+    // #294: a nested $top/$skip against a delegate-backed navigation anywhere in the expand tree
+    // (see the RunDelegate branch below) throws Microsoft.OData.ODataException rather than
+    // returning/threading an IResult — every caller of ApplyCollectionPipelineAsync already catches
+    // that exception and converts it to 400 InvalidQueryOption.
+    private static async Task ExpandLevelAsync(
         IReadOnlyList<object> items,
         IReadOnlyList<JsonObject> jsonItems,
         SelectExpandClause clause,
@@ -1359,7 +1357,7 @@ internal static class OhDataEndpointFactory
         int depth,
         CancellationToken ct)
     {
-        if (items.Count == 0 || depth > MaxNestedExpandDepth || levelSources.Count == 0) return null;
+        if (items.Count == 0 || depth > MaxNestedExpandDepth || levelSources.Count == 0) return;
 
         // Cache the key PropertyInfo once per level (M-3 perf parity with the old inline loop).
         // #292: levelSources is a union of 2+ profiles only when the EDM couldn't disambiguate
@@ -1442,7 +1440,17 @@ internal static class OhDataEndpointFactory
             // already emptied above).
             if (expandItem.TopOption is not null || expandItem.SkipOption is not null)
             {
-                return ODataError(400, "UnsupportedQueryOption",
+                // Thrown (not returned) for the same reason EnsureWithinExpandCeiling throws below:
+                // it avoids IResult threading through this void recursive walk. All 5 collection-GET
+                // call sites of ApplyCollectionPipelineAsync already catch Microsoft.OData.ODataException
+                // and surface it as 400 InvalidQueryOption.
+                //
+                // Known gap (#320, not fixed here): this reject fires only when the navigation ITSELF
+                // resolves to RunDelegate at this level. A delegate-backed nav reached solely via a
+                // ServeRaw (delegate-less) parent's already-materialized graph never reaches this
+                // check — its nested $top/$skip is still silently ignored. Fixing that needs a
+                // treatment-independent pre-pipeline scan of the whole $expand tree; out of scope here.
+                throw new Microsoft.OData.ODataException(
                     $"A nested $top/$skip is not supported on the delegate-backed navigation '{propName}'; " +
                     "declare it delegate-less (no Handler/BatchHandler) to enable server-side windowing, " +
                     "or remove the option.");
@@ -1547,10 +1555,9 @@ internal static class OhDataEndpointFactory
 
                 if (targetSources.Count > 0)
                 {
-                    IResult? nestedExpandError = await ExpandLevelAsync(
+                    await ExpandLevelAsync(
                         childItems, childObjects, (SelectExpandClause)nestedClause, targetSources, targetEdmType,
                         registration, requestServices, serializerOptions, depth + 1, ct);
-                    if (nestedExpandError is not null) return nestedExpandError;
                 }
                 // If no candidate set is registered/resolvable at all, the deeper expansion
                 // cannot be loaded here; Stage 3.5's OmitUnexpandedNavigations still keeps the
@@ -1569,8 +1576,6 @@ internal static class OhDataEndpointFactory
                 if (nestedSelected is not null) StripToSelectedProperties(childObjects, nestedSelected);
             }
         }
-
-        return null;
     }
 
     // #292: finds the request-scoped endpoint source(s) that legitimately serve a navigation
@@ -3702,8 +3707,7 @@ internal static class OhDataEndpointFactory
                         frameworkNextLink = BuildNextPageLinkWithSkip(ctx, nextSkip);
                     }
 
-                    var (finalItems, selectedProps, expandError) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
-                    if (expandError is not null) return expandError;
+                    var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
@@ -4148,10 +4152,9 @@ internal static class OhDataEndpointFactory
 
                     JsonArray finalItems;
                     List<string>? selectedProps;
-                    IResult? expandError;
                     try
                     {
-                        (finalItems, selectedProps, expandError) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct, pushedLevelsNavNames);
+                        (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct, pushedLevelsNavNames);
                     }
                     catch (JsonException ex) when (engagedExpandNavs is { Count: > 0 })
                     {
@@ -4171,8 +4174,6 @@ internal static class OhDataEndpointFactory
                             source.EntitySetName);
                         throw;
                     }
-
-                    if (expandError is not null) return expandError;
 
                     // #206 phase 2 (optioned expand): apply the JSON-side portion of each pushed
                     // expand's nested options — Nav@odata.count and count-deferred paging, plus nested
@@ -4336,8 +4337,7 @@ internal static class OhDataEndpointFactory
                         object[] searchItems = searchResults.ToArray();
                         var (pagedSearchItems, searchPreTotal, searchNextLink) = ApplyGetAllPaging(searchItems);
 
-                        var (searchFinal, searchSelectedProps, searchExpandError) = await ApplyCollectionPipelineAsync(pagedSearchItems, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
-                        if (searchExpandError is not null) return searchExpandError;
+                        var (searchFinal, searchSelectedProps) = await ApplyCollectionPipelineAsync(pagedSearchItems, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
                         string searchBaseUrl = BuildBaseUrl(ctx, prefix);
                         var searchEnvelope = new Dictionary<string, object?>();
                         searchEnvelope["@odata.context"] = $"{searchBaseUrl}/$metadata#{AppendSelectSuffix(name, searchSelectedProps)}";
@@ -4356,8 +4356,7 @@ internal static class OhDataEndpointFactory
                     var rawItems = enumerable.ToArray();
                     var (pagedItems, preTotal, nextLink) = ApplyGetAllPaging(rawItems);
 
-                    var (finalItems, selectedProps, expandError) = await ApplyCollectionPipelineAsync(pagedItems, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
-                    if (expandError is not null) return expandError;
+                    var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(pagedItems, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
@@ -4548,9 +4547,8 @@ internal static class OhDataEndpointFactory
                         // Reuse the collection pipeline (Serialize → ETag → Expand → Select) on a
                         // single-element array so GetById gets the same expand/batch-handler/
                         // select behavior as GET /{Set}, instead of a bespoke reimplementation.
-                        var (expandedItems, expandSelectedProps, expandError) =
+                        var (expandedItems, expandSelectedProps) =
                             await ApplyCollectionPipelineAsync(new[] { result }, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
-                        if (expandError is not null) return expandError;
                         var entityBody = (JsonObject)expandedItems[0]!;
 
                         // Rebuild with @odata.context/@odata.id first (JSON §4.5: annotations
