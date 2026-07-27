@@ -382,25 +382,47 @@ public sealed class LevelsWithOptionsPushdownSqliteTests : IAsyncLifetime
             LevelsOptionsSqliteHarness.Names(level1[1].GetProperty("Children")));
     }
 
-    // #296: a nested $top/$skip on a SELF-REFERENTIAL navigation is rejected by Microsoft's
-    // SelectExpandQueryValidator before OhData ever sees it ("The limit of '0' for Top query has been
-    // exceeded"): the model-bound MaxTop on the navigation's target type defaults to 0 as soon as that
-    // type carries any model-bound settings, which it always does when it is its own entity set. That
-    // is a PRE-EXISTING framework limitation — it reproduces identically on a plain
-    // $expand=Children($top=1) with no $levels — so $levels + $top is unreachable today. OhData plumbs
-    // the options through anyway (EngagedExpand.Skip/Top + ShapeLevelsInJson window per level), so the
-    // combination lights up if that limitation is lifted. Pinned here so the diagnosis is not lost.
+    // #296: a nested $top/$skip on a SELF-REFERENTIAL navigation used to be rejected by Microsoft's
+    // SelectExpandQueryValidator before OhData ever saw it ("The limit of '0' for Top query has been
+    // exceeded"): the model-bound MaxTop on the navigation's target type defaulted to 0 as soon as that
+    // type carried any model-bound settings, which it always does when it is its own entity set. Fixed
+    // by OhDataBuilder.MarkNavigationTargetTypesFullyQueryable clearing model-bound MaxTop on every type
+    // that is a navigation target -- root-and-nav-target ("shared"/self-referential) types included --
+    // not just pure nav-target-only types. OhData's own MaxExpandTop ceiling (ValidateNestedTopCeiling)
+    // still governs the nested $top at request time; see SelfReferentialNavMaxTopTests.cs for that half
+    // of the behavior. This test now asserts the nested $top is no longer rejected, with and without
+    // $levels, instead of pinning the old 400.
+    //
+    // WithLevels ($levels=2;$top=1) genuinely flows through EF pushdown (a bounded, cycle-free
+    // recursion — see BuildLevelsNavBinding), so the actual windowed data is asserted below. WithoutLevels
+    // ($top=1, no $levels) does NOT flow through pushdown for a delegate-less SELF-referential nav: a
+    // plain (unbounded-depth) member-init projection of Node->Children->Node is genuinely cyclic, so
+    // BuildExpandNavBinding excludes it from pushdownExpandNavs regardless of $top — that is a
+    // PRE-EXISTING, orthogonal limitation of the plain-expand path (only $levels bounds the cycle), not
+    // something #296's model-bound-MaxTop fix touches. Only the status code (400 -> 200) is asserted for
+    // that shape here.
     [Fact]
-    public async Task NestedTop_OnSelfReferentialNav_RejectedByModelBoundValidator_WithAndWithoutLevels()
+    public async Task NestedTop_OnSelfReferentialNav_IsHonored_WithAndWithoutLevels()
     {
         HttpResponseMessage withLevels = await _fx.Client.GetAsync(
             "/odata/LvNodes?$filter=parentId eq null&$expand=Children($levels=2;$top=1)");
         HttpResponseMessage withoutLevels = await _fx.Client.GetAsync(
             "/odata/LvNodes?$filter=parentId eq null&$expand=Children($top=1)");
 
-        Assert.Equal(HttpStatusCode.BadRequest, withLevels.StatusCode);
-        Assert.Equal(HttpStatusCode.BadRequest, withoutLevels.StatusCode);
-        Assert.Contains("for Top query has been exceeded", await withoutLevels.Content.ReadAsStringAsync());
+        Assert.Equal(HttpStatusCode.OK, withLevels.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, withoutLevels.StatusCode);
+
+        // With $levels=2: the nested $top applies at EVERY level of the recursion (same as $filter/
+        // $orderby in the tests above), so level 1 is windowed to Root's first child ("A") and level 2
+        // is windowed to A's first child ("A1").
+        using (JsonDocument doc = JsonDocument.Parse(await withLevels.Content.ReadAsStringAsync()))
+        {
+            JsonElement root = LevelsOptionsSqliteHarness.Root(doc);
+            JsonElement level1 = root.GetProperty("Children");
+            Assert.Equal(new[] { "A" }, LevelsOptionsSqliteHarness.Names(level1));
+            JsonElement level2 = level1[0].GetProperty("Children");
+            Assert.Equal(new[] { "A1" }, LevelsOptionsSqliteHarness.Names(level2));
+        }
     }
 
     [Fact]
