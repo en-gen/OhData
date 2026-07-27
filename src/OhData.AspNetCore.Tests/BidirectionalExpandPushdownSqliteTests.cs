@@ -185,6 +185,64 @@ public sealed class IfChild
     public string Shout => Name.ToUpperInvariant();
 }
 
+// ── P1: sibling cross-reference — the cycle closes entirely BETWEEN TWO LEAVES, neither of which is
+// the root (adversarial review, #323 fold-in). CyInvoice expands Customer and Orders as two SIBLING
+// leaves (no nesting between them in the $expand tree); Customer.Orders <-> Order.Customer is a
+// self-contained bidirectional pair that never references CyInvoice at all. With Change A reverted,
+// BuildExpandNavBinding's guard (Change B) checks each leaf's element type against the OWNER
+// (CyInvoice) only — CyCustomer and CyOrder have no navigation back to CyInvoice, so the guard admits
+// both regardless, and both would be materialized BARE. EF Core's own relationship fixup then wires
+// Order.Customer and Customer.Orders to each other (both rows tracked in the same DbContext), closing
+// a cycle System.Text.Json cannot serialize — with the root never involved.
+public sealed class CyInvoice
+{
+    public int Id { get; set; }
+    public string Number { get; set; } = "";
+    public int CustomerId { get; set; }
+    public CyCustomer? Customer { get; set; }
+    public List<CyOrder> Orders { get; set; } = new();
+}
+
+public sealed class CyCustomer
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public List<CyOrder> Orders { get; set; } = new(); // <-> CyOrder.Customer — NEVER references CyInvoice
+}
+
+public sealed class CyOrder
+{
+    public int Id { get; set; }
+    public int InvoiceId { get; set; }
+    public int CustomerId { get; set; }
+    public string Sku { get; set; } = "";
+    public CyCustomer? Customer { get; set; } // back-reference to CyCustomer — closes the cycle WITHOUT CyInvoice
+}
+
+// ── P2: self-referential leaf element type — the cycle closes ENTIRELY within the expanded leaf's own
+// element type, with no reference to the root at all (adversarial review, #323 fold-in). CyOrg expands
+// Employees as a single leaf (no nested $expand); CyEmployee.Manager/CyEmployee.Reports are a
+// self-referential pair (a manager's Reports collection <-> a report's Manager reference) that never
+// mentions CyOrg. With Change A reverted, the leaf is materialized bare, and EF's relationship fixup
+// wires Manager/Reports among the tracked CyEmployee rows, closing a self-referential cycle entirely
+// inside the leaf element type.
+public sealed class CyOrg
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public List<CyEmployee> Employees { get; set; } = new();
+}
+
+public sealed class CyEmployee
+{
+    public int Id { get; set; }
+    public int OrgId { get; set; }
+    public string Name { get; set; } = "";
+    public int? ManagerId { get; set; }
+    public CyEmployee? Manager { get; set; }
+    public List<CyEmployee> Reports { get; set; } = new(); // <-> Manager — NEVER references CyOrg
+}
+
 public sealed class BidirectionalExpandDbContext : DbContext
 {
     public BidirectionalExpandDbContext(DbContextOptions<BidirectionalExpandDbContext> options) : base(options) { }
@@ -203,6 +261,11 @@ public sealed class BidirectionalExpandDbContext : DbContext
     public DbSet<GsLeaf> GsLeaves => Set<GsLeaf>();
     public DbSet<IfRoot> IfRoots => Set<IfRoot>();
     public DbSet<IfChild> IfChildren => Set<IfChild>();
+    public DbSet<CyInvoice> CyInvoices => Set<CyInvoice>();
+    public DbSet<CyCustomer> CyCustomers => Set<CyCustomer>();
+    public DbSet<CyOrder> CyOrders => Set<CyOrder>();
+    public DbSet<CyOrg> CyOrgs => Set<CyOrg>();
+    public DbSet<CyEmployee> CyEmployees => Set<CyEmployee>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -221,6 +284,17 @@ public sealed class BidirectionalExpandDbContext : DbContext
 
         b.Entity<IfRoot>().HasMany(r => r.Children).WithOne().HasForeignKey(c => c.RootId);
         // AuditRef is [NotMapped]; nothing to configure.
+
+        // P1: CyInvoice -> Customer (single) and -> Orders (collection) are two SIBLING navigations;
+        // the cycle lives entirely in Customer <-> Order (neither references CyInvoice).
+        b.Entity<CyInvoice>().HasOne(i => i.Customer).WithMany().HasForeignKey(i => i.CustomerId);
+        b.Entity<CyInvoice>().HasMany(i => i.Orders).WithOne().HasForeignKey(o => o.InvoiceId);
+        b.Entity<CyCustomer>().HasMany(c => c.Orders).WithOne(o => o.Customer!).HasForeignKey(o => o.CustomerId);
+
+        // P2: CyOrg -> Employees; the cycle lives entirely in Manager <-> Reports (self-referential on
+        // CyEmployee, never referencing CyOrg).
+        b.Entity<CyOrg>().HasMany(o => o.Employees).WithOne().HasForeignKey(e => e.OrgId);
+        b.Entity<CyEmployee>().HasOne(e => e.Manager).WithMany(m => m.Reports).HasForeignKey(e => e.ManagerId);
     }
 }
 
@@ -297,6 +371,35 @@ public sealed class IfRootProfile : EntitySetProfile<int, IfRoot>
         GetQueryable = _ => Task.FromResult(db.IfRoots.AsQueryable());
         HasMany(x => x.Children); // delegate-less; Children's element type carries an
                                   // interface-typed back-reference (AuditRef)
+    }
+}
+
+// P1: sibling cross-reference — Customer and Orders are two independent, delegate-less leaves off the
+// SAME root; the cycle between them is invisible to a guard that only checks each leaf against the root.
+public sealed class CyInvoiceProfile : EntitySetProfile<int, CyInvoice>
+{
+    public CyInvoiceProfile(BidirectionalExpandDbContext db) : base(x => x.Id)
+    {
+        EntitySetName = "CyInvoices";
+        ExpandEnabled = true;
+        OrderByEnabled = true;
+        GetQueryable = _ => Task.FromResult(db.CyInvoices.AsQueryable());
+        HasOptional(x => x.Customer!); // delegate-less, single-valued leaf
+        HasMany(x => x.Orders); // delegate-less, collection leaf
+    }
+}
+
+// P2: self-referential leaf element type — Employees' own element type (CyEmployee) is cyclic via
+// Manager/Reports, with no reference to CyOrg at all.
+public sealed class CyOrgProfile : EntitySetProfile<int, CyOrg>
+{
+    public CyOrgProfile(BidirectionalExpandDbContext db) : base(x => x.Id)
+    {
+        EntitySetName = "CyOrgs";
+        ExpandEnabled = true;
+        OrderByEnabled = true;
+        GetQueryable = _ => Task.FromResult(db.CyOrgs.AsQueryable());
+        HasMany(x => x.Employees); // delegate-less; element type is self-referential (Manager/Reports)
     }
 }
 
@@ -382,6 +485,8 @@ internal static class BidirectionalExpandPushdownHarness
                 b.AddEntitySetProfile<AcRootProfile>();
                 b.AddEntitySetProfile<GsRootProfile>();
                 b.AddEntitySetProfile<IfRootProfile>();
+                b.AddEntitySetProfile<CyInvoiceProfile>();
+                b.AddEntitySetProfile<CyOrgProfile>();
                 b.AddEntitySetProfile<InMemoryBxAuthorProfile>();
             },
             configureServices: services =>
@@ -436,6 +541,21 @@ internal static class BidirectionalExpandPushdownHarness
 
         db.IfRoots.Add(new IfRoot { Id = 1, Name = "IfRoot1" });
         db.IfChildren.Add(new IfChild { Id = 10, RootId = 1, Name = "ifchild1" });
+
+        // P1: CyInvoice1 -> Customer1, and -> two Orders that ALSO back-reference Customer1 (the cycle
+        // is Customer1.Orders <-> Order.Customer, entirely independent of CyInvoice1).
+        db.CyCustomers.Add(new CyCustomer { Id = 1, Name = "Cust1" });
+        db.CyInvoices.Add(new CyInvoice { Id = 1, Number = "INV-1", CustomerId = 1 });
+        db.CyOrders.AddRange(
+            new CyOrder { Id = 100, InvoiceId = 1, CustomerId = 1, Sku = "SKU-X" },
+            new CyOrder { Id = 101, InvoiceId = 1, CustomerId = 1, Sku = "SKU-Y" });
+
+        // P2: CyOrg1 -> two employees, Manager1 and Report1 (Report1.ManagerId = Manager1.Id), a
+        // self-referential cycle entirely independent of CyOrg1.
+        db.CyOrgs.Add(new CyOrg { Id = 1, Name = "Org1" });
+        db.CyEmployees.AddRange(
+            new CyEmployee { Id = 10, OrgId = 1, Name = "Manager1", ManagerId = null },
+            new CyEmployee { Id = 11, OrgId = 1, Name = "Report1", ManagerId = 10 });
 
         db.SaveChanges();
         return fx;
@@ -821,33 +941,43 @@ public sealed class NonEfBidirectionalExpandTests
     }
 }
 
-// ── T23-T27: cycle-regression pins ─────────────────────────────────────────────────────────────────
+// ── T23-T27: shape-coverage regression pins, PLUS P1/P2: the actual cycle-load-bearing proof ────────
 //
-// EMPIRICAL FINDING (verified by TEMPORARILY reverting Change A in BuildShapedNavAccess and
-// re-running this class, this file's other bidirectional tests, and ExpandPushdownSqliteTests'
-// BidirectionalNav_Expand_PushesDown_WithJoin — all against EF Core 10 + SQLite): NONE of these
-// shapes actually 500 with ONLY Change A reverted (Change B — the narrowed static guard — still in
-// place). Every one of them keeps returning 200 with fully correct data. This CONFIRMS, rather than
-// contradicts, the frozen spec's own probe finding ("bidirectional, expanded-back-reference (3- and
-// 5-level), grandparent-skip, audit-column, and mid-ancestor shapes all return correct finite data
-// with the guard disabled") — on the member-init PROJECTION path, the root (and every intermediate
-// level) is independently re-projected into a fresh POCO regardless of Change A, so even a leaf that
-// stays bare/tracked never shares object identity with anything else in the SAME serialized graph;
-// no reference cycle can close. Change A's empirically-load-bearing value for THIS path is the
-// accepted wire change (leaf/intermediate consistency: non-EDM-structural properties no longer
-// materialize on a leaf) and the SQL-narrowing bonus (column-pruned leaf SELECTs) — not, on this EF
-// Core version, cycle-prevention.
+// CORRECTED MECHANISM (adversarial review, #323 fold-in — supersedes a prior "EMPIRICAL FINDING" here
+// that claimed Change A was NOT load-bearing for cycle prevention on this path; that claim was FALSE
+// and has been removed). A reference cycle forms on the member-init projection path if and only if TWO
+// mutually-referencing instances are BOTH materialized bare (untransformed) at leaf positions in the
+// SAME serialized graph. The root being independently re-projected into a fresh POCO only forecloses a
+// cycle whose OTHER end is the root itself — every T23-T27 shape below happens to have exactly that
+// shape (the back-reference always points at the root or an ancestor already re-projected), which is
+// why none of them 500 with Change A reverted; it does NOT mean Change A is inert. Two proven
+// counter-examples, where the cycle's other end is NOT the root:
+//   - P1 (sibling cross-reference): CyInvoice expands Customer and Orders as two independent leaves;
+//     Customer.Orders <-> Order.Customer cycles WITHOUT ever referencing CyInvoice. Neither leaf's
+//     guard check (BuildExpandNavBinding, evaluated against the OWNER = CyInvoice) sees this cycle at
+//     all, because it only checks each leaf against its immediate owner, never against sibling leaves.
+//   - P2 (self-referential leaf element type): CyOrg expands Employees as one leaf; CyEmployee.Manager
+//     <-> CyEmployee.Reports is self-referential and never references CyOrg either.
+// Both shapes below are VERIFIED (see LeafCycleRegressionTests) to return `500` (JsonException, cyclic
+// reference detected) with ONLY Change A reverted, and `200` with correct data with Change A restored —
+// Change A is load-bearing for this disjoint class of cycle. Change B (the narrowed static guard) is
+// separately load-bearing for the class FindCyclicLeafExpand/TypeHasNavigationTo actually check
+// (back-reference to the immediate owner) — the two are not redundant.
 //
-// The GENUINE "500 without the fix" reproduction lives on the #305 Include-fallback path instead
-// (Change C, not Change A): Include populates TRACKED entities with no re-projection safety net, so a
-// leaf's back-reference CAN get fixed up to the SAME tracked root instance being serialized. Verified
-// empirically by TEMPORARILY disabling the Change C guard in the #305 Path A block: BOTH
-// IncludeFallbackCyclicLeafTests methods (tracking AND AsNoTracking) then fail with a 500
-// (InternalServerError) instead of the expected 400 — confirming AsNoTracking is NOT a mitigation,
-// exactly as the frozen spec states. See IncludeFallbackSqliteTests.cs's IncludeFallbackCyclicLeafTests
-// for the actual 500-reproducing pins; the tests below stay as PROJECTION-path regression pins (T23-T27
-// per the original task breakdown) documenting the (correct, verified) 200 outcome rather than a false
-// "500 without Change A" claim.
+// The #305 Include-fallback path (Change C, not Change A) has its OWN, separate cycle exposure: Include
+// populates TRACKED entities with no re-projection safety net at all, so a leaf's back-reference to the
+// ROOT can get fixed up to the same tracked root instance being serialized — verified empirically by
+// TEMPORARILY disabling the Change C guard in the #305 Path A block: BOTH IncludeFallbackCyclicLeafTests
+// methods (tracking AND AsNoTracking) then fail with a 500 (InternalServerError) instead of the expected
+// 400 — confirming AsNoTracking is NOT a mitigation. See IncludeFallbackSqliteTests.cs's
+// IncludeFallbackCyclicLeafTests for those pins. FindCyclicLeafExpand only checks a leaf's element type
+// against the ROOT model too (same root-only blind spot as Change B) — a P1/P2-shaped cycle (neither end
+// is the root) is NOT caught by Change C either and can still 500 on the Include-fallback path; this is
+// NOT a regression (develop has the same gap) and is tracked separately as #326.
+//
+// T23-T27 below stay as general shape-coverage regression pins (collapsed into a Theory) — useful for
+// catching an unrelated regression in these specific shapes, but they prove nothing about Change A's
+// necessity; that proof is LeafCycleRegressionTests (P1/P2) below.
 
 public sealed class CycleRegressionPinTests : IAsyncLifetime
 {
@@ -872,40 +1002,87 @@ public sealed class CycleRegressionPinTests : IAsyncLifetime
         _connection.Dispose();
     }
 
-    [Fact] // T23
-    public async Task Pin_SimpleBidirectional_Succeeds()
+    [Theory] // T23-T27
+    [InlineData("/odata/BxAuthors?$expand=Books($expand=Author)")] // T23: simple bidirectional
+    [InlineData("/odata/BxDeepAuthors?$expand=Books($expand=Author($expand=Books($expand=Author)))")] // T24: 5-level chain
+    [InlineData("/odata/GsRoots?$expand=Mids($expand=Leaves)")] // T25: grandparent-skip
+    [InlineData("/odata/AcRoots?$expand=Mids($expand=Leaves)")] // T26: audit columns
+    [InlineData("/odata/IfRoots?$expand=Children")] // T27: interface-typed audit
+    public async Task Pin_Shape_Succeeds(string url)
     {
-        HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/BxAuthors?$expand=Books($expand=Author)");
+        HttpResponseMessage resp = await _fx.Client.GetAsync(url);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
     }
+}
 
-    [Fact] // T24
-    public async Task Pin_FiveLevelChain_Succeeds()
+// ── P1/P2: LeafCycleRegressionTests — the actual proof that Change A is load-bearing ────────────────
+// (adversarial review, #323 fold-in). See the CORRECTED MECHANISM comment above for why T23-T27 don't
+// exercise this class of cycle. Both tests here were verified, by TEMPORARILY reverting Change A
+// (IsMemberInitProjectable(elem, model) -> engaged.Children is { Count: > 0 } at both call sites in
+// BuildShapedNavAccess), to fail with 500 (JsonException, cyclic reference) — and to pass with Change A
+// restored.
+public sealed class LeafCycleRegressionTests : IAsyncLifetime
+{
+    private SqliteConnection _connection = null!;
+    private SqlCaptureSink _sink = null!;
+    private BxDelegateCounter _counter = null!;
+    private TestFixture _fx = null!;
+
+    public async Task InitializeAsync()
     {
-        HttpResponseMessage resp = await _fx.Client.GetAsync(
-            "/odata/BxDeepAuthors?$expand=Books($expand=Author($expand=Books($expand=Author)))");
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        _connection = new SqliteConnection("Data Source=:memory:");
+        _connection.Open();
+        _sink = new SqlCaptureSink();
+        _counter = new BxDelegateCounter();
+        _fx = await BidirectionalExpandPushdownHarness.BuildAsync(_connection, _counter, _sink);
+        _sink.Clear();
     }
 
-    [Fact] // T25
-    public async Task Pin_GrandparentSkip_Succeeds()
+    public async Task DisposeAsync()
     {
-        HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/GsRoots?$expand=Mids($expand=Leaves)");
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        await _fx.DisposeAsync();
+        _connection.Dispose();
     }
 
-    [Fact] // T26
-    public async Task Pin_AuditColumns_Succeeds()
+    [Fact] // P1: sibling cross-reference — Customer.Orders <-> Order.Customer, neither touches CyInvoice
+    public async Task SiblingCrossReference_Customer_And_Orders_BothServed_WithJoin()
     {
-        HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/AcRoots?$expand=Mids($expand=Leaves)");
+        HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/CyInvoices?$expand=Customer,Orders");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        string sql = BidirectionalExpandPushdownHarness.LastSelectAgainst(_sink, "CyInvoices");
+        Assert.Contains("\"CyCustomers\"", sql); // Customer leaf JOIN'd
+        Assert.Contains("\"CyOrders\"", sql); // Orders leaf JOIN'd
+
+        string body = await resp.Content.ReadAsStringAsync();
+        using JsonDocument doc = JsonDocument.Parse(body);
+        JsonElement invoice = doc.RootElement.GetProperty("value")[0];
+        Assert.Equal("INV-1", invoice.GetProperty("Number").GetString());
+
+        JsonElement customer = invoice.GetProperty("Customer");
+        Assert.Equal("Cust1", customer.GetProperty("Name").GetString());
+
+        JsonElement orders = invoice.GetProperty("Orders");
+        Assert.Equal(2, orders.GetArrayLength());
+        Assert.Contains(orders.EnumerateArray(), o => o.GetProperty("Sku").GetString() == "SKU-X");
+        Assert.Contains(orders.EnumerateArray(), o => o.GetProperty("Sku").GetString() == "SKU-Y");
     }
 
-    [Fact] // T27
-    public async Task Pin_InterfaceTypedAudit_Succeeds()
+    [Fact] // P2: self-referential leaf element type — Manager/Reports, never touches CyOrg
+    public async Task SelfReferentialLeafElementType_Employees_Served()
     {
-        HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/IfRoots?$expand=Children");
+        HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/CyOrgs?$expand=Employees");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        using JsonDocument doc = JsonDocument.Parse(body);
+        JsonElement org = doc.RootElement.GetProperty("value")[0];
+        Assert.Equal("Org1", org.GetProperty("Name").GetString());
+
+        JsonElement employees = org.GetProperty("Employees");
+        Assert.Equal(2, employees.GetArrayLength());
+        Assert.Contains(employees.EnumerateArray(), e => e.GetProperty("Name").GetString() == "Manager1");
+        Assert.Contains(employees.EnumerateArray(), e => e.GetProperty("Name").GetString() == "Report1");
     }
 }
 

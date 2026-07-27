@@ -410,11 +410,7 @@ public sealed class LevelsWithOptionsPushdownSqliteTests : IAsyncLifetime
         _sink.Clear();
         HttpResponseMessage withLevels = await _fx.Client.GetAsync(
             "/odata/LvNodes?$filter=parentId eq null&$expand=Children($levels=2;$top=1)");
-        HttpResponseMessage withoutLevels = await _fx.Client.GetAsync(
-            "/odata/LvNodes?$filter=parentId eq null&$expand=Children($top=1)");
-
         Assert.Equal(HttpStatusCode.OK, withLevels.StatusCode);
-        Assert.Equal(HttpStatusCode.OK, withoutLevels.StatusCode);
 
         // With $levels=2: the nested $top applies at EVERY level of the recursion (same as $filter/
         // $orderby in the tests above), so level 1 is windowed to Root's first child ("A") and level 2
@@ -430,7 +426,17 @@ public sealed class LevelsWithOptionsPushdownSqliteTests : IAsyncLifetime
 
         // Without $levels (T19): the plain leaf expand now genuinely applies the window too — Root's
         // Children is capped to its first child by the deterministic key tiebreak (#254), and the
-        // window is a real SQL Take(1), not an in-memory truncation of the full collection.
+        // window is a real SQL Take(1) (a ROW_NUMBER() window, verified below), not an in-memory
+        // truncation of the full collection.
+        _sink.Clear();
+        HttpResponseMessage withoutLevels = await _fx.Client.GetAsync(
+            "/odata/LvNodes?$filter=parentId eq null&$expand=Children($top=1)");
+        Assert.Equal(HttpStatusCode.OK, withoutLevels.StatusCode);
+
+        string sql = LevelsOptionsSqliteHarness.LastSelectAgainst(_sink, "LvNodes");
+        Assert.Contains("ROW_NUMBER()", sql);
+        Assert.Contains("<= 1", sql);
+
         using (JsonDocument doc = JsonDocument.Parse(await withoutLevels.Content.ReadAsStringAsync()))
         {
             JsonElement root = LevelsOptionsSqliteHarness.Root(doc);

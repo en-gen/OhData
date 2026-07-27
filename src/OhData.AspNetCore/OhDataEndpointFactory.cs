@@ -2313,21 +2313,36 @@ internal static class OhDataEndpointFactory
     // public-settable CLR property that is not complex-typed — projecting an EF-owned complex property
     // under a tracking queryable throws (the same phase-1 boundary TryApplySelectProjection guards). A
     // type that fails this defers its parent branch off pushdown (stays EDM-only), never a 500.
-    private static bool IsMemberInitProjectable(Type elementType, IEdmModel model)
-    {
-        if (elementType.GetConstructor(Type.EmptyTypes) is null) return false;
-        if (model.FindDeclaredType(elementType.FullName ?? elementType.Name) is not IEdmEntityType edmType) return false;
+    //
+    // #323 fold-in (review): memoized — as of #323 (Change A/B) this runs per request, per engaged
+    // expand, per level, and does GetConstructor + FindDeclaredType + per-property reflection each time,
+    // for a result that is invariant for a given (elementType, model) pair for the lifetime of that EDM
+    // model. Cached per this file's existing static-cache convention (e.g. s_efIncludeMethodCache);
+    // reference equality on IEdmModel is correct here since the same model instance is reused for every
+    // request within one registration, and different registrations never share a model instance.
+    private static readonly ConcurrentDictionary<(Type ElementType, IEdmModel Model), bool>
+        s_memberInitProjectableCache = new();
 
-        foreach (IEdmStructuralProperty sp in edmType.StructuralProperties())
+    private static bool IsMemberInitProjectable(Type elementType, IEdmModel model) =>
+        s_memberInitProjectableCache.GetOrAdd((elementType, model), static key =>
         {
-            if (sp.Type.Definition is IEdmComplexType) return false; // owned-entity projection boundary
-            // #253: sp.Name is the EDM name, which may be a [JsonPropertyName] rename — resolve back
-            // to the CLR property by EDM name (falls back to a plain CLR-name match for un-renamed).
-            PropertyInfo? clrProp = ODataPropertyNaming.FindClrPropertyByEdmName(elementType, sp.Name);
-            if (clrProp is null || clrProp.SetMethod is not { IsPublic: true }) return false;
-        }
-        return true;
-    }
+            (Type elementType, IEdmModel model) = key;
+            if (elementType.GetConstructor(Type.EmptyTypes) is null) return false;
+            if (model.FindDeclaredType(elementType.FullName ?? elementType.Name) is not IEdmEntityType edmType)
+            {
+                return false;
+            }
+
+            foreach (IEdmStructuralProperty sp in edmType.StructuralProperties())
+            {
+                if (sp.Type.Definition is IEdmComplexType) return false; // owned-entity projection boundary
+                // #253: sp.Name is the EDM name, which may be a [JsonPropertyName] rename — resolve back
+                // to the CLR property by EDM name (falls back to a plain CLR-name match for un-renamed).
+                PropertyInfo? clrProp = ODataPropertyNaming.FindClrPropertyByEdmName(elementType, sp.Name);
+                if (clrProp is null || clrProp.SetMethod is not { IsPublic: true }) return false;
+            }
+            return true;
+        });
 
     // #206 phase 2 (multi-level expand): the public-settable, non-complex scalar structural CLR
     // properties of <paramref name="elementType"/> (per the EDM), bound as <c>n.Prop</c> into an
@@ -3103,7 +3118,10 @@ internal static class OhDataEndpointFactory
     // ODataException handler) instead of being caught and overwritten by the generic provider-failure
     // catch around the real Include call. The caller has already rejected any nested $expand/$levels
     // (FindNestedExpandOrLevels above), so only LEAF expands reach this loop — checking each one's
-    // element type against modelType alone (rather than the full nested tree) is complete.
+    // element type against modelType covers a back-reference TO THE ROOT, which is the class this guard
+    // targets. It does NOT cover every possible cycle: a cycle that closes entirely between two SIBLING
+    // leaves, or entirely inside a self-referential leaf element type, never references modelType and
+    // slips past this check — see #326.
     private static EngagedExpand? FindCyclicLeafExpand(IReadOnlyList<EngagedExpand> engaged, Type modelType)
     {
         foreach (EngagedExpand e in engaged)
@@ -4121,8 +4139,13 @@ internal static class OhDataEndpointFactory
                             // parent<->child object cycle System.Text.Json throws on. Only leaf expands
                             // reach this point (the nested-$expand/$levels check above already rejected
                             // anything deeper), so checking each engaged expand's element type against
-                            // typeof(TModel) alone is complete. Fail loud (400, #305-consistent) rather
-                            // than risk the tracked-entity cycle turning into an uncontrolled 500.
+                            // typeof(TModel) covers a back-reference TO THE ROOT — the class this guard
+                            // targets. It is NOT a complete cycle guard: a cycle that closes entirely
+                            // between two SIBLING leaves, or entirely inside a self-referential leaf
+                            // element type, never references TModel and is invisible to this check (same
+                            // root-only blind spot as FindCyclicLeafExpand/TypeHasNavigationTo) — tracked
+                            // as #326. Fail loud (400, #305-consistent) rather than risk the tracked-entity
+                            // cycle turning into an uncontrolled 500 for the class this DOES catch.
                             if (FindCyclicLeafExpand(engagedExpandNavs, typeof(TModel)) is { } cyclicNav)
                             {
                                 throw new Microsoft.OData.ODataException(
@@ -4268,13 +4291,19 @@ internal static class OhDataEndpointFactory
                         // cannot be served at all, so rethrow: the group-level exception filter turns
                         // this into a generic 500 InternalServerError, never leaking the exception
                         // detail (or which navigation/shape tripped it) to the client. #323 makes this
-                        // unreachable from BOTH pushdown routes that used to be able to trip it: the
-                        // member-init projection path (Change A always materializes leaf expands through
-                        // a fresh POCO, so no bidirectional-nav entity is ever handed to the serializer)
-                        // and the #305 Include fallback (Change C rejects a leaf with a back-reference to
-                        // TModel before Include ever runs). It stays reachable from tracked-entity fixup
-                        // cycles unrelated to $expand pushdown itself (e.g. a handler's own eager-loaded
-                        // graph, or a self-referential set's plain fixup) — see #325.
+                        // unreachable from the member-init projection path REGARDLESS of which two
+                        // instances the cycle closes between (Change A always materializes every leaf —
+                        // and every intermediate level — through a fresh POCO, structurally, so no
+                        // bidirectional-nav entity of any shape is ever handed to the serializer on that
+                        // path). It stays reachable from the #305 Include fallback for a cycle that does
+                        // NOT reference the root model: Change C only rejects a leaf whose related type
+                        // navigates back to TModel — a cycle closing entirely between two sibling leaves,
+                        // or entirely inside a self-referential leaf element type, is invisible to that
+                        // check and can still reach this catch on the Include-fallback path (#326, not a
+                        // regression — the Include fallback never guarded against this class). Also stays
+                        // reachable from tracked-entity fixup cycles unrelated to $expand pushdown itself
+                        // (e.g. a handler's own eager-loaded graph, or a self-referential set's plain
+                        // fixup) — see #325.
                         logger?.LogDebug(ex,
                             "OhData: $expand pushdown produced a serialization cycle for {EntitySet}.",
                             source.EntitySetName);
