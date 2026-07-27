@@ -13,16 +13,15 @@ using Xunit;
 
 namespace OhData.AspNetCore.Tests;
 
-// Regression for the $expand delegate-safety bypass when the SAME CLR model type is exposed by 2+
-// entity sets with DIVERGENT navigation-delegate config. The CHANGELOG [1.5.0] promises the
-// delegate-safety invariant holds recursively: "a delegate-backed navigation is never EF-included at
-// any depth ... its delegate is never bypassed." Before the union fix, the nested-expand pushdown
-// resolved the child element type's delegate config from a SINGLE profile (FirstOrDefault by model
-// type), so if a delegate-LESS set over the model registered before the delegate-BACKED one, the
-// delegate was folded into an EF Include/ThenInclude JOIN and never invoked — raw rows JOIN-loaded,
-// bypassing whatever filter/authorization the delegate applies. The fix unions the delegate-backed
-// nav names across ALL profiles for the type, so the branch defers regardless of registration order.
-// Uses the same EF Core Sqlite + SQL-capture harness as MultiLevelExpandPushdownSqliteTests.
+// Model B — declaring-set authority (OWNER DECISION 2026-07-26, FROZEN spec on issue #293): when
+// the SAME CLR/EDM model type is exposed by 2+ entity sets, each set's OWN declaration governs its
+// OWN navigations — a delegate on a sibling set never retroactively poisons a nav a delegate-less
+// sibling serves raw. Fail-closed BLANKING fires only when the candidate sets sharing that exact
+// EDM type genuinely DISAGREE (some delegate-less, some delegate-backed, or 2+ distinct delegates)
+// — the framework then cannot tell which authoritative declaration applies, so it blanks rather
+// than guessing or picking one arbitrarily. This must hold regardless of registration order (a
+// deterministic set computation, never a FirstOrDefault). Uses the same EF Core Sqlite +
+// SQL-capture harness as MultiLevelExpandPushdownSqliteTests.
 
 // Book is exposed by TWO entity sets (Books, FeaturedBooks) with DIVERGENT Reviews config:
 //   Books        → HasMany(Reviews)                 (delegate-LESS)
@@ -101,6 +100,37 @@ public sealed class MsShelf
     public int Id { get; set; }
     public List<MsBook> Books { get; set; } = new();   // -> ambiguous MsBook: exactly ONE route (FeaturedBooks)
     public List<MsBook2> Books2 { get; set; } = new(); // -> ambiguous MsBook2: TWO conflicting routes
+
+    // -> a type exposed by EXACTLY ONE entity set (SecureBooks), delegate-backed, no other
+    // candidate sharing that exact EDM type to disagree with it. The "single-candidate delegate-
+    // backed nested nav" case: RunDelegate, distinct from the now-blanked ambiguous Books above.
+    public List<MsSecureBook> SecureBooks { get; set; } = new();
+}
+
+// Exposed ONLY by SecureBooksProfile ("SecureBooks") below — no sibling entity set shares this
+// exact EDM type, so its candidate set for Notes is a singleton and DL(Notes) is always empty.
+public sealed class MsSecureBook
+{
+    public int Id { get; set; }
+    public List<MsNote> Notes { get; set; } = new();
+}
+
+public sealed class MsNote
+{
+    public int Id { get; set; }
+    public int SecureBookId { get; set; }
+    public string Text { get; set; } = "";
+    public bool Secret { get; set; }
+}
+
+// Root of a 3-level chain (Groups -> Shelves -> Books -> Reviews) used to exercise a DISAGREEMENT
+// at depth 3 rather than depth 2: not EF-mapped at all (GetQueryable returns an in-memory single
+// row) — only its Shelves navigation delegate matters, which genuinely loads MsShelf entities so
+// Stage 3 recurses into a real (non-empty) next level.
+public sealed class MsGroup
+{
+    public int Id { get; set; }
+    public List<MsShelf> Shelves { get; set; } = new();
 }
 
 public sealed class MultiSetDbContext : DbContext
@@ -115,6 +145,8 @@ public sealed class MultiSetDbContext : DbContext
     public DbSet<MsBook2> Book2s => Set<MsBook2>();
     public DbSet<MsReview2> Review2s => Set<MsReview2>();
     public DbSet<MsShelf> Shelves => Set<MsShelf>();
+    public DbSet<MsSecureBook> SecureBooks => Set<MsSecureBook>();
+    public DbSet<MsNote> Notes => Set<MsNote>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -123,10 +155,12 @@ public sealed class MultiSetDbContext : DbContext
         b.Entity<MsBook>().HasMany(x => x.Tags).WithOne().HasForeignKey(x => x.BookId);
         b.Entity<MsMagazine>().HasMany(x => x.Reviews).WithOne().HasForeignKey(x => x.BookId);
         b.Entity<MsBook2>().HasMany(x => x.Reviews).WithOne().HasForeignKey(x => x.Book2Id);
-        // MsShelf.Books/Books2 are served entirely by their profile's own getAll delegate
-        // (below) — not a real EF relationship — so EF must not try to auto-discover one.
+        b.Entity<MsSecureBook>().HasMany(x => x.Notes).WithOne().HasForeignKey(x => x.SecureBookId);
+        // MsShelf.Books/Books2/SecureBooks are served entirely by their profile's own getAll
+        // delegate (below) — not a real EF relationship — so EF must not try to auto-discover one.
         b.Entity<MsShelf>().Ignore(x => x.Books);
         b.Entity<MsShelf>().Ignore(x => x.Books2);
+        b.Entity<MsShelf>().Ignore(x => x.SecureBooks);
     }
 }
 
@@ -134,10 +168,13 @@ public sealed class MultiSetDelegateCounter
 {
     private int _reviewCalls;
     private int _book2ReviewCalls;
+    private int _secureNoteCalls;
     public int ReviewCalls => _reviewCalls;
     public int Book2ReviewCalls => _book2ReviewCalls;
+    public int SecureNoteCalls => _secureNoteCalls;
     public void CountReviewCall() => Interlocked.Increment(ref _reviewCalls);
     public void CountBook2ReviewCall() => Interlocked.Increment(ref _book2ReviewCalls);
+    public void CountSecureNoteCall() => Interlocked.Increment(ref _secureNoteCalls);
 }
 
 public sealed class MsLibraryProfile : EntitySetProfile<int, MsLibrary>
@@ -225,6 +262,51 @@ public sealed class MsShelfProfile : EntitySetProfile<int, MsShelf>
         HasMany(x => x.Books2,
             getAll: (shelfId, ct) =>
                 Task.FromResult<IEnumerable<MsBook2>>(db.Book2s.Include(bk => bk.Reviews).ToList()));
+
+        HasMany(x => x.SecureBooks,
+            getAll: (shelfId, ct) =>
+                Task.FromResult<IEnumerable<MsSecureBook>>(db.SecureBooks.Include(sb => sb.Notes).ToList()));
+    }
+}
+
+// The ONLY entity set exposing the MsSecureBook EDM type — its candidate set for Notes is a
+// singleton, so DB(Notes)={this route} and DL(Notes)=∅ unconditionally: the "single-candidate
+// delegate-backed nested nav" case (RunDelegate), distinct from the now-blanked MsBook/Reviews
+// ambiguity above. The delegate filters out Secret notes; the Shelf handler's own incidental
+// Include(sb => sb.Notes) loads BOTH secret and non-secret notes, so a response containing the
+// secret note would prove the raw Include leaked instead of this delegate having run.
+public sealed class MsSecureBooksProfile : EntitySetProfile<int, MsSecureBook>
+{
+    public MsSecureBooksProfile(MultiSetDbContext db, MultiSetDelegateCounter counter) : base(x => x.Id)
+    {
+        EntitySetName = "SecureBooks";
+        ExpandEnabled = true;
+        GetQueryable = _ => Task.FromResult(db.SecureBooks.AsQueryable());
+        HasMany(x => x.Notes,
+            getAll: (bookId, ct) =>
+            {
+                counter.CountSecureNoteCall();
+                return Task.FromResult<IEnumerable<MsNote>>(
+                    db.Notes.Where(n => n.SecureBookId == bookId && !n.Secret).ToList());
+            });
+    }
+}
+
+// Root of the depth-3 disagreement chain: Groups -> Shelves -> Books -> Reviews. Not EF-mapped;
+// GetQueryable returns a single in-memory row. Shelves is delegate-backed so Stage 3 (not the
+// pushdown gate) resolves it, genuinely loading MsShelf rows so the recursion reaches a real
+// (non-empty) depth-2 level, which in turn genuinely loads MsBook rows (with Reviews incidentally
+// Include()'d) via Shelf's OWN Books delegate — so the depth-3 Reviews disagreement is evaluated
+// against real data, not trivially skipped because an intermediate level was empty.
+public sealed class MsGroupProfile : EntitySetProfile<int, MsGroup>
+{
+    public MsGroupProfile(MultiSetDbContext db) : base(x => x.Id)
+    {
+        EntitySetName = "Groups";
+        ExpandEnabled = true;
+        GetQueryable = _ => Task.FromResult(new[] { new MsGroup { Id = 1 } }.AsQueryable());
+        HasMany(x => x.Shelves,
+            getAll: (groupId, ct) => Task.FromResult<IEnumerable<MsShelf>>(db.Shelves.ToList()));
     }
 }
 
@@ -289,6 +371,8 @@ internal static class MultiSetSqliteHarness
                 }
                 b.AddEntitySetProfile<MsMagazineProfile>();
                 b.AddEntitySetProfile<MsShelfProfile>();
+                b.AddEntitySetProfile<MsSecureBooksProfile>();
+                b.AddEntitySetProfile<MsGroupProfile>();
                 // Same order toggle applied to the doubly-ambiguous BookAlpha/BookBeta pair so the
                 // #292 "identical result regardless of registration order" tests exercise both.
                 if (booksBeforeFeatured)
@@ -330,6 +414,9 @@ internal static class MultiSetSqliteHarness
         db.Book2s.Add(new MsBook2 { Id = 10, Title = "B2-1" });
         db.Review2s.Add(new MsReview2 { Id = 100, Book2Id = 10, Body = "book2-raw-review" });
         db.Shelves.Add(new MsShelf { Id = 1 });
+        db.SecureBooks.Add(new MsSecureBook { Id = 1 });
+        db.Notes.Add(new MsNote { Id = 1, SecureBookId = 1, Text = "public-note", Secret = false });
+        db.Notes.Add(new MsNote { Id = 2, SecureBookId = 1, Text = "hidden-note", Secret = true });
         db.SaveChanges();
         return fx;
     }
@@ -405,33 +492,33 @@ public sealed class MultiSetDelegateSafetyExpandTests
         Assert.Contains("\"tag1\"", body);
     }
 
-    // #292 regression, merged: exercises BOTH the "exactly one legitimate route" outcome (Books)
-    // and the "two conflicting routes" fail-closed outcome (Books2) from a SINGLE request per
-    // registration order (both navs live on the same Shelves entity set and Stage 3 resolves each
-    // independently, so one request per order loses no coverage versus two).
+    // Model B flip (was: SoleRouteResolvesAndConflictBlanks, Books-half honored FeaturedBooks'
+    // delegate): under Model B, Books' candidate set for the exact MsBook EDM type is
+    // {Books (delegate-less), FeaturedBooks (delegate-backed)} — DB(Reviews) = {FeaturedBooks} and
+    // DL(Reviews) = {Books} DISAGREE (one set says raw, the other delegates), so Reviews now BLANKS
+    // for the Books half too, exactly like Books2's already-conflicting two-routes case. Both navs
+    // live on the same Shelves entity set and Stage 3 resolves each independently, so one request
+    // per registration order still exercises both without losing coverage.
     //
-    // Books is delegate-backed (unlike Library.Books above), so it goes through Stage 3
-    // (ExpandLevelAsync) directly rather than pushdown — exactly where
-    // ResolveRequestSourceForEdmType's registration-order-dependent FirstOrDefault lived. Books
-    // targets the ambiguous MsBook type where EXACTLY ONE candidate (FeaturedBooks) route-backs the
-    // nested Reviews expand. The pre-fix FirstOrDefault, depending on iteration order, could
-    // resolve to the routeless Books profile — silently skipping the FeaturedBooks delegate while
-    // the Shelf handler's own incidental `Include(b => b.Reviews)` left raw review rows already
-    // populated on the CLR graph, which Stage 3.5 (OmitUnexpandedNavigations) would then keep
-    // untouched (it only strips UN-expanded navigations — the raw data leaks straight through with
-    // the delegate never having run). The fix must resolve to FeaturedBooks' delegate — and ONLY
-    // it — regardless of order.
+    // Books is delegate-backed on MsShelfProfile (unlike Library.Books above), so it goes through
+    // Stage 3 (ExpandLevelAsync) directly rather than pushdown. Its nested Reviews expand resolves
+    // against the ambiguous MsBook candidate set {Books, FeaturedBooks} — DB/DL disagree — so it
+    // must BLANK rather than run FeaturedBooks' delegate OR let the Shelf handler's own incidental
+    // `Include(b => b.Reviews)` leak "raw-review" straight through via Stage 3.5
+    // (OmitUnexpandedNavigations, which only strips UN-expanded navigations and would otherwise
+    // keep it untouched).
     //
     // Books2 targets the DOUBLY-ambiguous MsBook2 type, where TWO DIFFERENT profiles (BookAlphas,
-    // BookBetas) both route-back Reviews with distinct delegates — a genuine conflict with no way
-    // to legitimately choose between them. Neither may be picked arbitrarily; the fix must blank
-    // the Reviews node rather than let the Shelf handler's own incidental
-    // `Include(b => b.Reviews)` leak raw "book2-raw-review" data through, and neither delegate may
-    // run. Must hold in BOTH registration orders.
+    // BookBetas) both route-back Reviews with distinct delegates — DB has 2+ routes, a conflict
+    // with no way to legitimately choose between them (owner micro-decision C: keep BLANK even
+    // when it's "just" 2+ routes agreeing on nothing else). Neither may be picked arbitrarily; the
+    // Shelf handler's own incidental `Include(b => b.Reviews)` must not leak raw "book2-raw-review"
+    // data through, and neither delegate may run. Must hold in BOTH registration orders — the
+    // candidate-set/disagreement computation never reads registration order.
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task NestedExpand_SoleRouteResolvesAndConflictBlanks_InOneRequest_RegardlessOfOrder(
+    public async Task NestedExpand_DisagreementAndConflict_BothBlank_RegardlessOfOrder(
         bool booksBeforeFeatured)
     {
         using var connection = new SqliteConnection("Data Source=:memory:");
@@ -445,17 +532,143 @@ public sealed class MultiSetDelegateSafetyExpandTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         string body = await resp.Content.ReadAsStringAsync();
 
-        // Books: the ONE legitimate delegate (FeaturedBooks' Reviews handler) must have run —
-        // exactly once, for the one seeded book — in BOTH registration orders. Its OWN served data
-        // reaches the response (not merely "empty" — a genuinely resolvable route is HONORED, not
-        // deferred).
-        Assert.Equal(1, counter.ReviewCalls);
-        Assert.Contains("raw-review", body);
+        // Books: DB(Reviews)={FeaturedBooks} vs DL(Reviews)={Books} disagree — fail closed. Neither
+        // FeaturedBooks' delegate runs nor the Shelf handler's raw Include-populated Reviews leaks.
+        Assert.Equal(0, counter.ReviewCalls);
+        Assert.DoesNotContain("raw-review", body);
 
         // Books2: neither BookAlphas' nor BookBetas' delegate ran — fail closed, the raw,
         // Include-populated Reviews data must never leak through.
         Assert.Equal(0, counter.Book2ReviewCalls);
         Assert.DoesNotContain("book2-raw-review", body);
+
+        // Both navs blank to an empty array — the response contains at least the two occurrences
+        // (one per seeded Book/Book2).
         Assert.Contains("\"Reviews\":[]", body);
+    }
+
+    // NEW (Model B matrix): dual-exposure public+secure at ROOT. Root-level $expand always reads
+    // only the URL-named set's own declaration (unchanged by this fix) — this test demonstrates the
+    // pattern Model B is explicitly designed to support: the SAME CLR/EDM type exposed via a
+    // public/unfiltered (delegate-less) set AND a secured/filtered (delegate-backed) set, each
+    // served according to ITS OWN declaration with no cross-contamination.
+    [Fact]
+    public async Task RootExpand_DualExposure_DelegatelessServesRaw_DelegateBackedRuns()
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        var counter = new MultiSetDelegateCounter();
+        await using TestFixture fx = await MultiSetSqliteHarness.BuildAsync(
+            connection, counter, sink: null, booksBeforeFeatured: true);
+
+        // Public/unfiltered Books (delegate-less): its own declaration governs, so the raw related
+        // Reviews rows are served directly — no delegate exists to run.
+        HttpResponseMessage pub = await fx.Client.GetAsync("/odata/Books?$expand=Reviews");
+        Assert.Equal(HttpStatusCode.OK, pub.StatusCode);
+        string pubBody = await pub.Content.ReadAsStringAsync();
+        Assert.Contains("raw-review", pubBody);
+        Assert.Equal(0, counter.ReviewCalls);
+
+        // Secured/filtered FeaturedBooks (delegate-backed) over the SAME MsBook type: its OWN
+        // declaration routes Reviews through a delegate, which the root path must run.
+        HttpResponseMessage sec = await fx.Client.GetAsync("/odata/FeaturedBooks?$expand=Reviews");
+        Assert.Equal(HttpStatusCode.OK, sec.StatusCode);
+        Assert.Equal(1, counter.ReviewCalls);
+    }
+
+    // NEW (Model B matrix): single-candidate delegate-backed nested nav -> RUN. MsSecureBook is
+    // exposed by EXACTLY ONE entity set (SecureBooks), so its candidate set for Notes is a
+    // singleton: DB(Notes)={SecureBooks' route}, DL(Notes)=∅ unconditionally — no disagreement is
+    // even possible. This is the "honored sole route" outcome, now clearly distinct from the
+    // MultiSet Books/Reviews case above (which LOOKS similar — "one route among the candidates" —
+    // but blanks because a genuine second, delegate-less candidate disagrees).
+    [Fact]
+    public async Task NestedExpand_SingleCandidateDelegateBacked_Runs()
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        var counter = new MultiSetDelegateCounter();
+        await using TestFixture fx = await MultiSetSqliteHarness.BuildAsync(
+            connection, counter, sink: null, booksBeforeFeatured: true);
+
+        HttpResponseMessage resp = await fx.Client.GetAsync(
+            "/odata/Shelves?$expand=SecureBooks($expand=Notes)");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        string body = await resp.Content.ReadAsStringAsync();
+
+        // The sole delegate ran exactly once, and its OWN filtered result — not the Shelf handler's
+        // raw Include(sb => sb.Notes) (which loaded both notes) — is what the response carries.
+        Assert.Equal(1, counter.SecureNoteCalls);
+        Assert.Contains("public-note", body);
+        Assert.DoesNotContain("hidden-note", body);
+    }
+
+    // NEW (Model B matrix): a DEPTH-3 disagreement must blank exactly like the depth-2 cases above.
+    // Groups(depth1, delegate-backed Shelves) -> Shelves(depth2, delegate-backed Books, itself
+    // incidentally Include()-ing Reviews) -> Books(depth3, Reviews resolves against the ambiguous
+    // {Books, FeaturedBooks} candidate set) -> Reviews disagreement. Every intermediate level is
+    // genuinely loaded (via real delegates) so the depth-3 disagreement is actually evaluated
+    // against non-empty data, not vacuously skipped because an earlier level came back empty.
+    [Fact]
+    public async Task NestedExpand_DepthThreeDisagreement_Blanks()
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        var counter = new MultiSetDelegateCounter();
+        await using TestFixture fx = await MultiSetSqliteHarness.BuildAsync(
+            connection, counter, sink: null, booksBeforeFeatured: true);
+
+        HttpResponseMessage resp = await fx.Client.GetAsync(
+            "/odata/Groups?$expand=Shelves($expand=Books($expand=Reviews))");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        string body = await resp.Content.ReadAsStringAsync();
+
+        // The chain genuinely reached depth 3 (Books is present, non-empty)...
+        Assert.Contains("\"Id\":10", body);
+        // ...but the depth-3 Reviews disagreement still fails closed: neither FeaturedBooks' delegate
+        // ran nor did the Shelf handler's raw Include-populated Reviews leak through.
+        Assert.Equal(0, counter.ReviewCalls);
+        Assert.DoesNotContain("raw-review", body);
+        Assert.Contains("\"Reviews\":[]", body);
+    }
+
+    // NEW (Model B matrix): gate/path-agreement probe. The SAME disagreeing nav (MsBook.Reviews,
+    // ambiguous between delegate-less Books and delegate-backed FeaturedBooks) is reached two
+    // different ways in one test: via a delegate-less PARENT nav (Library.Books — resolved by the
+    // PUSHDOWN GATE, which must defer the whole branch rather than EF-include Reviews) and via a
+    // delegate-backed PARENT nav (Shelf.Books — resolved directly by the DELEGATE PATH, Stage 3).
+    // Both must independently compute the SAME candidate set and the SAME Blank treatment for
+    // Reviews — proving the gate and the delegate path can never diverge on the same navigation.
+    [Fact]
+    public async Task GatePathAgreement_SameDisagreeingNav_NeitherDelegatelessNorDelegateBackedParent_Leaks()
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        var sink = new SqlCaptureSink();
+        var counter = new MultiSetDelegateCounter();
+        await using TestFixture fx = await MultiSetSqliteHarness.BuildAsync(
+            connection, counter, sink, booksBeforeFeatured: true);
+        sink.Clear();
+
+        // Via the delegate-less parent: the PUSHDOWN GATE sees the same disagreement and defers the
+        // whole branch — Reviews is never EF-included/JOIN'd.
+        HttpResponseMessage viaGate = await fx.Client.GetAsync(
+            "/odata/Libraries?$orderby=id&$expand=Books($expand=Reviews)");
+        Assert.Equal(HttpStatusCode.OK, viaGate.StatusCode);
+        string gateSql = MultiSetSqliteHarness.LastSelectAgainst(sink, "Libraries");
+        Assert.DoesNotContain("\"Reviews\"", gateSql);
+        string gateBody = await viaGate.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("raw-review", gateBody);
+
+        // Via the delegate-backed parent: Stage 3 (the DELEGATE PATH) resolves Reviews directly —
+        // no pushdown gate involved for a route-backed top nav — and independently computes the
+        // SAME Blank treatment from the SAME candidate set.
+        HttpResponseMessage viaPath = await fx.Client.GetAsync(
+            "/odata/Shelves?$expand=Books($expand=Reviews)");
+        Assert.Equal(HttpStatusCode.OK, viaPath.StatusCode);
+        string pathBody = await viaPath.Content.ReadAsStringAsync();
+        Assert.Equal(0, counter.ReviewCalls);
+        Assert.DoesNotContain("raw-review", pathBody);
+        Assert.Contains("\"Reviews\":[]", pathBody);
     }
 }

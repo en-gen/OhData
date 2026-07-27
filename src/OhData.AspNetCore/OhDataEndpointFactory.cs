@@ -1376,85 +1376,35 @@ internal static class OhDataEndpointFactory
             PropertyInfo? expandClrProp = ODataPropertyNaming.FindClrPropertyByEdmName(items[0].GetType(), propName);
             string expandKey = ResolveNavigationJsonKey(expandClrProp?.Name ?? propName, expandClrProp, serializerOptions);
 
-            // #292: resolve which registered NavigationRouteDefinition (if any) legitimately
-            // serves this navigation at THIS level. levelSources is almost always a single
-            // profile; it only holds 2+ when the same CLR/EDM type is exposed by multiple entity
-            // sets and the EDM had no real navigation-source binding to tell them apart. Exactly
-            // one candidate defining a route for this nav name is unambiguous (the others simply
-            // have no opinion on it) — use it. Two or more candidates defining DIFFERENT routes
-            // for the SAME nav name is a genuine conflict: picking either risks running the wrong
-            // profile's delegate (or silently skipping the right one), so this fails closed by
-            // blanking the node below rather than guessing.
-            List<NavigationRouteDefinition> routeMatches = new();
-            foreach (IEntitySetEndpointSource candidate in levelSources)
+            // Model B — declaring-set authority (OWNER DECISION 2026-07-26, FROZEN spec on issue
+            // #293): resolve this navigation's treatment from levelSources, the exact-EDM-type
+            // candidate set for this level (see ResolveRequestSourcesForEdmType). ResolveNavTreatment
+            // is the SAME dispatch the pushdown gate uses (TryBuildEngagedExpand, over the equivalent
+            // startup-profile candidate set for the child element type) — reusing it here means the
+            // gate and this delegate path can never disagree: the gate only ever pushes down a
+            // ServeRaw navigation (so RunDelegate/Blank always arrive here needing action), and this
+            // path only ever runs the sole RunDelegate route or blanks a Blank one.
+            NavTreatmentResult treatment = ResolveNavTreatment(propName, levelSources);
+            bool isCollectionNav = (expandItem.PathToNavigationProperty.FirstSegment as NavigationPropertySegment)?
+                .NavigationProperty?.Type.IsCollection() ?? false;
+
+            if (treatment.Treatment == NavTreatment.ServeRaw)
             {
-                NavigationRouteDefinition? match = candidate.NavigationRoutes.FirstOrDefault(n =>
-                    string.Equals(n.PropertyName, propName, StringComparison.OrdinalIgnoreCase));
-                if (match is not null) routeMatches.Add(match);
+                // DB(X) = ∅ over every candidate at this level: nobody delegates this navigation, so
+                // whatever is already sitting at jsonItems[i][expandKey] — an EF Include pushed down by
+                // the query, or the plain serialized CLR graph — IS the raw, authoritative answer.
+                // Nothing to inject or blank; leave it exactly as serialized.
+                continue;
             }
 
-            if (routeMatches.Count == 0)
+            if (treatment.Treatment == NavTreatment.Blank)
             {
-                // CRITICAL fail-closed fix (adversarial review, on top of #293): at depth > 1,
-                // levelSources only contains the profile(s) ResolveRequestSourcesForEdmType matched
-                // by EXACT EDM type name for THIS level — which never includes a profile declared
-                // over a DERIVED CLR type, since a derived type gets its own, differently-named EDM
-                // entity type. So a navigation that is delegate-backed ONLY by such a derived-type
-                // profile (delegating a nav declared on the base type) legitimately has zero
-                // routeMatches here even though it IS someone's authorization boundary. #293's
-                // DelegateBackedNavNamesForClrType is the single authoritative, assignability-aware
-                // "is this delegate-backed anywhere" check — reuse it here so the pushdown gate and
-                // this delegate path agree. levelSources all share one CLR model type by construction
-                // (see the keyProp comment above), and that shared type is a common ancestor of every
-                // possible runtime instance at this level, so checking it (rather than any single
-                // item's runtime type) catches a derived-type delegate regardless of which concrete
-                // type actually appears in the page.
-                //
-                // Scoped to depth > 1 (never the root, depth == 1): the root call always passes
-                // levelSources = [requestSource] — the EXACT entity set the URL explicitly named, not
-                // an inferred candidate. That set's own NavigationRoutes are the sole, authoritative
-                // answer for its OWN direct navigations (this is the same asymmetry the pushdown gate
-                // already relies on — TryBuildEngagedExpand decides a nav's OWN pushability from only
-                // its owning profile, and consults the union solely for the NEXT level down). Applying
-                // this check at depth == 1 would wrongly defer/blank a legitimately delegate-less (or
-                // already SQL-pushed) navigation just because some UNRELATED entity set happens to
-                // expose the same CLR type with a delegate on a same-named nav — exactly the false
-                // positive that regressed the $levels self-referential suite (LvNodes/LvShallowNodes/
-                // LvSecureNodes all share the exact LvNode CLR type) during development of this fix.
-                if (depth > 1 &&
-                    DelegateBackedNavNamesForClrType(levelSources[0].ModelType, registration) is { } backedElsewhere &&
-                    backedElsewhere.Contains(propName))
-                {
-                    // Unlike OmitUnexpandedNavigations' key REMOVAL (§11.2.4.2) for a nav that was
-                    // never $expand'd, this key IS in the $expand clause, so Stage 3.5 would KEEP
-                    // whatever the parent handler (or EF fixup/Include) already populated here.
-                    // Overwrite with an explicit empty value so a delegate-backed nav can never leak
-                    // fixup rows just because no route resolved for it at THIS level.
-                    bool isCollectionNavNoRoute = (expandItem.PathToNavigationProperty.FirstSegment as NavigationPropertySegment)?
-                        .NavigationProperty?.Type.IsCollection() ?? false;
-                    for (int i = 0; i < items.Count; i++)
-                    {
-                        jsonItems[i][expandKey] = isCollectionNavNoRoute ? new JsonArray() : null;
-                    }
-                }
-
-                continue; // no handler registered anywhere — cannot load it
-            }
-
-            if (routeMatches.Count > 1)
-            {
-                // Fail closed (#292 item 3): whatever CLR value the PARENT level's own handler
-                // happened to populate here (e.g. an incidental EF Include, or relationship
-                // fixup from elsewhere in the same tracked DbContext) must not leak through
-                // un-vetted just because this level couldn't decide whose delegate — if any —
-                // is the authority for it. Blank instead of injecting/keeping either candidate's
-                // data or invoking either delegate.
-                //
-                // Same Stage-3.5 subtlety as the no-route branch above: this key IS in the $expand
-                // clause, so OmitUnexpandedNavigations would KEEP it — overwrite explicitly rather
-                // than rely on removal.
-                bool isCollectionNav = (expandItem.PathToNavigationProperty.FirstSegment as NavigationPropertySegment)?
-                    .NavigationProperty?.Type.IsCollection() ?? false;
+                // DB(X) and DL(X) disagree at this level (some candidate delegates, another declares
+                // the nav with no route — or 2+ candidates delegate via distinct routes): the framework
+                // cannot tell which authoritative declaration governs, so it fails closed rather than
+                // guessing. Overwrite explicitly — this key IS in the $expand clause, so Stage 3.5's
+                // OmitUnexpandedNavigations (which only ever REMOVES un-$expand'd keys) would otherwise
+                // keep whatever the parent handler/EF fixup happened to leave here.
                 for (int i = 0; i < items.Count; i++)
                 {
                     jsonItems[i][expandKey] = isCollectionNav ? new JsonArray() : null;
@@ -1462,7 +1412,10 @@ internal static class OhDataEndpointFactory
                 continue;
             }
 
-            NavigationRouteDefinition navRoute = routeMatches[0];
+            // NavTreatment.RunDelegate: exactly one candidate at this level routes this navigation
+            // back, and no candidate disagrees (declares it delegate-less) — that route is the sole,
+            // unambiguous authority for it. Run it.
+            NavigationRouteDefinition navRoute = treatment.Route!;
 
             // Load the related entity/collection for every entity at this level, keeping the CLR
             // results (relatedByIndex[i]) so deeper levels can read their keys.
@@ -1616,6 +1569,31 @@ internal static class OhDataEndpointFactory
     private static IReadOnlyList<IEntitySetEndpointSource> ResolveRequestSourcesForEdmType(
         IEdmEntityType? targetEdmType, OhDataRegistration registration, IServiceProvider requestServices)
     {
+        List<IEntitySetEndpointSource> candidates = new();
+        foreach (IEntitySetEndpointSource profile in ResolveProfilesForEdmType(targetEdmType, registration))
+        {
+            if (requestServices.GetService(profile.GetType()) is IEntitySetEndpointSource instance)
+                candidates.Add(instance);
+        }
+        return candidates;
+    }
+
+    // Model B candidate resolution (FROZEN spec, issue #293): the startup profiles whose entity
+    // set's EDM entity type is EXACTLY <paramref name="targetEdmType"/> (matched by
+    // <see cref="IEdmEntityType.FullTypeName"/> — never CLR-type assignability, and never registration
+    // order). This is "the candidate set S" the decision table in ResolveNavTreatment partitions into
+    // DB/DL. Shared by both call sites that need a level's candidate set:
+    //   - the pushdown gate (TryBuildEngagedExpand → ResolveProfilesForClrType below), which only has
+    //     structural facts available at query-plan time, so the startup singletons here suffice;
+    //   - the delegate expansion path (ExpandLevelAsync → ResolveRequestSourcesForEdmType above), which
+    //     re-resolves each of these same candidates through the request scope so their handlers may
+    //     capture scoped dependencies (e.g. a DbContext).
+    // Because both paths start from this exact same set, the gate and the delegate path can never
+    // compute a different candidate set for the same navigation — only ResolveNavTreatment's decision
+    // over that set matters, and it is likewise shared.
+    private static IReadOnlyList<IEntitySetEndpointSource> ResolveProfilesForEdmType(
+        IEdmEntityType? targetEdmType, OhDataRegistration registration)
+    {
         if (targetEdmType is null) return Array.Empty<IEntitySetEndpointSource>();
 
         string targetName = targetEdmType.FullTypeName();
@@ -1624,11 +1602,74 @@ internal static class OhDataEndpointFactory
         {
             IEdmEntityType? setType = registration.EdmModel.EntityContainer?
                 .FindEntitySet(profile.EntitySetName)?.EntityType;
-            if (setType is null || setType.FullTypeName() != targetName) continue;
-            if (requestServices.GetService(profile.GetType()) is IEntitySetEndpointSource instance)
-                candidates.Add(instance);
+            if (setType is not null && setType.FullTypeName() == targetName) candidates.Add(profile);
         }
         return candidates;
+    }
+
+    // Gate-side convenience over ResolveProfilesForEdmType: resolves a CLR element type (as seen at
+    // query-plan time, e.g. binding.ElementType) to its declared EDM entity type via the same
+    // model.FindDeclaredType(...) convention IsMemberInitProjectable already relies on, then defers to
+    // ResolveProfilesForEdmType so the gate's candidate set is computed by the exact same EDM-type
+    // match the delegate path uses — never CLR-type equality/assignability on its own, which is what
+    // made #293's original fix over-broad (matching a base/derived CLR type rather than the exact EDM
+    // entity type the level is actually reached through).
+    private static IReadOnlyList<IEntitySetEndpointSource> ResolveProfilesForClrType(
+        Type clrType, IEdmModel model, OhDataRegistration registration)
+    {
+        IEdmEntityType? edmType = model.FindDeclaredType(clrType.FullName ?? clrType.Name) as IEdmEntityType;
+        return ResolveProfilesForEdmType(edmType, registration);
+    }
+
+    // Model B navigation treatment (declaring-set authority — OWNER DECISION 2026-07-26, FROZEN spec
+    // on issue #293). Each candidate set's OWN declaration is authoritative for its OWN navigations; a
+    // delegate on a sibling/derived set never retroactively poisons a nav that ANOTHER set legitimately
+    // serves raw. Fail-closed BLANKING happens only on genuine disagreement between candidates.
+    //
+    // Partitions <paramref name="candidates"/> — the exact-EDM-type candidate set for one level, from
+    // ResolveProfilesForEdmType / ResolveProfilesForClrType / ResolveRequestSourcesForEdmType — into:
+    //   DB(navName) = candidates that route this nav back (NavigationRoutes has a matching entry)
+    //   DL(navName) = candidates that DECLARE this nav (NavigationPropertyNames) but have NO route
+    // A candidate that neither routes nor declares the nav has no opinion on it and is ignored.
+    //
+    //   DB empty                          -> ServeRaw     (nobody delegates; raw survives as-is)
+    //   DB has exactly one route, DL empty -> RunDelegate  (sole, unambiguous authority — run it)
+    //   DB non-empty AND DL non-empty      -> Blank        (delegate-backed vs delegate-less disagree)
+    //   DB has 2+ candidates                -> Blank        (2+ distinct delegate routes disagree)
+    // Deterministic: only set membership over `candidates` is read, never registration/iteration order.
+    //
+    // Used by BOTH the pushdown gate (candidates = startup profiles for the child element type) and the
+    // delegate expansion path (candidates = levelSources, the same profiles re-resolved through the
+    // request scope) — see the two call sites — so they can never diverge: the gate only ever pushes
+    // down a ServeRaw navigation (RunDelegate/Blank always defer to the delegate path), and the delegate
+    // path's ServeRaw case is a no-op (the pushed/serialized raw value already present is correct).
+    private enum NavTreatment { ServeRaw, RunDelegate, Blank }
+
+    private readonly record struct NavTreatmentResult(NavTreatment Treatment, NavigationRouteDefinition? Route);
+
+    private static NavTreatmentResult ResolveNavTreatment(string navName, IReadOnlyList<IEntitySetEndpointSource> candidates)
+    {
+        List<NavigationRouteDefinition>? delegateBacked = null; // DB(navName)
+        bool anyDelegateLess = false; // DL(navName) non-empty?
+
+        foreach (IEntitySetEndpointSource candidate in candidates)
+        {
+            NavigationRouteDefinition? route = candidate.NavigationRoutes.FirstOrDefault(n =>
+                string.Equals(n.PropertyName, navName, StringComparison.OrdinalIgnoreCase));
+            if (route is not null)
+            {
+                (delegateBacked ??= new List<NavigationRouteDefinition>()).Add(route);
+            }
+            else if (candidate.NavigationPropertyNames.Any(n => string.Equals(n, navName, StringComparison.OrdinalIgnoreCase)))
+            {
+                anyDelegateLess = true;
+            }
+        }
+
+        if (delegateBacked is null) return new NavTreatmentResult(NavTreatment.ServeRaw, null);
+        if (delegateBacked.Count == 1 && !anyDelegateLess)
+            return new NavTreatmentResult(NavTreatment.RunDelegate, delegateBacked[0]);
+        return new NavTreatmentResult(NavTreatment.Blank, null); // disagreement, or 2+ distinct routes
     }
 
     // OData JSON Format v4.01 §4.5.1 / §11.2.4.2: a navigation property that was not requested
@@ -2125,6 +2166,20 @@ internal static class OhDataEndpointFactory
         // STILL DEFERRED: a $levels item that also carries its own nested $expand. Depth accounting
         // between the $levels budget and the nested branch's own remainingDepth is ambiguous against
         // MaxExpansionDepth, so the whole branch stays EDM-only (graceful, never a 500).
+        //
+        // Micro-decision (A) (owner-settled, FROZEN spec on issue #293): this $levels branch NEVER
+        // calls ResolveNavTreatment / ResolveProfilesForClrType — it recurses the SAME already-resolved
+        // `binding` (the URL-named root set's own self-referential nav) at every level, exactly as
+        // BuildLevelsNavBinding produced it. So `GET /Base?$expand=Children($levels=2)` through a
+        // self-referential nav resolves ENTIRELY from the URL-named set and serves raw at every level,
+        // even when the same CLR/EDM type is ALSO exposed (with disagreeing nav config) by another
+        // entity set. By contrast, the explicit nested form below — `$expand=Children($expand=Children)`
+        // — descends one real ExpandedNavigationSelectItem per level, so EACH level re-resolves its own
+        // candidate set via ResolveProfilesForClrType/ResolveNavTreatment; if that type is exposed by
+        // MULTIPLE disagreeing sets, the grandchild BLANKS (candidate disagreement) even though $levels
+        // would have served it raw. This is an intentional, accepted asymmetry (fail-closed by default
+        // for the explicit form) rather than a bug — #318 tracks optional parent-set provenance
+        // threading to unify the two under the same "serve raw" outcome.
         if (item.LevelsOption is not null)
         {
             SelectExpandClause? lc = item.SelectAndExpand;
@@ -2170,23 +2225,25 @@ internal static class OhDataEndpointFactory
             if (remainingDepth < 2) return false;
             if (!IsMemberInitProjectable(binding.ElementType, model)) return false;
 
-            // Delegate-safety at depth: gather the delegate-backed navigation names of EVERY profile
-            // whose entity set exposes this element CLR type (not just the first one). A nested nav that
-            // ANY such profile declares WITH a delegate must never be EF-included, so the whole parent
-            // branch is deferred (it then resolves via the existing delegate/EDM path). Unioning across
-            // all matching profiles keeps the delegate-safety invariant registration-order-independent:
-            // the same CLR model type can be exposed by 2+ entity sets with DIFFERENT nav-delegate
-            // config, and a delegate-carrying set must not be bypassed just because a delegate-less set
-            // over the same type happened to register first. When the element type is not exposed by any
-            // entity set (no profile), no delegate can exist for its navigations, so they are inherently
-            // delegate-less and eligible if otherwise pushable.
-            HashSet<string>? childRouteBacked = DelegateBackedNavNamesForClrType(binding.ElementType, registration);
+            // Model B pushdown gate (FROZEN spec, issue #293): resolve the candidate set for this
+            // element CLR type — every startup profile whose entity set's EDM type is EXACTLY this
+            // type (ResolveProfilesForClrType; never CLR-type assignability, never registration
+            // order) — and use the SAME ResolveNavTreatment dispatch the delegate expansion path
+            // uses (ExpandLevelAsync) to decide each nested nav's treatment. A nav only stays
+            // EF-includable (pushed down) when its treatment is ServeRaw (DB(nav) = ∅ over the
+            // candidate set); RunDelegate and Blank both defer the WHOLE parent branch off pushdown
+            // so it resolves via the delegate expansion path instead, which alone knows how to invoke
+            // the sole delegate or write the blanked value. Computing the gate's candidate set with
+            // the exact same helper the delegate path uses is what guarantees the two can never
+            // diverge on the same navigation.
+            IReadOnlyList<IEntitySetEndpointSource> childCandidates =
+                ResolveProfilesForClrType(binding.ElementType, model, registration);
 
             foreach (ExpandedNavigationSelectItem childItem in childItems)
             {
                 string childNavName = childItem.PathToNavigationProperty.FirstSegment.Identifier;
-                if (childRouteBacked is not null && childRouteBacked.Contains(childNavName))
-                    return false; // delegate-backed nested nav — defer whole branch (never EF-included)
+                if (ResolveNavTreatment(childNavName, childCandidates).Treatment != NavTreatment.ServeRaw)
+                    return false; // RunDelegate or Blank — defer whole branch (never EF-included)
 
                 if (BuildExpandNavBinding(binding.ElementType, childNavName) is not { } childBinding)
                     return false; // cyclic / non-projectable nested nav — defer whole branch
@@ -2209,44 +2266,6 @@ internal static class OhDataEndpointFactory
             binding, item.FilterOption, item.OrderByOption, skip, top, item.CountOption == true, nestedSelect,
             children, Levels: 0);
         return true;
-    }
-
-    // #206 phase 2 (multi-level expand): the UNION of delegate-backed navigation-property names across
-    // every startup source whose entity set's CLR model type is <paramref name="clrType"/>, or null when
-    // that type is not exposed by any entity set (a nav-target-only type — no profile, hence no delegate
-    // can exist for its navigations). Used at query-plan time to decide whether a nested navigation is
-    // delegate-backed; only structural facts (NavigationRoutes) are read, so the startup singleton
-    // sources suffice (no request scope needed).
-    //
-    // The union — not a single FirstOrDefault — is load-bearing for the delegate-safety invariant: OhData
-    // de-duplicates entity-set NAMES at startup, but the SAME CLR model type may be exposed by 2+ entity
-    // sets carrying DIFFERENT nav-delegate config. If any one of them route-backs a given navigation, that
-    // navigation must be treated as delegate-backed everywhere (branch deferred, never EF-included), so a
-    // delegate-carrying set is never bypassed merely because a delegate-less set over the same type
-    // registered first. The union is scoped to the SAME clrType and (by name membership at the call site)
-    // the SAME navigation, so an unrelated nav on a different type never widens the deferral.
-    //
-    // #293: matching is by ASSIGNABILITY, not exact type identity (clrType == p.ModelType). A profile
-    // declared over a DERIVED type can attach a delegate to a navigation declared on a BASE type — the
-    // nested nav being evaluated here (childNavName at the call site) is reached through binding.ElementType,
-    // which is whatever CLR type the PARENT navigation's element type is (often the base). An exact-identity
-    // match would make that profile invisible to the union, treating the nav as delegate-less and letting it
-    // be EF-Included — a delegate bypass. Widening to either direction of assignability (clrType is a base of
-    // p.ModelType, OR clrType is itself a derived/equal type of p.ModelType) only ever ADDS candidates, so
-    // the worst case is an unrelated same-named navigation on an unrelated type in the inheritance chain
-    // forcing an unnecessary (but always SAFE) deferral — never a missed delegate. Over-matching costs a
-    // pushdown opportunity at worst; under-matching costs a security boundary, so the direction of error here
-    // is deliberately conservative.
-    private static HashSet<string>? DelegateBackedNavNamesForClrType(Type clrType, OhDataRegistration registration)
-    {
-        HashSet<string>? names = null;
-        foreach (IEntitySetEndpointSource p in registration.Profiles.Where(p =>
-                     clrType.IsAssignableFrom(p.ModelType) || p.ModelType.IsAssignableFrom(clrType)))
-        {
-            foreach (NavigationRouteDefinition r in p.NavigationRoutes)
-                (names ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase)).Add(r.PropertyName);
-        }
-        return names;
     }
 
     // #206 phase 2 (multi-level expand): true when an element type can be projected into a fresh
