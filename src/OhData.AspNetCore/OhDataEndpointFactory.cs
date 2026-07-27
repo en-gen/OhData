@@ -3688,6 +3688,17 @@ internal static class OhDataEndpointFactory
             ? (int)Math.Min((long)cap + 1, int.MaxValue)
             : null;
 
+        // #313: a BARE pushed leaf (no $count, no explicit $top of its own — $skip alone included) used
+        // to compose NO SQL Take at all, leaving the single most common $expand shape unbounded by
+        // MaxExpandTop. Same trade as countBound above (SQL Take(cap+1), gated to a projection leaf for
+        // the same APPLY/LATERAL reason), just for the no-$count case. Mutually exclusive with
+        // countBound (that one requires engaged.Count; this one requires !engaged.Count), and with an
+        // explicit $top (Top is null here) since $top must win over the default ceiling bound.
+        int? defaultLeafBound = !deferPagingToJson && isProjectionLeaf && !engaged.Count && engaged.Top is null
+            && maxExpandTop is int defaultCap
+            ? (int)Math.Min((long)defaultCap + 1, int.MaxValue)
+            : null;
+
         // Whenever paging is in play — pushed to SQL now (no $count) OR deferred to the JSON window
         // (with $count, or under #300's deferPagingToJson) — stabilize the order so WHICH rows land in
         // the page is deterministic. Mirrors the root path's EnsureStableOrder (#241): append the nav
@@ -3697,7 +3708,8 @@ internal static class OhDataEndpointFactory
         // countBound-suppressing children level) so the deferred JSON window (ShapePushedExpandsInJson /
         // ShapeLevelsInJson) still pages over a deterministic SQL order. A composite/unresolvable key is
         // left to the provider (best-effort, never throws).
-        bool paging = (engaged.Skip is int s && s > 0) || engaged.Top is int || countBound is not null;
+        bool paging = (engaged.Skip is int s && s > 0) || engaged.Top is int || countBound is not null
+            || defaultLeafBound is not null;
         if (paging && TryGetKeyClrProperty(model, elem) is { } keyProp)
         {
             ParameterExpression e = Expression.Parameter(elem, "e");
@@ -3733,6 +3745,11 @@ internal static class OhDataEndpointFactory
                         access = Expression.Call(_enumerableSkip.MakeGenericMethod(elem), access, Expression.Constant(sk));
                     if (engaged.Top is int tp)
                         access = Expression.Call(_enumerableTake.MakeGenericMethod(elem), access, Expression.Constant(tp));
+                    // #313: no explicit $top → fall back to the default ceiling bound (composed AFTER
+                    // any $skip, same as the explicit-$top Take above) so a bare (or $skip-only) leaf is
+                    // no longer an unbounded materialization.
+                    else if (defaultLeafBound is int leafBound)
+                        access = Expression.Call(_enumerableTake.MakeGenericMethod(elem), access, Expression.Constant(leafBound));
                 }
                 // else: a level WITH children — defer the $skip/$top window to the JSON pass (#304).
             }
@@ -3908,7 +3925,13 @@ internal static class OhDataEndpointFactory
             // now needs the JSON pass too, or the window would silently never be applied.)
             bool hasChildren = e.Children is { Count: > 0 };
             bool levelsNeedsJsonPaging = e.Levels > 0 && (e.Skip is int || e.Top is int);
-            if (!e.Count && e.NestedSelect is null && !hasChildren && !levelsNeedsJsonPaging) continue;
+            // #313: a bare collection leaf (no $count, no $top/$skip of its own) now carries a SQL
+            // Take(MaxExpandTop+1) bound composed by ApplyNavShape (defaultLeafBound) — so it still
+            // needs to be visited here to enforce the ceiling, even though there is no count/select/
+            // children work to do otherwise.
+            bool needsLeafCeilingCheck = e.Binding.IsCollection && !hasChildren && e.Top is null && maxExpandTop is int;
+            if (!e.Count && e.NestedSelect is null && !hasChildren && !levelsNeedsJsonPaging && !needsLeafCeilingCheck)
+                continue;
 
             // #254 (item 2): a $levels expand may now carry $count/$select. Its recursion is implicit
             // (there is no per-level EngagedExpand — the SAME binding repeats), so shape every level by
@@ -3936,6 +3959,20 @@ internal static class OhDataEndpointFactory
                     // still window (to an empty array), never fall through to "no window at all".
                     else if (hasChildren && ((e.Skip is int sk && sk > 0) || e.Top is int))
                         WriteNestedWindowOnly(arr, key, e, maxExpandTop);
+                    // #313: bare children (nested $expand, no $count/$skip/$top of its own) can't be
+                    // SQL-windowed at all (the same APPLY/LATERAL constraint documented on
+                    // ApplyNavShape's isProjectionLeaf gate) — so it was, and still is, fully
+                    // materialized here. It now needs the ceiling check the windowed shapes above
+                    // already get, applied BEFORE recursing into children so a breach 400s before
+                    // descending any further.
+                    else if (hasChildren && maxExpandTop is int)
+                        EnsureWithinExpandCeiling(arr, key, maxExpandTop, "'$expand'");
+                    // #313: bare leaf (no children, no $count, no explicit $top — a lone $skip=0 no-op
+                    // included). ApplyNavShape now SQL-bounds this shape to MaxExpandTop+1 rows
+                    // (defaultLeafBound), so arr.Count > cap here means the true collection exceeds the
+                    // configured budget.
+                    else if (!hasChildren && e.Top is null && maxExpandTop is int)
+                        EnsureWithinExpandCeiling(arr, key, maxExpandTop, "'$expand'");
                     // Recurse into deeper pushed levels on the (paged) elements BEFORE this level's
                     // $select strip — the strip keeps expanded-nav names (ExtractSelectedProperties), so
                     // the children survive, and shaping deeper counts/selects sees the full child graph.

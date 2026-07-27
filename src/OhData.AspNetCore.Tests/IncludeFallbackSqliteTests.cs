@@ -320,6 +320,44 @@ public sealed class IncludeFallbackMaxExpandTopTests : IAsyncLifetime
         string body = await resp.Content.ReadAsStringAsync();
         Assert.Contains("\"Children@odata.count\":1", body);
     }
+
+    // #313 parity: the SAME bare-leaf bound ApplyNavShape now composes on the member-init projection
+    // path (BareLeafCeilingTests) must flow through the #305 Include fallback too — both call the same
+    // ApplyNavShape (see ApplyIncludeFallback's remarks).
+    [Fact]
+    public async Task BareExpand_NoCountNoTop_ChildCountAboveCeiling_Returns400()
+    {
+        // P1 has exactly 3 children; a ceiling of 2 puts the true count above the budget — a BARE
+        // $expand=Children (no $count, no $top) used to be entirely unbounded through this fallback too.
+        HttpResponseMessage resp = await _fx.Client.GetAsync(
+            "/odata/NoCtorParents?$orderby=id&$expand=Children");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("InvalidQueryOption", body);
+        Assert.Contains("Children", body);
+        Assert.Contains("cannot be computed", body);
+        Assert.Contains("maximum of 2", body);
+        Assert.Contains("Narrow it with a nested $filter", body);
+        Assert.DoesNotContain("Sqlite", body);
+        Assert.DoesNotContain("SQLITE", body);
+    }
+
+    [Fact]
+    public async Task BareExpand_NoCountNoTop_ChildCountUnderCeiling_Returns200_WithChildren()
+    {
+        // P2 has exactly 1 child — comfortably under the ceiling of 2. Isolate to P2 so the OVERALL
+        // request doesn't 400 on P1's own over-ceiling Children array.
+        HttpResponseMessage resp = await _fx.Client.GetAsync(
+            "/odata/NoCtorParents?$orderby=id&$expand=Children&$filter=name eq 'P2'");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        using JsonDocument doc = JsonDocument.Parse(body);
+        JsonElement children = doc.RootElement.GetProperty("value")[0].GetProperty("Children");
+        Assert.Single(children.EnumerateArray());
+        Assert.Equal("C2a", children[0].GetProperty("Name").GetString());
+    }
 }
 
 // Include-invalid model: EF's own model does not recognize the "nav" (explicitly Ignore()d), so
