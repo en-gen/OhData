@@ -93,11 +93,21 @@ public sealed class GetByIdNestedTopCeilingTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task GetById_NestedTop_AtCeiling_Succeeds()
+    public async Task GetById_NestedTop_AtCeiling_OnDelegateBackedNav_Rejected400()
     {
+        // #294 (owner decision, filed alongside #296): GbCeilingProfile's Children navigation is
+        // delegate-backed (HasMany(..., getAll:)), so an in-range nested $top can no longer be
+        // silently served here either — this used to be a 200 (the delegate's full answer, unwindowed)
+        // before #294's reject shipped. GetById shares the same $expand inlining pipeline as the
+        // collection routes (ApplyCollectionPipelineAsync → ExpandLevelAsync), so the reject applies
+        // uniformly across both.
         HttpResponseMessage resp = await _fx.Client.GetAsync(
             "/odata/GbCeilingParents(1)?$expand=Children($top=2)");
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("InvalidQueryOption", body);
+        Assert.Contains("Children", body);
     }
 
     [Fact]

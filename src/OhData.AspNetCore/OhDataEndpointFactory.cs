@@ -1203,6 +1203,9 @@ internal static class OhDataEndpointFactory
     // Unified collection pipeline: Serialize → ETag → Expand → Select.
     // Serialises exactly once using the owned jsonOptions (defensively falls back to the
     // PascalCase _pascalCaseSerializerOptions if ever null — in practice it is always supplied).
+    // #294: a nested $top/$skip rejected against a delegate-backed navigation somewhere in the
+    // expand tree throws Microsoft.OData.ODataException out of ExpandLevelAsync — every caller of
+    // this method already catches that exception and converts it to 400 InvalidQueryOption.
     private static async Task<(JsonArray Items, List<string>? SelectedProps)> ApplyCollectionPipelineAsync(
         object[] originalItems,
         ODataQueryOptions options,
@@ -1338,6 +1341,10 @@ internal static class OhDataEndpointFactory
     // per-entity Handler is called once per entity (N+1 within that one property). Nested levels
     // flatten every related entity across the page into a single set before recursing, so a
     // batch-capable navigation is still batched once per level rather than once per parent.
+    // #294: a nested $top/$skip against a delegate-backed navigation anywhere in the expand tree
+    // (see the RunDelegate branch below) throws Microsoft.OData.ODataException rather than
+    // returning/threading an IResult — every caller of ApplyCollectionPipelineAsync already catches
+    // that exception and converts it to 400 InvalidQueryOption.
     private static async Task ExpandLevelAsync(
         IReadOnlyList<object> items,
         IReadOnlyList<JsonObject> jsonItems,
@@ -1416,6 +1423,38 @@ internal static class OhDataEndpointFactory
             // back, and no candidate disagrees (declares it delegate-less) — that route is the sole,
             // unambiguous authority for it. Run it.
             NavigationRouteDefinition navRoute = treatment.Route!;
+
+            // #294 (owner decision, issue #294): a nested $top/$skip inside $expand against a
+            // delegate-backed navigation cannot be safely re-windowed here — the per-entity Handler
+            // and the BatchHandler both return the delegate's FULL answer for the given parent
+            // key(s); nothing downstream applies a Skip/Take to it. Silently ignoring the option
+            // used to return every related row under an unsuspicious 200 (the #294 bug:
+            // $expand=Children($top=2) on a delegate-backed nav returned all 3 children). Reject
+            // instead of guessing, consistent with the framework's "parse the option or reject it"
+            // contract — mirrors ValidateNestedTopCeiling's over-ceiling 400 above it in the request
+            // pipeline (Priority-1/GetQueryable/GetAll/GetById all call that first), except this
+            // covers the newly-in-range case that previously reached the delegate and was dropped.
+            // Checked before EITHER branch below runs, so neither the per-entity Handler nor the
+            // BatchHandler is ever invoked for a rejected request. Does not apply to ServeRaw (EF
+            // pushdown honors/windows nested $top there) or Blank (nothing runs, and the field is
+            // already emptied above).
+            if (expandItem.TopOption is not null || expandItem.SkipOption is not null)
+            {
+                // Thrown (not returned) for the same reason EnsureWithinExpandCeiling throws below:
+                // it avoids IResult threading through this void recursive walk. All 5 collection-GET
+                // call sites of ApplyCollectionPipelineAsync already catch Microsoft.OData.ODataException
+                // and surface it as 400 InvalidQueryOption.
+                //
+                // Known gap (#320, not fixed here): this reject fires only when the navigation ITSELF
+                // resolves to RunDelegate at this level. A delegate-backed nav reached solely via a
+                // ServeRaw (delegate-less) parent's already-materialized graph never reaches this
+                // check — its nested $top/$skip is still silently ignored. Fixing that needs a
+                // treatment-independent pre-pipeline scan of the whole $expand tree; out of scope here.
+                throw new Microsoft.OData.ODataException(
+                    $"A nested $top/$skip is not supported on the delegate-backed navigation '{propName}'; " +
+                    "declare it delegate-less (no Handler/BatchHandler) to enable server-side windowing, " +
+                    "or remove the option.");
+            }
 
             // Load the related entity/collection for every entity at this level, keeping the CLR
             // results (relatedByIndex[i]) so deeper levels can read their keys.
