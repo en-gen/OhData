@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
@@ -273,5 +274,48 @@ public class BatchExpandTests
         var first = json.GetProperty("value")[0];
         Assert.True(first.TryGetProperty("Children", out var children));
         Assert.True(children.GetArrayLength() > 0);
+    }
+
+    // ── #294: nested $top/$skip is rejected on a BATCH-backed navigation, not silently dropped ──
+
+    [Fact]
+    public async Task NestedTop_OnBatchBackedNav_Rejected400_BatchHandlerNeverInvoked()
+    {
+        // BatchExpandQueryableProfile has no MaxExpandTop ceiling, so before #294 this nested $top
+        // reached ExpandLevelAsync's BatchHandler branch, which has no Skip/Take of its own — the
+        // delegate's full per-parent answer was served silently unwindowed under a 200 (the #294
+        // bug: $top=1 would have returned both of a parent's 2 children). Now it 400s before the
+        // BatchHandler runs at all — proved by ChildrenCalls staying at 0.
+        var counter = new BatchCallCounter();
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<BatchExpandQueryableProfile>(),
+            configureServices: s => s.AddSingleton(counter));
+
+        HttpResponseMessage resp = await fx.Client.GetAsync(
+            "/odata/BatchExpandParents?$expand=Children($top=1)");
+
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("UnsupportedQueryOption", body);
+        Assert.Contains("Children", body);
+        Assert.Equal(0, counter.ChildrenCalls);
+    }
+
+    [Fact]
+    public async Task NestedSkip_OnBatchBackedNav_Rejected400_BatchHandlerNeverInvoked()
+    {
+        var counter = new BatchCallCounter();
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<BatchExpandQueryableProfile>(),
+            configureServices: s => s.AddSingleton(counter));
+
+        HttpResponseMessage resp = await fx.Client.GetAsync(
+            "/odata/BatchExpandParents?$expand=Children($skip=1)");
+
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("UnsupportedQueryOption", body);
+        Assert.Contains("Children", body);
+        Assert.Equal(0, counter.ChildrenCalls);
     }
 }

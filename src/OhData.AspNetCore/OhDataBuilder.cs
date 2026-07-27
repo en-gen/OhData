@@ -515,27 +515,70 @@ public sealed class OhDataBuilder
     // every discovered type (see ODataModelBuilder.AddEntityType/AddComplexType) -- that base
     // type has no Filter()/OrderBy()/etc. overloads at all, only the QueryConfiguration property
     // those generic wrapper methods delegate to, so we call it directly instead.
+    //
+    // #296: a type can be BOTH a root profile's own entity type AND some navigation's target type
+    // (the self-referential case -- e.g. LvNode.Children : List<LvNode> -- but also the more general
+    // "shared type" case where entity A's navigation targets entity B's own root type). The original
+    // `!rootModelTypes.Contains(...)` filter excluded every such type from this method entirely, on
+    // the theory that root types must keep whatever Filter/OrderBy/Select/Count/Expand allowlist their
+    // own profile configured above (true) -- but that filter ALSO skipped the `SetMaxTop(null)` call,
+    // which is the ONLY setting here that has nothing to do with the root type's own request-level
+    // MaxTop. Microsoft's SelectExpandQueryValidator.ValidateNestedTop reads the model-bound MaxTop of
+    // the NAVIGATION'S TARGET TYPE (not the root type reached via GET /Set) to police a nested $top
+    // inside $expand=Nav($top=N). For a root+nav-target type that model-bound MaxTop was left at its
+    // implicit default of 0 (created as a side effect of the root profile's own Filter()/Select()/etc.
+    // calls), so every nested $top against such a type 400'd before OhData's own MaxExpandTop ceiling
+    // (ValidateNestedTopCeiling, enforced separately in OhDataEndpointFactory) ever ran.
+    //
+    // Fix: compute the set of types that are SOMEONE's navigation target (self or cross-referenced),
+    // and clear model-bound MaxTop on every one of them -- root or not. Root types that are ALSO nav
+    // targets get ONLY the MaxTop clear; their Filter/OrderBy/Select/Count/Expand configuration (set by
+    // EntitySetProfile.VisitModelBuilder above, possibly a restrictive allowlist) is left completely
+    // untouched, so the root entity set's OWN request-level MaxTop/query-capability behavior (governed
+    // at runtime by IEntitySetEndpointSource.MaxTop, not by this model-bound setting) is unaffected.
+    // Pure nav-target-only types keep the existing "fully permissive" treatment unchanged.
     private static void MarkNavigationTargetTypesFullyQueryable(
         ODataModelBuilder builder, HashSet<Type> rootModelTypes)
     {
-        foreach (var query in builder.StructuralTypes
-            .Where(stc => !rootModelTypes.Contains(stc.ClrType))
-            .Select(stc => stc.QueryConfiguration))
+        var structuralTypes = builder.StructuralTypes.ToList();
+
+        var navigationTargetTypes = new HashSet<Type>(
+            structuralTypes
+                .SelectMany(stc => stc.NavigationProperties)
+                .Select(np => np.RelatedClrType)
+                .Where(t => t is not null)!);
+
+        foreach (var stc in structuralTypes)
         {
-            query.SetFilter(properties: null, enableFilter: true);
-            query.SetOrderBy(properties: null, enableOrderBy: true);
-            query.SetSelect(properties: null, selectType: SelectExpandType.Allowed);
-            query.SetCount(enableCount: true);
-            // A generous (not unbounded) max expand depth, consistent with the other
-            // effectively-unlimited-but-not-infinite settings this framework uses elsewhere
-            // (e.g. MaxAnyAllExpressionDepth = 1000 in OhDataEndpointFactory).
-            query.SetExpand(properties: null, maxDepth: 1000, expandType: SelectExpandType.Allowed);
-            // #206 phase 2 (optioned expand): once ANY model-bound setting exists on a type,
-            // Microsoft's SelectExpand validator defaults its MaxTop to 0, which rejects a nested
-            // $top inside a $expand of THIS type ($expand=Children($top=N)) with "limit of 0 for
-            // Top". Nav-target types are the collection element types a nested $top pages, so clear
-            // that spurious ceiling (null = unlimited). OhData governs $top itself: the root path
-            // clamps to source.MaxTop, and the expand-pushdown path applies the nested $top directly.
+            bool isRoot = rootModelTypes.Contains(stc.ClrType);
+            bool isNavTarget = navigationTargetTypes.Contains(stc.ClrType);
+            if (isRoot && !isNavTarget) continue; // pure root type: leave entirely untouched
+
+            var query = stc.QueryConfiguration;
+
+            if (!isRoot)
+            {
+                // Pure nav-target-only type (never its own entity set): no allowlist surface of its
+                // own, so "fully permissive" is the only coherent semantics -- unchanged from before.
+                query.SetFilter(properties: null, enableFilter: true);
+                query.SetOrderBy(properties: null, enableOrderBy: true);
+                query.SetSelect(properties: null, selectType: SelectExpandType.Allowed);
+                query.SetCount(enableCount: true);
+                // A generous (not unbounded) max expand depth, consistent with the other
+                // effectively-unlimited-but-not-infinite settings this framework uses elsewhere
+                // (e.g. MaxAnyAllExpressionDepth = 1000 in OhDataEndpointFactory).
+                query.SetExpand(properties: null, maxDepth: 1000, expandType: SelectExpandType.Allowed);
+            }
+
+            // #206 phase 2 (optioned expand) / #296 (root+nav-target types): once ANY model-bound
+            // setting exists on a type, Microsoft's SelectExpand validator defaults its MaxTop to 0,
+            // which rejects a nested $top inside a $expand of THIS type ($expand=Children($top=N))
+            // with "limit of 0 for Top". Nav-target types (root or not) are the collection element
+            // types a nested $top pages, so clear that spurious ceiling (null = unlimited) on all of
+            // them. OhData governs $top itself: the root path clamps to source.MaxTop, and the
+            // expand-pushdown path applies the nested $top directly, bounded by source.MaxExpandTop
+            // (ValidateNestedTopCeiling) -- so clearing this model-bound MaxTop does not make nested
+            // $top unbounded, it just stops Microsoft's validator from pre-empting OhData's own check.
             query.SetMaxTop(null);
         }
     }
