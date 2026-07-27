@@ -126,10 +126,12 @@ was declared with a delegate** (#206):
 > SQL-JOIN expansion for free. See
 > [`$expand` pushdown](query-options.md#expand-pushdown-delegate-less-navigations-join-automatically-206)
 > for eligibility (including multi-level nested `$expand` and `$levels`) and the silent-fallback rules
-> (non-EF source, a delegate-backed/cyclic level, `$search`/`$compute`/`$apply` → the navigation stays
-> EDM-only for that request — the framework doesn't load it itself, but doesn't guarantee it empty
-> either: whatever the handler's own query already put there (a non-EF `GetQueryable`'s eager load, a
-> `GetAll` handler that populated it by hand) still serializes; never a `500`).
+> (non-EF source, a delegate-backed level, a level that is BOTH cyclic AND not member-init-projectable
+> (#323 — a plain bidirectional relationship pushes down fine), `$search`/`$compute`/`$apply` → the
+> navigation stays EDM-only for that request — the framework doesn't load it itself, but doesn't
+> guarantee it empty either: whatever the handler's own query already put there (a non-EF
+> `GetQueryable`'s eager load, a `GetAll` handler that populated it by hand) still serializes; never a
+> `500`).
 
 For a **delegate-backed** navigation, what differs is **how many times the handler is called**, and
 it depends on which overload you registered:

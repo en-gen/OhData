@@ -92,6 +92,41 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   remains available as an à la carte alternative. Docs now lead with `AddOhData()` as the
   recommended registration. Additive API only — no runtime behavior change.
 
+### Fixed
+
+- **`$expand` pushdown no longer silently returns `[]` for a standard bidirectional EF relationship
+  (#323).** A related type that navigates back to its parent (e.g. `Author.Books` / `Book.Author`) used
+  to defer the whole branch off pushdown — even a 3- or 5-level expanded back-reference, a
+  grandparent-skip shape, or a plain self-referential `$expand=Children($top=1)` — because the static
+  guard treated ANY back-reference as an unconditional cycle risk. It wasn't: the real risk is
+  materializing a related entity *bare* (untransformed) inside a pushed projection, which only happened
+  at leaf expands (an intermediate level with its own nested `$expand` was already projected into a
+  fresh POCO and never risked a cycle). **The fix:** every pushed-down expand — leaf included — is now
+  materialized through the same member-init projection intermediate levels and `$levels` already used
+  (`BuildShapedNavAccess`), which structurally forecloses a serialization cycle regardless of
+  back-references; the static guard (`BuildExpandNavBinding`) is narrowed accordingly to defer only a
+  related type that is BOTH cyclic AND not member-init-projectable. The #305 `Include` fallback (for a
+  root model that can't support a member-init projection at all) keeps a conservative guard instead —
+  fails loud with `400` on a leaf whose related type navigates back to the root model, since `Include`
+  populates *tracked* entities and EF Core's own relationship fixup could still close a cycle there.
+
+  **BEHAVIOR CHANGE:** a `$expand` that previously silently deferred to EDM-only under a `200` (with
+  the navigation's default CLR value, typically `[]` or `null`) for a bidirectional relationship now
+  actually pushes down and returns the real related data via a SQL `JOIN`. A request that hits the
+  narrower #305 Include-fallback path and has a leaf whose related type navigates back to the root model
+  now returns `400` instead of the same silent `[]`/`null`.
+
+  **Wire change (accepted by design):** because every pushed leaf expand is now a fresh member-init
+  projection rather than the bare related entity, a public CLR property on the related type that is
+  **not** an EDM structural property (e.g. `[NotMapped]`, a get-only computed property not derived from
+  bound scalars) is no longer materialized on a leaf-expanded entity — it serializes as its type's
+  default value. This makes leaves consistent with intermediate levels, which already dropped such
+  properties; a computed get-only property whose getter derives from bound scalar properties still
+  serializes correctly. See `docs/query-options.md` for the full breakdown.
+
+  Not fixed by this change: a self-referential entity set still 500s on a plain `GET` with no
+  `$expand` at all (tracked-entity fixup cycles before serialization) — tracked separately as #325.
+
 ## [1.5.0] - 2026-07-21
 
 Query-pushdown and spec-correctness milestone: `$select` and `$expand` now push into the backing

@@ -2284,7 +2284,7 @@ internal static class OhDataEndpointFactory
                 if (ResolveNavTreatment(childNavName, childCandidates).Treatment != NavTreatment.ServeRaw)
                     return false; // RunDelegate or Blank — defer whole branch (never EF-included)
 
-                if (BuildExpandNavBinding(binding.ElementType, childNavName) is not { } childBinding)
+                if (BuildExpandNavBinding(binding.ElementType, childNavName, model) is not { } childBinding)
                     return false; // cyclic / non-projectable nested nav — defer whole branch
 
                 if (!TryBuildEngagedExpand(childItem, childBinding, model, registration, remainingDepth - 1, out EngagedExpand childEngaged))
@@ -2355,11 +2355,13 @@ internal static class OhDataEndpointFactory
     // FilterBinder/OrderByBinder (bound against the nav element type), so nested $filter/$orderby
     // translate with the exact OData semantics the top-level collection path uses — no bespoke
     // OData→LINQ translator. Skip/Take are omitted here when $count is requested (the JSON pass pages
-    // after counting). A single-valued reference has no collection operators; it is returned unchanged
-    // unless it carries deeper navigations, in which case it is projected into a null-guarded member-init.
-    // A $levels expand delegates to BuildLevelsNavAccess (bounded self-referential recursion). Runs
-    // inside the caller's try/catch: a binder that cannot bind a clause throws, and the caller then
-    // abandons pushdown for the request (the nav stays EDM-only) rather than surfacing a 500.
+    // after counting). A single-valued reference has no collection operators; it is projected into a
+    // null-guarded member-init whenever its element type is member-init-projectable (#323) — LEAF
+    // expands included, not only ones with deeper nested navigations — and returned unchanged (bare)
+    // only when the element type is not projectable. A $levels expand delegates to BuildLevelsNavAccess
+    // (bounded self-referential recursion). Runs inside the caller's try/catch: a binder that cannot
+    // bind a clause throws, and the caller then abandons pushdown for the request (the nav stays
+    // EDM-only) rather than surfacing a 500.
     private static Expression BuildShapedNavAccess(
         Expression owner, EngagedExpand engaged, IEdmModel model, ODataQuerySettings binderSettings,
         int? maxExpandTop)
@@ -2382,12 +2384,20 @@ internal static class OhDataEndpointFactory
 
         if (!nav.IsCollection)
         {
-            // Single-valued reference. When it carries deeper pushed navigations, project it into a
-            // fresh member-init (null-guarded so a missing reference stays null); otherwise the bare
-            // reference (EF outer join loads the full related entity).
-            if (engaged.Children is { Count: > 0 })
+            // Single-valued reference. #323 (Change A): project it into a fresh member-init
+            // (null-guarded so a missing reference stays null) whenever the element type is
+            // member-init-projectable — a LEAF expand (no nested children) included, not only one
+            // that carries deeper pushed navigations. BuildMemberInit handles an empty child list.
+            // Materializing every leaf through a fresh POCO rather than the bare EF-tracked entity is
+            // what makes a serialization cycle structurally impossible on this path (no entity with a
+            // live back-reference navigation is ever handed to the serializer). When the element type
+            // is NOT projectable, fall back to the bare reference (EF outer join loads the full
+            // related entity) exactly as before.
+            if (IsMemberInitProjectable(elem, model))
             {
-                Expression init = BuildMemberInit(access, elem, engaged.Children, model, binderSettings, maxExpandTop);
+                Expression init = BuildMemberInit(
+                    access, elem, engaged.Children ?? Array.Empty<EngagedExpand>(), model, binderSettings,
+                    maxExpandTop);
                 return Expression.Condition(
                     Expression.Equal(access, Expression.Constant(null, elem)),
                     Expression.Constant(null, elem), init);
@@ -2398,14 +2408,22 @@ internal static class OhDataEndpointFactory
         access = ApplyNavShape(
             access, engaged, elem, model, BindNavShape(engaged, elem, model, binderSettings), maxExpandTop);
 
-        // Fold a nested $expand into an element-wise projection so the deeper delegate-less navigations
-        // load in the same JOIN'd query (EF ThenInclude). Without children this is byte-identical to the
-        // single-level path (a plain .ToList() of the full related entities — all columns materialized).
-        if (engaged.Children is { Count: > 0 })
+        // #323 (Change A): fold EVERY element-wise projection — leaf or intermediate — into the query
+        // whenever the element type is member-init-projectable, not only when a nested $expand folds
+        // deeper delegate-less navigations in (EF ThenInclude). Same structural-cycle-impossibility
+        // rationale as the single-valued branch above: a leaf collection is now a List<T> of fresh
+        // POCOs, never the bare EF-tracked related entities, so a bidirectional back-reference can no
+        // longer close a parent<->child object cycle for System.Text.Json. BuildMemberInit handles an
+        // empty child list. When the element type is NOT projectable, this stays the bare
+        // .ToList() of full related entities (all columns materialized) exactly as before.
+        if (IsMemberInitProjectable(elem, model))
         {
             ParameterExpression n = Expression.Parameter(elem, "n");
             LambdaExpression proj = Expression.Lambda(
-                BuildMemberInit(n, elem, engaged.Children, model, binderSettings, maxExpandTop), n);
+                BuildMemberInit(
+                    n, elem, engaged.Children ?? Array.Empty<EngagedExpand>(), model, binderSettings,
+                    maxExpandTop),
+                n);
             access = Expression.Call(_enumerableSelect.MakeGenericMethod(elem, elem), access, proj);
         }
 
@@ -2887,19 +2905,25 @@ internal static class OhDataEndpointFactory
     // delegate reach this method (the caller filters out every navigation that owns a
     // NavigationRouteDefinition), so provenance — "no delegate exists" — is already established;
     // this method only adds the structural safety checks. A navigation qualifies when it maps to a
-    // settable CLR property whose (element) type declares no navigation back to TModel — a
-    // bidirectional relationship would materialize a parent<->child object cycle that
-    // System.Text.Json throws on — and, for a collection, whose member type can accept a
-    // List&lt;TElement&gt; (the .ToList() the projection emits). Everything else stays EDM-only.
-    private static ExpandNavBinding? BuildExpandNavBinding<TModel>(string navPropertyName) =>
-        BuildExpandNavBinding(typeof(TModel), navPropertyName);
+    // settable CLR property and, for a collection, whose member type can accept a List&lt;TElement&gt;
+    // (the .ToList() the projection emits). #323 (Change B): a navigation back to TModel (a
+    // bidirectional relationship) is EXCLUDED only when the element type is also NOT member-init-
+    // projectable — a projectable element type is always materialized through BuildShapedNavAccess's
+    // fresh-POCO member-init (Change A), which structurally cannot close a parent&lt;-&gt;child object
+    // cycle regardless of what navigations it declares, so the guard is unnecessary (and wrongly
+    // conservative) there. An un-projectable element type keeps today's conservative defer. Everything
+    // else stays EDM-only.
+    private static ExpandNavBinding? BuildExpandNavBinding<TModel>(string navPropertyName, IEdmModel model) =>
+        BuildExpandNavBinding(typeof(TModel), navPropertyName, model);
 
     // #206 phase 2 (Option A1 / multi-level): non-generic core — build the pushdown binding for a
     // navigation <paramref name="navPropertyName"/> declared on <paramref name="ownerType"/> (the
     // root model at the top level, or a nested element type when recursing), or null when it is not
-    // eligible. Acyclicity is checked against the OWNER at this level, so a nested nav that navigates
-    // back to its own parent (a bidirectional relationship) is excluded exactly as at the root.
-    private static ExpandNavBinding? BuildExpandNavBinding(Type ownerType, string navPropertyName)
+    // eligible. #323 (Change B): the back-reference guard is narrowed to the un-projectable residue —
+    // checked against the OWNER at this level, so a nested nav that navigates back to its own parent
+    // (a bidirectional relationship) is excluded exactly as at the root, but ONLY when its element
+    // type cannot be member-init-projected (see the remarks above).
+    private static ExpandNavBinding? BuildExpandNavBinding(Type ownerType, string navPropertyName, IEdmModel model)
     {
         // #253 completion: navPropertyName is the EDM (JSON) navigation name — a [JsonPropertyName]-
         // renamed nav arrives here as its JSON name (from NavigationPropertyNames or the parser's
@@ -2909,7 +2933,16 @@ internal static class OhDataEndpointFactory
 
         Type? elementType = NavElementClrType(navProp);
         if (elementType is null) return null;
-        if (TypeHasNavigationTo(elementType, ownerType)) return null; // cyclic — stays EDM-only
+
+        // #323 (Change B): a member-init-projectable element type is always materialized through a
+        // fresh POCO (Change A in BuildShapedNavAccess), never the bare EF-tracked entity, so a
+        // navigation back to ownerType can no longer close a serialization cycle on this path — only
+        // an UN-projectable element type still risks materializing the bare (potentially cyclic)
+        // related entity, so only that residue keeps the conservative defer.
+        if (!IsMemberInitProjectable(elementType, model) && TypeHasNavigationTo(elementType, ownerType))
+        {
+            return null; // cyclic AND un-projectable — stays EDM-only
+        }
 
         // NavElementClrType returns the property type itself for a single-valued reference and the
         // element type for a collection, so "element differs from property" identifies a collection.
@@ -2954,12 +2987,19 @@ internal static class OhDataEndpointFactory
 
     // #206 phase 2: true when <paramref name="type"/> declares a public property that navigates
     // back to <paramref name="target"/> (or a base/interface in target's hierarchy) — i.e. a
-    // navigation that would close a serialization cycle back to the parent entity. The
-    // assignability check is intentionally broadened in BOTH directions on the property type AND
-    // the collection element type (adversarial-review hardening): a back-reference need not be the
-    // exact TModel — a base class or interface that TModel implements (or that is assignable from
-    // TModel) also closes a cycle. Over-matching here only forces a safe fallback to the EDM-only
-    // path, never incorrect data, so the conservative direction is correct.
+    // navigation that would close a serialization cycle IF the related entity were ever handed to
+    // the serializer bare (untransformed by a fresh-POCO projection). The assignability check is
+    // intentionally broadened in BOTH directions on the property type AND the collection element
+    // type (adversarial-review hardening): a back-reference need not be the exact TModel — a base
+    // class or interface that TModel implements (or that is assignable from TModel) also closes a
+    // cycle. Over-matching here only forces a safe fallback, never incorrect data, so the
+    // conservative direction is correct. Implementation UNCHANGED by #323 — only its callers'
+    // interpretation of a `true` result changed: BuildExpandNavBinding's guard (Change B) now
+    // consults it only for an element type that is NOT member-init-projectable (a projectable type
+    // is always materialized through a fresh POCO — Change A — so a back-reference there can no
+    // longer close a cycle); the #305 Include fallback (FindCyclicLeafExpand, Change C) still treats
+    // any `true` result as unsafe outright, because Include loads TRACKED entities regardless of
+    // projectability, and EF's own relationship fixup can wire the back-reference up.
     private static bool TypeHasNavigationTo(Type type, Type target)
     {
         foreach (PropertyInfo p in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
@@ -3053,6 +3093,26 @@ internal static class OhDataEndpointFactory
         return null;
     }
 
+    // #323 (Change C): the FIRST top-level engaged expand whose element type navigates back to
+    // <paramref name="modelType"/> — the scope ApplyIncludeFallback below cannot safely serve, because
+    // (unlike the member-init projection path's fresh POCOs) Include populates TRACKED entities, and
+    // EF Core's own relationship fixup can wire up a bidirectional back-reference the projection path's
+    // Change A structurally forecloses. Checked by the caller BEFORE invoking ApplyIncludeFallback, and
+    // OUTSIDE the try/catch that wraps the actual Include construction+execution, so this validation's
+    // specific/actionable ODataException message reaches the client verbatim (via the route's outer
+    // ODataException handler) instead of being caught and overwritten by the generic provider-failure
+    // catch around the real Include call. The caller has already rejected any nested $expand/$levels
+    // (FindNestedExpandOrLevels above), so only LEAF expands reach this loop — checking each one's
+    // element type against modelType alone (rather than the full nested tree) is complete.
+    private static EngagedExpand? FindCyclicLeafExpand(IReadOnlyList<EngagedExpand> engaged, Type modelType)
+    {
+        foreach (EngagedExpand e in engaged)
+        {
+            if (TypeHasNavigationTo(e.Binding.ElementType, modelType)) return e;
+        }
+        return null;
+    }
+
     // #305 Path A: populate the request's engaged $expand navigations via EF Core's own Include when
     // the root TModel projection is ineligible for a member-init Select (TryApplySelectProjection
     // returned <paramref name="query"/> unchanged — no parameterless ctor / unknowable ETag / complex-or-
@@ -3067,14 +3127,17 @@ internal static class OhDataEndpointFactory
     //
     // SCOPE (documented deviation from the fully general settled design — see the PR/report): only LEAF
     // engaged expands (no nested $expand children, no $levels) are served this way; the caller has
-    // already rejected any nested $filter/$orderby (HasNestedFilterOrOrderBy) AND any nested $expand/
-    // $levels (FindNestedExpandOrLevels) before calling this method, so no such item reaches the loop
-    // below. A nested $expand or $levels fails loud rather than risk an unverified reflection-built
+    // already rejected any nested $filter/$orderby (HasNestedFilterOrOrderBy), any nested $expand/
+    // $levels (FindNestedExpandOrLevels), AND — #323 (Change C) — any leaf whose element type navigates
+    // back to TModel (FindCyclicLeafExpand) before calling this method, so no such item reaches the
+    // loop below. A nested $expand or $levels fails loud rather than risk an unverified reflection-built
     // ThenInclude/self-referential Include chain — untested by this fix's settled-design test list, and
     // materially riskier than the member-init path: EF's automatic navigation-fixup can wire up a
     // tracked self-referential navigation beyond the requested depth even when it was never explicitly
-    // Include'd, which the member-init projection (fresh POCOs, not EF-tracked) never risks. Both
-    // remain fully servable via full pushdown (add a parameterless ctor) or an expand delegate.
+    // Include'd, which the member-init projection (fresh POCOs, not EF-tracked) never risks. A
+    // bidirectional back-reference fails loud for the SAME reason (#323): Include loads TRACKED
+    // entities, so EF's fixup can close a cycle the member-init path structurally forecloses (Change A).
+    // All three remain fully servable via full pushdown (add a parameterless ctor) or an expand delegate.
     private static IQueryable<TModel> ApplyIncludeFallback<TModel>(
         IQueryable<TModel> query, IReadOnlyList<EngagedExpand> engaged, MethodInfo includeMethod,
         IEdmModel model, int? maxExpandTop)
@@ -3433,7 +3496,7 @@ internal static class OhDataEndpointFactory
             source.NavigationRoutes.Select(r => r.PropertyName), StringComparer.OrdinalIgnoreCase);
         var pushdownExpandNavs = source.NavigationPropertyNames
             .Where(navName => !routeBackedNavNames.Contains(navName)) // delegate-backed → delegate path only
-            .Select(navName => (navName, binding: BuildExpandNavBinding<TModel>(navName)))
+            .Select(navName => (navName, binding: BuildExpandNavBinding<TModel>(navName, registration.EdmModel)))
             .Where(pair => pair.binding is not null)
             .ToDictionary(pair => pair.navName, pair => pair.binding!.Value, StringComparer.OrdinalIgnoreCase);
 
@@ -3969,6 +4032,20 @@ internal static class OhDataEndpointFactory
                             {
                                 (engagedExpandNavs ??= new List<EngagedExpand>()).Add(engaged);
                             }
+                            else
+                            {
+                                // #323: makes docs/query-options.md's existing "the reason is
+                                // Debug-logged" claim true for $expand pushdown (previously no log was
+                                // emitted at all here, unlike the analogous $select-pushdown skips
+                                // above). TryBuildEngagedExpand defers for a structural reason — an
+                                // unsupported nested option ($search/$compute/$apply), a nested level
+                                // that is delegate-backed/cyclic/non-projectable, or the expansion depth
+                                // budget — so the navigation stays EDM-only for this request rather than
+                                // surfacing a 500.
+                                logger?.LogDebug(
+                                    "OhData: $expand pushdown deferred for {EntitySet}/{Nav}: navigation is not eligible for full pushdown at the requested depth/options; it stays EDM-only for this request.",
+                                    source.EntitySetName, navName);
+                            }
                         }
                     }
 
@@ -4035,6 +4112,30 @@ internal static class OhDataEndpointFactory
                                     "settable non-complex properties, and — if it uses ETags — a direct " +
                                     "UseETag selector over structural properties) to enable full " +
                                     "pushdown, or write an expand delegate for this navigation.");
+                            }
+
+                            // #323 (Change C): the Include fallback populates TRACKED entities, so a
+                            // navigation back to TModel — safe on the member-init projection path
+                            // (Change A always materializes a fresh POCO there) — is NOT safe here: EF
+                            // Core's own relationship fixup can wire up the back-reference and close a
+                            // parent<->child object cycle System.Text.Json throws on. Only leaf expands
+                            // reach this point (the nested-$expand/$levels check above already rejected
+                            // anything deeper), so checking each engaged expand's element type against
+                            // typeof(TModel) alone is complete. Fail loud (400, #305-consistent) rather
+                            // than risk the tracked-entity cycle turning into an uncontrolled 500.
+                            if (FindCyclicLeafExpand(engagedExpandNavs, typeof(TModel)) is { } cyclicNav)
+                            {
+                                throw new Microsoft.OData.ODataException(
+                                    $"The '$expand' on '{cyclicNav.Binding.Property.Name}' could not be " +
+                                    "served without a projection-eligible model: the related type has a " +
+                                    $"navigation back to '{typeof(TModel).Name}', which a plain Include " +
+                                    "fallback cannot safely materialize (the loaded entities are tracked, " +
+                                    "and EF Core's own relationship fixup could close a serialization " +
+                                    "cycle). Make the model projection-eligible (a public parameterless " +
+                                    "constructor, settable non-complex properties, and — if it uses " +
+                                    "ETags — a direct UseETag selector over structural properties) to " +
+                                    "enable full pushdown, or write an expand delegate for this " +
+                                    "navigation.");
                             }
 
                             MethodInfo? efInclude = efAssembly is not null ? ResolveEfIncludeMethod(efAssembly) : null;
@@ -4166,9 +4267,14 @@ internal static class OhDataEndpointFactory
                         // a 200 — exactly the class of bug #305 reports. A true object-graph cycle
                         // cannot be served at all, so rethrow: the group-level exception filter turns
                         // this into a generic 500 InternalServerError, never leaking the exception
-                        // detail (or which navigation/shape tripped it) to the client. A separate
-                        // follow-up hardens TypeHasNavigationTo so this path becomes unreachable in
-                        // practice; until then, failing loud beats lying under a 200.
+                        // detail (or which navigation/shape tripped it) to the client. #323 makes this
+                        // unreachable from BOTH pushdown routes that used to be able to trip it: the
+                        // member-init projection path (Change A always materializes leaf expands through
+                        // a fresh POCO, so no bidirectional-nav entity is ever handed to the serializer)
+                        // and the #305 Include fallback (Change C rejects a leaf with a back-reference to
+                        // TModel before Include ever runs). It stays reachable from tracked-entity fixup
+                        // cycles unrelated to $expand pushdown itself (e.g. a handler's own eager-loaded
+                        // graph, or a self-referential set's plain fixup) — see #325.
                         logger?.LogDebug(ex,
                             "OhData: $expand pushdown produced a serialization cycle for {EntitySet}.",
                             source.EntitySetName);
