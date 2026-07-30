@@ -393,24 +393,24 @@ public sealed class LevelsWithOptionsPushdownSqliteTests : IAsyncLifetime
     // of the behavior. This test now asserts the nested $top is no longer rejected, with and without
     // $levels, instead of pinning the old 400.
     //
-    // WithLevels ($levels=2;$top=1) genuinely flows through EF pushdown (a bounded, cycle-free
-    // recursion — see BuildLevelsNavBinding), so the actual windowed data is asserted below. WithoutLevels
-    // ($top=1, no $levels) does NOT flow through pushdown for a delegate-less SELF-referential nav: a
-    // plain (unbounded-depth) member-init projection of Node->Children->Node is genuinely cyclic, so
-    // BuildExpandNavBinding excludes it from pushdownExpandNavs regardless of $top — that is a
-    // PRE-EXISTING, orthogonal limitation of the plain-expand path (only $levels bounds the cycle), not
-    // something #296's model-bound-MaxTop fix touches. Only the status code (400 -> 200) is asserted for
-    // that shape here.
+    // WithLevels ($levels=2;$top=1) flows through EF pushdown via BuildLevelsNavBinding (a bounded,
+    // cycle-free recursion), so the actual windowed data is asserted below.
+    //
+    // WithoutLevels ($top=1, no $levels) used to be a PRE-EXISTING, orthogonal limitation of the plain
+    // (non-$levels) expand path: a self-referential related type was treated as unconditionally cyclic,
+    // so BuildExpandNavBinding excluded it from pushdownExpandNavs regardless of $top, and only the
+    // status code (400 -> 200) could be asserted — the $top itself silently went unapplied.
+    // **RESOLVED by #323** (T19): a self-referential type is still member-init-projectable (a public
+    // parameterless constructor plus settable scalar structural properties — cyclicity is orthogonal to
+    // that), so the narrowed guard now admits it and the plain expand genuinely pushes down and windows
+    // in SQL too, exactly like any other leaf. The actual windowed data is now asserted for BOTH shapes.
     [Fact]
     public async Task NestedTop_OnSelfReferentialNav_IsHonored_WithAndWithoutLevels()
     {
+        _sink.Clear();
         HttpResponseMessage withLevels = await _fx.Client.GetAsync(
             "/odata/LvNodes?$filter=parentId eq null&$expand=Children($levels=2;$top=1)");
-        HttpResponseMessage withoutLevels = await _fx.Client.GetAsync(
-            "/odata/LvNodes?$filter=parentId eq null&$expand=Children($top=1)");
-
         Assert.Equal(HttpStatusCode.OK, withLevels.StatusCode);
-        Assert.Equal(HttpStatusCode.OK, withoutLevels.StatusCode);
 
         // With $levels=2: the nested $top applies at EVERY level of the recursion (same as $filter/
         // $orderby in the tests above), so level 1 is windowed to Root's first child ("A") and level 2
@@ -422,6 +422,25 @@ public sealed class LevelsWithOptionsPushdownSqliteTests : IAsyncLifetime
             Assert.Equal(new[] { "A" }, LevelsOptionsSqliteHarness.Names(level1));
             JsonElement level2 = level1[0].GetProperty("Children");
             Assert.Equal(new[] { "A1" }, LevelsOptionsSqliteHarness.Names(level2));
+        }
+
+        // Without $levels (T19): the plain leaf expand now genuinely applies the window too — Root's
+        // Children is capped to its first child by the deterministic key tiebreak (#254), and the
+        // window is a real SQL Take(1) (a ROW_NUMBER() window, verified below), not an in-memory
+        // truncation of the full collection.
+        _sink.Clear();
+        HttpResponseMessage withoutLevels = await _fx.Client.GetAsync(
+            "/odata/LvNodes?$filter=parentId eq null&$expand=Children($top=1)");
+        Assert.Equal(HttpStatusCode.OK, withoutLevels.StatusCode);
+
+        string sql = LevelsOptionsSqliteHarness.LastSelectAgainst(_sink, "LvNodes");
+        Assert.Contains("ROW_NUMBER()", sql);
+        Assert.Contains("<= 1", sql);
+
+        using (JsonDocument doc = JsonDocument.Parse(await withoutLevels.Content.ReadAsStringAsync()))
+        {
+            JsonElement root = LevelsOptionsSqliteHarness.Root(doc);
+            Assert.Equal(new[] { "A" }, LevelsOptionsSqliteHarness.Names(root.GetProperty("Children")));
         }
     }
 
