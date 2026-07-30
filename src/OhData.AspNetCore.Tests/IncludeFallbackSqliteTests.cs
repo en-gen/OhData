@@ -40,10 +40,11 @@ public sealed class NoCtorChild
 }
 
 // Include-invalid fixture: FakeNav is CLR-shaped exactly like an eligible delegate-less collection nav
-// (a settable, non-cyclic List<T>), so BuildExpandNavBinding (pure CLR reflection, no EF-model
-// awareness) treats it as pushable — but OnModelCreating below explicitly Ignore()s it, so EF's OWN
-// model does not recognize it as a navigation at all. Calling EF's Include on it must fail loud (400),
-// not silently drop the data.
+// (a settable List<T> that passes BuildExpandNavBinding's structural checks regardless of the #323
+// back-reference guard — pure CLR reflection, no EF-model awareness), so BuildExpandNavBinding treats
+// it as pushable — but OnModelCreating below explicitly Ignore()s it, so EF's OWN model does not
+// recognize it as a navigation at all. Calling EF's Include on it must fail loud (400), not silently
+// drop the data.
 public sealed record IncludeInvalidParent(int Id, string Name)
 {
     public List<IncludeInvalidChild> FakeNav { get; set; } = new();
@@ -55,6 +56,25 @@ public sealed class IncludeInvalidChild
     public string Name { get; set; } = "";
 }
 
+// #323 (Change C) fixture: a root model that can't support the member-init projection (no
+// parameterless ctor — forces Path A / Include fallback) whose delegate-less collection nav's related
+// type carries a typed back-reference to the root. Unlike the projection path (fresh POCOs, never
+// cyclic — see ExpandPushdownSqliteTests's CycParent/CycChild), Include populates TRACKED entities,
+// so EF's own relationship fixup could close the cycle; Change C rejects this with 400 before Include
+// ever runs, rather than risk a 500.
+public sealed record NoCtorCyclicParent(int Id, string Name)
+{
+    public List<NoCtorCyclicChild> Children { get; set; } = new();
+}
+
+public sealed class NoCtorCyclicChild
+{
+    public int Id { get; set; }
+    public int ParentId { get; set; }
+    public string Name { get; set; } = "";
+    public NoCtorCyclicParent? Parent { get; set; }
+}
+
 public sealed class IncludeFallbackDbContext : DbContext
 {
     public IncludeFallbackDbContext(DbContextOptions<IncludeFallbackDbContext> options) : base(options) { }
@@ -62,6 +82,8 @@ public sealed class IncludeFallbackDbContext : DbContext
     public DbSet<NoCtorParent> NoCtorParents => Set<NoCtorParent>();
     public DbSet<NoCtorChild> NoCtorChildren => Set<NoCtorChild>();
     public DbSet<IncludeInvalidParent> IncludeInvalidParents => Set<IncludeInvalidParent>();
+    public DbSet<NoCtorCyclicParent> NoCtorCyclicParents => Set<NoCtorCyclicParent>();
+    public DbSet<NoCtorCyclicChild> NoCtorCyclicChildren => Set<NoCtorCyclicChild>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -70,6 +92,9 @@ public sealed class IncludeFallbackDbContext : DbContext
 
         // FakeNav is deliberately NOT a real EF relationship — see the fixture remarks above.
         modelBuilder.Entity<IncludeInvalidParent>().Ignore(p => p.FakeNav);
+
+        modelBuilder.Entity<NoCtorCyclicParent>()
+            .HasMany(p => p.Children).WithOne(c => c.Parent!).HasForeignKey(c => c.ParentId);
     }
 }
 
@@ -98,6 +123,32 @@ public sealed class IncludeInvalidParentProfile : EntitySetProfile<int, IncludeI
     }
 }
 
+// TRACKING (default) — proves Change C fails loud regardless of the query's own tracking behavior.
+public sealed class NoCtorCyclicParentProfile : EntitySetProfile<int, NoCtorCyclicParent>
+{
+    public NoCtorCyclicParentProfile(IncludeFallbackDbContext db) : base(x => x.Id)
+    {
+        EntitySetName = "NoCtorCyclicParents";
+        ExpandEnabled = true;
+        GetQueryable = _ => Task.FromResult(db.NoCtorCyclicParents.AsQueryable());
+        HasMany(x => x.Children); // delegate-less, bidirectional — CLR-eligible for pushdown
+    }
+}
+
+// AsNoTracking() variant, same CLR/EDM shape — Change C's guard is purely type-based (it never
+// inspects the query's tracking behavior), so this must ALSO fail loud with 400, not silently
+// succeed just because the query happens not to track entities.
+public sealed class NoCtorCyclicParentNoTrackingProfile : EntitySetProfile<int, NoCtorCyclicParent>
+{
+    public NoCtorCyclicParentNoTrackingProfile(IncludeFallbackDbContext db) : base(x => x.Id)
+    {
+        EntitySetName = "NoCtorCyclicParentsNoTracking";
+        ExpandEnabled = true;
+        GetQueryable = _ => Task.FromResult(db.NoCtorCyclicParents.AsNoTracking().AsQueryable());
+        HasMany(x => x.Children);
+    }
+}
+
 internal static class IncludeFallbackSqliteHarness
 {
     public static async Task<TestFixture> BuildAsync(
@@ -109,6 +160,8 @@ internal static class IncludeFallbackSqliteHarness
                 if (defaults is not null) b.WithDefaults(defaults);
                 b.AddEntitySetProfile<NoCtorParentProfile>();
                 b.AddEntitySetProfile<IncludeInvalidParentProfile>();
+                b.AddEntitySetProfile<NoCtorCyclicParentProfile>();
+                b.AddEntitySetProfile<NoCtorCyclicParentNoTrackingProfile>();
             },
             configureServices: services =>
             {
@@ -129,6 +182,9 @@ internal static class IncludeFallbackSqliteHarness
             new NoCtorChild { Id = 20, ParentId = 2, Name = "C2a" });
 
         db.IncludeInvalidParents.Add(new IncludeInvalidParent(1, "BadP1"));
+
+        db.NoCtorCyclicParents.Add(new NoCtorCyclicParent(1, "CyP1"));
+        db.NoCtorCyclicChildren.Add(new NoCtorCyclicChild { Id = 10, ParentId = 1, Name = "CyC1a" });
 
         db.SaveChanges();
         return fx;
@@ -297,5 +353,75 @@ public sealed class IncludeFallbackInvalidModelTests : IAsyncLifetime
         Assert.Contains("InvalidQueryOption", body);
         Assert.DoesNotContain("Sqlite", body);
         Assert.DoesNotContain("SQLITE", body);
+    }
+}
+
+// #323 (Change C), T12-T16: a leaf expand under the Include fallback whose related type navigates
+// back to the root model fails loud (400) rather than risk EF's own tracked-entity fixup closing a
+// serialization cycle — unlike the member-init projection path, which structurally forecloses the
+// same cycle via Change A (see ExpandPushdownCyclicFallbackTests.BidirectionalNav_Expand_PushesDown_WithJoin).
+public sealed class IncludeFallbackCyclicLeafTests : IAsyncLifetime
+{
+    private SqliteConnection _connection = null!;
+    private TestFixture _fx = null!;
+
+    public async Task InitializeAsync()
+    {
+        _connection = new SqliteConnection("Data Source=:memory:");
+        _connection.Open();
+        _fx = await IncludeFallbackSqliteHarness.BuildAsync(_connection);
+    }
+
+    public async Task DisposeAsync()
+    {
+        await _fx.DisposeAsync();
+        _connection.Dispose();
+    }
+
+    [Fact]
+    public async Task CyclicLeaf_BareExpand_FailsLoud400_WithActionableMessage()
+    {
+        // T12/T13: the tracking (default) query — Change C rejects it before Include ever runs.
+        HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/NoCtorCyclicParents?$expand=Children");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("\"error\"", body);
+        Assert.Contains("InvalidQueryOption", body);
+        Assert.Contains("Children", body); // names the offending navigation
+        Assert.Contains("NoCtorCyclicParent", body); // names the root model the back-reference targets
+        Assert.DoesNotContain("Sqlite", body);
+        Assert.DoesNotContain("SQLITE", body);
+    }
+
+    [Fact]
+    public async Task CyclicLeaf_AsNoTracking_StillFailsLoud400()
+    {
+        // T14: Change C's guard is purely type-based — it never inspects the query's own tracking
+        // behavior — so an AsNoTracking() query over the SAME cyclic shape must ALSO fail loud rather
+        // than silently succeed just because this particular query happens not to track entities
+        // (the guard cannot know that at startup-bind time, and a handler could swap trackingbehavior
+        // per-request).
+        HttpResponseMessage resp = await _fx.Client.GetAsync(
+            "/odata/NoCtorCyclicParentsNoTracking?$expand=Children");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("InvalidQueryOption", body);
+    }
+
+    [Fact]
+    public async Task UnidirectionalLeaf_BareExpand_StillServes200()
+    {
+        // T15/T16 control: NoCtorParents/NoCtorChildren has NO back-reference (unidirectional), so it
+        // must keep serving 200 with real data through the SAME Include fallback path — Change C must
+        // not over-defer a shape it was never meant to catch. This mirrors
+        // NoParameterlessCtor_BareExpand_ServesRealChildren_Not200WithEmptyNav above; asserted again
+        // here as an explicit sibling-control pin for Change C.
+        HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/NoCtorParents?$orderby=id&$expand=Children");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("\"C1a\"", body);
     }
 }

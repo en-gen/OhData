@@ -71,9 +71,13 @@ public sealed class RefTarget
     public string Name { get; set; } = "";
 }
 
-// Cyclic delegate-less nav: CycChild has a typed back-reference to CycParent, so the startup static
-// guard (TypeHasNavigationTo) excludes it from pushdown — expanding it must gracefully stay
-// EDM-only (no JOIN, no 500), never materialize a parent<->child cycle.
+// Bidirectional (cyclic) delegate-less nav: CycChild has a typed back-reference to CycParent. #323:
+// CycChild is member-init-projectable (public parameterless ctor, settable scalar structural
+// properties), so the narrowed static guard (BuildExpandNavBinding/TypeHasNavigationTo) now ADMITS
+// it — every pushed leaf is materialized through a fresh POCO (BuildShapedNavAccess), which never
+// binds the back-reference nav property, so no parent<->child object cycle can form regardless of
+// the back-reference. Expanding it now genuinely JOINs (see BidirectionalNav_Expand_PushesDown_WithJoin
+// below) rather than deferring to EDM-only.
 public sealed class CycParent
 {
     public int Id { get; set; }
@@ -186,7 +190,9 @@ public sealed class RefHolderProfile : EntitySetProfile<int, RefHolder>
     }
 }
 
-// Bare HasMany on a bidirectional (cyclic) relationship → excluded by the static guard.
+// Bare HasMany on a bidirectional (cyclic) relationship → #323: now admitted by the narrowed static
+// guard (the element type is member-init-projectable, so it is always materialized through a fresh
+// POCO — the back-reference can no longer close a cycle) and genuinely pushed down.
 public sealed class CycParentProfile : EntitySetProfile<int, CycParent>
 {
     public CycParentProfile(ExpandPushDbContext db) : base(x => x.Id)
@@ -195,7 +201,7 @@ public sealed class CycParentProfile : EntitySetProfile<int, CycParent>
         ExpandEnabled = true;
         OrderByEnabled = true;
         GetQueryable = _ => Task.FromResult(db.CycParents.AsQueryable());
-        HasMany(x => x.Kids); // delegate-less BUT cyclic → stays EDM-only
+        HasMany(x => x.Kids); // delegate-less, bidirectional — pushed down (#323)
     }
 }
 
@@ -443,8 +449,10 @@ public sealed class ExpandPushdownDelegateNavTests : IAsyncLifetime
     }
 }
 
-// A cyclic (bidirectional) delegate-less navigation is excluded by the startup static guard: the
-// $expand must gracefully stay EDM-only — no JOIN, no 500, no materialized parent<->child cycle.
+// #323: a bidirectional (cyclic) delegate-less navigation is now ADMITTED by the narrowed static
+// guard — the related type's leaf materialization is always a fresh member-init POCO
+// (BuildShapedNavAccess), so a back-reference can no longer close a parent<->child serialization
+// cycle regardless of the model's shape. The $expand genuinely JOINs and returns the real data.
 public sealed class ExpandPushdownCyclicFallbackTests : IAsyncLifetime
 {
     private SqliteConnection _connection = null!;
@@ -469,14 +477,24 @@ public sealed class ExpandPushdownCyclicFallbackTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task CyclicNav_Expand_GracefulFallback_NoJoinNo500()
+    public async Task BidirectionalNav_Expand_PushesDown_WithJoin()
     {
         _sink.Clear();
         var resp = await _fx.Client.GetAsync("/odata/CycParents?$expand=Kids&$orderby=id");
         Assert.Equal(System.Net.HttpStatusCode.OK, resp.StatusCode);
 
+        // #323: the bidirectional relationship no longer defers off pushdown — the parents query
+        // JOINs the children table.
         string sql = ExpandPushdownSqliteHarness.LastSelectAgainst(_sink, "CycParents");
-        Assert.DoesNotContain("\"CycChildren\"", sql);
+        Assert.Contains("\"CycChildren\"", sql);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("\"Kids\"", body);
+        Assert.Contains("\"K1\"", body);
+        // The leaf projection is a fresh POCO with only scalar structural properties bound — the
+        // back-reference nav property itself is never bound (wire change, #323), so it must NOT
+        // appear on the wire (it isn't even an EDM property).
+        Assert.DoesNotContain("\"Parent\"", body);
     }
 }
 
