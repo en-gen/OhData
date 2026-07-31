@@ -23,8 +23,9 @@ namespace OhData.AspNetCore.Tests;
 // BuildExpandNavBinding) is narrowed accordingly to defer only a related type that is BOTH cyclic AND
 // NOT member-init-projectable. This suite proves the fix against a range of bidirectional/cyclic
 // shapes that used to silently defer to EDM-only (or, for some shapes, 500) and now genuinely push
-// down and JOIN. See also IncludeFallbackSqliteTests.cs (Change C — the #305 Include-fallback path
-// keeps its OWN conservative guard) and ExpandPushdownSqliteTests.cs
+// down and JOIN. See also IncludeFallbackSqliteTests.cs (Change C originally kept its OWN
+// conservative guard on the #305 Include-fallback path; #325/#326 later removed it — see
+// IncludeFallbackCyclicLeafTests) and ExpandPushdownSqliteTests.cs
 // (BidirectionalNav_Expand_PushesDown_WithJoin — the simplest single-hop bidirectional pin).
 
 // ── T1-T2: Author/Book, bidirectional, expanded back-reference at 3 and 5 levels ──────────────────
@@ -450,10 +451,14 @@ public sealed class BxSecureAuthorProfile : EntitySetProfile<int, BxAuthor>
             getAll: (authorId, ct) =>
             {
                 counter.Calls++;
-                // AsNoTracking(): a delegate that returns real tracked entities off a bidirectional
-                // relationship risks the SAME kind of tracked-entity fixup cycle #325 tracks for
-                // self-referential sets — orthogonal to #323 (the delegate path is untouched by this
-                // fix; ExpandLevelAsync assigns the delegate's return value as-is, with no projection).
+                // AsNoTracking(): historically a delegate that returns real tracked entities off a
+                // bidirectional relationship risked the SAME kind of tracked-entity fixup cycle #325
+                // fixed for self-referential sets — orthogonal to #323 (the delegate path is
+                // untouched by that fix; ExpandLevelAsync assigns the delegate's return value as-is,
+                // with no projection). #325/#326's SerializeBounded walker now bounds this delegate
+                // splice too (the Stage 3 site, ExpandLevelAsync), so AsNoTracking() is no longer
+                // load-bearing for safety here — kept anyway as a harmless, still-idiomatic choice for
+                // a read-only delegate.
                 return Task.FromResult<IEnumerable<BxBook>>(
                     db.BxBooks.AsNoTracking().Where(b => b.AuthorId == authorId).ToList());
             });
@@ -960,20 +965,24 @@ public sealed class NonEfBidirectionalExpandTests
 //     <-> CyEmployee.Reports is self-referential and never references CyOrg either.
 // Both shapes below are VERIFIED (see LeafCycleRegressionTests) to return `500` (JsonException, cyclic
 // reference detected) with ONLY Change A reverted, and `200` with correct data with Change A restored —
-// Change A is load-bearing for this disjoint class of cycle. Change B (the narrowed static guard) is
-// separately load-bearing for the class FindCyclicLeafExpand/TypeHasNavigationTo actually check
-// (back-reference to the immediate owner) — the two are not redundant.
+// Change A is load-bearing for this disjoint class of cycle. Change B (the narrowed static guard,
+// TypeHasNavigationTo via BuildExpandNavBinding) is separately load-bearing for pushdown ELIGIBILITY
+// (back-reference to the immediate owner) — the two are not redundant, and both remain belt-and-
+// suspenders for cycle safety alongside #325/#326's SerializeBounded walker (below) as of this fix.
 //
-// The #305 Include-fallback path (Change C, not Change A) has its OWN, separate cycle exposure: Include
-// populates TRACKED entities with no re-projection safety net at all, so a leaf's back-reference to the
-// ROOT can get fixed up to the same tracked root instance being serialized — verified empirically by
-// TEMPORARILY disabling the Change C guard in the #305 Path A block: BOTH IncludeFallbackCyclicLeafTests
-// methods (tracking AND AsNoTracking) then fail with a 500 (InternalServerError) instead of the expected
-// 400 — confirming AsNoTracking is NOT a mitigation. See IncludeFallbackSqliteTests.cs's
-// IncludeFallbackCyclicLeafTests for those pins. FindCyclicLeafExpand only checks a leaf's element type
-// against the ROOT model too (same root-only blind spot as Change B) — a P1/P2-shaped cycle (neither end
-// is the root) is NOT caught by Change C either and can still 500 on the Include-fallback path; this is
-// NOT a regression (develop has the same gap) and is tracked separately as #326.
+// The #305 Include-fallback path (Change C, not Change A) used to have its OWN, separate cycle
+// exposure: Include populates TRACKED entities with no re-projection safety net at all, so a leaf's
+// back-reference to the ROOT could get fixed up to the same tracked root instance being serialized —
+// verified empirically (pre-#325/#326) by TEMPORARILY disabling the Change C guard in the #305 Path A
+// block: BOTH IncludeFallbackCyclicLeafTests methods (tracking AND AsNoTracking) failed with a 500
+// (InternalServerError) instead of the then-expected 400 — confirming AsNoTracking was NOT a
+// mitigation. Change C's own guard (FindCyclicLeafExpand) only checked a leaf's element type against
+// the ROOT model too (same root-only blind spot as Change B) — a P1/P2-shaped cycle (neither end is
+// the root) was NOT caught by it either and could still 500 on the Include-fallback path; that gap was
+// #326. #325/#326 (Option B) REMOVED Change C's guard entirely rather than widen it: SerializeBounded
+// makes the tracked, cyclic Include-fallback graph safe to serialize regardless of which two instances
+// the cycle closes between, so all three shapes (root back-reference, P1, P2) now serve real data with
+// `200` instead of rejecting with `400`. See IncludeFallbackSqliteTests.cs's IncludeFallbackCyclicLeafTests.
 //
 // T23-T27 below stay as general shape-coverage regression pins (collapsed into a Theory) — useful for
 // catching an unrelated regression in these specific shapes, but they prove nothing about Change A's
@@ -1086,19 +1095,94 @@ public sealed class LeafCycleRegressionTests : IAsyncLifetime
     }
 }
 
-// ── T28: a self-referential entity set still 500s on a PLAIN GET with no $expand at all ───────────
-// (tracked-entity fixup cycling before serialization — #325, NOT fixed by #323). Pinned here so a
-// future fix for #325 is forced to update this test rather than silently changing behavior underneath
-// it. Skipped rather than asserted as a hard 500 pin: reliably reproducing #325 depends on EF Core
-// change-tracker fixup timing this harness's per-request DbContext scoping does not deterministically
-// trigger (each HTTP request gets its own scoped DbContext instance, so entities tracked during
-// seeding are not visible to it) — #325's own investigation is the right place to nail the precise
-// repro, not this fix's test matrix.
-public sealed class SelfReferentialPlainGetCycleTests
+// ── #325 core repro: a self-referential entity set on a PLAIN GET with no $expand at all ──────────
+// Previously 500'd (tracked-entity fixup cycling before serialization, JsonException at Stage 1
+// SerializeToNode) — NOT fixed by #323, since no $expand is involved at all: no projection, no
+// pushdown, no cycle guard participates. Fixed by #325/#326 (Option B): Stage 1 now serializes via
+// SerializeBounded with clause: null, which suppresses EVERY EDM navigation at the JsonTypeInfo
+// level BEFORE System.Text.Json ever walks the CLR graph — a reference cycle among the tracked,
+// EF-relationship-fixed-up instances is structurally unreachable. See
+// SerializeBoundedWalkerTests.cs for the fuller T-matrix (T8-T11, T16/T17, T24-T28, T30/T31, T35);
+// this class stays as the originally-pinned regression test for exactly this repro.
+
+public sealed class SgNode
 {
-    [Fact(Skip = "Pinned against #325 (separate issue, not fixed by #323) — see class remarks.")]
-    public Task SelfReferentialSet_PlainGet_NoExpand_Returns500()
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public int? ParentId { get; set; }
+    public SgNode? Parent { get; set; }
+    public List<SgNode> Children { get; set; } = new();
+}
+
+public sealed class SgDbContext : DbContext
+{
+    public SgDbContext(DbContextOptions<SgDbContext> options) : base(options) { }
+    public DbSet<SgNode> SgNodes => Set<SgNode>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        throw new NotImplementedException("See #325.");
+        modelBuilder.Entity<SgNode>()
+            .HasMany(n => n.Children).WithOne(n => n.Parent!).HasForeignKey(n => n.ParentId);
+    }
+}
+
+public sealed class SgNodeProfile : EntitySetProfile<int, SgNode>
+{
+    public SgNodeProfile(SgDbContext db) : base(x => x.Id)
+    {
+        EntitySetName = "SgNodes";
+        OrderByEnabled = true;
+        GetQueryable = _ => Task.FromResult(db.SgNodes.AsQueryable());
+        HasOptional(x => x.Parent!);
+        HasMany(x => x.Children);
+    }
+}
+
+public sealed class SelfReferentialPlainGetCycleTests : IAsyncLifetime
+{
+    private SqliteConnection _connection = null!;
+    private TestFixture _fx = null!;
+
+    public async Task InitializeAsync()
+    {
+        _connection = new SqliteConnection("Data Source=:memory:");
+        _connection.Open();
+        _fx = await TestHostBuilder.BuildAsync(
+            b => b.AddEntitySetProfile<SgNodeProfile>(),
+            configureServices: services => services.AddDbContext<SgDbContext>(o => o.UseSqlite(_connection)));
+
+        using IServiceScope scope = _fx.App.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<SgDbContext>();
+        db.Database.EnsureCreated();
+        db.SgNodes.AddRange(
+            new SgNode { Id = 1, Name = "Root" },
+            new SgNode { Id = 2, Name = "ChildA", ParentId = 1 },
+            new SgNode { Id = 3, Name = "ChildB", ParentId = 1 });
+        db.SaveChanges();
+    }
+
+    public async Task DisposeAsync()
+    {
+        await _fx.DisposeAsync();
+        _connection.Dispose();
+    }
+
+    [Fact]
+    public async Task SelfReferentialSet_PlainGet_NoExpand_Returns200()
+    {
+        // No $filter: the whole table loads into ONE tracked query result in THIS request's own
+        // DbContext scope, so EF's own relationship fixup wires Parent/Children among all three
+        // rows — the exact #325 mechanism, reproduced without any cross-request tracking trickery.
+        HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/SgNodes?$orderby=id");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        using JsonDocument doc = JsonDocument.Parse(body);
+        JsonElement value = doc.RootElement.GetProperty("value");
+        Assert.Equal(3, value.GetArrayLength());
+        JsonElement root = value.EnumerateArray().Single(n => n.GetProperty("Name").GetString() == "Root");
+        // §4.5.1: no $expand was requested, so Parent/Children are OMITTED, never null/[].
+        Assert.False(root.TryGetProperty("Parent", out _));
+        Assert.False(root.TryGetProperty("Children", out _));
     }
 }
