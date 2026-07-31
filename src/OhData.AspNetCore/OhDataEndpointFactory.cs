@@ -12,6 +12,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web;
@@ -1219,8 +1220,19 @@ internal static class OhDataEndpointFactory
         HashSet<string>? pushedLevelsNavNames = null)
     {
         // Stage 1: Serialize once using the configured naming policy.
+        // #325/#326 (Option B): bounded by the root $expand clause (and any pushed $levels
+        // budget), never by the object graph — see SerializeBounded's remarks. This is what makes
+        // a plain GET over a self-referential/bidirectional model with tracked-entity relationship
+        // fixup safe: navigations outside the clause are never handed to System.Text.Json at all,
+        // so a cycle among them is structurally unreachable.
         var serializerOptions = jsonOptions ?? _pascalCaseSerializerOptions;
-        JsonArray json = JsonSerializer.SerializeToNode(originalItems, serializerOptions)!.AsArray();
+        SelectExpandClause? rootClauseForSerialize = options.SelectExpand?.SelectExpandClause;
+        var json = new JsonArray();
+        foreach (object item in originalItems)
+        {
+            json.Add(SerializeBounded(item, rootEdmType, rootClauseForSerialize, serializerOptions,
+                levelsNavNames: pushedLevelsNavNames));
+        }
 
         // Stage 2: Inject @odata.etag using the original (pre-expand) items for ETag computation.
         if (source.HasETag)
@@ -1490,15 +1502,29 @@ internal static class OhDataEndpointFactory
                 }
             }
 
+            // Resolve the navigation target's EDM entity type and nested $expand/$select clause up
+            // front — needed both by the #325/#326 bounded splice immediately below AND by the
+            // hasNestedExpand recursion further down (single computation, reused).
+            IEdmNavigationProperty? navProp =
+                (expandItem.PathToNavigationProperty.FirstSegment as NavigationPropertySegment)?.NavigationProperty;
+            IEdmEntityType? targetEdmType = navProp?.ToEntityType();
+            SelectExpandClause? nestedClause = expandItem.SelectAndExpand;
+
             // Inject the serialised related value onto each parent JsonObject.
+            // #325/#326 (Option B): the delegate's own returned graph gets the SAME bounded
+            // treatment as Stage 1 — a delegate can return tracked/cyclic entities (T30/T31), and
+            // this splice is a second, independent serialization event Stage 1's walker never
+            // reaches (relatedByIndex[i] is the delegate's freshly returned object, not something
+            // read off the root item via reflection). Bounded by nestedClause exactly as Stage 1 is
+            // bounded by the root clause: any navigation nestedClause itself keeps gets a
+            // reflection-read splice here, and — for one that resolves to RunDelegate/Blank at the
+            // NEXT level — the hasNestedExpand recursion below still unconditionally overwrites it
+            // (same ordering guarantee as Stage 1: walker first, delegate-safety overwrite after).
             for (int i = 0; i < items.Count; i++)
             {
-                jsonItems[i][expandKey] = relatedByIndex[i] is null
-                    ? null
-                    : JsonSerializer.SerializeToNode(relatedByIndex[i], serializerOptions);
+                jsonItems[i][expandKey] = SerializeBounded(relatedByIndex[i], targetEdmType, nestedClause, serializerOptions);
             }
 
-            SelectExpandClause? nestedClause = expandItem.SelectAndExpand;
             if (nestedClause is null) continue;
 
             bool hasNestedExpand = nestedClause.SelectedItems.OfType<ExpandedNavigationSelectItem>().Any();
@@ -1541,15 +1567,13 @@ internal static class OhDataEndpointFactory
 
             if (hasNestedExpand)
             {
-                // Resolve the navigation target's entity type and the request-scoped source(s)
-                // that legitimately serve the NEXT level's own NavigationRoutes (nav handlers may
-                // capture scoped dependencies such as a DbContext). #292: unions every profile
-                // exposing the same CLR/EDM type so the per-nav lookup above (routeMatches) can
-                // fail closed on conflicts instead of a single arbitrary FirstOrDefault picking
-                // whichever profile happens to be first in registration/iteration order.
-                IEdmNavigationProperty? navProp =
-                    (expandItem.PathToNavigationProperty.FirstSegment as NavigationPropertySegment)?.NavigationProperty;
-                IEdmEntityType? targetEdmType = navProp?.ToEntityType();
+                // The request-scoped source(s) that legitimately serve the NEXT level's own
+                // NavigationRoutes (nav handlers may capture scoped dependencies such as a
+                // DbContext) — navProp/targetEdmType were already resolved above for the bounded
+                // splice. #292: unions every profile exposing the same CLR/EDM type so the per-nav
+                // lookup above (routeMatches) can fail closed on conflicts instead of a single
+                // arbitrary FirstOrDefault picking whichever profile happens to be first in
+                // registration/iteration order.
                 IReadOnlyList<IEntitySetEndpointSource> targetSources = ResolveRequestSourcesForEdmType(
                     targetEdmType, registration, requestServices);
 
@@ -1829,6 +1853,182 @@ internal static class OhDataEndpointFactory
                 obj.Remove(serializedKey);
             }
         }
+    }
+
+    // #325/#326 (OWNER DECISIONS, FROZEN spec — Option B, "clause-bounded, level-wise
+    // serialization"): the walker that replaces "serialize the whole CLR graph, then strip"
+    // (OmitUnexpandedNavigations' job) with "serialize only what was asked for" at the point of
+    // serialization itself. Root cause of #325/#326: whole-graph serialization is bounded by the
+    // OBJECT GRAPH, but omission is bounded by the $expand CLAUSE, and omission runs strictly
+    // AFTER serialization (Stage 3.5) — so any graph deeper/wider than the clause gets walked by
+    // System.Text.Json first, and a bidirectional/self-referential EF model's relationship fixup
+    // makes that graph cyclic, which SerializeToNode throws on.
+    //
+    // Mechanism: serialize <paramref name="value"/> with EVERY one of its EDM type's navigation
+    // properties suppressed at the JsonTypeInfo level (GetNavSuppressedOptions — the same
+    // TypeInfoResolver-modifier mechanism IgnoredPropertyJsonOptions.Build uses for Ignore()'d
+    // properties), then for each navigation the $expand <paramref name="clause"/> keeps (or an
+    // active $levels budget keeps — mirrors OmitUnexpandedNavigations' own keep/recurse decision
+    // table exactly, including $levels bookkeeping, because that logic IS the spec), read the CLR
+    // value via reflection and recurse into THIS method, splicing the result back onto the
+    // suppressed JsonObject. Recursion is therefore bounded by the clause tree (finite: it is
+    // exactly as deep as the client's own $expand/$levels request), never by the object graph, so
+    // a reference cycle in the underlying CLR graph is structurally unreachable — the walker never
+    // asks System.Text.Json to serialize a navigation property at all.
+    //
+    // Correctness for EVERY caller, including ones that later overwrite what this method wrote:
+    // for a ServeRaw navigation (see ResolveNavTreatment/NavTreatment) nothing downstream touches
+    // this key again, so the CLR value read here — whatever a member-init projection, an EF
+    // Include, or the plain tracked graph already populated — IS the final, authoritative answer.
+    // For a RunDelegate/Blank navigation this method may splice a stale or empty guess (the CLR
+    // property is typically unpopulated before the delegate runs), but ExpandLevelAsync's
+    // RunDelegate/Blank branches unconditionally overwrite jsonItems[i][expandKey] AFTER this
+    // walker runs (see ApplyCollectionPipelineAsync Stage 1 and the Stage 3 delegate-injection
+    // splice below) — a hard ordering requirement carried over from Model B (#292/#293) delegate
+    // safety. This method never inspects NavTreatment/ResolveNavTreatment itself; it only decides
+    // WHAT the $expand clause asked to see, never WHO is authoritative for the answer.
+    //
+    // <paramref name="edmType"/> null is the deliberate whole-graph fallback for ODataEntityNode's
+    // deep-insert opt-out (§11.4.2.2): that caller passes no EDM type specifically so the freshly
+    // deserialized POST/PUT/PATCH body graph stays inline, unbounded, exactly as before this fix —
+    // do not "fix" that case here.
+    //
+    // Keys off value.GetType() (the RUNTIME type) rather than a statically-threaded CLR type for
+    // both the suppression-options lookup and FindClrPropertyByEdmName, so a derived/polymorphic
+    // entity instance's own (possibly inherited) navigation properties are found and suppressed
+    // correctly even when reached through a base-typed navigation property.
+    private static JsonNode? SerializeBounded(
+        object? value,
+        IEdmEntityType? edmType,
+        SelectExpandClause? clause,
+        JsonSerializerOptions? serializerOptions,
+        (string Nav, int Remaining)? activeLevels = null,
+        int maxLevels = MaxNestedExpandDepth,
+        HashSet<string>? levelsNavNames = null)
+    {
+        if (value is null) return null;
+
+        JsonSerializerOptions opts = serializerOptions ?? _pascalCaseSerializerOptions;
+
+        if (edmType is null)
+        {
+            // Deliberate whole-graph fallback — see remarks above.
+            return JsonSerializer.SerializeToNode(value, opts);
+        }
+
+        if (value is IEnumerable seq and not string)
+        {
+            var array = new JsonArray();
+            foreach (object? element in seq)
+            {
+                array.Add(SerializeBounded(element, edmType, clause, opts, activeLevels, maxLevels, levelsNavNames));
+            }
+            return array;
+        }
+
+        Type clrType = value.GetType();
+        JsonSerializerOptions navSuppressed = GetNavSuppressedOptions(opts, edmType, clrType);
+        JsonObject obj = JsonSerializer.SerializeToNode(value, clrType, navSuppressed)!.AsObject();
+
+        // Navigation name -> its nested $expand clause, for navigations expanded at THIS level —
+        // and, for a $levels-carrying self-referential nav that was actually PUSHED (levelsNavNames),
+        // the resolved recursion budget. Mirrors OmitUnexpandedNavigations' own bookkeeping exactly
+        // (see #206 there for the full rationale) so the two never disagree on what "kept" means.
+        Dictionary<string, SelectExpandClause?>? expanded = null;
+        Dictionary<string, int>? levelsRemaining = null;
+        if (clause is not null)
+        {
+            foreach (ExpandedNavigationSelectItem expandItem in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
+            {
+                string navName = expandItem.PathToNavigationProperty.FirstSegment.Identifier;
+                (expanded ??= new Dictionary<string, SelectExpandClause?>(StringComparer.OrdinalIgnoreCase))
+                    [navName] = expandItem.SelectAndExpand;
+                if (expandItem.LevelsOption is { } lv && levelsNavNames is not null && levelsNavNames.Contains(navName))
+                {
+                    int resolved = lv.IsMaxLevel ? maxLevels : (int)Math.Min(lv.Level, maxLevels);
+                    (levelsRemaining ??= new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase))[navName] =
+                        Math.Min(Math.Max(resolved, 1), maxLevels);
+                }
+            }
+        }
+
+        foreach (IEdmNavigationProperty navProp in edmType.NavigationProperties())
+        {
+            PropertyInfo? clrNavProp = ODataPropertyNaming.FindClrPropertyByEdmName(clrType, navProp.Name);
+            string serializedKey = ResolveNavigationJsonKey(clrNavProp?.Name ?? navProp.Name, clrNavProp, opts);
+
+            SelectExpandClause? nested = null;
+            bool explicitlyExpanded = expanded is not null && expanded.TryGetValue(navProp.Name, out nested);
+            bool keptByLevels = !explicitlyExpanded && activeLevels is { } al &&
+                string.Equals(al.Nav, navProp.Name, StringComparison.OrdinalIgnoreCase) && al.Remaining > 0;
+
+            if (!explicitlyExpanded && !keptByLevels) continue; // not requested — already suppressed above
+
+            SelectExpandClause? nestedClause = explicitlyExpanded ? nested : null;
+            int? nextLevels =
+                levelsRemaining is not null && levelsRemaining.TryGetValue(navProp.Name, out int freshLevels)
+                    ? freshLevels - 1
+                    : (keptByLevels ? activeLevels!.Value.Remaining - 1 : (int?)null);
+            (string, int)? childActive = nextLevels is int nl && nl > 0 ? (navProp.Name, nl) : null;
+
+            object? navValue = clrNavProp?.GetValue(value);
+            if (navValue is null)
+            {
+                obj[serializedKey] = navProp.Type.IsCollection() ? new JsonArray() : null;
+                continue;
+            }
+
+            obj[serializedKey] = SerializeBounded(
+                navValue, navProp.ToEntityType(), nestedClause, opts, childActive, maxLevels, levelsNavNames);
+        }
+
+        return obj;
+    }
+
+    // Registration-scoped cache (keyed by the exact base options instance + the runtime CLR type
+    // being serialized) of the derived JsonSerializerOptions SerializeBounded uses to serialize a
+    // single level's OWN structural/complex members with every EDM navigation property removed
+    // from its JsonTypeInfo — the same TypeInfoResolver-modifier mechanism
+    // IgnoredPropertyJsonOptions.Build uses (see its remarks for the perf rationale: a resolver
+    // modifier runs once per type, and the resulting JsonTypeInfo is cached on the options
+    // instance, so steady state has fewer members to emit). Built lazily per (options, type) pair
+    // rather than eagerly for the whole model up front — cheap in steady state (computed once,
+    // reused for the lifetime of the process) and needs no extra registration-wide plumbing
+    // threaded through the five call sites. Keying on the CLR type alone (not a separate EDM-type
+    // component) relies on the same CLR-type<->EDM-entity-type 1:1 convention the rest of this file
+    // already assumes (see ResolveProfilesForClrType); baseOptions is itself already
+    // registration-scoped, so two registrations exposing the same CLR type with different EDM
+    // shapes still get independent cache entries.
+    private static readonly ConcurrentDictionary<(JsonSerializerOptions Options, Type ClrType), JsonSerializerOptions>
+        _navSuppressedOptionsCache = new();
+
+    private static JsonSerializerOptions GetNavSuppressedOptions(
+        JsonSerializerOptions baseOptions, IEdmEntityType edmType, Type clrType)
+    {
+        return _navSuppressedOptionsCache.GetOrAdd((baseOptions, clrType), key =>
+        {
+            (JsonSerializerOptions opts, Type type) = key;
+            var navClrNames = new HashSet<string>(StringComparer.Ordinal);
+            foreach (IEdmNavigationProperty navProp in edmType.NavigationProperties())
+            {
+                PropertyInfo? clrProp = ODataPropertyNaming.FindClrPropertyByEdmName(type, navProp.Name);
+                if (clrProp is not null) navClrNames.Add(clrProp.Name);
+            }
+            if (navClrNames.Count == 0) return opts;
+
+            var derived = new JsonSerializerOptions(opts);
+            IJsonTypeInfoResolver resolver = derived.TypeInfoResolver ?? new DefaultJsonTypeInfoResolver();
+            derived.TypeInfoResolver = resolver.WithAddedModifier(typeInfo =>
+            {
+                if (typeInfo.Kind != JsonTypeInfoKind.Object || typeInfo.Type != type) return;
+                for (int i = typeInfo.Properties.Count - 1; i >= 0; i--)
+                {
+                    if (typeInfo.Properties[i].AttributeProvider is PropertyInfo prop && navClrNames.Contains(prop.Name))
+                        typeInfo.Properties.RemoveAt(i);
+                }
+            });
+            return derived;
+        });
     }
 
     // #184: resolve the JSON key a navigation property serializes to. A per-property
@@ -3009,12 +3209,14 @@ internal static class OhDataEndpointFactory
     // class or interface that TModel implements (or that is assignable from TModel) also closes a
     // cycle. Over-matching here only forces a safe fallback, never incorrect data, so the
     // conservative direction is correct. Implementation UNCHANGED by #323 — only its callers'
-    // interpretation of a `true` result changed: BuildExpandNavBinding's guard (Change B) now
-    // consults it only for an element type that is NOT member-init-projectable (a projectable type
-    // is always materialized through a fresh POCO — Change A — so a back-reference there can no
-    // longer close a cycle); the #305 Include fallback (FindCyclicLeafExpand, Change C) still treats
-    // any `true` result as unsafe outright, because Include loads TRACKED entities regardless of
-    // projectability, and EF's own relationship fixup can wire the back-reference up.
+    // interpretation of a `true` result changed: BuildExpandNavBinding's guard (Change B) consults it
+    // only for an element type that is NOT member-init-projectable (a projectable type is always
+    // materialized through a fresh POCO — Change A — so a back-reference there can no longer close a
+    // cycle) and is still load-bearing for THAT class post-#325/#326 (belt-and-suspenders alongside
+    // SerializeBounded, and still the only thing that decides pushdown ELIGIBILITY in the first
+    // place — SerializeBounded only makes the RESULT safe to serialize once a shape is pushed). The
+    // #305 Include fallback's OWN former use of this method (FindCyclicLeafExpand, Change C) was
+    // REMOVED by #325/#326 (Option B) — see the removal note above FindNestedExpandOrLevels.
     private static bool TypeHasNavigationTo(Type type, Type target)
     {
         foreach (PropertyInfo p in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
@@ -3108,28 +3310,19 @@ internal static class OhDataEndpointFactory
         return null;
     }
 
-    // #323 (Change C): the FIRST top-level engaged expand whose element type navigates back to
-    // <paramref name="modelType"/> — the scope ApplyIncludeFallback below cannot safely serve, because
-    // (unlike the member-init projection path's fresh POCOs) Include populates TRACKED entities, and
-    // EF Core's own relationship fixup can wire up a bidirectional back-reference the projection path's
-    // Change A structurally forecloses. Checked by the caller BEFORE invoking ApplyIncludeFallback, and
-    // OUTSIDE the try/catch that wraps the actual Include construction+execution, so this validation's
-    // specific/actionable ODataException message reaches the client verbatim (via the route's outer
-    // ODataException handler) instead of being caught and overwritten by the generic provider-failure
-    // catch around the real Include call. The caller has already rejected any nested $expand/$levels
-    // (FindNestedExpandOrLevels above), so only LEAF expands reach this loop — checking each one's
-    // element type against modelType covers a back-reference TO THE ROOT, which is the class this guard
-    // targets. It does NOT cover every possible cycle: a cycle that closes entirely between two SIBLING
-    // leaves, or entirely inside a self-referential leaf element type, never references modelType and
-    // slips past this check — see #326.
-    private static EngagedExpand? FindCyclicLeafExpand(IReadOnlyList<EngagedExpand> engaged, Type modelType)
-    {
-        foreach (EngagedExpand e in engaged)
-        {
-            if (TypeHasNavigationTo(e.Binding.ElementType, modelType)) return e;
-        }
-        return null;
-    }
+    // #323 (Change C) formerly guarded ApplyIncludeFallback below with a FindCyclicLeafExpand check
+    // that rejected (400) any leaf whose element type navigated back to the root model — Include
+    // populates TRACKED entities, so EF's own relationship fixup can wire up a back-reference the
+    // member-init projection path's Change A structurally forecloses. #325/#326 (OWNER DECISIONS,
+    // FROZEN spec — Option B) REMOVED that guard: the same clause-bounded serialization walker
+    // (SerializeBounded) that fixes #325's plain-GET tracked-entity cycle makes the Include
+    // fallback's tracked-entity graph safe to serve too, regardless of which two instances the
+    // cycle closes between — a back-reference to the root (what Change C caught), a sibling
+    // cross-reference, or a self-referential leaf element type (#326's two previously-still-500
+    // classes) are all now served correctly. Rejecting a request the framework can now answer
+    // would be backwards relative to the #305/#323 "serve, don't silently drop or reject" direction.
+    // See IncludeFallbackSqliteTests.cs's IncludeFallbackCyclicLeafTests for the coverage (flipped
+    // from asserting 400 to asserting real served data).
 
     // #305 Path A: populate the request's engaged $expand navigations via EF Core's own Include when
     // the root TModel projection is ineligible for a member-init Select (TryApplySelectProjection
@@ -3145,17 +3338,18 @@ internal static class OhDataEndpointFactory
     //
     // SCOPE (documented deviation from the fully general settled design — see the PR/report): only LEAF
     // engaged expands (no nested $expand children, no $levels) are served this way; the caller has
-    // already rejected any nested $filter/$orderby (HasNestedFilterOrOrderBy), any nested $expand/
-    // $levels (FindNestedExpandOrLevels), AND — #323 (Change C) — any leaf whose element type navigates
-    // back to TModel (FindCyclicLeafExpand) before calling this method, so no such item reaches the
-    // loop below. A nested $expand or $levels fails loud rather than risk an unverified reflection-built
+    // already rejected any nested $filter/$orderby (HasNestedFilterOrOrderBy) and any nested $expand/
+    // $levels (FindNestedExpandOrLevels) before calling this method, so no such item reaches the loop
+    // below. A nested $expand or $levels fails loud rather than risk an unverified reflection-built
     // ThenInclude/self-referential Include chain — untested by this fix's settled-design test list, and
     // materially riskier than the member-init path: EF's automatic navigation-fixup can wire up a
     // tracked self-referential navigation beyond the requested depth even when it was never explicitly
-    // Include'd, which the member-init projection (fresh POCOs, not EF-tracked) never risks. A
-    // bidirectional back-reference fails loud for the SAME reason (#323): Include loads TRACKED
-    // entities, so EF's fixup can close a cycle the member-init path structurally forecloses (Change A).
-    // All three remain fully servable via full pushdown (add a parameterless ctor) or an expand delegate.
+    // Include'd, which the member-init projection (fresh POCOs, not EF-tracked) never risks.
+    // #325/#326 (Option B): a bidirectional/cyclic back-reference (what #323's Change C used to reject
+    // here) is now served — SerializeBounded makes the Include fallback's tracked-entity graph safe to
+    // serialize regardless of which two instances a cycle closes between (see the removal note just
+    // above FindNestedExpandOrLevels... i.e. two methods above this one, where Change C's guard used to
+    // live).
     private static IQueryable<TModel> ApplyIncludeFallback<TModel>(
         IQueryable<TModel> query, IReadOnlyList<EngagedExpand> engaged, MethodInfo includeMethod,
         IEdmModel model, int? maxExpandTop)
@@ -3249,9 +3443,18 @@ internal static class OhDataEndpointFactory
         // routes take no $expand, so every declared navigation on the element type is omitted per
         // OData JSON §4.5.1 / §11.2.4.2 — matching a top-level collection GET of that type instead
         // of leaking each item's whole CLR graph. Runs before $select so projection has final say.
-        var json = JsonSerializer.SerializeToNode(itemArray, navSerializerOptions)!.AsArray();
+        // #325/#326 (Option B): SerializeBounded with clause: null never hands ANY navigation to
+        // System.Text.Json in the first place (bounded, not stripped-after), so a cyclic/tracked
+        // nav item type is safe here too.
+        var json = new JsonArray();
+        foreach (object item in itemArray)
+        {
+            json.Add(SerializeBounded(item, navElementEdmType, clause: null, navSerializerOptions));
+        }
         // #184: navItemType is the CLR element type, so [JsonPropertyName] renames on its
-        // navigations are honored when computing which keys to omit.
+        // navigations are honored when computing which keys to omit. Defence-in-depth (#325/#326):
+        // a practical no-op now that SerializeBounded never wrote an un-expanded navigation, kept
+        // in case a future caller ever hands this a clause again without checking.
         OmitUnexpandedNavigations(json, navElementEdmType, clause: null, navItemType, navSerializerOptions);
 
         // Apply $select post-processing for navigation results if requested.
@@ -3314,7 +3517,12 @@ internal static class OhDataEndpointFactory
         JsonSerializerOptions? jsonOptions, string? odataId = null, string? etag = null,
         IEdmEntityType? omitNavsForType = null)
     {
-        var serialized = JsonSerializer.SerializeToNode(entity, jsonOptions)!.AsObject();
+        // #325/#326 (Option B): bounded by clause: null (no $expand is possible on this path — see
+        // the deep-insert remarks below) rather than whole-graph. omitNavsForType null is the
+        // CRITICAL deep-insert opt-out (§11.4.2.2): SerializeBounded falls back to the exact
+        // pre-#325 whole-graph JsonSerializer.SerializeToNode call in that case, so a deep-insert
+        // POST response body keeps its inline nested-create graph exactly as before this fix.
+        var serialized = (JsonObject)SerializeBounded(entity, omitNavsForType, clause: null, jsonOptions)!;
         string baseUrl = BuildBaseUrl(ctx, prefix);
 
         // #176: on single-entity read responses, omit navigation properties that were not
@@ -3323,6 +3531,8 @@ internal static class OhDataEndpointFactory
         // unaffected. See OmitUnexpandedNavigations for the spec citation.
         // #184: the concrete entity's CLR type carries [JsonPropertyName] renames on its
         // navigations, so omission keys off the same names the serializer just wrote.
+        // #325/#326: defence-in-depth (practical no-op now — SerializeBounded already omitted
+        // every un-expanded navigation at the point of serialization).
         OmitUnexpandedNavigations(serialized, omitNavsForType, clause: null, entity.GetType(), jsonOptions);
 
         var node = new JsonObject
@@ -4132,34 +4342,18 @@ internal static class OhDataEndpointFactory
                                     "pushdown, or write an expand delegate for this navigation.");
                             }
 
-                            // #323 (Change C): the Include fallback populates TRACKED entities, so a
-                            // navigation back to TModel — safe on the member-init projection path
-                            // (Change A always materializes a fresh POCO there) — is NOT safe here: EF
-                            // Core's own relationship fixup can wire up the back-reference and close a
-                            // parent<->child object cycle System.Text.Json throws on. Only leaf expands
-                            // reach this point (the nested-$expand/$levels check above already rejected
-                            // anything deeper), so checking each engaged expand's element type against
-                            // typeof(TModel) covers a back-reference TO THE ROOT — the class this guard
-                            // targets. It is NOT a complete cycle guard: a cycle that closes entirely
-                            // between two SIBLING leaves, or entirely inside a self-referential leaf
-                            // element type, never references TModel and is invisible to this check (same
-                            // root-only blind spot as FindCyclicLeafExpand/TypeHasNavigationTo) — tracked
-                            // as #326. Fail loud (400, #305-consistent) rather than risk the tracked-entity
-                            // cycle turning into an uncontrolled 500 for the class this DOES catch.
-                            if (FindCyclicLeafExpand(engagedExpandNavs, typeof(TModel)) is { } cyclicNav)
-                            {
-                                throw new Microsoft.OData.ODataException(
-                                    $"The '$expand' on '{cyclicNav.Binding.Property.Name}' could not be " +
-                                    "served without a projection-eligible model: the related type has a " +
-                                    $"navigation back to '{typeof(TModel).Name}', which a plain Include " +
-                                    "fallback cannot safely materialize (the loaded entities are tracked, " +
-                                    "and EF Core's own relationship fixup could close a serialization " +
-                                    "cycle). Make the model projection-eligible (a public parameterless " +
-                                    "constructor, settable non-complex properties, and — if it uses " +
-                                    "ETags — a direct UseETag selector over structural properties) to " +
-                                    "enable full pushdown, or write an expand delegate for this " +
-                                    "navigation.");
-                            }
+                            // #323 (Change C) formerly rejected (400) a leaf expand whose element type
+                            // navigates back to TModel here — the Include fallback populates TRACKED
+                            // entities, so EF Core's own relationship fixup can wire up the back-reference
+                            // and close a parent<->child object cycle System.Text.Json used to throw on.
+                            // #325/#326 (OWNER DECISIONS, FROZEN spec — Option B) REMOVED that guard: the
+                            // engaged navigations below now serialize through SerializeBounded
+                            // (ApplyCollectionPipelineAsync Stage 1), which never hands an un-expanded
+                            // navigation to System.Text.Json at all, so a reference cycle among these
+                            // tracked entities — whether it closes back to the root (what this guard used
+                            // to catch), between two sibling leaves, or inside a self-referential leaf
+                            // element type (#326's two previously-still-500 classes) — is structurally
+                            // unreachable. See IncludeFallbackSqliteTests.cs's IncludeFallbackCyclicLeafTests.
 
                             MethodInfo? efInclude = efAssembly is not null ? ResolveEfIncludeMethod(efAssembly) : null;
                             if (efInclude is null)
@@ -4283,27 +4477,24 @@ internal static class OhDataEndpointFactory
                     catch (JsonException ex) when (engagedExpandNavs is { Count: > 0 })
                     {
                         // #305 Path B (FAIL LOUD, owner directive — supersedes the #206 fallback this
-                        // replaces): the pushed graph tripped a serialization cycle the static
-                        // back-reference guard (TypeHasNavigationTo) missed (e.g. EF relationship fixup
-                        // populated an untyped/base-typed back-navigation the projection did not itself
-                        // materialize). Re-fetching EDM-only used to silently drop the navigations under
-                        // a 200 — exactly the class of bug #305 reports. A true object-graph cycle
-                        // cannot be served at all, so rethrow: the group-level exception filter turns
-                        // this into a generic 500 InternalServerError, never leaking the exception
-                        // detail (or which navigation/shape tripped it) to the client. #323 makes this
-                        // unreachable from the member-init projection path REGARDLESS of which two
-                        // instances the cycle closes between (Change A always materializes every leaf —
-                        // and every intermediate level — through a fresh POCO, structurally, so no
-                        // bidirectional-nav entity of any shape is ever handed to the serializer on that
-                        // path). It stays reachable from the #305 Include fallback for a cycle that does
-                        // NOT reference the root model: Change C only rejects a leaf whose related type
-                        // navigates back to TModel — a cycle closing entirely between two sibling leaves,
-                        // or entirely inside a self-referential leaf element type, is invisible to that
-                        // check and can still reach this catch on the Include-fallback path (#326, not a
-                        // regression — the Include fallback never guarded against this class). Also stays
-                        // reachable from tracked-entity fixup cycles unrelated to $expand pushdown itself
-                        // (e.g. a handler's own eager-loaded graph, or a self-referential set's plain
-                        // fixup) — see #325.
+                        // replaces): a true object-graph cycle cannot be served at all, so rethrow: the
+                        // group-level exception filter turns this into a generic 500 InternalServerError,
+                        // never leaking the exception detail (or which navigation/shape tripped it) to
+                        // the client. Belt-and-suspenders as of #325/#326 (Option B): SerializeBounded
+                        // (ApplyCollectionPipelineAsync Stage 1) never hands an un-expanded EDM navigation
+                        // to System.Text.Json, so a serialization cycle among EDM-declared navigations —
+                        // whatever static back-reference shape it takes, including the sibling-
+                        // cross-reference and self-referential-leaf classes #326 tracked — is structurally
+                        // unreachable through this path now, on BOTH the member-init projection path
+                        // (already true before #325/#326, via Change A) and the #305 Include fallback
+                        // (newly true — see the FindCyclicLeafExpand removal note above
+                        // FindNestedExpandOrLevels). This catch stays reachable for the one class #325's
+                        // OWNER DECISIONS explicitly left as a loud 500 rather than fix: a cycle closed by
+                        // an entity-typed CLR property that is NOT an EDM navigation (e.g. [NotMapped]) —
+                        // SerializeBounded only suppresses/bounds EDM-declared navigations, so such a
+                        // property still reaches System.Text.Json un-bounded on whichever branch of the
+                        // walker serializes that level's structural/complex members. See T35 in
+                        // BidirectionalExpandPushdownSqliteTests.cs.
                         logger?.LogDebug(ex,
                             "OhData: $expand pushdown produced a serialization cycle for {EntitySet}.",
                             source.EntitySetName);
@@ -6255,12 +6446,19 @@ internal static class OhDataEndpointFactory
             // entity set's own type but takes no $expand, so every declared navigation is omitted
             // (§4.5.1 / §11.2.4.2) and @odata.etag is injected per item when UseETag is set —
             // previously the raw CLR graph was handed to Results.Ok, leaking navs and dropping ETags.
+            // #325/#326 (Option B): bounded (clause: null — a bound op takes no $expand), never
+            // whole-graph, so a bound function/action returning tracked/cyclic entities is safe too.
             var serializerOptions = jsonOptions ?? _pascalCaseSerializerOptions;
-            var json = JsonSerializer.SerializeToNode(coll, serializerOptions)!.AsArray();
+            var json = new JsonArray();
+            foreach (object item in coll)
+            {
+                json.Add(SerializeBounded(item, rootEdmType, clause: null, serializerOptions));
+            }
             if (source.HasETag)
             {
                 InjectETagsIntoJsonArray(json, coll, source);
             }
+            // Defence-in-depth (#325/#326): practical no-op now.
             OmitUnexpandedNavigations(json, rootEdmType, clause: null, modelType, serializerOptions);
 
             return Results.Ok(new Dictionary<string, object?>

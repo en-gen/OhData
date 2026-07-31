@@ -56,12 +56,12 @@ public sealed class IncludeInvalidChild
     public string Name { get; set; } = "";
 }
 
-// #323 (Change C) fixture: a root model that can't support the member-init projection (no
-// parameterless ctor — forces Path A / Include fallback) whose delegate-less collection nav's related
-// type carries a typed back-reference to the root. Unlike the projection path (fresh POCOs, never
-// cyclic — see ExpandPushdownSqliteTests's CycParent/CycChild), Include populates TRACKED entities,
-// so EF's own relationship fixup could close the cycle; Change C rejects this with 400 before Include
-// ever runs, rather than risk a 500.
+// Fixture: a root model that can't support the member-init projection (no parameterless ctor —
+// forces Path A / Include fallback) whose delegate-less collection nav's related type carries a
+// typed back-reference to the root. Unlike the projection path (fresh POCOs, never cyclic — see
+// ExpandPushdownSqliteTests's CycParent/CycChild), Include populates TRACKED entities. #323 (Change
+// C) used to reject this with 400 before Include ever ran, rather than risk a 500; #325/#326
+// (Option B) relaxed that — SerializeBounded now serves the tracked, cyclic graph safely instead.
 public sealed record NoCtorCyclicParent(int Id, string Name)
 {
     public List<NoCtorCyclicChild> Children { get; set; } = new();
@@ -356,10 +356,16 @@ public sealed class IncludeFallbackInvalidModelTests : IAsyncLifetime
     }
 }
 
-// #323 (Change C), T12-T16: a leaf expand under the Include fallback whose related type navigates
-// back to the root model fails loud (400) rather than risk EF's own tracked-entity fixup closing a
+// #323 (Change C) formerly rejected (400) a leaf expand under the Include fallback whose related
+// type navigates back to the root model, rather than risk EF's own tracked-entity fixup closing a
 // serialization cycle — unlike the member-init projection path, which structurally forecloses the
 // same cycle via Change A (see ExpandPushdownCyclicFallbackTests.BidirectionalNav_Expand_PushesDown_WithJoin).
+//
+// #325/#326 (OWNER DECISIONS, FROZEN spec — Option B) RELAXED Change C: SerializeBounded
+// (OhDataEndpointFactory.cs) makes the Include fallback's tracked-entity graph safe to serialize
+// regardless of which two instances a cycle closes between, so this suite now asserts SERVED data
+// (200) instead of the former 400 — the exact repro #326 reported (a cycle that doesn't reference
+// the root model) is included below as its own class.
 public sealed class IncludeFallbackCyclicLeafTests : IAsyncLifetime
 {
     private SqliteConnection _connection = null!;
@@ -379,45 +385,42 @@ public sealed class IncludeFallbackCyclicLeafTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task CyclicLeaf_BareExpand_FailsLoud400_WithActionableMessage()
+    public async Task CyclicLeaf_BareExpand_Returns200_WithRealChildren()
     {
-        // T12/T13: the tracking (default) query — Change C rejects it before Include ever runs.
+        // Tracking (default) query — formerly rejected by Change C before Include ever ran.
         HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/NoCtorCyclicParents?$expand=Children");
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         string body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("\"error\"", body);
-        Assert.Contains("InvalidQueryOption", body);
-        Assert.Contains("Children", body); // names the offending navigation
-        Assert.Contains("NoCtorCyclicParent", body); // names the root model the back-reference targets
-        Assert.DoesNotContain("Sqlite", body);
-        Assert.DoesNotContain("SQLITE", body);
+        Assert.Contains("\"CyC1a\"", body);
     }
 
+    // Note: a nested $expand under the Include-fallback path (e.g. Children($expand=Parent)) is
+    // untouched by #325/#326 either way — it is pre-existing Path-A engagement/eligibility
+    // plumbing unrelated to serialization-cycle safety, out of this fix's scope. The IgnoreCycles-
+    // disqualifying counter-example (Children($expand=Parent) returning the REAL parent, not null)
+    // IS proven, on the member-init-projection-ineligible-but-pushdown-disabled EDM-only path: see
+    // SerializeBoundedWalkerTests.EdmOnlyExpandCycleTests (T8-T11).
+
     [Fact]
-    public async Task CyclicLeaf_AsNoTracking_StillFailsLoud400()
+    public async Task CyclicLeaf_AsNoTracking_AlsoReturns200_WithRealChildren()
     {
-        // T14: Change C's guard is purely type-based — it never inspects the query's own tracking
-        // behavior — so an AsNoTracking() query over the SAME cyclic shape must ALSO fail loud rather
-        // than silently succeed just because this particular query happens not to track entities
-        // (the guard cannot know that at startup-bind time, and a handler could swap trackingbehavior
-        // per-request).
+        // Change C's former guard was purely type-based — it never inspected the query's own
+        // tracking behavior — so an AsNoTracking() query over the SAME cyclic shape must serve the
+        // same way as the tracking query above.
         HttpResponseMessage resp = await _fx.Client.GetAsync(
             "/odata/NoCtorCyclicParentsNoTracking?$expand=Children");
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         string body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("InvalidQueryOption", body);
+        Assert.Contains("\"CyC1a\"", body);
     }
 
     [Fact]
     public async Task UnidirectionalLeaf_BareExpand_StillServes200()
     {
-        // T15/T16 control: NoCtorParents/NoCtorChildren has NO back-reference (unidirectional), so it
-        // must keep serving 200 with real data through the SAME Include fallback path — Change C must
-        // not over-defer a shape it was never meant to catch. This mirrors
-        // NoParameterlessCtor_BareExpand_ServesRealChildren_Not200WithEmptyNav above; asserted again
-        // here as an explicit sibling-control pin for Change C.
+        // Control: NoCtorParents/NoCtorChildren has NO back-reference (unidirectional), so it must
+        // keep serving 200 with real data through the SAME Include fallback path exactly as before.
         HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/NoCtorParents?$orderby=id&$expand=Children");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 

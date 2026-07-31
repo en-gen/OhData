@@ -131,7 +131,11 @@ was declared with a delegate** (#206):
 > navigation stays EDM-only for that request — the framework doesn't load it itself, but doesn't
 > guarantee it empty either: whatever the handler's own query already put there (a non-EF
 > `GetQueryable`'s eager load, a `GetAll` handler that populated it by hand) still serializes; never a
-> `500`).
+> `500`). That "never a `500`" now holds even for a tracked, EF-relationship-fixed-up graph that is
+> genuinely cyclic (self-referential or bidirectional): as of #325/#326, response serialization
+> itself is bounded by the `$expand` clause (a `SerializeBounded` walker), never by the object graph,
+> so a reference cycle among EDM-declared navigations is structurally unreachable — including on a
+> plain `GET` with no `$expand` at all.
 
 For a **delegate-backed** navigation, what differs is **how many times the handler is called**, and
 it depends on which overload you registered:
