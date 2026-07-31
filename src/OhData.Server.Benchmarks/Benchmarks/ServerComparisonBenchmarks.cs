@@ -3,6 +3,7 @@ using System.Threading.Tasks;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Configs;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.Data.Sqlite;
 
 namespace OhData.Server.Benchmarks.Benchmarks;
 
@@ -30,12 +31,14 @@ public class ServerComparisonBenchmarks
     private WebApplication _msODataApp = null!;
     private HttpClient _ohData = null!;
     private HttpClient _msOData = null!;
+    private SqliteConnection _ohDataNavConnection = null!;
+    private SqliteConnection _msODataNavConnection = null!;
 
     [GlobalSetup]
     public async Task Setup()
     {
-        (_ohDataApp, _ohData) = await BenchmarkHosts.StartOhDataAsync();
-        (_msODataApp, _msOData) = await BenchmarkHosts.StartMsODataAsync();
+        (_ohDataApp, _ohData, _ohDataNavConnection) = await BenchmarkHosts.StartOhDataAsync();
+        (_msODataApp, _msOData, _msODataNavConnection) = await BenchmarkHosts.StartMsODataAsync();
     }
 
     [GlobalCleanup]
@@ -45,6 +48,8 @@ public class ServerComparisonBenchmarks
         _msOData.Dispose();
         await _ohDataApp.DisposeAsync();
         await _msODataApp.DisposeAsync();
+        _ohDataNavConnection.Dispose();
+        _msODataNavConnection.Dispose();
     }
 
     private static async Task<string> GetAsync(HttpClient client, string url)
@@ -149,4 +154,49 @@ public class ServerComparisonBenchmarks
 
     [Benchmark, BenchmarkCategory("Delete")]
     public Task<string> MsOData_Delete() => SendAsync(_msOData, BenchmarkRequests.CreateDelete());
+
+    // ── Navigation scenarios (EF Core Sqlite-backed BenchDepartment/BenchEmployee) ──────────────────
+    // See BenchmarkRequests for why these run against EF Core Sqlite rather than the List<T> store the
+    // scenarios above use: OhData's $expand pushdown is gated to an EF Core-backed IQueryable, so a
+    // plain in-memory list would silently take the non-pushdown path and measure the wrong thing.
+
+    // ── $expand of a collection navigation (pushdown JOIN) ───────────────────────
+
+    [Benchmark(Baseline = true), BenchmarkCategory("ExpandCollection")]
+    public Task<string> OhData_ExpandCollection() => GetAsync(_ohData, BenchmarkRequests.DeptExpandCollectionUrl);
+
+    [Benchmark, BenchmarkCategory("ExpandCollection")]
+    public Task<string> MsOData_ExpandCollection() => GetAsync(_msOData, BenchmarkRequests.DeptExpandCollectionUrl);
+
+    // ── nested $expand=A($expand=B) ───────────────────────────────────────────
+
+    [Benchmark(Baseline = true), BenchmarkCategory("ExpandNested")]
+    public Task<string> OhData_ExpandNested() => GetAsync(_ohData, BenchmarkRequests.DeptExpandNestedUrl);
+
+    [Benchmark, BenchmarkCategory("ExpandNested")]
+    public Task<string> MsOData_ExpandNested() => GetAsync(_msOData, BenchmarkRequests.DeptExpandNestedUrl);
+
+    // ── $expand with nested $top/$orderby/$count/$select ─────────────────────
+
+    [Benchmark(Baseline = true), BenchmarkCategory("ExpandNestedOptions")]
+    public Task<string> OhData_ExpandNestedOptions() => GetAsync(_ohData, BenchmarkRequests.DeptExpandNestedOptionsUrl);
+
+    [Benchmark, BenchmarkCategory("ExpandNestedOptions")]
+    public Task<string> MsOData_ExpandNestedOptions() => GetAsync(_msOData, BenchmarkRequests.DeptExpandNestedOptionsUrl);
+
+    // ── $select + $expand combined ────────────────────────────────────────────
+
+    [Benchmark(Baseline = true), BenchmarkCategory("SelectExpand")]
+    public Task<string> OhData_SelectExpand() => GetAsync(_ohData, BenchmarkRequests.DeptSelectExpandUrl);
+
+    [Benchmark, BenchmarkCategory("SelectExpand")]
+    public Task<string> MsOData_SelectExpand() => GetAsync(_msOData, BenchmarkRequests.DeptSelectExpandUrl);
+
+    // ── $levels on a self-referential navigation ──────────────────────────────
+
+    [Benchmark(Baseline = true), BenchmarkCategory("Levels")]
+    public Task<string> OhData_Levels() => GetAsync(_ohData, BenchmarkRequests.EmployeeLevelsUrl);
+
+    [Benchmark, BenchmarkCategory("Levels")]
+    public Task<string> MsOData_Levels() => GetAsync(_msOData, BenchmarkRequests.EmployeeLevelsUrl);
 }
