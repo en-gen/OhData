@@ -1228,20 +1228,13 @@ internal static class OhDataEndpointFactory
         // so a cycle among them is structurally unreachable.
         var serializerOptions = jsonOptions ?? _pascalCaseSerializerOptions;
         SelectExpandClause? rootClauseForSerialize = options.SelectExpand?.SelectExpandClause;
-        var json = new JsonArray();
-        foreach (object item in originalItems)
-        {
-            // Fold-in #5 (#325/#326 review — maxLevels asymmetry): pass the SAME
-            // source.MaxExpansionDepth ceiling Stage 3.5's OmitUnexpandedNavigations call below
-            // already uses, instead of silently defaulting to the file-wide MaxNestedExpandDepth
-            // (12). Previously the walker reflection-walked up to 12 $levels deep and Stage 3.5 then
-            // re-stripped the surplus — output was correct only because Stage 3.5 papered over the
-            // mismatch, which is exactly the "walk deep then strip" pattern Option B exists to
-            // eliminate, and would have made the walker the STRICTER of the two (silently
-            // truncating) had a profile ever set MaxExpansionDepth above 12.
-            json.Add(SerializeBounded(item, rootEdmType, rootClauseForSerialize, serializerOptions,
-                maxLevels: source.MaxExpansionDepth, levelsNavNames: pushedLevelsNavNames));
-        }
+        // Perf fix (measured regression vs. develop, see SerializeBoundedCollection's remarks):
+        // ONE batched call for the whole page instead of one SerializeBounded call per entity.
+        // Fold-in #5 (#325/#326 review — maxLevels asymmetry) still applies: pass the SAME
+        // source.MaxExpansionDepth ceiling Stage 3.5's OmitUnexpandedNavigations call below already
+        // uses, instead of silently defaulting to the file-wide MaxNestedExpandDepth (12).
+        JsonArray json = SerializeBoundedCollection(originalItems, rootEdmType, rootClauseForSerialize,
+            serializerOptions, maxLevels: source.MaxExpansionDepth, levelsNavNames: pushedLevelsNavNames);
 
         // Stage 2: Inject @odata.etag using the original (pre-expand) items for ETag computation.
         if (source.HasETag)
@@ -2024,6 +2017,32 @@ internal static class OhDataEndpointFactory
         (Dictionary<string, SelectExpandClause?>? expanded, Dictionary<string, int>? levelsRemaining) =
             BuildExpandLookup(clause, levelsNavNames, maxLevels);
 
+        SpliceKeptNavigations(obj, value, clrType, edmType, expanded, levelsRemaining, activeLevels, opts,
+            maxLevels, levelsNavNames);
+
+        return obj;
+    }
+
+    // Perf fix (measured regression vs. develop — GetAllPage/Filter/OrderBy/CountTrue/Select/
+    // TopSkip allocation up 26-40%): the per-entity splice loop SerializeBounded ran inline above,
+    // extracted so SerializeBoundedCollection (below) can reuse it WITHOUT re-deriving the
+    // keep/recurse decision (expanded/levelsRemaining) per entity — every entity at the SAME level
+    // shares the SAME clause, so BuildExpandLookup only needs to run ONCE per batch, not once per
+    // entity. This is the single source both SerializeBounded and SerializeBoundedCollection call
+    // to splice kept navigations onto an already nav-suppressed JsonObject; the two can no longer
+    // independently drift on what gets spliced or how.
+    private static void SpliceKeptNavigations(
+        JsonObject obj,
+        object value,
+        Type clrType,
+        IEdmEntityType edmType,
+        Dictionary<string, SelectExpandClause?>? expanded,
+        Dictionary<string, int>? levelsRemaining,
+        (string Nav, int Remaining)? activeLevels,
+        JsonSerializerOptions opts,
+        int maxLevels,
+        HashSet<string>? levelsNavNames)
+    {
         foreach (IEdmNavigationProperty navProp in edmType.NavigationProperties())
         {
             // Perf (fold-in #7): decide keep/drop BEFORE any reflection — FindClrPropertyByEdmName/
@@ -2062,8 +2081,119 @@ internal static class OhDataEndpointFactory
                 navValue, navProp.ToEntityType(), decision.NestedClause, opts, decision.ChildActive, maxLevels,
                 levelsNavNames, isCollectionValue: navProp.Type.IsCollection());
         }
+    }
 
-        return obj;
+    // Perf fix (measured regression vs. develop, BenchmarkDotNet: GetAllPage +40%, Filter +38%,
+    // OrderBy +35%, CountTrue +34%, Select +28%, TopSkip +26% allocated bytes): SerializeBounded
+    // above is invoked once PER ENTITY on the collection GET path, so its
+    // JsonSerializer.SerializeToNode call — one call per entity — replaced develop's ONE call for
+    // the whole page. That is pure overhead whenever nothing is actually expanded (no $expand, or
+    // — like the benchmark's BenchWidget model — an entity type with zero EDM navigations at all):
+    // the per-entity walker buys cycle-safety (#325/#326) that never pays for itself because there
+    // is nothing to walk.
+    //
+    // This is the collection-aware entry point used by ApplyCollectionPipelineAsync's Stage 1: ONE
+    // JsonSerializer.SerializeToNode call over the WHOLE page (using nav-suppressed options, so the
+    // cycle-safety guarantee is unchanged — no navigation is ever handed to System.Text.Json unless
+    // the clause asks for it), producing a JsonArray in one shot exactly like develop's original
+    // single Stage-1 call. Kept navigations are then spliced in per element via
+    // SpliceKeptNavigations — but ONLY for navigations the clause actually keeps, and the whole
+    // per-element splice pass is skipped entirely (FAST PATH) when the clause keeps none at all,
+    // which is the overwhelming common case. In that case this method's allocation profile is
+    // develop's single-call shape plus one options/type-info lookup.
+    //
+    // Correctness: uses the SAME BuildExpandLookup/TryKeepNav decision table and the SAME
+    // SpliceKeptNavigations splice SerializeBounded itself uses (single source, see its remarks),
+    // so the two can never disagree on what "kept" means or how a kept nav gets spliced. The
+    // keep/recurse decision (expanded/levelsRemaining) is computed ONCE for the whole batch — valid
+    // because every element here is a ROOT-level sibling serialized under the SAME clause, with
+    // activeLevels always null (mirroring the original per-entity Stage 1 call, which never passed
+    // an activeLevels argument either).
+    //
+    // Array element order MUST match <paramref name="values"/>' source order exactly: STJ's
+    // SerializeToNode over an IEnumerable preserves enumeration order (the same guarantee develop's
+    // original single-call Stage 1 already relied on), and the splice loop below pairs
+    // batched[i]/values[i] by that same index — see SerializeBoundedWalkerTests for an explicit
+    // index-pairing assertion (a heterogeneous per-entity nav value pattern, e.g. entity N's nav
+    // populated and its neighbours' not, would surface a misaligned splice as wrong data on the
+    // wrong entity rather than passing by coincidence).
+    private static JsonArray SerializeBoundedCollection(
+        IReadOnlyList<object> values,
+        IEdmEntityType? edmType,
+        SelectExpandClause? clause,
+        JsonSerializerOptions? serializerOptions,
+        int maxLevels = MaxNestedExpandDepth,
+        HashSet<string>? levelsNavNames = null)
+    {
+        JsonSerializerOptions opts = serializerOptions ?? _pascalCaseSerializerOptions;
+        if (values.Count == 0) return new JsonArray();
+
+        if (edmType is null)
+        {
+            // Deliberate whole-graph fallback — mirrors SerializeBounded's own edmType:null branch
+            // (see its remarks). One call for the whole collection, exactly as develop's original
+            // single Stage-1 SerializeToNode(object[], ...) call: values is typed as
+            // IReadOnlyList<object>, so System.Text.Json resolves each element by its own runtime
+            // type (the same "boxed object" polymorphism develop's array call already relied on),
+            // not by a single shared declared type.
+            return JsonSerializer.SerializeToNode(values, opts) as JsonArray ?? new JsonArray();
+        }
+
+        (Dictionary<string, SelectExpandClause?>? expanded, Dictionary<string, int>? levelsRemaining) =
+            BuildExpandLookup(clause, levelsNavNames, maxLevels);
+
+        // Fast-path probe: does the clause keep ANY navigation of edmType at this level? Exactly
+        // the same TryKeepNav rule SpliceKeptNavigations applies per entity below, evaluated ONCE
+        // for the whole batch. No $expand (or an entity type with zero EDM navigations, like the
+        // benchmark model) always lands here with anyNavKept == false.
+        bool anyNavKept = false;
+        foreach (IEdmNavigationProperty navProp in edmType.NavigationProperties())
+        {
+            if (TryKeepNav(navProp.Name, expanded, levelsRemaining, activeLevels: null).Keep)
+            {
+                anyNavKept = true;
+                break;
+            }
+        }
+
+        // Populate the shared per-clrType nav-suppression state for every DISTINCT runtime type
+        // present, BEFORE the single batched serialize call below resolves each type's
+        // JsonTypeInfo for the first time — GetNavSuppressedOptions' own contract (see its remarks)
+        // requires the suppression set to be populated before first use, and a batched call
+        // resolves every element's JsonTypeInfo in that one call, so every distinct type must be
+        // pre-populated up front instead of lazily as each entity was serialized one at a time
+        // before this fix. GetNavSuppressedOptions returns the SAME derived options instance
+        // regardless of clrType (see CreateNavSuppressionState), so any successful call captures it.
+        JsonSerializerOptions? navSuppressed = null;
+        HashSet<Type>? seenTypes = null;
+        foreach (object? value in values)
+        {
+            if (value is null) continue;
+            Type t = value.GetType();
+            if ((seenTypes ??= new HashSet<Type>()).Add(t))
+            {
+                navSuppressed = GetNavSuppressedOptions(opts, edmType, t);
+            }
+        }
+        if (navSuppressed is null) return new JsonArray(); // every element was null — nothing to serialize
+
+        JsonArray batched = JsonSerializer.SerializeToNode(values, navSuppressed) as JsonArray ?? new JsonArray();
+
+        if (!anyNavKept) return batched; // FAST PATH: nothing to splice.
+
+        for (int i = 0; i < values.Count && i < batched.Count; i++)
+        {
+            // node-is-not-JsonObject guard (fold-in #2, 200→500 regression fix): a custom
+            // JsonConverter on the entity type may write a non-object shape — nothing to splice
+            // into. A null values[i] (defensive; the collection GET path never hands this method a
+            // null entity) is likewise left as whatever the batched call already produced for it.
+            if (values[i] is not { } value || batched[i] is not JsonObject obj) continue;
+
+            SpliceKeptNavigations(obj, value, value.GetType(), edmType, expanded, levelsRemaining,
+                activeLevels: null, opts, maxLevels, levelsNavNames);
+        }
+
+        return batched;
     }
 
     // Fold-in #1 (#325/#326 regression, data exposure): true when the BASE (pre-nav-suppression)

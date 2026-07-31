@@ -969,3 +969,140 @@ public sealed class SingleValuedNavTargetImplementingIEnumerableTests
         Assert.Contains("\"R\"", body);
     }
 }
+
+// ── Perf-fix regression (2026-07-31): SerializeBoundedCollection batched-splice index pairing ──
+// Stage 1 of ApplyCollectionPipelineAsync moved from N per-entity SerializeBounded calls to ONE
+// SerializeBoundedCollection call over the whole page (one JsonSerializer.SerializeToNode call
+// instead of N), then splices each kept navigation back in per element by pairing the serialized
+// array element at index i with the source CLR item at the SAME index i. A misaligned pairing
+// would silently attach one entity's navigation data to a DIFFERENT entity instead of throwing —
+// this fixture seeds several top-level nodes, each with a DIFFERENT, non-empty, distinctly-named
+// set of children, and asserts every node in the SAME page response carries EXACTLY its own
+// children (never a neighbour's). ExpandPushdownEnabled = false forces the EDM-only/ServeRaw path
+// (Include/pushdown never engaged), so the walker's CLR-reflection splice is what is under test.
+public sealed class IxNode
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public int? ParentId { get; set; }
+    public IxNode? Parent { get; set; }
+    public List<IxNode> Children { get; set; } = new();
+}
+
+public sealed class IxDbContext : DbContext
+{
+    public IxDbContext(DbContextOptions<IxDbContext> options) : base(options) { }
+    public DbSet<IxNode> IxNodes => Set<IxNode>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<IxNode>()
+            .HasMany(n => n.Children).WithOne(n => n.Parent!).HasForeignKey(n => n.ParentId);
+    }
+}
+
+public sealed class IxNodeProfile : EntitySetProfile<int, IxNode>
+{
+    public IxNodeProfile(IxDbContext db) : base(x => x.Id)
+    {
+        EntitySetName = "IxNodes";
+        ExpandEnabled = true;
+        OrderByEnabled = true;
+        ExpandPushdownEnabled = false; // force the ServeRaw/EDM-only SerializeBoundedCollection path
+        GetQueryable = _ => Task.FromResult(db.IxNodes.AsQueryable());
+        HasOptional(x => x.Parent!);
+        HasMany(x => x.Children);
+    }
+}
+
+public sealed class SerializeBoundedCollectionIndexPairingTests : IAsyncLifetime
+{
+    private const int ParentCount = 6;
+    private SqliteConnection _connection = null!;
+    private TestFixture _fx = null!;
+
+    public async Task InitializeAsync()
+    {
+        _connection = new SqliteConnection("Data Source=:memory:");
+        _connection.Open();
+        _fx = await TestHostBuilder.BuildAsync(
+            b => b.AddEntitySetProfile<IxNodeProfile>(),
+            configureServices: services => services.AddDbContext<IxDbContext>(o => o.UseSqlite(_connection)));
+
+        using IServiceScope scope = _fx.App.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<IxDbContext>();
+        db.Database.EnsureCreated();
+
+        // ParentCount top-level parents (ids 1..ParentCount), parent p has exactly p children,
+        // each distinctly named "P{p}-C{c}". Parent 1 therefore has a non-empty Children array
+        // while other parents have progressively larger, entirely different ones — a swapped or
+        // off-by-one splice would surface as one parent's array containing another's names, or a
+        // wrong element count.
+        for (int p = 1; p <= ParentCount; p++)
+        {
+            db.IxNodes.Add(new IxNode { Id = p, Name = $"P{p}" });
+        }
+        db.SaveChanges();
+
+        int childId = 1000;
+        for (int p = 1; p <= ParentCount; p++)
+        {
+            for (int c = 1; c <= p; c++)
+            {
+                db.IxNodes.Add(new IxNode { Id = childId++, Name = $"P{p}-C{c}", ParentId = p });
+            }
+        }
+        db.SaveChanges();
+    }
+
+    public async Task DisposeAsync()
+    {
+        await _fx.DisposeAsync();
+        _connection.Dispose();
+    }
+
+    [Fact]
+    public async Task CollectionExpand_EveryEntityCarriesExactlyItsOwnChildren_NoIndexMisalignment()
+    {
+        HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/IxNodes?$orderby=id&$expand=Children");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        var value = doc.RootElement.GetProperty("value");
+
+        // Element order must match source order exactly (ordered by id: parents 1..ParentCount
+        // first, then child rows) — the splice pairs by index, so verifying THIS array's shape
+        // directly checks the pairing assumption, not just each parent's final content.
+        int totalChildren = Enumerable.Range(1, ParentCount).Sum();
+        Assert.Equal(ParentCount + totalChildren, value.GetArrayLength());
+
+        for (int p = 1; p <= ParentCount; p++)
+        {
+            var parent = value.EnumerateArray().Single(e => e.GetProperty("Id").GetInt32() == p);
+            Assert.Equal($"P{p}", parent.GetProperty("Name").GetString());
+
+            var children = parent.GetProperty("Children");
+            Assert.Equal(p, children.GetArrayLength());
+            string[] actualNames = children.EnumerateArray()
+                .Select(c => c.GetProperty("Name").GetString()!)
+                .OrderBy(n => n, StringComparer.Ordinal)
+                .ToArray();
+            string[] expectedNames = Enumerable.Range(1, p)
+                .Select(c => $"P{p}-C{c}")
+                .OrderBy(n => n, StringComparer.Ordinal)
+                .ToArray();
+            Assert.Equal(expectedNames, actualNames);
+        }
+
+        // $expand=Children applies uniformly to every IxNode at this (root) level, including the
+        // child rows themselves — each has no children of its own, so its spliced "Children" must
+        // be an EMPTY array, never a leaked/misaligned copy of some OTHER node's children.
+        foreach (var child in value.EnumerateArray().Where(e => e.GetProperty("Id").GetInt32() >= 1000))
+        {
+            var ownChildren = child.GetProperty("Children");
+            Assert.Equal(System.Text.Json.JsonValueKind.Array, ownChildren.ValueKind);
+            Assert.Equal(0, ownChildren.GetArrayLength());
+        }
+    }
+}
