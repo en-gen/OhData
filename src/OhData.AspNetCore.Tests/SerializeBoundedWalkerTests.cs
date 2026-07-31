@@ -3,10 +3,15 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Reflection;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.OData.Query;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.OData.Edm;
+using Microsoft.OData.UriParser;
 using OhData;
 using Xunit;
 
@@ -296,34 +301,74 @@ public sealed class SelfReferentialGeneralTests : IAsyncLifetime
         }
     }
 
-    [Fact] // T16/T17: the tracked-entity hazard — serialize, then mutate + SaveChanges in the SAME
-           // DbContext scope/instance, and prove the walker never mutated the tracked graph.
-    public async Task Serialize_ThenMutateAndSaveChangesSameScope_NoNavigationCorrupted()
+    [Fact] // T16/T17 (fold-in #3 rewrite — the original version here was VACUOUS: it never called
+           // SerializeBounded, never issued a request, and passed unmodified on develop, since all
+           // it actually asserted was that reading a C# property doesn't mutate it. This version
+           // exercises the real production pipeline AND the real production SerializeBounded method
+           // directly (via reflection — it is `private static`), then mutates + SaveChanges in the
+           // SAME DbContext/scope instance the reads ran against, and proves the tracked graph
+           // survived untouched. Verified (per fold-in review) to actually go red if the walker
+           // wrote instead of read — see the PR/report for the temporary-SetValue verification.
+    public async Task SerializeBounded_ThenMutateAndSaveChangesSameScope_NoNavigationCorrupted()
     {
+        // Part 1: a real HTTP request through the full production pipeline (TestServer, not a
+        // hand-rolled substitute) proves the end-to-end shape is correct over this tracked,
+        // self-referential graph — same repro family as T8-T11.
+        HttpResponseMessage resp = await _fx.Client.GetAsync(
+            "/odata/SpNodes?$orderby=id&$expand=Children($expand=Parent)");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Contains("\"ChildA\"", await resp.Content.ReadAsStringAsync());
+
+        // Part 2: the actual T16/T17 hazard proof. TestServer disposes the HTTP request's own DI
+        // scope (and its SpDbContext) before Client.GetAsync above returns, so there is no way to
+        // reach back into THAT exact scope afterward. Instead: create ONE scope here, invoke the
+        // SAME production SerializeBounded method Part 1 just exercised — via reflection, since it
+        // is `private static` — over a SelectExpandClause built the identical way the framework's
+        // own GetQueryable route builds one (ODataQueryContext + ODataQueryOptions<SpNode> straight
+        // off an HttpRequest, no OData routing middleware needed), then mutate + SaveChanges in this
+        // SAME scope/DbContext instance immediately after. This is the only way to test "read a
+        // request-scoped tracked graph, then save in that SAME scope" without fighting TestServer's
+        // per-request scope lifetime.
         using IServiceScope scope = _fx.App.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<SpDbContext>();
+        var registration = scope.ServiceProvider.GetRequiredKeyedService<OhDataRegistration>(
+            OhDataDefaults.DefaultRegistrationName);
 
-        // Load (and thereby track + fixup) the whole graph in THIS scope — mirroring what a
-        // request handler's GetQueryable would do inside one request scope.
         List<SpNode> all = await db.SpNodes.OrderBy(n => n.Id).ToListAsync();
         SpNode root = all.Single(n => n.Id == 1);
         Assert.Equal(2, root.Children.Count);
-        Assert.All(root.Children, c => Assert.NotNull(c.Parent));
+        Assert.All(root.Children, c => Assert.Same(root, c.Parent));
 
-        // The walker only ever reads via reflection (PropertyInfo.GetValue) — never SetValue —
-        // so exercising it here directly proves T17 without needing HTTP-scope trickery: read
-        // every EDM navigation off the tracked graph exactly as SerializeBounded would, then
-        // assert the tracked instances are bit-for-bit unchanged.
+        IEdmEntityType edmType = registration.EdmModel.EntityContainer.FindEntitySet("SpNodes").EntityType;
+
+        var httpContext = new DefaultHttpContext { RequestServices = scope.ServiceProvider };
+        httpContext.Request.QueryString = new QueryString("?$expand=Children($expand=Parent)");
+        var queryContext = new ODataQueryContext(registration.EdmModel, typeof(SpNode), path: null);
+        var options = new ODataQueryOptions<SpNode>(queryContext, httpContext.Request);
+        SelectExpandClause clause = options.SelectExpand!.SelectExpandClause;
+
+        MethodInfo serializeBounded = typeof(OhDataEndpointFactory).GetMethod(
+            "SerializeBounded", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        // Invoke the REAL walker directly over every tracked node — same call shape
+        // ApplyCollectionPipelineAsync's Stage 1 uses (single item, activeLevels/levelsNavNames
+        // null, isCollectionValue false). If SerializeBounded ever called PropertyInfo.SetValue
+        // instead of GetValue while reading Parent/Children here, this call is where it would
+        // happen — proven below by temporarily flipping the walker to SetValue (see PR notes).
         foreach (SpNode n in all)
         {
-            _ = n.Parent;
-            _ = n.Children.Count;
+            object? result = serializeBounded.Invoke(null, new object?[]
+            {
+                n, edmType, clause, null, null, OhDataEndpointFactory.MaxNestedExpandDepth, null, false
+            });
+            Assert.NotNull(result);
         }
 
+        // The proof: the reflection-driven reads above must not have mutated the tracked graph.
         Assert.Equal(2, root.Children.Count);
         Assert.All(root.Children, c => Assert.Same(root, c.Parent));
 
-        // T16: mutate + SaveChanges in the SAME scope/instance.
+        // T16: mutate + SaveChanges in the SAME scope/instance, immediately after the reads.
         root.Name = "RootRenamedInScope";
         await db.SaveChangesAsync();
 
@@ -333,12 +378,13 @@ public sealed class SelfReferentialGeneralTests : IAsyncLifetime
         List<SpNode> reloadedChildren = await db.SpNodes.AsNoTracking()
             .Where(n => n.ParentId == 1).ToListAsync();
         Assert.Equal(2, reloadedChildren.Count);
+        Assert.All(reloadedChildren, c => Assert.Equal(1, c.ParentId));
     }
 }
 
-// ── T27 (bound-op collection) uses its own minimal fixture — GetTree above is unused/unreachable
-// on purpose (BindFunction only needs a valid delegate shape at startup; the route itself is
-// exercised through WrapBoundOpResult's own harness below with real, servable data). ────────────
+// ── T27 (bound-op collection) uses its own minimal fixture below (SpTreeNodeProfile.AllNodes) —
+// BindFunction only needs a valid delegate shape at startup; the route itself is exercised through
+// WrapBoundOpResult's own harness with real, servable data over a self-referential collection. ──
 
 public sealed class SpTreeNode
 {
@@ -695,5 +741,231 @@ public sealed class NonEdmNavigationResidueTests
 
         // OWNER DECISIONS (#325/#326 FROZEN spec, item 4): deliberately NOT fixed by this change.
         Assert.Equal(HttpStatusCode.InternalServerError, resp.StatusCode);
+    }
+}
+
+// ── Fold-in #1 (#325/#326 review — data exposure regression): SerializeBounded's splice must only
+// resurrect a kept navigation that System.Text.Json's BASE options would themselves have emitted.
+// Measured repro: [JsonIgnore]'d nav — develop -> {"Id":1,"Name":"R"}, pre-fold-in branch ->
+// {"Id":1,"Name":"R","HiddenTags":[{"Id":1,"Name":"SECRET"}]} (SECRET data leaked via $expand). ──
+
+public sealed class ZjTag
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public int ZjRootId { get; set; }
+}
+
+public sealed class ZjRoot
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+
+    // [JsonIgnore]'d on the CLR side but STILL a real EDM navigation (ODataConventionModelBuilder
+    // auto-detects it by reflection over the CLR shape — [JsonIgnore] is an STJ-only attribute, the
+    // EDM model builder doesn't consult it at all). This is exactly the shape GetNavSuppressedOptions
+    // strips from the JsonTypeInfo to keep the graph walk bounded — a splice that ignores what the
+    // BASE (un-suppressed) options would themselves have decided about this member is a data
+    // exposure bug, not a serialization-cycle fix.
+    [System.Text.Json.Serialization.JsonIgnore]
+    public List<ZjTag> HiddenTags { get; set; } = new();
+}
+
+public sealed class ZjDbContext : DbContext
+{
+    public ZjDbContext(DbContextOptions<ZjDbContext> options) : base(options) { }
+    public DbSet<ZjRoot> ZjRoots => Set<ZjRoot>();
+    public DbSet<ZjTag> ZjTags => Set<ZjTag>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<ZjRoot>().HasMany(r => r.HiddenTags).WithOne().HasForeignKey(t => t.ZjRootId);
+    }
+}
+
+public sealed class ZjRootProfile : EntitySetProfile<int, ZjRoot>
+{
+    public ZjRootProfile(ZjDbContext db) : base(x => x.Id)
+    {
+        EntitySetName = "ZjRoots";
+        ExpandEnabled = true;
+        GetQueryable = _ => Task.FromResult(db.ZjRoots.AsQueryable());
+        HasMany(x => x.HiddenTags);
+    }
+}
+
+public sealed class JsonIgnoredNavigationTests : IAsyncLifetime
+{
+    private SqliteConnection _connection = null!;
+    private TestFixture _fx = null!;
+
+    public async Task InitializeAsync()
+    {
+        _connection = new SqliteConnection("Data Source=:memory:");
+        _connection.Open();
+        _fx = await TestHostBuilder.BuildAsync(
+            b => b.AddEntitySetProfile<ZjRootProfile>(),
+            configureServices: services => services.AddDbContext<ZjDbContext>(o => o.UseSqlite(_connection)));
+
+        using IServiceScope scope = _fx.App.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ZjDbContext>();
+        db.Database.EnsureCreated();
+        db.ZjRoots.Add(new ZjRoot { Id = 1, Name = "R" });
+        db.ZjTags.Add(new ZjTag { Id = 1, Name = "SECRET", ZjRootId = 1 });
+        db.SaveChanges();
+    }
+
+    public async Task DisposeAsync()
+    {
+        await _fx.DisposeAsync();
+        _connection.Dispose();
+    }
+
+    [Fact]
+    public async Task JsonIgnoredNavigation_PlainGet_StaysAbsent()
+    {
+        HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/ZjRoots");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        var root = doc.RootElement.GetProperty("value")[0];
+        Assert.False(root.TryGetProperty("HiddenTags", out _));
+        Assert.DoesNotContain("SECRET", body);
+    }
+
+    [Fact] // The measured regression: $expand must NOT resurrect a [JsonIgnore]'d navigation.
+    public async Task JsonIgnoredNavigation_Expanded_StaysAbsent_NotResurrected()
+    {
+        HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/ZjRoots?$expand=HiddenTags");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        var root = doc.RootElement.GetProperty("value")[0];
+        Assert.False(root.TryGetProperty("HiddenTags", out _));
+        Assert.DoesNotContain("SECRET", body);
+    }
+}
+
+// ── Fold-in #2 (#325/#326 review — 200→500 regression): SerializeBounded must not force
+// `.AsObject()` on a non-object shape, and must not shape-sniff `value is IEnumerable` to decide
+// entity-vs-collection cardinality. Measured repro: an entity with [JsonConverter] writing a plain
+// string — develop -> 200 {"value":["thing:1"]}, pre-fold-in branch -> 500. ────────────────────────
+
+public sealed class ZcThingJsonConverter : System.Text.Json.Serialization.JsonConverter<ZcThing>
+{
+    public override ZcThing? Read(
+        ref System.Text.Json.Utf8JsonReader reader, Type typeToConvert, System.Text.Json.JsonSerializerOptions options) =>
+        throw new NotSupportedException();
+
+    public override void Write(
+        System.Text.Json.Utf8JsonWriter writer, ZcThing value, System.Text.Json.JsonSerializerOptions options) =>
+        writer.WriteStringValue($"thing:{value.Id}");
+}
+
+[System.Text.Json.Serialization.JsonConverter(typeof(ZcThingJsonConverter))]
+public sealed class ZcThing
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+}
+
+public sealed class ZcThingProfile : EntitySetProfile<int, ZcThing>
+{
+    public ZcThingProfile() : base(x => x.Id)
+    {
+        EntitySetName = "ZcThings";
+        GetQueryable = _ => Task.FromResult(new[] { new ZcThing { Id = 1, Name = "One" } }.AsQueryable());
+    }
+}
+
+public sealed class EntityCustomConverterTests
+{
+    [Fact]
+    public async Task EntityWithCustomJsonConverter_CollectionGet_Returns200_NotAsObjectCrash()
+    {
+        await using TestFixture fx = await TestHostBuilder.BuildAsync(b => b.AddEntitySetProfile<ZcThingProfile>());
+
+        HttpResponseMessage resp = await fx.Client.GetAsync("/odata/ZcThings");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("\"thing:1\"", body);
+    }
+}
+
+// Corollary the reviewer inferred from the pre-fold-in `value is IEnumerable seq and not string`
+// shape-sniff: it decided "is this a COLLECTION of entities of edmType?" from the CLR VALUE's own
+// shape rather than from EDM cardinality. That misfires for a SINGLE-valued navigation (cardinality
+// 1) whose target CLR type happens to implement IEnumerable for an unrelated domain reason: the
+// pre-fold-in code would walk it element-by-element from WITHIN our own recursion, reusing the
+// WRONG edmType (the nav's, not the element's) per element.
+//
+// Verification note (honesty about what this test does and doesn't isolate): with the fold-in #2
+// `.AsObject()` guard alone (verified separately above, EntityCustomConverterTests — confirmed to
+// go red without it), the former per-element crash no longer reproduces even with the OLD shape-sniff
+// reinstated, because a boxed `int` element hits the SAME non-object guard on ITS OWN recursive call
+// and returns a JSON number instead of throwing. This test therefore does NOT independently regress
+// without the isCollectionValue change for THIS fixture — confirmed while verifying fold-in #2 (the
+// old sniff + the new guard together still produce a 200, byte-identical to the fixed dispatch for
+// this specific element type). The isCollectionValue change is kept as the architecturally correct
+// fix regardless (EDM cardinality, not CLR shape, decides "is this a collection of entities" — the
+// only sound source of truth once nav-target types are unconstrained), and this test pins that the
+// scenario stays a 200 (not a regression net for a shape-sniff-specific crash that no longer exists
+// once the AsObject guard is in place). Root-level entities that merely happen to implement
+// IEnumerable hit a DIFFERENT, pre-existing System.Text.Json behavior unrelated to this fix (STJ
+// itself always treats an IEnumerable-implementing CLR type as enumerable-shaped when handed
+// directly to SerializeToNode, matching `develop`'s whole-graph serializer byte-for-byte for the
+// same CLR shape — not something #325/#326 could or should change).
+public sealed class ZeTarget : IEnumerable<int>
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+
+    public IEnumerator<int> GetEnumerator()
+    {
+        yield return 7;
+        yield return 8;
+    }
+
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+}
+
+public sealed class ZeRoot
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public ZeTarget? Target { get; set; }
+}
+
+public sealed class ZeRootProfile : EntitySetProfile<int, ZeRoot>
+{
+    public ZeRootProfile() : base(x => x.Id)
+    {
+        EntitySetName = "ZeRoots";
+        ExpandEnabled = true;
+        var target = new ZeTarget { Id = 1, Name = "T" };
+        GetQueryable = _ => Task.FromResult(new[] { new ZeRoot { Id = 1, Name = "R", Target = target } }.AsQueryable());
+        HasOptional(x => x.Target!);
+    }
+}
+
+public sealed class SingleValuedNavTargetImplementingIEnumerableTests
+{
+    [Fact]
+    public async Task ExpandedSingleValuedNav_TargetImplementsIEnumerable_Returns200_NotWrongDispatchCrash()
+    {
+        await using TestFixture fx = await TestHostBuilder.BuildAsync(b => b.AddEntitySetProfile<ZeRootProfile>());
+
+        HttpResponseMessage resp = await fx.Client.GetAsync("/odata/ZeRoots?$expand=Target");
+        string body = await resp.Content.ReadAsStringAsync();
+        // Pre-fold-in (shape-sniffed cardinality + unconditional .AsObject()): this would recurse
+        // into Target's IEnumerable<int> contents using ZeTarget's own edmType per boxed int
+        // element, then throw InvalidOperationException on the resulting non-object node — a 500.
+        // Post-fold-in: cardinality is EDM-driven (HasOptional -> isCollectionValue: false), so the
+        // walker never iterates Target's own enumerable contents as if they were entities at all.
+        Assert.True(resp.StatusCode == HttpStatusCode.OK, $"{resp.StatusCode}: {body}");
+        Assert.Contains("\"R\"", body);
     }
 }

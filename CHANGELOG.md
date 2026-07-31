@@ -164,6 +164,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   root, to a sibling leaf, or to itself — that previously returned `400` now returns `200` with real
   data.
 
+  **BEHAVIOR CHANGE:** an **`$expand`'d collection navigation whose CLR value is `null`** (e.g. an
+  uninitialized `List<T>` property) now serializes as `[]` instead of `null`. This is more
+  §4.5.1-correct — a collection-valued navigation is a JSON array, never `null` — and matches how an
+  un-loaded collection nav already serialized when populated-but-empty; only the previously-`null`
+  case changes.
+
   **Not fixed by this change (deliberate, OWNER DECISIONS):** a cycle closed by an entity-typed CLR
   property that is **not** an EDM navigation (e.g. excluded from the EDM model entirely, distinct from
   `[NotMapped]`-for-EF) is the same blind spot `OmitUnexpandedNavigations` always had —

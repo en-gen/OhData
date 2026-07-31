@@ -8,6 +8,7 @@ using System.IO;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -1230,8 +1231,16 @@ internal static class OhDataEndpointFactory
         var json = new JsonArray();
         foreach (object item in originalItems)
         {
+            // Fold-in #5 (#325/#326 review — maxLevels asymmetry): pass the SAME
+            // source.MaxExpansionDepth ceiling Stage 3.5's OmitUnexpandedNavigations call below
+            // already uses, instead of silently defaulting to the file-wide MaxNestedExpandDepth
+            // (12). Previously the walker reflection-walked up to 12 $levels deep and Stage 3.5 then
+            // re-stripped the surplus — output was correct only because Stage 3.5 papered over the
+            // mismatch, which is exactly the "walk deep then strip" pattern Option B exists to
+            // eliminate, and would have made the walker the STRICTER of the two (silently
+            // truncating) had a profile ever set MaxExpansionDepth above 12.
             json.Add(SerializeBounded(item, rootEdmType, rootClauseForSerialize, serializerOptions,
-                levelsNavNames: pushedLevelsNavNames));
+                maxLevels: source.MaxExpansionDepth, levelsNavNames: pushedLevelsNavNames));
         }
 
         // Stage 2: Inject @odata.etag using the original (pre-expand) items for ETag computation.
@@ -1522,7 +1531,10 @@ internal static class OhDataEndpointFactory
             // (same ordering guarantee as Stage 1: walker first, delegate-safety overwrite after).
             for (int i = 0; i < items.Count; i++)
             {
-                jsonItems[i][expandKey] = SerializeBounded(relatedByIndex[i], targetEdmType, nestedClause, serializerOptions);
+                // Fold-in #2: cardinality comes from the EDM (isCollectionNav, already resolved
+                // above), never sniffed from relatedByIndex[i]'s own CLR shape.
+                jsonItems[i][expandKey] = SerializeBounded(
+                    relatedByIndex[i], targetEdmType, nestedClause, serializerOptions, isCollectionValue: isCollectionNav);
             }
 
             if (nestedClause is null) continue;
@@ -1746,6 +1758,15 @@ internal static class OhDataEndpointFactory
     // so by the time this runs an expanded navigation already holds its loaded related entities.
     // Only members that the EDM declares as navigation properties are touched, so structural
     // properties and @odata.* annotations are left untouched by construction.
+    //
+    // Post-#325/#326 role (Option B): SerializeBounded (below) now makes this pass a PRACTICAL
+    // no-op at every one of its five call sites — it never writes an un-expanded navigation in the
+    // first place, so there is nothing left here to strip. It stays wired in at every call site as
+    // defence-in-depth against a CALLER-level mistake (a future call site that forgets to invoke
+    // SerializeBounded, or invokes it with the wrong clause), never against a decision-table bug:
+    // BuildExpandLookup/TryKeepNav below are the single shared source of the keep/recurse rules, so
+    // the two methods cannot independently drift on what "kept" means the way they did before this
+    // fold-in (see #325/#326 fold-in review — the maxLevels asymmetry that motivated the extraction).
     private static void OmitUnexpandedNavigations(
         JsonNode? node,
         IEdmEntityType? edmType,
@@ -1781,23 +1802,8 @@ internal static class OhDataEndpointFactory
         // (levelsNavNames): a delegate-backed $levels nav takes the delegate path (which loads only the
         // first level), so its deeper self-references must still be stripped as before — otherwise the
         // delegate's raw serialized graph would leak beyond depth 1.
-        Dictionary<string, SelectExpandClause?>? expanded = null;
-        Dictionary<string, int>? levelsRemaining = null;
-        if (clause is not null)
-        {
-            foreach (ExpandedNavigationSelectItem expandItem in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
-            {
-                string navName = expandItem.PathToNavigationProperty.FirstSegment.Identifier;
-                (expanded ??= new Dictionary<string, SelectExpandClause?>(StringComparer.OrdinalIgnoreCase))
-                    [navName] = expandItem.SelectAndExpand;
-                if (expandItem.LevelsOption is { } lv && levelsNavNames is not null && levelsNavNames.Contains(navName))
-                {
-                    int resolved = lv.IsMaxLevel ? maxLevels : (int)Math.Min(lv.Level, maxLevels);
-                    (levelsRemaining ??= new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase))[navName] =
-                        Math.Min(Math.Max(resolved, 1), maxLevels);
-                }
-            }
-        }
+        (Dictionary<string, SelectExpandClause?>? expanded, Dictionary<string, int>? levelsRemaining) =
+            BuildExpandLookup(clause, levelsNavNames, maxLevels);
 
         // NavigationProperties() (not DeclaredNavigationProperties()) so inherited navigations on a
         // derived entity type are covered too. edmType is always an entity type here — the root is
@@ -1820,39 +1826,98 @@ internal static class OhDataEndpointFactory
                 : ODataPropertyNaming.FindClrPropertyByEdmName(clrType, navProp.Name);
             string serializedKey = ResolveNavigationJsonKey(clrNavProp?.Name ?? navProp.Name, clrNavProp, serializerOptions);
 
-            SelectExpandClause? nested = null;
-            bool explicitlyExpanded = expanded is not null &&
-                expanded.TryGetValue(navProp.Name, out nested);
-            // #206 ($levels): keep the self-referential nav even without an explicit nested item when a
-            // parent $levels expansion still has recursion budget for it.
-            bool keptByLevels = !explicitlyExpanded && activeLevels is { } al &&
-                string.Equals(al.Nav, navProp.Name, StringComparison.OrdinalIgnoreCase) && al.Remaining > 0;
-
-            if (explicitlyExpanded || keptByLevels)
-            {
-                // Recurse into the expanded value to strip ITS un-expanded navigations. obj[key]
-                // is null when the expanded single-valued nav had no related entity — the recursive
-                // call no-ops on a null node, so no separate presence check is needed. The nested
-                // CLR type (element type for a collection nav) carries [JsonPropertyName] resolution
-                // one level deeper.
-                SelectExpandClause? nestedClause = explicitlyExpanded ? nested : null;
-                // Resolve the levels budget carried into the next recursion: a fresh $levels=N at this
-                // level seeds N-1; otherwise the inherited budget decrements. When it reaches 0 the nav
-                // is kept at this level but its own self-reference below is stripped (depth honored).
-                int? nextLevels =
-                    levelsRemaining is not null && levelsRemaining.TryGetValue(navProp.Name, out int freshLevels)
-                        ? freshLevels - 1
-                        : (keptByLevels ? activeLevels!.Value.Remaining - 1 : (int?)null);
-                (string, int)? childActive = nextLevels is int nl && nl > 0 ? (navProp.Name, nl) : null;
-
-                OmitUnexpandedNavigations(obj[serializedKey], navProp.ToEntityType(), nestedClause,
-                    NavElementClrType(clrNavProp), serializerOptions, childActive, maxLevels, levelsNavNames);
-            }
-            else
+            // Fold-in #6 (de-duplication): TryKeepNav is the SAME keep/recurse rule SerializeBounded
+            // uses (see its remarks below) — the two can no longer independently drift on what
+            // "kept" means.
+            NavKeepDecision decision = TryKeepNav(navProp.Name, expanded, levelsRemaining, activeLevels);
+            if (!decision.Keep)
             {
                 obj.Remove(serializedKey);
+                continue;
+            }
+
+            // Recurse into the expanded value to strip ITS un-expanded navigations. obj[key]
+            // is null when the expanded single-valued nav had no related entity — the recursive
+            // call no-ops on a null node, so no separate presence check is needed. The nested
+            // CLR type (element type for a collection nav) carries [JsonPropertyName] resolution
+            // one level deeper.
+            OmitUnexpandedNavigations(obj[serializedKey], navProp.ToEntityType(), decision.NestedClause,
+                NavElementClrType(clrNavProp), serializerOptions, decision.ChildActive, maxLevels, levelsNavNames);
+        }
+    }
+
+    // Fold-in #6 (#325/#326 review, de-duplication): the keep/recurse decision table shared by
+    // OmitUnexpandedNavigations (JSON-strip substrate, above) and SerializeBounded (CLR-read+splice
+    // substrate, below) — previously reimplemented byte-for-byte identically in both methods, which
+    // had ALREADY drifted once (one passed maxLevels: source.MaxExpansionDepth at its Stage 1 call
+    // site, the other silently defaulted to the file-wide MaxNestedExpandDepth ceiling — see fold-in
+    // #5). Extracting a single shared implementation makes that class of drift structurally
+    // impossible: the two methods now call the SAME code, so they can no longer disagree on what
+    // "kept" means — only on what each one DOES with a kept/dropped decision (strip a JSON key vs.
+    // never write a CLR value to it in the first place). This is orthogonal to (and does not weaken)
+    // the defence-in-depth OmitUnexpandedNavigations itself provides — that comes from requiring the
+    // CALL at every site, not from forking the decision logic (see its own remarks above).
+    //
+    // Returns navigation name -> its nested $expand clause for every navigation expanded at THIS
+    // level, and (for a $levels-carrying self-referential nav that was actually PUSHED —
+    // levelsNavNames) the resolved recursion budget. See OmitUnexpandedNavigations' original #206
+    // remarks for the full $levels rationale.
+    private static (Dictionary<string, SelectExpandClause?>? Expanded, Dictionary<string, int>? LevelsRemaining)
+        BuildExpandLookup(SelectExpandClause? clause, HashSet<string>? levelsNavNames, int maxLevels)
+    {
+        Dictionary<string, SelectExpandClause?>? expanded = null;
+        Dictionary<string, int>? levelsRemaining = null;
+        if (clause is not null)
+        {
+            foreach (ExpandedNavigationSelectItem expandItem in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
+            {
+                string navName = expandItem.PathToNavigationProperty.FirstSegment.Identifier;
+                (expanded ??= new Dictionary<string, SelectExpandClause?>(StringComparer.OrdinalIgnoreCase))
+                    [navName] = expandItem.SelectAndExpand;
+                if (expandItem.LevelsOption is { } lv && levelsNavNames is not null && levelsNavNames.Contains(navName))
+                {
+                    int resolved = lv.IsMaxLevel ? maxLevels : (int)Math.Min(lv.Level, maxLevels);
+                    (levelsRemaining ??= new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase))[navName] =
+                        Math.Min(Math.Max(resolved, 1), maxLevels);
+                }
             }
         }
+        return (expanded, levelsRemaining);
+    }
+
+    // Fold-in #6: whether navPropName is kept (explicitly $expand'd at this level, or still within
+    // an inherited $levels budget) and, when kept, the nested clause / child recursion budget to
+    // carry into the next level. Keep-vs-drop mirrors OmitUnexpandedNavigations' original #206
+    // remarks exactly — this record IS that rule, not a re-derivation of it.
+    private readonly record struct NavKeepDecision(
+        bool Keep, SelectExpandClause? NestedClause, (string Nav, int Remaining)? ChildActive);
+
+    private static NavKeepDecision TryKeepNav(
+        string navPropName,
+        Dictionary<string, SelectExpandClause?>? expanded,
+        Dictionary<string, int>? levelsRemaining,
+        (string Nav, int Remaining)? activeLevels)
+    {
+        SelectExpandClause? nested = null;
+        bool explicitlyExpanded = expanded is not null && expanded.TryGetValue(navPropName, out nested);
+        // #206 ($levels): keep the self-referential nav even without an explicit nested item when a
+        // parent $levels expansion still has recursion budget for it.
+        bool keptByLevels = !explicitlyExpanded && activeLevels is { } al &&
+            string.Equals(al.Nav, navPropName, StringComparison.OrdinalIgnoreCase) && al.Remaining > 0;
+
+        if (!explicitlyExpanded && !keptByLevels) return new NavKeepDecision(false, null, null);
+
+        SelectExpandClause? nestedClause = explicitlyExpanded ? nested : null;
+        // Resolve the levels budget carried into the next recursion: a fresh $levels=N at this
+        // level seeds N-1; otherwise the inherited budget decrements. When it reaches 0 the nav
+        // is kept at this level but its own self-reference below is stripped (depth honored).
+        int? nextLevels =
+            levelsRemaining is not null && levelsRemaining.TryGetValue(navPropName, out int freshLevels)
+                ? freshLevels - 1
+                : (keptByLevels ? activeLevels!.Value.Remaining - 1 : (int?)null);
+        (string, int)? childActive = nextLevels is int nl && nl > 0 ? (navPropName, nl) : null;
+
+        return new NavKeepDecision(true, nestedClause, childActive);
     }
 
     // #325/#326 (OWNER DECISIONS, FROZEN spec — Option B, "clause-bounded, level-wise
@@ -1879,7 +1944,11 @@ internal static class OhDataEndpointFactory
     // Correctness for EVERY caller, including ones that later overwrite what this method wrote:
     // for a ServeRaw navigation (see ResolveNavTreatment/NavTreatment) nothing downstream touches
     // this key again, so the CLR value read here — whatever a member-init projection, an EF
-    // Include, or the plain tracked graph already populated — IS the final, authoritative answer.
+    // Include, or the plain tracked graph already populated — is the answer this method commits to.
+    // (Adjacent, pre-existing gap, #320: a ServeRaw nav's own CHILDREN may themselves be
+    // delegate-backed — this method has no way to run a delegate, so a nested delegate-backed
+    // navigation reached only through a ServeRaw parent is not resolved here. Not new to #325/#326;
+    // tracked under #320, not fixed by this change.)
     // For a RunDelegate/Blank navigation this method may splice a stale or empty guess (the CLR
     // property is typically unpopulated before the delegate runs), but ExpandLevelAsync's
     // RunDelegate/Blank branches unconditionally overwrite jsonItems[i][expandKey] AFTER this
@@ -1897,6 +1966,17 @@ internal static class OhDataEndpointFactory
     // both the suppression-options lookup and FindClrPropertyByEdmName, so a derived/polymorphic
     // entity instance's own (possibly inherited) navigation properties are found and suppressed
     // correctly even when reached through a base-typed navigation property.
+    //
+    // <paramref name="isCollectionValue"/> (fold-in #2, 200→500 regression guard): whether
+    // <paramref name="value"/> represents a COLLECTION of entities of <paramref name="edmType"/>
+    // rather than a single entity. This is decided by the CALLER from EDM cardinality
+    // (navRoute.IsCollection / navProp.Type.IsCollection()) — NEVER sniffed from value's own CLR
+    // shape (the pre-fold-in code tested `value is IEnumerable`). Shape-sniffing misfires for an
+    // entity model whose CLR class itself happens to implement IEnumerable (e.g. it wraps or
+    // derives from a collection type for unrelated domain reasons): such an entity would be walked
+    // element-by-element as if it WERE a collection of its own EDM type, instead of being serialized
+    // as the single object it is — corrupting the response shape (or throwing, depending on what
+    // its elements are) instead of a correct 200.
     private static JsonNode? SerializeBounded(
         object? value,
         IEdmEntityType? edmType,
@@ -1904,7 +1984,8 @@ internal static class OhDataEndpointFactory
         JsonSerializerOptions? serializerOptions,
         (string Nav, int Remaining)? activeLevels = null,
         int maxLevels = MaxNestedExpandDepth,
-        HashSet<string>? levelsNavNames = null)
+        HashSet<string>? levelsNavNames = null,
+        bool isCollectionValue = false)
     {
         if (value is null) return null;
 
@@ -1916,10 +1997,10 @@ internal static class OhDataEndpointFactory
             return JsonSerializer.SerializeToNode(value, opts);
         }
 
-        if (value is IEnumerable seq and not string)
+        if (isCollectionValue)
         {
             var array = new JsonArray();
-            foreach (object? element in seq)
+            foreach (object? element in (IEnumerable)value)
             {
                 array.Add(SerializeBounded(element, edmType, clause, opts, activeLevels, maxLevels, levelsNavNames));
             }
@@ -1928,50 +2009,49 @@ internal static class OhDataEndpointFactory
 
         Type clrType = value.GetType();
         JsonSerializerOptions navSuppressed = GetNavSuppressedOptions(opts, edmType, clrType);
-        JsonObject obj = JsonSerializer.SerializeToNode(value, clrType, navSuppressed)!.AsObject();
+        JsonNode? node = JsonSerializer.SerializeToNode(value, clrType, navSuppressed);
+
+        // Fold-in #2 (200→500 regression): a custom JsonConverter on the ENTITY type itself may
+        // write a non-object shape (e.g. a bare string, as develop's whole-graph serializer would
+        // also produce) — there are no navigations to splice into that, so return it as-is instead
+        // of forcing .AsObject() and throwing InvalidOperationException.
+        if (node is not JsonObject obj) return node;
 
         // Navigation name -> its nested $expand clause, for navigations expanded at THIS level —
         // and, for a $levels-carrying self-referential nav that was actually PUSHED (levelsNavNames),
-        // the resolved recursion budget. Mirrors OmitUnexpandedNavigations' own bookkeeping exactly
-        // (see #206 there for the full rationale) so the two never disagree on what "kept" means.
-        Dictionary<string, SelectExpandClause?>? expanded = null;
-        Dictionary<string, int>? levelsRemaining = null;
-        if (clause is not null)
-        {
-            foreach (ExpandedNavigationSelectItem expandItem in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
-            {
-                string navName = expandItem.PathToNavigationProperty.FirstSegment.Identifier;
-                (expanded ??= new Dictionary<string, SelectExpandClause?>(StringComparer.OrdinalIgnoreCase))
-                    [navName] = expandItem.SelectAndExpand;
-                if (expandItem.LevelsOption is { } lv && levelsNavNames is not null && levelsNavNames.Contains(navName))
-                {
-                    int resolved = lv.IsMaxLevel ? maxLevels : (int)Math.Min(lv.Level, maxLevels);
-                    (levelsRemaining ??= new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase))[navName] =
-                        Math.Min(Math.Max(resolved, 1), maxLevels);
-                }
-            }
-        }
+        // the resolved recursion budget. Fold-in #6: shared with OmitUnexpandedNavigations via
+        // BuildExpandLookup/TryKeepNav so the two can never disagree on what "kept" means.
+        (Dictionary<string, SelectExpandClause?>? expanded, Dictionary<string, int>? levelsRemaining) =
+            BuildExpandLookup(clause, levelsNavNames, maxLevels);
 
         foreach (IEdmNavigationProperty navProp in edmType.NavigationProperties())
         {
+            // Perf (fold-in #7): decide keep/drop BEFORE any reflection — FindClrPropertyByEdmName/
+            // ResolveNavigationJsonKey cost nothing for the (usually much more numerous) navigations
+            // this level did NOT ask to see; they were already removed from `obj` by
+            // GetNavSuppressedOptions above, so a dropped nav needs no further work at all.
+            NavKeepDecision decision = TryKeepNav(navProp.Name, expanded, levelsRemaining, activeLevels);
+            if (!decision.Keep) continue; // not requested — already suppressed above
+
             PropertyInfo? clrNavProp = ODataPropertyNaming.FindClrPropertyByEdmName(clrType, navProp.Name);
-            string serializedKey = ResolveNavigationJsonKey(clrNavProp?.Name ?? navProp.Name, clrNavProp, opts);
-
-            SelectExpandClause? nested = null;
-            bool explicitlyExpanded = expanded is not null && expanded.TryGetValue(navProp.Name, out nested);
-            bool keptByLevels = !explicitlyExpanded && activeLevels is { } al &&
-                string.Equals(al.Nav, navProp.Name, StringComparison.OrdinalIgnoreCase) && al.Remaining > 0;
-
-            if (!explicitlyExpanded && !keptByLevels) continue; // not requested — already suppressed above
-
-            SelectExpandClause? nestedClause = explicitlyExpanded ? nested : null;
-            int? nextLevels =
-                levelsRemaining is not null && levelsRemaining.TryGetValue(navProp.Name, out int freshLevels)
-                    ? freshLevels - 1
-                    : (keptByLevels ? activeLevels!.Value.Remaining - 1 : (int?)null);
-            (string, int)? childActive = nextLevels is int nl && nl > 0 ? (navProp.Name, nl) : null;
-
             object? navValue = clrNavProp?.GetValue(value);
+
+            // Fold-in #1 (#325/#326 regression, DATA EXPOSURE): GetNavSuppressedOptions strips every
+            // EDM navigation from clrType's JsonTypeInfo so System.Text.Json never walks into the
+            // (potentially cyclic) graph at all — that suppression exists PURELY to keep the graph
+            // walk bounded, never to decide member visibility. Splicing obj[serializedKey]
+            // unconditionally below would therefore bypass whatever the BASE (un-suppressed) options
+            // would themselves have decided about this member: a [JsonIgnore]'d navigation, one
+            // hidden by JsonIgnoreCondition.WhenWritingNull/WhenWritingDefault, or one carrying a
+            // custom [JsonConverter] (whose shape this recursive splice cannot honor) must all stay
+            // absent/unmodified exactly as they would on develop — a clause-kept nav is never a
+            // license to resurrect what the base serializer options would themselves have hidden.
+            if (clrNavProp is not null && !IsNavVisibleInBaseOptions(opts, clrType, clrNavProp, value, navValue))
+            {
+                continue;
+            }
+
+            string serializedKey = ResolveNavigationJsonKey(clrNavProp?.Name ?? navProp.Name, clrNavProp, opts);
             if (navValue is null)
             {
                 obj[serializedKey] = navProp.Type.IsCollection() ? new JsonArray() : null;
@@ -1979,56 +2059,123 @@ internal static class OhDataEndpointFactory
             }
 
             obj[serializedKey] = SerializeBounded(
-                navValue, navProp.ToEntityType(), nestedClause, opts, childActive, maxLevels, levelsNavNames);
+                navValue, navProp.ToEntityType(), decision.NestedClause, opts, decision.ChildActive, maxLevels,
+                levelsNavNames, isCollectionValue: navProp.Type.IsCollection());
         }
 
         return obj;
     }
 
-    // Registration-scoped cache (keyed by the exact base options instance + the runtime CLR type
-    // being serialized) of the derived JsonSerializerOptions SerializeBounded uses to serialize a
-    // single level's OWN structural/complex members with every EDM navigation property removed
-    // from its JsonTypeInfo — the same TypeInfoResolver-modifier mechanism
-    // IgnoredPropertyJsonOptions.Build uses (see its remarks for the perf rationale: a resolver
-    // modifier runs once per type, and the resulting JsonTypeInfo is cached on the options
-    // instance, so steady state has fewer members to emit). Built lazily per (options, type) pair
-    // rather than eagerly for the whole model up front — cheap in steady state (computed once,
-    // reused for the lifetime of the process) and needs no extra registration-wide plumbing
-    // threaded through the five call sites. Keying on the CLR type alone (not a separate EDM-type
-    // component) relies on the same CLR-type<->EDM-entity-type 1:1 convention the rest of this file
-    // already assumes (see ResolveProfilesForClrType); baseOptions is itself already
-    // registration-scoped, so two registrations exposing the same CLR type with different EDM
-    // shapes still get independent cache entries.
-    private static readonly ConcurrentDictionary<(JsonSerializerOptions Options, Type ClrType), JsonSerializerOptions>
-        _navSuppressedOptionsCache = new();
+    // Fold-in #1 (#325/#326 regression, data exposure): true when the BASE (pre-nav-suppression)
+    // JsonTypeInfo for clrType — resolved through the SAME resolver GetNavSuppressedOptions itself
+    // falls back to (never `opts.GetTypeInfo` directly: an `opts` instance that has never actually
+    // been handed to `JsonSerializer.Serialize`/`SerializeToNode` and carries no explicit
+    // `TypeInfoResolver` throws `NotSupportedException` from `GetTypeInfo`, even though
+    // `SerializeToNode` itself tolerates that exact options shape via its own implicit reflection
+    // fallback — `_pascalCaseSerializerOptions`, this file's own defensive fallback, is exactly such
+    // an instance) — would itself emit clrNavProp for this entity instance. [JsonIgnore] removes the
+    // member from typeInfo.Properties entirely (presence check below); JsonIgnoreCondition.
+    // WhenWritingNull/WhenWritingDefault keep the member present but gate it at serialize time via
+    // JsonPropertyInfo.ShouldSerialize (invoked here with the SAME (owner, value) pair
+    // System.Text.Json itself would use); a custom [JsonConverter] on the property changes its wire
+    // shape in a way SerializeBounded's own recursive splice cannot reproduce, so that case is
+    // treated as not natively-visible too — omitted rather than corrupted with the wrong shape.
+    private static bool IsNavVisibleInBaseOptions(
+        JsonSerializerOptions opts, Type clrType, PropertyInfo clrNavProp, object entityValue, object? navValue)
+    {
+        if (clrNavProp.GetCustomAttribute<JsonConverterAttribute>() is not null) return false;
+
+        JsonTypeInfo? typeInfo = GetBaseTypeInfo(opts, clrType);
+        if (typeInfo is null) return false;
+        foreach (JsonPropertyInfo p in typeInfo.Properties)
+        {
+            if (p.AttributeProvider is not PropertyInfo pi || pi != clrNavProp) continue;
+            return p.ShouldSerialize is null || p.ShouldSerialize(entityValue, navValue);
+        }
+        return false; // [JsonIgnore]'d, or otherwise excluded from the base JsonTypeInfo entirely
+    }
+
+    // Fold-in #7 (perf hygiene): ONE derived JsonSerializerOptions per baseOptions (not one per
+    // (baseOptions, ClrType) pair as before) — mirrors IgnoredPropertyJsonOptions.Build's own
+    // pattern (see its remarks): a single TypeInfoResolver modifier consults a type-keyed lookup
+    // built INSIDE this cache entry, so N entity types sharing a registration's baseOptions share
+    // ONE derived JsonSerializerOptions and therefore one JsonTypeInfo cache, instead of each type
+    // paying for (and duplicating work across) its own independent derived-options instance. The
+    // per-type nav-name set is populated via GetOrAdd BEFORE returning Derived, which guarantees it
+    // is present the first time `clrType` is ever handed to Derived for serialization — System.Text.
+    // Json resolves and permanently caches a type's JsonTypeInfo on FIRST use per options instance,
+    // so populating the lookup any later would let that first resolution see an empty entry and
+    // permanently miss the suppression for that type.
+    //
+    // Also caches the BASE (un-suppressed) JsonTypeInfo per clrType — fold-in #1's
+    // IsNavVisibleInBaseOptions needs it, resolved through the SAME captured BaseResolver fallback
+    // (never `opts.GetTypeInfo`, which requires the caller's options to already carry an explicit
+    // resolver — see IsNavVisibleInBaseOptions' remarks) — so that lookup is O(1) after first use
+    // too, instead of re-resolving/re-walking clrType's properties on every kept navigation.
+    //
+    // Keyed via ConditionalWeakTable (not the previous ConcurrentDictionary<(Options,Type),...>) so
+    // an options instance's cache entry is collected along with the options itself — the previous
+    // strong-keyed dictionary leaked one entry per distinct JsonSerializerOptions for the life of
+    // the process, which matters for test suites (e.g. WebApplicationFactory) that construct a fresh
+    // host — and therefore fresh options — per test class.
+    private sealed record NavSuppressionState(
+        JsonSerializerOptions Derived,
+        IJsonTypeInfoResolver BaseResolver,
+        ConcurrentDictionary<Type, HashSet<string>> NavClrNamesByType,
+        ConcurrentDictionary<Type, JsonTypeInfo?> BaseTypeInfoByType);
+
+    private static readonly ConditionalWeakTable<JsonSerializerOptions, NavSuppressionState>
+        s_navSuppressedOptionsCache = new();
+
+    private static NavSuppressionState CreateNavSuppressionState(JsonSerializerOptions baseOptions)
+    {
+        var navClrNamesByType = new ConcurrentDictionary<Type, HashSet<string>>();
+        IJsonTypeInfoResolver baseResolver = baseOptions.TypeInfoResolver ?? new DefaultJsonTypeInfoResolver();
+        var derived = new JsonSerializerOptions(baseOptions);
+        derived.TypeInfoResolver = baseResolver.WithAddedModifier(typeInfo =>
+        {
+            if (typeInfo.Kind != JsonTypeInfoKind.Object) return;
+            if (!navClrNamesByType.TryGetValue(typeInfo.Type, out HashSet<string>? navClrNames) ||
+                navClrNames.Count == 0)
+            {
+                return;
+            }
+            for (int i = typeInfo.Properties.Count - 1; i >= 0; i--)
+            {
+                if (typeInfo.Properties[i].AttributeProvider is PropertyInfo prop && navClrNames.Contains(prop.Name))
+                    typeInfo.Properties.RemoveAt(i);
+            }
+        });
+        return new NavSuppressionState(derived, baseResolver, navClrNamesByType, new ConcurrentDictionary<Type, JsonTypeInfo?>());
+    }
 
     private static JsonSerializerOptions GetNavSuppressedOptions(
         JsonSerializerOptions baseOptions, IEdmEntityType edmType, Type clrType)
     {
-        return _navSuppressedOptionsCache.GetOrAdd((baseOptions, clrType), key =>
+        NavSuppressionState state = s_navSuppressedOptionsCache.GetValue(baseOptions, CreateNavSuppressionState);
+        state.NavClrNamesByType.GetOrAdd(clrType, type =>
         {
-            (JsonSerializerOptions opts, Type type) = key;
             var navClrNames = new HashSet<string>(StringComparer.Ordinal);
             foreach (IEdmNavigationProperty navProp in edmType.NavigationProperties())
             {
                 PropertyInfo? clrProp = ODataPropertyNaming.FindClrPropertyByEdmName(type, navProp.Name);
                 if (clrProp is not null) navClrNames.Add(clrProp.Name);
             }
-            if (navClrNames.Count == 0) return opts;
-
-            var derived = new JsonSerializerOptions(opts);
-            IJsonTypeInfoResolver resolver = derived.TypeInfoResolver ?? new DefaultJsonTypeInfoResolver();
-            derived.TypeInfoResolver = resolver.WithAddedModifier(typeInfo =>
-            {
-                if (typeInfo.Kind != JsonTypeInfoKind.Object || typeInfo.Type != type) return;
-                for (int i = typeInfo.Properties.Count - 1; i >= 0; i--)
-                {
-                    if (typeInfo.Properties[i].AttributeProvider is PropertyInfo prop && navClrNames.Contains(prop.Name))
-                        typeInfo.Properties.RemoveAt(i);
-                }
-            });
-            return derived;
+            return navClrNames;
         });
+        return state.Derived;
+    }
+
+    // Fold-in #1 support: the BASE (un-suppressed) JsonTypeInfo for clrType under baseOptions,
+    // resolved via the captured BaseResolver fallback (see CreateNavSuppressionState) and cached
+    // alongside the nav-suppression state for that baseOptions instance. Returns null when the
+    // resolver has no metadata for clrType at all (e.g. a non-object/primitive runtime type reached
+    // through a base-typed navigation) — treated as "not visible" by the caller, which is always
+    // safe (omission, never corruption).
+    private static JsonTypeInfo? GetBaseTypeInfo(JsonSerializerOptions baseOptions, Type clrType)
+    {
+        NavSuppressionState state = s_navSuppressedOptionsCache.GetValue(baseOptions, CreateNavSuppressionState);
+        return state.BaseTypeInfoByType.GetOrAdd(clrType, type => state.BaseResolver.GetTypeInfo(type, baseOptions));
     }
 
     // #184: resolve the JSON key a navigation property serializes to. A per-property
@@ -3216,7 +3363,8 @@ internal static class OhDataEndpointFactory
     // SerializeBounded, and still the only thing that decides pushdown ELIGIBILITY in the first
     // place — SerializeBounded only makes the RESULT safe to serialize once a shape is pushed). The
     // #305 Include fallback's OWN former use of this method (FindCyclicLeafExpand, Change C) was
-    // REMOVED by #325/#326 (Option B) — see the removal note above FindNestedExpandOrLevels.
+    // REMOVED by #325/#326 (Option B) — see the removal note below FindNestedExpandOrLevels,
+    // immediately preceding ApplyIncludeFallback.
     private static bool TypeHasNavigationTo(Type type, Type target)
     {
         foreach (PropertyInfo p in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
@@ -3348,8 +3496,7 @@ internal static class OhDataEndpointFactory
     // #325/#326 (Option B): a bidirectional/cyclic back-reference (what #323's Change C used to reject
     // here) is now served — SerializeBounded makes the Include fallback's tracked-entity graph safe to
     // serialize regardless of which two instances a cycle closes between (see the removal note just
-    // above FindNestedExpandOrLevels... i.e. two methods above this one, where Change C's guard used to
-    // live).
+    // above this method, where Change C's guard used to live).
     private static IQueryable<TModel> ApplyIncludeFallback<TModel>(
         IQueryable<TModel> query, IReadOnlyList<EngagedExpand> engaged, MethodInfo includeMethod,
         IEdmModel model, int? maxExpandTop)
@@ -4487,14 +4634,14 @@ internal static class OhDataEndpointFactory
                         // cross-reference and self-referential-leaf classes #326 tracked — is structurally
                         // unreachable through this path now, on BOTH the member-init projection path
                         // (already true before #325/#326, via Change A) and the #305 Include fallback
-                        // (newly true — see the FindCyclicLeafExpand removal note above
-                        // FindNestedExpandOrLevels). This catch stays reachable for the one class #325's
-                        // OWNER DECISIONS explicitly left as a loud 500 rather than fix: a cycle closed by
-                        // an entity-typed CLR property that is NOT an EDM navigation (e.g. [NotMapped]) —
-                        // SerializeBounded only suppresses/bounds EDM-declared navigations, so such a
-                        // property still reaches System.Text.Json un-bounded on whichever branch of the
-                        // walker serializes that level's structural/complex members. See T35 in
-                        // BidirectionalExpandPushdownSqliteTests.cs.
+                        // (newly true — see the FindCyclicLeafExpand removal note below
+                        // FindNestedExpandOrLevels, immediately preceding ApplyIncludeFallback). This
+                        // catch stays reachable for the one class #325's OWNER DECISIONS explicitly left
+                        // as a loud 500 rather than fix: a cycle closed by an entity-typed CLR property
+                        // that is NOT an EDM navigation (e.g. [NotMapped]) — SerializeBounded only
+                        // suppresses/bounds EDM-declared navigations, so such a property still reaches
+                        // System.Text.Json un-bounded on whichever branch of the walker serializes that
+                        // level's structural/complex members. See T35 in SerializeBoundedWalkerTests.cs.
                         logger?.LogDebug(ex,
                             "OhData: $expand pushdown produced a serialization cycle for {EntitySet}.",
                             source.EntitySetName);
