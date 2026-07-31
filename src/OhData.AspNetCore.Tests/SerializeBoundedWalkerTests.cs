@@ -272,7 +272,7 @@ public sealed class SelfReferentialGeneralTests : IAsyncLifetime
            // must omit navigations exactly like a plain GetById.
     public async Task Patch_ResponseBody_Returns200_NavigationsOmitted()
     {
-        var content = new StringContent("{\"name\":\"RootRenamed\"}", System.Text.Encoding.UTF8, "application/json");
+        using var content = new StringContent("{\"name\":\"RootRenamed\"}", System.Text.Encoding.UTF8, "application/json");
         HttpResponseMessage resp = await _fx.Client.PatchAsync("/odata/SpNodes(1)", content);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
