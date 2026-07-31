@@ -125,7 +125,55 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   serializes correctly. See `docs/query-options.md` for the full breakdown.
 
   Not fixed by this change: a self-referential entity set still 500s on a plain `GET` with no
-  `$expand` at all (tracked-entity fixup cycles before serialization) — tracked separately as #325.
+  `$expand` at all (tracked-entity fixup cycles before serialization) — tracked separately as #325
+  (fixed below).
+
+- **A self-referential/bidirectional entity set no longer 500s on serialization, in ANY shape — plain
+  `GET` with no `$expand` at all (#325), or a cycle that doesn't reference the root model on the #305
+  `Include` fallback (#326).** Root cause: whole-graph serialization is bounded by the CLR object
+  graph, but OData's "omit an un-expanded navigation" rule (`OmitUnexpandedNavigations`) is bounded by
+  the `$expand` clause and previously ran strictly AFTER serialization — so any graph deeper/wider
+  than the clause was handed to `System.Text.Json` first, and EF Core's own relationship fixup (which
+  wires up `Parent`/`Children`-shaped navigations among tracked entities loaded in the same query, with
+  or without `$expand`) made that graph cyclic. **The fix (Option B — clause-bounded, level-wise
+  serialization):** a new `SerializeBounded` walker serializes an entity with every one of its EDM
+  navigations suppressed at the `JsonTypeInfo` level (the same `TypeInfoResolver`-modifier mechanism
+  `Ignore()`'d properties already use), then splices in — via reflection, recursively — only the
+  navigations the `$expand` clause (or an active `$levels` budget) actually kept. Recursion is
+  therefore bounded by the clause, never by the object graph, so a reference cycle is structurally
+  unreachable. Replaces all five whole-graph `JsonSerializer.SerializeToNode` call sites: the root
+  collection-GET serialize, the delegate-expansion splice, navigation-collection routes, single-entity
+  responses (`GET`/`POST`/`PUT`/`PATCH`), and bound-operation collection results. A deep-insert POST
+  response body (which deliberately serializes its nested-create graph inline, unbounded) is
+  unaffected — that caller passes no EDM type, which `SerializeBounded` treats as an explicit
+  opt-out and falls back to the pre-#325 whole-graph behavior. Delegate safety (Model B, #292/#293) is
+  unchanged and, if anything, strengthened: a navigation not in the `$expand` clause is never read off
+  the CLR object at all, and a delegate's own answer still always overwrites whatever this walker
+  guessed by reading the graph before the delegate ran.
+
+  **`#326` relaxed rather than widened:** the issue proposed rejecting (`400`) two additional cycle
+  shapes the #323 Include-fallback guard (`FindCyclicLeafExpand`, "Change C") missed — a sibling
+  cross-reference and a self-referential leaf element type. Since `SerializeBounded` makes ALL of
+  these shapes safe to serve, rejecting them would be backwards; Change C's guard is removed
+  entirely and all three shapes (including the original root-back-reference case Change C used to
+  catch) are now served with real data instead of `400`.
+
+  **BEHAVIOR CHANGE:** a plain `GET` (no `$expand`) over a self-referential/bidirectional entity set
+  that previously 500'd now returns `200` with the un-expanded navigations correctly omitted. A
+  `$expand` on the #305 Include fallback whose related type has any kind of back-reference — to the
+  root, to a sibling leaf, or to itself — that previously returned `400` now returns `200` with real
+  data.
+
+  **BEHAVIOR CHANGE:** an **`$expand`'d collection navigation whose CLR value is `null`** (e.g. an
+  uninitialized `List<T>` property) now serializes as `[]` instead of `null`. This is more
+  §4.5.1-correct — a collection-valued navigation is a JSON array, never `null` — and matches how an
+  un-loaded collection nav already serialized when populated-but-empty; only the previously-`null`
+  case changes.
+
+  **Not fixed by this change (deliberate, OWNER DECISIONS):** a cycle closed by an entity-typed CLR
+  property that is **not** an EDM navigation (e.g. excluded from the EDM model entirely, distinct from
+  `[NotMapped]`-for-EF) is the same blind spot `OmitUnexpandedNavigations` always had —
+  `SerializeBounded` only bounds EDM-declared navigations — and still surfaces as a `500`.
 
 ## [1.5.0] - 2026-07-21
 

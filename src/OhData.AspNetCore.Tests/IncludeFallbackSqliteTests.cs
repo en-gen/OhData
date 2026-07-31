@@ -56,12 +56,12 @@ public sealed class IncludeInvalidChild
     public string Name { get; set; } = "";
 }
 
-// #323 (Change C) fixture: a root model that can't support the member-init projection (no
-// parameterless ctor — forces Path A / Include fallback) whose delegate-less collection nav's related
-// type carries a typed back-reference to the root. Unlike the projection path (fresh POCOs, never
-// cyclic — see ExpandPushdownSqliteTests's CycParent/CycChild), Include populates TRACKED entities,
-// so EF's own relationship fixup could close the cycle; Change C rejects this with 400 before Include
-// ever runs, rather than risk a 500.
+// Fixture: a root model that can't support the member-init projection (no parameterless ctor —
+// forces Path A / Include fallback) whose delegate-less collection nav's related type carries a
+// typed back-reference to the root. Unlike the projection path (fresh POCOs, never cyclic — see
+// ExpandPushdownSqliteTests's CycParent/CycChild), Include populates TRACKED entities. #323 (Change
+// C) used to reject this with 400 before Include ever ran, rather than risk a 500; #325/#326
+// (Option B) relaxed that — SerializeBounded now serves the tracked, cyclic graph safely instead.
 public sealed record NoCtorCyclicParent(int Id, string Name)
 {
     public List<NoCtorCyclicChild> Children { get; set; } = new();
@@ -356,10 +356,19 @@ public sealed class IncludeFallbackInvalidModelTests : IAsyncLifetime
     }
 }
 
-// #323 (Change C), T12-T16: a leaf expand under the Include fallback whose related type navigates
-// back to the root model fails loud (400) rather than risk EF's own tracked-entity fixup closing a
+// #323 (Change C) formerly rejected (400) a leaf expand under the Include fallback whose related
+// type navigates back to the root model, rather than risk EF's own tracked-entity fixup closing a
 // serialization cycle — unlike the member-init projection path, which structurally forecloses the
 // same cycle via Change A (see ExpandPushdownCyclicFallbackTests.BidirectionalNav_Expand_PushesDown_WithJoin).
+//
+// #325/#326 (OWNER DECISIONS, FROZEN spec — Option B) RELAXED Change C: SerializeBounded
+// (OhDataEndpointFactory.cs) makes the Include fallback's tracked-entity graph safe to serialize
+// regardless of which two instances a cycle closes between, so this suite now asserts SERVED data
+// (200) instead of the former 400. NOTE (fold-in review correction): the fixture below
+// (NoCtorCyclicParent/Child) is the root-back-reference shape only — #326's own two reported shapes
+// (a sibling cross-reference, and a self-referential LEAF element type, neither referencing the
+// root) are covered separately by SiblingCrossReferenceIncludeFallbackTests and
+// SelfReferentialLeafIncludeFallbackTests below.
 public sealed class IncludeFallbackCyclicLeafTests : IAsyncLifetime
 {
     private SqliteConnection _connection = null!;
@@ -379,49 +388,260 @@ public sealed class IncludeFallbackCyclicLeafTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task CyclicLeaf_BareExpand_FailsLoud400_WithActionableMessage()
+    public async Task CyclicLeaf_BareExpand_Returns200_WithRealChildren()
     {
-        // T12/T13: the tracking (default) query — Change C rejects it before Include ever runs.
+        // Tracking (default) query — formerly rejected by Change C before Include ever ran.
         HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/NoCtorCyclicParents?$expand=Children");
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         string body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("\"error\"", body);
-        Assert.Contains("InvalidQueryOption", body);
-        Assert.Contains("Children", body); // names the offending navigation
-        Assert.Contains("NoCtorCyclicParent", body); // names the root model the back-reference targets
-        Assert.DoesNotContain("Sqlite", body);
-        Assert.DoesNotContain("SQLITE", body);
+        Assert.Contains("\"CyC1a\"", body);
     }
 
+    // Note: a nested $expand under the Include-fallback path (e.g. Children($expand=Parent)) is
+    // untouched by #325/#326 either way — it is pre-existing Path-A engagement/eligibility
+    // plumbing unrelated to serialization-cycle safety, out of this fix's scope. The IgnoreCycles-
+    // disqualifying counter-example (Children($expand=Parent) returning the REAL parent, not null)
+    // IS proven, on the member-init-projection-ineligible-but-pushdown-disabled EDM-only path: see
+    // SerializeBoundedWalkerTests.EdmOnlyExpandCycleTests (T8-T11).
+
     [Fact]
-    public async Task CyclicLeaf_AsNoTracking_StillFailsLoud400()
+    public async Task CyclicLeaf_AsNoTracking_AlsoReturns200_WithRealChildren()
     {
-        // T14: Change C's guard is purely type-based — it never inspects the query's own tracking
-        // behavior — so an AsNoTracking() query over the SAME cyclic shape must ALSO fail loud rather
-        // than silently succeed just because this particular query happens not to track entities
-        // (the guard cannot know that at startup-bind time, and a handler could swap trackingbehavior
-        // per-request).
+        // Change C's former guard was purely type-based — it never inspected the query's own
+        // tracking behavior — so an AsNoTracking() query over the SAME cyclic shape must serve the
+        // same way as the tracking query above.
         HttpResponseMessage resp = await _fx.Client.GetAsync(
             "/odata/NoCtorCyclicParentsNoTracking?$expand=Children");
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         string body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("InvalidQueryOption", body);
+        Assert.Contains("\"CyC1a\"", body);
     }
 
     [Fact]
     public async Task UnidirectionalLeaf_BareExpand_StillServes200()
     {
-        // T15/T16 control: NoCtorParents/NoCtorChildren has NO back-reference (unidirectional), so it
-        // must keep serving 200 with real data through the SAME Include fallback path — Change C must
-        // not over-defer a shape it was never meant to catch. This mirrors
-        // NoParameterlessCtor_BareExpand_ServesRealChildren_Not200WithEmptyNav above; asserted again
-        // here as an explicit sibling-control pin for Change C.
+        // Control: NoCtorParents/NoCtorChildren has NO back-reference (unidirectional), so it must
+        // keep serving 200 with real data through the SAME Include fallback path exactly as before.
         HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/NoCtorParents?$orderby=id&$expand=Children");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         string body = await resp.Content.ReadAsStringAsync();
         Assert.Contains("\"C1a\"", body);
+    }
+}
+
+// #326's ACTUAL two reported shapes (fold-in review, #4) — neither is the root-back-reference shape
+// IncludeFallbackCyclicLeafTests above covers. Both use a positional-record root (no parameterless
+// ctor) to force the #305 Path A Include fallback, exactly like NoCtorParent/NoCtorCyclicParent
+// above, so the Include machinery (not the member-init projection path) is what's under test.
+
+// ── Shape 1: sibling cross-reference — Invoice.Customers / Invoice.Orders are two independent leaf
+// expands off the SAME root; InvCustomer.Orders and InvOrder.Customer cross-reference EACH OTHER,
+// and NEITHER references the root Invoice at all. EF's automatic relationship fixup wires up that
+// cross-reference among ANY entities tracked in the same DbContext/query regardless of which
+// Include loaded them, so expanding Customers AND Orders together tracks a genuinely cyclic pair of
+// leaf element types that #323's old root-only guard would never have caught (develop: 500). ───────
+
+public sealed record Invoice(int Id, string Name)
+{
+    public List<InvCustomer> Customers { get; set; } = new();
+    public List<InvOrder> Orders { get; set; } = new();
+}
+
+public sealed class InvCustomer
+{
+    public int Id { get; set; }
+    public int InvoiceId { get; set; }
+    public string Name { get; set; } = "";
+    public List<InvOrder> Orders { get; set; } = new(); // sibling cross-reference, not to the root
+}
+
+public sealed class InvOrder
+{
+    public int Id { get; set; }
+    public int InvoiceId { get; set; }
+    public int? CustomerId { get; set; }
+    public string Name { get; set; } = "";
+    public InvCustomer? Customer { get; set; } // sibling cross-reference, not to the root
+}
+
+public sealed class SiblingCrossReferenceDbContext : DbContext
+{
+    public SiblingCrossReferenceDbContext(DbContextOptions<SiblingCrossReferenceDbContext> options) : base(options) { }
+
+    public DbSet<Invoice> Invoices => Set<Invoice>();
+    public DbSet<InvCustomer> InvCustomers => Set<InvCustomer>();
+    public DbSet<InvOrder> InvOrders => Set<InvOrder>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Invoice>().HasMany(i => i.Customers).WithOne().HasForeignKey(c => c.InvoiceId);
+        modelBuilder.Entity<Invoice>().HasMany(i => i.Orders).WithOne().HasForeignKey(o => o.InvoiceId);
+        modelBuilder.Entity<InvCustomer>().HasMany(c => c.Orders).WithOne(o => o.Customer!).HasForeignKey(o => o.CustomerId);
+    }
+}
+
+public sealed class InvoiceProfile : EntitySetProfile<int, Invoice>
+{
+    public InvoiceProfile(SiblingCrossReferenceDbContext db) : base(x => x.Id)
+    {
+        EntitySetName = "Invoices";
+        ExpandEnabled = true;
+        GetQueryable = _ => Task.FromResult(db.Invoices.AsQueryable());
+        HasMany(x => x.Customers); // delegate-less -> CLR-eligible for pushdown, forced to Path A
+        HasMany(x => x.Orders);
+    }
+}
+
+public sealed class SiblingCrossReferenceIncludeFallbackTests : IAsyncLifetime
+{
+    private SqliteConnection _connection = null!;
+    private TestFixture _fx = null!;
+
+    public async Task InitializeAsync()
+    {
+        _connection = new SqliteConnection("Data Source=:memory:");
+        _connection.Open();
+        _fx = await TestHostBuilder.BuildAsync(
+            b => b.AddEntitySetProfile<InvoiceProfile>(),
+            configureServices: services =>
+                services.AddDbContext<SiblingCrossReferenceDbContext>(o => o.UseSqlite(_connection)));
+
+        using var scope = _fx.App.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<SiblingCrossReferenceDbContext>();
+        db.Database.EnsureCreated();
+        db.Invoices.Add(new Invoice(1, "Inv1"));
+        db.InvCustomers.Add(new InvCustomer { Id = 1, InvoiceId = 1, Name = "Cust1" });
+        db.InvOrders.Add(new InvOrder { Id = 1, InvoiceId = 1, CustomerId = 1, Name = "Ord1" });
+        db.SaveChanges();
+    }
+
+    public async Task DisposeAsync()
+    {
+        await _fx.DisposeAsync();
+        _connection.Dispose();
+    }
+
+    [Fact] // #326's sibling-cross-reference repro: develop 500s here (Change C never caught it —
+           // it only guarded a related type navigating back to the ROOT, and neither InvCustomer nor
+           // InvOrder does; EF's fixup still wires up their mutual cross-reference once both are
+           // tracked in the same context, closing a cycle whole-graph serialization can't handle).
+    public async Task SiblingCrossReference_BothExpanded_Returns200_WithRealCustomerAndOrderData()
+    {
+        HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/Invoices?$expand=Customers,Orders");
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.True(resp.StatusCode == HttpStatusCode.OK, $"{resp.StatusCode}: {body}");
+        Assert.Contains("\"Cust1\"", body);
+        Assert.Contains("\"Ord1\"", body);
+    }
+
+    [Fact] // Control: Customers expanded alone never tracks any InvOrder, so no cross-reference cycle
+           // is even possible — must serve 200 on develop and after the fix alike.
+    public async Task CustomersExpandedAlone_Returns200()
+    {
+        HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/Invoices?$expand=Customers");
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.True(resp.StatusCode == HttpStatusCode.OK, $"{resp.StatusCode}: {body}");
+        Assert.Contains("\"Cust1\"", body);
+    }
+
+    [Fact] // Control: Orders expanded alone never tracks any InvCustomer — same reasoning.
+    public async Task OrdersExpandedAlone_Returns200()
+    {
+        HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/Invoices?$expand=Orders");
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.True(resp.StatusCode == HttpStatusCode.OK, $"{resp.StatusCode}: {body}");
+        Assert.Contains("\"Ord1\"", body);
+    }
+}
+
+// ── Shape 2: self-referential leaf element type — Org.Employees is a single leaf expand off the
+// root; OrgEmployee.Manager/Reports self-reference AMONG the employees loaded for that one expand,
+// and OrgEmployee has no navigation back to Org at all. Neither references the root, matching #326's
+// second reported class (develop: 500). ──────────────────────────────────────────────────────────
+
+public sealed record Org(int Id, string Name)
+{
+    public List<OrgEmployee> Employees { get; set; } = new();
+}
+
+public sealed class OrgEmployee
+{
+    public int Id { get; set; }
+    public int OrgId { get; set; }
+    public string Name { get; set; } = "";
+    public int? ManagerId { get; set; }
+    public OrgEmployee? Manager { get; set; }
+    public List<OrgEmployee> Reports { get; set; } = new();
+}
+
+public sealed class SelfReferentialLeafDbContext : DbContext
+{
+    public SelfReferentialLeafDbContext(DbContextOptions<SelfReferentialLeafDbContext> options) : base(options) { }
+
+    public DbSet<Org> Orgs => Set<Org>();
+    public DbSet<OrgEmployee> OrgEmployees => Set<OrgEmployee>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Org>().HasMany(o => o.Employees).WithOne().HasForeignKey(e => e.OrgId);
+        modelBuilder.Entity<OrgEmployee>()
+            .HasMany(e => e.Reports).WithOne(e => e.Manager!).HasForeignKey(e => e.ManagerId);
+    }
+}
+
+public sealed class OrgProfile : EntitySetProfile<int, Org>
+{
+    public OrgProfile(SelfReferentialLeafDbContext db) : base(x => x.Id)
+    {
+        EntitySetName = "Orgs";
+        ExpandEnabled = true;
+        GetQueryable = _ => Task.FromResult(db.Orgs.AsQueryable());
+        HasMany(x => x.Employees); // delegate-less -> CLR-eligible for pushdown, forced to Path A
+    }
+}
+
+public sealed class SelfReferentialLeafIncludeFallbackTests : IAsyncLifetime
+{
+    private SqliteConnection _connection = null!;
+    private TestFixture _fx = null!;
+
+    public async Task InitializeAsync()
+    {
+        _connection = new SqliteConnection("Data Source=:memory:");
+        _connection.Open();
+        _fx = await TestHostBuilder.BuildAsync(
+            b => b.AddEntitySetProfile<OrgProfile>(),
+            configureServices: services =>
+                services.AddDbContext<SelfReferentialLeafDbContext>(o => o.UseSqlite(_connection)));
+
+        using var scope = _fx.App.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<SelfReferentialLeafDbContext>();
+        db.Database.EnsureCreated();
+        db.Orgs.Add(new Org(1, "Acme"));
+        db.OrgEmployees.Add(new OrgEmployee { Id = 1, OrgId = 1, Name = "Boss" });
+        db.OrgEmployees.Add(new OrgEmployee { Id = 2, OrgId = 1, Name = "Report", ManagerId = 1 });
+        db.SaveChanges();
+    }
+
+    public async Task DisposeAsync()
+    {
+        await _fx.DisposeAsync();
+        _connection.Dispose();
+    }
+
+    [Fact] // #326's self-referential-leaf repro: develop 500s here (Change C only guarded a
+           // back-reference to the ROOT; OrgEmployee has none — its self-reference is entirely among
+           // the leaf-expanded employees themselves, wired up by EF's own fixup once both rows are
+           // tracked in the same context).
+    public async Task Employees_Expanded_Returns200_WithBothEmployees()
+    {
+        HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/Orgs?$expand=Employees");
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.True(resp.StatusCode == HttpStatusCode.OK, $"{resp.StatusCode}: {body}");
+        Assert.Contains("\"Boss\"", body);
+        Assert.Contains("\"Report\"", body);
     }
 }
