@@ -42,7 +42,7 @@ internal static class BenchmarkHosts
     public const string EntitySet = "BenchWidgets";
 
     /// <summary>OhData minimal-API pipeline host.</summary>
-    public static async Task<(WebApplication App, HttpClient Client, SqliteConnection NavConnection)> StartOhDataAsync()
+    public static async Task<(WebApplication App, HttpClient Client, SqliteConnection NavConnection)> StartOhDataAsync(int seed)
     {
         SqliteConnection connection = OpenNavConnection();
 
@@ -61,7 +61,7 @@ internal static class BenchmarkHosts
         var app = builder.Build();
         app.MapOhData();
         await app.StartAsync();
-        await SeedNavDataAsync(app);
+        await SeedNavDataAsync(app, seed);
 
         var client = ((IHost)app).GetTestClient();
         client.BaseAddress = new Uri(client.BaseAddress!, "odata/");
@@ -69,7 +69,7 @@ internal static class BenchmarkHosts
     }
 
     /// <summary>Microsoft.AspNetCore.OData ODataController + [EnableQuery] pipeline host.</summary>
-    public static async Task<(WebApplication App, HttpClient Client, SqliteConnection NavConnection)> StartMsODataAsync()
+    public static async Task<(WebApplication App, HttpClient Client, SqliteConnection NavConnection)> StartMsODataAsync(int seed)
     {
         SqliteConnection connection = OpenNavConnection();
 
@@ -87,7 +87,7 @@ internal static class BenchmarkHosts
         var app = builder.Build();
         app.MapControllers();
         await app.StartAsync();
-        await SeedNavDataAsync(app);
+        await SeedNavDataAsync(app, seed);
 
         var client = ((IHost)app).GetTestClient();
         client.BaseAddress = new Uri(client.BaseAddress!, "odata/");
@@ -101,12 +101,12 @@ internal static class BenchmarkHosts
         return connection;
     }
 
-    private static async Task SeedNavDataAsync(WebApplication app)
+    private static async Task SeedNavDataAsync(WebApplication app, int seed)
     {
         using var scope = app.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<BenchOrgDbContext>();
         await db.Database.EnsureCreatedAsync();
-        BenchOrgData.Seed(db);
+        BenchOrgData.Seed(db, seed);
     }
 
     private static IEdmModel BuildEdmModel()
