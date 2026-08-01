@@ -25,7 +25,7 @@ public static class Program
                 return 0;
         }
 
-        BenchmarkSwitcher.FromTypes(new[] { typeof(ServerComparisonBenchmarks) }).Run(args);
+        BenchmarkSwitcher.FromTypes(new[] { typeof(ServerComparisonBenchmarks), typeof(ExpandComparisonBenchmarks) }).Run(args);
         return 0;
     }
 }

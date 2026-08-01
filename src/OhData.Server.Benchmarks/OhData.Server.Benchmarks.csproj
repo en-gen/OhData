@@ -17,6 +17,9 @@
     <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.*" />
     <PackageReference Include="Microsoft.AspNetCore.OData" Version="[9.5.*, 10)" />
     <PackageReference Include="Microsoft.OData.ModelBuilder" Version="[2.*, 3)" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.*" />
+    <!-- Transitive pin: clears GHSA-2m69-gcr7-jv3q (SQLitePCLRaw < 2.1.12) under TreatWarningsAsErrors. -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.4" />
   </ItemGroup>
 
   <ItemGroup>
