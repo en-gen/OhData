@@ -15,7 +15,16 @@
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" Version="0.15.*" />
     <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.*" />
-    <PackageReference Include="Microsoft.AspNetCore.OData" Version="[9.5.*, 10)" />
+    <!--
+      Floating to the latest STABLE Microsoft.AspNetCore.OData deliberately: this is a competitive
+      comparison, so it must always measure their current shipping release rather than whatever
+      minor happened to be current when the suite was written. Was pinned to [9.5.*, 10), which
+      silently froze the comparison at a single minor. Prerelease versions are excluded by NuGet's
+      floating-version rules, so a 10.0.0-preview.* will not be picked up until 10.0.0 ships.
+      NOTE: this makes the benchmark build intentionally non-reproducible across time. If a major
+      bump breaks the MsODataHost controllers, fix the controllers - do not re-pin.
+    -->
+    <PackageReference Include="Microsoft.AspNetCore.OData" Version="*" />
     <PackageReference Include="Microsoft.OData.ModelBuilder" Version="[2.*, 3)" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.*" />
     <!-- Transitive pin: clears GHSA-2m69-gcr7-jv3q (SQLitePCLRaw < 2.1.12) under TreatWarningsAsErrors. -->
