@@ -26,6 +26,7 @@ internal sealed class BenchDepartmentProfile : EntitySetProfile<int, BenchDepart
         ExpandEnabled = true;
         CountEnabled = true;
         MaxTop = BenchOrgData.DepartmentPageSize;
+        MaxExpansionDepth = BenchOrgData.MaxExpansionDepth; // set explicitly to mirror the MS host's [EnableQuery(MaxExpansionDepth = ...)] — see BenchOrgData.MaxExpansionDepth.
 
         GetQueryable = _ => Task.FromResult(db.BenchDepartments.AsQueryable());
         GetById = async (id, ct) => await db.BenchDepartments.FirstOrDefaultAsync(d => d.Id == id, ct);
@@ -58,6 +59,7 @@ internal sealed class BenchEmployeeProfile : EntitySetProfile<int, BenchEmployee
         ExpandEnabled = true;
         CountEnabled = true;
         MaxTop = BenchOrgData.EmployeePageSize;
+        MaxExpansionDepth = BenchOrgData.MaxExpansionDepth; // set explicitly to mirror the MS host's [EnableQuery(MaxExpansionDepth = ...)] — see BenchOrgData.MaxExpansionDepth.
 
         GetQueryable = _ => Task.FromResult(db.BenchEmployees.AsQueryable());
         GetById = async (id, ct) => await db.BenchEmployees.FirstOrDefaultAsync(e => e.Id == id, ct);

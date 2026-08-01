@@ -27,6 +27,44 @@ internal static class BenchmarkRequests
     // benchmarks above exercise OhData's "one JOIN per page" $expand pushdown, nested $expand, $levels,
     // or a bidirectional (parent<->child) navigation pair — see BenchmarkHosts for why these five run
     // against EF Core Sqlite rather than the List&lt;T&gt; store the widget scenarios use.
+    //
+    // ── Known asymmetries the smoke gate tolerates (adversarial review fold-in) ─────────────────────
+    // These are genuine, understood differences between the two hosts' responses on these five
+    // scenarios. None distorts the fairness of the comparison (row content is identical, or the
+    // divergence is a pre-existing spec nit outside what is being measured) but none of them is
+    // caught by the smoke check either, so they are recorded here instead of being rediscovered:
+    //   1. OhData emits `@odata.nextLink` on all five BenchDepartments responses; Microsoft emits
+    //      none. OhData applies MaxTop=20 (BenchOrgData.DepartmentPageSize) as an implicit page
+    //      limit and, because the page comes back exactly full (DepartmentCount is also 20),
+    //      advertises a next page that doesn't exist. No timing distortion — same rows either way —
+    //      but the two responses are not byte-for-byte/semantically identical envelopes.
+    //   2. `@odata.context` differs: `#BenchDepartments` on OhData vs
+    //      `#BenchDepartments(Employees())` on MS OData — OhData omits the expand clause from the
+    //      context URL. Pre-existing spec nit, unrelated to this branch.
+    //   3. MaxTop means different things on the two sides. OhData treats it as an implicit page
+    //      size (applied even when the client sends no $top); MS's [EnableQuery(MaxTop=...)] only
+    //      caps a client-*supplied* $top and does nothing to an unpaged request on its own. This is
+    //      neutral for every scenario here only because DepartmentPageSize == DepartmentCount == 20
+    //      (see point 4 below) and EmployeePageSize == EmployeeCount for the one BenchEmployees
+    //      scenario ($levels), which additionally $filters down to a single row. An unfiltered,
+    //      unpaged BenchEmployees scenario would diverge sharply (OhData would page to 100 rows,
+    //      MS OData would return all 1000) and nothing in this suite would catch it.
+    //   4. `[EnableQuery(PageSize=...)]` is deliberately omitted on both new MS controllers
+    //      (BenchDepartmentsController, BenchEmployeesController) — see the reasoning documented on
+    //      each: PageSize wraps every collection in the response (including expanded/nested ones) in
+    //      a TruncatedCollection, and composing that with nested $expand needs the SQL APPLY
+    //      operation, which SQLite's EF Core provider can't emit (500). Don't "fix" this later
+    //      without re-reading that reasoning.
+    //
+    // ── Dataset caveats (not fairness defects, but they limit generalization) ───────────────────────
+    //   - Fan-out is perfectly uniform: exactly EmployeeCount/DepartmentCount = 50 employees per
+    //     department, and exactly ManagerBranchingFactor = 5 reports per manager. Uniform fan-out is
+    //     the easy case for a JOIN/pushdown strategy; skewed fan-out (a handful of huge departments or
+    //     managers) is where nested-$top windowing strategies are most likely to diverge, and this
+    //     suite never exercises that.
+    //   - DepartmentPageSize == DepartmentCount, so root-collection paging (a second page of
+    //     departments) is never exercised by any expand scenario — every BenchDepartments scenario
+    //     here returns its entire result set on page one.
 
     /// <summary>Bare <c>$expand</c> of a collection navigation — the pushdown JOIN itself.</summary>
     public const string DeptExpandCollectionUrl = "BenchDepartments?$expand=Employees&$orderby=id";

@@ -349,7 +349,11 @@ internal static class SmokeCheck
     /// Compares a <c>$expand</c>'d collection response: same parent id sequence (order matters — the
     /// request always carries a root <c>$orderby=id</c>) and, per parent, the same SET of expanded
     /// child ids (order does NOT matter unless the request also carries a nested <c>$orderby</c> —
-    /// neither server implementation guarantees child ordering without one).
+    /// neither server implementation guarantees child ordering without one) AND, per matched child
+    /// (matched by id), the same value for every structural property — not just <c>Id</c>. A host that
+    /// dropped or corrupted <c>Salary</c>/<c>DepartmentId</c>/<c>ManagerId</c> on the expanded
+    /// <c>BenchEmployee</c> children would pass an id-only check but fails this one, the same
+    /// full-value discipline <see cref="AssertSameEntity"/> already applies to top-level entities.
     /// </summary>
     private static void AssertSameParentsAndChildIdSets(JsonNode a, JsonNode b, string childProperty, int expectedParents)
     {
@@ -364,10 +368,18 @@ internal static class SmokeCheck
             long parentIdB = (long)parentsB[i]!["Id"]!;
             Assert(parentIdA == parentIdB, $"parent[{i}] id differs: OhData={parentIdA} MS={parentIdB}");
 
-            long[] childIdsA = ((JsonArray)parentsA[i]![childProperty]!).Select(c => (long)c!["Id"]!).OrderBy(x => x).ToArray();
-            long[] childIdsB = ((JsonArray)parentsB[i]![childProperty]!).Select(c => (long)c!["Id"]!).OrderBy(x => x).ToArray();
+            var childrenA = ((JsonArray)parentsA[i]![childProperty]!).ToDictionary(c => (long)c!["Id"]!, c => c!);
+            var childrenB = ((JsonArray)parentsB[i]![childProperty]!).ToDictionary(c => (long)c!["Id"]!, c => c!);
+            long[] childIdsA = childrenA.Keys.OrderBy(x => x).ToArray();
+            long[] childIdsB = childrenB.Keys.OrderBy(x => x).ToArray();
             Assert(childIdsA.SequenceEqual(childIdsB),
                 $"parent {parentIdA} {childProperty} id set differs: OhData [{string.Join(",", childIdsA)}] vs MS [{string.Join(",", childIdsB)}]");
+
+            foreach (var (childId, childA) in childrenA)
+            {
+                AssertSameProperties(childA, childrenB[childId], BenchEmployeeProperties,
+                    $"parent {parentIdA} {childProperty} child {childId}");
+            }
         }
     }
 
@@ -377,8 +389,10 @@ internal static class SmokeCheck
 
     /// <summary>
     /// For each expanded item under <paramref name="collectionProperty"/> (order-independent — matched
-    /// by id), asserts the nested single-valued navigation <paramref name="singleValuedProperty"/>
-    /// resolves to the same related id (or is null on both sides) on both hosts.
+    /// by id), asserts the nested single-valued navigation <paramref name="singleValuedProperty"/> is
+    /// null on both hosts or present on both hosts with the same value for every structural property —
+    /// not just <c>Id</c> — the same full-value discipline <see cref="AssertSameEntity"/> already
+    /// applies to top-level entities.
     /// </summary>
     private static void AssertSameNestedSingleValued(JsonNode a, JsonNode b, string collectionProperty, string singleValuedProperty)
     {
@@ -392,15 +406,37 @@ internal static class SmokeCheck
                 .ToDictionary(c => (long)c!["Id"]!, c => c);
             foreach (var (childId, childA) in childrenA)
             {
-                long? refA = NestedId(childA, singleValuedProperty);
-                long? refB = NestedId(childrenB[childId], singleValuedProperty);
-                Assert(refA == refB, $"{collectionProperty} {childId} nested {singleValuedProperty} differs: OhData={refA?.ToString() ?? "null"} MS={refB?.ToString() ?? "null"}");
+                JsonObject? nestedA = childA![singleValuedProperty] as JsonObject;
+                JsonObject? nestedB = childrenB[childId]![singleValuedProperty] as JsonObject;
+                Assert((nestedA is null) == (nestedB is null),
+                    $"{collectionProperty} {childId} nested {singleValuedProperty} null-ness differs: OhData={(nestedA is null ? "null" : "present")} MS={(nestedB is null ? "null" : "present")}");
+                if (nestedA is not null && nestedB is not null)
+                {
+                    AssertSameProperties(nestedA, nestedB, BenchEmployeeProperties,
+                        $"{collectionProperty} {childId} nested {singleValuedProperty}");
+                }
             }
         }
     }
 
-    private static long? NestedId(JsonNode? parent, string property) =>
-        parent?[property] is JsonObject nested && nested["Id"] is JsonNode idNode ? (long)idNode : null;
+    /// <summary>Structural (non-navigation) properties of a bare (no <c>$select</c>) <c>BenchEmployee</c>
+    /// projection — the shape every scenario feeding <see cref="AssertSameParentsAndChildIdSets"/> and
+    /// <see cref="AssertSameNestedSingleValued"/> actually requests.</summary>
+    private static readonly string[] BenchEmployeeProperties = { "Id", "Name", "Salary", "DepartmentId", "ManagerId" };
+
+    /// <summary>Asserts <paramref name="a"/> and <paramref name="b"/> have the same value (including
+    /// both-null) for every property in <paramref name="properties"/>. Mirrors <see cref="AssertSameEntity"/>'s
+    /// full-value comparison, generalized to a caller-supplied property list and null-tolerant per property
+    /// (unlike <see cref="AssertSameEntity"/>, which asserts non-null for its fixed widget property set).</summary>
+    private static void AssertSameProperties(JsonNode a, JsonNode b, string[] properties, string context)
+    {
+        foreach (string prop in properties)
+        {
+            string? valA = a[prop]?.ToJsonString();
+            string? valB = b[prop]?.ToJsonString();
+            Assert(valA == valB, $"{context}: property '{prop}' differs: OhData={valA ?? "null"} MS={valB ?? "null"}");
+        }
+    }
 
     /// <summary>
     /// Recursively walks a <c>$levels</c>-expanded tree, collecting the <c>Id</c> of the given node and
