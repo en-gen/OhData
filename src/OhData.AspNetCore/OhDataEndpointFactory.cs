@@ -1992,12 +1992,32 @@ internal static class OhDataEndpointFactory
 
         if (isCollectionValue)
         {
-            var array = new JsonArray();
+            // Perf (#337): the NESTED collection level is batched exactly like the root level —
+            // ONE SerializeToNode call for the whole homogeneous sibling set instead of one per
+            // element. Before this, SerializeBoundedCollection's batching only ever fired for the
+            // root page, and its fast path ("the clause keeps NO navigation") was unreachable for
+            // any $expand by construction, so ~99% of an $expand payload's bytes were still
+            // serialized one entity at a time — the exact shape batching was introduced to remove.
+            //
+            // Materialized into a List<object?> by ENUMERATION (never by an IReadOnlyList cast) for
+            // two reasons, both load-bearing:
+            //   1. Polymorphism. The element declared type is `object`, so System.Text.Json
+            //      dispatches on each element's RUNTIME type — byte-identical to the per-element
+            //      SerializeToNode(element, element.GetType(), ...) this replaces, so a DERIVED
+            //      entity sitting in a base-typed collection still emits its own members (and in
+            //      STJ's derived-first property order). Handing STJ the concrete collection
+            //      (List<TBase>) instead would serialize every element by its DECLARED type and
+            //      silently drop the derived members.
+            //   2. Index alignment. SerializeBoundedCollection pairs batched[i] with values[i], and
+            //      SerializeBoundedCollection is contractually index-preserving (see its remarks).
+            //      Building the list by the same foreach STJ will then walk keeps that true even for
+            //      a collection whose indexer order disagrees with its enumeration order.
+            var elements = new List<object?>();
             foreach (object? element in (IEnumerable)value)
             {
-                array.Add(SerializeBounded(element, edmType, clause, opts, activeLevels, maxLevels, levelsNavNames));
+                elements.Add(element);
             }
-            return array;
+            return SerializeBoundedCollection(elements, edmType, clause, opts, maxLevels, levelsNavNames, activeLevels);
         }
 
         Type clrType = value.GetType();
@@ -2098,17 +2118,28 @@ internal static class OhDataEndpointFactory
     // the clause asks for it), producing a JsonArray in one shot exactly like develop's original
     // single Stage-1 call. Kept navigations are then spliced in per element via
     // SpliceKeptNavigations — but ONLY for navigations the clause actually keeps, and the whole
-    // per-element splice pass is skipped entirely (FAST PATH) when the clause keeps none at all,
-    // which is the overwhelming common case. In that case this method's allocation profile is
-    // develop's single-call shape plus one options/type-info lookup.
+    // per-element splice pass is skipped entirely (FAST PATH) when the clause keeps none at all.
+    //
+    // #337: this is ALSO SerializeBounded's nested-collection branch. The fast path above is gated
+    // on "the clause keeps NO navigation", which an $expand request never satisfies by definition —
+    // so before #337 batching only ever paid off for a request that expanded nothing (or a model
+    // with zero EDM navigations), and every entity BELOW the root was still serialized one
+    // SerializeToNode call at a time. Routing the nested level here batches each homogeneous
+    // sibling set into a single call as well, which is where the overwhelming majority of an
+    // $expand payload's bytes actually live (measured: 1 batched call over ~1 KB vs. 1,000
+    // individual calls over ~82 KB on the ExpandCollection benchmark shape). <paramref
+    // name="activeLevels"/> is the $levels budget inherited from the parent level — always null at
+    // the root call site (mirroring Stage 1's original per-entity call, which never passed one),
+    // threaded through by the nested caller so the batched path's keep/recurse decision is the
+    // SAME one the per-entity path made.
     //
     // Correctness: uses the SAME BuildExpandLookup/TryKeepNav decision table and the SAME
     // SpliceKeptNavigations splice SerializeBounded itself uses (single source, see its remarks),
     // so the two can never disagree on what "kept" means or how a kept nav gets spliced. The
     // keep/recurse decision (expanded/levelsRemaining) is computed ONCE for the whole batch — valid
-    // because every element here is a ROOT-level sibling serialized under the SAME clause, with
-    // activeLevels always null (mirroring the original per-entity Stage 1 call, which never passed
-    // an activeLevels argument either).
+    // because every element here is a SIBLING at the same level, serialized under the SAME clause
+    // and the SAME inherited activeLevels budget, exactly as the per-entity loop this replaces
+    // passed the identical (clause, activeLevels) pair to every element in turn.
     //
     // Array element order MUST match <paramref name="values"/>' source order exactly: STJ's
     // SerializeToNode over an IEnumerable preserves enumeration order (the same guarantee develop's
@@ -2118,12 +2149,13 @@ internal static class OhDataEndpointFactory
     // populated and its neighbours' not, would surface a misaligned splice as wrong data on the
     // wrong entity rather than passing by coincidence).
     private static JsonArray SerializeBoundedCollection(
-        IReadOnlyList<object> values,
+        IReadOnlyList<object?> values,
         IEdmEntityType? edmType,
         SelectExpandClause? clause,
         JsonSerializerOptions? serializerOptions,
         int maxLevels = MaxNestedExpandDepth,
-        HashSet<string>? levelsNavNames = null)
+        HashSet<string>? levelsNavNames = null,
+        (string Nav, int Remaining)? activeLevels = null)
     {
         JsonSerializerOptions opts = serializerOptions ?? _pascalCaseSerializerOptions;
         if (values.Count == 0) return new JsonArray();
@@ -2149,7 +2181,7 @@ internal static class OhDataEndpointFactory
         bool anyNavKept = false;
         foreach (IEdmNavigationProperty navProp in edmType.NavigationProperties())
         {
-            if (TryKeepNav(navProp.Name, expanded, levelsRemaining, activeLevels: null).Keep)
+            if (TryKeepNav(navProp.Name, expanded, levelsRemaining, activeLevels).Keep)
             {
                 anyNavKept = true;
                 break;
@@ -2175,7 +2207,18 @@ internal static class OhDataEndpointFactory
                 navSuppressed = GetNavSuppressedOptions(opts, edmType, t);
             }
         }
-        if (navSuppressed is null) return new JsonArray(); // every element was null — nothing to serialize
+        if (navSuppressed is null)
+        {
+            // Every element was null, so no runtime type was available to pre-populate suppression
+            // for and there is nothing to serialize. #337: a JSON null per element, NOT an empty
+            // array — a nested collection navigation may legitimately hold nulls, and the
+            // per-element path this replaces emitted one null per null element (SerializeBounded
+            // returns null for a null value). Unreachable from the root call site, whose entities
+            // are never null.
+            var allNull = new JsonArray();
+            for (int i = 0; i < values.Count; i++) allNull.Add((JsonNode?)null);
+            return allNull;
+        }
 
         JsonArray batched = JsonSerializer.SerializeToNode(values, navSuppressed) as JsonArray ?? new JsonArray();
 
@@ -2190,7 +2233,7 @@ internal static class OhDataEndpointFactory
             if (values[i] is not { } value || batched[i] is not JsonObject obj) continue;
 
             SpliceKeptNavigations(obj, value, value.GetType(), edmType, expanded, levelsRemaining,
-                activeLevels: null, opts, maxLevels, levelsNavNames);
+                activeLevels, opts, maxLevels, levelsNavNames);
         }
 
         return batched;
@@ -2308,15 +2351,60 @@ internal static class OhDataEndpointFactory
         return state.BaseTypeInfoByType.GetOrAdd(clrType, type => state.BaseResolver.GetTypeInfo(type, baseOptions));
     }
 
+    // #338 (perf): the resolved key, memoized per (PropertyInfo, JsonSerializerOptions). Those two
+    // ARE the full dependency set of the computation below — the [JsonPropertyName] rename is a
+    // function of the property alone, and the fallback is a function of the options'
+    // PropertyNamingPolicy alone — so the key is exactly as wide as the answer and no wider.
+    // Keying on PropertyInfo alone would be WRONG: two registrations may carry different naming
+    // policies (OhDataBuilder.WithJsonPropertyNamingPolicy is per-registration), and they would
+    // collide on the un-renamed branch.
+    //
+    // Shaped as ConditionalWeakTable<options, ConcurrentDictionary<PropertyInfo, string>> rather
+    // than one strong-keyed ConcurrentDictionary<(options, prop), string> for the same reason
+    // s_navSuppressedOptionsCache is (see fold-in #7 there): a strong options key leaks an entry per
+    // distinct JsonSerializerOptions for the life of the process, which a test suite that builds a
+    // fresh WebApplicationFactory host per class hits hard. The inner PropertyInfo keys are
+    // collected with the options entry that roots them.
+    private static readonly ConditionalWeakTable<JsonSerializerOptions, ConcurrentDictionary<PropertyInfo, string>>
+        s_navJsonKeyCache = new();
+
     // #184: resolve the JSON key a navigation property serializes to. A per-property
     // [System.Text.Json.Serialization.JsonPropertyName] rename wins (STJ emits it verbatim);
     // otherwise the naming policy converts the CLR name (and a null policy leaves it unchanged).
+    //
+    // #338 (perf): GetCustomAttribute is not cheap and this is a hot-path call — OmitUnexpandedNavigations
+    // reaches it once per EDM navigation per JSON object (~3,000 times on a 1,000-row, 3-navigation
+    // $expand), inside a pass its own header documents as a PRACTICAL no-op. Memoized here rather
+    // than reordered around the keep/drop test, because BOTH branches of that test need the key
+    // (the drop branch to obj.Remove it, the keep branch to index into it), so a reorder saves
+    // nothing — see OmitUnexpandedNavigations.
     private static string ResolveNavigationJsonKey(
         string navClrName, PropertyInfo? clrNavProp, JsonSerializerOptions? serializerOptions)
     {
-        JsonPropertyNameAttribute? rename = clrNavProp?.GetCustomAttribute<JsonPropertyNameAttribute>();
-        if (rename is not null) return rename.Name;
-        return serializerOptions?.PropertyNamingPolicy?.ConvertName(navClrName) ?? navClrName;
+        // No CLR property (AdvancedConfigure EDM with no matching member): nothing stable to key a
+        // cache entry on, and no attribute lookup to save — the naming-policy call is all there is.
+        // The defensive navClrName check keeps the cache honest if a future caller ever passes a
+        // name that is NOT the property's own (every current one passes clrNavProp.Name).
+        if (clrNavProp is null || !string.Equals(navClrName, clrNavProp.Name, StringComparison.Ordinal))
+        {
+            JsonPropertyNameAttribute? uncachedRename = clrNavProp?.GetCustomAttribute<JsonPropertyNameAttribute>();
+            if (uncachedRename is not null) return uncachedRename.Name;
+            return serializerOptions?.PropertyNamingPolicy?.ConvertName(navClrName) ?? navClrName;
+        }
+
+        // A null options argument and _pascalCaseSerializerOptions produce identical answers (the
+        // latter's PropertyNamingPolicy is null), so they can safely share one cache entry — the
+        // same substitution every other method in this file makes for a null options argument.
+        JsonSerializerOptions optionsKey = serializerOptions ?? _pascalCaseSerializerOptions;
+        return s_navJsonKeyCache.GetOrCreateValue(optionsKey).GetOrAdd(
+            clrNavProp,
+            static (prop, opts) =>
+            {
+                JsonPropertyNameAttribute? rename = prop.GetCustomAttribute<JsonPropertyNameAttribute>();
+                if (rename is not null) return rename.Name;
+                return opts.PropertyNamingPolicy?.ConvertName(prop.Name) ?? prop.Name;
+            },
+            optionsKey);
     }
 
     // #184: the CLR type carrying a navigation target's own properties — the element type for a
