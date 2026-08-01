@@ -52,10 +52,44 @@ namespace OhData.Server.Benchmarks.Benchmarks;
 /// </description></item>
 /// </list>
 /// <para>
-/// Fix: pin <c>InvocationCount</c> so the pilot cannot vary between runs, set <c>UnrollFactor</c> to 1
-/// (required whenever <c>InvocationCount</c> is set explicitly), and <b>drop</b> <c>WarmupCount</c> to
-/// restore adaptive warmup so the transient is absorbed however long it actually takes. Do not
+/// Fix, part 1: pin <c>InvocationCount</c> so the pilot cannot vary between runs, and set
+/// <c>UnrollFactor</c> to 1 (required whenever <c>InvocationCount</c> is set explicitly). Do not
 /// reintroduce <c>MinIterationTime</c> here: it is what let the invocation count float.
+/// </para>
+/// <para>
+/// Fix, part 2 — <c>MinWarmupCount</c>. Restoring <b>adaptive</b> warmup was necessary but not
+/// sufficient: this workload has a <b>two-stage transient</b>, and adaptive warmup is fooled by the
+/// first stage. Observed warmup series on one run: <c>14.27, 13.80, 13.42, 13.99, 13.75, 13.41,
+/// 14.19, 12.97</c> — flat, low variance, so BenchmarkDotNet declared convergence after 8 iterations
+/// and began measuring. The workload then <b>stepped down to ~4.5 ms/op</b> at measured iteration 9,
+/// i.e. the real convergence happened <i>inside</i> the measurement window, producing a right-skewed
+/// distribution (median 4.933 ms vs mean 6.779 ms, StdDev 48%).
+/// </para>
+/// <para>
+/// The step is <b>tiered JIT reaching tier-1 with dynamic PGO</b>, confirmed by a control run with
+/// <c>DOTNET_TieredCompilation=0</c>: the ramp and the plateau both vanish and StdDev falls to 3.2%.
+/// <b>That control run is NOT a valid config to adopt</b> — disabling tiering also disables dynamic
+/// PGO, and steady state moves from ~4.5 ms to ~7.6 ms. It buys stability by measuring slower,
+/// non-representative code. The fix is to <i>reach</i> tier-1+PGO before measuring, not to disable it.
+/// </para>
+/// <para>
+/// <c>MinWarmupCount</c> floors the warmup while leaving adaptive warmup free to run longer.
+/// </para>
+/// <para>
+/// <b>The floor is sized in OPERATIONS, not iterations — and the fastest benchmark sets it.</b> A
+/// floor of 20 fixed <c>ExpandCollection</c> (48% -> 5.6% StdDev) but left <c>MsOData_Levels</c> a
+/// clean monotone decay across the entire measured window (4.46 -> 1.74 ms/op, still falling at
+/// iteration 30, StdDev 37%). Because <c>InvocationCount</c> is fixed at 32 for every benchmark in the
+/// job, 20 iterations buys every benchmark the same 640 operations — but the JIT transient is a
+/// per-operation phenomenon, so the *fastest* scenario needs the most iterations to clear it.
+/// <c>MsOData_Levels</c> converges at roughly 1,400 operations. Hence a floor of <b>50</b>
+/// (50 x 32 = 1,600 operations), sized against the slowest-converging scenario, not the average.
+/// </para>
+/// <para>
+/// If a new scenario is added, check its measured series is flat at both ends before trusting it, and
+/// raise this floor if it is not. Do not switch back to a fixed <c>WarmupCount</c>, and do not disable
+/// tiered compilation. The cost of the higher floor is run time on the slow scenarios, which is the
+/// right trade against publishing an unconverged number.
 /// </para>
 /// <para>
 /// When reading results from this class, prefer <c>Median</c> and the ordered per-iteration series over
@@ -74,6 +108,11 @@ public class ExpandComparisonBenchmarks : ServerComparisonBenchmarksBase
             AddJob(Job.Default
                 .WithInvocationCount(32)
                 .WithUnrollFactor(1)
+                // MaxWarmupCount must be raised too: BenchmarkDotNet's default max is 50 and it
+                // validates Min < Max strictly, so a floor of 50 alone fails config validation
+                // ("MaxWarmupIterationCount must be greater than MinWarmupIterationCount").
+                .WithMinWarmupCount(50)
+                .WithMaxWarmupCount(100)
                 .WithIterationCount(30));
         }
     }
