@@ -21,18 +21,30 @@ public static class Program
         string[] switcherArgs = BenchSeedResolver.StripSeedArgument(args);
 
         // Correctness gate: both hosts must return semantically equivalent responses for every
-        // benchmarked scenario before any measurement runs. Skipped inside BenchmarkDotNet's
-        // spawned child processes (they re-enter Main with --benchmarkName filters).
-        bool isChildBenchmarkProcess = switcherArgs.Any(a => a.StartsWith("--benchmarkName", StringComparison.OrdinalIgnoreCase));
-        if (!isChildBenchmarkProcess)
-        {
-            if (!await SmokeCheck.RunAsync(seed))
-                return 1;
+        // benchmarked scenario before any measurement runs.
+        //
+        // No child-process guard is needed, and the one that used to live here was dead code.
+        // BenchmarkDotNet's default (out-of-process) toolchain does NOT re-enter this Main: it
+        // generates a SEPARATE executable which references this assembly and has its own entry
+        // point, then launches that. So this Main runs exactly once, in the parent, and the gate
+        // below runs exactly once per invocation. The previous guard tested for a "--benchmarkName"
+        // argument that never appears — passing it to BenchmarkSwitcher.Run is in fact rejected
+        // ("Option 'benchmarkName' is unknown"), so the condition could never be true.
+        //
+        // Two consequences worth knowing, because both are load-bearing right above this comment:
+        //   * Anything this process needs to hand its benchmark children travels by ordinary
+        //     environment-variable inheritance (Process.Start with UseShellExecute=false), not by
+        //     argument passing — the children never see this Main's argv. That is exactly why the
+        //     resolved seed is exported to the environment rather than appended to switcherArgs.
+        //   * Compile-time values (consts) reach them for free, because the generated child
+        //     project references THIS assembly — which is why BenchOrgData.DefaultSeed needs no
+        //     propagation machinery at all, and only the --seed override does.
+        if (!await SmokeCheck.RunAsync(seed))
+            return 1;
 
-            // "--smoke" runs the correctness checks only.
-            if (switcherArgs.Contains("--smoke", StringComparer.OrdinalIgnoreCase))
-                return 0;
-        }
+        // "--smoke" runs the correctness checks only.
+        if (switcherArgs.Contains("--smoke", StringComparer.OrdinalIgnoreCase))
+            return 0;
 
         BenchmarkSwitcher.FromTypes(new[] { typeof(ServerComparisonBenchmarks), typeof(ExpandComparisonBenchmarks) }).Run(switcherArgs);
         return 0;
