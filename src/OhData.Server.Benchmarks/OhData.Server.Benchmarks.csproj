@@ -14,6 +14,7 @@
 
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" Version="0.15.*" />
+    <PackageReference Include="Bogus" Version="35.6.5" />
     <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.*" />
     <!--
       Floating to the latest STABLE Microsoft.AspNetCore.OData deliberately: this is a competitive

@@ -33,22 +33,24 @@ internal static class BenchmarkRequests
     // scenarios. None distorts the fairness of the comparison (row content is identical, or the
     // divergence is a pre-existing spec nit outside what is being measured) but none of them is
     // caught by the smoke check either, so they are recorded here instead of being rediscovered:
-    //   1. OhData emits `@odata.nextLink` on all five BenchDepartments responses; Microsoft emits
-    //      none. OhData applies MaxTop=20 (BenchOrgData.DepartmentPageSize) as an implicit page
-    //      limit and, because the page comes back exactly full (DepartmentCount is also 20),
-    //      advertises a next page that doesn't exist. No timing distortion — same rows either way —
-    //      but the two responses are not byte-for-byte/semantically identical envelopes.
+    //   1. `@odata.nextLink` presence may differ between hosts. OhData treats MaxTop as an implicit
+    //      page size and always advertises a next link when more rows exist beyond the page; whether
+    //      MS OData's client-driven $top (no PageSize set — see point 4) does the same for an explicit
+    //      $top isn't asserted by the smoke check either way. Not fairness-distorting (same row
+    //      content), just an unverified envelope difference.
     //   2. `@odata.context` differs: `#BenchDepartments` on OhData vs
     //      `#BenchDepartments(Employees())` on MS OData — OhData omits the expand clause from the
     //      context URL. Pre-existing spec nit, unrelated to this branch.
     //   3. MaxTop means different things on the two sides. OhData treats it as an implicit page
     //      size (applied even when the client sends no $top); MS's [EnableQuery(MaxTop=...)] only
-    //      caps a client-*supplied* $top and does nothing to an unpaged request on its own. This is
-    //      neutral for every scenario here only because DepartmentPageSize == DepartmentCount == 20
-    //      (see point 4 below) and EmployeePageSize == EmployeeCount for the one BenchEmployees
-    //      scenario ($levels), which additionally $filters down to a single row. An unfiltered,
-    //      unpaged BenchEmployees scenario would diverge sharply (OhData would page to 100 rows,
-    //      MS OData would return all 1000) and nothing in this suite would catch it.
+    //      caps a client-*supplied* $top and does nothing to an unpaged request on its own. Since
+    //      BenchOrgData.DepartmentPageSize (12) is now LESS than BenchOrgData.DepartmentCount (20),
+    //      every BenchDepartments-rooted URL below sends an explicit `$top=DepartmentPageSize` so both
+    //      hosts window to the same page size — leaving any of them unpaged would make OhData return
+    //      12 rows and MS OData return all 20 for the identical request, which would silently make the
+    //      "faster" host just the one returning less data. EmployeePageSize == EmployeeCount for the
+    //      one BenchEmployees scenario ($levels), which additionally $filters down to a single root
+    //      row, so no equivalent explicit $top is needed there.
     //   4. `[EnableQuery(PageSize=...)]` is deliberately omitted on both new MS controllers
     //      (BenchDepartmentsController, BenchEmployeesController) — see the reasoning documented on
     //      each: PageSize wraps every collection in the response (including expanded/nested ones) in
@@ -56,35 +58,47 @@ internal static class BenchmarkRequests
     //      operation, which SQLite's EF Core provider can't emit (500). Don't "fix" this later
     //      without re-reading that reasoning.
     //
-    // ── Dataset caveats (not fairness defects, but they limit generalization) ───────────────────────
-    //   - Fan-out is perfectly uniform: exactly EmployeeCount/DepartmentCount = 50 employees per
-    //     department, and exactly ManagerBranchingFactor = 5 reports per manager. Uniform fan-out is
-    //     the easy case for a JOIN/pushdown strategy; skewed fan-out (a handful of huge departments or
-    //     managers) is where nested-$top windowing strategies are most likely to diverge, and this
-    //     suite never exercises that.
-    //   - DepartmentPageSize == DepartmentCount, so root-collection paging (a second page of
-    //     departments) is never exercised by any expand scenario — every BenchDepartments scenario
-    //     here returns its entire result set on page one.
+    // ── Dataset shape (see Model/BenchOrgData.cs) ────────────────────────────────────────────────────
+    //   - Department fan-out is seeded and skewed (Zipf-like, shuffled per seed), not uniform: the
+    //     largest department holds roughly a third of all employees, the smallest a handful. This is
+    //     deliberately the regime where nested-$top windowing strategies are most likely to diverge
+    //     from "materialize everything and count" — the old uniform 50/department split hid it.
+    //   - DepartmentPageSize (12) < DepartmentCount (20), so root-collection paging is now genuinely
+    //     exercised — see the explicit `$top=DepartmentPageSize` on every URL below and asymmetry #3.
+    //   - The manager tree's branching factor is itself seed-derived (bounded, not fixed at 5) — see
+    //     BenchOrgData.MinManagerBranchingFactor/MaxManagerBranchingFactor.
+    //   - All of the above (which department is the outlier, exact department sizes, the branching
+    //     factor, every name/salary) is deterministic for a given seed — see BenchSeedResolver — so a
+    //     specific run's numbers are always reproducible via `--seed N`.
 
-    /// <summary>Bare <c>$expand</c> of a collection navigation — the pushdown JOIN itself.</summary>
-    public const string DeptExpandCollectionUrl = "BenchDepartments?$expand=Employees&$orderby=id";
+    /// <summary>Bare <c>$expand</c> of a collection navigation — the pushdown JOIN itself. Carries an
+    /// explicit root <c>$top</c> so both hosts window the root BenchDepartments page identically — see
+    /// asymmetry #3 above.</summary>
+    public static readonly string DeptExpandCollectionUrl =
+        $"BenchDepartments?$expand=Employees&$orderby=id&$top={BenchOrgData.DepartmentPageSize}";
 
     /// <summary>Nested <c>$expand=A($expand=B)</c> — a 3-table JOIN chain (Department → Employee →
     /// Employee-as-Manager, the self-referential single-valued nav).</summary>
-    public const string DeptExpandNestedUrl = "BenchDepartments?$expand=Employees($expand=Manager)&$orderby=id";
+    public static readonly string DeptExpandNestedUrl =
+        $"BenchDepartments?$expand=Employees($expand=Manager)&$orderby=id&$top={BenchOrgData.DepartmentPageSize}";
 
     /// <summary><c>$expand</c> carrying nested <c>$top</c>/<c>$orderby</c>/<c>$count</c>/<c>$select</c> —
     /// all applied per parent, windowed and pruned in the same JOIN'd query.</summary>
-    public const string DeptExpandNestedOptionsUrl =
-        "BenchDepartments?$expand=Employees($top=10;$orderby=id;$count=true;$select=Id,Name)&$orderby=id";
+    public static readonly string DeptExpandNestedOptionsUrl =
+        $"BenchDepartments?$expand=Employees($top=10;$orderby=id;$count=true;$select=Id,Name)&$orderby=id&$top={BenchOrgData.DepartmentPageSize}";
 
     /// <summary><c>$select</c> and <c>$expand</c> combined — root columns pruned, expanded collection
     /// left unfiltered.</summary>
-    public const string DeptSelectExpandUrl = "BenchDepartments?$select=Id,Name&$expand=Employees&$orderby=id";
+    public static readonly string DeptSelectExpandUrl =
+        $"BenchDepartments?$select=Id,Name&$expand=Employees&$orderby=id&$top={BenchOrgData.DepartmentPageSize}";
 
     /// <summary>
-    /// <c>$levels</c> on the self-referential manager tree, rooted at <see cref="BenchOrgData.RootEmployeeId"/>:
-    /// root + 5 direct reports + 25 of their reports = 31 employees (see <see cref="BenchOrgData"/>).
+    /// <c>$levels</c> on the self-referential manager tree, rooted at <see cref="BenchOrgData.RootEmployeeId"/>.
+    /// The tree's branching factor is seed-derived (bounded — see <see cref="BenchOrgData.MinManagerBranchingFactor"/>/
+    /// <see cref="BenchOrgData.MaxManagerBranchingFactor"/>), so the exact employee count two levels deep
+    /// varies by seed; what's invariant is that the tree is connected, acyclic, single-rooted, and bounded
+    /// in depth, so this is always a small, well-defined, non-empty subtree that both hosts agree on
+    /// exactly for a given seed (see <see cref="BenchOrgData"/>).
     /// Goes through the COLLECTION route with a <c>$filter</c> down to the single root row rather than
     /// <c>GetById</c>: OhData's (and, empirically, Microsoft.AspNetCore.OData's) <c>$expand</c> pushdown
     /// rewrites the LINQ query feeding the response, which requires the entity to still be an unmaterialized

@@ -1,3 +1,4 @@
+using System;
 using System.Net.Http;
 using System.Threading.Tasks;
 using BenchmarkDotNet.Attributes;
@@ -29,8 +30,15 @@ public abstract class ServerComparisonBenchmarksBase
     [GlobalSetup]
     public async Task Setup()
     {
-        (_ohDataApp, HttpClient ohData, _ohDataNavConnection) = await BenchmarkHosts.StartOhDataAsync();
-        (_msODataApp, HttpClient msOData, _msODataNavConnection) = await BenchmarkHosts.StartMsODataAsync();
+        // No argv is available inside a BenchmarkDotNet child process (it re-enters Program.Main with
+        // its own --benchmarkName filter, never the original command line), so this resolves from the
+        // OHDATA_BENCH_SEED environment variable Program.Main exported before handing off to
+        // BenchmarkDotNet, falling back to BenchOrgData.DefaultSeed if that's somehow absent.
+        (int seed, string seedSource) = BenchSeedResolver.Resolve(Array.Empty<string>());
+        Console.WriteLine($"── Bench data seed (child process): {seed} (source: {seedSource}) ──");
+
+        (_ohDataApp, HttpClient ohData, _ohDataNavConnection) = await BenchmarkHosts.StartOhDataAsync(seed);
+        (_msODataApp, HttpClient msOData, _msODataNavConnection) = await BenchmarkHosts.StartMsODataAsync(seed);
         OhDataClient = ohData;
         MsODataClient = msOData;
     }
