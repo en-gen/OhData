@@ -2435,13 +2435,11 @@ internal static class OhDataEndpointFactory
         {
             if (GetBaseTypeInfo(baseOptions, t)?.PolymorphismOptions is not null) { result = true; break; }
         }
-        if (!result)
-        {
-            foreach (Type iface in clrType.GetInterfaces())
-            {
-                if (GetBaseTypeInfo(baseOptions, iface)?.PolymorphismOptions is not null) { result = true; break; }
-            }
-        }
+        // Interfaces are unordered and have no single "nearest" ancestor to walk, so unlike the base
+        // chain above there is nothing to step through - the question is purely "does ANY of them
+        // configure polymorphism", which Any states directly and short-circuits identically.
+        result = result || clrType.GetInterfaces()
+            .Any(iface => GetBaseTypeInfo(baseOptions, iface)?.PolymorphismOptions is not null);
 
         // Racing writers compute the same answer, so last-write-wins is safe here.
         state.PolymorphicByType[clrType] = result;
