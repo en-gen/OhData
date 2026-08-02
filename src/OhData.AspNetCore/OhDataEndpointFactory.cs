@@ -1999,25 +1999,29 @@ internal static class OhDataEndpointFactory
             // any $expand by construction, so ~99% of an $expand payload's bytes were still
             // serialized one entity at a time — the exact shape batching was introduced to remove.
             //
-            // Materialized into a List<object?> by ENUMERATION (never by an IReadOnlyList cast) for
-            // two reasons, both load-bearing:
-            //   1. Polymorphism. The element declared type is `object`, so System.Text.Json
-            //      dispatches on each element's RUNTIME type — byte-identical to the per-element
-            //      SerializeToNode(element, element.GetType(), ...) this replaces, so a DERIVED
-            //      entity sitting in a base-typed collection still emits its own members (and in
-            //      STJ's derived-first property order). Handing STJ the concrete collection
-            //      (List<TBase>) instead would serialize every element by its DECLARED type and
-            //      silently drop the derived members.
+            // Materialized into a List<object?> by ENUMERATION (never handed to System.Text.Json as
+            // the concrete collection) for two reasons, both load-bearing:
+            //   1. Member dispatch. The element declared type is `object`, so STJ resolves each
+            //      element's RUNTIME type and a DERIVED entity sitting in a base-typed collection
+            //      still emits its own members (in STJ's derived-first property order). Handing STJ
+            //      the concrete List<TBase> instead would serialize every element by its DECLARED
+            //      type and silently drop those members.
             //   2. Index alignment. SerializeBoundedCollection pairs batched[i] with values[i], and
-            //      SerializeBoundedCollection is contractually index-preserving (see its remarks).
-            //      Building the list by the same foreach STJ will then walk keeps that true even for
-            //      a collection whose indexer order disagrees with its enumeration order.
-            var elements = new List<object?>();
-            foreach (object? element in (IEnumerable)value)
-            {
-                elements.Add(element);
-            }
-            return SerializeBoundedCollection(elements, edmType, clause, opts, maxLevels, levelsNavNames, activeLevels);
+            //      is contractually index-preserving (see its remarks). Building the list by the
+            //      same enumeration STJ will then walk keeps that true even for a collection whose
+            //      indexer order disagrees with its enumeration order.
+            //
+            // `object`-declared dispatch is NOT, however, equivalent to runtime-TYPED dispatch:
+            // supplying `object` as the declared type is exactly what triggers STJ's POLYMORPHIC
+            // RE-ENTRY, which emits the type discriminator of the nearest [JsonPolymorphic] ancestor
+            // ("$kind": "a", ...). The per-element SerializeToNode(element, element.GetType(), ...)
+            // call this replaces passes declared type == runtime type, so STJ resolves that type's
+            // own JsonTypeInfo and writes no discriminator at all. suppressPolymorphicMetadata: true
+            // therefore makes SerializeBoundedCollection fall back to that exact per-element call for
+            // the collections where the difference is observable — see its remarks.
+            var elements = ((IEnumerable)value).Cast<object?>().ToList();
+            return SerializeBoundedCollection(elements, edmType, clause, opts, maxLevels, levelsNavNames,
+                activeLevels, suppressPolymorphicMetadata: true);
         }
 
         Type clrType = value.GetType();
@@ -2155,7 +2159,8 @@ internal static class OhDataEndpointFactory
         JsonSerializerOptions? serializerOptions,
         int maxLevels = MaxNestedExpandDepth,
         HashSet<string>? levelsNavNames = null,
-        (string Nav, int Remaining)? activeLevels = null)
+        (string Nav, int Remaining)? activeLevels = null,
+        bool suppressPolymorphicMetadata = false)
     {
         JsonSerializerOptions opts = serializerOptions ?? _pascalCaseSerializerOptions;
         if (values.Count == 0) return new JsonArray();
@@ -2198,6 +2203,7 @@ internal static class OhDataEndpointFactory
         // regardless of clrType (see CreateNavSuppressionState), so any successful call captures it.
         JsonSerializerOptions? navSuppressed = null;
         HashSet<Type>? seenTypes = null;
+        bool polymorphic = false;
         foreach (object? value in values)
         {
             if (value is null) continue;
@@ -2205,6 +2211,13 @@ internal static class OhDataEndpointFactory
             if ((seenTypes ??= new HashSet<Type>()).Add(t))
             {
                 navSuppressed = GetNavSuppressedOptions(opts, edmType, t);
+                // Piggy-backed on the distinct-type pass that already exists, so the polymorphism
+                // test costs one cached lookup per DISTINCT runtime type per collection — never a
+                // per-element check on the hot path.
+                if (suppressPolymorphicMetadata && !polymorphic && EmitsPolymorphicMetadata(opts, t))
+                {
+                    polymorphic = true;
+                }
             }
         }
         if (navSuppressed is null)
@@ -2212,12 +2225,51 @@ internal static class OhDataEndpointFactory
             // Every element was null, so no runtime type was available to pre-populate suppression
             // for and there is nothing to serialize. #337: a JSON null per element, NOT an empty
             // array — a nested collection navigation may legitimately hold nulls, and the
-            // per-element path this replaces emitted one null per null element (SerializeBounded
-            // returns null for a null value). Unreachable from the root call site, whose entities
-            // are never null.
+            // per-element path this replaces emitted exactly one null per null element
+            // (SerializeBounded returns null for a null value), so this is what keeps the nested
+            // level byte-identical.
+            //
+            // The root call site's behaviour is unchanged either way, but NOT because "a page never
+            // contains a null entity" — that would be an assumption about handler behaviour, not an
+            // invariant. It is because a null entity in the page fails EARLIER in the pipeline: a
+            // GetQueryable returning [null, null] 500s upstream of this method on develop and on
+            // this branch alike, so the two shapes are never distinguishable at the root.
+            // Independently, this shape is the safer one: develop's `return new JsonArray()` would
+            // leave the returned array SHORTER than originalItems, which Stage 2 (ETag injection)
+            // and Stage 3 (expansion) index by originalItems.Length — a latent desync this removes.
             var allNull = new JsonArray();
             for (int i = 0; i < values.Count; i++) allNull.Add((JsonNode?)null);
             return allNull;
+        }
+
+        if (polymorphic)
+        {
+            // #337 correctness fallback: at least one element's type hierarchy has polymorphism
+            // CONFIGURED (a [JsonPolymorphic] ancestor, or the equivalent set up by a custom
+            // TypeInfoResolver — see EmitsPolymorphicMetadata, which asks STJ rather than reading
+            // attributes). Batching hands STJ an `object`-declared element, which makes it take the
+            // polymorphic re-entry path and write a type discriminator ("$kind", "$type", ...) that
+            // the per-element call never wrote. That is not a cosmetic difference: the discriminator
+            // is an arbitrary STJ key in an OData payload (not @odata.type), StripToSelectedProperties
+            // /KeepUnderSelect only preserve keys containing '@' so it silently vanishes under
+            // $select, and the standalone navigation route (which still serializes per element)
+            // would disagree with $expand on the same navigation.
+            //
+            // So for these collections only, serialize exactly as before batching: one
+            // SerializeToNode per element with declared type == runtime type. Everything else keeps
+            // the batched path — this costs the optimization only for genuinely polymorphic models.
+            //
+            // Deliberately NOT applied at the root call site (suppressPolymorphicMetadata defaults to
+            // false): the root page was ALREADY batched before #337, so develop already emits the
+            // discriminator there. Suppressing it at the root would be a second output change, not a
+            // fix — byte-identity with develop is the acceptance criterion, not internal symmetry.
+            var perElement = new JsonArray();
+            foreach (object? value in values)
+            {
+                perElement.Add(SerializeBounded(
+                    value, edmType, clause, opts, activeLevels, maxLevels, levelsNavNames));
+            }
+            return perElement;
         }
 
         JsonArray batched = JsonSerializer.SerializeToNode(values, navSuppressed) as JsonArray ?? new JsonArray();
@@ -2295,7 +2347,8 @@ internal static class OhDataEndpointFactory
         JsonSerializerOptions Derived,
         IJsonTypeInfoResolver BaseResolver,
         ConcurrentDictionary<Type, HashSet<string>> NavClrNamesByType,
-        ConcurrentDictionary<Type, JsonTypeInfo?> BaseTypeInfoByType);
+        ConcurrentDictionary<Type, JsonTypeInfo?> BaseTypeInfoByType,
+        ConcurrentDictionary<Type, bool> PolymorphicByType);
 
     private static readonly ConditionalWeakTable<JsonSerializerOptions, NavSuppressionState>
         s_navSuppressedOptionsCache = new();
@@ -2319,7 +2372,9 @@ internal static class OhDataEndpointFactory
                     typeInfo.Properties.RemoveAt(i);
             }
         });
-        return new NavSuppressionState(derived, baseResolver, navClrNamesByType, new ConcurrentDictionary<Type, JsonTypeInfo?>());
+        return new NavSuppressionState(
+            derived, baseResolver, navClrNamesByType,
+            new ConcurrentDictionary<Type, JsonTypeInfo?>(), new ConcurrentDictionary<Type, bool>());
     }
 
     private static JsonSerializerOptions GetNavSuppressedOptions(
@@ -2349,6 +2404,48 @@ internal static class OhDataEndpointFactory
     {
         NavSuppressionState state = s_navSuppressedOptionsCache.GetValue(baseOptions, CreateNavSuppressionState);
         return state.BaseTypeInfoByType.GetOrAdd(clrType, type => state.BaseResolver.GetTypeInfo(type, baseOptions));
+    }
+
+    // #337 correctness support: would System.Text.Json write polymorphic metadata (a type
+    // discriminator) for an instance of <paramref name="clrType"/> when it is reached through an
+    // `object`-declared slot — i.e. through the batched SerializeBoundedCollection call rather than
+    // a per-element SerializeToNode(value, value.GetType(), ...)?
+    //
+    // Asks STJ, never the attributes. Polymorphism is only USUALLY declared with
+    // [JsonPolymorphic]/[JsonDerivedType]; it can equally be configured by a custom
+    // TypeInfoResolver or a JsonTypeInfo modifier, which attribute reflection would miss entirely
+    // (and would then silently re-introduce the discriminator leak this guards against). The
+    // resolved JsonTypeInfo.PolymorphismOptions is the single authority for both spellings, and it
+    // is resolved through the SAME captured BaseResolver every other lookup in this file uses (see
+    // IsNavVisibleInBaseOptions' remarks on why `opts.GetTypeInfo` is not safe here).
+    //
+    // Walks base classes AND interfaces because the discriminator comes from the nearest configured
+    // ANCESTOR, not from clrType itself: for `A : Base` where Base carries the configuration, A's
+    // own type info has no PolymorphismOptions at all.
+    //
+    // Memoized per (clrType, options) alongside the rest of the per-options state, so a collection
+    // pays one dictionary lookup per distinct runtime type and the hierarchy walk happens once.
+    private static bool EmitsPolymorphicMetadata(JsonSerializerOptions baseOptions, Type clrType)
+    {
+        NavSuppressionState state = s_navSuppressedOptionsCache.GetValue(baseOptions, CreateNavSuppressionState);
+        if (state.PolymorphicByType.TryGetValue(clrType, out bool cached)) return cached;
+
+        bool result = false;
+        for (Type? t = clrType; t is not null && t != typeof(object); t = t.BaseType)
+        {
+            if (GetBaseTypeInfo(baseOptions, t)?.PolymorphismOptions is not null) { result = true; break; }
+        }
+        if (!result)
+        {
+            foreach (Type iface in clrType.GetInterfaces())
+            {
+                if (GetBaseTypeInfo(baseOptions, iface)?.PolymorphismOptions is not null) { result = true; break; }
+            }
+        }
+
+        // Racing writers compute the same answer, so last-write-wins is safe here.
+        state.PolymorphicByType[clrType] = result;
+        return result;
     }
 
     // #338 (perf): the resolved key, memoized per (PropertyInfo, JsonSerializerOptions). Those two
@@ -2383,12 +2480,14 @@ internal static class OhDataEndpointFactory
     {
         // No CLR property (AdvancedConfigure EDM with no matching member): nothing stable to key a
         // cache entry on, and no attribute lookup to save — the naming-policy call is all there is.
-        // The defensive navClrName check keeps the cache honest if a future caller ever passes a
-        // name that is NOT the property's own (every current one passes clrNavProp.Name).
-        if (clrNavProp is null || !string.Equals(navClrName, clrNavProp.Name, StringComparison.Ordinal))
+        //
+        // CALLER INVARIANT: when clrNavProp is non-null, navClrName IS clrNavProp.Name — every call
+        // site passes `clrNavProp?.Name ?? <edm fallback>` or `prop.Name` directly. The cache below
+        // therefore keys on the property alone and recomputes from prop.Name. A defensive
+        // navClrName != clrNavProp.Name branch was tried here and removed: it is unreachable at all
+        // five call sites, and an unexecutable branch on a hot path can never be validated.
+        if (clrNavProp is null)
         {
-            JsonPropertyNameAttribute? uncachedRename = clrNavProp?.GetCustomAttribute<JsonPropertyNameAttribute>();
-            if (uncachedRename is not null) return uncachedRename.Name;
             return serializerOptions?.PropertyNamingPolicy?.ConvertName(navClrName) ?? navClrName;
         }
 
