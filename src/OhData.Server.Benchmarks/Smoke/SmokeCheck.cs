@@ -3,9 +3,13 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using OhData.Server.Benchmarks.Model;
 
 namespace OhData.Server.Benchmarks.Smoke;
@@ -23,12 +27,12 @@ internal static class SmokeCheck
         public SmokeFailureException(string message) : base(message) { }
     }
 
-    public static async Task<bool> RunAsync()
+    public static async Task<bool> RunAsync(int seed)
     {
         Console.WriteLine("── Smoke check: verifying both hosts return semantically equivalent responses ──");
 
-        var (ohApp, oh, ohNavConnection) = await BenchmarkHosts.StartOhDataAsync();
-        var (msApp, ms, msNavConnection) = await BenchmarkHosts.StartMsODataAsync();
+        var (ohApp, oh, ohNavConnection) = await BenchmarkHosts.StartOhDataAsync(seed);
+        var (msApp, ms, msNavConnection) = await BenchmarkHosts.StartMsODataAsync(seed);
         await using var ohAppScope = ohApp;
         using var ohScope = oh;
         using var ohNavConnScope = ohNavConnection;
@@ -36,7 +40,25 @@ internal static class SmokeCheck
         using var msScope = ms;
         using var msNavConnScope = msNavConnection;
 
+        await PrintDepartmentFanOutAsync(ohApp, seed);
+
         int failures = 0;
+
+        // Cross-host data identity is the property the entire comparison rests on: both hosts must
+        // hold byte-identical seeded rows for a given seed, or every ratio the benchmarks report is
+        // meaningless. Checked directly against each host's database (bypassing HTTP/query-option
+        // semantics entirely) rather than inferred from any one endpoint's response shape.
+        try
+        {
+            await AssertIdenticalSeedDataAsync(ohApp, msApp, seed);
+            Console.WriteLine("  PASS  Cross-host seeded data identity (row hash)");
+        }
+        catch (SmokeFailureException ex)
+        {
+            failures++;
+            Console.WriteLine($"  FAIL  Cross-host seeded data identity (row hash): {ex.Message}");
+        }
+
         foreach (var (name, check) in Checks())
         {
             try
@@ -59,6 +81,67 @@ internal static class SmokeCheck
 
         Console.WriteLine("Smoke check passed: all scenarios semantically equivalent across hosts.");
         return true;
+    }
+
+    /// <summary>
+    /// Hashes every seeded <see cref="BenchDepartment"/>/<see cref="BenchEmployee"/> row (id-ordered, all
+    /// structural properties) from each host's own <see cref="BenchOrgDbContext"/> and asserts the two
+    /// hashes match — the smoke-check-level proof that <see cref="BenchOrgData.Seed"/>'s "generate the
+    /// blueprint once, clone per host" discipline actually produced byte-identical data across the two
+    /// independently-seeded hosts for <paramref name="seed"/>, not just plausible-looking data.
+    /// </summary>
+    private static async Task AssertIdenticalSeedDataAsync(WebApplication ohApp, WebApplication msApp, int seed)
+    {
+        string hashOh = await ComputeSeedRowHashAsync(ohApp);
+        string hashMs = await ComputeSeedRowHashAsync(msApp);
+        Assert(hashOh == hashMs,
+            $"seeded row hash mismatch for seed {seed}: OhData={hashOh} MS={hashMs} — the two hosts do not " +
+            "hold byte-identical data, which invalidates every comparison this suite reports.");
+    }
+
+    private static async Task<string> ComputeSeedRowHashAsync(WebApplication app)
+    {
+        using var scope = app.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<BenchOrgDbContext>();
+
+        var departments = await db.BenchDepartments.AsNoTracking().OrderBy(d => d.Id).ToListAsync();
+        var employees = await db.BenchEmployees.AsNoTracking().OrderBy(e => e.Id).ToListAsync();
+
+        var sb = new StringBuilder();
+        foreach (var d in departments)
+            sb.Append(d.Id).Append('|').Append(d.Name).Append(';');
+        sb.Append("--EMPLOYEES--");
+        foreach (var e in employees)
+        {
+            sb.Append(e.Id).Append('|').Append(e.Name).Append('|').Append(e.Salary)
+              .Append('|').Append(e.DepartmentId).Append('|').Append(e.ManagerId).Append(';');
+        }
+
+        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString()));
+        return Convert.ToHexString(hash);
+    }
+
+    /// <summary>Diagnostic only (not a correctness assertion): reports the seed's actual
+    /// employees-per-department distribution so a reader of <c>--smoke</c> output can see the skew
+    /// profile a given seed produces without hand-computing it.</summary>
+    private static async Task PrintDepartmentFanOutAsync(WebApplication ohApp, int seed)
+    {
+        using var scope = ohApp.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<BenchOrgDbContext>();
+        var byDepartment = await db.BenchEmployees.AsNoTracking()
+            .GroupBy(e => e.DepartmentId)
+            .Select(g => new { DepartmentId = g.Key, Count = g.Count() })
+            .ToListAsync();
+        int[] sizes = byDepartment.Select(x => x.Count).OrderBy(x => x).ToArray();
+        int median = sizes.Length % 2 == 1
+            ? sizes[sizes.Length / 2]
+            : (sizes[sizes.Length / 2 - 1] + sizes[sizes.Length / 2]) / 2;
+        var largest = byDepartment.OrderByDescending(x => x.Count).First();
+        var smallest = byDepartment.OrderBy(x => x.Count).First();
+        Console.WriteLine(
+            $"── Department fan-out for seed {seed}: min={sizes[0]} max={sizes[^1]} median={median} " +
+            $"total={sizes.Sum()} across {sizes.Length} departments " +
+            $"(largest=dept {largest.DepartmentId} @ {largest.Count}, smallest=dept {smallest.DepartmentId} @ {smallest.Count}) ──");
     }
 
     private static IEnumerable<(string Name, Func<HttpClient, HttpClient, Task> Check)> Checks()
@@ -186,9 +269,14 @@ internal static class SmokeCheck
         {
             var a = await GetJsonAsync(oh, BenchmarkRequests.DeptExpandCollectionUrl, HttpStatusCode.OK);
             var b = await GetJsonAsync(ms, BenchmarkRequests.DeptExpandCollectionUrl, HttpStatusCode.OK);
-            AssertSameParentsAndChildIdSets(a, b, "Employees", expectedParents: BenchOrgData.DepartmentCount);
+            AssertSameParentsAndChildIdSets(a, b, "Employees", expectedParents: BenchOrgData.DepartmentPageSize);
+            // The request now carries an explicit $top=DepartmentPageSize (root paging — see
+            // BenchmarkRequests), so the expanded total only covers the departments on that first page,
+            // not every department; AssertSameParentsAndChildIdSets already proves per-parent child sets
+            // match, so this just reconfirms the aggregate is identical rather than merely per-parent.
             int totalA = SumChildCounts(a, "Employees");
-            Assert(totalA == BenchOrgData.EmployeeCount, $"expanded Employees totalled {totalA} across departments, expected {BenchOrgData.EmployeeCount}");
+            int totalB = SumChildCounts(b, "Employees");
+            Assert(totalA == totalB, $"expanded Employees totals differ across the paged departments: OhData={totalA} MS={totalB}");
         }
         );
 
@@ -196,7 +284,7 @@ internal static class SmokeCheck
         {
             var a = await GetJsonAsync(oh, BenchmarkRequests.DeptExpandNestedUrl, HttpStatusCode.OK);
             var b = await GetJsonAsync(ms, BenchmarkRequests.DeptExpandNestedUrl, HttpStatusCode.OK);
-            AssertSameParentsAndChildIdSets(a, b, "Employees", expectedParents: BenchOrgData.DepartmentCount);
+            AssertSameParentsAndChildIdSets(a, b, "Employees", expectedParents: BenchOrgData.DepartmentPageSize);
             AssertSameNestedSingleValued(a, b, "Employees", "Manager");
         }
         );
@@ -207,8 +295,8 @@ internal static class SmokeCheck
             var b = await GetJsonAsync(ms, BenchmarkRequests.DeptExpandNestedOptionsUrl, HttpStatusCode.OK);
             var deptsA = (JsonArray)a["value"]!;
             var deptsB = (JsonArray)b["value"]!;
-            Assert(deptsA.Count == BenchOrgData.DepartmentCount, $"OhData returned {deptsA.Count} departments, expected {BenchOrgData.DepartmentCount}");
-            Assert(deptsB.Count == BenchOrgData.DepartmentCount, $"MS OData returned {deptsB.Count} departments, expected {BenchOrgData.DepartmentCount}");
+            Assert(deptsA.Count == BenchOrgData.DepartmentPageSize, $"OhData returned {deptsA.Count} departments, expected {BenchOrgData.DepartmentPageSize}");
+            Assert(deptsB.Count == BenchOrgData.DepartmentPageSize, $"MS OData returned {deptsB.Count} departments, expected {BenchOrgData.DepartmentPageSize}");
 
             for (int i = 0; i < deptsA.Count; i++)
             {
@@ -248,7 +336,7 @@ internal static class SmokeCheck
         {
             var a = await GetJsonAsync(oh, BenchmarkRequests.DeptSelectExpandUrl, HttpStatusCode.OK);
             var b = await GetJsonAsync(ms, BenchmarkRequests.DeptSelectExpandUrl, HttpStatusCode.OK);
-            AssertSameParentsAndChildIdSets(a, b, "Employees", expectedParents: BenchOrgData.DepartmentCount);
+            AssertSameParentsAndChildIdSets(a, b, "Employees", expectedParents: BenchOrgData.DepartmentPageSize);
             foreach (var (label, json) in new[] { ("OhData", a), ("MS OData", b) })
             {
                 string[] props = ((JsonObject)json["value"]![0]!)
@@ -278,12 +366,20 @@ internal static class SmokeCheck
             Assert(rootIdA == BenchOrgData.RootEmployeeId, $"OhData root id was {rootIdA}, expected {BenchOrgData.RootEmployeeId}");
             Assert(rootIdB == BenchOrgData.RootEmployeeId, $"MS OData root id was {rootIdB}, expected {BenchOrgData.RootEmployeeId}");
 
-            // $levels=2 from a branching-factor-5 tree: root + 5 direct reports + 25 of their reports.
-            const int expectedTreeSize = 1 + 5 + 5 * 5;
+            // The manager tree's branching factor is seed-derived (bounded — see
+            // BenchOrgData.Min/MaxManagerBranchingFactor), so the exact tree size at $levels=2 varies by
+            // seed instead of being a fixed 31. What's asserted instead: the tree is non-trivial (more
+            // than just the root — proves at least one level actually expanded), bounded by the worst-case
+            // branching factor two levels deep (proves the tree didn't runaway/cycle), and — the part that
+            // actually matters for a fair comparison — both hosts agree on the EXACT same set of ids.
+            const int minPlausibleTreeSize = 1 + BenchOrgData.MinManagerBranchingFactor;
+            const int maxPlausibleTreeSize = 1 + BenchOrgData.MaxManagerBranchingFactor + BenchOrgData.MaxManagerBranchingFactor * BenchOrgData.MaxManagerBranchingFactor;
             long[] idsA = CollectTreeIds(a, "Reports").OrderBy(x => x).ToArray();
             long[] idsB = CollectTreeIds(b, "Reports").OrderBy(x => x).ToArray();
-            Assert(idsA.Length == expectedTreeSize, $"OhData $levels tree had {idsA.Length} employees, expected {expectedTreeSize}");
-            Assert(idsB.Length == expectedTreeSize, $"MS OData $levels tree had {idsB.Length} employees, expected {expectedTreeSize}");
+            Assert(idsA.Length >= minPlausibleTreeSize && idsA.Length <= maxPlausibleTreeSize,
+                $"OhData $levels tree had {idsA.Length} employees, expected between {minPlausibleTreeSize} and {maxPlausibleTreeSize}");
+            Assert(idsB.Length >= minPlausibleTreeSize && idsB.Length <= maxPlausibleTreeSize,
+                $"MS OData $levels tree had {idsB.Length} employees, expected between {minPlausibleTreeSize} and {maxPlausibleTreeSize}");
             Assert(idsA.SequenceEqual(idsB), $"$levels tree id sets differ: OhData [{string.Join(",", idsA)}] vs MS [{string.Join(",", idsB)}]");
         }
         );
