@@ -2,8 +2,7 @@
 
 	<PropertyGroup>
 		<TargetFramework>net10.0</TargetFramework>
-		<Nullable>enable</Nullable>
-		<LangVersion>latest</LangVersion>
+		<!-- Nullable/LangVersion are already set (enable/latest) in src/Directory.Build.props; not repeated here. -->
 		<IsPackable>false</IsPackable>
 		<!-- Test projects do not require XML documentation comments -->
 		<NoWarn>$(NoWarn);CS1591</NoWarn>

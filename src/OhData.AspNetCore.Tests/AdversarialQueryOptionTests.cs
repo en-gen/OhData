@@ -133,6 +133,35 @@ public class AdversarialQueryOptionTests
     }
 
     [Fact]
+    public async Task OrderBy_DivByZero_Returns400ODataError_NamesOrderByNotFilter()
+    {
+        // #358 review item 5: the error message must name the option that actually faulted. A
+        // request carrying ONLY $orderby (no $filter anywhere in it) previously said "The
+        // $filter expression could not be evaluated", which is simply false when there's no
+        // $filter in the request.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AdversarialQueryProfile>());
+        var response = await fx.Client.GetAsync(Url + "?$orderby=" + Uri.EscapeDataString("Id div 0"));
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("InvalidQueryOption", json.GetProperty("error").GetProperty("code").GetString());
+        string message = json.GetProperty("error").GetProperty("message").GetString()!;
+        Assert.Contains("$orderby", message);
+        Assert.DoesNotContain("$filter", message);
+    }
+
+    [Fact]
+    public async Task Filter_DivByZero_MessageNamesFilterNotOrderBy()
+    {
+        // Companion to the above: a pure $filter fault must name $filter, not $orderby.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AdversarialQueryProfile>());
+        var response = await fx.Client.GetAsync(Url + "?$filter=" + Uri.EscapeDataString("Id div 0 eq 1"));
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        string message = json.GetProperty("error").GetProperty("message").GetString()!;
+        Assert.Contains("$filter", message);
+        Assert.DoesNotContain("$orderby", message);
+    }
+
+    [Fact]
     public async Task Filter_ExtremelyLong_10kChars_DoesNotHang_ReturnsQuickly()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AdversarialQueryProfile>());

@@ -116,6 +116,8 @@ jobs:
             --no-build -c Release
           dotnet test src/OhData.AspNetCore.Swashbuckle.Tests/OhData.AspNetCore.Swashbuckle.Tests.csproj \
             --no-build -c Release
+          dotnet test src/OhData.TestBench.AspNetCore.Tests/OhData.TestBench.AspNetCore.Tests.csproj \
+            --no-build -c Release
 
       - name: Pack
         run: |

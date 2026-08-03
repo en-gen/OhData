@@ -33,6 +33,20 @@ namespace OhData.TestBench.AspNetCore.Tests;
 /// marker), with the InMemory database name replaced by a fresh GUID per instance so the two
 /// tests -- and any other test that boots this factory -- never share state through EF Core's
 /// process-wide InMemory database registry.
+/// <para>
+/// <b>Harness note (deliberate divergence):</b> every other OhData test project uses
+/// <c>Microsoft.AspNetCore.TestHost</c> via the shared in-repo <c>TestHostBuilder</c>, which
+/// builds a fresh <c>WebApplicationBuilder</c> from scratch inside the test process -- it never
+/// executes an existing app's own <c>Program.cs</c>. That pattern cannot exercise this bug: #356
+/// is specifically about what <em>this app's actual startup code</em> registers, so the test
+/// needs to boot the real <c>OhData.TestBench.AspNetCore/Program.cs</c> unmodified, which is
+/// exactly what <c>Microsoft.AspNetCore.Mvc.Testing</c>'s <see cref="WebApplicationFactory{TEntryPoint}"/>
+/// is built for (it locates and runs the target assembly's actual entry point). One satellite
+/// test project per integration surface — this one paired 1:1 with the TestBench app it verifies
+/// — is the repo's existing convention (see <c>OhData.Client.Tests</c> vs. <c>OhData.Client</c>,
+/// etc.); referencing the sample app from the core <c>OhData.AspNetCore.Tests</c> project would
+/// invert that and create a backward dependency from the framework's test suite onto a sample.
+/// </para>
 /// </summary>
 public class DbContextLifetimeTests
 {
@@ -43,12 +57,37 @@ public class DbContextLifetimeTests
         {
             builder.ConfigureServices(services =>
             {
-                // Replace the app's own AddDbContext<AppDbContext>(...) registration with an
-                // identically-scoped one pointed at a private, per-test-instance InMemory
-                // database, so tests never see each other's writes (or the app's default
-                // "TestBench" seed data mutated by a previous test run in the same process).
+                // Point AppDbContext at a private, per-test-instance InMemory database, so tests
+                // never see each other's writes (or the app's default "TestBench" seed data
+                // mutated by a previous test run in the same process). Only
+                // DbContextOptions<AppDbContext> is removed and re-registered here -- EF Core's
+                // AddDbContext TryAdds the AppDbContext service descriptor itself, so if
+                // Program.cs already registered one (it always has, by this point in host
+                // construction), THIS call is a no-op for it and Program.cs's own registration
+                // -- and its lifetime -- passes through untouched. That is what makes
+                // AppDbContext_IsRegisteredScoped below a genuine assertion about Program.cs,
+                // not this fixture.
+                //
+                // #356 review R3: the options re-registration must mirror THAT lifetime, not
+                // default to Scoped. Read it BEFORE removing anything, so a Program.cs regressed
+                // back to Singleton gets a Singleton-registered DbContextOptions<AppDbContext>
+                // too. Doing this the naive way (removing the options and re-adding via the
+                // parameterless-lifetime AddDbContext overload, which defaults to Scoped) mismatches
+                // a Singleton AppDbContext against Scoped options -- ASP.NET Core's own DI scope
+                // validation then fails host construction with "cannot consume scoped service
+                // ... from singleton ..." BEFORE a single request runs, which is a real DI wiring
+                // complaint but tells a maintainer nothing about #356's actual bug (a poisoned
+                // change tracker bricking later, unrelated writes). Mirroring the lifetime lets
+                // FailedWrite_DoesNotBrickSubsequentWrites reach that real bug on a regression.
+                ServiceLifetime appLifetime = services
+                    .LastOrDefault(d => d.ServiceType == typeof(AppDbContext))?.Lifetime
+                    ?? ServiceLifetime.Scoped;
+
                 services.RemoveAll<DbContextOptions<AppDbContext>>();
-                services.AddDbContext<AppDbContext>(o => o.UseInMemoryDatabase(dbName));
+                services.AddDbContext<AppDbContext>(
+                    o => o.UseInMemoryDatabase(dbName),
+                    contextLifetime: appLifetime,
+                    optionsLifetime: appLifetime);
             });
         });
     }
