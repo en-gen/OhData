@@ -20,7 +20,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
 }
 ```
 
-`UseETag` accepts one or more property selectors. The framework SHA-256 hashes their values and Base64-encodes the result. `byte[]` properties are hashed directly (ideal for SQL row-version columns); all other values are hashed as their UTF-8 string representations.
+`UseETag` accepts one or more property selectors. The framework SHA-256 hashes their values and Base64-encodes the result. Binary buffers are hashed directly (ideal for SQL row-version columns) - `byte[]`, `ImmutableArray<byte>`, `ReadOnlyMemory<byte>`, `Memory<byte>` and `ArraySegment<byte>` are all treated identically. Every other value is hashed as its UTF-8 string representation, formatted as described below.
 
 Hash multiple fields together - the ETag changes if any of them changes:
 
@@ -28,26 +28,72 @@ Hash multiple fields together - the ETag changes if any of them changes:
 UseETag(x => x.Name, x => x.Price, x => x.UpdatedAt);
 ```
 
+### Which selector types are allowed
+
+`MapOhData()` throws `InvalidOperationException` if a `UseETag` selector returns a type the hash
+cannot faithfully represent. Supported types are:
+
+- a binary buffer - `byte[]`, `ImmutableArray<byte>`, `ReadOnlyMemory<byte>`, `Memory<byte>`,
+  `ArraySegment<byte>`
+- `string`, `bool`, an enum, or any type implementing `IFormattable` (which covers every numeric
+  type, `DateTime`, `DateTimeOffset`, `DateOnly`, `TimeOnly`, `TimeSpan`, `Guid` and `char`)
+- a `Nullable<T>` of any of the above
+
+Anything else - a navigation property, an entity reference, a `List<T>`, a POCO, `object` - is
+rejected. The reason is that such a type usually has no `ToString()` override, so it would format
+to its own *type name*: the same string for every row, giving every entity in the set one shared
+ETag and turning `If-Match` into a check that always passes. Nothing in any response reveals that;
+the only symptom is a lost update, so it fails at startup instead. The fix is always to select a
+scalar projection - `x => x.Related.Id`, `x => x.Related.RowVersion`.
+
+The check sees only the *declared* type. A selector declared as `IFormattable` (or any base type)
+is accepted, and it is then the type's responsibility to render culture-independently.
+
 ### How values are formatted
 
-Non-`byte[]` values are formatted **round-trippably and under `InvariantCulture`** before hashing,
+Non-binary values are formatted **round-trippably and under `InvariantCulture`** before hashing,
 so the ETag is a faithful function of the entity state and nothing else:
 
 | Value type | Formatting | Why |
 |---|---|---|
-| `DateTime`, `DateTimeOffset`, `DateOnly`, `TimeOnly` | `"O"` (ISO-8601 round-trip) | Keeps all seven fractional-second digits, plus `DateTimeKind`/offset. A `DateTimeOffset.UtcNow` timestamp changes the ETag even when two writes land in the same second. |
-| `TimeSpan` | `"c"` | Full tick precision. `"O"` is not a valid `TimeSpan` specifier. |
-| `Guid` | `"D"` | Canonical hyphenated form. `"O"` is not a valid `Guid` specifier. |
+| `DateTime` (`Utc`, `Unspecified`) | `"O"` (ISO-8601 round-trip) | Keeps all seven fractional-second digits, plus the `Z`/no-suffix that discriminates the two Kinds. |
+| `DateTime` (`Local`) | `"O"` with the offset suppressed, plus a Kind marker | See the note below - `"O"` would append the *server's* UTC offset. |
+| `DateTimeOffset` | `"O"` | Full sub-second precision plus the value's own offset. A `DateTimeOffset.UtcNow` timestamp changes the ETag even when two writes land in the same second. |
+| `DateOnly`, `TimeOnly` | `"O"` | `TimeOnly`'s general format drops seconds as well as the fraction. |
+| `TimeSpan` | `"c"` | Full tick precision. `"O"` is not a valid `TimeSpan` specifier - it throws. |
+| `Guid` | `"D"` | Canonical hyphenated form. `"O"` is not a valid `Guid` specifier - it throws. |
 | `float`, `double` | invariant, default | The shortest *round-trippable* form - two values that differ by one bit hash differently. |
 | `decimal` | invariant, default | Exact, and preserves scale (`1.50m` differs from `1.5m`). |
-| integers, `bool`, `char`, `string`, enums | invariant | Exact by construction. |
-| anything else | `IFormattable` under invariant culture, else `ToString()` | Custom ETag input types should have a stable, complete, culture-independent `ToString()`. |
+| integers, `char`, enums | invariant, default | Exact by construction; invariant culture pins the sign character, which differs in some locales. |
+| `string` | as-is | |
+| `bool` | `ToString()` | `bool` does not implement `IFormattable`; its `ToString()` ignores any format provider and always yields `True`/`False`. |
+| anything else | `IFormattable` under invariant culture, else `ToString()` | Reachable only for a selector declared as a base type or interface - see the allowlist above. |
 
 Invariance is what lets a `de-DE` and an `en-US` server behind the same load balancer agree on the
 ETag for identical entity state. Values are additionally length-prefixed and tagged with their CLR
 type before hashing, so adjacent properties cannot be reinterpreted across the boundary
 (`("ab","c")` vs `("a","bc")`), `null` never hashes the same as `""`, and the string `"1"` never
 collides with the integer `1`.
+
+Two consequences worth knowing about:
+
+- **`DateTime` with `Kind == Local` is hashed by its wall-clock reading, not its instant.** The
+  round-trip `"O"` format appends `TimeZoneInfo.Local`'s offset for a `Local` value, which would
+  make the ETag a function of the *server's* timezone configuration: a client reading from a
+  `TZ=UTC` node and writing to a `TZ=America/Chicago` node would get `412` forever, and a tzdata
+  update that changes a future DST rule would rotate every outstanding ETag. So the offset is
+  suppressed and the `DateTimeKind` is recorded instead - the value stays lossless and
+  machine-independent. (Storing UTC, as `DateTimeOffset.UtcNow` or `DateTime.UtcNow` does, sidesteps
+  the question entirely and remains the recommendation.)
+- **Two `DateTimeOffset` values that are `==` can have different ETags.** `DateTimeOffset.Equals`
+  compares instants, so `10:00Z` equals `12:00+02:00` - but they are different representations and
+  serialize differently, so they hash differently. Normalize (`.ToUniversalTime()`) in your model if
+  you need offset-insensitive comparison.
+
+The type discriminator is derived from type *names* only, never assembly identity, so the `net8.0`
+and `net10.0` builds of the package produce the same ETag for the same data and an application
+version bump does not rotate anything. Renaming or moving a type that appears in an ETag selector
+*does* change that entity set's ETags - treat it like any other representation change.
 
 > **Upgrading:** these rules changed in the release noted in the [CHANGELOG](../CHANGELOG.md), and
 > every previously-issued ETag value changes with them. Clients holding an older ETag get a `412`

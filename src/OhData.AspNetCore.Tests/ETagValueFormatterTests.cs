@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using OhData;
 using Xunit;
@@ -131,8 +132,8 @@ public class ETagValueFormatterTests
 
         foreach (object value in values)
         {
-            string enUs = WithCulture("en-US", () => ETagValueFormatter.Format(value));
-            string other = WithCulture(culture, () => ETagValueFormatter.Format(value));
+            string enUs = CultureScope.Run("en-US", () => ETagValueFormatter.Format(value));
+            string other = CultureScope.Run(culture, () => ETagValueFormatter.Format(value));
             Assert.Equal(enUs, other);
         }
     }
@@ -155,21 +156,147 @@ public class ETagValueFormatterTests
         Assert.NotEqual(ETagValueFormatter.Format(t1), ETagValueFormatter.Format(t2));
     }
 
-    private static T WithCulture<T>(string culture, Func<T> action)
+    // ── DateTimeKind.Local must not import the server's timezone configuration ──────
+
+    /// <summary>
+    /// <c>"O"</c> renders a <see cref="DateTimeKind.Local"/> value with
+    /// <c>TimeZoneInfo.Local.GetUtcOffset(...)</c> appended, which would put the *server's*
+    /// timezone into the hash: a client reading from a <c>TZ=UTC</c> node and writing to a
+    /// <c>TZ=America/Chicago</c> node would get 412 forever, and a tzdata DST change would rotate
+    /// every outstanding ETag on a single node. The formatter must emit the wall-clock reading
+    /// plus a Kind marker instead.
+    /// </summary>
+    [Fact]
+    public void LocalDateTime_DoesNotEmbedTheServerUtcOffset()
     {
-        CultureInfo previousCulture = CultureInfo.CurrentCulture;
-        CultureInfo previousUiCulture = CultureInfo.CurrentUICulture;
-        try
+        var local = new DateTime(2026, 1, 1, 10, 0, 0, DateTimeKind.Local).AddTicks(1_000_000);
+
+        string formatted = ETagValueFormatter.Format(local);
+
+        // The "O" output would have been e.g. "2026-01-01T10:00:00.1000000-06:00".
+        Assert.Equal("2026-01-01T10:00:00.1000000[Local]", formatted);
+        Assert.DoesNotContain(
+            TimeZoneInfo.Local.GetUtcOffset(local).ToString("c", CultureInfo.InvariantCulture),
+            formatted,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>All three <see cref="DateTimeKind"/>s over the same ticks stay distinct — the Kind
+    /// is part of the value and dropping it would be a new collision.</summary>
+    [Fact]
+    public void AllThreeDateTimeKinds_OverTheSameTicks_FormatDistinctly()
+    {
+        long ticks = new DateTime(2026, 1, 1, 10, 0, 0, DateTimeKind.Utc).AddTicks(1_000_000).Ticks;
+        string utc = ETagValueFormatter.Format(new DateTime(ticks, DateTimeKind.Utc));
+        string local = ETagValueFormatter.Format(new DateTime(ticks, DateTimeKind.Local));
+        string unspecified = ETagValueFormatter.Format(new DateTime(ticks, DateTimeKind.Unspecified));
+
+        Assert.Equal(3, new HashSet<string>(new[] { utc, local, unspecified }, StringComparer.Ordinal).Count);
+    }
+
+    /// <summary>A Local value still keeps full sub-second precision — the Kind fix must not
+    /// re-open the original #351 hole.</summary>
+    [Fact]
+    public void LocalDateTime_KeepsSubSecondPrecision()
+    {
+        var a = new DateTime(2026, 1, 1, 10, 0, 0, DateTimeKind.Local).AddMilliseconds(100);
+        var b = new DateTime(2026, 1, 1, 10, 0, 0, DateTimeKind.Local).AddMilliseconds(900);
+
+        Assert.NotEqual(ETagValueFormatter.Format(a), ETagValueFormatter.Format(b));
+    }
+
+    // ── Type discriminator must not carry assembly versions ────────────────────────
+
+    /// <summary>
+    /// <see cref="Type.FullName"/> embeds each generic argument's assembly identity *including its
+    /// version*, so the net8.0 and net10.0 builds of this package would mint different ETags for
+    /// identical data. The discriminator must be derived from names only.
+    /// </summary>
+    [Theory]
+    [InlineData(typeof(int), "System.Int32")]
+    [InlineData(typeof(byte[]), "System.Byte[]")]
+    [InlineData(typeof(int?), "System.Nullable`1[System.Int32]")]
+    [InlineData(typeof((decimal, decimal)), "System.ValueTuple`2[System.Decimal,System.Decimal]")]
+    [InlineData(typeof(System.Collections.Generic.List<string>), "System.Collections.Generic.List`1[System.String]")]
+    public void StableTypeName_IsVersionFree(Type type, string expected)
+    {
+        string name = ETagValueFormatter.StableTypeName(type);
+
+        Assert.Equal(expected, name);
+        Assert.DoesNotContain("Version=", name, StringComparison.Ordinal);
+        Assert.DoesNotContain("PublicKeyToken", name, StringComparison.Ordinal);
+
+        // The exact thing this replaces, for contrast.
+        if (type.IsConstructedGenericType)
         {
-            var target = new CultureInfo(culture);
-            CultureInfo.CurrentCulture = target;
-            CultureInfo.CurrentUICulture = target;
-            return action();
+            Assert.Contains("Version=", type.FullName!, StringComparison.Ordinal);
         }
-        finally
-        {
-            CultureInfo.CurrentCulture = previousCulture;
-            CultureInfo.CurrentUICulture = previousUiCulture;
-        }
+    }
+
+    /// <summary>Nested types stay distinct even though <c>Type.Name</c> drops the declaring
+    /// type.</summary>
+    [Fact]
+    public void StableTypeName_KeepsNestedTypesDistinct()
+    {
+        Assert.NotEqual(
+            ETagValueFormatter.StableTypeName(typeof(OuterA.Shared)),
+            ETagValueFormatter.StableTypeName(typeof(OuterB.Shared)));
+    }
+
+    private static class OuterA { internal sealed class Shared { } }
+    private static class OuterB { internal sealed class Shared { } }
+
+    // ── Selector-type allowlist ────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData(typeof(byte[]))]
+    [InlineData(typeof(System.Collections.Immutable.ImmutableArray<byte>))]
+    [InlineData(typeof(ReadOnlyMemory<byte>))]
+    [InlineData(typeof(Memory<byte>))]
+    [InlineData(typeof(ArraySegment<byte>))]
+    [InlineData(typeof(string))]
+    [InlineData(typeof(bool))]
+    [InlineData(typeof(bool?))]
+    [InlineData(typeof(char))]
+    [InlineData(typeof(int))]
+    [InlineData(typeof(long?))]
+    [InlineData(typeof(double))]
+    [InlineData(typeof(decimal))]
+    [InlineData(typeof(DateTime))]
+    [InlineData(typeof(DateTimeOffset?))]
+    [InlineData(typeof(DateOnly))]
+    [InlineData(typeof(TimeOnly))]
+    [InlineData(typeof(TimeSpan))]
+    [InlineData(typeof(Guid))]
+    [InlineData(typeof(DayOfWeek))]
+    [InlineData(typeof(DayOfWeek?))]
+    public void SupportedSelectorTypes_AreAccepted(Type type) =>
+        Assert.True(ETagValueFormatter.IsSupportedSelectorType(type), type.ToString());
+
+    /// <summary>
+    /// Each of these formats to a value that is either constant across every row (no
+    /// <c>ToString()</c> override → the type's own name) or culture-dependent
+    /// (<see cref="TimeZoneInfo"/> → its UI-culture <c>DisplayName</c>).
+    /// </summary>
+    [Theory]
+    [InlineData(typeof(object))]
+    [InlineData(typeof(System.Collections.Generic.List<string>))]
+    [InlineData(typeof(System.Collections.Generic.List<byte>))]
+    [InlineData(typeof(int[]))]
+    [InlineData(typeof(TimeZoneInfo))]
+    [InlineData(typeof(ETagValueFormatterTests))]
+    public void UnsupportedSelectorTypes_AreRejected(Type type) =>
+        Assert.False(ETagValueFormatter.IsSupportedSelectorType(type), type.ToString());
+
+    /// <summary>Demonstrates the failure the allowlist exists to prevent: a type with no
+    /// <c>ToString()</c> override formats to its own type name — identical for every row.</summary>
+    [Fact]
+    public void TypeWithoutToStringOverride_FormatsToAConstant()
+    {
+        var a = new System.Collections.Generic.List<string> { "a" };
+        var b = new System.Collections.Generic.List<string> { "COMPLETELY", "DIFFERENT" };
+
+        Assert.Equal(ETagValueFormatter.Format(a), ETagValueFormatter.Format(b));
+        Assert.False(ETagValueFormatter.IsSupportedSelectorType(typeof(System.Collections.Generic.List<string>)));
     }
 }

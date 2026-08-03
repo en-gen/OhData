@@ -504,6 +504,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         // access makes the names unknowable → null → pushdown ineligible while ETags are on.
         _etagPropertyNames = TryExtractDirectMemberNames(propertySelectors);
 
+        // #351: capture each selector's DECLARED result type so MapOhData() can reject a selector
+        // the hash cannot faithfully represent (see ETagValueFormatter.IsSupportedSelectorType).
+        // Like the names above, this must run before the compiled-delegate cache early return.
+        _etagSelectors = ExtractSelectorInfo(propertySelectors);
+
         // Reuse the cached compiled delegate if available (avoids recompiling on every scoped construction).
         if (s_etagCache.TryGetValue(GetType(), out var cached))
         {
@@ -542,6 +547,38 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     }
 
     private IReadOnlyCollection<string>? _etagPropertyNames;
+    private IReadOnlyList<ETagSelectorInfo>? _etagSelectors;
+
+    /// <summary>
+    /// Describes each <c>UseETag</c> selector for the startup type check: a human-readable
+    /// description for the error message, and the selector's DECLARED result type.
+    /// </summary>
+    /// <remarks>
+    /// The declared type is taken after stripping the compiler-inserted <c>Convert</c> to
+    /// <c>object</c> that boxing a value type produces, so <c>x =&gt; x.UpdatedAt</c> reports
+    /// <c>DateTime</c> rather than <c>object</c>. A selector genuinely declared as <c>object</c>
+    /// reports <c>object</c> and is rejected — its runtime type is unknowable at startup.
+    /// </remarks>
+    private static IReadOnlyList<ETagSelectorInfo> ExtractSelectorInfo(
+        Expression<Func<TModel, object?>>[] selectors)
+    {
+        var infos = new List<ETagSelectorInfo>(selectors.Length);
+        foreach (Expression<Func<TModel, object?>> selector in selectors)
+        {
+            Expression body = selector.Body is UnaryExpression unary &&
+                (unary.NodeType == ExpressionType.Convert || unary.NodeType == ExpressionType.ConvertChecked)
+                ? unary.Operand
+                : selector.Body;
+
+            string description = body is MemberExpression member && member.Expression is ParameterExpression
+                ? member.Member.Name
+                : body.ToString();
+
+            infos.Add(new ETagSelectorInfo(description, body.Type));
+        }
+
+        return infos;
+    }
 
     /// <summary>
     /// Extracts CLR property names when EVERY selector is a direct member access on the lambda
@@ -1873,6 +1910,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     bool IEntitySetEndpointSource.SelectPushdownEnabled => _resolvedSelectPushdownEnabled;
     bool IEntitySetEndpointSource.ExpandPushdownEnabled => _resolvedExpandPushdownEnabled;
     IReadOnlyCollection<string>? IEntitySetEndpointSource.ETagPropertyNames => _etagPropertyNames;
+    IReadOnlyList<ETagSelectorInfo>? IEntitySetEndpointSource.ETagSelectors => _etagSelectors;
     RoundingMode IEntitySetEndpointSource.RoundingMode => _resolvedRoundingMode;
     IReadOnlyList<StructuralPropertyInfo> IEntitySetEndpointSource.StructuralProperties =>
         _structuralProperties ??= BuildStructuralProperties();

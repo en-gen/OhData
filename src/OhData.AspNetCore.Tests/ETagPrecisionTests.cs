@@ -1,6 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
+using System.Collections.Immutable;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
@@ -197,6 +197,7 @@ public class ETagPrecisionTests
     {
         public int Id { get; set; }
         public DateTime Dt { get; set; }
+        public DateTime DtLocal { get; set; }
         public DateTimeOffset Dto { get; set; }
         public DateOnly Date { get; set; }
         public TimeOnly Time { get; set; }
@@ -215,7 +216,7 @@ public class ETagPrecisionTests
         {
             EntitySetName = "TypedThings";
             UseETag(
-                x => x.Dt, x => x.Dto, x => x.Date, x => x.Time, x => x.Span,
+                x => x.Dt, x => x.DtLocal, x => x.Dto, x => x.Date, x => x.Time, x => x.Span,
                 x => x.Ref, x => x.Dbl, x => x.Flt, x => x.Dec, x => x.Num, x => x.Flag);
         }
     }
@@ -229,6 +230,7 @@ public class ETagPrecisionTests
     {
         Id = 1,
         Dt = BaseInstant.AddMilliseconds(100),
+        DtLocal = new DateTime(2026, 1, 1, 10, 0, 0, DateTimeKind.Local).AddMilliseconds(100),
         Dto = new DateTimeOffset(BaseInstant).AddMilliseconds(100),
         Date = new DateOnly(2026, 1, 1),
         Time = new TimeOnly(14, 30, 0, 500),
@@ -250,6 +252,11 @@ public class ETagPrecisionTests
     [InlineData("dt-same-second")]
     [InlineData("dt-one-tick")]                 // (pre-fix collision)
     [InlineData("dt-kind")]                     // DateTimeKind is part of the value
+    // Local values: sub-second precision must survive the Kind-marker treatment, and a Local
+    // value must stay distinct from the same wall-clock ticks stored as Utc or Unspecified.
+    [InlineData("dt-local-same-second")]        // (pre-fix collision)
+    [InlineData("dt-local-to-unspecified")]
+    [InlineData("dt-local-to-utc")]
     // Sub-second on DateTimeOffset — what DateTimeOffset.UtcNow yields on every write.
     [InlineData("dto-same-second")]             // (pre-fix collision)
     [InlineData("dto-offset")]
@@ -289,6 +296,11 @@ public class ETagPrecisionTests
             case "dt-same-second": t.Dt = BaseInstant.AddMilliseconds(900); break;
             case "dt-one-tick": t.Dt = t.Dt.AddTicks(1); break;
             case "dt-kind": t.Dt = DateTime.SpecifyKind(t.Dt, DateTimeKind.Unspecified); break;
+            case "dt-local-same-second":
+                t.DtLocal = new DateTime(2026, 1, 1, 10, 0, 0, DateTimeKind.Local).AddMilliseconds(900);
+                break;
+            case "dt-local-to-unspecified": t.DtLocal = DateTime.SpecifyKind(t.DtLocal, DateTimeKind.Unspecified); break;
+            case "dt-local-to-utc": t.DtLocal = DateTime.SpecifyKind(t.DtLocal, DateTimeKind.Utc); break;
             case "dto-same-second": t.Dto = new DateTimeOffset(BaseInstant).AddMilliseconds(900); break;
             case "dto-offset": t.Dto = t.Dto.ToOffset(TimeSpan.FromHours(2)); break;
             case "date-plus-day": t.Date = t.Date.AddDays(1); break;
@@ -333,6 +345,46 @@ public class ETagPrecisionTests
         Assert.Equal(ETagOf(profile, Baseline()), ETagOf(profile, Baseline()));
     }
 
+    /// <summary>
+    /// The golden value. Every other assertion in this file is relational (two computed ETags
+    /// compared against each other), which cannot catch a change that moves *both* sides — the
+    /// exact shape of the #351 regression. This pins one literal ETag over a model covering every
+    /// supported category, so any future change to the formatting or the framing fails CI and has
+    /// to be a deliberate, documented decision.
+    /// <para>
+    /// It doubles as the machine-independence proof: the model carries a
+    /// <see cref="DateTimeKind.Local"/> timestamp, so if the formatter ever re-imported
+    /// <c>TimeZoneInfo.Local</c>'s offset (as <c>"O"</c> does natively) this value would differ
+    /// between developer machines and CI. It is also asserted under a non-invariant culture.
+    /// </para>
+    /// <para>
+    /// <b>If this test fails, do not just update the constant.</b> Every ETag the framework has
+    /// ever issued changes with it — see the upgrade note in docs/etags.md.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void GoldenETagValue_IsPinned()
+    {
+        const string Golden = "AbClBeSSBSIpXap9VGWOsZrEggQd/sMvuJUUV8O7Rl0=";
+
+        var profile = new TypedThingProfile();
+
+        Assert.Equal(Golden, ETagOf(profile, Baseline()));
+        Assert.Equal(Golden, CultureScope.Run("de-DE", () => ETagOf(profile, Baseline())));
+        Assert.Equal(Golden, CultureScope.Run("th-TH", () => ETagOf(profile, Baseline())));
+    }
+
+    /// <summary>Golden value for the binary path, pinned for the same reason.</summary>
+    [Fact]
+    public void GoldenETagValue_ForByteArrayRowVersion_IsPinned()
+    {
+        var profile = new VersionedProfile();
+
+        Assert.Equal(
+            "GQ8uG6NlitaOK6cOVuXIsK1K6w+cuoTvTZYfDmWXu1E=",
+            ETagOf(profile, new Versioned { Id = 1, RowVersion = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 } }));
+    }
+
     // ── 4. Culture invariance ───────────────────────────────────────────────────
 
     public class Priced
@@ -371,8 +423,8 @@ public class ETagPrecisionTests
             Count = -9876543,
         };
 
-        string enUs = WithCulture("en-US", () => ETagOf(profile, model));
-        string other = WithCulture(culture, () => ETagOf(profile, model));
+        string enUs = CultureScope.Run("en-US", () => ETagOf(profile, model));
+        string other = CultureScope.Run(culture, () => ETagOf(profile, model));
 
         Assert.Equal(enUs, other);
     }
@@ -386,26 +438,8 @@ public class ETagPrecisionTests
         {
             var model = new Priced { Id = 1, Price = 1m, Ratio = special, At = BaseInstant, Count = 1 };
             Assert.Equal(
-                WithCulture("en-US", () => ETagOf(profile, model)),
-                WithCulture("de-DE", () => ETagOf(profile, model)));
-        }
-    }
-
-    private static T WithCulture<T>(string culture, Func<T> action)
-    {
-        CultureInfo previousCulture = CultureInfo.CurrentCulture;
-        CultureInfo previousUiCulture = CultureInfo.CurrentUICulture;
-        try
-        {
-            var target = new CultureInfo(culture);
-            CultureInfo.CurrentCulture = target;
-            CultureInfo.CurrentUICulture = target;
-            return action();
-        }
-        finally
-        {
-            CultureInfo.CurrentCulture = previousCulture;
-            CultureInfo.CurrentUICulture = previousUiCulture;
+                CultureScope.Run("en-US", () => ETagOf(profile, model)),
+                CultureScope.Run("de-DE", () => ETagOf(profile, model)));
         }
     }
 
@@ -529,5 +563,122 @@ public class ETagPrecisionTests
         Assert.NotEqual(a, b);
         Assert.Equal(a, aAgain);
         Assert.NotEqual(a, empty);
+    }
+
+    // ── 7. The other buffer shapes a row-version column arrives as ──────────────
+
+    /// <summary>
+    /// <see cref="ImmutableArray{T}"/>, <see cref="ReadOnlyMemory{T}"/>, <see cref="Memory{T}"/>
+    /// and <see cref="ArraySegment{T}"/> over <see cref="byte"/> are all realistic row-version
+    /// shapes, and none of them implements <see cref="IFormattable"/> or overrides
+    /// <c>ToString()</c> — so before they were routed onto the binary path they formatted to their
+    /// own type name, giving every row in the set the same ETag.
+    /// </summary>
+    public class BufferShapes
+    {
+        public int Id { get; set; }
+        public ImmutableArray<byte> Immutable { get; set; }
+        public ReadOnlyMemory<byte> ReadOnly { get; set; }
+        public Memory<byte> Mutable { get; set; }
+        public ArraySegment<byte> Segment { get; set; }
+    }
+
+    private sealed class ImmutableBufferProfile : EntitySetProfile<int, BufferShapes>
+    {
+        public ImmutableBufferProfile() : base(x => x.Id)
+        {
+            EntitySetName = "ImmutableBuffers";
+            UseETag(x => x.Immutable);
+        }
+    }
+
+    private sealed class ReadOnlyBufferProfile : EntitySetProfile<int, BufferShapes>
+    {
+        public ReadOnlyBufferProfile() : base(x => x.Id)
+        {
+            EntitySetName = "ReadOnlyBuffers";
+            UseETag(x => x.ReadOnly);
+        }
+    }
+
+    private sealed class MutableBufferProfile : EntitySetProfile<int, BufferShapes>
+    {
+        public MutableBufferProfile() : base(x => x.Id)
+        {
+            EntitySetName = "MutableBuffers";
+            UseETag(x => x.Mutable);
+        }
+    }
+
+    private sealed class SegmentBufferProfile : EntitySetProfile<int, BufferShapes>
+    {
+        public SegmentBufferProfile() : base(x => x.Id)
+        {
+            EntitySetName = "SegmentBuffers";
+            UseETag(x => x.Segment);
+        }
+    }
+
+    [Fact]
+    public void ImmutableArrayRowVersion_DistinguishesValues()
+    {
+        var profile = new ImmutableBufferProfile();
+        string a = ETagOf(profile, new BufferShapes { Id = 1, Immutable = ImmutableArray.Create<byte>(1, 2, 3) });
+        string b = ETagOf(profile, new BufferShapes { Id = 1, Immutable = ImmutableArray.Create<byte>(9, 9, 9) });
+        string aAgain = ETagOf(profile, new BufferShapes { Id = 1, Immutable = ImmutableArray.Create<byte>(1, 2, 3) });
+        string uninitialized = ETagOf(profile, new BufferShapes { Id = 1 });
+        string emptyArray = ETagOf(profile, new BufferShapes { Id = 1, Immutable = ImmutableArray<byte>.Empty });
+
+        Assert.NotEqual(a, b);
+        Assert.Equal(a, aAgain);
+        // A `default` ImmutableArray is the absent state, not an empty buffer.
+        Assert.NotEqual(uninitialized, emptyArray);
+    }
+
+    [Fact]
+    public void ReadOnlyMemoryRowVersion_DistinguishesValues()
+    {
+        var profile = new ReadOnlyBufferProfile();
+        string a = ETagOf(profile, new BufferShapes { Id = 1, ReadOnly = new byte[] { 1, 2, 3 } });
+        string b = ETagOf(profile, new BufferShapes { Id = 1, ReadOnly = new byte[] { 9, 9, 9 } });
+
+        Assert.NotEqual(a, b);
+        Assert.Equal(a, ETagOf(profile, new BufferShapes { Id = 1, ReadOnly = new byte[] { 1, 2, 3 } }));
+    }
+
+    [Fact]
+    public void MemoryRowVersion_DistinguishesValues()
+    {
+        var profile = new MutableBufferProfile();
+        Assert.NotEqual(
+            ETagOf(profile, new BufferShapes { Id = 1, Mutable = new byte[] { 1, 2, 3 } }),
+            ETagOf(profile, new BufferShapes { Id = 1, Mutable = new byte[] { 9, 9, 9 } }));
+    }
+
+    [Fact]
+    public void ArraySegmentRowVersion_DistinguishesValues()
+    {
+        var profile = new SegmentBufferProfile();
+        Assert.NotEqual(
+            ETagOf(profile, new BufferShapes { Id = 1, Segment = new ArraySegment<byte>(new byte[] { 1, 2, 3 }) }),
+            ETagOf(profile, new BufferShapes { Id = 1, Segment = new ArraySegment<byte>(new byte[] { 9, 9, 9 }) }));
+    }
+
+    /// <summary>Every buffer shape carrying the same bytes hashes the same — deliberate: they are
+    /// the same row version, however the model wraps them.</summary>
+    [Fact]
+    public void AllBufferShapes_WithTheSameBytes_AgreeWithByteArray()
+    {
+        byte[] raw = { 1, 2, 3 };
+        string fromArray = ETagOf(new VersionedProfile(), new Versioned { Id = 1, RowVersion = raw });
+
+        Assert.Equal(fromArray, ETagOf(new ImmutableBufferProfile(),
+            new BufferShapes { Id = 1, Immutable = ImmutableArray.Create(raw) }));
+        Assert.Equal(fromArray, ETagOf(new ReadOnlyBufferProfile(),
+            new BufferShapes { Id = 1, ReadOnly = raw }));
+        Assert.Equal(fromArray, ETagOf(new MutableBufferProfile(),
+            new BufferShapes { Id = 1, Mutable = raw }));
+        Assert.Equal(fromArray, ETagOf(new SegmentBufferProfile(),
+            new BufferShapes { Id = 1, Segment = new ArraySegment<byte>(raw) }));
     }
 }
