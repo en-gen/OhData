@@ -91,6 +91,47 @@ public class AdversarialQueryOptionTests
         Assert.Equal("InvalidQueryOption", json.GetProperty("error").GetProperty("code").GetString());
     }
 
+    // #358: `div 0` / `mod 0` are syntactically valid but unevaluable at runtime. On the
+    // GetQueryable (LINQ-to-Objects, in-memory) path, ApplyTo's expression tree isn't evaluated
+    // until the queryable is enumerated (ToArray() inside the route handler) -- Microsoft.OData's
+    // own ODataException catch never sees the fault, only the .NET DivideByZeroException raised
+    // during that enumeration. Before #358 this reached the group-level exception filter and
+    // surfaced as an unhandled 500; see FilterArithmeticFaultSqliteTests for the EF Core
+    // (SQL-translated) counterpart, which behaves differently since the database evaluates the
+    // expression instead of the CLR.
+
+    [Fact]
+    public async Task Filter_DivByZero_Returns400ODataError()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AdversarialQueryProfile>());
+        var response = await fx.Client.GetAsync(Url + "?$filter=" + Uri.EscapeDataString("Id div 0 eq 1"));
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("InvalidQueryOption", json.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task Filter_ModByZero_Returns400ODataError()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AdversarialQueryProfile>());
+        var response = await fx.Client.GetAsync(Url + "?$filter=" + Uri.EscapeDataString("Id mod 0 eq 1"));
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("InvalidQueryOption", json.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task Count_DivByZero_Returns400ODataError()
+    {
+        // $/count applies $filter via its own ApplyTo + LongCount() call, a separate code path
+        // from the collection GET above -- covered separately since #358's fix touches it too.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AdversarialQueryProfile>());
+        var response = await fx.Client.GetAsync(Url + "/$count?$filter=" + Uri.EscapeDataString("Id div 0 eq 1"));
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("InvalidQueryOption", json.GetProperty("error").GetProperty("code").GetString());
+    }
+
     [Fact]
     public async Task Filter_ExtremelyLong_10kChars_DoesNotHang_ReturnsQuickly()
     {

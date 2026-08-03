@@ -4484,6 +4484,22 @@ internal static class OhDataEndpointFactory
                 {
                     return ODataError(400, "InvalidQueryOption", ex.Message);
                 }
+                // #358: an evaluable-looking $filter/$count expression (div/mod by a literal or
+                // bound zero, or a decimal arithmetic overflow) faults at LINQ execution time —
+                // AFTER ApplyTo has already built the expression tree, so Microsoft.OData's own
+                // ODataException catch above never sees it. queryable.ToArray() above (and the
+                // Priority-1 profile's own ApplyTo, which this route does not control) is where
+                // that deferred execution actually happens. Narrowed to the two concrete,
+                // client-triggerable arithmetic faults (not the broader ArithmeticException base,
+                // which would also swallow unrelated bugs elsewhere in this try block) and mapped
+                // to the same 400 InvalidQueryOption envelope every other invalid-$filter case in
+                // this file already returns, rather than falling through to the group-level
+                // exception filter's generic 500.
+                catch (Exception ex) when (ex is DivideByZeroException or OverflowException)
+                {
+                    return ODataError(400, "InvalidQueryOption",
+                        $"The $filter expression could not be evaluated: {ex.Message}");
+                }
             })
               .WithSummary($"List {name} (queryable)")
               .WithDescription(
@@ -4988,6 +5004,21 @@ internal static class OhDataEndpointFactory
                 {
                     return ODataError(400, "InvalidQueryOption", ex.Message);
                 }
+                // #358: see the matching comment on the Priority-1 route above — same rationale,
+                // same narrowed pair of exception types. On this path the fault can surface either
+                // from the odataCount LongCount() above (when $count=true) or from the ToArray()
+                // calls that materialize `filtered`/`items` further up (ApplySelectPushdown/the
+                // pushdown-expand branches), all of which run inside this one try block. For an
+                // EF Core-backed IQueryable the fault may instead be deferred into the database
+                // (e.g. SQLite's integer division returns NULL rather than raising an error, so no
+                // exception reaches here at all) — this catch only engages when the .NET runtime
+                // itself raises it, which is exactly the in-memory/LINQ-to-Objects and EF Core
+                // InMemory-provider case reported in #358.
+                catch (Exception ex) when (ex is DivideByZeroException or OverflowException)
+                {
+                    return ODataError(400, "InvalidQueryOption",
+                        $"The $filter expression could not be evaluated: {ex.Message}");
+                }
             })
               .WithSummary($"List {name} (queryable)")
               .WithDescription(
@@ -5243,6 +5274,13 @@ internal static class OhDataEndpointFactory
                 catch (Microsoft.OData.ODataException ex)
                 {
                     return ODataError(400, "InvalidQueryOption", ex.Message);
+                }
+                // #358: $/count applies $filter via ApplyTo + LongCount() above, same fault class
+                // as the collection GET routes — see the matching comment there.
+                catch (Exception ex) when (ex is DivideByZeroException or OverflowException)
+                {
+                    return ODataError(400, "InvalidQueryOption",
+                        $"The $filter expression could not be evaluated: {ex.Message}");
                 }
             }).WithTags(name).Produces<long>(200, "text/plain").Produces(400)
               .WithMetadata(new OhDataQueryOptionsMetadata(
