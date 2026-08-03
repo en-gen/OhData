@@ -7,7 +7,6 @@ using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Security.Cryptography;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.OData.Deltas;
@@ -478,8 +477,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// properties using SHA-256 and encodes the result as Base64, returning it in the
     /// <c>ETag</c> response header (OData §8.2.6) and the <c>@odata.etag</c> annotation.
     /// <para>
-    /// Supports <c>byte[]</c> values (e.g. row-version columns) directly;
-    /// all other values are hashed as their UTF-8 string representations.
+    /// Supports <c>byte[]</c> values (e.g. row-version columns) directly; all other values are
+    /// hashed as their UTF-8 string representations, formatted round-trippably and under
+    /// <see cref="CultureInfo.InvariantCulture"/> by <see cref="ETagValueFormatter"/> — so a
+    /// <c>DateTimeOffset</c> keeps its full sub-second precision and a <c>decimal</c> hashes
+    /// identically on a <c>de-DE</c> and an <c>en-US</c> server.
     /// </para>
     /// </summary>
     /// <remarks>
@@ -513,24 +515,18 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         if (propertySelectors.Length == 0)
             throw new ArgumentException("At least one property selector is required.", nameof(propertySelectors));
         var getters = propertySelectors.Select(e => e.Compile()).ToArray();
-        byte[] sep = new byte[] { 0x00 };
         _getETag = model =>
         {
             // Collect all bytes into a buffer, then hash once without allocating a hasher object per call.
             using var ms = new MemoryStream();
             for (int i = 0; i < getters.Length; i++)
             {
-                if (i > 0) ms.Write(sep, 0, sep.Length);
-                object? value = getters[i](model);
-                if (value is byte[] bytes)
-                {
-                    ms.Write(bytes, 0, bytes.Length);
-                }
-                else if (value is not null)
-                {
-                    byte[] strBytes = Encoding.UTF8.GetBytes(value.ToString()!);
-                    ms.Write(strBytes, 0, strBytes.Length);
-                }
+                // #351: ETagValueFormatter owns BOTH the value formatting (round-trippable +
+                // culture-invariant, so same-second writes and cross-locale servers can't collide)
+                // and the framing (length-prefixed, type-tagged, null-distinguishing, so adjacent
+                // values can't be reinterpreted across the boundary). Do not inline a bare
+                // ToString() here — that was the lost-update bug.
+                ETagValueFormatter.Append(ms, getters[i](model));
             }
             // Use static SHA256.HashData to avoid per-call object allocation.
             if (!ms.TryGetBuffer(out ArraySegment<byte> buffer))

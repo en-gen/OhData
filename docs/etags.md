@@ -28,6 +28,32 @@ Hash multiple fields together - the ETag changes if any of them changes:
 UseETag(x => x.Name, x => x.Price, x => x.UpdatedAt);
 ```
 
+### How values are formatted
+
+Non-`byte[]` values are formatted **round-trippably and under `InvariantCulture`** before hashing,
+so the ETag is a faithful function of the entity state and nothing else:
+
+| Value type | Formatting | Why |
+|---|---|---|
+| `DateTime`, `DateTimeOffset`, `DateOnly`, `TimeOnly` | `"O"` (ISO-8601 round-trip) | Keeps all seven fractional-second digits, plus `DateTimeKind`/offset. A `DateTimeOffset.UtcNow` timestamp changes the ETag even when two writes land in the same second. |
+| `TimeSpan` | `"c"` | Full tick precision. `"O"` is not a valid `TimeSpan` specifier. |
+| `Guid` | `"D"` | Canonical hyphenated form. `"O"` is not a valid `Guid` specifier. |
+| `float`, `double` | invariant, default | The shortest *round-trippable* form - two values that differ by one bit hash differently. |
+| `decimal` | invariant, default | Exact, and preserves scale (`1.50m` differs from `1.5m`). |
+| integers, `bool`, `char`, `string`, enums | invariant | Exact by construction. |
+| anything else | `IFormattable` under invariant culture, else `ToString()` | Custom ETag input types should have a stable, complete, culture-independent `ToString()`. |
+
+Invariance is what lets a `de-DE` and an `en-US` server behind the same load balancer agree on the
+ETag for identical entity state. Values are additionally length-prefixed and tagged with their CLR
+type before hashing, so adjacent properties cannot be reinterpreted across the boundary
+(`("ab","c")` vs `("a","bc")`), `null` never hashes the same as `""`, and the string `"1"` never
+collides with the integer `1`.
+
+> **Upgrading:** these rules changed in the release noted in the [CHANGELOG](../CHANGELOG.md), and
+> every previously-issued ETag value changes with them. Clients holding an older ETag get a `412`
+> on a conditional write (or a full `200` instead of `304` on a conditional read) and re-fetch -
+> the safe direction. No configuration is involved and no ETag is comparable across the upgrade.
+
 ## Response headers
 
 When `UseETag` is configured, the `ETag` response header is added to:
