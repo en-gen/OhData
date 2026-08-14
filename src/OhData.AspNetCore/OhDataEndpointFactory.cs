@@ -340,6 +340,73 @@ internal static class OhDataEndpointFactory
             : queryable.Provider.CreateQuery<TModel>(rewritten);
     }
 
+    // #358 (adversarial review R2, HIGH): signals that evaluating (enumerating/counting) a
+    // $filter- or $orderby-ApplyTo'd query raised a client-triggerable arithmetic fault (div/mod
+    // by zero, decimal overflow) -- thrown only by EvaluateQueryWithArithmeticFaultGuard below,
+    // and caught by a dedicated clause on each collection-read route's OUTER try. A dedicated
+    // type rather than reusing Microsoft.OData.ODataException: several nearby try/catch blocks
+    // (the $expand-pushdown Include-fallback and pushed-query materialize sites) already catch
+    // ODataException for an unrelated reason (provider translation failures) and rewrite it into
+    // a different, $expand-specific message -- reusing ODataException here would let those catches
+    // intercept and mask this fault instead of it reaching the route's own 400 InvalidQueryOption
+    // handling.
+    private sealed class FilterArithmeticFaultException(string message) : Exception(message);
+
+    /// <summary>
+    /// Evaluates <paramref name="materialize"/> — an enumeration (<c>ToArray</c>) or
+    /// <c>LongCount</c> of the $filter/$orderby-ApplyTo'd query for the current request — and
+    /// converts a <see cref="DivideByZeroException"/>/<see cref="OverflowException"/> raised
+    /// DURING that specific call into a <see cref="FilterArithmeticFaultException"/> the calling
+    /// route's own catch clause turns into 400 InvalidQueryOption.
+    /// <para>
+    /// Scope (adversarial review R2, HIGH — "narrow the try"): callers must wrap ONLY the
+    /// materialization call itself, never handler invocation, <c>ApplyCollectionPipelineAsync</c>
+    /// (nav delegates, batch handlers, ETag computation), or JSON serialization. An arithmetic
+    /// fault raised from any of those is a genuine server bug, not a client input problem, and
+    /// must reach the group-level exception filter (logged, 500) like any other unexpected
+    /// exception — never be relabeled 400 just because it happens to share an exception type with
+    /// a bad $filter.
+    /// </para>
+    /// <para>
+    /// Guard (same review, same finding): only engages when <paramref name="options"/> actually
+    /// carries a $filter or $orderby. Without either, no client-supplied expression could be the
+    /// cause of a fault raised while enumerating this query — e.g. a profile's own
+    /// <c>GetQueryable</c> Select projection dividing by zero is enumerated at this exact call
+    /// site with NO $filter in the request, and must 500 (a genuine handler bug), not 400. When
+    /// the guard doesn't match, the exception is left alone and propagates normally.
+    /// </para>
+    /// <para>
+    /// Provider note: this only ever engages when the .NET runtime itself raises the exception —
+    /// LINQ-to-Objects and EF Core's InMemory provider evaluate arithmetic client-side. A real
+    /// relational provider (SQL Server, PostgreSQL, SQLite) may instead defer the fault into the
+    /// database (raising a <c>DbException</c> subclass, or in SQLite's case treating division by
+    /// zero as NULL and returning zero matching rows) — neither is caught here. That gap is
+    /// tracked separately; see #358's follow-up issue for a provider-independent fix.
+    /// </para>
+    /// </summary>
+    private static T EvaluateQueryWithArithmeticFaultGuard<TModel, T>(
+        Func<T> materialize, ODataQueryOptions<TModel> options, ILogger? logger, string entitySetName)
+    {
+        bool hasFilter = options.Filter is not null;
+        bool hasOrderBy = options.OrderBy is not null;
+        try
+        {
+            return materialize();
+        }
+        catch (Exception ex) when ((ex is DivideByZeroException or OverflowException) && (hasFilter || hasOrderBy))
+        {
+            logger?.LogDebug(ex,
+                "OhData: arithmetic fault evaluating $filter/$orderby for {EntitySet}.", entitySetName);
+            string option = (hasFilter, hasOrderBy) switch
+            {
+                (true, true) => "$filter or $orderby expression",
+                (true, false) => "$filter expression",
+                _ => "$orderby expression",
+            };
+            throw new FilterArithmeticFaultException($"The {option} could not be evaluated: {ex.Message}");
+        }
+    }
+
     // #241: reports whether the result order is already established by a top-level ordering operator,
     // so the stabilizing key order below never overrides a profile that pre-orders its own IQueryable.
     // Walks only the outer method-call spine (following the source argument) — an OrderBy buried inside
@@ -4449,7 +4516,8 @@ internal static class OhDataEndpointFactory
                             ctx.Response.Headers["Preference-Applied"] = $"maxpagesize={appliedPageSize!.Value}";
                     }
 
-                    object[] items = queryable.ToArray();
+                    object[] items = EvaluateQueryWithArithmeticFaultGuard(
+                        () => queryable.ToArray(), options, logger, source.EntitySetName);
 
                     // Emit a $skip continuation link when a full page was returned under the cap
                     // (there may be more rows). The next offset is the profile-applied $skip on this
@@ -4481,6 +4549,15 @@ internal static class OhDataEndpointFactory
                     return Results.Ok(envelope);
                 }
                 catch (Microsoft.OData.ODataException ex)
+                {
+                    return ODataError(400, "InvalidQueryOption", ex.Message);
+                }
+                // #358: thrown only by EvaluateQueryWithArithmeticFaultGuard's narrow, guarded
+                // materialize-site try above (queryable.ToArray()) — see that method's doc comment
+                // for the full scope/guard rationale. This route does not control the Priority-1
+                // profile's own ApplyTo call, only the enumeration of whatever IQueryable it hands
+                // back.
+                catch (FilterArithmeticFaultException ex)
                 {
                     return ODataError(400, "InvalidQueryOption", ex.Message);
                 }
@@ -4553,7 +4630,8 @@ internal static class OhDataEndpointFactory
                             ? (IQueryable<TModel>)options.Filter.ApplyTo(queryable, cachedCountSettings)
                             : queryable;
                         countQ = ApplyRoundingMode(countQ, source.RoundingMode);
-                        odataCount = countQ.LongCount();
+                        odataCount = EvaluateQueryWithArithmeticFaultGuard(
+                            () => countQ.LongCount(), options, logger, source.EntitySetName);
                     }
 
                     // Apply filter/orderby/skip/top without $select so TModel shape is preserved.
@@ -4835,7 +4913,8 @@ internal static class OhDataEndpointFactory
                                 IQueryable<TModel> included = ApplyIncludeFallback(
                                     filtered, engagedExpandNavs, efInclude, registration.EdmModel,
                                     source.MaxExpandTop);
-                                items = ApplySelectPushdown(included).ToArray();
+                                items = EvaluateQueryWithArithmeticFaultGuard(
+                                    () => ApplySelectPushdown(included).ToArray(), options, logger, source.EntitySetName);
                                 // engagedExpandNavs stays SET (not nulled): the existing
                                 // ShapePushedExpandsInJson pass below shapes nested
                                 // $count/$select/$top/$skip exactly as it does for the projection path.
@@ -4862,7 +4941,8 @@ internal static class OhDataEndpointFactory
                         {
                             try
                             {
-                                items = pushedQuery.ToArray();
+                                items = EvaluateQueryWithArithmeticFaultGuard(
+                                    () => pushedQuery.ToArray(), options, logger, source.EntitySetName);
                             }
                             catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException
                                 or Microsoft.OData.ODataException)
@@ -4912,7 +4992,8 @@ internal static class OhDataEndpointFactory
                     else
                     {
                         // No expand pushdown — $select-only path, byte-for-byte unchanged.
-                        items = ApplySelectPushdown(filtered).ToArray();
+                        items = EvaluateQueryWithArithmeticFaultGuard(
+                            () => ApplySelectPushdown(filtered).ToArray(), options, logger, source.EntitySetName);
                     }
 
                     // Gap 3: compute nextLink when MaxTop (or preferred page size) is set and page is full
@@ -4985,6 +5066,16 @@ internal static class OhDataEndpointFactory
                     return Results.Ok(envelope);
                 }
                 catch (Microsoft.OData.ODataException ex)
+                {
+                    return ODataError(400, "InvalidQueryOption", ex.Message);
+                }
+                // #358: thrown only by EvaluateQueryWithArithmeticFaultGuard's narrow, guarded
+                // materialize-site tries above (the odataCount LongCount(), and the three
+                // ApplySelectPushdown/pushdown-expand ToArray() call sites) — see that method's
+                // doc comment for the full scope/guard rationale, including why the AST-free CLR
+                // fault detection here doesn't help on a real relational provider (tracked as a
+                // separate follow-up issue).
+                catch (FilterArithmeticFaultException ex)
                 {
                     return ODataError(400, "InvalidQueryOption", ex.Message);
                 }
@@ -5216,7 +5307,9 @@ internal static class OhDataEndpointFactory
                         var queryable = countResult.Items is IQueryable<TModel> tq
                             ? tq
                             : countResult.Items.Cast<TModel>().AsQueryable();
-                        return Results.Content(queryable.LongCount().ToString(), "text/plain");
+                        long odataQueryableCount = EvaluateQueryWithArithmeticFaultGuard(
+                            () => queryable.LongCount(), options, logger, source.EntitySetName);
+                        return Results.Content(odataQueryableCount.ToString(), "text/plain");
                     }
                     if (source.HasGetQueryable)
                     {
@@ -5225,7 +5318,9 @@ internal static class OhDataEndpointFactory
                             ? (IQueryable<TModel>)options.Filter.ApplyTo(q, cachedCountSettings)
                             : q;
                         filtered = ApplyRoundingMode(filtered, source.RoundingMode);
-                        return Results.Content(filtered.LongCount().ToString(), "text/plain");
+                        long queryableCount = EvaluateQueryWithArithmeticFaultGuard(
+                            () => filtered.LongCount(), options, logger, source.EntitySetName);
+                        return Results.Content(queryableCount.ToString(), "text/plain");
                     }
                     if (options.Filter is not null)
                     {
@@ -5241,6 +5336,13 @@ internal static class OhDataEndpointFactory
                     return Results.Content(count.ToString(), "text/plain");
                 }
                 catch (Microsoft.OData.ODataException ex)
+                {
+                    return ODataError(400, "InvalidQueryOption", ex.Message);
+                }
+                // #358: thrown only by EvaluateQueryWithArithmeticFaultGuard's narrow, guarded
+                // LongCount() call sites above — see that method's doc comment for the full
+                // scope/guard rationale.
+                catch (FilterArithmeticFaultException ex)
                 {
                     return ODataError(400, "InvalidQueryOption", ex.Message);
                 }
