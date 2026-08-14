@@ -94,6 +94,28 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`$filter`/`$orderby` division-by-zero (and decimal overflow) no longer 500s on the
+  LINQ-to-Objects and EF Core InMemory-provider read paths (#358, partial).** `$filter=Price div 0`/
+  `mod 0` raised an unhandled `DivideByZeroException` (or, for a decimal arithmetic overflow,
+  `OverflowException`) that reached the group-level exception filter as a generic `500`, rather than
+  a `400 InvalidQueryOption` OData error. Fixed by wrapping only the enumeration/count of the
+  `$filter`/`$orderby`-`ApplyTo`'d query — not handler invocation, `$expand`/ETag/serialization — in a
+  narrow, guarded catch: it engages **only** when the request actually carries `$filter` or
+  `$orderby`, so a handler's own arithmetic bug (unrelated to a client query option) still 500s,
+  logged, exactly as before. **Known gap, deliberately not addressed here:** a real relational
+  provider may raise its own `DbException` subclass instead of a CLR exception (SQL Server, msg 8134;
+  PostgreSQL, SQLSTATE 22012) — those are not caught, so the `500` persists on those databases. A
+  provider-independent fix (rejecting a literal-zero divisor in the parsed `$filter`/`$orderby` AST
+  before `ApplyTo` runs) is tracked as a follow-up issue; this change does not close #358.
+
+- **`OhData.TestBench.AspNetCore` no longer registers `AppDbContext` as a singleton (#356).** `DbContext`
+  is not thread-safe and its change tracker is not safe to share across requests: one failed
+  `SaveChanges()` left a poisoned entity in the single shared tracker's `Added` state forever, so every
+  subsequent write (POST/PUT/PATCH/DELETE, bound actions) on any entity set, across both the v1 and v2
+  registrations, failed with `500` for the remaining life of the process. Registered scoped instead
+  (the `AddDbContext` default, and what OhData profiles are themselves registered `AddScoped` to
+  expect). The flagship sample no longer teaches this anti-pattern.
+
 - **`$expand` pushdown no longer silently returns `[]` for a standard bidirectional EF relationship
   (#323).** A related type that navigates back to its parent (e.g. `Author.Books` / `Book.Author`) used
   to defer the whole branch off pushdown — even a 3- or 5-level expanded back-reference, a
