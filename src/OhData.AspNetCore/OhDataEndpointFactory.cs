@@ -4150,6 +4150,32 @@ internal static class OhDataEndpointFactory
                 "ETag validation on PUT/PATCH/DELETE requires fetching the current entity.");
         }
 
+        // #351: a selector whose type the hash cannot faithfully represent produces the SAME ETag
+        // for every row (a type with no ToString() override formats to its own type name), which
+        // silently turns If-Match into a no-op. That is the worst failure mode a concurrency
+        // primitive has — invisible in every response, and only observable as a lost update — so
+        // it fails loudly here rather than shipping.
+        if (source.HasETag && source.ETagSelectors is { } etagSelectors)
+        {
+            foreach (ETagSelectorInfo selector in etagSelectors)
+            {
+                if (ETagValueFormatter.IsSupportedSelectorType(selector.Type))
+                {
+                    continue;
+                }
+
+                throw new InvalidOperationException(
+                    $"Entity set '{source.EntitySetName}': UseETag selector '{selector.Description}' returns " +
+                    $"'{selector.Type}', which cannot be hashed into a meaningful ETag — every entity in the " +
+                    "set would share one ETag value and If-Match would never detect a conflict. Supported " +
+                    "selector types are: a binary row-version buffer (byte[], ImmutableArray<byte>, " +
+                    "ReadOnlyMemory<byte>, Memory<byte>, ArraySegment<byte>), string, bool, an enum, any type " +
+                    "implementing IFormattable (all the numeric, date/time, TimeSpan and Guid types), or a " +
+                    "Nullable of any of those. Select a scalar projection instead, e.g. " +
+                    "'x => x.Something.Id' or 'x => x.Something.RowVersion'.");
+            }
+        }
+
         // Profiles are registered as scoped. At request time, resolve a fresh instance
         // so handler delegates capture per-request scoped dependencies (e.g. DbContext).
         // The startup 'source' is used only for structural queries (HasGetById, MaxTop, etc.).

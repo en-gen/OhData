@@ -7,7 +7,6 @@ using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Security.Cryptography;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.OData.Deltas;
@@ -478,8 +477,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// properties using SHA-256 and encodes the result as Base64, returning it in the
     /// <c>ETag</c> response header (OData §8.2.6) and the <c>@odata.etag</c> annotation.
     /// <para>
-    /// Supports <c>byte[]</c> values (e.g. row-version columns) directly;
-    /// all other values are hashed as their UTF-8 string representations.
+    /// Supports <c>byte[]</c> values (e.g. row-version columns) directly; all other values are
+    /// hashed as their UTF-8 string representations, formatted round-trippably and under
+    /// <see cref="CultureInfo.InvariantCulture"/> by <see cref="ETagValueFormatter"/> — so a
+    /// <c>DateTimeOffset</c> keeps its full sub-second precision and a <c>decimal</c> hashes
+    /// identically on a <c>de-DE</c> and an <c>en-US</c> server.
     /// </para>
     /// </summary>
     /// <remarks>
@@ -502,6 +504,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         // access makes the names unknowable → null → pushdown ineligible while ETags are on.
         _etagPropertyNames = TryExtractDirectMemberNames(propertySelectors);
 
+        // #351: capture each selector's DECLARED result type so MapOhData() can reject a selector
+        // the hash cannot faithfully represent (see ETagValueFormatter.IsSupportedSelectorType).
+        // Like the names above, this must run before the compiled-delegate cache early return.
+        _etagSelectors = ExtractSelectorInfo(propertySelectors);
+
         // Reuse the cached compiled delegate if available (avoids recompiling on every scoped construction).
         if (s_etagCache.TryGetValue(GetType(), out var cached))
         {
@@ -513,24 +520,18 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         if (propertySelectors.Length == 0)
             throw new ArgumentException("At least one property selector is required.", nameof(propertySelectors));
         var getters = propertySelectors.Select(e => e.Compile()).ToArray();
-        byte[] sep = new byte[] { 0x00 };
         _getETag = model =>
         {
             // Collect all bytes into a buffer, then hash once without allocating a hasher object per call.
             using var ms = new MemoryStream();
             for (int i = 0; i < getters.Length; i++)
             {
-                if (i > 0) ms.Write(sep, 0, sep.Length);
-                object? value = getters[i](model);
-                if (value is byte[] bytes)
-                {
-                    ms.Write(bytes, 0, bytes.Length);
-                }
-                else if (value is not null)
-                {
-                    byte[] strBytes = Encoding.UTF8.GetBytes(value.ToString()!);
-                    ms.Write(strBytes, 0, strBytes.Length);
-                }
+                // #351: ETagValueFormatter owns BOTH the value formatting (round-trippable +
+                // culture-invariant, so same-second writes and cross-locale servers can't collide)
+                // and the framing (length-prefixed, type-tagged, null-distinguishing, so adjacent
+                // values can't be reinterpreted across the boundary). Do not inline a bare
+                // ToString() here — that was the lost-update bug.
+                ETagValueFormatter.Append(ms, getters[i](model));
             }
             // Use static SHA256.HashData to avoid per-call object allocation.
             if (!ms.TryGetBuffer(out ArraySegment<byte> buffer))
@@ -546,6 +547,37 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     }
 
     private IReadOnlyCollection<string>? _etagPropertyNames;
+    private IReadOnlyList<ETagSelectorInfo>? _etagSelectors;
+
+    /// <summary>
+    /// Describes each <c>UseETag</c> selector for the startup type check: a human-readable
+    /// description for the error message, and the selector's DECLARED result type.
+    /// </summary>
+    /// <remarks>
+    /// The declared type is taken after stripping the compiler-inserted <c>Convert</c> to
+    /// <c>object</c> that boxing a value type produces, so <c>x =&gt; x.UpdatedAt</c> reports
+    /// <c>DateTime</c> rather than <c>object</c>. A selector genuinely declared as <c>object</c>
+    /// reports <c>object</c> and is rejected — its runtime type is unknowable at startup.
+    /// </remarks>
+    private static IReadOnlyList<ETagSelectorInfo> ExtractSelectorInfo(
+        Expression<Func<TModel, object?>>[] selectors)
+    {
+        return selectors.Select(Describe).ToList();
+
+        static ETagSelectorInfo Describe(Expression<Func<TModel, object?>> selector)
+        {
+            Expression body = selector.Body is UnaryExpression unary &&
+                (unary.NodeType == ExpressionType.Convert || unary.NodeType == ExpressionType.ConvertChecked)
+                ? unary.Operand
+                : selector.Body;
+
+            string description = body is MemberExpression member && member.Expression is ParameterExpression
+                ? member.Member.Name
+                : body.ToString();
+
+            return new ETagSelectorInfo(description, body.Type);
+        }
+    }
 
     /// <summary>
     /// Extracts CLR property names when EVERY selector is a direct member access on the lambda
@@ -1877,6 +1909,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     bool IEntitySetEndpointSource.SelectPushdownEnabled => _resolvedSelectPushdownEnabled;
     bool IEntitySetEndpointSource.ExpandPushdownEnabled => _resolvedExpandPushdownEnabled;
     IReadOnlyCollection<string>? IEntitySetEndpointSource.ETagPropertyNames => _etagPropertyNames;
+    IReadOnlyList<ETagSelectorInfo>? IEntitySetEndpointSource.ETagSelectors => _etagSelectors;
     RoundingMode IEntitySetEndpointSource.RoundingMode => _resolvedRoundingMode;
     IReadOnlyList<StructuralPropertyInfo> IEntitySetEndpointSource.StructuralProperties =>
         _structuralProperties ??= BuildStructuralProperties();

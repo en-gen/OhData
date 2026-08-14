@@ -13,6 +13,14 @@ namespace OhData;
 public sealed record AuthorizationConfig(bool Required, string? Policy, IReadOnlyList<string>? Roles);
 
 /// <summary>
+/// One <c>UseETag</c> selector, as seen at startup: <paramref name="Description"/> is the CLR
+/// property name for a direct member access (otherwise the expression text), and
+/// <paramref name="Type"/> is the selector's declared result type with any boxing conversion
+/// stripped.
+/// </summary>
+internal sealed record ETagSelectorInfo(string Description, Type Type);
+
+/// <summary>
 /// Internal contract used by OhData.AspNetCore to interrogate a profile and invoke its handlers
 /// without knowing the generic TKey/TModel types at compile time.
 /// </summary>
@@ -93,6 +101,14 @@ internal interface IEntitySetEndpointSource
     /// computed (names unknowable — #206 pushdown is then ineligible while <see cref="HasETag"/>).
     /// </summary>
     IReadOnlyCollection<string>? ETagPropertyNames { get; }
+
+    /// <summary>
+    /// One entry per <c>UseETag</c> selector — its description and DECLARED result type — for the
+    /// startup check that rejects a selector the ETag hash cannot faithfully represent (#351).
+    /// <c>null</c> when ETags are unconfigured.
+    /// </summary>
+    IReadOnlyList<ETagSelectorInfo>? ETagSelectors { get; }
+
     RoundingMode RoundingMode { get; }
     IReadOnlyList<StructuralPropertyInfo> StructuralProperties { get; }
 

@@ -115,6 +115,57 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   registrations, failed with `500` for the remaining life of the process. Registered scoped instead
   (the `AddDbContext` default, and what OhData profiles are themselves registered `AddScoped` to
   expect). The flagship sample no longer teaches this anti-pattern.
+- **`UseETag` no longer loses sub-second precision or depends on server culture — same-second writes
+  are no longer lost updates (#351).** ETag inputs were hashed with a bare, parameterless
+  `value.ToString()`: no format specifier and no `IFormatProvider`. Every date/time type therefore
+  contributed a *general* (human-readable) rendering that drops the fractional second — and, for
+  `TimeOnly`, whole seconds — so two genuinely different entity states written inside the same second
+  hashed to a byte-identical ETag. A client holding a stale ETag then **passed** the `If-Match`
+  precondition and silently overwrote a newer version with a `200` where RFC 7232 §3.1 / Protocol
+  §8.2.5 require `412`. This was not an exotic path: it is exactly the `UpdatedAt = DateTimeOffset.UtcNow`
+  pattern `docs/etags.md` recommends and the TestBench profiles use — any two writes that land in the
+  same second collide, regardless of how fine the clock is. The same line was culture-sensitive, so a
+  `de-DE` server produced a different ETag from an `en-US` server for byte-identical entity state
+  (spurious `412`s across a mixed-locale fleet), and a `th-TH` server rendered dates in the Buddhist
+  calendar.
+
+  ETag inputs now go through a dedicated formatter that is round-trippable **and** culture-invariant
+  per type: `"O"` for `DateTime`/`DateTimeOffset`/`DateOnly`/`TimeOnly`; `"c"` for `TimeSpan` and
+  `"D"` for `Guid` (`"O"` is not a legal specifier for either and throws); invariant-culture default
+  formatting for `float`/`double` (the shortest *round-trippable* form since .NET Core 3.0),
+  `decimal` (already exact, and scale-preserving), integers, `bool`, `char`, `string` and enums; and
+  `IFormattable` under invariant culture for anything else. Binary row-version inputs are still
+  hashed raw, and now cover every shape such a column realistically arrives as — `byte[]` plus
+  `ImmutableArray<byte>`, `ReadOnlyMemory<byte>`, `Memory<byte>` and `ArraySegment<byte>`, none of
+  which implements `IFormattable` or overrides `ToString()` and all of which previously hashed to
+  their own *type name* (one shared ETag for every row in the set). A `DateTime` whose `Kind` is
+  `Local` is hashed by its wall-clock reading plus a Kind marker rather than by `"O"`'s local-offset
+  suffix, so the ETag never becomes a function of the server's timezone configuration or of a tzdata
+  update. The type discriminator is derived from type *names* only, never assembly identity, so the
+  `net8.0` and `net10.0` builds of this package agree and an application version bump does not rotate
+  anything.
+
+  The hash framing was hardened at the same time, closing three adjacent collision vectors: each
+  value is now length-prefixed (so `("ab","c")` and `("a","bc")` cannot produce the same bytes),
+  `null` carries a distinct marker (so clearing a string property to `null` no longer hashes the same
+  as setting it to `""`), and each value carries a CLR type discriminator (so the string `"1"` and
+  the integer `1` cannot collide).
+
+  **BEHAVIOR CHANGE:** every ETag value produced by `UseETag` changes. The previous values were
+  unsound, so this is unavoidable and is the safe direction: a client presenting an ETag minted by an
+  older build gets `412 Precondition Failed` on a conditional write, or a full `200` representation
+  instead of `304 Not Modified` on a conditional read, and re-fetches. No data is at risk from the
+  transition; the pre-fix values were the ones that put data at risk. The ETag *mechanism* —
+  weak/strong tag form, header handling, and the `If-Match`/`If-None-Match` comparison — is unchanged.
+
+  **BEHAVIOR CHANGE:** `MapOhData()` now throws `InvalidOperationException` for a `UseETag` selector
+  whose declared type cannot be hashed faithfully — a navigation property, an entity reference, a
+  `List<T>`, a POCO, `object`. Such a selector never worked: with no `ToString()` override it
+  formatted to its own type name, so every entity in the set shared one ETag and `If-Match` silently
+  became a check that always passes, observable only as a lost update. Supported selector types are a
+  binary buffer, `string`, `bool`, an enum, any `IFormattable` type, or a `Nullable` of those; the
+  exception names the entity set, the selector and its type, and points at the remedy (select a
+  scalar projection, e.g. `x => x.Related.Id`). See `docs/etags.md`.
 
 - **`$expand` pushdown no longer silently returns `[]` for a standard bidirectional EF relationship
   (#323).** A related type that navigates back to its parent (e.g. `Author.Books` / `Book.Author`) used
