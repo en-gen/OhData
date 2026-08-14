@@ -196,8 +196,17 @@ public sealed class PushEtagUnknowableProfile : EntitySetProfile<int, PushEtagUn
 }
 
 /// <summary>
-/// UseETag over a NAVIGATION property: the name is capturable (direct member) but it is not a
-/// structural property, so the ETag-name-not-structural fallback branch fires at request time.
+/// An entity set that has BOTH a navigation property and an ETag, exercising $select pushdown
+/// identity when the two interact.
+/// <para>
+/// This fixture used to declare <c>UseETag(x => x.Parts)</c> — a navigation property — to reach the
+/// ETag-name-not-structural fallback. #351 made that a startup error: a <c>List&lt;PushPart&gt;</c>
+/// has no <c>ToString()</c> override, so every row hashed to the literal type name and every
+/// entity in the set shared one ETag. The fallback branch it targeted is still covered by
+/// <see cref="PushEtagComputedProfile"/>, whose get-only <c>FullName</c> is likewise absent from
+/// the EDM's structural properties; the rejection itself is asserted in
+/// <c>ETagSelectorValidationTests</c>.
+/// </para>
 /// </summary>
 public sealed class PushEtagNavItem
 {
@@ -218,7 +227,7 @@ public sealed class PushEtagNavProfile : EntitySetProfile<int, PushEtagNavItem>
         SelectEnabled = true;
         HasMany(x => x.Parts!, (int key, CancellationToken ct) =>
             Task.FromResult<IEnumerable<PushPart>>(PushData.Parts()));
-        UseETag(x => x.Parts); // direct member, but a navigation — not structural
+        UseETag(x => x.Name); // a navigation selector is rejected at startup since #351
         GetQueryable = _ => Task.FromResult(_store.AsQueryable());
         GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(x => x.Id == id));
     }
