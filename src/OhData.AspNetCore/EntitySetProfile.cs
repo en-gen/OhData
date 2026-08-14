@@ -562,8 +562,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private static IReadOnlyList<ETagSelectorInfo> ExtractSelectorInfo(
         Expression<Func<TModel, object?>>[] selectors)
     {
-        var infos = new List<ETagSelectorInfo>(selectors.Length);
-        foreach (Expression<Func<TModel, object?>> selector in selectors)
+        return selectors.Select(Describe).ToList();
+
+        static ETagSelectorInfo Describe(Expression<Func<TModel, object?>> selector)
         {
             Expression body = selector.Body is UnaryExpression unary &&
                 (unary.NodeType == ExpressionType.Convert || unary.NodeType == ExpressionType.ConvertChecked)
@@ -574,10 +575,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
                 ? member.Member.Name
                 : body.ToString();
 
-            infos.Add(new ETagSelectorInfo(description, body.Type));
+            return new ETagSelectorInfo(description, body.Type);
         }
-
-        return infos;
     }
 
     /// <summary>

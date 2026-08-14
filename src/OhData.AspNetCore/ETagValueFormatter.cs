@@ -284,12 +284,17 @@ internal static class ETagValueFormatter
         }
 
         // Type.Name omits declaring types, so walk the nesting chain to keep Outer+Inner distinct
-        // from another Outer's Inner. Never touches assembly identity.
-        string name = type.Name;
+        // from another Outer's Inner. Never touches assembly identity. Collected outward-in and
+        // reversed rather than prepended in the loop: prepending reallocates the whole string each
+        // time, which is quadratic in nesting depth.
+        var segments = new List<string> { type.Name };
         for (Type? declaring = type.DeclaringType; declaring is not null; declaring = declaring.DeclaringType)
         {
-            name = declaring.Name + "+" + name;
+            segments.Add(declaring.Name);
         }
+
+        segments.Reverse();
+        string name = string.Join("+", segments);
 
         return type.Namespace is null ? name : type.Namespace + "." + name;
     }
