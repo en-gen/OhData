@@ -489,6 +489,20 @@ internal static class OhDataEndpointFactory
             ? startupJsonOptions
             : IgnoredPropertyJsonOptions.Build(startupJsonOptions, ignoredByType);
 
+        // #389: OData open COMPLEX types. Every complex type the EDM marks OpenType="true"
+        // carries a DynamicPropertyDictionaryAnnotation naming the CLR member that backs its
+        // dynamic properties; this layers one more resolver modifier that marks that member as
+        // System.Text.Json extension data, so the bag serialises and binds FLAT (dynamic keys as
+        // siblings of the declared properties) with no attribute on the consumer's model. Added
+        // AFTER the ignored-property modifier so Ignore()ing the container still wins (the member
+        // is gone from the contract by then, and this modifier simply finds nothing to mark), and
+        // BEFORE the per-request nav-suppression modifier, which derives from these options.
+        // Reference-equal no-op when the model declares no open complex type.
+        IReadOnlyDictionary<Type, PropertyInfo> openTypeContainers =
+            OpenTypeJsonOptions.BuildOpenComplexTypeContainerMap(registration.EdmModel);
+        effectiveJsonOptions = OpenTypeJsonOptions.Build(effectiveJsonOptions, openTypeContainers);
+        OpenTypeJsonOptions.ValidateOrThrow(effectiveJsonOptions, openTypeContainers);
+
         // Resolved once here (rather than down at the per-profile loop) so the group-level
         // exception filter below can log through the same "OhData" category every other
         // handler uses.

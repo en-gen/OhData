@@ -41,6 +41,8 @@
           href: ../../docs/property-access.md
         - name: Ignoring properties
           href: ../../docs/ignoring-properties.md
+        - name: Open types (dynamic property bags)
+          href: ../../docs/open-types.md
         - name: Bound functions & actions
           href: ../../docs/bound-operations.md
     - name: Querying

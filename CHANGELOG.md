@@ -61,6 +61,25 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **OData open types — dynamic property bags on complex types (#389).** A complex type with an
+  `IDictionary<string, object?>` member now serializes and binds **flat**: its entries are siblings of
+  the declared properties on the wire, never nested under the member's own name. Reads (collection
+  `GET`, `GET` by key, navigation and property routes, `$expand` targets), writes (`POST`/`PUT`/`PATCH`,
+  including property-route writes), and `$select=<container>` all round-trip undeclared keys, and
+  `$metadata` declares `OpenType="true"` with the container omitted.
+
+  **No model changes are required, and none are accepted as a substitute.** Support is driven from the
+  EDM: `ODataConventionModelBuilder` already infers the container and records it as a
+  `DynamicPropertyDictionaryAnnotation`, which OhData reads at `MapOhData()` to mark exactly that
+  member as `System.Text.Json` extension data on the registration's serializer options. The consumer's
+  CLR model needs no `[JsonExtensionData]` (or any other) attribute, so a type published in a shared
+  contract package works as-is. Nothing is matched by property name or convention. Zero delta —
+  reference-identical options — for a model with no open complex type.
+
+  **Not supported, deliberately** (see [docs/open-types.md](docs/open-types.md)): entity-**root**
+  dynamic containers, and `$filter`/`$orderby` over an *individual* dynamic key (the latter faults in
+  Microsoft's query binder before any SQL is generated, so no query reaches the database).
+
 - **`$levels` may now carry other nested expand options (#254).** A `$levels=N` / `$levels=max`
   self-referential expand combined with `$filter`, `$orderby`, `$skip`, `$top`, `$count`, or `$select`
   is no longer deferred off the pushdown path — it pushes, with those options applied at **every level
