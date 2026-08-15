@@ -571,6 +571,34 @@ internal static class OpenTypeJsonOptions
 
         if (element.ValueKind != JsonValueKind.Object) return null;
         if (!options.TryGetTypeInfo(declaredType, out JsonTypeInfo? typeInfo)) return null;
+
+        // A DICTIONARY-valued declared member is a JSON object that is not a bag: its keys are map
+        // keys of a declared property, but System.Text.Json binds straight through it into the value
+        // type — and that value type can be an open complex type. Bailing here on "Kind is not
+        // Object" (#389 round-3 L1) stopped the walk one member short of the bag: measured, the
+        // byte-identical keys were rejected with a 400 through a plain `TOpenComplex` member and
+        // accepted with a 201 through an `IDictionary<string, TOpenComplex>` one, then echoed on
+        // every later read.
+        //
+        // Only the VALUES are walked. The dictionary's own keys are declared-member map keys, not
+        // dynamic property names — they were always legal to send and are not held to the identifier
+        // grammar.
+        if (typeInfo.Kind == JsonTypeInfoKind.Dictionary)
+        {
+            // From CLR reflection rather than JsonTypeInfo.ElementType, for the same reason the array
+            // branch above uses reflection: ElementType only exists from .NET 9 and this assembly
+            // also targets net8.0.
+            Type? valueType = GetDictionaryValueType(declaredType);
+            if (valueType is null) return null;
+            foreach (JsonProperty entry in element.EnumerateObject())
+            {
+                if (entry.Value.ValueKind is not (JsonValueKind.Object or JsonValueKind.Array)) continue;
+                string? found = FindInvalidDynamicKey(entry.Value, valueType, options);
+                if (found is not null) return found;
+            }
+            return null;
+        }
+
         if (typeInfo.Kind != JsonTypeInfoKind.Object) return null;
 
         // Resolved from the SAME contract the binder will use, so "declared" here means exactly
@@ -651,6 +679,25 @@ internal static class OpenTypeJsonOptions
         }
     }
 
+    // The value type of a dictionary-shaped CLR member, or null when none can be resolved (a
+    // non-generic IDictionary, say) — in which case the walk simply stops, exactly as it did before.
+    // The declared type itself is tested first so an `IDictionary<string, T>`-typed member resolves
+    // without an interface scan.
+    private static Type? GetDictionaryValueType(Type type)
+    {
+        if (IsDictionaryInterface(type)) return type.GetGenericArguments()[1];
+        foreach (Type candidate in type.GetInterfaces())
+        {
+            if (IsDictionaryInterface(candidate)) return candidate.GetGenericArguments()[1];
+        }
+        return null;
+    }
+
+    private static bool IsDictionaryInterface(Type type) =>
+        type.IsGenericType
+        && (type.GetGenericTypeDefinition() == typeof(IDictionary<,>)
+            || type.GetGenericTypeDefinition() == typeof(IReadOnlyDictionary<,>));
+
     // The item type of a collection-shaped CLR member, or null when the member is not a collection
     // of a single item type (a string is deliberately excluded — it is IEnumerable<char>, never a
     // JSON array here). `string`/primitive item types simply resolve to a JsonTypeInfo whose Kind
@@ -689,7 +736,11 @@ internal static class OpenTypeJsonOptions
     /// built from, and <c>Nl</c>. Measured rejections of valid identifiers included <c>नाम</c>,
     /// <c>ชื่อ</c>, <c>Ⅸ</c>, and NFD-decomposed <c>naïve</c>. That last one is the indefensible
     /// case: macOS hands back NFD where Windows hands back NFC, so the same key typed on two
-    /// machines got two different HTTP status codes.
+    /// machines got two different HTTP status codes. Under the category rule the two spellings agree
+    /// for any name <b>within the length limit</b> — decomposition adds code points, so a name
+    /// already at the 128 cap in NFC can still exceed it in NFD (measured: 128 × U+00EF is accepted,
+    /// its 256-code-point NFD form is not). That is the grammar's own boundary, which defines the
+    /// limit in characters, not a normalisation inconsistency this could paper over.
     /// </para>
     /// <para>
     /// <b>Counted in code points, not UTF-16 code units.</b> The 128 cap is a character count in the

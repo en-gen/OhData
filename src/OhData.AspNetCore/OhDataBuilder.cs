@@ -147,8 +147,11 @@ public sealed class OhDataBuilder
     /// on every route that binds a body which can reach a dynamic bag: <c>POST</c>, <c>PUT</c> and
     /// <c>PATCH</c> on the entity, the structural-property write routes, the navigation-<c>POST</c>
     /// create route, and each parameter of a bound or unbound <b>action</b>. It is applied at every
-    /// depth — the value of an accepted dynamic key is itself walked, including through arrays,
-    /// because everything below a bag key is stored verbatim and echoed on every later read.
+    /// depth — the value of an accepted dynamic key is itself walked, including through arrays and
+    /// through dictionary-valued declared members, because everything below a bag key is stored
+    /// verbatim and echoed on every later read. (A dictionary member's own map keys are keys of a
+    /// <i>declared</i> property, not dynamic property names, so they are not validated — only its
+    /// values are walked.)
     /// See <c>docs/open-types.md</c> for the full contract, including <c>PATCH</c>'s whole-value
     /// replace semantics.
     /// </para>

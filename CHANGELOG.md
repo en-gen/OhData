@@ -91,10 +91,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `Meta@odata.count`, `has space`) is rejected on write with `400` naming the key, since a bag key is
   persisted verbatim and echoed on every later read. The grammar is the ABNF's Unicode categories
   (`L`/`Nl` leading, plus `Nd`/`Mn`/`Mc`/`Pc`/`Cf` following), counted in code points, so non-Latin
-  identifiers and both the NFC and NFD spellings of an accented one are accepted. The check covers
-  every route that binds a body reaching a bag — `POST`/`PUT`/`PATCH`, the property-route writes, the
-  navigation-`POST` create route, and each **action** parameter — and applies at every depth,
-  including through arrays, since the value of a dynamic key is stored verbatim too. A bag key equal
+  identifiers are accepted, as are both the NFC and NFD spellings of an accented one for any name
+  within the 128-character limit (decomposition adds code points, so only a name already at the cap
+  can differ between the two forms). The check covers every route that binds a body reaching a bag —
+  `POST`/`PUT`/`PATCH`, the property-route writes, the navigation-`POST` create route, and each
+  **action** parameter — and applies at every depth, including through arrays and through
+  dictionary-valued declared members, since the value of a dynamic key is stored verbatim too. A bag key equal
   to one of the complex type's own declared property names loses to the declared property and is
   omitted from the response (with a warning logged) rather than emitting a duplicate JSON property
   name; and a container that `System.Text.Json` cannot use as extension data — most commonly a

@@ -164,8 +164,29 @@ two different HTTP status codes depending on the client's operating system.
 
 ```jsonc
 { "error": { "code": "InvalidBody", "target": "@odata.type",
-             "message": "'@odata.type' is not a valid dynamic property name. …" } }
+             "message": "'@odata.type' is not a valid dynamic property name. A dynamic property of
+                         an OData open type must be a simple identifier: it starts with a letter (in
+                         any script) or '_', continues with letters, digits, combining marks or '_',
+                         and is at most 128 characters long. '@', '.', '-' and spaces are not
+                         allowed; names containing '@' are reserved for control information such as
+                         '@odata.type'." } }
 ```
+
+The message is deliberately plain-language rather than a recital of the Unicode category codes — it
+is read by an API consumer, and the formal grammar is the section above.
+
+### Invisible characters are permitted — treat dynamic keys as untrusted display text
+
+`Cf` (format) is one of the `identifierCharacter` categories, so the grammar admits invisible
+characters in *following* position: zero-width joiners and non-joiners (U+200D, U+200C), U+200B,
+U+FEFF, the soft hyphen U+00AD, and the bidi controls (U+202E `RLO`, U+2066 `LRI`, …). They are
+correctly rejected as the *leading* character, and OhData does not deviate from the normative
+grammar to reject them elsewhere.
+
+The consequence is that two visually identical dynamic keys can be distinct strings, and a key
+containing a bidi control can reorder the text rendered around it. Keys are echoed verbatim, so a
+consumer that displays them in a UI should escape or strip format characters exactly as it would for
+any other untrusted string.
 
 ### It applies at every depth
 
@@ -180,6 +201,19 @@ identifier, including through arrays:
 
 // 400, target "@odata.id" — arrays under a dynamic key are walked too
 { "Source": "S", "Xref": "X", "Metadata": { "list": [ { "@odata.id": "http://evil/x" } ] } }
+```
+
+"Every depth" includes the path *to* a bag as well as the path below it. A declared member typed
+`IDictionary<string, TOpenComplex>` is a JSON object that is not itself a bag, but the values under
+it are — so the values are walked. The dictionary's own keys are map keys of a declared property,
+never dynamic property names, and are not held to the identifier grammar:
+
+```jsonc
+// 400, target "@odata.type" — reached through a dictionary-valued declared member
+{ "Id": 0, "MetaMap": { "one": { "@odata.type": "#Evil.Type" } } }
+
+// 201 — "has space" is a map key of MetaMap, not a dynamic property name
+{ "Id": 0, "MetaMap": { "has space": { "tier": 7 } } }
 ```
 
 The check runs only under the opt-in, and only against members that will actually land in a bag —

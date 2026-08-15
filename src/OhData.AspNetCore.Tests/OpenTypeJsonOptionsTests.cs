@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -525,6 +526,30 @@ public class OpenTypeJsonOptionsTests
             string.Concat(Enumerable.Repeat("\U0001D400", 129))));
     }
 
+    /// <summary>
+    /// #389 round-3 INFO-2. NFC and NFD spellings of the same name agree — but only <i>within the
+    /// length limit</i>. Decomposition adds code points, so a name already at the 128 cap in NFC
+    /// exceeds it once decomposed. That is the grammar's own boundary (it defines the limit in
+    /// characters), not a normalisation inconsistency; the point of pinning it is that the docs used
+    /// to state the agreement as absolute.
+    /// </summary>
+    [Fact]
+    public void IsValidDynamicPropertyName_NfcAndNfdCanDivergeOnlyAtTheLengthCap()
+    {
+        string nfc = new('ï', 128);                       // 128 × 'ï'
+        string nfd = nfc.Normalize(NormalizationForm.FormD);
+        Assert.Equal(256, nfd.Length);                          // premise: 'i' + U+0308 per character
+
+        Assert.True(OpenTypeJsonOptions.IsValidDynamicPropertyName(nfc));
+        Assert.False(OpenTypeJsonOptions.IsValidDynamicPropertyName(nfd));
+
+        // One character below the cap the two forms agree, which is every name a client will send.
+        string shortNfc = new('ï', 64);
+        Assert.True(OpenTypeJsonOptions.IsValidDynamicPropertyName(shortNfc));
+        Assert.True(OpenTypeJsonOptions.IsValidDynamicPropertyName(
+            shortNfc.Normalize(NormalizationForm.FormD)));
+    }
+
     /// <summary>An unpaired surrogate is not a character in any category, so it is rejected.</summary>
     [Fact]
     public void IsValidDynamicPropertyName_RejectsAnUnpairedSurrogate() =>
@@ -620,6 +645,39 @@ public class OpenTypeJsonOptionsTests
             OpenTypeJsonOptions.FindInvalidDynamicKey(doc.RootElement, typeof(OtjCollectionHost), options));
     }
 
+    // ── #389 round-3 L1: a DICTIONARY-valued declared member is walked through ───────────────────
+    //
+    // The walk resolved the member's JsonTypeInfo and bailed on anything whose Kind was not Object.
+    // IDictionary<string, TOpenComplex> is Kind == Dictionary, so it stopped one member short of the
+    // bag that System.Text.Json binds straight into.
+
+    [Fact]
+    public void FindInvalidDynamicKey_WalksThroughADictionaryValuedMemberIntoItsValues()
+    {
+        JsonSerializerOptions options =
+            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjDictionaryHost>());
+        using JsonDocument doc =
+            JsonDocument.Parse("""{"Id":1,"Bags":{"one":{"Region":"eu"},"two":{"@odata.type":"#Evil"}}}""");
+        Assert.Equal(
+            "@odata.type",
+            OpenTypeJsonOptions.FindInvalidDynamicKey(doc.RootElement, typeof(OtjDictionaryHost), options));
+    }
+
+    /// <summary>
+    /// The dictionary's own keys are map keys of a DECLARED property, not dynamic property names, so
+    /// they are deliberately not held to the identifier grammar. Only the values are walked.
+    /// </summary>
+    [Fact]
+    public void FindInvalidDynamicKey_DoesNotPoliceTheMapKeysOfADictionaryValuedMember()
+    {
+        JsonSerializerOptions options =
+            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjDictionaryHost>());
+        using JsonDocument doc =
+            JsonDocument.Parse("""{"Id":1,"Bags":{"has space":{"Region":"eu","tier":3}}}""");
+        Assert.Null(
+            OpenTypeJsonOptions.FindInvalidDynamicKey(doc.RootElement, typeof(OtjDictionaryHost), options));
+    }
+
     /// <summary>Without the opt-in no member is extension data, so nothing is ever a dynamic key.</summary>
     [Fact]
     public void FindInvalidDynamicKey_WithoutTheOpenTypeModifier_FindsNothing()
@@ -675,3 +733,22 @@ public class OtjWrongDictionaryTypeHost
 
 public class OtjGetterOnlyHost { public int Id { get; set; } public OtjGetterOnly? Bag { get; set; } }
 public class OtjCollectionHost { public int Id { get; set; } public List<OtjBag>? Bags { get; set; } }
+
+/// <summary>
+/// A DICTIONARY-valued declared member whose values are an open complex type. Its own type is
+/// <c>JsonTypeInfoKind.Dictionary</c>, which is what the walk used to stop on (#389 round-3 L1).
+/// <para>
+/// <c>Bag</c> is not decoration. <c>ODataConventionModelBuilder</c> does <b>not</b> discover a
+/// complex type through an <c>IDictionary&lt;string, T&gt;</c> member (measured: with <c>Bags</c>
+/// alone the container map is empty and <c>OtjBag.Kv</c> stays an ordinary declared property, so
+/// nothing under <c>Bags</c> is a bag and there is correctly nothing to police). A plain member of
+/// the same type is what puts it in the EDM as open — after which the dictionary member reaches the
+/// very same bag, which is the asymmetry this pins.
+/// </para>
+/// </summary>
+public class OtjDictionaryHost
+{
+    public int Id { get; set; }
+    public OtjBag? Bag { get; set; }
+    public IDictionary<string, OtjBag>? Bags { get; set; }
+}

@@ -277,10 +277,18 @@ internal static class OhDataEndpointFactory
         if (!openTypesActive || jsonOptions is null) return null;
         string? key = OpenTypeJsonOptions.FindInvalidDynamicKey(body, declaredType, jsonOptions);
         if (key is null) return null;
+        // Plain terms, not the ABNF's Unicode category codes -- this is read by an API consumer, not
+        // by a spec implementer, and docs/open-types.md carries the formal grammar. It has to be
+        // accurate about what M3 actually widened the rule to, though: the pre-M3 wording ("a letter
+        // or '_' followed by letters, digits or '_'") described an ASCII-flavoured grammar that
+        // would have implied 'नाम' and NFD-spelled 'naive' were invalid, and never mentioned the cap
+        // a name can also be rejected for.
         return ODataError(400, "InvalidBody",
             $"'{key}' is not a valid dynamic property name. A dynamic property of an OData open " +
-            "type must be a simple identifier (a letter or '_' followed by letters, digits or '_'); " +
-            "names containing '@' are reserved for control information such as '@odata.type'.",
+            "type must be a simple identifier: it starts with a letter (in any script) or '_', " +
+            "continues with letters, digits, combining marks or '_', and is at most 128 characters " +
+            "long. '@', '.', '-' and spaces are not allowed; names containing '@' are reserved for " +
+            "control information such as '@odata.type'.",
             target: key);
     }
 

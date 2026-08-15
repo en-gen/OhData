@@ -63,6 +63,20 @@ public sealed class OtwPlain
     public string Name { get; set; } = "";
 }
 
+/// <summary>
+/// #389 round-3 L1. <c>MetaMap</c> is a DICTIONARY-valued declared member whose values are an open
+/// complex type. It is not itself a dynamic-property container — its value type is not
+/// <c>object</c>, so <c>ODataConventionModelBuilder</c> maps it as an ordinary property — but
+/// <c>System.Text.Json</c> binds straight through it into each value's extension data, which is
+/// exactly the bag <c>Metadata</c> reaches one member over.
+/// </summary>
+public sealed class OtwDictHost
+{
+    public int Id { get; set; }
+    public ExternalReferenceMetadata? Metadata { get; set; }
+    public IDictionary<string, ExternalReferenceMetadata>? MetaMap { get; set; }
+}
+
 internal sealed class OtwStore
 {
     internal List<OtwParent> Parents { get; } = new() { new() { Id = 1, Name = "p1" } };
@@ -73,6 +87,9 @@ internal sealed class OtwStore
 
     /// <summary>Non-null only if the action handler actually ran.</summary>
     internal ExternalReferenceMetadata? LastActionMeta { get; set; }
+
+    /// <summary>Non-null only if the dictionary-member create handler actually ran.</summary>
+    internal OtwDictHost? LastDictHost { get; set; }
 }
 
 internal sealed class OtwParentProfile : EntitySetProfile<int, OtwParent>
@@ -114,6 +131,19 @@ internal sealed class OtwActionProfile : EntitySetProfile<int, OtwActionHost>
     private void Stamp(ExternalReferenceMetadata meta) => _store.LastActionMeta = meta;
 }
 
+internal sealed class OtwDictHostProfile : EntitySetProfile<int, OtwDictHost>
+{
+    public OtwDictHostProfile(OtwStore store) : base(x => x.Id)
+    {
+        EntitySetName = "OtwDictHosts";
+        Post = (entity, ct) =>
+        {
+            store.LastDictHost = entity;
+            return Task.FromResult<OtwDictHost?>(entity);
+        };
+    }
+}
+
 internal sealed class OtwPlainProfile : EntitySetProfile<int, OtwPlain>
 {
     public OtwPlainProfile() : base(x => x.Id)
@@ -135,6 +165,7 @@ public class OpenTypeWriteRouteCoverageTests
                 o.WithOpenTypes();
                 o.AddEntitySetProfile<OtwParentProfile>();
                 o.AddEntitySetProfile<OtwActionProfile>();
+                o.AddEntitySetProfile<OtwDictHostProfile>();
             },
             configureServices: s => s.AddSingleton(store));
         return (fx, store);
@@ -252,6 +283,13 @@ public class OpenTypeWriteRouteCoverageTests
     /// The parameter ENVELOPE is not a bag. Its keys are parameter names matched against the
     /// operation's signature, so they must not be policed as dynamic property names — otherwise
     /// wiring the check in here would have been a behavior change for every action.
+    /// <para>
+    /// The envelope carries <c>meta@odata.type</c> deliberately (#389 round-3 INFO-3). A plain
+    /// <c>{"meta":{…}}</c> envelope does not discriminate: <c>meta</c> is itself a conformant
+    /// identifier, so the test passed identically under the buggy logic of checking the whole
+    /// envelope against the parameter's declared type. An envelope key that is <i>not</i> an
+    /// identifier fails the moment the envelope is policed, which is the claim being pinned.
+    /// </para>
     /// </summary>
     [Fact]
     public async Task BoundAction_StillAcceptsAConformantParameterAndBindsDynamicKeys()
@@ -261,7 +299,7 @@ public class OpenTypeWriteRouteCoverageTests
 
         HttpResponseMessage resp = await fx.Client.PostAsync(
             "/odata/OtwActionHosts/Stamp",
-            Json("""{ "meta": { "Region": "us", "tier": 4 } }"""));
+            Json("""{ "meta@odata.type": "#x", "meta": { "Region": "us", "tier": 4 } }"""));
 
         Assert.True(
             resp.StatusCode is HttpStatusCode.OK or HttpStatusCode.NoContent,
@@ -269,6 +307,71 @@ public class OpenTypeWriteRouteCoverageTests
 
         IDictionary<string, object?> bag = store.LastActionMeta!.KeyValuePairs!;
         Assert.Equal(new[] { "Region", "tier" }, bag.Keys.OrderBy(k => k, StringComparer.Ordinal));
+    }
+
+    // ── Round-3 L1: the walk stops at a DICTIONARY-valued declared member ────────────────────────
+    //
+    // FindInvalidDynamicKey resolved the member's JsonTypeInfo and bailed on anything whose Kind was
+    // not Object. An IDictionary<string, TOpenComplex> member is Kind == Dictionary, so the walk
+    // stopped there — while System.Text.Json bound straight through it into each value's extension
+    // data. Measured: the byte-identical keys were rejected with a 400 through `Metadata` and
+    // accepted with a 201 through `MetaMap`, then echoed on every later read.
+
+    /// <summary>The measured repro: a reserved key inside a dictionary-valued declared member.</summary>
+    [Fact]
+    public async Task Post_RejectsAReservedKeyInsideADictionaryValuedMember()
+    {
+        (TestFixture fx, OtwStore store) = await BuildAsync();
+        await using TestFixture _fx = fx;
+
+        HttpResponseMessage resp = await fx.Client.PostAsync(
+            "/odata/OtwDictHosts",
+            Json("""{ "Id": 0, "MetaMap": { "one": { "@odata.type": "#Evil", "has space": 1 } } }"""));
+
+        await AssertInvalidDynamicKeyAsync(resp, "@odata.type");
+        Assert.Null(store.LastDictHost);
+    }
+
+    /// <summary>
+    /// The control for the test above — the same keys one member over, through a plain complex
+    /// member. Both must give the same answer; that they did not is the whole finding.
+    /// </summary>
+    [Fact]
+    public async Task Post_RejectsTheSameReservedKeyThroughAPlainComplexMember()
+    {
+        (TestFixture fx, OtwStore store) = await BuildAsync();
+        await using TestFixture _fx = fx;
+
+        HttpResponseMessage resp = await fx.Client.PostAsync(
+            "/odata/OtwDictHosts",
+            Json("""{ "Id": 0, "Metadata": { "@odata.type": "#Evil" } }"""));
+
+        await AssertInvalidDynamicKeyAsync(resp, "@odata.type");
+        Assert.Null(store.LastDictHost);
+    }
+
+    /// <summary>
+    /// The dictionary's own KEYS are declared-member map keys, not dynamic property names, so they
+    /// are deliberately NOT held to the identifier grammar — only the VALUES are walked. Without
+    /// this the fix would "pass" by rejecting every map key a consumer has always been allowed to
+    /// send.
+    /// </summary>
+    [Fact]
+    public async Task Post_DoesNotPoliceTheMapKeysOfADictionaryValuedMember()
+    {
+        (TestFixture fx, OtwStore store) = await BuildAsync();
+        await using TestFixture _fx = fx;
+
+        HttpResponseMessage resp = await fx.Client.PostAsync(
+            "/odata/OtwDictHosts",
+            Json("""{ "Id": 0, "MetaMap": { "has space": { "tier": 7 } } }"""));
+
+        Assert.True(
+            resp.StatusCode is HttpStatusCode.Created or HttpStatusCode.OK,
+            $"unexpected {(int)resp.StatusCode}: {await resp.Content.ReadAsStringAsync()}");
+
+        IDictionary<string, object?> bag = store.LastDictHost!.MetaMap!["has space"].KeyValuePairs!;
+        Assert.Equal(new[] { "tier" }, bag.Keys);
     }
 }
 
