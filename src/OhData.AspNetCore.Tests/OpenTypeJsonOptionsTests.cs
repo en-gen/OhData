@@ -217,37 +217,42 @@ public class OpenTypeJsonOptionsTests
     // ── Declared-name shadowing on the way OUT (#389 finding 3) ─────────────────────────────────
 
     /// <summary>
-    /// A bag key equal to a declared property's JSON name used to emit that name twice in one JSON
-    /// object — invalid OData, and on every .NET reader tested the BAG entry won, making the
-    /// declared value unreachable. The declared property wins now and the bag entry is dropped.
+    /// A bag key equal to a declared property's JSON name would emit that name twice in one JSON
+    /// object — on every .NET reader tested the BAG entry wins, making the declared value
+    /// unreachable. It is a hard error, matching <c>Microsoft.AspNetCore.OData</c>'s
+    /// <c>DynamicPropertyNameAlreadyUsedAsDeclaredPropertyName</c>. The message names the type and
+    /// the key and carries no values.
     /// </summary>
     [Fact]
-    public void Build_ABagKeyShadowingADeclaredProperty_IsOmittedAndTheDeclaredValueWins()
+    public void Build_ABagKeyShadowingADeclaredProperty_Throws()
     {
         JsonSerializerOptions options =
             OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjEntity>());
 
-        string json = JsonSerializer.Serialize(
-            new OtjBag
-            {
-                Region = "declared",
-                Kv = new Dictionary<string, object?> { ["Region"] = "fromBag", ["ok"] = 1 },
-            },
-            options);
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            JsonSerializer.Serialize(
+                new OtjBag
+                {
+                    Region = "declared",
+                    Kv = new Dictionary<string, object?> { ["Region"] = "fromBag", ["ok"] = 1 },
+                },
+                options));
 
-        Assert.Equal("""{"Region":"declared","ok":1}""", json);
-
-        // Re-parsing is the point: the old output was not merely ugly, it was a duplicate JSON key.
-        using JsonDocument doc = JsonDocument.Parse(json);
-        Assert.Equal("declared", doc.RootElement.GetProperty("Region").GetString());
+        Assert.Contains("'Region'", ex.Message, StringComparison.Ordinal);
+        Assert.Contains(typeof(OtjBag).FullName!, ex.Message, StringComparison.Ordinal);
+        // Names, never values: this message reaches logs.
+        Assert.DoesNotContain("fromBag", ex.Message, StringComparison.Ordinal);
     }
 
     /// <summary>
-    /// Ordinal, not case-insensitive: suppressing a merely case-differing key would be silent data
-    /// loss rather than a fix, and it is the byte-for-byte repeat that produces invalid JSON.
+    /// Ordinal, not case-insensitive — and this is a recorded decision, not an oversight. Only a
+    /// byte-for-byte repeat is a duplicate JSON key, so <c>region</c> beside a declared
+    /// <c>Region</c> serializes fine and must not fault. The consequence is documented in
+    /// <c>docs/open-types.md</c>: OhData binds request bodies case-insensitively, so a
+    /// case-differing key can still round-trip into a corrupting write.
     /// </summary>
     [Fact]
-    public void Build_ABagKeyDifferingOnlyByCase_IsNotSuppressed()
+    public void Build_ABagKeyDifferingOnlyByCase_DoesNotThrow()
     {
         JsonSerializerOptions options =
             OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjEntity>());
@@ -260,15 +265,13 @@ public class OpenTypeJsonOptionsTests
     }
 
     /// <summary>
-    /// The suppression must preserve the container's runtime type. System.Text.Json resolves the
-    /// extension-data converter from the DECLARED property type and casts the getter's return value
-    /// back to it, so substituting a plain <c>Dictionary</c> for a container declared as
-    /// <c>OtjCustomBag : Dictionary&lt;string, object?&gt;</c> throws <c>InvalidCastException</c>
-    /// mid-serialization — i.e. a 500 on a read, which is the outcome this whole guard exists to
-    /// avoid.
+    /// The check sees through a container declared as a custom dictionary subclass rather than as the
+    /// interface, and the happy path still serializes flat through that same custom type. (The old
+    /// drop implementation had to CLONE the container here, which is what made the runtime type
+    /// load-bearing; nothing is substituted any more, so the getter is a pure inspection.)
     /// </summary>
     [Fact]
-    public void Build_SuppressionPreservesACustomContainerRuntimeType()
+    public void Build_ACustomContainerRuntimeType_SerializesFlatAndStillDetectsAShadow()
     {
         OpenTypeJsonOptions.OpenComplexTypeContainers containers = Containers<OtjCustomBagHost>();
         // Guard against the test passing vacuously: the builder must actually have inferred the
@@ -278,27 +281,29 @@ public class OpenTypeJsonOptionsTests
         JsonSerializerOptions options = OpenTypeJsonOptions.Build(new JsonSerializerOptions(), containers);
 
         string json = JsonSerializer.Serialize(
-            new OtjCustomBagHolder
-            {
-                Region = "declared",
-                Kv = new OtjCustomBag { ["Region"] = "fromBag", ["ok"] = 1 },
-            },
+            new OtjCustomBagHolder { Region = "declared", Kv = new OtjCustomBag { ["ok"] = 1 } },
             options);
-
         Assert.Equal("""{"Region":"declared","ok":1}""", json);
+
+        Assert.Throws<InvalidOperationException>(() =>
+            JsonSerializer.Serialize(
+                new OtjCustomBagHolder
+                {
+                    Region = "declared",
+                    Kv = new OtjCustomBag { ["Region"] = "fromBag", ["ok"] = 1 },
+                },
+                options));
     }
 
     /// <summary>
-    /// #389 M1. <c>TryCreateEmptyLike</c> assumed a freshly constructed container was empty, and the
-    /// caller then used <c>IDictionary.Add</c>. A container whose parameterless constructor SEEDS an
-    /// entry breaks both halves: the clone starts non-empty, <c>Add</c> hits the duplicate, and a
-    /// plain <c>GET</c> faults with <c>ArgumentException</c> — a <b>500 on a read</b>, refuting both
-    /// the "caller degrades rather than throwing" comment and <c>docs/open-types.md</c>'s "a read is
-    /// never faulted over a data condition". Clearing the clone and assigning through the indexer is
-    /// what makes those true.
+    /// A container whose parameterless constructor SEEDS an entry. This shape used to be a hazard in
+    /// its own right (#389 M1): the drop path cloned the container via <c>Activator.CreateInstance</c>
+    /// and assumed the clone was empty, so the seeded key collided on copy-in. With no clone there is
+    /// no special case left — the seeded key is just another dynamic key and serializes normally.
+    /// Kept as the regression pin for that removal.
     /// </summary>
     [Fact]
-    public void Build_SuppressionSurvivesAContainerWhoseConstructorSeedsEntries()
+    public void Build_AContainerWhoseConstructorSeedsEntries_IsNoLongerASpecialCase()
     {
         OpenTypeJsonOptions.OpenComplexTypeContainers containers = Containers<OtjDefaultingBagHost>();
         // Premise: the seeding subclass really is what the builder inferred as the container.
@@ -308,28 +313,47 @@ public class OpenTypeJsonOptionsTests
 
         JsonSerializerOptions options = OpenTypeJsonOptions.Build(new JsonSerializerOptions(), containers);
 
-        // "Region" shadows the declared property, so the suppressing clone path is taken; "schema"
-        // is the key the constructor seeds, so the clone starts out already containing it.
         string json = JsonSerializer.Serialize(
-            new OtjDefaultingBagHolder
-            {
-                Region = "declared",
-                Kv = new OtjDefaultingBag { ["Region"] = "fromBag", ["ok"] = 1 },
-            },
+            new OtjDefaultingBagHolder { Region = "declared", Kv = new OtjDefaultingBag { ["ok"] = 1 } },
             options);
 
-        // No fault, the declared property wins, and the seeded key is carried across exactly once.
+        // "schema" is the constructor-seeded key; it is emitted once, alongside the explicit one.
         Assert.Equal("""{"Region":"declared","schema":"v1","ok":1}""", json);
-        using JsonDocument doc = JsonDocument.Parse(json);
-        Assert.Equal("declared", doc.RootElement.GetProperty("Region").GetString());
     }
 
     /// <summary>
-    /// The suppressing getter must hand back the SAME dictionary when there is nothing to suppress —
-    /// System.Text.Json calls it on the deserialize path too, to find an existing bag to populate.
+    /// #389 M2, reversed. A container PRE-SEEDED with one of its own declared property names used to
+    /// be the feature's worst corner: the getter always saw a collision, so on the DESERIALIZE path
+    /// System.Text.Json populated the discarded clone and every dynamic key in the request was lost
+    /// while the write still reported success. The getter no longer substitutes anything, so the same
+    /// shape now fails loudly on first contact instead of silently discarding writes.
     /// </summary>
     [Fact]
-    public void Build_BindingIsUnaffectedByTheShadowSuppressingGetter()
+    public void Build_AContainerPreSeededWithADeclaredName_ThrowsInsteadOfSilentlyLosingWrites()
+    {
+        JsonSerializerOptions options =
+            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjPreSeededBagHost>());
+
+        // DESERIALIZE, not serialize: this is the path the old implementation corrupted. STJ calls
+        // the container getter to find an existing dictionary to populate, the getter sees the
+        // pre-seeded declared name, and the request fails instead of quietly dropping alpha/beta.
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            JsonSerializer.Deserialize<OtjPreSeededBagHolder>("""{"alpha":1,"beta":2}""", options));
+
+        Assert.Contains("'Region'", ex.Message, StringComparison.Ordinal);
+
+        // And the read side of the same shape fails too, rather than rendering a clean-looking echo.
+        Assert.Throws<InvalidOperationException>(() =>
+            JsonSerializer.Serialize(new OtjPreSeededBagHolder { Region = "declared" }, options));
+    }
+
+    /// <summary>
+    /// The checking getter must hand back the SAME dictionary — System.Text.Json calls it on the
+    /// deserialize path too, to find an existing bag to populate, so substituting anything would
+    /// corrupt binding. It only ever inspects now, which is what makes that structural.
+    /// </summary>
+    [Fact]
+    public void Build_BindingIsUnaffectedByTheShadowCheckingGetter()
     {
         JsonSerializerOptions options =
             OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjEntity>());
@@ -348,7 +372,9 @@ public class OpenTypeJsonOptionsTests
     /// still marks the type open and drops the member from the CSDL, but System.Text.Json cannot bind
     /// into it — measured, the incoming dynamic keys are silently discarded — and skipping the type
     /// leaves the CSDL claiming <c>OpenType="true"</c> while the wire nests the bag under its own
-    /// name. Since open types are opt-in, that is a startup failure, not a silent skip.
+    /// name. That is a startup failure naming the member and the fix, not a silent skip — and the
+    /// message also names <c>WithOpenTypes(false)</c>, since turning open types off for the whole
+    /// registration is the other way out.
     /// </summary>
     [Fact]
     public void BuildContainerMap_GetterOnlyContainer_Throws()
@@ -720,6 +746,23 @@ public class OtjDefaultingBagHost
 {
     public int Id { get; set; }
     public OtjDefaultingBagHolder? Bag { get; set; }
+}
+
+/// <summary>
+/// #389 M2. A container PRE-SEEDED with one of the type's own declared property names — the shape
+/// that used to lose every dynamic key on write while reporting success, and that now throws.
+/// </summary>
+public class OtjPreSeededBagHolder
+{
+    public string? Region { get; set; }
+    public IDictionary<string, object?>? Kv { get; set; } =
+        new Dictionary<string, object?> { ["Region"] = "preset" };
+}
+
+public class OtjPreSeededBagHost
+{
+    public int Id { get; set; }
+    public OtjPreSeededBagHolder? Bag { get; set; }
 }
 
 /// <summary>A dictionary member the convention builder does NOT treat as a container.</summary>

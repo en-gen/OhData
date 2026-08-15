@@ -11,6 +11,80 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **OData open types — dynamic property bags on complex types, ON BY DEFAULT (#389).** A complex type
+  with an `IDictionary<string, object?>` member serializes and binds **flat**: its entries are
+  siblings of the declared properties on the wire, never nested under the member's own name. Reads
+  (collection `GET`, `GET` by key, navigation and property routes, `$expand` targets), writes
+  (`POST`/`PUT`/`PATCH`, including property-route writes), and `$select=<container>` all round-trip
+  undeclared keys, and `$metadata` declares `OpenType="true"` with the container omitted.
+
+  **On by default because a complex type with a dictionary member *is* an open type**, and the CSDL
+  OhData emits has always said so — `ODataConventionModelBuilder` marks it `OpenType="true"` and omits
+  the member from the declared properties regardless. Leaving the payload nested made `$metadata` and
+  the body disagree, and made conformance something you had to know the spec to ask for. It also
+  diverged from `Microsoft.AspNetCore.OData`, whose `ODataResourceSerializer` reads the same
+  annotation and appends dynamic properties flat with no opt-in flag at all.
+
+  > **⚠ BREAKING CHANGE, and it is not detectable by diffing responses.** This alters the wire shape
+  > **and the write binding** of every complex type in the model that has a dictionary member. An
+  > existing client body `{"Meta":{"Bag":{"a":1}}}` stops binding `{"a":1}` to the `Bag` **property**
+  > and starts binding a dynamic **key** named `Bag` holding that dictionary — the handler persists
+  > `Bag = { "Bag": {"a":1} }`. **The response echo of the mis-bound value is byte-identical to the
+  > correct one**, so this will not show up in a staging response diff or in a test that compares
+  > payloads. Because of that, `MapOhData()` now logs **one warning per affected complex type** at
+  > startup, naming the CLR type and the container member.
+  >
+  > **Opt out with `AddOhData(o => o.WithOpenTypes(false))`**, which restores the pre-#389 shape in
+  > which the container is an ordinary nested declared property.
+  >
+  > **Detection recipe:** *do any of your complex types have an `IDictionary<string, object>`
+  > member?* If none do, nothing changes — the registration's serializer options are not even derived,
+  > no write body is buffered or walked, nothing is logged, and every response (error responses
+  > included) is byte-identical between the default and `WithOpenTypes(false)`.
+
+  **A bag key equal to one of the complex type's own declared property names now fails the request**
+  with `500` and the OData error envelope, naming the type and the key in the log (previously: the
+  declared property won, the key was dropped, and a warning was logged). Emitting both would produce a
+  duplicate JSON property name, which every .NET reader tested resolves in the bag's favour, making
+  the declared value unreachable. The spec does not decide between dropping and failing — CSDL 4.01
+  §6.3/§9.3 say only that dynamic properties are "uniquely named", and JSON Format defers to
+  RFC 8259's SHOULD — so this follows `Microsoft.AspNetCore.OData`, which throws
+  `DynamicPropertyNameAlreadyUsedAsDeclaredPropertyName` in the same situation. The deciding argument
+  is that the condition is **systematic, not per-row**: a client cannot cause it (a body key matching a
+  declared name binds to the declared property and never reaches the bag), so the only source is
+  server-side code, and if it fires at all it fires for every row carrying that key. **Accepted cost:
+  a collection endpoint faults on the bad data rather than serving the remaining rows.** The match is
+  ordinal, so a key differing only in case does not fail — see [docs/open-types.md](docs/open-types.md)
+  for the recorded consequence of that.
+
+  **No model changes are required, and none are accepted as a substitute.** Support is driven from the
+  EDM: `ODataConventionModelBuilder` already infers the container and records it as a
+  `DynamicPropertyDictionaryAnnotation`, which OhData reads at `MapOhData()` to mark exactly that
+  member as `System.Text.Json` extension data on the registration's serializer options. The consumer's
+  CLR model needs no `[JsonExtensionData]` (or any other) attribute, so a type published in a shared
+  contract package works as-is. Nothing is matched by property name or convention.
+
+  A dynamic key that is not an OData simple identifier (CSDL §4.1 `odataIdentifier` — empty, or
+  containing `@`, `.`, whitespace or `-`: `@odata.type`, `Meta@odata.count`, `has space`) is rejected
+  on write with `400` naming the key, since a bag key is persisted verbatim and echoed on every later
+  read. The grammar is the ABNF's Unicode categories (`L`/`Nl` leading, plus `Nd`/`Mn`/`Mc`/`Pc`/`Cf`
+  following), counted in code points, so non-Latin identifiers are accepted, as are both the NFC and
+  NFD spellings of an accented one for any name within the 128-character limit (decomposition adds
+  code points, so only a name already at the cap can differ between the two forms). The check covers
+  every route that binds a body reaching a bag — `POST`/`PUT`/`PATCH`, the property-route writes, the
+  navigation-`POST` create route, and each **action** parameter — and applies at every depth,
+  including through arrays and through dictionary-valued declared members, since the value of a
+  dynamic key is stored verbatim too. A container that `System.Text.Json` cannot use as extension
+  data — most commonly a getter-only `public IDictionary<string, object?> Bag { get; } = new();` —
+  fails at `MapOhData()` with a message naming the member and the fix.
+
+  **Not supported, deliberately** (see [docs/open-types.md](docs/open-types.md)): entity-**root**
+  dynamic containers, and `$filter`/`$orderby` over an *individual* dynamic key (the latter faults in
+  Microsoft's query binder before any SQL is generated, so no query reaches the database). Note also
+  that `PATCH` of a complex member **replaces** the whole complex value rather than merging it — the
+  pre-existing behavior for any complex member, but open types widen its blast radius to the entire
+  bag; the docs carry the read-modify-write recipe.
+
 - **`MaxExpandTop` bounds nested `$top` and nested `$count` — default `1000` (#254).** New ceiling on
   `EntitySetDefaults` and `EntitySetProfile`, shaped exactly like `MaxTop` (positive integer or `null`
   for no ceiling; profile overrides the global default). The **root** entity set's resolved value
@@ -60,55 +134,6 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   previously missing on `GET /{Set}({key})`) are also part of this fix.
 
 ### Added
-
-- **OData open types — dynamic property bags on complex types, opt-in (#389).** Enable with
-  `AddOhData(o => o.WithOpenTypes())`. A complex type with an `IDictionary<string, object?>` member
-  then serializes and binds **flat**: its entries are siblings of the declared properties on the wire,
-  never nested under the member's own name. Reads (collection `GET`, `GET` by key, navigation and
-  property routes, `$expand` targets), writes (`POST`/`PUT`/`PATCH`, including property-route writes),
-  and `$select=<container>` all round-trip undeclared keys, and `$metadata` declares `OpenType="true"`
-  with the container omitted.
-
-  **Opt-in because enabling it changes the wire shape** of every complex type in the model that has a
-  dictionary member, in both directions. Detection recipe: *do any of your complex types have an
-  `IDictionary<string, object>` member?* If none do, `WithOpenTypes()` is a no-op — the registration's
-  serializer options are not even derived, no write body is buffered or walked, and every response
-  (error responses included) is byte-identical. If any do, an existing
-  client body `{"Meta":{"Bag":{"a":1}}}` stops binding to the `Bag` **property** and starts binding as
-  a dynamic **key** named `Bag`, and the echo of the mis-bound value is byte-identical to the correct
-  one — so migrate deliberately. Default off; a registration that does not call `WithOpenTypes()` is
-  unchanged from before #389.
-
-  **No model changes are required, and none are accepted as a substitute.** Support is driven from the
-  EDM: `ODataConventionModelBuilder` already infers the container and records it as a
-  `DynamicPropertyDictionaryAnnotation`, which OhData reads at `MapOhData()` to mark exactly that
-  member as `System.Text.Json` extension data on the registration's serializer options. The consumer's
-  CLR model needs no `[JsonExtensionData]` (or any other) attribute, so a type published in a shared
-  contract package works as-is. Nothing is matched by property name or convention.
-
-  Under the opt-in: a dynamic key that is not an OData simple identifier (CSDL §4.1
-  `odataIdentifier` — empty, or containing `@`, `.`, whitespace or `-`: `@odata.type`,
-  `Meta@odata.count`, `has space`) is rejected on write with `400` naming the key, since a bag key is
-  persisted verbatim and echoed on every later read. The grammar is the ABNF's Unicode categories
-  (`L`/`Nl` leading, plus `Nd`/`Mn`/`Mc`/`Pc`/`Cf` following), counted in code points, so non-Latin
-  identifiers are accepted, as are both the NFC and NFD spellings of an accented one for any name
-  within the 128-character limit (decomposition adds code points, so only a name already at the cap
-  can differ between the two forms). The check covers every route that binds a body reaching a bag —
-  `POST`/`PUT`/`PATCH`, the property-route writes, the navigation-`POST` create route, and each
-  **action** parameter — and applies at every depth, including through arrays and through
-  dictionary-valued declared members, since the value of a dynamic key is stored verbatim too. A bag key equal
-  to one of the complex type's own declared property names loses to the declared property and is
-  omitted from the response (with a warning logged) rather than emitting a duplicate JSON property
-  name; and a container that `System.Text.Json` cannot use as extension data — most commonly a
-  getter-only `public IDictionary<string, object?> Bag { get; } = new();` — fails at `MapOhData()` with
-  a message naming the member and the fix.
-
-  **Not supported, deliberately** (see [docs/open-types.md](docs/open-types.md)): entity-**root**
-  dynamic containers, and `$filter`/`$orderby` over an *individual* dynamic key (the latter faults in
-  Microsoft's query binder before any SQL is generated, so no query reaches the database). Note also
-  that `PATCH` of a complex member **replaces** the whole complex value rather than merging it — the
-  pre-existing behavior for any complex member, but open types widen its blast radius to the entire
-  bag; the docs carry the read-modify-write recipe.
 
 - **`$levels` may now carry other nested expand options (#254).** A `$levels=N` / `$levels=max`
   self-referential expand combined with `$filter`, `$orderby`, `$skip`, `$top`, `$count`, or `$select`

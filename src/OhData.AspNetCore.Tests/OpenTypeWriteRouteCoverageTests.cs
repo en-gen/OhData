@@ -144,13 +144,30 @@ internal sealed class OtwDictHostProfile : EntitySetProfile<int, OtwDictHost>
     }
 }
 
+/// <summary>
+/// The "nothing to do" model: no dictionary member anywhere, so the EDM declares no open complex
+/// type and <c>OhDataRegistration.OpenTypesActive</c> stays false whatever the open-types setting is.
+/// Every write route is wired (and the structural-property write route rides <c>Patch</c>) because
+/// the byte-identical guarantee is asserted per route, not just on <c>PUT</c> — see
+/// <see cref="OpenTypeDefaultOnIsByteIdenticalTests"/>. Handlers are pure functions of their input,
+/// so two fixtures built from this profile are directly comparable.
+/// </summary>
 internal sealed class OtwPlainProfile : EntitySetProfile<int, OtwPlain>
 {
     public OtwPlainProfile() : base(x => x.Id)
     {
         EntitySetName = "OtwPlains";
+        GetAll = ct => Task.FromResult<IEnumerable<OtwPlain>>(new[] { new OtwPlain { Id = 1, Name = "n" } });
         GetById = (id, ct) => Task.FromResult<OtwPlain?>(new OtwPlain { Id = id, Name = "n" });
+        Post = (model, ct) => Task.FromResult<OtwPlain?>(model);
         Put = (id, model, ct) => Task.FromResult(model);
+        Patch = (id, delta, ct) =>
+        {
+            var target = new OtwPlain { Id = id, Name = "n" };
+            delta.Patch(target);
+            return Task.FromResult<OtwPlain?>(target);
+        };
+        Delete = (id, ct) => Task.FromResult(true);
     }
 }
 
@@ -376,63 +393,164 @@ public class OpenTypeWriteRouteCoverageTests
 }
 
 /// <summary>
-/// #389 L1. <c>CHANGELOG.md</c> and <c>WithOpenTypes</c>'s own remarks promise that opting in on a
-/// model with no dictionary member is a no-op and "every response is byte-identical". It was not:
-/// the write paths gated on <c>OpenTypesEnabled</c> (did the consumer opt in?) rather than on
-/// whether the EDM actually produced an open complex type, so such a registration still buffered
-/// every <c>PUT</c> body into a <see cref="JsonDocument"/> and still walked every write body looking
-/// for keys that could not exist. The buffering was observable, because the two readers word a
-/// malformed-body failure differently.
+/// The guarantee that keeps the default-ON flip (#389) from touching anyone who does not have a
+/// dictionary member: a model with no open complex type must be <b>byte-identical</b> — status and
+/// full response body — between the default and <c>WithOpenTypes(false)</c>. Since the flag now
+/// defaults to <c>true</c>, this is no longer a promise made to an opted-in minority; it is the
+/// blast-radius bound for every existing registration in the wild, which is why the matrix below
+/// covers every write route and every malformed-body shape rather than just <c>PUT</c>.
+/// <para>
+/// #389 L1 is the reason it is asserted rather than assumed. The write paths originally gated on
+/// <c>OpenTypesEnabled</c> (what did the consumer ask for?) rather than on
+/// <c>OpenTypesActive</c> (did the EDM actually produce an open complex type?), so such a
+/// registration still buffered every <c>PUT</c> body into a <see cref="JsonDocument"/> and still
+/// walked every write body looking for keys that could not exist. The buffering was observable,
+/// because the two readers word a malformed-body failure differently:
+/// <c>JsonDocument.ParseAsync</c> reports no <c>Path</c> where
+/// <c>JsonSerializer.DeserializeAsync</c> reports <c>Path: $</c>.
+/// </para>
 /// </summary>
-public class OpenTypeNoOpenTypesIsByteIdenticalTests
+public class OpenTypeDefaultOnIsByteIdenticalTests
 {
-    private static Task<TestFixture> BuildAsync(bool openTypes) =>
+    // null = configure nothing, which is the case that matters now: the DEFAULT versus the opt-out.
+    private static Task<TestFixture> BuildAsync(bool? openTypes) =>
         TestHostBuilder.BuildAsync(o =>
         {
-            if (openTypes) o.WithOpenTypes();
+            if (openTypes is bool explicitly) o.WithOpenTypes(explicitly);
             o.AddEntitySetProfile<OtwPlainProfile>();
         });
 
     private static StringContent Json(string json) => new(json, Encoding.UTF8, "application/json");
 
     /// <summary>
-    /// The exact delta the reviewer measured: <c>JsonDocument.ParseAsync</c> reports no <c>Path</c>
-    /// where <c>JsonSerializer.DeserializeAsync</c> reports <c>Path: $</c>, so a malformed PUT body
-    /// produced two different 400 messages depending only on whether <c>WithOpenTypes()</c> had been
-    /// called — on a model with no open type at all.
+    /// Every body shape a write route can be handed, including the ones that fail before any handler
+    /// runs. The malformed cases are the discriminating ones — buffering the body changes the error
+    /// wording, which is exactly how the original defect was found.
     /// </summary>
-    [Fact]
-    public async Task MalformedPutBody_ProducesTheSameResponseOnAndOff()
+    public static TheoryData<string, string> Bodies() => new()
     {
-        await using TestFixture on = await BuildAsync(openTypes: true);
+        { "well-formed", """{ "Id": 1, "Name": "changed" }""" },
+        { "malformed", "{ not json" },
+        { "trailing-garbage", """{ "Id": 1, "Name": "x" } trailing""" },
+        { "empty", "" },
+        { "whitespace-only", "   " },
+        { "array", """[ { "Id": 1 } ]""" },
+        { "bare-null", "null" },
+        { "bare-string", "\"just a string\"" },
+        { "bare-number", "42" },
+        { "bare-bool", "true" },
+        { "empty-object", "{}" },
+        // 40 levels of nesting: deep enough to be a non-trivial walk, well inside JsonDocument's
+        // own 64-level cap so both fixtures take the same branch rather than both 400ing on depth.
+        { "deep", Deep(40) },
+    };
+
+    private static string Deep(int depth) =>
+        """{ "Id": 1, "Name": "x", "Nested": """
+        + new string('[', depth) + new string(']', depth)
+        + " }";
+
+    /// <summary>
+    /// The whole matrix: every write route × every body shape, default versus opt-out, comparing
+    /// status <b>and</b> the full response body.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(Bodies))]
+    public async Task EveryWriteRoute_IsByteIdenticalBetweenTheDefaultAndTheOptOut(string label, string body)
+    {
+        await using TestFixture on = await BuildAsync(openTypes: null);
         await using TestFixture off = await BuildAsync(openTypes: false);
 
-        const string Malformed = "{ not json";
+        (string Method, string Url)[] routes =
+        {
+            ("POST", "/odata/OtwPlains"),
+            ("PUT", "/odata/OtwPlains(1)"),
+            ("PATCH", "/odata/OtwPlains(1)"),
+            // Structural-property write route — rides Patch, and is one of the routes the
+            // dynamic-key check is wired into, so it has to be in the comparison.
+            ("PUT", "/odata/OtwPlains(1)/Name"),
+            ("PATCH", "/odata/OtwPlains(1)/Name"),
+        };
 
-        HttpResponseMessage onResp = await on.Client.PutAsync("/odata/OtwPlains(1)", Json(Malformed));
-        HttpResponseMessage offResp = await off.Client.PutAsync("/odata/OtwPlains(1)", Json(Malformed));
+        foreach ((string method, string url) in routes)
+        {
+            HttpResponseMessage onResp = await Send(on, method, url, body);
+            HttpResponseMessage offResp = await Send(off, method, url, body);
 
-        Assert.Equal(offResp.StatusCode, onResp.StatusCode);
-        Assert.Equal(
-            await offResp.Content.ReadAsStringAsync(),
-            await onResp.Content.ReadAsStringAsync());
+            string context = $"{method} {url} [{label}]";
+            Assert.Equal(offResp.StatusCode, onResp.StatusCode);
+            Assert.Equal(
+                (context, await offResp.Content.ReadAsStringAsync()),
+                (context, await onResp.Content.ReadAsStringAsync()));
+        }
     }
 
-    /// <summary>A well-formed PUT is byte-identical too — the ordinary path, not just the error one.</summary>
+    /// <summary>
+    /// A non-JSON <c>Content-Type</c> short-circuits with <c>415</c> before the body is read at all,
+    /// which is a different branch from the malformed-JSON one above.
+    /// </summary>
     [Fact]
-    public async Task WellFormedPutBody_ProducesTheSameResponseOnAndOff()
+    public async Task WrongContentType_IsByteIdenticalBetweenTheDefaultAndTheOptOut()
     {
-        await using TestFixture on = await BuildAsync(openTypes: true);
+        await using TestFixture on = await BuildAsync(openTypes: null);
         await using TestFixture off = await BuildAsync(openTypes: false);
 
-        const string Body = """{ "Id": 1, "Name": "changed" }""";
+        foreach (string contentType in new[] { "text/plain", "application/xml" })
+        {
+            foreach ((string method, string url) in new[]
+                     {
+                         ("POST", "/odata/OtwPlains"),
+                         ("PUT", "/odata/OtwPlains(1)"),
+                         ("PATCH", "/odata/OtwPlains(1)"),
+                     })
+            {
+                HttpResponseMessage onResp = await Send(on, method, url, """{ "Id": 1 }""", contentType);
+                HttpResponseMessage offResp = await Send(off, method, url, """{ "Id": 1 }""", contentType);
 
-        HttpResponseMessage onResp = await on.Client.PutAsync("/odata/OtwPlains(1)", Json(Body));
-        HttpResponseMessage offResp = await off.Client.PutAsync("/odata/OtwPlains(1)", Json(Body));
+                string context = $"{method} {url} [{contentType}]";
+                Assert.Equal(offResp.StatusCode, onResp.StatusCode);
+                Assert.Equal(
+                    (context, await offResp.Content.ReadAsStringAsync()),
+                    (context, await onResp.Content.ReadAsStringAsync()));
+            }
+        }
+    }
 
-        Assert.Equal(offResp.StatusCode, onResp.StatusCode);
-        Assert.Equal(
-            await offResp.Content.ReadAsStringAsync(),
-            await onResp.Content.ReadAsStringAsync());
+    /// <summary>Reads have no body to walk, but the serializer options they use are the same object
+    /// the write paths derive from — so the read side is compared too.</summary>
+    [Fact]
+    public async Task Reads_AreByteIdenticalBetweenTheDefaultAndTheOptOut()
+    {
+        await using TestFixture on = await BuildAsync(openTypes: null);
+        await using TestFixture off = await BuildAsync(openTypes: false);
+
+        foreach (string url in new[]
+                 {
+                     "/odata/OtwPlains",
+                     "/odata/OtwPlains(1)",
+                     "/odata/OtwPlains(1)/Name",
+                     "/odata/OtwPlains(1)/Name/$value",
+                     "/odata/$metadata",
+                     "/odata",
+                 })
+        {
+            HttpResponseMessage onResp = await on.Client.GetAsync(url);
+            HttpResponseMessage offResp = await off.Client.GetAsync(url);
+
+            Assert.Equal(offResp.StatusCode, onResp.StatusCode);
+            Assert.Equal(
+                (url, await offResp.Content.ReadAsStringAsync()),
+                (url, await onResp.Content.ReadAsStringAsync()));
+        }
+    }
+
+    private static Task<HttpResponseMessage> Send(
+        TestFixture fx, string method, string url, string body, string contentType = "application/json")
+    {
+        var request = new HttpRequestMessage(new HttpMethod(method), url)
+        {
+            Content = new StringContent(body, Encoding.UTF8, contentType),
+        };
+        return fx.Client.SendAsync(request);
     }
 }

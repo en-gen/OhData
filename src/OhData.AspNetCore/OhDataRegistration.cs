@@ -17,7 +17,7 @@ public sealed class OhDataRegistration
         IReadOnlyList<IEntitySetEndpointSource> profiles,
         IReadOnlyList<UnboundOperationDefinition>? unboundOps = null,
         JsonNamingPolicy? jsonPropertyNamingPolicy = null,
-        bool openTypesEnabled = false)
+        bool openTypesEnabled = true)
     {
         Prefix = prefix;
         EdmModel = edmModel;
@@ -45,9 +45,11 @@ public sealed class OhDataRegistration
     internal JsonNamingPolicy? JsonPropertyNamingPolicy { get; }
 
     /// <summary>
-    /// #389: whether <c>OhDataBuilder.WithOpenTypes()</c> was called. <c>false</c> (the default)
-    /// means the open-type resolver modifier is never built and the write-side dynamic-key
-    /// validation never runs, so the registration behaves exactly as it did before #389.
+    /// #389: whether open complex types are enabled for this registration. <c>true</c> (the default —
+    /// a complex type with a dictionary member <i>is</i> an open type, and the CSDL has always said
+    /// so). <c>OhDataBuilder.WithOpenTypes(false)</c> sets it <c>false</c>, which means the open-type
+    /// resolver modifier is never built and the write-side dynamic-key validation never runs, so the
+    /// registration behaves exactly as it did before #389.
     /// </summary>
     internal bool OpenTypesEnabled { get; }
 
@@ -57,15 +59,22 @@ public sealed class OhDataRegistration
     /// <c>OhDataEndpointFactory.MapAll</c>, which is the first place the container map exists.
     /// </summary>
     /// <remarks>
+    /// <b>This gate is what makes default-on safe, and it is now load-bearing for every registration
+    /// rather than for an opted-in minority.</b> Since <see cref="OpenTypesEnabled"/> defaults to
+    /// <c>true</c>, the second conjunct — does the EDM actually declare an open complex type? — is the
+    /// only thing standing between a model with no dictionary member anywhere and a changed response.
+    /// It has to keep every such model byte-identical to a pre-#389 build, error responses included.
+    /// <para>
     /// <see cref="OpenTypesEnabled"/> alone is the wrong gate for the per-request work, and the
-    /// difference was observable. <c>WithOpenTypes()</c> is documented as a no-op on a model with no
-    /// dictionary member, but gating on the opt-in flag meant such a registration still buffered
-    /// every <c>PUT</c> body into a <see cref="System.Text.Json.JsonDocument"/> before deserializing
-    /// — which changes the malformed-JSON error message, since <c>JsonDocument.ParseAsync</c> reports
-    /// no <c>Path</c> where <c>JsonSerializer.DeserializeAsync</c> reports <c>Path: $</c>. Measured
-    /// ON vs OFF on a model with no open types, that was the entire delta from "byte-identical".
-    /// Gating on this instead restores the claim and skips the buffering plus a full body walk on
-    /// every write.
+    /// difference was observable. Gating the write paths on the flag meant a registration with no
+    /// dictionary member still buffered every <c>PUT</c> body into a
+    /// <see cref="System.Text.Json.JsonDocument"/> before deserializing — which changes the
+    /// malformed-JSON error message, since <c>JsonDocument.ParseAsync</c> reports no <c>Path</c>
+    /// where <c>JsonSerializer.DeserializeAsync</c> reports <c>Path: $</c>. Measured on a model with
+    /// no open types, that was the entire delta from "byte-identical". Gating on this instead
+    /// restores the claim and skips the buffering plus a full body walk on every write.
+    /// <c>OpenTypeDefaultOnIsByteIdenticalTests</c> pins it across every write route and body shape.
+    /// </para>
     /// </remarks>
     internal bool OpenTypesActive { get; set; }
 

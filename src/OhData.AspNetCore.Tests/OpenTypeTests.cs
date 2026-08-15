@@ -589,27 +589,31 @@ public class OpenTypeUnusableContainerTests
     /// <summary>
     /// Silently skipping would leave the CSDL saying <c>OpenType="true"</c> with the container
     /// omitted while the wire still nests it under its own name — exactly the EDM/wire mismatch this
-    /// feature declines to ship for entity roots. Since open types are opt-in, the registration
-    /// asked for this explicitly, so it is a startup failure naming the type, the member and the fix.
+    /// feature declines to ship for entity roots. So it is a startup failure naming the type, the
+    /// member and the fix. Open types being ON by default, this now fires without the registration
+    /// mentioning them at all.
     /// </summary>
     [Fact]
-    public async Task GetterOnlyContainer_FailsAtMapOhData_WhenOpenTypesAreEnabled()
+    public async Task GetterOnlyContainer_FailsAtMapOhData_ByDefault()
     {
         InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(
             () => TestHostBuilder.BuildAsync(o =>
-                o.WithOpenTypes().AddEntitySetProfile<UnbindableBagProfile>()));
+                o.AddEntitySetProfile<UnbindableBagProfile>()));
 
         Assert.Contains("UnbindableBag", ex.Message, StringComparison.Ordinal);
         Assert.Contains("Entries", ex.Message, StringComparison.Ordinal);
         Assert.Contains("no accessible setter", ex.Message, StringComparison.Ordinal);
     }
 
-    /// <summary>Without the opt-in the same model starts fine — nothing about it is inspected.</summary>
+    /// <summary>
+    /// The escape hatch is also the way out of this startup failure: with open types off the model is
+    /// never inspected and the registration starts fine, exactly as it did pre-#389.
+    /// </summary>
     [Fact]
-    public async Task GetterOnlyContainer_IsNotEvenLookedAt_WithoutTheOptIn()
+    public async Task GetterOnlyContainer_IsNotEvenLookedAt_UnderTheOptOut()
     {
         await using TestFixture fx = await TestHostBuilder.BuildAsync(o =>
-            o.AddEntitySetProfile<UnbindableBagProfile>());
+            o.WithOpenTypes(false).AddEntitySetProfile<UnbindableBagProfile>());
 
         HttpResponseMessage resp = await fx.Client.GetAsync("/odata/UnbindableBags");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
@@ -648,10 +652,20 @@ internal sealed class ShadowedKeyHostProfile : EntitySetProfile<int, OpenTypeHos
     }
 }
 
-/// <summary>Captures every warning the "OhData" logger category emits during a test.</summary>
+/// <summary>Captures every warning-or-worse record emitted during a test.</summary>
 internal sealed class WarningCapture : ILoggerProvider
 {
+    /// <summary>The formatted MESSAGE of each record — never the attached exception's own text.</summary>
     internal List<string> Warnings { get; } = new();
+
+    /// <summary>
+    /// The attached <see cref="Exception"/> of each record that carried one. Separate from
+    /// <see cref="Warnings"/> because <c>formatter(state, exception)</c> renders only the message
+    /// template: a handler fault logged as "unhandled exception processing {Method} {Path}" puts the
+    /// actual cause here and nowhere else, so a test asserting "the real exception was logged" has to
+    /// look at this list.
+    /// </summary>
+    internal List<Exception> Exceptions { get; } = new();
 
     public ILogger CreateLogger(string categoryName) => new Sink(this);
     public void Dispose() { }
@@ -668,7 +682,9 @@ internal sealed class WarningCapture : ILoggerProvider
             LogLevel logLevel, EventId eventId, TState state, Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-            if (logLevel >= LogLevel.Warning) _owner.Warnings.Add(formatter(state, exception));
+            if (logLevel < LogLevel.Warning) return;
+            _owner.Warnings.Add(formatter(state, exception));
+            if (exception is not null) _owner.Exceptions.Add(exception);
         }
     }
 }
@@ -676,64 +692,137 @@ internal sealed class WarningCapture : ILoggerProvider
 public class OpenTypeShadowedKeyTests
 {
     /// <summary>
-    /// The pre-fix output was <c>{"Channel":"declared","Channel":"fromBag",…}</c> — a duplicate JSON
-    /// property name, which is invalid OData (Microsoft's <c>ODataWriter</c> runs an explicit
-    /// duplicate-name check rather than emitting it) and which every .NET reader tested resolves in
-    /// the BAG's favour, making the declared value unreachable. Emitting invalid JSON is not an
-    /// acceptable outcome and neither is faulting a read over a data condition, so the declared
-    /// property wins, the bag entry is dropped, and a warning names the type and the key.
+    /// Emitting both would produce <c>{"Channel":"declared","Channel":"fromBag",…}</c> — a duplicate
+    /// JSON property name, which every .NET reader tested resolves in the BAG's favour, making the
+    /// declared value unreachable, and which Microsoft's <c>ODataWriter</c> runs an explicit
+    /// duplicate-name check rather than emitting.
+    /// <para>
+    /// The contract is now a hard failure, matching <c>Microsoft.AspNetCore.OData</c>
+    /// (<c>DynamicPropertyNameAlreadyUsedAsDeclaredPropertyName</c>, also an
+    /// <c>InvalidOperationException</c>). The spec does not decide this — CSDL §6.3/§9.3 say only
+    /// that dynamic properties are "uniquely named", and JSON Format defers to RFC 8259's SHOULD —
+    /// so the deciding argument is that the condition is SYSTEMATIC: a client cannot cause it, only
+    /// server-side code can, and if it fires at all it fires for every row carrying the key.
+    /// </para>
+    /// <para>
+    /// The accepted cost is that a collection endpoint faults rather than serving the remaining rows.
+    /// What must NOT happen is a bare/empty 500 — this asserts the OData error envelope and that the
+    /// real exception reached the log.
+    /// </para>
     /// </summary>
     [Fact]
-    public async Task ABagKeyShadowingADeclaredProperty_LosesToItAndIsLogged()
+    public async Task ABagKeyShadowingADeclaredProperty_Fails500WithTheODataErrorEnvelope()
     {
         var capture = new WarningCapture();
         await using TestFixture fx = await TestHostBuilder.BuildAsync(
-            o => o.WithOpenTypes().AddEntitySetProfile<ShadowedKeyHostProfile>(),
+            o => o.AddEntitySetProfile<ShadowedKeyHostProfile>(),
             configureServices: s => s.AddSingleton<ILoggerProvider>(capture));
 
-        string body = await fx.Client.GetStringAsync("/odata/ShadowedHosts");
+        HttpResponseMessage resp = await fx.Client.GetAsync("/odata/ShadowedHosts");
+        Assert.Equal(HttpStatusCode.InternalServerError, resp.StatusCode);
 
-        // Parses at all, and to the DECLARED value: the duplicate key is gone, not merely reordered.
+        // The OData error envelope, not an empty body.
+        string body = await resp.Content.ReadAsStringAsync();
         using JsonDocument doc = JsonDocument.Parse(body);
-        JsonElement meta = doc.RootElement.GetProperty("value")[0].GetProperty("Meta");
-        Assert.Equal("declared", meta.GetProperty("Channel").GetString());
-        Assert.Equal(1, meta.GetProperty("ok").GetInt32());
+        JsonElement error = doc.RootElement.GetProperty("error");
+        Assert.Equal("InternalServerError", error.GetProperty("code").GetString());
 
-        // Exactly one "Channel" in the raw bytes — JsonDocument silently keeps the last duplicate,
-        // so the parsed view alone would not have caught the old defect.
-        Assert.Single(System.Text.RegularExpressions.Regex.Matches(body, "\"Channel\""));
+        // The framework never leaks the exception text to the client...
+        Assert.DoesNotContain("fromBag", body, StringComparison.Ordinal);
 
+        // ...but it does log it. The group filter's own message is a generic "unhandled exception
+        // processing {Method} {Path}"; the cause travels as the record's attached Exception, which is
+        // what has to name the type and the colliding key.
         Assert.Contains(
-            capture.Warnings,
-            w => w.Contains("ExternalReferenceMetadataV2", StringComparison.Ordinal)
-                 && w.Contains("Channel", StringComparison.Ordinal));
+            capture.Exceptions,
+            e => e is InvalidOperationException
+                 && e.Message.Contains("ExternalReferenceMetadataV2", StringComparison.Ordinal)
+                 && e.Message.Contains("'Channel'", StringComparison.Ordinal));
     }
 }
 
 /// <summary>
-/// Zero-delta guarantee, end to end: a registration that did NOT call <c>WithOpenTypes()</c> must
-/// behave exactly as it did before #389 — the container stays a nested declared property in both
-/// directions, and none of the new write-side validation runs. This is what makes "existing suites
-/// unchanged" a structural property rather than a hope. The reference-equality half of the
-/// guarantee is asserted directly against the builder in <c>OpenTypeJsonOptionsTests</c>.
+/// Open types are <b>on by default</b>, and <c>WithOpenTypes(false)</c> is the escape hatch back to
+/// the pre-#389 shape. These tests pin both ends of that: the default flattens without anyone asking,
+/// and the opt-OUT restores the container to an ordinary nested declared property in both directions
+/// with none of the write-side validation running.
+/// <para>
+/// This class was <c>OpenTypeOptInTests</c> and asserted the reverse. The reversal is the point: a
+/// complex type with a dictionary member <i>is</i> an open type, the CSDL always said so, and the
+/// developer should get the conformant shape without having to know the spec.
+/// </para>
+/// <para>
+/// The zero-delta guarantee for models with <i>no</i> open complex type — the thing that keeps this
+/// default flip from touching anyone else — lives in
+/// <c>OpenTypeDefaultOnIsByteIdenticalTests</c>. The reference-equality half is asserted directly
+/// against the builder in <c>OpenTypeJsonOptionsTests</c>.
+/// </para>
 /// </summary>
-public class OpenTypeOptInTests
+public class OpenTypeOptOutTests
 {
-    private static async Task<(TestFixture Fx, ExternalReferenceStore Store)> BuildAsync(bool openTypes)
+    private static async Task<(TestFixture Fx, ExternalReferenceStore Store)> BuildAsync(bool? openTypes)
     {
         var store = new ExternalReferenceStore();
         TestFixture fx = await TestHostBuilder.BuildAsync(
             o =>
             {
-                if (openTypes) o.WithOpenTypes();
+                // null = say nothing at all, which is the case that matters: the DEFAULT has to
+                // flatten, not merely `WithOpenTypes(true)`.
+                if (openTypes is bool explicitly) o.WithOpenTypes(explicitly);
                 o.AddEntitySetProfile<ExternalReferenceProfile>();
             },
             configureServices: s => s.AddSingleton(store));
         return (fx, store);
     }
 
+    /// <summary>
+    /// The headline of the reversal: nothing in this registration mentions open types, and the
+    /// container is flattened anyway.
+    /// </summary>
     [Fact]
-    public async Task WithoutOptIn_TheContainerIsStillANestedDeclaredProperty()
+    public async Task ByDefault_TheContainerIsFlattened()
+    {
+        (TestFixture fx, ExternalReferenceStore _) = await BuildAsync(openTypes: null);
+        await using TestFixture _fx = fx;
+
+        string body = await fx.Client.GetStringAsync("/odata/ExternalReferences");
+        using JsonDocument doc = JsonDocument.Parse(body);
+        JsonElement meta = doc.RootElement.GetProperty("value")[0].GetProperty("Metadata");
+        Assert.Equal(3, meta.GetProperty("tier").GetInt32());
+        Assert.False(meta.TryGetProperty("KeyValuePairs", out _));
+    }
+
+    /// <summary>Write-side dynamic-key validation is part of the default, not of an opt-in.</summary>
+    [Fact]
+    public async Task ByDefault_ReservedKeysAreRejected()
+    {
+        (TestFixture fx, ExternalReferenceStore _) = await BuildAsync(openTypes: null);
+        await using TestFixture _fx = fx;
+
+        HttpResponseMessage resp = await fx.Client.PostAsync("/odata/ExternalReferences",
+            new StringContent(
+                """{ "Source": "S", "Xref": "X", "Metadata": { "@odata.type": "#Evil" } }""",
+                Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    /// <summary><c>WithOpenTypes(true)</c> is still accepted and means what it says.</summary>
+    [Fact]
+    public async Task ExplicitTrue_IsTheSameAsTheDefault()
+    {
+        (TestFixture fx, ExternalReferenceStore _) = await BuildAsync(openTypes: true);
+        await using TestFixture _fx = fx;
+
+        string body = await fx.Client.GetStringAsync("/odata/ExternalReferences");
+        using JsonDocument doc = JsonDocument.Parse(body);
+        JsonElement meta = doc.RootElement.GetProperty("value")[0].GetProperty("Metadata");
+        Assert.Equal(3, meta.GetProperty("tier").GetInt32());
+        Assert.False(meta.TryGetProperty("KeyValuePairs", out _));
+    }
+
+    [Fact]
+    public async Task WithOptOut_TheContainerIsStillANestedDeclaredProperty()
     {
         (TestFixture fx, ExternalReferenceStore _) = await BuildAsync(openTypes: false);
         await using TestFixture _fx = fx;
@@ -748,30 +837,42 @@ public class OpenTypeOptInTests
     }
 
     /// <summary>
-    /// The reason the feature is opt-in. Without it this body binds the caller's dictionary to the
-    /// DECLARED <c>KeyValuePairs</c> property; with it, the same body would bind a dynamic key
-    /// literally named <c>KeyValuePairs</c> whose value is that dictionary — and the response echo
-    /// of the two is byte-identical, so the corruption would be invisible from the wire.
+    /// The reason the escape hatch exists, and the reason the default flip gets a startup warning.
+    /// Under the opt-out this body binds the caller's dictionary to the DECLARED
+    /// <c>KeyValuePairs</c> property; by default the same body binds a dynamic key literally named
+    /// <c>KeyValuePairs</c> whose value is that dictionary — and the response echo of the two is
+    /// byte-identical, so an adopter cannot tell them apart from the wire. Both halves are asserted
+    /// here, against the store rather than against the response, because the response is exactly
+    /// what cannot discriminate.
     /// </summary>
     [Fact]
-    public async Task WithoutOptIn_AnExistingNestedWriteBodyStillBindsToTheDeclaredContainer()
+    public async Task WithOptOut_AnExistingNestedWriteBodyStillBindsToTheDeclaredContainer()
     {
-        (TestFixture fx, ExternalReferenceStore store) = await BuildAsync(openTypes: false);
-        await using TestFixture _fx = fx;
+        const string NestedBody =
+            """{ "Source": "S", "Xref": "X", "Metadata": { "KeyValuePairs": { "a": 1 } } }""";
 
-        HttpResponseMessage resp = await fx.Client.PostAsync("/odata/ExternalReferences",
-            new StringContent(
-                """{ "Source": "S", "Xref": "X", "Metadata": { "KeyValuePairs": { "a": 1 } } }""",
-                Encoding.UTF8, "application/json"));
+        (TestFixture optedOut, ExternalReferenceStore outStore) = await BuildAsync(openTypes: false);
+        await using TestFixture _out = optedOut;
+        HttpResponseMessage outResp = await optedOut.Client.PostAsync("/odata/ExternalReferences",
+            new StringContent(NestedBody, Encoding.UTF8, "application/json"));
 
-        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
-        IDictionary<string, object?> bag = store.LastWritten!.Metadata!.KeyValuePairs!;
-        Assert.Equal(new[] { "a" }, bag.Keys);
+        Assert.Equal(HttpStatusCode.Created, outResp.StatusCode);
+        Assert.Equal(new[] { "a" }, outStore.LastWritten!.Metadata!.KeyValuePairs!.Keys);
+
+        // Same body, default settings: the dictionary is now the VALUE of a dynamic key that is
+        // itself named "KeyValuePairs". This is the silent re-bind the startup warning exists for.
+        (TestFixture onByDefault, ExternalReferenceStore onStore) = await BuildAsync(openTypes: null);
+        await using TestFixture _on = onByDefault;
+        HttpResponseMessage onResp = await onByDefault.Client.PostAsync("/odata/ExternalReferences",
+            new StringContent(NestedBody, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.Created, onResp.StatusCode);
+        Assert.Equal(new[] { "KeyValuePairs" }, onStore.LastWritten!.Metadata!.KeyValuePairs!.Keys);
     }
 
-    /// <summary>Write-side dynamic-key validation is part of the opt-in, not of the baseline.</summary>
+    /// <summary>Write-side dynamic-key validation goes away with the opt-out, as it did pre-#389.</summary>
     [Fact]
-    public async Task WithoutOptIn_ReservedKeysAreNotRejected()
+    public async Task WithOptOut_ReservedKeysAreNotRejected()
     {
         (TestFixture fx, ExternalReferenceStore _) = await BuildAsync(openTypes: false);
         await using TestFixture _fx = fx;
@@ -784,17 +885,81 @@ public class OpenTypeOptInTests
         // Nested under a declared property they are inert payload, never control information.
         Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
     }
+}
 
+/// <summary>
+/// The startup warning that mitigates the default flip. It is the only signal an existing adopter
+/// gets before their stored data is already wrong, because the mis-bound response echo is
+/// byte-identical to the correct one — a normal breaking change shows up in a staging diff and this
+/// one does not.
+/// </summary>
+public class OpenTypeStartupWarningTests
+{
+    // WarningCapture sinks EVERY category, not just "OhData", so an unrelated host-startup warning
+    // would make a bare Assert.Empty flaky. Select on the phrase unique to this warning instead —
+    // which also means "logs nothing" is asserted about THIS warning specifically, which is the
+    // claim being made.
+    private static List<string> WireShapeWarnings(WarningCapture capture) =>
+        capture.Warnings
+            .Where(w => w.Contains("is an OData open complex type", StringComparison.Ordinal))
+            .ToList();
+
+    /// <summary>
+    /// Fires by default, names the CLR type AND the container member, and points at the escape hatch.
+    /// </summary>
     [Fact]
-    public async Task WithOptIn_TheContainerIsFlattened()
+    public async Task AnAffectedComplexType_IsNamedInAStartupWarning()
     {
-        (TestFixture fx, ExternalReferenceStore _) = await BuildAsync(openTypes: true);
-        await using TestFixture _fx = fx;
+        var capture = new WarningCapture();
+        await using TestFixture _ = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<ExternalReferenceProfile>(),
+            configureServices: s => s
+                .AddSingleton<ExternalReferenceStore>()
+                .AddSingleton<ILoggerProvider>(capture));
 
-        string body = await fx.Client.GetStringAsync("/odata/ExternalReferences");
-        using JsonDocument doc = JsonDocument.Parse(body);
-        JsonElement meta = doc.RootElement.GetProperty("value")[0].GetProperty("Metadata");
-        Assert.Equal(3, meta.GetProperty("tier").GetInt32());
-        Assert.False(meta.TryGetProperty("KeyValuePairs", out _));
+        List<string> warnings = WireShapeWarnings(capture);
+        Assert.NotEmpty(warnings);
+
+        // The full CLR type name, not a substring that a derived type would also satisfy.
+        Assert.Contains(
+            warnings,
+            w => w.Contains(typeof(ExternalReferenceMetadata).FullName!, StringComparison.Ordinal)
+                 && w.Contains("KeyValuePairs", StringComparison.Ordinal));
+
+        // The escape hatch has to be in every one of them: naming the problem without naming the
+        // remedy just sends the reader to the release notes.
+        Assert.All(warnings, w => Assert.Contains("WithOpenTypes(false)", w, StringComparison.Ordinal));
+
+        // One per affected type, not one per anything else — no duplicates.
+        Assert.Equal(warnings.Count, warnings.Distinct(StringComparer.Ordinal).Count());
+    }
+
+    /// <summary>
+    /// A model with no open complex type must log NOTHING — the untouched-app guarantee covers the
+    /// log as well as the wire. <c>OtwPlain</c> has no dictionary member anywhere.
+    /// </summary>
+    [Fact]
+    public async Task AModelWithNoOpenComplexTypes_LogsNothingAtAll()
+    {
+        var capture = new WarningCapture();
+        await using TestFixture _ = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<OtwPlainProfile>(),
+            configureServices: s => s.AddSingleton<ILoggerProvider>(capture));
+
+        Assert.Empty(WireShapeWarnings(capture));
+    }
+
+    /// <summary>Taking the escape hatch silences it too — there is nothing left to warn about.</summary>
+    [Fact]
+    public async Task TheOptOut_SilencesTheWarning()
+    {
+        var capture = new WarningCapture();
+        await using TestFixture _ = await TestHostBuilder.BuildAsync(
+            o => o.WithOpenTypes(false).AddEntitySetProfile<ExternalReferenceProfile>(),
+            configureServices: s => s
+                .AddSingleton<ExternalReferenceStore>()
+                .AddSingleton<ILoggerProvider>(capture));
+
+        Assert.Empty(WireShapeWarnings(capture));
     }
 }

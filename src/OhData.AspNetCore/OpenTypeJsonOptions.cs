@@ -21,13 +21,27 @@ namespace OhData;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Opt-in.</b> Nothing in this file runs unless the registration called
-/// <c>OhDataBuilder.WithOpenTypes()</c>. That is not a style choice: flattening a container
-/// <i>re-binds</i> a body an existing adopter is already sending. Once the member is extension
-/// data it is no longer a <i>declared</i> property, so <c>{"Meta":{"Bag":{"a":1}}}</c> stops
-/// meaning "the Bag property" and starts meaning "a dynamic key literally named Bag" — and because
-/// the echo of that mis-bound value is byte-identical to the correct one, the corruption is
-/// invisible from the wire. Defaulting off keeps every pre-#389 registration byte-identical.
+/// <b>On by default; <c>OhDataBuilder.WithOpenTypes(false)</c> is the escape hatch.</b> A complex
+/// type with a dictionary member <i>is</i> an open type, and the CSDL this same
+/// <c>ODataConventionModelBuilder</c> emits has always said so — <c>OpenType="true"</c>, container
+/// omitted from the declared properties — whether or not anything in this file ran. Leaving the
+/// wire nested made <c>$metadata</c> and the payload disagree and made the conformant shape
+/// something the developer had to know the spec to ask for. It also diverged from
+/// <c>Microsoft.AspNetCore.OData</c>, whose <c>ODataResourceSerializer.AppendDynamicProperties</c>
+/// reads the very same annotation and appends dynamic properties flat with <i>no</i> opt-in flag on
+/// that path.
+/// </para>
+/// <para>
+/// <b>The hazard the opt-in used to guard is real and did not go away.</b> Flattening a container
+/// <i>re-binds</i> a body an existing adopter is already sending: once the member is extension data
+/// it is no longer a <i>declared</i> property, so <c>{"Meta":{"Bag":{"a":1}}}</c> stops meaning "the
+/// Bag property" and starts meaning "a dynamic key literally named Bag" holding the old dictionary.
+/// Because the echo of that mis-bound value is byte-identical to the correct one, the corruption is
+/// invisible from the wire and an adopter cannot find it by diffing staging responses.
+/// <see cref="WarnWireShapeIsFlat"/> is the mitigation: one startup warning per affected complex
+/// type, naming the type and the container. A model with <b>no</b> dictionary member is untouched in
+/// either setting — <see cref="Build"/> returns the base options reference-equal, nothing is logged,
+/// and <c>OhDataRegistration.OpenTypesActive</c> keeps every write path off.
 /// </para>
 /// <para>
 /// <b>Driven by the EDM, never by attributes and never by a name convention.</b>
@@ -108,8 +122,8 @@ internal static class OpenTypeJsonOptions
     /// file.
     /// <para>
     /// Throws when the EDM marks a type open but <c>System.Text.Json</c> cannot use the designated
-    /// member as extension data. The caller asked for open types explicitly, and the alternative
-    /// outcomes are both worse than a startup failure: silently skipping leaves the CSDL saying
+    /// member as extension data. Both alternative outcomes are worse than a startup failure that
+    /// names the member and the fix: silently skipping leaves the CSDL saying
     /// <c>OpenType="true"</c> with the container omitted while the wire still nests it under its
     /// own name (measured — that is exactly the EDM/wire mismatch this feature declines to ship
     /// for entity roots), and marking it anyway silently <i>drops</i> every incoming dynamic key
@@ -141,10 +155,12 @@ internal static class OpenTypeJsonOptions
     /// types. Otherwise returns one derived options instance whose resolver modifier marks each
     /// mapped container as <see cref="JsonPropertyInfo.IsExtensionData"/>.
     /// </summary>
+    // No ILogger parameter: the one thing this used to log — a bag key shadowing a declared property
+    // — is now an InvalidOperationException, which the group-level exception filter logs (and renders
+    // as 500 + the OData error envelope) like any other handler fault.
     internal static JsonSerializerOptions Build(
         JsonSerializerOptions baseOptions,
-        OpenComplexTypeContainers containers,
-        ILogger? logger = null)
+        OpenComplexTypeContainers containers)
     {
         if (containers.IsEmpty) return baseOptions;
 
@@ -186,7 +202,7 @@ internal static class OpenTypeJsonOptions
                 }
                 // Idempotent: a member already carrying [JsonExtensionData] is simply reaffirmed.
                 property.IsExtensionData = true;
-                SuppressKeysShadowingADeclaredProperty(typeInfo, property, logger);
+                ThrowOnKeysShadowingADeclaredProperty(typeInfo, property);
                 break;
             }
         });
@@ -194,47 +210,62 @@ internal static class OpenTypeJsonOptions
     }
 
     // A bag key equal to a DECLARED property's JSON name would otherwise emit that name twice in
-    // one JSON object — measured: `{"Region":"declared","Region":"fromBag"}`, which is invalid
-    // OData, is what Microsoft's ODataWriter runs an explicit duplicate-property-name check to
-    // prevent, and which every .NET reader tested resolves in the BAG's favour, making the
-    // declared value unreachable. This is reachable from ordinary server-side data (a handler that
-    // merges a caller-supplied dictionary into the bag), so it cannot be left to fail at write
-    // time or emit invalid JSON: the declared property wins and the shadowed key is dropped.
+    // one JSON object — measured: `{"Region":"declared","Region":"fromBag"}`, which every .NET
+    // reader tested resolves in the BAG's favour, making the declared value unreachable, and which
+    // Microsoft's ODataWriter runs an explicit duplicate-property-name check to prevent. This is a
+    // hard error: the request fails with 500 + the OData error envelope.
+    //
+    // THE SPEC DOES NOT RULE ON IT -- checked, not assumed. OData CSDL 4.01 §6.3 (open entity type)
+    // and §9.3 (open complex type) say only that an open type "allows clients to add properties
+    // dynamically to instances of the type by specifying UNIQUELY NAMED property values in the
+    // payload". That is directional but it is not a MUST NOT addressed to the server. OData JSON
+    // Format 4.01 does not address it at all and defers to RFC 8259, where object member names
+    // "SHOULD be unique". So dropping the key and failing the request are BOTH conformant; the only
+    // thing actually ruled out is emitting the duplicate, which neither does.
+    //
+    // With no spec constraint, this follows Microsoft.AspNetCore.OData deliberately. It guards the
+    // same condition in both directions and treats it as InvalidOperation (-> 500) on both:
+    //   - Formatter/Serialization/ODataResourceSerializer.cs:825-829 -- builds
+    //       new HashSet<string>(resource.Properties.Select(p => p.Name))
+    //     and throws SRResources.DynamicPropertyNameAlreadyUsedAsDeclaredPropertyName ("The name of
+    //     dynamic property '{0}' was already used as the declared property name of open type '{1}'.")
+    //   - Formatter/Deserialization/DeserializationHelper.cs:266-269 -- throws
+    //     SRResources.DuplicateDynamicPropertyNameFound. (Narrower than the serializer's check: that
+    //     one fires when a dynamic key is ALREADY IN the bag, i.e. a duplicate DYNAMIC key, not a
+    //     declared-name shadow. Cited here as evidence of the posture -- MS hard-errors on dynamic
+    //     property name conflicts rather than degrading -- not as a second check of this exact
+    //     condition.)
+    //
+    // The second reason is that the failure is SYSTEMATIC, not per-row. A client cannot create this
+    // collision: System.Text.Json binds a body key matching a declared name to the DECLARED property,
+    // so it never reaches the bag (measured). The only source is server-side code -- typically a
+    // handler merging a caller-supplied dictionary into the container without excluding declared
+    // names -- and if that can fire at all it fires for every row carrying the key. A warning in a
+    // log stream is the wrong signal for a systematic defect.
+    //
+    // The cost is accepted deliberately and is stated in docs/open-types.md: a collection endpoint
+    // faults on the bad data rather than serving the remaining rows.
     //
     // Implemented by wrapping the container's getter rather than by a converter, because extension
-    // data is written straight from whatever this getter returns. The wrapper hands back the SAME
-    // dictionary reference whenever there is no collision, which is every ordinary payload — and
-    // that matters beyond allocation: System.Text.Json also calls this getter on the DESERIALIZE
-    // path, to find an existing dictionary to populate. Returning the original there is what keeps
-    // binding untouched.
-    //
-    // The one uncovered corner is a model that PRE-INITIALIZES its container with a key equal to one
-    // of its own declared property names:
-    //     public IDictionary<string, object?>? Bag { get; set; } =
-    //         new Dictionary<string, object?> { ["Region"] = "preset" };  // Region is ALSO declared
-    // On such a type the getter always sees a collision, so on the deserialize path it hands
-    // System.Text.Json a filtered CLONE, STJ populates the clone, and the clone is discarded.
-    // #389 M2: that is stronger than the "would populate the filtered copy" this comment used to
-    // say. Measured, EVERY dynamic key in the request is dropped, the write still reports 201, and
-    // the response echo looks clean because it is rendered from the same pre-initialized bag — a
-    // silent, total write loss that reports success.
-    //
-    // Left uncovered deliberately. The model is already self-contradictory (it declares a property
-    // and pre-seeds a dynamic key of the same name); the condition depends on the runtime INSTANCE,
-    // so startup sees types and cannot detect it; and this getter has no way to tell the serialize
-    // path from the deserialize path — the only signal available here is the collision itself, which
-    // is equally present on both. The alternative on the read side, emitting invalid JSON on every
-    // response, is worse. docs/open-types.md documents it under the collision section so this is not
-    // code-comment-only knowledge.
-    private static void SuppressKeysShadowingADeclaredProperty(
-        JsonTypeInfo typeInfo, JsonPropertyInfo container, ILogger? logger)
+    // data is written straight from whatever this getter returns. The wrapper ALWAYS hands back the
+    // same dictionary reference; it only inspects. That matters beyond allocation: System.Text.Json
+    // also calls this getter on the DESERIALIZE path, to find an existing dictionary to populate, so
+    // returning anything else there would corrupt binding. (The previous drop-and-clone
+    // implementation did exactly that, and a container PRE-SEEDED with a declared name consequently
+    // lost every dynamic key in the request while reporting 201 — #389 M2. Throwing removes that
+    // corner entirely: such a model now fails loudly on the first request instead of silently
+    // discarding writes.)
+    private static void ThrowOnKeysShadowingADeclaredProperty(
+        JsonTypeInfo typeInfo, JsonPropertyInfo container)
     {
         Func<object, object?>? get = container.Get;
         if (get is null) return;
 
         // JSON names, so the configured naming policy is already applied — the same strings the
-        // writer is about to emit. Ordinal: a duplicate JSON key is a byte-for-byte repeat, and
-        // suppressing a merely case-differing key would be silent data loss, not a fix.
+        // writer is about to emit. ORDINAL, deliberately: only a byte-for-byte repeat is a duplicate
+        // JSON key, and faulting on a merely case-differing key would reject data that serializes
+        // perfectly well. See docs/open-types.md for the consequence — OhData binds request bodies
+        // case-insensitively, so a case-differing key can still round-trip into a corrupting write.
         var declaredNames = new HashSet<string>(StringComparer.Ordinal);
         foreach (JsonPropertyInfo property in typeInfo.Properties)
         {
@@ -246,111 +277,40 @@ internal static class OpenTypeJsonOptions
         container.Get = instance =>
         {
             object? bag = get(instance);
-            return bag switch
+            switch (bag)
             {
-                IDictionary<string, object?> objectBag =>
-                    DropShadowedKeys(objectBag, declaredNames, ownerType, logger),
-                IDictionary<string, JsonElement> elementBag =>
-                    DropShadowedKeys(elementBag, declaredNames, ownerType, logger),
-                _ => bag,
-            };
+                // The two shapes System.Text.Json accepts as extension data. Only the KEYS are read;
+                // the bag itself is returned untouched either way.
+                case IDictionary<string, object?> objectBag:
+                    ThrowIfAnyKeyShadowsADeclaredName(objectBag.Keys, declaredNames, ownerType);
+                    break;
+                case IDictionary<string, JsonElement> elementBag:
+                    ThrowIfAnyKeyShadowsADeclaredName(elementBag.Keys, declaredNames, ownerType);
+                    break;
+            }
+            return bag;
         };
     }
 
-    private static IDictionary<string, TValue> DropShadowedKeys<TValue>(
-        IDictionary<string, TValue> bag, HashSet<string> declaredNames, Type ownerType, ILogger? logger)
+    // Throws on the FIRST offending key rather than collecting them all: the message names one
+    // concrete key the caller has to remove, and a type carrying one shadowing key almost always
+    // carries it on every instance, so an exhaustive list buys nothing. Values are never included —
+    // this message can reach a log aggregator, and a dynamic value is arbitrary caller-supplied data.
+    private static void ThrowIfAnyKeyShadowsADeclaredName(
+        IEnumerable<string> keys, HashSet<string> declaredNames, Type ownerType)
     {
-        if (bag.Count == 0) return bag;
-
-        List<string>? shadowed = null;
-        foreach (string key in bag.Keys)
+        foreach (string key in keys)
         {
-            if (declaredNames.Contains(key)) (shadowed ??= new List<string>()).Add(key);
-        }
-        if (shadowed is null) return bag;
-
-        IDictionary<string, TValue>? filtered = TryCreateEmptyLike(bag);
-        if (filtered is null)
-        {
-            // Nothing safe to substitute. Better a duplicate key plus a loud error than a 500 on a
-            // read: the request still returns the data, and the log says exactly what is wrong.
-            logger?.LogError(
-                "OhData: open complex type '{Type}' carries dynamic key(s) '{Keys}' that shadow its own " +
-                "declared properties, and its container type '{ContainerType}' could not be cloned to " +
-                "suppress them — the response will contain a duplicate JSON property name. Remove the " +
-                "shadowing key(s), or give the container a type with a parameterless constructor.",
-                ownerType.FullName, string.Join(", ", shadowed), bag.GetType().FullName);
-            return bag;
-        }
-
-        foreach (KeyValuePair<string, TValue> entry in bag)
-        {
-            // Indexer, never Add: Add throws ArgumentException on a duplicate key, and this loop can
-            // legitimately present one. TryCreateEmptyLike clones the bag's RUNTIME type, whose
-            // parameterless constructor is free to install a different IEqualityComparer than the
-            // source bag's — a case-insensitive clone fed an ordinal source holding both "a" and "A"
-            // sees the second key as a duplicate. Add would turn that into a 500 on a read, which is
-            // precisely the outcome this whole guard exists to avoid; the indexer degrades to
-            // last-write-wins instead. (Same reason the shadowed keys are logged, not asserted.)
-            if (!declaredNames.Contains(entry.Key)) filtered[entry.Key] = entry.Value;
-        }
-        // One record per container instance, not one per shadowing key (#389 L4): the keys are
-        // joined into a single message, for the same reason the error branch above does. This does
-        // NOT de-duplicate across a page — a 1000-entity response where every entity shadows still
-        // logs 1000 times, bounded by page size. Going further would need either per-request state
-        // (which this getter, baked into the options at startup, does not have) or a process-wide
-        // "already warned" set, and the latter would silence a recurring problem after its first
-        // occurrence. Amplification bounded by page size is the better trade.
-        logger?.LogWarning(
-            "OhData: open complex type '{Type}' carries the dynamic key(s) '{Keys}', which are also " +
-            "names of its declared properties. The declared properties win and those dynamic keys " +
-            "are omitted from the response — emitting both would produce a duplicate JSON property " +
-            "name.",
-            ownerType.FullName, string.Join(", ", shadowed));
-        return filtered;
-    }
-
-    // The replacement bag must be of the SAME runtime type. System.Text.Json resolves the
-    // extension-data converter from the container's DECLARED property type and casts the value the
-    // getter returns back to it, so handing a plain Dictionary back for a container declared as
-    // `MyBag : Dictionary<string, object?>` throws InvalidCastException — measured, not assumed.
-    // Cloning the bag's own runtime type covers that and the ordinary declared-as-interface case
-    // alike. Returns null when the type cannot be instantiated (no parameterless constructor — a
-    // ReadOnlyDictionary, say); a serialization path must never fault over a data condition, so the
-    // caller degrades rather than throwing.
-    //
-    // #389 M1: "empty-like" is not a given. A parameterless constructor is free to SEED the instance
-    //   class MyBag : Dictionary<string, object?> { public MyBag() { this["schema"] = "v1"; } }
-    // and the caller then copied the surviving keys into a bag that was never empty — measured as a
-    // 500 on a plain GET (ArgumentException from Dictionary.Add on the duplicate key), refuting both
-    // the paragraph above and docs/open-types.md's "a read is never faulted over a data condition".
-    // Clearing is what makes the name true. IsReadOnly is checked for the same reason: a fixed-size
-    // or read-only IDictionary implementation with a public parameterless constructor would throw
-    // from Clear/the indexer instead, and null (duplicate key + a logged error) is the documented
-    // degradation for "cannot be cloned".
-    //
-    // The clone does NOT inherit the source bag's IEqualityComparer — a Dictionary constructed
-    // through Activator gets whatever its own constructor installs, which for the plain-Dictionary
-    // fast path above is the default ordinal comparer. That is deliberate and safe: the clone is
-    // only ever ENUMERATED by the serializer, never queried by key, so a comparer difference cannot
-    // change the emitted JSON. It can only collapse two source keys that the clone's comparer
-    // considers equal, which the caller's indexer assignment degrades to last-write-wins rather than
-    // faulting. Do not "fix" this by copying the comparer: there is no comparer-taking constructor
-    // to call on an arbitrary IDictionary runtime type.
-    private static IDictionary<string, TValue>? TryCreateEmptyLike<TValue>(IDictionary<string, TValue> bag)
-    {
-        Type runtimeType = bag.GetType();
-        if (runtimeType == typeof(Dictionary<string, TValue>)) return new Dictionary<string, TValue>();
-        try
-        {
-            if (Activator.CreateInstance(runtimeType) is not IDictionary<string, TValue> created) return null;
-            if (created.IsReadOnly) return null;
-            if (created.Count > 0) created.Clear();
-            return created;
-        }
-        catch (Exception)
-        {
-            return null;
+            if (!declaredNames.Contains(key)) continue;
+            throw new InvalidOperationException(
+                $"OhData: the dynamic property name '{key}' on open complex type " +
+                $"'{ownerType.FullName}' is already used as a declared property name of that type. " +
+                "Each dynamic property of an open type must be uniquely named, and emitting both " +
+                "would produce a duplicate JSON property name. Remove that key from the type's " +
+                "dynamic-property container — server-side code that merges a caller-supplied " +
+                "dictionary into the container must exclude names that are declared properties of " +
+                "the type. A client cannot cause this: an incoming body key matching a declared " +
+                "name binds to the declared property and never reaches the container.");
         }
     }
 
@@ -422,6 +382,69 @@ internal static class OpenTypeJsonOptions
         }
     }
 
+    /// <summary>
+    /// Logs one <c>Warning</c> per open complex type at <c>MapOhData()</c>, naming the CLR type and
+    /// the container member whose dynamic keys now serialize flat. Logs <b>nothing at all</b> when
+    /// the model has no open complex type.
+    /// </summary>
+    /// <remarks>
+    /// <b>This is the mitigation for a breaking change that cannot be detected by testing.</b> Open
+    /// types are on by default (a complex type with a dictionary member <i>is</i> an open type and
+    /// the CSDL has always said so), but the hazard that originally justified opt-in does not go
+    /// away with the default: once the container is <c>System.Text.Json</c> extension data it is no
+    /// longer a <i>declared</i> property, so an existing adopter's body
+    /// <c>{"Meta":{"Bag":{"a":1}}}</c> binds <c>Bag</c> as a dynamic key <i>holding</i> the old
+    /// dictionary and the handler persists <c>Bag = { "Bag": {"a":1} }</c>.
+    /// <para>
+    /// What makes that worth a startup warning rather than a line in the release notes is that the
+    /// response echo of the mis-bound value is <b>byte-identical</b> to the correct one. An ordinary
+    /// breaking change surfaces in an adopter's tests or in a staging diff; this one surfaces in
+    /// neither — the wire looks right while the stored shape is wrong. Naming the affected types at
+    /// startup is the only signal available before the data is already corrupt, and it is free:
+    /// <see cref="BuildOpenComplexTypeContainerMap"/> already runs here and already knows exactly
+    /// which types are affected.
+    /// </para>
+    /// <para>
+    /// Iterates <see cref="OpenComplexTypeContainers.OpenClrTypes"/> rather than the container map's
+    /// keys, because that is the list of types whose <i>wire shape</i> changed: a derived open
+    /// complex type serializes flat too, even though it shares — and is collapsed onto — its base's
+    /// container entry. The container member is resolved through the same base-chain walk the
+    /// modifier uses, so the name reported is the member actually being flattened.
+    /// </para>
+    /// <para>
+    /// Emitted once per registration at startup, never per request. It is not suppressed for a
+    /// registration that passed <c>WithOpenTypes(true)</c> explicitly: the flag records what the
+    /// consumer asked for, while this records what the model turned out to contain, and the
+    /// distinction a suppression would rest on is not one the plain <c>bool</c> carries.
+    /// </para>
+    /// </remarks>
+    internal static void WarnWireShapeIsFlat(OpenComplexTypeContainers containers, ILogger? logger)
+    {
+        if (logger is null || containers.IsEmpty) return;
+
+        foreach (Type openClrType in containers.OpenClrTypes)
+        {
+            string containerName =
+                TryFindContainer(containers.ByDeclaringType, openClrType, out PropertyInfo? container)
+                    ? container.Name
+                    : "(unresolved)";
+            // Each placeholder appears EXACTLY once. Microsoft.Extensions.Logging binds a message
+            // template's placeholders to the argument array positionally, so a repeated {Container}
+            // would consume a second argument that is not there and render literally.
+            logger.LogWarning(
+                "OhData: '{Type}' is an OData open complex type whose dynamic-property container is " +
+                "the member '{Container}'. Its dynamic keys serialize FLAT — as siblings of the " +
+                "declared properties — and an incoming body binds the same way. This is the conformant " +
+                "shape, and the one $metadata has always advertised for this type (OpenType=\"true\", " +
+                "with that member omitted from the declared properties). If existing clients send or " +
+                "read that member NESTED under its own name, such a body now binds its whole dictionary " +
+                "as ONE dynamic key of that same name, and the response echo of the mis-bound value is " +
+                "byte-identical to the correct one — so the difference will not show up in a response " +
+                "diff. Call AddOhData(o => o.WithOpenTypes(false)) to restore the previous nested shape.",
+                openClrType.FullName, containerName);
+        }
+    }
+
     private static InvalidOperationException ContractRejected(
         Type openClrType, OpenComplexTypeContainers containers, string detail, Exception? inner)
     {
@@ -439,9 +462,9 @@ internal static class OpenTypeJsonOptions
     // IDictionary<string, JsonElement>, and must be both readable and writable (it is populated
     // on read and enumerated on write).
     //
-    // Both halves fail loudly rather than skipping the type, because the registration asked for
-    // open types explicitly and every silent outcome is worse (see the remarks on
-    // BuildOpenComplexTypeContainerMap). Their reachability differs:
+    // Both halves fail loudly rather than skipping the type, because every silent outcome is worse
+    // (see the remarks on BuildOpenComplexTypeContainerMap) and the throw names the member and the
+    // fix. Their reachability differs:
     //   - The writability half is the idiomatic `public IDictionary<string, object?> Bag { get; }
     //     = new();`, which ODataConventionModelBuilder happily infers as a container. Measured: the
     //     CSDL says OpenType="true" with no Bag property, and the wire nests Bag anyway.
@@ -495,8 +518,9 @@ internal static class OpenTypeJsonOptions
             $"that member cannot be used as System.Text.Json extension data because {problem}. " +
             "Give it a public getter and setter of type IDictionary<string, object?> " +
             "(for example `public IDictionary<string, object?>? Bag { get; set; }`), or drop the " +
-            "member so the type is no longer open. Open types are opt-in " +
-            "(AddOhData(o => o.WithOpenTypes())), so this is not skipped silently.");
+            "member so the type is no longer open. This is not skipped silently, because skipping " +
+            "would leave $metadata saying OpenType=\"true\" while the wire nested the member anyway; " +
+            "AddOhData(o => o.WithOpenTypes(false)) turns open types off for the whole registration.");
     }
 
     // Walks the base-type chain so a DERIVED open complex type resolves the container its base
@@ -547,9 +571,9 @@ internal static class OpenTypeJsonOptions
     /// </para>
     /// <para>
     /// A key equal to a declared property's name needs no check here: <c>System.Text.Json</c> binds
-    /// it to the declared property and it never reaches the bag (measured). The collision this
-    /// cannot see is the one that arrives from server-side data, which
-    /// <see cref="SuppressKeysShadowingADeclaredProperty"/> handles on the way out.
+    /// it to the declared property and it never reaches the bag (measured) — which is also why the
+    /// collision is never a client's doing. The one that arrives from server-side data is caught on
+    /// the way out by <see cref="ThrowOnKeysShadowingADeclaredProperty"/>.
     /// </para>
     /// </remarks>
     internal static string? FindInvalidDynamicKey(

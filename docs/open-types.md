@@ -1,9 +1,9 @@
 # Open Types (dynamic property bags)
 
 An OData **open type** carries caller-supplied properties that are not declared in the EDM. OhData
-supports this on **complex types**: give the type an `IDictionary<string, object?>` member, opt in
-with `WithOpenTypes()`, and its entries are written and read as **siblings** of the declared
-properties — never nested under the member's own name.
+supports this on **complex types**: give the type an `IDictionary<string, object?>` member and its
+entries are written and read as **siblings** of the declared properties — never nested under the
+member's own name. This is **on by default**; `WithOpenTypes(false)` is the escape hatch.
 
 **No attributes. No model changes.** Support is driven entirely by the EDM, so a model published
 in a shared contract package works as-is:
@@ -24,8 +24,8 @@ public record ExternalReferenceMetadata
 ```
 
 ```csharp
+// Nothing to enable — a complex type with a dictionary member is an open type.
 services.AddOhData(o => o
-    .WithOpenTypes()
     .AddEntitySetProfile<ExternalReferenceProfile>());
 ```
 
@@ -46,14 +46,37 @@ services.AddOhData(o => o
 
 `KeyValuePairs` appears nowhere on the wire, and nowhere in `$metadata`.
 
-## Opt in deliberately — this changes the wire shape
+## On by default — and why
 
-`WithOpenTypes()` is **off by default**, and turning it on is a breaking change for any complex
-type in the model that has a dictionary member.
+A complex type with a dictionary member **is** an open type, and the CSDL OhData emits has always
+said so: `ODataConventionModelBuilder` marks the type `OpenType="true"` and omits the member from
+the declared properties whether or not the flat wire shape is active. Leaving the payload nested
+made `$metadata` and the body disagree, and made the conformant behaviour something you had to know
+the spec to ask for.
+
+It also put OhData at odds with the ecosystem. `Microsoft.AspNetCore.OData`'s
+`ODataResourceSerializer.AppendDynamicProperties` reads the **same**
+`DynamicPropertyDictionaryAnnotation` and appends dynamic properties flat, with no opt-in flag
+anywhere in that path: annotation present ⇒ flat. OhData now auto-maps per the spec; you write a
+declarative profile.
+
+### If you are upgrading, read this
+
+`WithOpenTypes(false)` restores the pre-#389 shape, in which the container is an ordinary nested
+declared property:
+
+```csharp
+services.AddOhData(o => o
+    .WithOpenTypes(false)
+    .AddEntitySetProfile<ExternalReferenceProfile>());
+```
 
 **Does this affect me?** Ask one question: *do any of your complex types have an
-`IDictionary<string, object>` member?* If none do, enabling this is a no-op — the registration's
-serializer options are not even derived, and every response is byte-identical. If any do, read on.
+`IDictionary<string, object>` member?* If none do, this setting is inert in either position — the
+registration's serializer options are not even derived, no write body is walked, nothing is logged,
+and every response including error responses is byte-identical to a pre-#389 build. If any do, read
+on. **You do not have to work this out by hand: `MapOhData()` logs one warning per affected complex
+type at startup, naming the CLR type and the container member.**
 
 Once the container is extension data it is no longer a *declared* property. An existing client body
 
@@ -63,9 +86,12 @@ Once the container is extension data it is no longer a *declared* property. An e
 
 stops binding `{"a":1}` to the `KeyValuePairs` property and starts binding a **dynamic key literally
 named `KeyValuePairs`** whose value is that dictionary. The handler then persists
-`KeyValuePairs = { "KeyValuePairs": {"a":1} }`, and the response echo of that mis-bound value is
-byte-identical to the correct one — so the corruption is invisible from the wire. Migrate clients
-and stored data deliberately; do not flip this on a live surface and watch the responses.
+`KeyValuePairs = { "KeyValuePairs": {"a":1} }`.
+
+**The response echo of that mis-bound value is byte-identical to the correct one.** This is why the
+startup warning exists rather than a line in the release notes: an ordinary breaking change shows up
+in your tests or in a staging response diff, and this one shows up in neither. The wire looks right
+while the stored shape is wrong. Migrate clients and stored data deliberately.
 
 ## How the container is discovered
 
@@ -216,9 +242,9 @@ never dynamic property names, and are not held to the identifier grammar:
 { "Id": 0, "MetaMap": { "has space": { "tier": 7 } } }
 ```
 
-The check runs only under the opt-in, and only against members that will actually land in a bag —
-unknown members of a *non*-open type are ignored on binding exactly as they were before, so a client
-may still send `@odata.context` at the entity root.
+The check runs only against members that will actually land in a bag — unknown members of a
+*non*-open type are ignored on binding exactly as they were before, so a client may still send
+`@odata.context` at the entity root. A model with no open complex type never runs it at all.
 
 ## `PATCH` replaces the complex value — it does not merge it
 
@@ -259,70 +285,88 @@ await client.PatchAsync(id, new { Metadata = MergeWithDeclaredProperties(current
 `PATCH` on the property route (`PATCH /Set({key})/Metadata`) is not a merge either — it returns
 `400 NotSupported`. Use `PUT /Set({key})/Metadata`, which is an explicit whole-value replace.
 
-## A bag key that collides with a declared property name
+## A bag key that collides with a declared property name — this fails the request
 
 Server-side data can put a key in the bag that equals one of the complex type's own declared
 property names (a handler merging a caller-supplied dictionary, for instance). Emitting both would
-produce a **duplicate JSON property name** — invalid OData, and something every .NET reader tested
-resolves in the *bag's* favour, making the declared value unreachable.
+produce a **duplicate JSON property name**, which every .NET reader tested resolves in the *bag's*
+favour, making the declared value unreachable.
 
-**Contract: the declared property wins and the colliding bag key is omitted from the response**, with
-a warning logged on the `OhData` logger naming the type and the key. Nothing faults, and nothing
-invalid is emitted.
+**Contract: the request fails with `500` and the OData error envelope.** The exception names the CLR
+type and the colliding key (never the value) and is logged; the client gets the ordinary
+`{"error":{"code":"InternalServerError",…}}` body, not a bare 500.
 
 ```jsonc
 // Meta.Channel = "declared";  Meta.KeyValuePairs = { "Channel": "fromBag", "ok": 1 }
-{ "Channel": "declared", "ok": 1 }
+// GET /odata/Things  →  500
+{ "error": { "code": "InternalServerError", "message": "…" } }
 ```
 
-The match is **ordinal**: a key differing only in case (`channel` beside a declared `Channel`) is
-kept, since it produces no duplicate key and suppressing it would be silent data loss.
+**The cost is deliberate and worth stating plainly: a collection endpoint faults on the bad data
+rather than serving the remaining rows.**
 
-Suppression works by handing the serializer a filtered clone of the container, of the container's own
-runtime type. The clone is emptied first, so a container type whose parameterless constructor seeds
-entries of its own still works. If the type cannot be cloned at all — no parameterless constructor
-(a `ReadOnlyDictionary`, say), or an instance that reports itself read-only — the response then does
-contain the duplicate key and an **error** is logged naming the type, the keys and the container
-type. A read is never faulted over a data condition.
+### Why a hard failure rather than dropping the key
 
-This cannot be checked at startup — the keys are dynamic — and it does not arise from a client body,
-because `System.Text.Json` binds a body key matching a declared name to that declared property; it
-never reaches the bag.
+**The spec does not decide this.** OData CSDL 4.01 §6.3 (open entity type) and §9.3 (open complex
+type) say only that an open type "allows clients to add properties dynamically to instances of the
+type by specifying *uniquely named* property values in the payload" — directional, but not a
+prohibition addressed to the server. OData JSON Format 4.01 does not address it and defers to
+RFC 8259, where object member names "SHOULD be unique". Dropping the key and failing the request are
+**both** conformant; the only thing actually ruled out is *emitting* the duplicate, which neither
+does.
 
-### The one shape this collides with: a container pre-seeded with a declared name
+With no spec constraint, two things decide it:
 
-There is a single model shape where the suppression above costs you writes, and it fails **silently
-and completely**. If the container is *initialised* with a key equal to one of the type's own
-declared property names:
+1. **It matches `Microsoft.AspNetCore.OData`.** That library guards the same condition and treats it
+   as `InvalidOperation` — a 500 — on both sides of the wire:
+   `ODataResourceSerializer.AppendDynamicProperties` throws
+   `DynamicPropertyNameAlreadyUsedAsDeclaredPropertyName` ("The name of dynamic property '{0}' was
+   already used as the declared property name of open type '{1}'."), and
+   `DeserializationHelper` throws `DuplicateDynamicPropertyNameFound` on a dynamic property name
+   conflict inbound. Diverging from the ecosystem needs a specific reason, and there is not one
+   strong enough here.
+2. **The failure is systematic, not per-row.** A client *cannot* create this collision:
+   `System.Text.Json` binds a body key matching a declared name to that declared property, so it
+   never reaches the bag. The only source is server-side code, and if it can fire at all it fires for
+   every row carrying that key. A warning in a log stream is the wrong signal for a systematic defect.
+
+The match is **ordinal**: a key differing only in case (`channel` beside a declared `Channel`) does
+**not** fail, because it produces no duplicate JSON key and serializes perfectly well.
+
+> **Recorded consequence of the ordinal comparison.** OhData binds request bodies
+> *case-insensitively*, so a body key `channel` binds to the declared `Channel` property — but a
+> `channel` key placed in the bag by server-side code round-trips into the response as a distinct
+> sibling of `Channel`. A client reading that response and PUTting it back will bind `channel` to the
+> declared property, silently overwriting it. This is a deliberate trade (faulting on a
+> case-differing key would reject data that is valid JSON and valid OData) and not an oversight —
+> but if your handlers merge caller-supplied dictionaries into a container, exclude declared property
+> names **case-insensitively** even though the fault only fires on an exact match.
+
+This cannot be checked at startup, because the keys are dynamic and the condition depends on the
+runtime instance rather than on the type.
+
+### Do not pre-seed a container with a declared property's name
 
 ```csharp
 public class Meta
 {
     public string? Region { get; set; }                                   // declared
     public IDictionary<string, object?>? Bag { get; set; }
-        = new Dictionary<string, object?> { ["Region"] = "preset" };      // ...and pre-seeded
+        = new Dictionary<string, object?> { ["Region"] = "preset" };      // ...and pre-seeded  ✗
 }
 ```
 
-then every instance collides on construction, so the getter always hands the serializer a filtered
-clone. `System.Text.Json` calls that same getter on the **deserialize** path to find a dictionary to
-populate — so it populates the clone, and the clone is discarded:
+Every instance of this type collides on construction, so every read *and* every write of it fails.
+The shape is self-contradictory to begin with — it declares `Region` and simultaneously asserts a
+dynamic key called `Region`.
 
-```jsonc
-// POST /odata/Things   { "Id": 1, "Meta": { "alpha": 1, "beta": 2 } }
-// →  201 Created
-// →  response Meta = { "Region": null }
-// →  server-side bag is still { "Region": "preset" };  alpha and beta are GONE
-```
+Under the previous drop-based behaviour this same shape failed far worse: the collision made the
+container's getter hand `System.Text.Json` a filtered clone, and because that getter is also called
+on the **deserialize** path to find a dictionary to populate, every dynamic key in the request was
+written into the discarded clone. A `POST` of `{"Meta":{"alpha":1,"beta":2}}` returned `201`, looked
+clean in the echo, and stored nothing. Failing loudly removes that corner entirely.
 
-**Every dynamic key in the request is dropped, and the write still reports success.** Nothing is
-logged on the write path, and the response looks clean because it is rendered from the same
-pre-seeded bag.
-
-Do not pre-seed a container with a declared property's name. The shape is self-contradictory to
-begin with — it declares `Region` and simultaneously asserts a dynamic key called `Region` — and it
-cannot be detected at startup, because the condition depends on the runtime *instance* rather than
-on the type. Pre-seeding a container with any *other* key is fine and has no effect on binding.
+Pre-seeding a container with any *other* key is fine and has no effect on binding.
 
 ## What is *not* supported
 
@@ -367,8 +411,9 @@ translates to SQL and pushes down normally.
 
 - A container `System.Text.Json` cannot use as extension data — in practice, one with no setter —
   **fails at `MapOhData()`** with a message naming the type, the member and the fix. It is not
-  skipped: the registration asked for open types explicitly, and a silent skip leaves the CSDL
-  saying `OpenType="true"` while the wire nests the bag under its own name.
+  skipped: a silent skip leaves the CSDL saying `OpenType="true"` while the wire nests the bag under
+  its own name. Since open types are on by default, this now surfaces without the registration
+  mentioning them; `WithOpenTypes(false)` is the other way out.
 - A type that already carries its own `[JsonExtensionData]` member (a `JsonObject`, say — the model
   builder does not see that as a container, so both survive) would end up with two extension-data
   members, which `System.Text.Json` rejects. That is also caught at `MapOhData()`, not left to
@@ -400,13 +445,13 @@ walker cannot protect a value it has no EDM description of.
 
 Flattening is one `JsonTypeInfoResolver` modifier baked into the registration's derived
 `JsonSerializerOptions` — the same mechanism `Ignore(...)` uses. It runs once per CLR type
-(`JsonTypeInfo` is cached on the options instance), never per request. When the registration has
-not called `WithOpenTypes()` — or has, but the model declares no open complex type — the derived
-options are skipped entirely and the pipeline is reference-identical to before.
+(`JsonTypeInfo` is cached on the options instance), never per request. When the model declares no
+open complex type — or the registration called `WithOpenTypes(false)` — the derived options are
+skipped entirely and the pipeline is reference-identical to before.
 
-Write-side dynamic-key validation walks the request body once, and only for a registration that
-opted in **and** whose EDM actually declares an open complex type; otherwise it is a single `bool`
-test and the body is never walked. That second condition is what makes "enabling this on a model
-with no dictionary member is a no-op" literally true rather than nearly true: such a registration
-does not buffer write bodies, and its responses — including error responses — are byte-identical to
-the same registration with the opt-in removed.
+Write-side dynamic-key validation walks the request body once, and only for a registration whose EDM
+actually declares an open complex type; otherwise it is a single `bool` test and the body is never
+walked. Now that open types are on by default, **that EDM condition is the whole blast-radius bound**:
+it is what makes "a model with no dictionary member is untouched" literally true rather than nearly
+true. Such a registration does not buffer write bodies, and its responses — including error
+responses — are byte-identical between the default and `WithOpenTypes(false)`.

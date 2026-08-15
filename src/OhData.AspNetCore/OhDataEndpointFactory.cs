@@ -259,10 +259,11 @@ internal static class OhDataEndpointFactory
         }
     }
 
-    // #389: policing dynamic-property names on the way in. Only a registration that opted into open
-    // types AND whose EDM actually declares one pays anything here (OpenTypesActive, not
-    // OpenTypesEnabled -- #389 L1) -- for everyone else this is one bool test and the body is never
-    // walked. See OpenTypeJsonOptions.FindInvalidDynamicKey for why the check rides the raw JSON
+    // #389: policing dynamic-property names on the way in. Only a registration whose EDM actually
+    // declares an open complex type pays anything here (OpenTypesActive, not OpenTypesEnabled --
+    // #389 L1; and now that the flag defaults to true, that EDM half is effectively the whole gate)
+    // -- for everyone else this is one bool test and the body is never walked. See
+    // OpenTypeJsonOptions.FindInvalidDynamicKey for why the check rides the raw JSON
     // against JsonTypeInfo rather than the bound CLR graph.
     //
     // Called from every route that binds a body which can reach a dynamic bag: POST/PUT/PATCH on the
@@ -528,17 +529,28 @@ internal static class OhDataEndpointFactory
         var loggerFactory = routes.ServiceProvider.GetService<ILoggerFactory>();
         var groupLogger = loggerFactory?.CreateLogger("OhData");
 
-        // #389: OData open COMPLEX types, OPT-IN via AddOhData(o => o.WithOpenTypes()). Every
-        // complex type the EDM marks OpenType="true" carries a DynamicPropertyDictionaryAnnotation
-        // naming the CLR member that backs its dynamic properties; this layers one more resolver
-        // modifier that marks that member as System.Text.Json extension data, so the bag serialises
-        // and binds FLAT (dynamic keys as siblings of the declared properties) with no attribute on
-        // the consumer's model.
+        // #389: OData open COMPLEX types, ON BY DEFAULT; AddOhData(o => o.WithOpenTypes(false)) is
+        // the escape hatch. Every complex type the EDM marks OpenType="true" carries a
+        // DynamicPropertyDictionaryAnnotation naming the CLR member that backs its dynamic
+        // properties; this layers one more resolver modifier that marks that member as
+        // System.Text.Json extension data, so the bag serialises and binds FLAT (dynamic keys as
+        // siblings of the declared properties) with no attribute on the consumer's model.
         //
-        // Off by default because flattening RE-BINDS a body an existing adopter already sends: the
-        // container stops being a declared property, so {"Meta":{"Bag":{...}}} silently becomes a
-        // dynamic key named "Bag". When off, the map is not even built and effectiveJsonOptions is
-        // threaded through reference-unchanged.
+        // Default-ON because a complex type with a dictionary member IS an open type: this same
+        // builder has always emitted OpenType="true" for it and always omitted the member from the
+        // declared properties, so leaving the wire nested made $metadata and the payload disagree
+        // and made conformance something the developer had to know the spec to ask for. It is also
+        // what Microsoft.AspNetCore.OData does -- its ODataResourceSerializer.AppendDynamicProperties
+        // reads the SAME annotation and appends dynamic properties flat, with no opt-in flag
+        // anywhere in that path.
+        //
+        // Flattening still RE-BINDS a body an existing adopter already sends -- the container stops
+        // being a declared property, so {"Meta":{"Bag":{...}}} becomes a dynamic key named "Bag" --
+        // and the echo of that mis-bound value is byte-identical to the correct one, so it is not
+        // detectable by diffing responses. WarnWireShapeIsFlat below names every affected type once
+        // at startup, which is the only signal available before the stored data is already wrong.
+        // With the escape hatch taken, the map is not even built and effectiveJsonOptions is threaded
+        // through reference-unchanged.
         //
         // Ordering: added AFTER the ignored-property modifier and BEFORE the per-request
         // nav-suppression modifier, which derives from these options. The three never contend for a
@@ -549,14 +561,20 @@ internal static class OhDataEndpointFactory
         var openTypeContainers = registration.OpenTypesEnabled
             ? OpenTypeJsonOptions.BuildOpenComplexTypeContainerMap(registration.EdmModel)
             : OpenTypeJsonOptions.OpenComplexTypeContainers.Empty;
-        effectiveJsonOptions = OpenTypeJsonOptions.Build(effectiveJsonOptions, openTypeContainers, groupLogger);
+        effectiveJsonOptions = OpenTypeJsonOptions.Build(effectiveJsonOptions, openTypeContainers);
         OpenTypeJsonOptions.ValidateOrThrow(effectiveJsonOptions, openTypeContainers);
 
-        // #389 L1: every per-request open-type path gates on this, NOT on OpenTypesEnabled. The
-        // opt-in says what the consumer asked for; this says whether the model gave it anything to
-        // do. Opting in on a model with no open complex type is documented as a no-op, and gating
-        // the write paths on the opt-in alone made that documentation false -- see the remarks on
-        // OhDataRegistration.OpenTypesActive for the measured difference.
+        // Named after ValidateOrThrow so a registration that is about to fail startup does not first
+        // emit migration advice for a contract it will never serve. Silent when the model has no open
+        // complex type, which is what keeps an unaffected app's log untouched.
+        OpenTypeJsonOptions.WarnWireShapeIsFlat(openTypeContainers, groupLogger);
+
+        // #389 L1: every per-request open-type path gates on this, NOT on OpenTypesEnabled. The flag
+        // says what the consumer asked for; this says whether the model gave it anything to do. Now
+        // that the flag defaults to TRUE this is the ONLY thing keeping a model with no dictionary
+        // member byte-identical to a pre-#389 build -- gating the write paths on the flag alone made
+        // that false even when it was opt-in. See the remarks on OhDataRegistration.OpenTypesActive
+        // for the measured difference.
         registration.OpenTypesActive = !openTypeContainers.IsEmpty;
 
         // #200: observability. The outermost group filter opens an ActivitySource span per OData
