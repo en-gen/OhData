@@ -61,24 +61,45 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **OData open types — dynamic property bags on complex types (#389).** A complex type with an
-  `IDictionary<string, object?>` member now serializes and binds **flat**: its entries are siblings of
-  the declared properties on the wire, never nested under the member's own name. Reads (collection
-  `GET`, `GET` by key, navigation and property routes, `$expand` targets), writes (`POST`/`PUT`/`PATCH`,
-  including property-route writes), and `$select=<container>` all round-trip undeclared keys, and
-  `$metadata` declares `OpenType="true"` with the container omitted.
+- **OData open types — dynamic property bags on complex types, opt-in (#389).** Enable with
+  `AddOhData(o => o.WithOpenTypes())`. A complex type with an `IDictionary<string, object?>` member
+  then serializes and binds **flat**: its entries are siblings of the declared properties on the wire,
+  never nested under the member's own name. Reads (collection `GET`, `GET` by key, navigation and
+  property routes, `$expand` targets), writes (`POST`/`PUT`/`PATCH`, including property-route writes),
+  and `$select=<container>` all round-trip undeclared keys, and `$metadata` declares `OpenType="true"`
+  with the container omitted.
+
+  **Opt-in because enabling it changes the wire shape** of every complex type in the model that has a
+  dictionary member, in both directions. Detection recipe: *do any of your complex types have an
+  `IDictionary<string, object>` member?* If none do, `WithOpenTypes()` is a no-op — the registration's
+  serializer options are not even derived and every response is byte-identical. If any do, an existing
+  client body `{"Meta":{"Bag":{"a":1}}}` stops binding to the `Bag` **property** and starts binding as
+  a dynamic **key** named `Bag`, and the echo of the mis-bound value is byte-identical to the correct
+  one — so migrate deliberately. Default off; a registration that does not call `WithOpenTypes()` is
+  unchanged from before #389.
 
   **No model changes are required, and none are accepted as a substitute.** Support is driven from the
   EDM: `ODataConventionModelBuilder` already infers the container and records it as a
   `DynamicPropertyDictionaryAnnotation`, which OhData reads at `MapOhData()` to mark exactly that
   member as `System.Text.Json` extension data on the registration's serializer options. The consumer's
   CLR model needs no `[JsonExtensionData]` (or any other) attribute, so a type published in a shared
-  contract package works as-is. Nothing is matched by property name or convention. Zero delta —
-  reference-identical options — for a model with no open complex type.
+  contract package works as-is. Nothing is matched by property name or convention.
+
+  Under the opt-in: a dynamic key that is not an OData simple identifier (empty, or containing `@`,
+  `.` or whitespace — `@odata.type`, `Meta@odata.count`, `has space`) is rejected on write with `400`
+  naming the key, since a bag key is persisted verbatim and echoed on every later read; a bag key equal
+  to one of the complex type's own declared property names loses to the declared property and is
+  omitted from the response (with a warning logged) rather than emitting a duplicate JSON property
+  name; and a container that `System.Text.Json` cannot use as extension data — most commonly a
+  getter-only `public IDictionary<string, object?> Bag { get; } = new();` — fails at `MapOhData()` with
+  a message naming the member and the fix.
 
   **Not supported, deliberately** (see [docs/open-types.md](docs/open-types.md)): entity-**root**
   dynamic containers, and `$filter`/`$orderby` over an *individual* dynamic key (the latter faults in
-  Microsoft's query binder before any SQL is generated, so no query reaches the database).
+  Microsoft's query binder before any SQL is generated, so no query reaches the database). Note also
+  that `PATCH` of a complex member **replaces** the whole complex value rather than merging it — the
+  pre-existing behavior for any complex member, but open types widen its blast radius to the entire
+  bag; the docs carry the read-modify-write recipe.
 
 - **`$levels` may now carry other nested expand options (#254).** A `$levels=N` / `$levels=max`
   self-referential expand combined with `$filter`, `$orderby`, `$skip`, `$top`, `$count`, or `$select`

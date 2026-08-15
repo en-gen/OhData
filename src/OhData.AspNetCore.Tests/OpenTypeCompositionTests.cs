@@ -10,7 +10,8 @@ using Xunit;
 
 namespace OhData.AspNetCore.Tests;
 
-// #389 integration risk 1 & 2. Two TypeInfoResolver modifiers now run against the same
+// #389 integration risk 1 & 2. Every fixture here opts in with WithOpenTypes() — flattening is
+// off by default (see OpenTypeOptInTests). Two TypeInfoResolver modifiers now run against the same
 // JsonTypeInfo chain: the nav-suppression modifier REMOVES every EDM navigation before
 // System.Text.Json can walk it (that removal is what makes a reference cycle structurally
 // unreachable — #325/#326), and the open-type modifier MUTATES a member into extension data.
@@ -103,8 +104,13 @@ internal sealed class CompOwnerProfile : EntitySetProfile<int, CompOwner>
         EntitySetName = "CompOwners";
         ExpandEnabled = true;
         SelectEnabled = true;
-        // Third modifier in the chain (#226 Ignore()): proves the open-type modifier composes with
-        // the ignored-property one too, not only with nav suppression.
+        // Third modifier in the chain (#226 Ignore()). To be precise about what this does and does
+        // not show: Ignore()'s map is keyed by profile.ModelType — an ENTITY type — and Ignore()
+        // takes an Expression<Func<TModel, object?>>, i.e. a root member of that entity, while a
+        // dynamic-property container lives on a COMPLEX type, which is never a ModelType. The two
+        // modifiers therefore cannot meet on one JsonTypeInfo at all. What Secret pins is the
+        // weaker (but still real) claim that both modifiers survive in the same chained resolver:
+        // neither is lost when the other is layered on.
         Ignore(x => x.Secret);
         GetAll = ct => Task.FromResult<IEnumerable<CompOwner>>(store.Owners);
         GetById = (id, ct) => Task.FromResult(store.Owners.FirstOrDefault(o => o.Id == id));
@@ -131,6 +137,7 @@ public class OpenTypeCompositionTests
         await TestHostBuilder.BuildAsync(
             o =>
             {
+                o.WithOpenTypes();
                 o.AddEntitySetProfile<CompOwnerProfile>();
                 o.AddEntitySetProfile<CompNodeProfile>();
             },
@@ -162,7 +169,9 @@ public class OpenTypeCompositionTests
         Assert.Equal("tv", tagMeta.GetProperty("tagDynamic").GetString());
         Assert.False(tagMeta.TryGetProperty("KeyValuePairs", out _));
 
-        // (d) ignored-property modifier still wins.
+        // (d) the ignored-property modifier is still in effect alongside the other two. It cannot
+        //     interact with the open-type one (see CompOwnerProfile's comment) — this asserts only
+        //     that layering three modifiers does not lose any of them.
         Assert.False(owner.TryGetProperty("Secret", out _));
     }
 

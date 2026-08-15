@@ -16,13 +16,15 @@ public sealed class OhDataRegistration
         IEdmModel edmModel,
         IReadOnlyList<IEntitySetEndpointSource> profiles,
         IReadOnlyList<UnboundOperationDefinition>? unboundOps = null,
-        JsonNamingPolicy? jsonPropertyNamingPolicy = null)
+        JsonNamingPolicy? jsonPropertyNamingPolicy = null,
+        bool openTypesEnabled = false)
     {
         Prefix = prefix;
         EdmModel = edmModel;
         Profiles = profiles;
         UnboundOperations = unboundOps ?? System.Array.Empty<UnboundOperationDefinition>();
         JsonPropertyNamingPolicy = jsonPropertyNamingPolicy;
+        OpenTypesEnabled = openTypesEnabled;
     }
 
     /// <summary>The URL prefix under which all entity set routes are mounted, e.g. <c>"/odata"</c>.</summary>
@@ -41,6 +43,13 @@ public sealed class OhDataRegistration
     /// rather than inherited from the host's <c>HttpJsonOptions</c>.
     /// </summary>
     internal JsonNamingPolicy? JsonPropertyNamingPolicy { get; }
+
+    /// <summary>
+    /// #389: whether <c>OhDataBuilder.WithOpenTypes()</c> was called. <c>false</c> (the default)
+    /// means the open-type resolver modifier is never built and the write-side dynamic-key
+    /// validation never runs, so the registration behaves exactly as it did before #389.
+    /// </summary>
+    internal bool OpenTypesEnabled { get; }
 
     /// <summary>The OData entity set names exposed by this registration.</summary>
     public IEnumerable<string> EntitySetNames => Profiles.Select(p => p.EntitySetName);

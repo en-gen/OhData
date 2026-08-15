@@ -29,6 +29,9 @@ public sealed class OhDataBuilder
     // null = PascalCase (the CLR names $metadata declares, OData §4.4). This is the source of
     // truth for every OhData response path; the host's PropertyNamingPolicy is not inherited.
     private JsonNamingPolicy? _jsonPropertyNamingPolicy;
+    // #389: OData open complex types. Off by default because turning it on changes the wire shape
+    // of every complex type that has a dictionary member -- see WithOpenTypes.
+    private bool _openTypesEnabled;
 
     // Tracks profile types registered across all OhData registrations on this IServiceCollection.
     // Stored as a singleton marker so it is shared between all OhDataBuilder instances.
@@ -119,6 +122,35 @@ public sealed class OhDataBuilder
     public OhDataBuilder WithJsonPropertyNamingPolicy(JsonNamingPolicy? policy)
     {
         _jsonPropertyNamingPolicy = policy;
+        return this;
+    }
+
+    /// <summary>
+    /// Enables OData <b>open complex types</b> (#389) for this registration: a complex type with an
+    /// <c>IDictionary&lt;string, object?&gt;</c> member serializes and binds its entries <b>flat</b>
+    /// — dynamic keys as siblings of the declared properties, never nested under the member's own
+    /// name. Off by default.
+    /// </summary>
+    /// <remarks>
+    /// <b>This changes the wire shape</b> of every complex type in the model that has a dictionary
+    /// member, in both directions, so it is opt-in rather than automatic. To find out whether it
+    /// affects you: <i>do any of your complex types have an <c>IDictionary&lt;string, object&gt;</c>
+    /// member?</i> If none do, enabling this is a no-op (the registration's serializer options are
+    /// not even derived). If any do, an existing client body of the form
+    /// <c>{"Meta":{"Bag":{"a":1}}}</c> stops binding to the <c>Bag</c> property and starts binding
+    /// as a dynamic key named <c>Bag</c>, and the response echo of that mis-bound value is
+    /// byte-identical to the correct one — so migrate deliberately.
+    /// <para>
+    /// Enabling also turns on validation of incoming dynamic-property names: a key that is not an
+    /// OData simple identifier (empty, containing <c>@</c>, <c>.</c> or whitespace) is rejected on
+    /// <c>POST</c>/<c>PUT</c>/<c>PATCH</c> with <c>400</c>. See <c>docs/open-types.md</c> for the
+    /// full contract, including <c>PATCH</c>'s whole-value replace semantics.
+    /// </para>
+    /// </remarks>
+    /// <param name="enabled"><c>true</c> (the default) to enable; <c>false</c> to leave off.</param>
+    public OhDataBuilder WithOpenTypes(bool enabled = true)
+    {
+        _openTypesEnabled = enabled;
         return this;
     }
 
@@ -288,6 +320,7 @@ public sealed class OhDataBuilder
         string capturedName = _name;
         var capturedDefaults = _defaults;
         var capturedNamingPolicy = _jsonPropertyNamingPolicy;
+        bool capturedOpenTypes = _openTypesEnabled;
 
         _services.AddKeyedSingleton<OhDataRegistration>(capturedName, (sp, _) =>
         {
@@ -460,7 +493,7 @@ public sealed class OhDataBuilder
                 capturedPrefix);
 
             var reg = new OhDataRegistration(
-                capturedPrefix, edmModel, profiles, capturedUnbound, capturedNamingPolicy);
+                capturedPrefix, edmModel, profiles, capturedUnbound, capturedNamingPolicy, capturedOpenTypes);
             // Also register in the collection for named access
             sp.GetRequiredService<OhDataRegistrationCollection>().Add(capturedName, reg);
             return reg;

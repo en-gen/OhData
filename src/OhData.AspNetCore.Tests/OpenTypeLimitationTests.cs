@@ -57,7 +57,7 @@ public class OpenTypeEntityRootLimitationTests
     public async Task EntityRootContainer_IsOmittedFromCsdlButStillNestedOnTheWire()
     {
         await using TestFixture fx = await TestHostBuilder.BuildAsync(o =>
-            o.AddEntitySetProfile<RootBagProfile>());
+            o.WithOpenTypes().AddEntitySetProfile<RootBagProfile>());
 
         string csdl = await fx.Client.GetStringAsync("/odata/$metadata");
         Assert.Contains("<EntityType Name=\"RootBagEntity\" OpenType=\"true\">", csdl, StringComparison.Ordinal);
@@ -141,7 +141,7 @@ public sealed class OpenTypeDynamicKeyFilterSqliteTests : IAsyncLifetime
     private async Task<TestFixture> BuildAsync()
     {
         TestFixture fx = await TestHostBuilder.BuildAsync(
-            b => b.AddEntitySetProfile<SqlRefProfile>(),
+            b => b.WithOpenTypes().AddEntitySetProfile<SqlRefProfile>(),
             configureServices: services =>
             {
                 services.AddSingleton(_sink);

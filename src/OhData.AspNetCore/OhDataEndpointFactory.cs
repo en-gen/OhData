@@ -259,6 +259,23 @@ internal static class OhDataEndpointFactory
         }
     }
 
+    // #389: policing dynamic-property names on the way in. Only a registration that opted into
+    // open types (WithOpenTypes) pays anything here -- for everyone else this is one bool test and
+    // the body is never walked. See OpenTypeJsonOptions.FindInvalidDynamicKey for why the check
+    // rides the raw JSON against JsonTypeInfo rather than the bound CLR graph.
+    private static IResult? RejectInvalidDynamicKey(
+        OhDataRegistration registration, JsonElement body, Type declaredType, JsonSerializerOptions? jsonOptions)
+    {
+        if (!registration.OpenTypesEnabled || jsonOptions is null) return null;
+        string? key = OpenTypeJsonOptions.FindInvalidDynamicKey(body, declaredType, jsonOptions);
+        if (key is null) return null;
+        return ODataError(400, "InvalidBody",
+            $"'{key}' is not a valid dynamic property name. A dynamic property of an OData open " +
+            "type must be a simple identifier (a letter or '_' followed by letters, digits or '_'); " +
+            "names containing '@' are reserved for control information such as '@odata.type'.",
+            target: key);
+    }
+
     private static IEnumerable<string> ParseETagList(string raw)
     {
         // Split comma-separated ETags per RFC 7232 §3.1.
@@ -489,25 +506,35 @@ internal static class OhDataEndpointFactory
             ? startupJsonOptions
             : IgnoredPropertyJsonOptions.Build(startupJsonOptions, ignoredByType);
 
-        // #389: OData open COMPLEX types. Every complex type the EDM marks OpenType="true"
-        // carries a DynamicPropertyDictionaryAnnotation naming the CLR member that backs its
-        // dynamic properties; this layers one more resolver modifier that marks that member as
-        // System.Text.Json extension data, so the bag serialises and binds FLAT (dynamic keys as
-        // siblings of the declared properties) with no attribute on the consumer's model. Added
-        // AFTER the ignored-property modifier so Ignore()ing the container still wins (the member
-        // is gone from the contract by then, and this modifier simply finds nothing to mark), and
-        // BEFORE the per-request nav-suppression modifier, which derives from these options.
-        // Reference-equal no-op when the model declares no open complex type.
-        IReadOnlyDictionary<Type, PropertyInfo> openTypeContainers =
-            OpenTypeJsonOptions.BuildOpenComplexTypeContainerMap(registration.EdmModel);
-        effectiveJsonOptions = OpenTypeJsonOptions.Build(effectiveJsonOptions, openTypeContainers);
-        OpenTypeJsonOptions.ValidateOrThrow(effectiveJsonOptions, openTypeContainers);
-
         // Resolved once here (rather than down at the per-profile loop) so the group-level
         // exception filter below can log through the same "OhData" category every other
         // handler uses.
         var loggerFactory = routes.ServiceProvider.GetService<ILoggerFactory>();
         var groupLogger = loggerFactory?.CreateLogger("OhData");
+
+        // #389: OData open COMPLEX types, OPT-IN via AddOhData(o => o.WithOpenTypes()). Every
+        // complex type the EDM marks OpenType="true" carries a DynamicPropertyDictionaryAnnotation
+        // naming the CLR member that backs its dynamic properties; this layers one more resolver
+        // modifier that marks that member as System.Text.Json extension data, so the bag serialises
+        // and binds FLAT (dynamic keys as siblings of the declared properties) with no attribute on
+        // the consumer's model.
+        //
+        // Off by default because flattening RE-BINDS a body an existing adopter already sends: the
+        // container stops being a declared property, so {"Meta":{"Bag":{...}}} silently becomes a
+        // dynamic key named "Bag". When off, the map is not even built and effectiveJsonOptions is
+        // threaded through reference-unchanged.
+        //
+        // Ordering: added AFTER the ignored-property modifier and BEFORE the per-request
+        // nav-suppression modifier, which derives from these options. The three never contend for a
+        // member -- nav suppression only removes EDM navigations (an open complex type has none),
+        // and the ignored-property map is keyed by profile.ModelType (an ENTITY type), which a
+        // container's declaring complex type can never be, so those two modifiers never see the
+        // same JsonTypeInfo.
+        var openTypeContainers = registration.OpenTypesEnabled
+            ? OpenTypeJsonOptions.BuildOpenComplexTypeContainerMap(registration.EdmModel)
+            : OpenTypeJsonOptions.OpenComplexTypeContainers.Empty;
+        effectiveJsonOptions = OpenTypeJsonOptions.Build(effectiveJsonOptions, openTypeContainers, groupLogger);
+        OpenTypeJsonOptions.ValidateOrThrow(effectiveJsonOptions, openTypeContainers);
 
         // #200: observability. The outermost group filter opens an ActivitySource span per OData
         // request and records the request-duration histogram + active-request up/down counter (both
@@ -5570,6 +5597,14 @@ internal static class OhDataEndpointFactory
                             "create nested related entities inline (OData §11.4.2.2).");
                     }
 
+                    // #389: a dynamic key that is not an OData simple identifier would otherwise be
+                    // persisted verbatim and echoed on every later read -- a STORED fault for any
+                    // other consumer, since '@odata.type' inside a complex value is what a
+                    // conforming reader uses to resolve that value's type.
+                    IResult? postInvalidKey =
+                        RejectInvalidDynamicKey(registration, document.RootElement, typeof(TModel), jsonOptions);
+                    if (postInvalidKey is not null) return postInvalidKey;
+
                     TModel? model;
                     try
                     {
@@ -5677,7 +5712,24 @@ internal static class OhDataEndpointFactory
                 {
                     var s = ResolveHandlers(ctx);
                     object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
-                    TModel? model = await JsonSerializer.DeserializeAsync<TModel>(ctx.Request.Body, jsonOptions, ct);
+                    TModel? model;
+                    if (registration.OpenTypesEnabled)
+                    {
+                        // #389: dynamic-property names are policed BEFORE binding, and that check
+                        // reads the raw JSON, so the body is buffered into a JsonDocument first.
+                        // Only under the opt-in -- without it PUT keeps streaming straight into the
+                        // deserializer exactly as before, so nothing about the default path moves.
+                        using JsonDocument putDocument =
+                            await JsonDocument.ParseAsync(ctx.Request.Body, cancellationToken: ct);
+                        IResult? putInvalidKey = RejectInvalidDynamicKey(
+                            registration, putDocument.RootElement, typeof(TModel), jsonOptions);
+                        if (putInvalidKey is not null) return putInvalidKey;
+                        model = putDocument.RootElement.Deserialize<TModel>(jsonOptions);
+                    }
+                    else
+                    {
+                        model = await JsonSerializer.DeserializeAsync<TModel>(ctx.Request.Body, jsonOptions, ct);
+                    }
                     if (model is null)
                         return ODataError(400, "InvalidBody", "Request body is empty or could not be deserialized.");
                     string bodyKeyStr = s.InvokeGetKeyString(model);
@@ -5788,6 +5840,12 @@ internal static class OhDataEndpointFactory
                     {
                         return ODataError(400, "InvalidBody", "Request body must be a JSON object.");
                     }
+
+                    // #389: see the POST route -- an unacceptable dynamic key is rejected before it
+                    // can be bound and persisted.
+                    IResult? patchInvalidKey =
+                        RejectInvalidDynamicKey(registration, body, typeof(TModel), jsonOptions);
+                    if (patchInvalidKey is not null) return patchInvalidKey;
 
                     // Only validate key mismatch if the key property was explicitly present in the body.
                     // PATCH is a partial update -- the key may be omitted. URL key is authoritative.
@@ -6628,6 +6686,12 @@ internal static class OhDataEndpointFactory
                             return ODataError(400, "InvalidBody",
                                 "Request body must contain a 'value' member.", target: propName);
                         }
+
+                        // #389: a property-route write replaces a whole complex value, so the same
+                        // dynamic-key policing the entity routes do applies to what lands inside it.
+                        IResult? propInvalidKey =
+                            RejectInvalidDynamicKey(registration, valueEl, propClrType, jsonOptions);
+                        if (propInvalidKey is not null) return propInvalidKey;
 
                         object? newValue;
                         try

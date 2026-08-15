@@ -1,9 +1,9 @@
 # Open Types (dynamic property bags)
 
 An OData **open type** carries caller-supplied properties that are not declared in the EDM. OhData
-supports this on **complex types**: give the type an `IDictionary<string, object?>` member and its
-entries are written and read as **siblings** of the declared properties — never nested under the
-member's own name.
+supports this on **complex types**: give the type an `IDictionary<string, object?>` member, opt in
+with `WithOpenTypes()`, and its entries are written and read as **siblings** of the declared
+properties — never nested under the member's own name.
 
 **No attributes. No model changes.** Support is driven entirely by the EDM, so a model published
 in a shared contract package works as-is:
@@ -23,6 +23,12 @@ public record ExternalReferenceMetadata
 }
 ```
 
+```csharp
+services.AddOhData(o => o
+    .WithOpenTypes()
+    .AddEntitySetProfile<ExternalReferenceProfile>());
+```
+
 ```jsonc
 // GET /odata/ExternalReferences
 {
@@ -39,6 +45,27 @@ public record ExternalReferenceMetadata
 ```
 
 `KeyValuePairs` appears nowhere on the wire, and nowhere in `$metadata`.
+
+## Opt in deliberately — this changes the wire shape
+
+`WithOpenTypes()` is **off by default**, and turning it on is a breaking change for any complex
+type in the model that has a dictionary member.
+
+**Does this affect me?** Ask one question: *do any of your complex types have an
+`IDictionary<string, object>` member?* If none do, enabling this is a no-op — the registration's
+serializer options are not even derived, and every response is byte-identical. If any do, read on.
+
+Once the container is extension data it is no longer a *declared* property. An existing client body
+
+```jsonc
+{ "Metadata": { "KeyValuePairs": { "a": 1 } } }
+```
+
+stops binding `{"a":1}` to the `KeyValuePairs` property and starts binding a **dynamic key literally
+named `KeyValuePairs`** whose value is that dictionary. The handler then persists
+`KeyValuePairs = { "KeyValuePairs": {"a":1} }`, and the response echo of that mis-bound value is
+byte-identical to the correct one — so the corruption is invisible from the wire. Migrate clients
+and stored data deliberately; do not flip this on a live surface and watch the responses.
 
 ## How the container is discovered
 
@@ -57,8 +84,19 @@ name or by convention.
 <ComplexType Name="ExternalReferenceMetadata" OpenType="true" />
 ```
 
-There is no opt-in switch. A complex type with a dictionary member *is* an open type — that is
-what the CSDL has always said; this only makes the JSON agree with it.
+The container must have **both a getter and a setter** — `System.Text.Json` populates it on read
+and enumerates it on write. The idiomatic collection-initializer shape
+
+```csharp
+public IDictionary<string, object?> Bag { get; } = new Dictionary<string, object?>();   // ✗
+```
+
+is inferred as a container by the model builder but cannot be bound into, so `MapOhData()` throws
+and names the member. Give it a setter:
+
+```csharp
+public IDictionary<string, object?>? Bag { get; set; }                                   // ✓
+```
 
 ## What is supported
 
@@ -67,7 +105,7 @@ what the CSDL has always said; this only makes the JSON agree with it.
 | `GET /Set` and `GET /Set({key})` | Dynamic keys flat, alongside declared properties |
 | `GET /Set({key})/{ComplexProp}` and `$expand` targets | Same |
 | `POST` / `PUT` | Undeclared keys inside a complex value bind into the dictionary and reach the handler |
-| `PATCH` | Same; undeclared keys survive a request that also patches declared properties |
+| `PATCH` | Same — but the complex value is **replaced**, not merged; see below |
 | `PUT`/`PATCH /Set({key})/{ComplexProp}` | Same (the whole complex value is replaced) |
 | `$select=<ComplexProp>` | The container is preserved in full — dynamic keys are not stripped |
 | `$metadata` | `OpenType="true"`; container omitted from the declared properties |
@@ -75,6 +113,110 @@ what the CSDL has always said; this only makes the JSON agree with it.
 
 Values arrive in the dictionary as `JsonElement` (System.Text.Json's representation for an
 `object`-typed slot), which is what a handler should expect when reading them.
+
+**The container is `null`, not empty, when a body carries no undeclared keys.** `System.Text.Json`
+only materialises the extension-data dictionary once the first unmatched member arrives, so a
+`POST` of `{"Metadata": {}}` leaves `KeyValuePairs` `null`. Every bag read in a handler needs a null
+check:
+
+```csharp
+object? tier = entity.Metadata?.KeyValuePairs?.GetValueOrDefault("tier");
+```
+
+## Dynamic property names are validated on write
+
+A dynamic key is persisted verbatim and echoed on every later read, so an unconstrained one is a
+*stored* fault against other consumers rather than a one-request nuisance: `@odata.type` inside a
+complex value is what a conforming reader (`Microsoft.OData.Client` among them) uses to resolve that
+value's type, and `@odata.id` is an entity reference. Nested under a declared container these are
+inert payload; flattened, they are control information.
+
+`POST`, `PUT`, `PATCH` and property-route writes therefore reject a dynamic key that is not an OData
+**simple identifier** (CSDL §4.1 `odataIdentifier`): a letter or `_` followed by up to 127 letters,
+digits or `_`. That rules out the empty string, `@odata.type`, `Meta@odata.count`, `has.dot`,
+`has space` and `kebab-case`.
+
+```jsonc
+// POST /odata/ExternalReferences  →  400
+{ "Source": "S", "Xref": "X", "Metadata": { "@odata.type": "#Evil.Type" } }
+```
+
+```jsonc
+{ "error": { "code": "InvalidBody", "target": "@odata.type",
+             "message": "'@odata.type' is not a valid dynamic property name. …" } }
+```
+
+The check runs only under the opt-in, and only against members that will actually land in a bag —
+unknown members of a *non*-open type are ignored on binding exactly as they were before, so a client
+may still send `@odata.context` at the entity root.
+
+## `PATCH` replaces the complex value — it does not merge it
+
+**This is the sharpest edge of the feature.** `PATCH` of a complex member deserializes that member
+wholesale into the CLR property, so the value the handler receives is built *only* from what the
+request restated. Everything else in the old complex value is gone — dynamic keys and declared
+properties alike.
+
+```jsonc
+// stored:  "Metadata": { "Region": "eu", "keepMe": "important", "tier": 3 }
+// PATCH:
+{ "Metadata": { "tier": 4 } }
+// result:  "Metadata": { "Region": null, "tier": 4 }        ← keepMe gone, Region nulled
+```
+
+This is **pre-existing behavior for every complex member**, not something open types introduced —
+but open types widen its blast radius from "one nullable member" to "the entire caller-supplied
+bag", so plan for it.
+
+The only reading under which "undeclared keys survive a PATCH" is true is the weak one: a `PATCH`
+that **omits** the complex member entirely leaves it, and everything in it, untouched.
+
+**To change one dynamic key, read-modify-write the whole complex value:**
+
+```csharp
+// 1. read
+var current = await client.GetAsync<ExternalReference>(id);
+var bag = new Dictionary<string, object?>(current.Metadata?.KeyValuePairs
+    ?? new Dictionary<string, object?>());
+
+// 2. modify
+bag["tier"] = 4;
+
+// 3. write the WHOLE complex value back
+await client.PatchAsync(id, new { Metadata = MergeWithDeclaredProperties(current.Metadata, bag) });
+```
+
+`PATCH` on the property route (`PATCH /Set({key})/Metadata`) is not a merge either — it returns
+`400 NotSupported`. Use `PUT /Set({key})/Metadata`, which is an explicit whole-value replace.
+
+## A bag key that collides with a declared property name
+
+Server-side data can put a key in the bag that equals one of the complex type's own declared
+property names (a handler merging a caller-supplied dictionary, for instance). Emitting both would
+produce a **duplicate JSON property name** — invalid OData, and something every .NET reader tested
+resolves in the *bag's* favour, making the declared value unreachable.
+
+**Contract: the declared property wins and the colliding bag key is omitted from the response**, with
+a warning logged on the `OhData` logger naming the type and the key. Nothing faults, and nothing
+invalid is emitted.
+
+```jsonc
+// Meta.Channel = "declared";  Meta.KeyValuePairs = { "Channel": "fromBag", "ok": 1 }
+{ "Channel": "declared", "ok": 1 }
+```
+
+The match is **ordinal**: a key differing only in case (`channel` beside a declared `Channel`) is
+kept, since it produces no duplicate key and suppressing it would be silent data loss.
+
+Suppression works by handing the serializer a filtered clone of the container, of the container's own
+runtime type. If that type cannot be instantiated (no parameterless constructor — a
+`ReadOnlyDictionary`, say) the clone is impossible; the response then does contain the duplicate key
+and an **error** is logged naming the type, the keys and the container type. A read is never faulted
+over a data condition.
+
+This cannot be checked at startup — the keys are dynamic — and it does not arise from a client body,
+because `System.Text.Json` binds a body key matching a declared name to that declared property; it
+never reaches the bag.
 
 ## What is *not* supported
 
@@ -117,13 +259,20 @@ translates to SQL and pushes down normally.
 
 ### Other boundaries
 
-- A container whose CLR type `System.Text.Json` cannot use as extension data (not assignable to
-  `IDictionary<string, object>` / `IDictionary<string, JsonElement>`, or not both readable and
-  writable) is left alone — that type keeps serializing exactly as it did before.
-- A derived type that *shadows* the container with `new` is not matched; only the exact member the
-  EDM designated is flattened.
-- `Ignore(x => x.Container)` still wins: the member is removed from the contract entirely, so
-  nothing is flattened and the bag does not appear.
+- A container `System.Text.Json` cannot use as extension data — in practice, one with no setter —
+  **fails at `MapOhData()`** with a message naming the type, the member and the fix. It is not
+  skipped: the registration asked for open types explicitly, and a silent skip leaves the CSDL
+  saying `OpenType="true"` while the wire nests the bag under its own name.
+- A type that already carries its own `[JsonExtensionData]` member (a `JsonObject`, say — the model
+  builder does not see that as a container, so both survive) would end up with two extension-data
+  members, which `System.Text.Json` rejects. That is also caught at `MapOhData()`, not left to
+  become a 500 on the first response.
+- A derived type that *shadows* the container with `new` **is** flattened, using the shadowing
+  member. `ODataConventionModelBuilder` records the derived member as that derived EDM type's own
+  container, so the derived type gets its own entry.
+- `Ignore(x => x.Container)` does **not** interact with this feature at all. `Ignore(...)` takes a
+  root member of a profile's *entity* type, and a container lives on a *complex* type, which is
+  never a profile's model type — the two never meet.
 
 ## Interaction with `$expand` and cycle safety
 
@@ -145,6 +294,9 @@ walker cannot protect a value it has no EDM description of.
 
 Flattening is one `JsonTypeInfoResolver` modifier baked into the registration's derived
 `JsonSerializerOptions` — the same mechanism `Ignore(...)` uses. It runs once per CLR type
-(`JsonTypeInfo` is cached on the options instance), never per request. When a model declares no
-open complex type, the derived options are skipped entirely and the pipeline is reference-identical
-to before.
+(`JsonTypeInfo` is cached on the options instance), never per request. When the registration has
+not called `WithOpenTypes()` — or has, but the model declares no open complex type — the derived
+options are skipped entirely and the pipeline is reference-identical to before.
+
+Write-side dynamic-key validation walks the request body once, and only for a registration that
+opted in; without the opt-in it is a single `bool` test and the body is never walked.
