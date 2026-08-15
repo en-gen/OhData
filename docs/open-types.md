@@ -131,10 +131,31 @@ complex value is what a conforming reader (`Microsoft.OData.Client` among them) 
 value's type, and `@odata.id` is an entity reference. Nested under a declared container these are
 inert payload; flattened, they are control information.
 
-`POST`, `PUT`, `PATCH` and property-route writes therefore reject a dynamic key that is not an OData
-**simple identifier** (CSDL §4.1 `odataIdentifier`): a letter or `_` followed by up to 127 letters,
-digits or `_`. That rules out the empty string, `@odata.type`, `Meta@odata.count`, `has.dot`,
-`has space` and `kebab-case`.
+Every route that binds a body which can reach a dynamic bag therefore rejects a dynamic key that is
+not an OData **simple identifier**:
+
+| Route | |
+|---|---|
+| `POST` / `PUT` / `PATCH /Set` and `/Set({key})` | the entity body |
+| `PUT` / `PATCH /Set({key})/{ComplexProp}` | the property-route write |
+| `POST /Set({key})/{Nav}` | the navigation-create route |
+| `POST /Set/{Action}`, `POST /Set({key})/{Action}`, `POST /{Action}` | each action **parameter**, against that parameter's declared type |
+
+An action's `{ "paramName": value }` envelope is not itself a bag — its keys are parameter names
+matched against the operation's signature — so only the parameter *values* are walked.
+
+### The grammar
+
+CSDL §4.1 `odataIdentifier`: one leading character from Unicode category **L** or **Nl** (or `_`),
+followed by up to 127 characters from **L**, **Nl**, **Nd**, **Mn**, **Mc**, **Pc** or **Cf**. The
+length is a count of **code points**, so an astral-plane identifier is not charged double for its
+surrogate pair.
+
+That rules out the empty string, `@odata.type`, `Meta@odata.count`, `has.dot`, `has space` and
+`kebab-case`. It **admits** any Unicode letter and the combining marks that go with it — `नाम`,
+`ชื่อ`, `Ⅸ`, `𝐀bc`, and `naïve` in either NFC or NFD form. That last pair matters in practice:
+macOS normalises to NFD where Windows normalises to NFC, so a narrower rule would give the same key
+two different HTTP status codes depending on the client's operating system.
 
 ```jsonc
 // POST /odata/ExternalReferences  →  400
@@ -144,6 +165,21 @@ digits or `_`. That rules out the empty string, `@odata.type`, `Meta@odata.count
 ```jsonc
 { "error": { "code": "InvalidBody", "target": "@odata.type",
              "message": "'@odata.type' is not a valid dynamic property name. …" } }
+```
+
+### It applies at every depth
+
+A dynamic value is stored exactly as sent, so the rule holds all the way down — not just for the
+first level of bag keys. Every object key below an accepted dynamic key must also be a simple
+identifier, including through arrays:
+
+```jsonc
+// 400, target "@odata.type" — the reserved key is one level below the accepted key "nested"
+{ "Source": "S", "Xref": "X",
+  "Metadata": { "Region": "us", "nested": { "@odata.type": "#Evil.Type" } } }
+
+// 400, target "@odata.id" — arrays under a dynamic key are walked too
+{ "Source": "S", "Xref": "X", "Metadata": { "list": [ { "@odata.id": "http://evil/x" } ] } }
 ```
 
 The check runs only under the opt-in, and only against members that will actually land in a bag —
@@ -209,14 +245,50 @@ The match is **ordinal**: a key differing only in case (`channel` beside a decla
 kept, since it produces no duplicate key and suppressing it would be silent data loss.
 
 Suppression works by handing the serializer a filtered clone of the container, of the container's own
-runtime type. If that type cannot be instantiated (no parameterless constructor — a
-`ReadOnlyDictionary`, say) the clone is impossible; the response then does contain the duplicate key
-and an **error** is logged naming the type, the keys and the container type. A read is never faulted
-over a data condition.
+runtime type. The clone is emptied first, so a container type whose parameterless constructor seeds
+entries of its own still works. If the type cannot be cloned at all — no parameterless constructor
+(a `ReadOnlyDictionary`, say), or an instance that reports itself read-only — the response then does
+contain the duplicate key and an **error** is logged naming the type, the keys and the container
+type. A read is never faulted over a data condition.
 
 This cannot be checked at startup — the keys are dynamic — and it does not arise from a client body,
 because `System.Text.Json` binds a body key matching a declared name to that declared property; it
 never reaches the bag.
+
+### The one shape this collides with: a container pre-seeded with a declared name
+
+There is a single model shape where the suppression above costs you writes, and it fails **silently
+and completely**. If the container is *initialised* with a key equal to one of the type's own
+declared property names:
+
+```csharp
+public class Meta
+{
+    public string? Region { get; set; }                                   // declared
+    public IDictionary<string, object?>? Bag { get; set; }
+        = new Dictionary<string, object?> { ["Region"] = "preset" };      // ...and pre-seeded
+}
+```
+
+then every instance collides on construction, so the getter always hands the serializer a filtered
+clone. `System.Text.Json` calls that same getter on the **deserialize** path to find a dictionary to
+populate — so it populates the clone, and the clone is discarded:
+
+```jsonc
+// POST /odata/Things   { "Id": 1, "Meta": { "alpha": 1, "beta": 2 } }
+// →  201 Created
+// →  response Meta = { "Region": null }
+// →  server-side bag is still { "Region": "preset" };  alpha and beta are GONE
+```
+
+**Every dynamic key in the request is dropped, and the write still reports success.** Nothing is
+logged on the write path, and the response looks clean because it is rendered from the same
+pre-seeded bag.
+
+Do not pre-seed a container with a declared property's name. The shape is self-contradictory to
+begin with — it declares `Region` and simultaneously asserts a dynamic key called `Region` — and it
+cannot be detected at startup, because the condition depends on the runtime *instance* rather than
+on the type. Pre-seeding a container with any *other* key is fine and has no effect on binding.
 
 ## What is *not* supported
 
@@ -299,4 +371,8 @@ not called `WithOpenTypes()` — or has, but the model declares no open complex 
 options are skipped entirely and the pipeline is reference-identical to before.
 
 Write-side dynamic-key validation walks the request body once, and only for a registration that
-opted in; without the opt-in it is a single `bool` test and the body is never walked.
+opted in **and** whose EDM actually declares an open complex type; otherwise it is a single `bool`
+test and the body is never walked. That second condition is what makes "enabling this on a model
+with no dictionary member is a no-op" literally true rather than nearly true: such a registration
+does not buffer write bodies, and its responses — including error responses — are byte-identical to
+the same registration with the opt-in removed.

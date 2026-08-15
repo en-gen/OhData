@@ -51,6 +51,24 @@ public sealed class OhDataRegistration
     /// </summary>
     internal bool OpenTypesEnabled { get; }
 
+    /// <summary>
+    /// #389 L1: whether open-type handling actually has anything to do — <see cref="OpenTypesEnabled"/>
+    /// <b>and</b> the EDM really declares at least one open complex type. Set once by
+    /// <c>OhDataEndpointFactory.MapAll</c>, which is the first place the container map exists.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="OpenTypesEnabled"/> alone is the wrong gate for the per-request work, and the
+    /// difference was observable. <c>WithOpenTypes()</c> is documented as a no-op on a model with no
+    /// dictionary member, but gating on the opt-in flag meant such a registration still buffered
+    /// every <c>PUT</c> body into a <see cref="System.Text.Json.JsonDocument"/> before deserializing
+    /// — which changes the malformed-JSON error message, since <c>JsonDocument.ParseAsync</c> reports
+    /// no <c>Path</c> where <c>JsonSerializer.DeserializeAsync</c> reports <c>Path: $</c>. Measured
+    /// ON vs OFF on a model with no open types, that was the entire delta from "byte-identical".
+    /// Gating on this instead restores the claim and skips the buffering plus a full body walk on
+    /// every write.
+    /// </remarks>
+    internal bool OpenTypesActive { get; set; }
+
     /// <summary>The OData entity set names exposed by this registration.</summary>
     public IEnumerable<string> EntitySetNames => Profiles.Select(p => p.EntitySetName);
 }

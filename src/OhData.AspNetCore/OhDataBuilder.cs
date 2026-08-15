@@ -142,9 +142,15 @@ public sealed class OhDataBuilder
     /// byte-identical to the correct one — so migrate deliberately.
     /// <para>
     /// Enabling also turns on validation of incoming dynamic-property names: a key that is not an
-    /// OData simple identifier (empty, containing <c>@</c>, <c>.</c> or whitespace) is rejected on
-    /// <c>POST</c>/<c>PUT</c>/<c>PATCH</c> with <c>400</c>. See <c>docs/open-types.md</c> for the
-    /// full contract, including <c>PATCH</c>'s whole-value replace semantics.
+    /// OData simple identifier (CSDL §4.1 <c>odataIdentifier</c> — so the empty string, or anything
+    /// containing <c>@</c>, <c>.</c>, whitespace or <c>-</c>) is rejected with <c>400</c>. This runs
+    /// on every route that binds a body which can reach a dynamic bag: <c>POST</c>, <c>PUT</c> and
+    /// <c>PATCH</c> on the entity, the structural-property write routes, the navigation-<c>POST</c>
+    /// create route, and each parameter of a bound or unbound <b>action</b>. It is applied at every
+    /// depth — the value of an accepted dynamic key is itself walked, including through arrays,
+    /// because everything below a bag key is stored verbatim and echoed on every later read.
+    /// See <c>docs/open-types.md</c> for the full contract, including <c>PATCH</c>'s whole-value
+    /// replace semantics.
     /// </para>
     /// </remarks>
     /// <param name="enabled"><c>true</c> (the default) to enable; <c>false</c> to leave off.</param>

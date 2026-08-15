@@ -288,6 +288,42 @@ public class OpenTypeJsonOptionsTests
     }
 
     /// <summary>
+    /// #389 M1. <c>TryCreateEmptyLike</c> assumed a freshly constructed container was empty, and the
+    /// caller then used <c>IDictionary.Add</c>. A container whose parameterless constructor SEEDS an
+    /// entry breaks both halves: the clone starts non-empty, <c>Add</c> hits the duplicate, and a
+    /// plain <c>GET</c> faults with <c>ArgumentException</c> — a <b>500 on a read</b>, refuting both
+    /// the "caller degrades rather than throwing" comment and <c>docs/open-types.md</c>'s "a read is
+    /// never faulted over a data condition". Clearing the clone and assigning through the indexer is
+    /// what makes those true.
+    /// </summary>
+    [Fact]
+    public void Build_SuppressionSurvivesAContainerWhoseConstructorSeedsEntries()
+    {
+        OpenTypeJsonOptions.OpenComplexTypeContainers containers = Containers<OtjDefaultingBagHost>();
+        // Premise: the seeding subclass really is what the builder inferred as the container.
+        Assert.Equal(
+            typeof(OtjDefaultingBag),
+            containers.ByDeclaringType[typeof(OtjDefaultingBagHolder)].PropertyType);
+
+        JsonSerializerOptions options = OpenTypeJsonOptions.Build(new JsonSerializerOptions(), containers);
+
+        // "Region" shadows the declared property, so the suppressing clone path is taken; "schema"
+        // is the key the constructor seeds, so the clone starts out already containing it.
+        string json = JsonSerializer.Serialize(
+            new OtjDefaultingBagHolder
+            {
+                Region = "declared",
+                Kv = new OtjDefaultingBag { ["Region"] = "fromBag", ["ok"] = 1 },
+            },
+            options);
+
+        // No fault, the declared property wins, and the seeded key is carried across exactly once.
+        Assert.Equal("""{"Region":"declared","schema":"v1","ok":1}""", json);
+        using JsonDocument doc = JsonDocument.Parse(json);
+        Assert.Equal("declared", doc.RootElement.GetProperty("Region").GetString());
+    }
+
+    /// <summary>
     /// The suppressing getter must hand back the SAME dictionary when there is nothing to suppress —
     /// System.Text.Json calls it on the deserialize path too, to find an existing bag to populate.
     /// </summary>
@@ -427,12 +463,72 @@ public class OpenTypeJsonOptionsTests
     public void IsValidDynamicPropertyName_MatchesTheODataSimpleIdentifierGrammar(string name, bool expected) =>
         Assert.Equal(expected, OpenTypeJsonOptions.IsValidDynamicPropertyName(name));
 
+    // ── #389 M3: the grammar is the ABNF's Unicode categories, not char.IsLetter ─────────────────
+    //
+    // odataIdentifier permits categories L/Nl leading and L/Nl/Nd/Mn/Mc/Pc/Cf following. The
+    // char.IsLetter/IsLetterOrDigit spelling this used to carry excluded the combining marks
+    // (Mn/Mc) and Nl, so it rejected legitimate client keys with a 400. The NFC/NFD pair is the
+    // case that forced the widening: macOS normalises to NFD and Windows to NFC, so the SAME key
+    // typed on two machines got two different HTTP status codes.
+
+    [Theory]
+    // Mc — Devanagari spacing combining mark ("naam").
+    [InlineData("नाम", true)]
+    // Mn — Thai tone marks ("chue").
+    [InlineData("ชื่อ", true)]
+    // Mn — NFD-decomposed "naïve": i + COMBINING DIAERESIS.
+    [InlineData("naïve", true)]
+    // The NFC spelling of the SAME word (precomposed U+00EF). These two rows look identical and are
+    // different strings — that is the point: macOS hands back the row above, Windows this one, and
+    // before M3 the two got different HTTP status codes for the same key.
+    [InlineData("naïve", true)]
+    // Mn — NFD-decomposed "Tiếng".
+    [InlineData("Tiếng", true)]
+    // Nl — ROMAN NUMERAL NINE, a letter-number, valid as a LEADING character.
+    [InlineData("Ⅸ", true)]
+    // Lu on the astral plane — MATHEMATICAL BOLD CAPITAL A, a surrogate pair in UTF-16.
+    [InlineData("\U0001D400bc", true)]
+    // Cf — ZERO WIDTH NON-JOINER is a valid FOLLOWING character.
+    [InlineData("a‌b", true)]
+    // ...but not a leading one: Cf is absent from identifierLeadingCharacter.
+    [InlineData("‌ab", false)]
+    // Mn is likewise following-only — a name may not OPEN with a combining mark.
+    [InlineData("́abc", false)]
+    // Nd is following-only, which is what "1leading" already pins for ASCII; here in Devanagari.
+    [InlineData("१abc", false)]
+    // Still rejected: So (SNOWMAN) is in neither set, so widening to the ABNF did not degenerate
+    // into "any non-ASCII character is fine".
+    [InlineData("☃snowman", false)]
+    public void IsValidDynamicPropertyName_FollowsTheUnicodeCategoriesOfTheAbnf(string name, bool expected) =>
+        Assert.Equal(expected, OpenTypeJsonOptions.IsValidDynamicPropertyName(name));
+
     [Fact]
     public void IsValidDynamicPropertyName_RejectsNamesLongerThan128Chars()
     {
         Assert.True(OpenTypeJsonOptions.IsValidDynamicPropertyName(new string('a', 128)));
         Assert.False(OpenTypeJsonOptions.IsValidDynamicPropertyName(new string('a', 129)));
     }
+
+    /// <summary>
+    /// #389 M3: the 128 cap counts CODE POINTS, not UTF-16 code units. An astral-plane identifier is
+    /// stored as a surrogate pair, so a length-based cap charged it double and rejected a name half
+    /// the permitted size — an artefact of the CLR's string encoding, not of the grammar.
+    /// </summary>
+    [Fact]
+    public void IsValidDynamicPropertyName_CountsCodePointsNotUtf16CodeUnits()
+    {
+        string astral128 = string.Concat(Enumerable.Repeat("\U0001D400", 128));
+        Assert.Equal(256, astral128.Length);          // premise: 128 code points, 256 code units
+        Assert.True(OpenTypeJsonOptions.IsValidDynamicPropertyName(astral128));
+
+        Assert.False(OpenTypeJsonOptions.IsValidDynamicPropertyName(
+            string.Concat(Enumerable.Repeat("\U0001D400", 129))));
+    }
+
+    /// <summary>An unpaired surrogate is not a character in any category, so it is rejected.</summary>
+    [Fact]
+    public void IsValidDynamicPropertyName_RejectsAnUnpairedSurrogate() =>
+        Assert.False(OpenTypeJsonOptions.IsValidDynamicPropertyName("a\uD800b"));
 
     private static string? FindInvalidKey(string json)
     {
@@ -446,9 +542,59 @@ public class OpenTypeJsonOptionsTests
     public void FindInvalidDynamicKey_AcceptsAConformantBody() =>
         Assert.Null(FindInvalidKey("""{"Id":1,"Bag":{"Region":"eu","tier":3}}"""));
 
+    /// <summary>
+    /// A reserved key at the TOP level of a bag — <c>Bag</c> is a declared complex member of the
+    /// entity, so <c>@odata.type</c> is a first-level dynamic key of <c>OtjBag</c>. (This test was
+    /// named "…NestedInAComplexValue", which described the case below that it did not actually
+    /// cover; #389 H1 renamed it to what it asserts and added the real nested coverage.)
+    /// </summary>
     [Fact]
-    public void FindInvalidDynamicKey_FindsAReservedKeyNestedInAComplexValue() =>
+    public void FindInvalidDynamicKey_FindsAReservedKeyAtTheTopLevelOfABag() =>
         Assert.Equal("@odata.type", FindInvalidKey("""{"Id":1,"Bag":{"@odata.type":"#Evil"}}"""));
+
+    // ── #389 H1: the VALUE of an accepted dynamic key is walked too ─────────────────────────────
+    //
+    // The check stopped at the first level of bag keys, so the stored-@odata.type vector it exists
+    // to close stayed open one level down: `{"Meta":{"Region":"us","nested":{"@odata.type":"#Evil"}}}`
+    // was accepted with a 201 and echoed verbatim on every later read. Everything below a dynamic
+    // key is stored as given, so every object key at every depth has to satisfy the same rule.
+
+    [Fact]
+    public void FindInvalidDynamicKey_FindsAReservedKeyInsideADynamicValue() =>
+        Assert.Equal(
+            "@odata.type",
+            FindInvalidKey("""{"Id":1,"Bag":{"Region":"us","nested":{"@odata.type":"#Evil","a":1}}}"""));
+
+    [Fact]
+    public void FindInvalidDynamicKey_FindsAReservedKeyInsideAnArrayUnderADynamicValue() =>
+        Assert.Equal(
+            "@odata.id",
+            FindInvalidKey("""{"Id":1,"Bag":{"list":[{"ok":1},{"@odata.id":"http://evil/x"}]}}"""));
+
+    /// <summary>Arbitrarily deep, and through alternating objects and arrays.</summary>
+    [Fact]
+    public void FindInvalidDynamicKey_FindsAReservedKeyManyLevelsBelowADynamicKey() =>
+        Assert.Equal(
+            "has space",
+            FindInvalidKey("""{"Id":1,"Bag":{"a":{"b":[{"c":{"d":[{"has space":1}]}}]}}}"""));
+
+    /// <summary>
+    /// The walk must not become a blanket rejection: a dynamic value whose own keys are all
+    /// conformant identifiers is still accepted at every depth. Without this the H1 fix would
+    /// "pass" by rejecting every nested object.
+    /// </summary>
+    [Fact]
+    public void FindInvalidDynamicKey_AcceptsAConformantNestedDynamicValue() =>
+        Assert.Null(FindInvalidKey(
+            """{"Id":1,"Bag":{"Region":"us","nested":{"inner":{"deep":[1,2,{"ok":true}]}}}}"""));
+
+    /// <summary>
+    /// Scalars and arrays of scalars under a dynamic key terminate the walk rather than tripping it.
+    /// </summary>
+    [Fact]
+    public void FindInvalidDynamicKey_AcceptsScalarAndScalarArrayDynamicValues() =>
+        Assert.Null(FindInvalidKey(
+            """{"Id":1,"Bag":{"n":1,"s":"x","b":true,"nul":null,"arr":[1,"two",false,null]}}"""));
 
     [Fact]
     public void FindInvalidDynamicKey_FindsAnEmptyKey() =>
@@ -496,6 +642,27 @@ public class OtjCustomBagHolder
 }
 
 public class OtjCustomBagHost { public int Id { get; set; } public OtjCustomBagHolder? Bag { get; set; } }
+
+/// <summary>
+/// A container whose parameterless constructor SEEDS an entry — so <c>Activator.CreateInstance</c>
+/// does not hand back an empty dictionary (#389 M1).
+/// </summary>
+public sealed class OtjDefaultingBag : Dictionary<string, object?>
+{
+    public OtjDefaultingBag() => this["schema"] = "v1";
+}
+
+public class OtjDefaultingBagHolder
+{
+    public string? Region { get; set; }
+    public OtjDefaultingBag? Kv { get; set; }
+}
+
+public class OtjDefaultingBagHost
+{
+    public int Id { get; set; }
+    public OtjDefaultingBagHolder? Bag { get; set; }
+}
 
 /// <summary>A dictionary member the convention builder does NOT treat as a container.</summary>
 public class OtjWrongDictionaryType { public IDictionary<string, string>? Kv { get; set; } }

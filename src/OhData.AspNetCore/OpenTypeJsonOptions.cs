@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.Logging;
@@ -204,10 +206,26 @@ internal static class OpenTypeJsonOptions
     // dictionary reference whenever there is no collision, which is every ordinary payload — and
     // that matters beyond allocation: System.Text.Json also calls this getter on the DESERIALIZE
     // path, to find an existing dictionary to populate. Returning the original there is what keeps
-    // binding untouched. The one uncovered corner is a model that pre-initializes its container
-    // with a key equal to one of its own declared property names; deserializing into such an
-    // instance would populate the filtered copy. That model is already self-contradictory, and the
-    // alternative — emitting invalid JSON on every read of it — is worse.
+    // binding untouched.
+    //
+    // The one uncovered corner is a model that PRE-INITIALIZES its container with a key equal to one
+    // of its own declared property names:
+    //     public IDictionary<string, object?>? Bag { get; set; } =
+    //         new Dictionary<string, object?> { ["Region"] = "preset" };  // Region is ALSO declared
+    // On such a type the getter always sees a collision, so on the deserialize path it hands
+    // System.Text.Json a filtered CLONE, STJ populates the clone, and the clone is discarded.
+    // #389 M2: that is stronger than the "would populate the filtered copy" this comment used to
+    // say. Measured, EVERY dynamic key in the request is dropped, the write still reports 201, and
+    // the response echo looks clean because it is rendered from the same pre-initialized bag — a
+    // silent, total write loss that reports success.
+    //
+    // Left uncovered deliberately. The model is already self-contradictory (it declares a property
+    // and pre-seeds a dynamic key of the same name); the condition depends on the runtime INSTANCE,
+    // so startup sees types and cannot detect it; and this getter has no way to tell the serialize
+    // path from the deserialize path — the only signal available here is the collision itself, which
+    // is equally present on both. The alternative on the read side, emitting invalid JSON on every
+    // response, is worse. docs/open-types.md documents it under the collision section so this is not
+    // code-comment-only knowledge.
     private static void SuppressKeysShadowingADeclaredProperty(
         JsonTypeInfo typeInfo, JsonPropertyInfo container, ILogger? logger)
     {
@@ -267,17 +285,28 @@ internal static class OpenTypeJsonOptions
 
         foreach (KeyValuePair<string, TValue> entry in bag)
         {
-            if (!declaredNames.Contains(entry.Key)) filtered.Add(entry.Key, entry.Value);
+            // Indexer, never Add: Add throws ArgumentException on a duplicate key, and this loop can
+            // legitimately present one. TryCreateEmptyLike clones the bag's RUNTIME type, whose
+            // parameterless constructor is free to install a different IEqualityComparer than the
+            // source bag's — a case-insensitive clone fed an ordinal source holding both "a" and "A"
+            // sees the second key as a duplicate. Add would turn that into a 500 on a read, which is
+            // precisely the outcome this whole guard exists to avoid; the indexer degrades to
+            // last-write-wins instead. (Same reason the shadowed keys are logged, not asserted.)
+            if (!declaredNames.Contains(entry.Key)) filtered[entry.Key] = entry.Value;
         }
-        foreach (string key in shadowed)
-        {
-            logger?.LogWarning(
-                "OhData: open complex type '{Type}' carries the dynamic key '{Key}', which is also " +
-                "the name of one of its declared properties. The declared property wins and the " +
-                "dynamic key is omitted from the response — emitting both would produce a duplicate " +
-                "JSON property name.",
-                ownerType.FullName, key);
-        }
+        // One record per container instance, not one per shadowing key (#389 L4): the keys are
+        // joined into a single message, for the same reason the error branch above does. This does
+        // NOT de-duplicate across a page — a 1000-entity response where every entity shadows still
+        // logs 1000 times, bounded by page size. Going further would need either per-request state
+        // (which this getter, baked into the options at startup, does not have) or a process-wide
+        // "already warned" set, and the latter would silence a recurring problem after its first
+        // occurrence. Amplification bounded by page size is the better trade.
+        logger?.LogWarning(
+            "OhData: open complex type '{Type}' carries the dynamic key(s) '{Keys}', which are also " +
+            "names of its declared properties. The declared properties win and those dynamic keys " +
+            "are omitted from the response — emitting both would produce a duplicate JSON property " +
+            "name.",
+            ownerType.FullName, string.Join(", ", shadowed));
         return filtered;
     }
 
@@ -289,13 +318,35 @@ internal static class OpenTypeJsonOptions
     // alike. Returns null when the type cannot be instantiated (no parameterless constructor — a
     // ReadOnlyDictionary, say); a serialization path must never fault over a data condition, so the
     // caller degrades rather than throwing.
+    //
+    // #389 M1: "empty-like" is not a given. A parameterless constructor is free to SEED the instance
+    //   class MyBag : Dictionary<string, object?> { public MyBag() { this["schema"] = "v1"; } }
+    // and the caller then copied the surviving keys into a bag that was never empty — measured as a
+    // 500 on a plain GET (ArgumentException from Dictionary.Add on the duplicate key), refuting both
+    // the paragraph above and docs/open-types.md's "a read is never faulted over a data condition".
+    // Clearing is what makes the name true. IsReadOnly is checked for the same reason: a fixed-size
+    // or read-only IDictionary implementation with a public parameterless constructor would throw
+    // from Clear/the indexer instead, and null (duplicate key + a logged error) is the documented
+    // degradation for "cannot be cloned".
+    //
+    // The clone does NOT inherit the source bag's IEqualityComparer — a Dictionary constructed
+    // through Activator gets whatever its own constructor installs, which for the plain-Dictionary
+    // fast path above is the default ordinal comparer. That is deliberate and safe: the clone is
+    // only ever ENUMERATED by the serializer, never queried by key, so a comparer difference cannot
+    // change the emitted JSON. It can only collapse two source keys that the clone's comparer
+    // considers equal, which the caller's indexer assignment degrades to last-write-wins rather than
+    // faulting. Do not "fix" this by copying the comparer: there is no comparer-taking constructor
+    // to call on an arbitrary IDictionary runtime type.
     private static IDictionary<string, TValue>? TryCreateEmptyLike<TValue>(IDictionary<string, TValue> bag)
     {
         Type runtimeType = bag.GetType();
         if (runtimeType == typeof(Dictionary<string, TValue>)) return new Dictionary<string, TValue>();
         try
         {
-            return Activator.CreateInstance(runtimeType) as IDictionary<string, TValue>;
+            if (Activator.CreateInstance(runtimeType) is not IDictionary<string, TValue> created) return null;
+            if (created.IsReadOnly) return null;
+            if (created.Count > 0) created.Clear();
+            return created;
         }
         catch (Exception)
         {
@@ -398,13 +449,29 @@ internal static class OpenTypeJsonOptions
     //     error. ODataConventionModelBuilder only ever infers a container from an
     //     IDictionary<string, object>-assignable member (measured: an IDictionary<string, string> or
     //     IDictionary<string, JsonElement> member is mapped as an ordinary Collection(KeyValuePair)
-    //     property and its type is not marked open at all), and no consumer can write the annotation
-    //     by hand -- EdmAnnotationExtensions exposes only a GETTER for it, and
-    //     DynamicPropertyDictionaryAnnotation itself is internal to Microsoft.OData.ModelBuilder. So
-    //     there is no test for this branch: it exists so a future widening of the builder's
-    //     inference fails loudly at startup instead of throwing out of the modifier mid-request.
-    //     (IDictionary<string, JsonElement> is accepted for the same reason -- it is half of what
-    //     System.Text.Json actually allows, even though the builder never produces it.)
+    //     property and its type is not marked open at all).
+    //
+    //     This comment used to add "and no consumer can write the annotation by hand --
+    //     EdmAnnotationExtensions exposes only a GETTER for it, and DynamicPropertyDictionaryAnnotation
+    //     itself is internal". BOTH halves of that were false (#389 L3, measured by reflection):
+    //     DynamicPropertyDictionaryAnnotation is an EXPORTED PUBLIC type with a public
+    //     ctor(PropertyInfo), and StructuralTypeConfiguration.AddDynamicPropertyDictionary(PropertyInfo),
+    //     StructuralTypeConfiguration.ModelBuilder and ODataModelBuilder.AddComplexType(Type) are all
+    //     public. The raw builder is reachable from what AdvancedConfigure is handed, too: the chain
+    //     EntitySetConfiguration<T>.EntityType -> EntityTypeConfiguration<T>.BaseType (the NON-generic
+    //     EntityTypeConfiguration, which IS a StructuralTypeConfiguration) -> .ModelBuilder COMPILES
+    //     and returns the very instance OhData is building with -- measured, ReferenceEquals true,
+    //     whenever the entity type has an EDM base type.
+    //
+    //     The branch is unreachable for a simpler and verifiable reason: the ONLY public API that
+    //     records the annotation validates this exact condition itself. AddDynamicPropertyDictionary
+    //     throws ArgumentException("The argument must be of type 'IDictionary<string, object>'") for
+    //     any other member type -- measured on the reachable route above. So a wrong-typed container
+    //     cannot enter the model through the builder at all, by hand or by convention, and there is
+    //     no test for this branch: it exists so a future widening of the builder's inference (or of
+    //     that argument check) fails loudly at startup instead of throwing out of the modifier
+    //     mid-request. (IDictionary<string, JsonElement> is accepted for the same reason -- it is
+    //     half of what System.Text.Json actually allows, even though the builder never produces it.)
     private static void ThrowIfUnusableAsExtensionData(PropertyInfo container, IEdmComplexType complexType)
     {
         Type type = container.PropertyType;
@@ -528,12 +595,60 @@ internal static class OpenTypeJsonOptions
             }
             // Unmatched members of a type that is NOT open are ignored on binding, exactly as they
             // are today — only a key that will actually land in a dynamic bag is policed.
-            else if (isOpen && !IsValidDynamicPropertyName(member.Name))
+            else if (isOpen)
             {
-                return member.Name;
+                if (!IsValidDynamicPropertyName(member.Name)) return member.Name;
+                // #389 H1: the VALUE of an accepted dynamic key has to be walked too. Everything
+                // below a bag key is stored verbatim and echoed on every later read, so stopping at
+                // the first level left the exact vector this check exists to close open one level
+                // down: {"Meta":{"nested":{"@odata.type":"#Evil"}}} was accepted with a 201 and then
+                // served back forever, control information and all.
+                string? nested = FindInvalidKeyInDynamicValue(member.Value);
+                if (nested is not null) return nested;
             }
         }
         return null;
+    }
+
+    /// <summary>
+    /// Walks the value of an accepted dynamic key. Every object key at every depth below it must
+    /// satisfy the same identifier rule, including through arrays.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately <b>type-free</b>, unlike <see cref="FindInvalidDynamicKey"/>. A dynamic value has
+    /// no declared type by construction — it binds to an <c>object</c>-typed slot and materialises as
+    /// a <see cref="JsonElement"/> — so there is no <see cref="JsonTypeInfo"/> to consult and no
+    /// notion of a "declared" member down here. Every key is a bag key, so every key is policed;
+    /// scalars terminate the walk.
+    /// <para>
+    /// Linear in the size of the value and bounded by the JSON document's own depth. No second depth
+    /// limit is imposed: <c>JsonDocument</c> has already enforced its 64-level cap at parse time, and
+    /// this walk cannot outrun a tree the reader accepted — a body deep enough to overflow here was
+    /// rejected with a <c>400</c> before <see cref="FindInvalidDynamicKey"/> was ever called.
+    /// </para>
+    /// </remarks>
+    private static string? FindInvalidKeyInDynamicValue(JsonElement value)
+    {
+        switch (value.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (JsonProperty member in value.EnumerateObject())
+                {
+                    if (!IsValidDynamicPropertyName(member.Name)) return member.Name;
+                    string? found = FindInvalidKeyInDynamicValue(member.Value);
+                    if (found is not null) return found;
+                }
+                return null;
+            case JsonValueKind.Array:
+                foreach (JsonElement item in value.EnumerateArray())
+                {
+                    string? found = FindInvalidKeyInDynamicValue(item);
+                    if (found is not null) return found;
+                }
+                return null;
+            default:
+                return null;
+        }
     }
 
     // The item type of a collection-shaped CLR member, or null when the member is not a collection
@@ -556,7 +671,9 @@ internal static class OpenTypeJsonOptions
 
     /// <summary>
     /// An OData dynamic property name must be a simple identifier (CSDL §4.1 <c>odataIdentifier</c>):
-    /// a letter or <c>_</c> followed by up to 127 letters, digits or <c>_</c>.
+    /// one leading character from Unicode category <c>L</c> or <c>Nl</c> (or <c>_</c>), followed by
+    /// up to 127 characters from <c>L</c>, <c>Nl</c>, <c>Nd</c>, <c>Mn</c>, <c>Mc</c>, <c>Pc</c> or
+    /// <c>Cf</c>.
     /// </summary>
     /// <remarks>
     /// The exclusions are what matter. <c>@</c> introduces control information (JSON Format §4.5)
@@ -564,15 +681,74 @@ internal static class OpenTypeJsonOptions
     /// annotation grammar, so any key carrying <c>@</c> is not a property name at all. <c>.</c> is
     /// the namespace separator. The empty string and embedded whitespace are not identifiers and
     /// are not addressable by any query option.
+    /// <para>
+    /// <b>The category set is the normative grammar, not an ASCII-flavoured approximation of it</b>
+    /// (#389 M3). The obvious spelling — <c>char.IsLetter</c> / <c>char.IsLetterOrDigit</c> — is
+    /// narrower than the ABNF in a way that rejects legitimate clients: it excludes the combining
+    /// marks (<c>Mn</c>/<c>Mc</c>) that Devanagari, Thai and every NFD-normalised Latin string are
+    /// built from, and <c>Nl</c>. Measured rejections of valid identifiers included <c>नाम</c>,
+    /// <c>ชื่อ</c>, <c>Ⅸ</c>, and NFD-decomposed <c>naïve</c>. That last one is the indefensible
+    /// case: macOS hands back NFD where Windows hands back NFC, so the same key typed on two
+    /// machines got two different HTTP status codes.
+    /// </para>
+    /// <para>
+    /// <b>Counted in code points, not UTF-16 code units.</b> The 128 cap is a character count in the
+    /// grammar; charging an astral-plane identifier like <c>𝐀bc</c> double because the CLR stores it
+    /// as a surrogate pair would be an artefact of the encoding. Rune enumeration also means no
+    /// per-<c>char</c> inspection ever sees half a surrogate pair: an unpaired surrogate decodes to
+    /// U+FFFD, whose category is in neither set, so a malformed name is rejected rather than
+    /// silently accepted.
+    /// </para>
     /// </remarks>
     internal static bool IsValidDynamicPropertyName(string name)
     {
-        if (name.Length is 0 or > 128) return false;
-        if (!char.IsLetter(name[0]) && name[0] != '_') return false;
-        for (int i = 1; i < name.Length; i++)
+        if (name.Length == 0) return false;
+
+        int codePoints = 0;
+        bool leading = true;
+        foreach (Rune rune in name.EnumerateRunes())
         {
-            if (!char.IsLetterOrDigit(name[i]) && name[i] != '_') return false;
+            // 1 leading + 127 following. Checked inside the loop so a long name short-circuits
+            // rather than being fully decoded first.
+            if (++codePoints > 128) return false;
+
+            UnicodeCategory category = Rune.GetUnicodeCategory(rune);
+            if (leading)
+            {
+                // '_' is Pc, which is a FOLLOWING category only, so it needs naming here.
+                if (rune.Value != '_' && !IsIdentifierLeadingCategory(category)) return false;
+                leading = false;
+            }
+            else if (!IsIdentifierFollowingCategory(category))
+            {
+                return false;
+            }
         }
         return true;
     }
+
+    // odataIdentifier's identifierLeadingCharacter: Unicode categories L (Lu/Ll/Lt/Lm/Lo) and Nl.
+    private static bool IsIdentifierLeadingCategory(UnicodeCategory category) => category switch
+    {
+        UnicodeCategory.UppercaseLetter or
+        UnicodeCategory.LowercaseLetter or
+        UnicodeCategory.TitlecaseLetter or
+        UnicodeCategory.ModifierLetter or
+        UnicodeCategory.OtherLetter or
+        UnicodeCategory.LetterNumber => true,
+        _ => false,
+    };
+
+    // identifierCharacter: the leading set plus Nd, Mn, Mc, Pc and Cf. Pc is what admits '_' (and
+    // the other connector punctuation) without a special case here.
+    private static bool IsIdentifierFollowingCategory(UnicodeCategory category) =>
+        IsIdentifierLeadingCategory(category) || category switch
+        {
+            UnicodeCategory.DecimalDigitNumber or
+            UnicodeCategory.NonSpacingMark or
+            UnicodeCategory.SpacingCombiningMark or
+            UnicodeCategory.ConnectorPunctuation or
+            UnicodeCategory.Format => true,
+            _ => false,
+        };
 }

@@ -259,14 +259,22 @@ internal static class OhDataEndpointFactory
         }
     }
 
-    // #389: policing dynamic-property names on the way in. Only a registration that opted into
-    // open types (WithOpenTypes) pays anything here -- for everyone else this is one bool test and
-    // the body is never walked. See OpenTypeJsonOptions.FindInvalidDynamicKey for why the check
-    // rides the raw JSON against JsonTypeInfo rather than the bound CLR graph.
+    // #389: policing dynamic-property names on the way in. Only a registration that opted into open
+    // types AND whose EDM actually declares one pays anything here (OpenTypesActive, not
+    // OpenTypesEnabled -- #389 L1) -- for everyone else this is one bool test and the body is never
+    // walked. See OpenTypeJsonOptions.FindInvalidDynamicKey for why the check rides the raw JSON
+    // against JsonTypeInfo rather than the bound CLR graph.
+    //
+    // Called from every route that binds a body which can reach a dynamic bag: POST/PUT/PATCH on the
+    // entity, the structural-property write route, the navigation-POST create route, and each
+    // parameter of a bound or unbound ACTION. The action routes pass the individual PARAMETER value
+    // and its declared parameter type, never the {"paramName": value} envelope -- the envelope's own
+    // keys are parameter names matched by the operation's signature, so they are not dynamic keys
+    // and must not be policed as such.
     private static IResult? RejectInvalidDynamicKey(
-        OhDataRegistration registration, JsonElement body, Type declaredType, JsonSerializerOptions? jsonOptions)
+        bool openTypesActive, JsonElement body, Type declaredType, JsonSerializerOptions? jsonOptions)
     {
-        if (!registration.OpenTypesEnabled || jsonOptions is null) return null;
+        if (!openTypesActive || jsonOptions is null) return null;
         string? key = OpenTypeJsonOptions.FindInvalidDynamicKey(body, declaredType, jsonOptions);
         if (key is null) return null;
         return ODataError(400, "InvalidBody",
@@ -536,6 +544,13 @@ internal static class OhDataEndpointFactory
         effectiveJsonOptions = OpenTypeJsonOptions.Build(effectiveJsonOptions, openTypeContainers, groupLogger);
         OpenTypeJsonOptions.ValidateOrThrow(effectiveJsonOptions, openTypeContainers);
 
+        // #389 L1: every per-request open-type path gates on this, NOT on OpenTypesEnabled. The
+        // opt-in says what the consumer asked for; this says whether the model gave it anything to
+        // do. Opting in on a model with no open complex type is documented as a no-op, and gating
+        // the write paths on the opt-in alone made that documentation false -- see the remarks on
+        // OhDataRegistration.OpenTypesActive for the measured difference.
+        registration.OpenTypesActive = !openTypeContainers.IsEmpty;
+
         // #200: observability. The outermost group filter opens an ActivitySource span per OData
         // request and records the request-duration histogram + active-request up/down counter (both
         // on the "OhData" Meter). Added first so it wraps every other filter and the handler; the
@@ -780,7 +795,8 @@ internal static class OhDataEndpointFactory
         }
 
         // Gap 7: Unbound functions/actions — registered once at service root level (§11.5.1)
-        MapUnboundOperations(group, registration.UnboundOperations, effectiveJsonOptions);
+        MapUnboundOperations(
+            group, registration.UnboundOperations, effectiveJsonOptions, registration.OpenTypesActive);
 
         return group;
     }
@@ -867,10 +883,13 @@ internal static class OhDataEndpointFactory
         return new OhDataQueryParametersMetadata { Parameters = list };
     }
 
+    // openTypesActive is passed rather than read off an OhDataRegistration because this method has
+    // never taken one -- it needs only the unbound operation list and the serializer options.
     private static void MapUnboundOperations(
         RouteGroupBuilder group,
         IReadOnlyList<UnboundOperationDefinition> unboundOps,
-        JsonSerializerOptions? jsonOptions)
+        JsonSerializerOptions? jsonOptions,
+        bool openTypesActive)
     {
         foreach (var op in unboundOps)
         {
@@ -949,6 +968,12 @@ internal static class OhDataEndpointFactory
                                 var param = opCapture.Parameters[i];
                                 if (TryGetJsonProperty(body, param.Name!, out var val))
                                 {
+                                    // #389 H2: same per-parameter dynamic-key check the bound
+                                    // actions run. An unbound action's parameters bind into the same
+                                    // CLR types and reach the same handlers.
+                                    IResult? opInvalidKey = RejectInvalidDynamicKey(
+                                        openTypesActive, val, param.ParameterType, jsonOptions);
+                                    if (opInvalidKey is not null) return opInvalidKey;
                                     args[i] = val.Deserialize(param.ParameterType, jsonOptions);
                                 }
                                 else if (param.HasDefaultValue)
@@ -5602,7 +5627,7 @@ internal static class OhDataEndpointFactory
                     // other consumer, since '@odata.type' inside a complex value is what a
                     // conforming reader uses to resolve that value's type.
                     IResult? postInvalidKey =
-                        RejectInvalidDynamicKey(registration, document.RootElement, typeof(TModel), jsonOptions);
+                        RejectInvalidDynamicKey(registration.OpenTypesActive, document.RootElement, typeof(TModel), jsonOptions);
                     if (postInvalidKey is not null) return postInvalidKey;
 
                     TModel? model;
@@ -5713,16 +5738,21 @@ internal static class OhDataEndpointFactory
                     var s = ResolveHandlers(ctx);
                     object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
                     TModel? model;
-                    if (registration.OpenTypesEnabled)
+                    if (registration.OpenTypesActive)
                     {
                         // #389: dynamic-property names are policed BEFORE binding, and that check
                         // reads the raw JSON, so the body is buffered into a JsonDocument first.
-                        // Only under the opt-in -- without it PUT keeps streaming straight into the
-                        // deserializer exactly as before, so nothing about the default path moves.
+                        // Only when the model actually HAS an open complex type -- otherwise PUT
+                        // keeps streaming straight into the deserializer exactly as before, so
+                        // nothing about the default path moves. Gating this on OpenTypesEnabled
+                        // instead was the one measurable way an opted-in registration with no open
+                        // types stopped being byte-identical to an opted-out one (#389 L1): the two
+                        // reads report a malformed body differently, JsonDocument.ParseAsync
+                        // omitting the "Path: $" that JsonSerializer.DeserializeAsync includes.
                         using JsonDocument putDocument =
                             await JsonDocument.ParseAsync(ctx.Request.Body, cancellationToken: ct);
                         IResult? putInvalidKey = RejectInvalidDynamicKey(
-                            registration, putDocument.RootElement, typeof(TModel), jsonOptions);
+                            registration.OpenTypesActive, putDocument.RootElement, typeof(TModel), jsonOptions);
                         if (putInvalidKey is not null) return putInvalidKey;
                         model = putDocument.RootElement.Deserialize<TModel>(jsonOptions);
                     }
@@ -5844,7 +5874,7 @@ internal static class OhDataEndpointFactory
                     // #389: see the POST route -- an unacceptable dynamic key is rejected before it
                     // can be bound and persisted.
                     IResult? patchInvalidKey =
-                        RejectInvalidDynamicKey(registration, body, typeof(TModel), jsonOptions);
+                        RejectInvalidDynamicKey(registration.OpenTypesActive, body, typeof(TModel), jsonOptions);
                     if (patchInvalidKey is not null) return patchInvalidKey;
 
                     // Only validate key mismatch if the key property was explicitly present in the body.
@@ -6370,7 +6400,26 @@ internal static class OhDataEndpointFactory
                         object? child;
                         try
                         {
-                            child = await JsonSerializer.DeserializeAsync(ctx.Request.Body, postNavItemType, jsonOptions, ct);
+                            // #389 H2: this is a documented CREATE route, so it polices dynamic
+                            // property names exactly as POST /{EntitySet} does -- it was the one
+                            // entity-creating route the check had not been wired into, and a body
+                            // rejected with 400 on the collection POST was accepted with 201 here
+                            // and persisted. Same buffer-then-bind shape as PUT, and gated the same
+                            // way, so a registration with no open complex type keeps streaming
+                            // straight into the deserializer.
+                            if (registration.OpenTypesActive)
+                            {
+                                using JsonDocument navDocument =
+                                    await JsonDocument.ParseAsync(ctx.Request.Body, cancellationToken: ct);
+                                IResult? navInvalidKey = RejectInvalidDynamicKey(
+                                    registration.OpenTypesActive, navDocument.RootElement, postNavItemType, jsonOptions);
+                                if (navInvalidKey is not null) return navInvalidKey;
+                                child = navDocument.RootElement.Deserialize(postNavItemType, jsonOptions);
+                            }
+                            else
+                            {
+                                child = await JsonSerializer.DeserializeAsync(ctx.Request.Body, postNavItemType, jsonOptions, ct);
+                            }
                         }
                         catch (JsonException ex)
                         {
@@ -6690,7 +6739,7 @@ internal static class OhDataEndpointFactory
                         // #389: a property-route write replaces a whole complex value, so the same
                         // dynamic-key policing the entity routes do applies to what lands inside it.
                         IResult? propInvalidKey =
-                            RejectInvalidDynamicKey(registration, valueEl, propClrType, jsonOptions);
+                            RejectInvalidDynamicKey(registration.OpenTypesActive, valueEl, propClrType, jsonOptions);
                         if (propInvalidKey is not null) return propInvalidKey;
 
                         object? newValue;
@@ -6884,6 +6933,15 @@ internal static class OhDataEndpointFactory
                             var param = actionCapture.Parameters[i];
                             if (TryGetJsonProperty(body, param.Name!, out var val))
                             {
+                                // #389 H2: an action parameter whose type is (or contains) an open
+                                // complex type binds dynamic keys just like an entity body does, and
+                                // a handler that persists it stores them verbatim -- the same vector
+                                // POST/PUT/PATCH are policed for. Checked per PARAMETER against the
+                                // parameter's declared type, so the {"paramName": value} envelope is
+                                // never itself treated as a bag.
+                                IResult? actionInvalidKey = RejectInvalidDynamicKey(
+                                    registration.OpenTypesActive, val, param.ParameterType, jsonOptions);
+                                if (actionInvalidKey is not null) return actionInvalidKey;
                                 args[i] = val.Deserialize(param.ParameterType, jsonOptions);
                             }
                             else if (param.HasDefaultValue)
@@ -7026,6 +7084,12 @@ internal static class OhDataEndpointFactory
                                     var param = actionCapture.Parameters[i];
                                     if (TryGetJsonProperty(body, param.Name!, out var val))
                                     {
+                                        // #389 H2: same per-parameter dynamic-key check as the
+                                        // collection-level bound action above. The loop starts at 1
+                                        // because parameter 0 of an entity-level action is the key.
+                                        IResult? actionInvalidKey = RejectInvalidDynamicKey(
+                                            registration.OpenTypesActive, val, param.ParameterType, jsonOptions);
+                                        if (actionInvalidKey is not null) return actionInvalidKey;
                                         args[i] = val.Deserialize(param.ParameterType, jsonOptions);
                                     }
                                     else if (param.HasDefaultValue)
