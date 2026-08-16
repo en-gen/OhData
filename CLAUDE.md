@@ -128,17 +128,36 @@ app.MapOhData()  →  returns RouteGroupBuilder
 
 ### Project layout
 
+Sixteen projects, all in `src/OhData.sln`. The `Target` column is the literal
+`TargetFramework(s)` from each `.csproj` - **read it before reaching for a .NET 9+ or .NET 10 API**.
+
 | Project | Target | Role |
 |---|---|---|
-| `OhData.AspNetCore` | net10.0 | All core and runtime types: `EntitySetProfile<TKey,TModel>`, `IEntitySetEndpointSource` (internal), `IVisitModelBuilder` (internal), `AuthorizationConfig`, `NavigationRouteDefinition`, `BoundOperationDefinition`, `OhDataBuilder`, `OhDataEndpointFactory`, `OhDataRegistration`, `OhDataRegistrationCollection`, `OhDataDefaults`, `AddOhDataVersion` / `MapOhDataVersion` versioning helpers, `ODataEntitySetProfile<TKey,TModel>`, `IODataEntitySetEndpointSource`, `DeltaProfile` / `DeltaMapping<TModel,TEntity>` / `IDeltaFactory` (delta mapping) and `Delta<T>` sugar, extension methods |
-| `OhData.Client` | net10.0 | Typed .NET OData 4.0 client with fluent LINQ-based filter/select/expand translation |
-| `OhData.TestBench.AspNetCore` | net10.0 | Runnable demo app with EF Core InMemory, Swagger UI + Scalar, versioned v1/v2 registrations |
+| `OhData.AspNetCore` | net8.0;net10.0 | Ships as `EnGen.OhData.AspNetCore`. All core and runtime types: `EntitySetProfile<TKey,TModel>`, `IEntitySetEndpointSource` (internal), `IVisitModelBuilder` (internal), `AuthorizationConfig`, `NavigationRouteDefinition`, `BoundOperationDefinition`, `OhDataBuilder`, `OhDataEndpointFactory`, `OhDataRegistration`, `OhDataRegistrationCollection`, `OhDataDefaults`, `AddOhDataVersion` / `MapOhDataVersion` versioning helpers, `ODataEntitySetProfile<TKey,TModel>`, `IODataEntitySetEndpointSource`, `OpenTypeJsonOptions` / `IgnoredPropertyJsonOptions` (internal), `DeltaProfile` / `DeltaMapping<TModel,TEntity>` / `IDeltaFactory` (delta mapping) and `Delta<T>` sugar, extension methods |
+| `OhData.Client` | net8.0;net10.0 | Ships as `EnGen.OhData.Client`. Typed .NET OData 4.0 client with fluent LINQ-based filter/select/expand translation and pagination |
+| `OhData.AspNetCore.OpenApi` | **net10.0** | Ships as `EnGen.OhData.AspNetCore.OpenApi` (#264). `Microsoft.AspNetCore.OpenApi` integration: `IOpenApiOperationTransformer`/`IOpenApiSchemaTransformer` implementations that document the OData query parameters per entity set's capability flags, apply auth/security requirements, and omit `Ignore()`d properties. **Single-TFM** - `Microsoft.AspNetCore.OpenApi` is referenced at `[10.*, 11)`, so there is no net8.0 build of this one |
+| `OhData.AspNetCore.NSwag` | net8.0;net10.0 | Ships as `EnGen.OhData.AspNetCore.NSwag` (#264). Same surface as an NSwag `IOperationProcessor`/`ISchemaProcessor` |
+| `OhData.AspNetCore.Swashbuckle` | net8.0;net10.0 | Ships as `EnGen.OhData.AspNetCore.Swashbuckle` (#264). Same surface as a Swashbuckle `IOperationFilter`/`ISchemaFilter` |
+| `OhData.TestBench.AspNetCore` | net10.0 | Runnable demo app with EF Core InMemory, Swagger UI (via the Swashbuckle companion package) + Scalar, versioned v1/v2 registrations |
 | `OhData.ClientTestBench.AspNetCore` | net10.0 | Runnable demo app used as server target for client integration tests |
-| `OhData.AspNetCore.Tests` | net10.0 | xUnit integration tests using `WebApplicationFactory` via `TestHostBuilder` |
+| `OhData.AspNetCore.Tests` | net10.0 | xUnit integration tests using `WebApplicationFactory` via `TestHostBuilder`. The main suite |
+| `OhData.AspNetCore.OpenApi.Tests` | net10.0 | xUnit tests for the `Microsoft.AspNetCore.OpenApi` companion package |
+| `OhData.AspNetCore.NSwag.Tests` | net10.0 | xUnit tests for the NSwag companion package |
+| `OhData.AspNetCore.Swashbuckle.Tests` | net10.0 | xUnit tests for the Swashbuckle companion package |
+| `OhData.TestBench.AspNetCore.Tests` | net10.0 | xUnit tests over the test bench host (`DbContext` lifetime / scoped-profile wiring) |
 | `OhData.Client.Tests` | net10.0 | xUnit tests for OhData.Client |
+| `OhData.MicrosoftODataClient.Tests` | net10.0 | Compatibility tests against Microsoft.OData.Client |
 | `OhData.Client.Benchmarks` | net10.0 | BenchmarkDotNet project for client library performance |
 | `OhData.Server.Benchmarks` | net10.0 | BenchmarkDotNet project comparing OhData's minimal-API pipeline against `Microsoft.AspNetCore.OData`'s `ODataController`+`[EnableQuery]` pipeline; report in `docs/server-comparison-report.md` |
-| `OhData.MicrosoftODataClient.Tests` | net10.0 | Compatibility tests against Microsoft.OData.Client |
+
+**`net8.0` on the two shipping libraries is load-bearing, not vestigial.** Several deliberate API
+choices exist *because* of it and will silently break the net8.0 build if "simplified" against the
+net10.0 API surface: `OpenTypeJsonOptions.FindInvalidDynamicKey` resolves array element and
+dictionary value types by CLR reflection rather than `JsonTypeInfo.ElementType` (.NET 9+), and
+`ETagValueFormatter.StableTypeName` avoids `Type.FullName` because a constructed generic embeds
+`Version=8.0.0.0` on net8.0 and `Version=10.0.0.0` on net10.0. Each is commented at the site; check
+the TFM before removing one. `dotnet build src/OhData.sln` builds every TFM, so a net8.0-only break
+does surface locally.
 
 ### `InternalsVisibleTo`
 
@@ -147,7 +166,7 @@ There is no `AssemblyInfo.cs`. The grants are MSBuild `<InternalsVisibleTo Inclu
 | Grantee | Why |
 |---|---|
 | `OhData.AspNetCore.Tests` | Access to the internal `IEntitySetEndpointSource` and `IVisitModelBuilder` interfaces. |
-| `OhData.AspNetCore.OpenApi` | #228: the OpenAPI companion packages read the internal per-profile `IgnoredPropertyNames` (via `IgnoredPropertyDocsMap`) so generated schemas omit `Ignore()`d properties, matching the real wire shape. |
+| `OhData.AspNetCore.OpenApi` | #228: the OpenAPI companion packages read the internal per-profile `IgnoredPropertyNames` (via `IgnoredPropertyDocsMap`) so generated schemas omit `Ignore()`d properties, matching the real wire shape. They also read the internal `SchemaPropertyCasing` so schema property names match the casing the serializer actually emits. |
 | `OhData.AspNetCore.NSwag` | Same as above. |
 | `OhData.AspNetCore.Swashbuckle` | Same as above. |
 | `OhData.Server.Benchmarks` | #389: the open-type serialize path is reachable only through internals (`OpenTypeJsonOptions`, its `Build`/`BuildOpenComplexTypeContainerMap` entry points, `IsValidDynamicPropertyNameCached`). The grant exists so `OpenTypeKeyValidationBenchmarks` measures the **shipped** validator rather than a transcribed copy of it — a copy is exactly the mistake that produced a 12x-wrong number for this code path once already. It widens no public API and changes no behaviour. |
