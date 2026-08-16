@@ -275,11 +275,9 @@ internal static class OpenTypeJsonOptions
         // JSON key, and faulting on a merely case-differing key would reject data that serializes
         // perfectly well. See docs/open-types.md for the consequence — OhData binds request bodies
         // case-insensitively, so a case-differing key can still round-trip into a corrupting write.
-        var declaredNames = new HashSet<string>(StringComparer.Ordinal);
-        foreach (JsonPropertyInfo property in typeInfo.Properties)
-        {
-            if (!ReferenceEquals(property, container)) declaredNames.Add(property.Name);
-        }
+        var declaredNames = new HashSet<string>(
+            typeInfo.Properties.Where(p => !ReferenceEquals(p, container)).Select(p => p.Name),
+            StringComparer.Ordinal);
         // There is deliberately NO `declaredNames.Count == 0` bail here. There used to be one, when
         // shadowing was the only condition checked and a type with no other declared property had
         // nothing to collide with. The identifier check below does not depend on the declared set,
@@ -687,6 +685,11 @@ internal static class OpenTypeJsonOptions
             // which only exists from .NET 9 and this assembly also targets net8.0.
             Type? itemType = GetEnumerableElementType(declaredType);
             if (itemType is null) return null;
+            // Deliberately NOT `.Select(...).FirstOrDefault(f => f is not null)`. `Select` reads as a
+            // pure projection, and each element here is a recursive validation of a caller-supplied
+            // subtree that must short-circuit on the first failure — the loop says that plainly and
+            // the LINQ form only says it if the reader already knows Select is lazy. The array walk
+            // in FindInvalidKeyInDynamicValue has the identical shape and is spelled the same way.
             foreach (JsonElement item in element.EnumerateArray())
             {
                 string? found = FindInvalidDynamicKey(item, itemType, options);
@@ -716,6 +719,10 @@ internal static class OpenTypeJsonOptions
             // also targets net8.0.
             Type? valueType = GetDictionaryValueType(declaredType);
             if (valueType is null) return null;
+            // The guard stays inline rather than folding into a `.Where` on the enumerator: the
+            // sibling walk over element.EnumerateObject() below cannot be written that way (its body
+            // is not a pure guard), and the two are read as a pair. A `.Where` would also box the
+            // struct enumerator once per object node of a body whose size the caller chooses.
             foreach (JsonProperty entry in element.EnumerateObject())
             {
                 if (entry.Value.ValueKind is not (JsonValueKind.Object or JsonValueKind.Array)) continue;
@@ -794,6 +801,9 @@ internal static class OpenTypeJsonOptions
                 }
                 return null;
             case JsonValueKind.Array:
+                // Not `.Select(FindInvalidKeyInDynamicValue).FirstOrDefault(...)`, for the reason
+                // given at the array branch of FindInvalidDynamicKey — the two array walks stay
+                // spelled alike.
                 foreach (JsonElement item in value.EnumerateArray())
                 {
                     string? found = FindInvalidKeyInDynamicValue(item);
@@ -812,11 +822,7 @@ internal static class OpenTypeJsonOptions
     private static Type? GetDictionaryValueType(Type type)
     {
         if (IsDictionaryInterface(type)) return type.GetGenericArguments()[1];
-        foreach (Type candidate in type.GetInterfaces())
-        {
-            if (IsDictionaryInterface(candidate)) return candidate.GetGenericArguments()[1];
-        }
-        return null;
+        return type.GetInterfaces().FirstOrDefault(IsDictionaryInterface)?.GetGenericArguments()[1];
     }
 
     private static bool IsDictionaryInterface(Type type) =>
@@ -834,12 +840,10 @@ internal static class OpenTypeJsonOptions
         if (type.IsArray) return type.GetElementType();
         if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(IEnumerable<>))
             return type.GetGenericArguments()[0];
-        foreach (Type candidate in type.GetInterfaces())
-        {
-            if (candidate.IsGenericType && candidate.GetGenericTypeDefinition() == typeof(IEnumerable<>))
-                return candidate.GetGenericArguments()[0];
-        }
-        return null;
+        return type.GetInterfaces()
+            .FirstOrDefault(candidate =>
+                candidate.IsGenericType && candidate.GetGenericTypeDefinition() == typeof(IEnumerable<>))
+            ?.GetGenericArguments()[0];
     }
 
     /// <summary>

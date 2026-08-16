@@ -747,10 +747,9 @@ public class OpenTypeJsonOptionsTests
         };
 
         var corpus = new TheoryData<string>();
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (string name in names)
+        foreach (string name in names.Distinct(StringComparer.Ordinal))
         {
-            if (seen.Add(name)) corpus.Add(name);
+            corpus.Add(name);
         }
         return corpus;
     }

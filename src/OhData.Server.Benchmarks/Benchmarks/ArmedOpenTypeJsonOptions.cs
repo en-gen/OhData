@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
@@ -115,11 +116,9 @@ internal static class ArmedOpenTypeJsonOptions
         Func<object, object?>? get = container.Get;
         if (get is null) return;
 
-        HashSet<string> declaredNames = new HashSet<string>(StringComparer.Ordinal);
-        foreach (JsonPropertyInfo property in typeInfo.Properties)
-        {
-            if (!ReferenceEquals(property, container)) declaredNames.Add(property.Name);
-        }
+        HashSet<string> declaredNames = new HashSet<string>(
+            typeInfo.Properties.Where(p => !ReferenceEquals(p, container)).Select(p => p.Name),
+            StringComparer.Ordinal);
 
         Type ownerType = typeInfo.Type;
         KeyCheck check = arm switch
@@ -163,6 +162,11 @@ internal static class ArmedOpenTypeJsonOptions
     private static void CheckKeysWithNoValidator(
         IEnumerable<string> keys, HashSet<string> declaredNames, Type ownerType)
     {
+        // The `continue` guard stays inline rather than folding into a `.Where`. This is a MEASURED
+        // arm, and its whole value is being structurally identical to arms B and C below — whose
+        // two-condition bodies cannot be folded — and to the shipped ThrowIfAnyKeyCannotBeEmitted it
+        // transcribes. Folding only this one would put a LINQ layer on the measured per-key loop and
+        // make the three arms no longer comparable, which is the one thing this file must not do.
         foreach (string key in keys)
         {
             if (!declaredNames.Contains(key)) continue;
