@@ -352,6 +352,29 @@ public class ServerDrivenPagingTests
         Assert.Equal("InvalidSkipToken", body.GetProperty("error").GetProperty("code").GetString());
     }
 
+    /// <summary>
+    /// The two corruptions above are both rejected by <c>Convert.FromBase64String</c>, so they say
+    /// nothing about the OTHER throw site in the reader. A token that is perfectly well-formed
+    /// base64 but decodes SHORT gets past the decode and fails in <c>BitConverter.ToInt32</c>
+    /// instead, with an <c>ArgumentException</c> — "AAA=" is 2 bytes, "" is 0 (which is
+    /// <c>ArgumentOutOfRangeException</c>, a subclass, from the separate empty-array guard).
+    /// Both must still be the client's 400, not an unhandled 500: this is the case a narrowing to
+    /// <c>FormatException</c> alone would let escape.
+    /// </summary>
+    [Theory]
+    [InlineData("AAA%3D")] // "AAA=" → 2 bytes
+    [InlineData("AA%3D%3D")] // "AA==" → 1 byte
+    [InlineData("")] // present but empty → 0 bytes
+    public async Task Priority1_ContinuationTokenDecodingShort_Returns400(string token)
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<PagingPriority1Profile>());
+        var resp = await fx.Client.GetAsync("/odata/PagingP1Widgets?ohdata-skiptoken=" + token);
+
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("InvalidSkipToken", body.GetProperty("error").GetProperty("code").GetString());
+    }
+
     // --------------------------------------------------------------------- exact-multiple, maxpagesize
 
     [Fact]

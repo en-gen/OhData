@@ -191,7 +191,16 @@ internal static class OhDataEndpointFactory
             byte[] bytes = Convert.FromBase64String(Uri.UnescapeDataString(raw.ToString()));
             skip = BitConverter.ToInt32(bytes, 0);
         }
-        catch
+        // The two ways a hand-edited token fails, and the only two these three calls raise:
+        // FormatException from Convert.FromBase64String (non-base64 character, bad padding), and
+        // ArgumentException from BitConverter.ToInt32 when the decode yields fewer than 4 bytes —
+        // as ArgumentOutOfRangeException for an EMPTY array ("?ohdata-skiptoken=", which decodes
+        // to zero bytes) and as plain ArgumentException for 1-3 bytes. Uri.UnescapeDataString
+        // throws for none of this (a malformed "%zz" is passed through verbatim), and would raise
+        // UriFormatException : FormatException if it ever did. Deliberately NOT a bare catch: an
+        // unrelated failure here is a bug, and should surface as a 500 rather than be laundered
+        // into "the client sent a bad token".
+        catch (Exception ex) when (ex is FormatException or ArgumentException)
         {
             return false;
         }
@@ -4887,7 +4896,8 @@ internal static class OhDataEndpointFactory
                             byte[] bytes = Convert.FromBase64String(Uri.UnescapeDataString(tokenVal.ToString()));
                             tokenSkip = BitConverter.ToInt32(bytes, 0);
                         }
-                        catch
+                        // Same throw set as TryReadFrameworkSkip — see the note there.
+                        catch (Exception ex) when (ex is FormatException or ArgumentException)
                         {
                             return ODataError(400, "InvalidSkipToken",
                                 "The skiptoken value is invalid or has been corrupted.");
