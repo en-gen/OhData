@@ -29,6 +29,11 @@ public sealed class OhDataBuilder
     // null = PascalCase (the CLR names $metadata declares, OData §4.4). This is the source of
     // truth for every OhData response path; the host's PropertyNamingPolicy is not inherited.
     private JsonNamingPolicy? _jsonPropertyNamingPolicy;
+    // #389: OData open complex types. ON by default -- a complex type with a dictionary member IS an
+    // open type, the CSDL this same builder emits has always said OpenType="true" for it, and the
+    // developer should not have to know the spec to get the conformant wire shape. WithOpenTypes(false)
+    // is the escape hatch back to the pre-#389 nested shape. See WithOpenTypes.
+    private bool _openTypesEnabled = true;
 
     // Tracks profile types registered across all OhData registrations on this IServiceCollection.
     // Stored as a singleton marker so it is shared between all OhDataBuilder instances.
@@ -119,6 +124,69 @@ public sealed class OhDataBuilder
     public OhDataBuilder WithJsonPropertyNamingPolicy(JsonNamingPolicy? policy)
     {
         _jsonPropertyNamingPolicy = policy;
+        return this;
+    }
+
+    /// <summary>
+    /// Controls OData <b>open complex types</b> (#389) for this registration: a complex type with an
+    /// <c>IDictionary&lt;string, object?&gt;</c> member serializes and binds its entries <b>flat</b>
+    /// — dynamic keys as siblings of the declared properties, never nested under the member's own
+    /// name. <b>On by default</b>; call <c>WithOpenTypes(false)</c> to restore the pre-#389 nested
+    /// shape.
+    /// </summary>
+    /// <remarks>
+    /// <b>Why on by default.</b> A complex type with a dictionary member <i>is</i> an open type, and
+    /// the CSDL this same builder emits has always said so — <c>ODataConventionModelBuilder</c> marks
+    /// the type <c>OpenType="true"</c> and omits the member from the declared properties whether or
+    /// not this is enabled. Leaving the wire shape nested made <c>$metadata</c> and the payload
+    /// disagree, and made the conformant behaviour something the developer had to know the spec to
+    /// ask for. It also put OhData at odds with <c>Microsoft.AspNetCore.OData</c>, whose
+    /// <c>ODataResourceSerializer</c> reads the very same <c>DynamicPropertyDictionaryAnnotation</c>
+    /// and appends dynamic properties flat with no opt-in flag anywhere in that path. OhData now
+    /// auto-maps per the spec; the developer writes a declarative profile.
+    /// <para>
+    /// <b><c>WithOpenTypes(false)</c> is an escape hatch, and the hazard it exists for is real.</b>
+    /// Once the container is <c>System.Text.Json</c> extension data it is no longer a <i>declared</i>
+    /// property, so an existing adopter's body <c>{"Meta":{"Bag":{"a":1}}}</c> stops binding
+    /// <c>{"a":1}</c> to the <c>Bag</c> property and starts binding a dynamic key literally named
+    /// <c>Bag</c> — the handler persists <c>Bag = { "Bag": {"a":1} }</c>. The response echo of that
+    /// mis-bound value is <b>byte-identical</b> to the correct one, so an adopter cannot detect the
+    /// difference by diffing responses in staging. <c>MapOhData()</c> therefore logs one warning per
+    /// affected complex type at startup, naming the CLR type and the container member.
+    /// </para>
+    /// <para>
+    /// <b>Does this affect you at all?</b> Ask one question: <i>do any of your complex types have an
+    /// <c>IDictionary&lt;string, object&gt;</c> member?</i> If none do, this setting is inert in
+    /// either position — the registration's serializer options are not even derived, no write-side
+    /// walk runs, nothing is logged, and every response (error responses included) is byte-identical
+    /// to a pre-#389 build.
+    /// </para>
+    /// <para>
+    /// When active this also validates incoming dynamic-property names: a key that is not an OData
+    /// simple identifier (CSDL §4.1 <c>odataIdentifier</c> — so the empty string, or anything
+    /// containing <c>@</c>, <c>.</c>, whitespace or <c>-</c>) is rejected with <c>400</c>. This runs
+    /// on every route that binds a body which can reach a dynamic bag: <c>POST</c>, <c>PUT</c> and
+    /// <c>PATCH</c> on the entity, the structural-property write routes, the navigation-<c>POST</c>
+    /// create route, and each parameter of a bound or unbound <b>action</b>. It is applied at every
+    /// depth — the value of an accepted dynamic key is itself walked, including through arrays and
+    /// through dictionary-valued declared members, because everything below a bag key is stored
+    /// verbatim and echoed on every later read. (A dictionary member's own map keys are keys of a
+    /// <i>declared</i> property, not dynamic property names, so they are not validated — only its
+    /// values are walked.)
+    /// See <c>docs/open-types.md</c> for the full contract, including <c>PATCH</c>'s whole-value
+    /// replace semantics.
+    /// </para>
+    /// </remarks>
+    /// <param name="enabled">
+    /// <c>true</c> (the default) for the flat, spec-conformant shape; <c>false</c> to restore the
+    /// pre-#389 shape in which the container is an ordinary nested declared property. The name keeps
+    /// the <c>With…</c> form the rest of this builder uses (<c>WithPrefix</c>, <c>WithDefaults</c>,
+    /// <c>WithJsonPropertyNamingPolicy</c>) rather than gaining a <c>WithoutOpenTypes()</c> sibling,
+    /// so there stays exactly one way to set it.
+    /// </param>
+    public OhDataBuilder WithOpenTypes(bool enabled = true)
+    {
+        _openTypesEnabled = enabled;
         return this;
     }
 
@@ -288,6 +356,7 @@ public sealed class OhDataBuilder
         string capturedName = _name;
         var capturedDefaults = _defaults;
         var capturedNamingPolicy = _jsonPropertyNamingPolicy;
+        bool capturedOpenTypes = _openTypesEnabled;
 
         _services.AddKeyedSingleton<OhDataRegistration>(capturedName, (sp, _) =>
         {
@@ -460,7 +529,7 @@ public sealed class OhDataBuilder
                 capturedPrefix);
 
             var reg = new OhDataRegistration(
-                capturedPrefix, edmModel, profiles, capturedUnbound, capturedNamingPolicy);
+                capturedPrefix, edmModel, profiles, capturedUnbound, capturedNamingPolicy, capturedOpenTypes);
             // Also register in the collection for named access
             sp.GetRequiredService<OhDataRegistrationCollection>().Add(capturedName, reg);
             return reg;
