@@ -158,19 +158,26 @@ internal static class ArmedOpenTypeJsonOptions
     // "Tier" — so the exception messages are shortened; the shipped ones build their strings inside
     // the throw, which costs nothing on the path not taken.
 
+    // THE SHADOW LOOKUP IS SPELLED THE SAME WAY IN ALL THREE ARMS, and that spelling is
+    //   bool shadowsDeclared = declaredNames.Contains(key);
+    //   if (shadowsDeclared) throw Shadowed(key, ownerType);
+    // rather than the shipped `if (!declaredNames.Contains(key)) continue; throw ...`. The two are
+    // the same branch — verified, not assumed: the Release IL of all three CheckKeysWith* methods is
+    // byte-identical before and after this rewrite (the named local is a stack temp the compiler
+    // never emits), so the measured arm-to-arm deltas cannot have moved and the published numbers
+    // stand without a re-run. What the rewrite buys is that arm A's loop body is no longer a bare
+    // filter, which is what `.Where` would otherwise have to be folded into — and folding a LINQ
+    // layer into ONE measured arm is the one thing this file must not do, since the arms are only
+    // comparable while they are structurally identical.
+
     /// <summary>Arm A — <c>e0edaac</c>.</summary>
     private static void CheckKeysWithNoValidator(
         IEnumerable<string> keys, HashSet<string> declaredNames, Type ownerType)
     {
-        // The `continue` guard stays inline rather than folding into a `.Where`. This is a MEASURED
-        // arm, and its whole value is being structurally identical to arms B and C below — whose
-        // two-condition bodies cannot be folded — and to the shipped ThrowIfAnyKeyCannotBeEmitted it
-        // transcribes. Folding only this one would put a LINQ layer on the measured per-key loop and
-        // make the three arms no longer comparable, which is the one thing this file must not do.
         foreach (string key in keys)
         {
-            if (!declaredNames.Contains(key)) continue;
-            throw Shadowed(key, ownerType);
+            bool shadowsDeclared = declaredNames.Contains(key);
+            if (shadowsDeclared) throw Shadowed(key, ownerType);
         }
     }
 
@@ -182,8 +189,8 @@ internal static class ArmedOpenTypeJsonOptions
         {
             if (string.IsNullOrWhiteSpace(key)) throw Nameless(ownerType);
 
-            if (!declaredNames.Contains(key)) continue;
-            throw Shadowed(key, ownerType);
+            bool shadowsDeclared = declaredNames.Contains(key);
+            if (shadowsDeclared) throw Shadowed(key, ownerType);
         }
     }
 
@@ -202,8 +209,8 @@ internal static class ArmedOpenTypeJsonOptions
                 throw NotAnIdentifier(ownerType);
             }
 
-            if (!declaredNames.Contains(key)) continue;
-            throw Shadowed(key, ownerType);
+            bool shadowsDeclared = declaredNames.Contains(key);
+            if (shadowsDeclared) throw Shadowed(key, ownerType);
         }
     }
 

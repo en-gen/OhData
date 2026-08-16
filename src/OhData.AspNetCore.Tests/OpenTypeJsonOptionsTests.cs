@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Linq;
 using System.Reflection;
 using System.Text;
@@ -559,6 +560,116 @@ public class OpenTypeJsonOptionsTests
         Assert.Contains("[JsonExtensionData]", ex.Message, StringComparison.Ordinal);
     }
 
+    // ── The four exception types ValidateOrThrow's probe catches ────────────────────────────────
+    //
+    // One test per clause, so the enumeration is pinned rather than assumed: the clause list is the
+    // measured surface of JsonSerializerOptions.GetTypeInfo, and a runtime that grew a fifth type
+    // would break here instead of escaping MapOhData() as a bare System.Text.Json message.
+
+    /// <summary>
+    /// <see cref="InvalidOperationException"/> — every contract <c>System.Text.Json</c> itself
+    /// rejects. Two members whose JSON names collide is the cheapest instance; an incompatible
+    /// <c>[JsonConverter]</c> and a second <c>[JsonConstructor]</c> land on the same clause.
+    /// </summary>
+    [Fact]
+    public void ValidateOrThrow_ContractResolutionThrowsInvalidOperation_IsWrappedAtStartup()
+    {
+        OpenTypeJsonOptions.OpenComplexTypeContainers containers = Containers<OtjDuplicateJsonNameHost>();
+        JsonSerializerOptions options = OpenTypeJsonOptions.Build(new JsonSerializerOptions(), containers);
+
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(
+            () => OpenTypeJsonOptions.ValidateOrThrow(options, containers));
+
+        Assert.IsType<InvalidOperationException>(ex.InnerException);
+        Assert.Contains("OtjDuplicateJsonName", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("InvalidOperationException", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <see cref="NotSupportedException"/> — the resolver has no metadata for the type. Reachable
+    /// whenever the consumer supplies their own <see cref="IJsonTypeInfoResolver"/> (a
+    /// source-generated <c>JsonSerializerContext</c>, typically) that does not know the open complex
+    /// type. <see cref="OpenTypeJsonOptions.Build"/> chains onto whatever resolver it is handed, so
+    /// the gap surfaces here rather than on the first request that serializes the type.
+    /// </summary>
+    [Fact]
+    public void ValidateOrThrow_ResolverHasNoMetadataForTheOpenType_IsWrappedAtStartup()
+    {
+        OpenTypeJsonOptions.OpenComplexTypeContainers containers = Containers<OtjEntity>();
+        var baseOptions = new JsonSerializerOptions { TypeInfoResolver = new NoMetadataResolver() };
+        JsonSerializerOptions options = OpenTypeJsonOptions.Build(baseOptions, containers);
+
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(
+            () => OpenTypeJsonOptions.ValidateOrThrow(options, containers));
+
+        Assert.IsType<NotSupportedException>(ex.InnerException);
+        Assert.Contains("OtjBag", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("NotSupportedException", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <see cref="TargetInvocationException"/> — a <c>[JsonConverter]</c>'s own constructor threw.
+    /// <c>System.Text.Json</c> instantiates the converter reflectively, so whatever it threw arrives
+    /// wrapped and the wrapper, not the original, is what the clause has to name.
+    /// </summary>
+    [Fact]
+    public void ValidateOrThrow_ConverterConstructorThrows_IsWrappedAtStartup()
+    {
+        OpenTypeJsonOptions.OpenComplexTypeContainers containers = Containers<OtjThrowingConverterHost>();
+        JsonSerializerOptions options = OpenTypeJsonOptions.Build(new JsonSerializerOptions(), containers);
+
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(
+            () => OpenTypeJsonOptions.ValidateOrThrow(options, containers));
+
+        TargetInvocationException inner = Assert.IsType<TargetInvocationException>(ex.InnerException);
+        Assert.IsType<FormatException>(inner.InnerException);
+        Assert.Contains("OtjThrowingConverterBag", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("TargetInvocationException", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <see cref="ArgumentException"/> — <c>GetTypeInfo</c>'s own guard on a <see cref="Type"/> it
+    /// cannot serialize at all. Not reachable through the EDM, whose open complex types are closed
+    /// classes, so the container map is built by hand here; the clause exists so a future caller that
+    /// does reach it still gets the explanatory message instead of a bare argument error.
+    /// </summary>
+    [Fact]
+    public void ValidateOrThrow_TypeGetTypeInfoRefusesOutright_IsWrappedAtStartup()
+    {
+        var containers = new OpenTypeJsonOptions.OpenComplexTypeContainers(
+            new Dictionary<Type, PropertyInfo>
+            {
+                [typeof(OtjBag)] = typeof(OtjBag).GetProperty(nameof(OtjBag.Kv))!,
+            },
+            new[] { typeof(List<>) });
+
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(
+            () => OpenTypeJsonOptions.ValidateOrThrow(new JsonSerializerOptions(), containers));
+
+        Assert.IsType<ArgumentException>(ex.InnerException);
+        Assert.Contains("ArgumentException", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The counter-case the old catch-all was justified by, measured: a container PRE-INITIALISED
+    /// with a read-only dictionary resolves a perfectly valid contract, so <c>GetTypeInfo</c> never
+    /// threw for it and narrowing the clause takes nothing away. That fault depends on the runtime
+    /// instance, not the type, and startup sees only types.
+    /// </summary>
+    [Fact]
+    public void ValidateOrThrow_ReadOnlyDictionaryInTheContainer_WasNeverAStartupFailure()
+    {
+        OpenTypeJsonOptions.OpenComplexTypeContainers containers = Containers<OtjReadOnlySeededHost>();
+        JsonSerializerOptions options = OpenTypeJsonOptions.Build(new JsonSerializerOptions(), containers);
+
+        OpenTypeJsonOptions.ValidateOrThrow(options, containers);
+    }
+
+    private sealed class NoMetadataResolver : IJsonTypeInfoResolver
+    {
+        public JsonTypeInfo? GetTypeInfo(Type type, JsonSerializerOptions options) => null;
+    }
+
     /// <summary>
     /// Probing must cover DERIVED open complex types, not only the container-declaring ones: the map
     /// collapses a derived type onto its base's entry, but the derived type has its own
@@ -1077,4 +1188,68 @@ public class OtjDictionaryHost
     public int Id { get; set; }
     public OtjBag? Bag { get; set; }
     public IDictionary<string, OtjBag>? Bags { get; set; }
+}
+
+// ── Contracts System.Text.Json rejects, one per catch clause in ValidateOrThrow ──────────────────
+
+/// <summary>Two members whose JSON names collide, which resolution rejects outright.</summary>
+public class OtjDuplicateJsonName
+{
+    [JsonPropertyName("dup")] public string? First { get; set; }
+    [JsonPropertyName("dup")] public string? Second { get; set; }
+    public IDictionary<string, object?>? Kv { get; set; }
+}
+
+public class OtjDuplicateJsonNameHost
+{
+    public int Id { get; set; }
+    public OtjDuplicateJsonName? Bag { get; set; }
+}
+
+/// <summary>
+/// A converter that cannot be constructed. <c>System.Text.Json</c> instantiates a converter named by
+/// <c>[JsonConverter]</c> reflectively, so this surfaces as a <see cref="TargetInvocationException"/>
+/// rather than as the <see cref="FormatException"/> the constructor actually threw.
+/// </summary>
+public sealed class OtjThrowingConverter : JsonConverter<string>
+{
+    public OtjThrowingConverter() =>
+        throw new FormatException("OtjThrowingConverter deliberately cannot be constructed.");
+
+    public override string? Read(
+        ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+        throw new NotSupportedException();
+
+    public override void Write(Utf8JsonWriter writer, string value, JsonSerializerOptions options) =>
+        throw new NotSupportedException();
+}
+
+public class OtjThrowingConverterBag
+{
+    [JsonConverter(typeof(OtjThrowingConverter))] public string? Region { get; set; }
+    public IDictionary<string, object?>? Kv { get; set; }
+}
+
+public class OtjThrowingConverterHost
+{
+    public int Id { get; set; }
+    public OtjThrowingConverterBag? Bag { get; set; }
+}
+
+/// <summary>
+/// A writable container PRE-INITIALISED with a READ-ONLY dictionary — the case the old catch-all was
+/// justified by. The contract resolves cleanly; the fault is in the instance, and only a write
+/// reaches it.
+/// </summary>
+public class OtjReadOnlySeededBag
+{
+    public string? Region { get; set; }
+    public IDictionary<string, object?>? Kv { get; set; } =
+        new ReadOnlyDictionary<string, object?>(new Dictionary<string, object?> { ["schema"] = "v1" });
+}
+
+public class OtjReadOnlySeededHost
+{
+    public int Id { get; set; }
+    public OtjReadOnlySeededBag? Bag { get; set; }
 }

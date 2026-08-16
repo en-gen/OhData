@@ -430,19 +430,31 @@ internal static class OpenTypeJsonOptions
     /// request path). The copy shares the same resolver, so it exercises the same modifier chain.
     /// </para>
     /// </remarks>
-    // The catch-all below is deliberate and load-bearing, so the finding is accepted rather than
-    // fixed. This started life as `catch (InvalidOperationException)` and missed the
-    // NotSupportedException read-only case entirely; narrowing it again to satisfy the rule
-    // reintroduces that bug. Nothing is swallowed either — the exception is rethrown wrapped, with
-    // the original preserved as InnerException.
-    [SuppressMessage(
-        "CodeQuality",
-        "cs/catch-of-all-exceptions",
-        Justification =
-            "Intentional: this method exists to convert ANY System.Text.Json contract failure into " +
-            "one MapOhData() error naming the open type and its container. Narrowing the clause " +
-            "reintroduces a fixed bug (NotSupportedException was missed when it caught only " +
-            "InvalidOperationException). The exception is rethrown wrapped, not swallowed.")]
+    // THE FOUR CATCH CLAUSES BELOW ARE THE MEASURED SURFACE OF GetTypeInfo, not a guess and not a
+    // catch-all. Each was reproduced against System.Text.Json on .NET 10 with the same modifier
+    // chain Build() installs, and each has a test:
+    //   - InvalidOperationException — every contract STJ itself rejects. Duplicate JSON property
+    //     names (including two names that collide only under PropertyNameCaseInsensitive), a
+    //     [JsonConverter] incompatible with the member it decorates, more than one
+    //     [JsonConstructor], and an extension-data member whose type STJ will not accept.
+    //   - NotSupportedException — the resolver has no metadata for the type. Reachable whenever the
+    //     consumer supplies their own TypeInfoResolver (a source-generated JsonSerializerContext,
+    //     typically) that does not know the open complex type.
+    //   - TargetInvocationException — a [JsonConverter]'s own constructor threw; STJ instantiates it
+    //     reflectively, so whatever it threw arrives wrapped.
+    //   - ArgumentException — GetTypeInfo's own guard on a Type it cannot serialize at all (pointer,
+    //     by-ref, open generic, void). Not reachable from the EDM, whose open complex types are
+    //     closed classes; caught so a future caller that reaches it still gets the explanatory
+    //     message rather than a bare argument error.
+    //
+    // What is deliberately NOT caught is an arbitrary exception out of consumer-supplied resolver or
+    // modifier code, which is a fault in that code rather than a contract System.Text.Json rejected;
+    // it still fails MapOhData() loudly, with its own type and stack intact and this frame on it.
+    //
+    // The old clause here was `catch (Exception)`, justified by a NotSupportedException read-only
+    // case it was said to cover. Measured, it did not: a container PRE-INITIALISED with a read-only
+    // dictionary resolves a perfectly valid JsonTypeInfo (see the remark above), so GetTypeInfo never
+    // threw for it and nothing about that case was ever caught here.
     internal static void ValidateOrThrow(
         JsonSerializerOptions options,
         OpenComplexTypeContainers containers)
@@ -460,14 +472,14 @@ internal static class OpenTypeJsonOptions
             {
                 typeInfo = probe.GetTypeInfo(openClrType);
             }
-            // Any exception, wrapped: the point of this method is that MapOhData() explains what
-            // went wrong once, rather than letting a bare System.Text.Json message escape with no
-            // indication that an open type was involved.
-            catch (Exception ex)
-            {
-                throw ContractRejected(openClrType, containers,
-                    $"resolving its JSON contract threw {ex.GetType().Name}: {ex.Message}", ex);
-            }
+            // Wrapped, not swallowed: the point of this method is that MapOhData() explains what went
+            // wrong once, rather than letting a bare System.Text.Json message escape with no
+            // indication that an open type was involved. See the note above the method for how this
+            // list of four was established.
+            catch (InvalidOperationException ex) { throw ContractResolutionFailed(openClrType, containers, ex); }
+            catch (NotSupportedException ex) { throw ContractResolutionFailed(openClrType, containers, ex); }
+            catch (TargetInvocationException ex) { throw ContractResolutionFailed(openClrType, containers, ex); }
+            catch (ArgumentException ex) { throw ContractResolutionFailed(openClrType, containers, ex); }
 
             int extensionDataMembers = typeInfo.Properties.Count(p => p.IsExtensionData);
             if (extensionDataMembers > 1)
@@ -542,6 +554,11 @@ internal static class OpenTypeJsonOptions
                 openClrType.FullName, containerName);
         }
     }
+
+    private static InvalidOperationException ContractResolutionFailed(
+        Type openClrType, OpenComplexTypeContainers containers, Exception inner) =>
+        ContractRejected(openClrType, containers,
+            $"resolving its JSON contract threw {inner.GetType().Name}: {inner.Message}", inner);
 
     private static InvalidOperationException ContractRejected(
         Type openClrType, OpenComplexTypeContainers containers, string detail, Exception? inner)
@@ -685,17 +702,13 @@ internal static class OpenTypeJsonOptions
             // which only exists from .NET 9 and this assembly also targets net8.0.
             Type? itemType = GetEnumerableElementType(declaredType);
             if (itemType is null) return null;
-            // Deliberately NOT `.Select(...).FirstOrDefault(f => f is not null)`. `Select` reads as a
-            // pure projection, and each element here is a recursive validation of a caller-supplied
-            // subtree that must short-circuit on the first failure — the loop says that plainly and
-            // the LINQ form only says it if the reader already knows Select is lazy. The array walk
-            // in FindInvalidKeyInDynamicValue has the identical shape and is spelled the same way.
-            foreach (JsonElement item in element.EnumerateArray())
-            {
-                string? found = FindInvalidDynamicKey(item, itemType, options);
-                if (found is not null) return found;
-            }
-            return null;
+            // Short-circuits, which is the one thing worth saying about this spelling: `Select` is
+            // lazy, so `FirstOrDefault` pulls elements one at a time and stops at the first failure
+            // — no sibling subtree past it is walked. The array walk in
+            // FindInvalidKeyInDynamicValue is spelled the same way.
+            return element.EnumerateArray()
+                .Select(item => FindInvalidDynamicKey(item, itemType, options))
+                .FirstOrDefault(found => found is not null);
         }
 
         if (element.ValueKind != JsonValueKind.Object) return null;
@@ -719,17 +732,13 @@ internal static class OpenTypeJsonOptions
             // also targets net8.0.
             Type? valueType = GetDictionaryValueType(declaredType);
             if (valueType is null) return null;
-            // The guard stays inline rather than folding into a `.Where` on the enumerator: the
-            // sibling walk over element.EnumerateObject() below cannot be written that way (its body
-            // is not a pure guard), and the two are read as a pair. A `.Where` would also box the
-            // struct enumerator once per object node of a body whose size the caller chooses.
-            foreach (JsonProperty entry in element.EnumerateObject())
-            {
-                if (entry.Value.ValueKind is not (JsonValueKind.Object or JsonValueKind.Array)) continue;
-                string? found = FindInvalidDynamicKey(entry.Value, valueType, options);
-                if (found is not null) return found;
-            }
-            return null;
+            // Scalar map values terminate the walk, so they are filtered out of the sequence rather
+            // than skipped inside it. Same short-circuit as the array branch above — the whole chain
+            // is lazy, so the first failing value returns without the rest being visited.
+            return element.EnumerateObject()
+                .Where(entry => entry.Value.ValueKind is JsonValueKind.Object or JsonValueKind.Array)
+                .Select(entry => FindInvalidDynamicKey(entry.Value, valueType, options))
+                .FirstOrDefault(found => found is not null);
         }
 
         if (typeInfo.Kind != JsonTypeInfoKind.Object) return null;
@@ -746,6 +755,10 @@ internal static class OpenTypeJsonOptions
             else declared[property.Name] = property;
         }
 
+        // Unlike the dictionary walk above, nothing here filters the sequence: every member of an
+        // open type is visited, and which of the two branches it takes — declared, so recurse with
+        // the member's own declared type; or dynamic, so validate the key and then recurse type-free
+        // — is the work, not a guard in front of it.
         foreach (JsonProperty member in element.EnumerateObject())
         {
             if (declared.TryGetValue(member.Name, out JsonPropertyInfo? property))
@@ -801,15 +814,11 @@ internal static class OpenTypeJsonOptions
                 }
                 return null;
             case JsonValueKind.Array:
-                // Not `.Select(FindInvalidKeyInDynamicValue).FirstOrDefault(...)`, for the reason
-                // given at the array branch of FindInvalidDynamicKey — the two array walks stay
-                // spelled alike.
-                foreach (JsonElement item in value.EnumerateArray())
-                {
-                    string? found = FindInvalidKeyInDynamicValue(item);
-                    if (found is not null) return found;
-                }
-                return null;
+                // Same spelling, same short-circuit, as the array branch of FindInvalidDynamicKey:
+                // `Select` is lazy, so `FirstOrDefault` stops at the first failing element.
+                return value.EnumerateArray()
+                    .Select(FindInvalidKeyInDynamicValue)
+                    .FirstOrDefault(found => found is not null);
             default:
                 return null;
         }
