@@ -4674,6 +4674,36 @@ internal static class OhDataEndpointFactory
                     string? frameworkNextLink = null;
                     int? appliedPageSize = null;
                     int frameworkSkip = 0;
+                    if (odataResult.NextLink is null)
+                    {
+                        // The offset is read and applied whether or not the client also sent $top —
+                        // it is gated only on the profile not paging itself. It used to sit inside
+                        // the "$top is null" guard below, so a request carrying both the framework
+                        // token and a $top dropped the offset silently and rewound to the first
+                        // page. $top only decides whether the framework CAPS and emits a further
+                        // continuation; it never means "forget where this walk had got to".
+                        //
+                        // The framework is the only thing that reads this option (it is invisible to
+                        // ODataQueryOptions.ApplyTo), so applying it here cannot double up with the
+                        // profile's own $skip, and with $top absent this is byte-identical to
+                        // applying it inside the guard: same Skip, same position relative to Take.
+                        //
+                        // Caveat, and the reason a $top on a continuation is still out of contract:
+                        // this Skip composes AFTER whatever the profile already applied, so when the
+                        // profile honours $top the offset lands on the profile's already-taken
+                        // window rather than ahead of it. That is unavoidable on a path where the
+                        // profile owns ApplyTo, and @odata.nextLink is opaque by spec (§11.2.5.7) —
+                        // a client is not entitled to graft query options onto one. What matters is
+                        // that the offset is never silently discarded.
+                        if (!TryReadFrameworkSkip(ctx, out frameworkSkip))
+                        {
+                            return ODataError(400, "InvalidSkipToken",
+                                "The continuation token is invalid or has been corrupted.");
+                        }
+                        if (frameworkSkip > 0)
+                            queryable = queryable.Skip(frameworkSkip);
+                    }
+
                     if (odataResult.NextLink is null && options.Top is null)
                     {
                         int? preferredPageSize = ParseMaxPageSize(ctx);
@@ -4682,14 +4712,6 @@ internal static class OhDataEndpointFactory
                                 ? Math.Min(preferredPageSize.Value, source.MaxTop.Value)
                                 : preferredPageSize.Value)
                             : source.MaxTop;
-
-                        if (!TryReadFrameworkSkip(ctx, out frameworkSkip))
-                        {
-                            return ODataError(400, "InvalidSkipToken",
-                                "The continuation token is invalid or has been corrupted.");
-                        }
-                        if (frameworkSkip > 0)
-                            queryable = queryable.Skip(frameworkSkip);
 
                         // #360: fetch ONE row past the page so a full final page is distinguishable
                         // from a full page with more behind it, WITHOUT a second round-trip to count

@@ -37,7 +37,7 @@ public class Priority1MaxTopTests
         Assert.True(json.TryGetProperty("@odata.nextLink", out var nextLink));
         // #360: the Priority-1 continuation carries a framework-private CUSTOM query option that the
         // framework applies itself, not $skip (which it emitted but never applied — see
-        // Priority1IgnoredOptionsPagingTests) and not $skiptoken (which ODataQueryOptions.ApplyTo
+        // ServerDrivenPagingTests) and not $skiptoken (which ODataQueryOptions.ApplyTo
         // throws on). The name is opaque to clients by spec; this pins it only so the mechanism
         // in play is unambiguous when the test fails.
         Assert.Contains("ohdata-skiptoken=", nextLink.GetString());

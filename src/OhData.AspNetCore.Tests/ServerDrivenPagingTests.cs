@@ -77,11 +77,27 @@ public class ServerDrivenPagingTests
         return (ids, pages);
     }
 
+    /// <summary>
+    /// Every row in <c>[from..to]</c> served exactly once, in ANY order. Sorting before comparing is
+    /// deliberate only where the serve ORDER is not part of the contract — Priority-1 establishes no
+    /// order of its own (#244, it is the profile's responsibility), so only the SET is pinned there.
+    /// Where the order IS guaranteed, use <see cref="AssertServedExactlyOnceInOrder"/> instead: this
+    /// assertion would pass a page-boundary defect that served every row once but resequenced them.
+    /// </summary>
     private static void AssertServedExactlyOnce(IReadOnlyList<int> ids, int from, int to)
     {
         Assert.Equal(Enumerable.Range(from, to - from + 1), ids.OrderBy(i => i));
         Assert.Equal(ids.Count, ids.Distinct().Count()); // no row served twice
     }
+
+    /// <summary>
+    /// The stronger form: exactly <c>[from..to]</c>, in that SEQUENCE. Usable wherever the serve
+    /// order is guaranteed — the `GetQueryable` path is ordered by the entity key by the framework,
+    /// and `GetAll` pages its source array positionally — so insertion order (ids ascending) is the
+    /// expected serve order and a resequencing defect must fail rather than be sorted away.
+    /// </summary>
+    private static void AssertServedExactlyOnceInOrder(IReadOnlyList<int> ids, int from, int to)
+        => Assert.Equal(Enumerable.Range(from, to - from + 1), ids);
 
     // ---------------------------------------------------------------- GetQueryable (Priority 2)
 
@@ -92,7 +108,7 @@ public class ServerDrivenPagingTests
         var (ids, pages) = await WalkAsync(fx, "/odata/PagingQueryableWidgets");
 
         Assert.Equal(Rows / PageSize, pages); // 4 pages, NOT 5 with an empty tail
-        AssertServedExactlyOnce(ids, 1, Rows);
+        AssertServedExactlyOnceInOrder(ids, 1, Rows);
     }
 
     [Fact]
@@ -151,7 +167,7 @@ public class ServerDrivenPagingTests
         var (ids, pages) = await WalkAsync(fx, "/odata/PagingGetAllWidgets");
 
         Assert.Equal(Rows / PageSize, pages);
-        AssertServedExactlyOnce(ids, 1, Rows);
+        AssertServedExactlyOnceInOrder(ids, 1, Rows);
     }
 
     [Fact]
@@ -248,6 +264,81 @@ public class ServerDrivenPagingTests
         var json = await GetJsonAsync(fx, "/odata/PagingP1IgnoreWidgets");
 
         Assert.Equal(PageSize, json.GetProperty("value").GetArrayLength());
+    }
+
+    /// <summary>
+    /// The framework continuation offset must not be silently discarded when a client grafts a
+    /// <c>$top</c> onto a continuation link. The read-and-apply pair used to sit inside the
+    /// "<c>$top</c> is absent" guard — which exists only to decide whether to CAP the page — so a
+    /// follow-up carrying both the token and a <c>$top</c> forgot where the walk had got to and
+    /// re-served the FIRST page: a plausible-looking response, i.e. silently wrong data.
+    /// <para>
+    /// What the offset cannot do on this path is land ahead of the profile's own <c>$top</c>. The
+    /// framework composes its <c>Skip</c> onto whatever the profile's <c>ApplyTo</c> already
+    /// returned, so for an options-honouring profile the arithmetic is
+    /// <c>Take($top).Skip(offset)</c> and the window is legitimately EMPTY once the offset has
+    /// passed <c>$top</c> rows — the client declared the result set to be its first <c>$top</c>
+    /// rows and has already consumed more than that many. Getting in front of the profile's
+    /// <c>ApplyTo</c> is impossible on a path whose whole premise is that the profile owns query
+    /// application, and it is exactly why <c>@odata.nextLink</c> is opaque (§11.2.5.7) and grafting
+    /// options onto one is out of contract. (The `GetQueryable` path, where the framework owns
+    /// skip/take, does yield the shifted window for the equivalent <c>$skiptoken</c> + <c>$top</c>
+    /// request.) The invariant pinned here is the one that matters: honoured, not forgotten.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Priority1_ContinuationTokenWithGraftedTop_DoesNotRewindToTheFirstPage()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<PagingPriority1Profile>());
+
+        var page1 = await GetJsonAsync(fx, "/odata/PagingP1Widgets");
+        Assert.Equal(new[] { 1, 2, 3, 4, 5 },
+            page1.GetProperty("value").EnumerateArray().Select(e => e.GetProperty("Id").GetInt32()).ToArray());
+
+        // The continuation, with a $top the framework never puts there itself, grafted on.
+        string next = new Uri(page1.GetProperty("@odata.nextLink").GetString()!).PathAndQuery;
+        var json = await GetJsonAsync(fx, next + "&$top=" + PageSize);
+
+        int[] ids = json.GetProperty("value").EnumerateArray()
+            .Select(e => e.GetProperty("Id").GetInt32()).ToArray();
+        Assert.DoesNotContain(1, ids); // before the fix this came back as page 1 verbatim
+        Assert.Empty(ids);             // Take(5) then Skip(5) — see the remarks above
+    }
+
+    /// <summary>
+    /// The same grafted-<c>$top</c> request against a profile that ignores the options it is handed
+    /// — the shape the framework-carried offset exists for. Here nothing has consumed the queryable
+    /// ahead of the framework, so the offset lands where it should and the page starts after the
+    /// rows already served instead of at row 1.
+    /// </summary>
+    [Fact]
+    public async Task Priority1_ContinuationTokenWithGraftedTop_StillAdvances_WhenProfileIgnoresOptions()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<PagingP1IgnoresOptionsProfile>());
+
+        var page1 = await GetJsonAsync(fx, "/odata/PagingP1IgnoreWidgets");
+        string next = new Uri(page1.GetProperty("@odata.nextLink").GetString()!).PathAndQuery;
+        var json = await GetJsonAsync(fx, next + "&$top=3");
+
+        int[] ids = json.GetProperty("value").EnumerateArray()
+            .Select(e => e.GetProperty("Id").GetInt32()).ToArray();
+        // Only the offset is asserted. This profile also ignores $top, so the page length is its
+        // own pre-existing business (#379-adjacent) and is deliberately not pinned here.
+        Assert.Equal(PageSize + 1, ids[0]); // 6 — before the fix this walk restarted at 1
+        Assert.DoesNotContain(1, ids);
+    }
+
+    [Fact]
+    public async Task Priority1_CorruptedContinuationToken_WithTop_Returns400()
+    {
+        // The token is validated on the same terms whether or not $top rides along; it used to be
+        // read only on the capping branch, so a corrupted token plus a $top returned 200.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<PagingPriority1Profile>());
+        var resp = await fx.Client.GetAsync("/odata/PagingP1Widgets?ohdata-skiptoken=not-base64!!&$top=3");
+
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("InvalidSkipToken", body.GetProperty("error").GetProperty("code").GetString());
     }
 
     [Fact]
