@@ -196,6 +196,40 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Three server-driven-paging defects that break a client following `@odata.nextLink` (#360, #399).**
+  None had test coverage: every pre-existing paging fixture was sized so the final page is partial,
+  and every walk started at offset 0.
+
+  1. **A spurious `@odata.nextLink` on an exactly-full FINAL page** (`GetQueryable` and Priority-1
+     `GetODataQueryable`, #360). The emit condition was "the page came back exactly `pageSize` long"
+     with nothing to compare against a total, so a collection whose row count is an exact multiple of
+     the page size ended every walk with one empty trailing page. Both paths now fetch one row *past*
+     the page and emit the link only if that probe row actually came back, then discard it — the same
+     single query, one row wider, with no extra round-trip (which matters because `GetQueryable`
+     deliberately does not materialize, and Priority-1 hands query application to the profile).
+     `@odata.count` is computed independently, pre-paging, and is unaffected. `GetAll` already got
+     this right and is untouched.
+  2. **A Priority-1 continuation the framework emitted but did not apply (#399)** — it was a
+     `$skip=N` the profile was expected to re-apply via `ODataQueryOptions.ApplyTo`, so a profile that
+     ignores the options it is handed served the identical first page forever and a `nextLink` walk
+     never terminated. The framework now carries its own offset and applies it itself, so the
+     continuation is correct whether or not the profile cooperates. The offset is also applied when
+     the client grafts a `$top` onto the link, rather than being silently dropped and rewinding to
+     the first page.
+  3. **`GetQueryable` dropped an explicit client `$skip` from the continuation (#399).** The skip was
+     applied to the query but left out of the offset the next link was built from, so
+     `?$skip=10` at page size 10 served rows 10–19 and linked straight back to row 10 — an infinite
+     rewind. The `$skiptoken` form needed no separate fix; it already encodes an absolute offset.
+
+  > **Behaviour change — the Priority-1 continuation link changed shape.** It now carries a
+  > framework-private custom query option (`ohdata-skiptoken`) instead of `$skip`. It cannot be
+  > `$skiptoken`: `ApplyTo` throws on one it has no handler for, which would break every profile that
+  > calls it. `@odata.nextLink` is opaque by spec (§11.2.5.7) and is meant to be followed verbatim,
+  > but a client that **persisted** a Priority-1 `nextLink` across a deploy will find the old `$skip`
+  > form is no longer produced — such a link still resolves, it just no longer means "continue from
+  > where the walk was" to the framework. Re-issue the collection request instead of replaying a
+  > stored link. `GetQueryable` (`$skiptoken`) and `GetAll` (`$skip`) link shapes are unchanged.
+
 - **`$filter`/`$orderby` division-by-zero (and decimal overflow) no longer 500s on the
   LINQ-to-Objects and EF Core InMemory-provider read paths (#358, partial).** `$filter=Price div 0`/
   `mod 0` raised an unhandled `DivideByZeroException` (or, for a decimal arithmetic overflow,
