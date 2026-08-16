@@ -137,9 +137,9 @@ internal static class OpenTypeJsonOptions
     {
         var byDeclaringType = new Dictionary<Type, PropertyInfo>();
         var openClrTypes = new List<Type>();
-        foreach (IEdmComplexType complexType in model.SchemaElements.OfType<IEdmComplexType>())
+        foreach (IEdmComplexType complexType in
+                 model.SchemaElements.OfType<IEdmComplexType>().Where(t => t.IsOpen))
         {
-            if (!complexType.IsOpen) continue;
             PropertyInfo? container = model.GetDynamicPropertyDictionary(complexType);
             if (container?.DeclaringType is null) continue;
             ThrowIfUnusableAsExtensionData(container, complexType);
@@ -432,6 +432,19 @@ internal static class OpenTypeJsonOptions
     /// request path). The copy shares the same resolver, so it exercises the same modifier chain.
     /// </para>
     /// </remarks>
+    // The catch-all below is deliberate and load-bearing, so the finding is accepted rather than
+    // fixed. This started life as `catch (InvalidOperationException)` and missed the
+    // NotSupportedException read-only case entirely; narrowing it again to satisfy the rule
+    // reintroduces that bug. Nothing is swallowed either — the exception is rethrown wrapped, with
+    // the original preserved as InnerException.
+    [SuppressMessage(
+        "CodeQuality",
+        "cs/catch-of-all-exceptions",
+        Justification =
+            "Intentional: this method exists to convert ANY System.Text.Json contract failure into " +
+            "one MapOhData() error naming the open type and its container. Narrowing the clause " +
+            "reintroduces a fixed bug (NotSupportedException was missed when it caught only " +
+            "InvalidOperationException). The exception is rethrown wrapped, not swallowed.")]
     internal static void ValidateOrThrow(
         JsonSerializerOptions options,
         OpenComplexTypeContainers containers)

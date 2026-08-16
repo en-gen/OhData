@@ -460,12 +460,25 @@ How it is made affordable:
 
 **Measured cost.** In isolation the fast path is **4.6 ns/key**, against **16.9 ns/key** for the naive
 rune walk and **5.4 ns/key** for the declared-name hash lookup that sits beside it in the same loop —
-so full validation became cheaper than the lookup it accompanies. That isolated figure is *not*
-predictive of the in-situ cost: serializing a 1,000-row page carrying 20 dynamic keys per row is
-**~26% slower** (4.28 ms → 5.41 ms), roughly 56 ns/key of marginal cost, because the check reads every
-character of every key where `IsNullOrWhiteSpace` read one. A hand-rolled scalar-bitmask variant
-measured slower still, so that cost is inherent to the scan rather than to `SearchValues`. A model
-with **no** open complex type is unaffected — none of this code runs for it.
+so full validation became cheaper than the lookup it accompanies.
+
+In situ, under BenchmarkDotNet, serializing a 1,000-row page carrying 20 dynamic keys per row costs
+this much more than the old whitespace-only check:
+
+| Key shape | Delta | Marginal |
+|---|---|---|
+| Repeating ASCII keys — the common case, 20 names reused on every row | **+4.0%** | 5.8 ns/key |
+| 20,000 distinct ASCII keys | +6.1% | 9.0 ns/key |
+| 20,000 distinct **non-ASCII** keys | +14.7% | 28.8 ns/key |
+
+Only the last row consults the validated-key cache at all — the cache is scoped to the non-ASCII
+fallback — and it is the shape that saturates the 1,024-entry table and then revalidates everything
+beyond it. Reaching it implies a handler synthesising per-row non-ASCII key names rather than using
+open types as a schema extension with a bounded vocabulary. A model with **no** open complex type is
+unaffected — none of this code runs for it.
+
+An earlier in-situ figure of ~26% (~56 ns/key) came from a stopwatch harness and is **refuted** by
+the run above; the benchmark that settled it is `OpenTypeKeyValidationBenchmarks`.
 
 `char.IsWhiteSpace` is no longer involved, but nothing narrowed: NBSP (U+00A0) and EM SPACE (U+2003)
 are rejected by the grammar as surely as they were by the whitespace test, since neither is in any

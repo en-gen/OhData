@@ -544,13 +544,16 @@ public class OpenTypeDefaultOnIsByteIdenticalTests
         }
     }
 
-    private static Task<HttpResponseMessage> Send(
+    // Awaited rather than returned unawaited, so the `using` disposes the request only after the
+    // send has completed. HttpClient buffers the response content by default, so the response
+    // stays readable afterwards.
+    private static async Task<HttpResponseMessage> Send(
         TestFixture fx, string method, string url, string body, string contentType = "application/json")
     {
-        var request = new HttpRequestMessage(new HttpMethod(method), url)
+        using var request = new HttpRequestMessage(new HttpMethod(method), url)
         {
             Content = new StringContent(body, Encoding.UTF8, contentType),
         };
-        return fx.Client.SendAsync(request);
+        return await fx.Client.SendAsync(request);
     }
 }

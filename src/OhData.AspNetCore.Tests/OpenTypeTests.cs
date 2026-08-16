@@ -349,7 +349,7 @@ public class OpenTypeWriteTests
             new[] { "organizationCreatedDate", "tier" },
             store.Items[0].Metadata!.KeyValuePairs!.Keys.OrderBy(k => k, StringComparer.Ordinal));
 
-        var req = new HttpRequestMessage(HttpMethod.Patch,
+        using var req = new HttpRequestMessage(HttpMethod.Patch,
             $"/odata/ExternalReferences({ExternalReferenceStore.Seed})")
         {
             Content = Json(
@@ -386,7 +386,7 @@ public class OpenTypeWriteTests
         (TestFixture fx, ExternalReferenceStore store) = await BuildAsync();
         await using TestFixture _fx = fx;
 
-        var req = new HttpRequestMessage(HttpMethod.Patch,
+        using var req = new HttpRequestMessage(HttpMethod.Patch,
             $"/odata/ExternalReferences({ExternalReferenceStore.Seed})")
         {
             Content = Json("""{ "Source": "Patched" }"""),
@@ -459,7 +459,7 @@ public class OpenTypeWriteTests
         (TestFixture fx, ExternalReferenceStore store) = await BuildAsync();
         await using TestFixture _fx = fx;
 
-        var req = new HttpRequestMessage(HttpMethod.Patch,
+        using var req = new HttpRequestMessage(HttpMethod.Patch,
             $"/odata/ExternalReferences({ExternalReferenceStore.Seed})")
         {
             Content = Json("""{ "Metadata": { "@odata.id": "http://evil/x" } }"""),
@@ -476,7 +476,7 @@ public class OpenTypeWriteTests
         (TestFixture fx, ExternalReferenceStore store) = await BuildAsync();
         await using TestFixture _fx = fx;
 
-        var req = new HttpRequestMessage(HttpMethod.Put,
+        using var req = new HttpRequestMessage(HttpMethod.Put,
             $"/odata/ExternalReferences({ExternalReferenceStore.Seed})/Metadata")
         {
             Content = Json("""{ "value": { "@odata.type": "#Evil.Type" } }"""),
@@ -537,7 +537,7 @@ public class OpenTypeWriteTests
         (TestFixture fx, ExternalReferenceStore store) = await BuildAsync();
         await using TestFixture _fx = fx;
 
-        var req = new HttpRequestMessage(HttpMethod.Put,
+        using var req = new HttpRequestMessage(HttpMethod.Put,
             $"/odata/ExternalReferences({ExternalReferenceStore.Seed})/Metadata")
         {
             Content = Json("""{ "value": { "onlyKey": 42 } }"""),
@@ -928,10 +928,10 @@ public class OpenTypeOptOutTests
         (TestFixture fx, ExternalReferenceStore _) = await BuildAsync(openTypes: null);
         await using TestFixture _fx = fx;
 
-        HttpResponseMessage resp = await fx.Client.PostAsync("/odata/ExternalReferences",
-            new StringContent(
-                """{ "Source": "S", "Xref": "X", "Metadata": { "@odata.type": "#Evil" } }""",
-                Encoding.UTF8, "application/json"));
+        using var content = new StringContent(
+            """{ "Source": "S", "Xref": "X", "Metadata": { "@odata.type": "#Evil" } }""",
+            Encoding.UTF8, "application/json");
+        HttpResponseMessage resp = await fx.Client.PostAsync("/odata/ExternalReferences", content);
 
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
     }
@@ -982,8 +982,9 @@ public class OpenTypeOptOutTests
 
         (TestFixture optedOut, ExternalReferenceStore outStore) = await BuildAsync(openTypes: false);
         await using TestFixture _out = optedOut;
-        HttpResponseMessage outResp = await optedOut.Client.PostAsync("/odata/ExternalReferences",
-            new StringContent(NestedBody, Encoding.UTF8, "application/json"));
+        using var outContent = new StringContent(NestedBody, Encoding.UTF8, "application/json");
+        HttpResponseMessage outResp =
+            await optedOut.Client.PostAsync("/odata/ExternalReferences", outContent);
 
         Assert.Equal(HttpStatusCode.Created, outResp.StatusCode);
         Assert.Equal(new[] { "a" }, outStore.LastWritten!.Metadata!.KeyValuePairs!.Keys);
@@ -992,8 +993,9 @@ public class OpenTypeOptOutTests
         // itself named "KeyValuePairs". This is the silent re-bind the startup warning exists for.
         (TestFixture onByDefault, ExternalReferenceStore onStore) = await BuildAsync(openTypes: null);
         await using TestFixture _on = onByDefault;
-        HttpResponseMessage onResp = await onByDefault.Client.PostAsync("/odata/ExternalReferences",
-            new StringContent(NestedBody, Encoding.UTF8, "application/json"));
+        using var onContent = new StringContent(NestedBody, Encoding.UTF8, "application/json");
+        HttpResponseMessage onResp =
+            await onByDefault.Client.PostAsync("/odata/ExternalReferences", onContent);
 
         Assert.Equal(HttpStatusCode.Created, onResp.StatusCode);
         Assert.Equal(new[] { "KeyValuePairs" }, onStore.LastWritten!.Metadata!.KeyValuePairs!.Keys);
@@ -1006,10 +1008,10 @@ public class OpenTypeOptOutTests
         (TestFixture fx, ExternalReferenceStore _) = await BuildAsync(openTypes: false);
         await using TestFixture _fx = fx;
 
-        HttpResponseMessage resp = await fx.Client.PostAsync("/odata/ExternalReferences",
-            new StringContent(
-                """{ "Source": "S", "Xref": "X", "Metadata": { "KeyValuePairs": { "@odata.type": "#Evil" } } }""",
-                Encoding.UTF8, "application/json"));
+        using var content = new StringContent(
+            """{ "Source": "S", "Xref": "X", "Metadata": { "KeyValuePairs": { "@odata.type": "#Evil" } } }""",
+            Encoding.UTF8, "application/json");
+        HttpResponseMessage resp = await fx.Client.PostAsync("/odata/ExternalReferences", content);
 
         // Nested under a declared property they are inert payload, never control information.
         Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
