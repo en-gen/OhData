@@ -798,21 +798,25 @@ public class OpenTypeNamelessKeyTests
     /// server-side code put a key in the container that cannot be a valid dynamic property name.
     /// </para>
     /// <para>
-    /// The line is <c>string.IsNullOrWhiteSpace</c> — "not a name at all" — and deliberately not the
-    /// full identifier grammar: <c>"has space"</c> and <c>"@odata.type"</c> <i>are</i> names that
-    /// happen to be illegal, and rejecting those on the read path costs rune enumeration and a
-    /// category lookup per key per instance. The write path already rejects them with a 400.
+    /// The line is now the <b>full identifier grammar</b>, so <c>"has space"</c> and
+    /// <c>"@odata.type"</c> fail here too — not only names that are not names at all. It used to be
+    /// <c>string.IsNullOrWhiteSpace</c> on the grounds that full validation costs rune enumeration
+    /// and a Unicode-category lookup per key per instance; the ASCII <c>SearchValues</c> fast path
+    /// and the bounded validated-key cache in <c>OpenTypeJsonOptions</c> are what removed that cost.
     /// </para>
     /// </summary>
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
     [InlineData("\t\n")]
+    // Names that ARE names, but are not identifiers — newly rejected, and the reason this test is no
+    // longer only about nameless keys.
+    [InlineData("has space")]
+    [InlineData("@odata.type")]
     // Unicode whitespace, not just ASCII: this case is literally NBSP (U+00A0) followed by EM SPACE
-    // (U+2003), both of which char.IsWhiteSpace covers. It pins that nobody narrows the check to an
-    // ASCII space/tab/newline test later.
+    // (U+2003). It pins that nobody narrows the check to an ASCII space/tab/newline test later.
     [InlineData("\u00A0\u2003")]
-    public async Task ANamelessBagKey_Fails500WithTheODataErrorEnvelope(string key)
+    public async Task ABagKeyThatIsNotAnIdentifier_Fails500WithTheODataErrorEnvelope(string key)
     {
         NamelessKeyHostProfile.Key = key;
         var capture = new WarningCapture();
@@ -838,7 +842,7 @@ public class OpenTypeNamelessKeyTests
         InvalidOperationException thrown = Assert.IsType<InvalidOperationException>(
             capture.Exceptions.First(e => e is InvalidOperationException));
         Assert.Contains("ExternalReferenceMetadataV2", thrown.Message, StringComparison.Ordinal);
-        Assert.Contains("empty or whitespace-only", thrown.Message, StringComparison.Ordinal);
+        Assert.Contains("not a valid OData identifier", thrown.Message, StringComparison.Ordinal);
 
         // Names and causes, never values: this message reaches log aggregators.
         Assert.DoesNotContain("namelessValue", thrown.Message, StringComparison.Ordinal);

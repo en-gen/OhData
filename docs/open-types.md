@@ -368,14 +368,21 @@ clean in the echo, and stored nothing. Failing loudly removes that corner entire
 
 Pre-seeding a container with any *other* key is fine and has no effect on binding.
 
-## A bag key that is not a name at all — this also fails the request
+## A bag key that is not a valid identifier — this also fails the request
 
-Server-side data can equally put a key in the bag that is **empty or whitespace-only** — `""`,
-`"   "`, `"\t\n"`, or a `null` key from a custom `IDictionary<string, object?>` implementation.
+Server-side data can equally put a key in the bag that is not an `odataIdentifier`. Two kinds, both
+handled identically:
+
+- **Not a name at all** — `""`, `"   "`, `"\t\n"`, or a `null` key from a custom
+  `IDictionary<string, object?>` implementation.
+- **A name that is not a legal identifier** — `"has space"`, `"@odata.type"`, `"kebab-case"`,
+  `"1leading"`, or a key made only of format characters such as U+200B.
 
 **Contract: the request fails with `500` and the OData error envelope**, exactly as the
 declared-name collision above does. The exception names the CLR type and states the condition; it
-never quotes a value.
+never quotes a value, and — unlike the collision message — it does not quote the offending key
+either, because a key rejected by the grammar can carry newlines or control characters into a log
+line.
 
 ```jsonc
 // Meta.Channel = "web";  Meta.KeyValuePairs = { "": "x", "tier": 3 }
@@ -383,11 +390,11 @@ never quotes a value.
 { "error": { "code": "InternalServerError", "message": "…" } }
 ```
 
-A name with no non-whitespace character is not an `odataIdentifier` (CSDL 4.01 §4.1), so emitting it
-produces a property that no conforming OData reader can address — it cannot be selected with
-`$select`, referenced, or round-tripped.
+Such a key is not an `odataIdentifier` (CSDL 4.01 §4.1), so emitting it produces a property that no
+conforming OData reader can address — it cannot be selected with `$select`, referenced, or
+round-tripped.
 
-As with the collision, **a client cannot cause this**: an empty or whitespace-only dynamic key in a
+As with the collision, **a client cannot cause this**: an invalid dynamic key in a
 write body is already rejected with `400` before it can bind (see
 [Dynamic property names are validated on write](#dynamic-property-names-are-validated-on-write)
 above). This check closes the server-side-data hole only.
@@ -401,7 +408,8 @@ above). This check closes the server-side-data hole only.
 
 ### This is a deliberate divergence from `Microsoft.AspNetCore.OData`
 
-`Microsoft.AspNetCore.OData` **silently skips** the empty key rather than failing:
+`Microsoft.AspNetCore.OData` **silently skips** the empty key rather than failing, and does not police
+the rest of the grammar on this path at all:
 
 ```csharp
 // ODataResourceSerializer.cs:820, immediately above the declared-name collision check
@@ -425,28 +433,43 @@ than accidental. Three reasons:
    code put a key in the container that cannot be a valid dynamic property name — and the same fix.
 3. **An unaddressable property is not a lesser fault than a duplicated one.**
 
-### Why the line is "not a name at all", and not the full grammar
+### The line is the full grammar, and what that costs
 
-The check is `string.IsNullOrWhiteSpace`, **not** full `odataIdentifier` validation. The distinction
-is a cost decision and it is worth being precise about:
+This check used to be `string.IsNullOrWhiteSpace` — "not a name at all" — on the grounds that
+`"has space"` and `"@odata.type"` *are* names and rejecting them costs rune enumeration plus a
+Unicode-category lookup per key per instance, on **every serialize**, to close a hole the write path
+already closes with a `400`. It is now the full `odataIdentifier` grammar, identical to the one the
+write path applies, so the container's contents **are** fully validated in both directions.
 
-- **Rejected here:** keys that carry no identity at all. Nothing can address them.
-- **Not rejected here:** `"has space"` and `"@odata.type"` — these *are* names, which merely happen
-  to be illegal `odataIdentifier`s. Rejecting them on the read path requires rune enumeration plus a
-  Unicode category lookup per key, per instance, on **every serialize**. The write path already
-  rejects them with `400`.
+How it is made affordable:
 
-The asymmetry is what puts the line where it is: `string.IsNullOrWhiteSpace` short-circuits on the
-first non-whitespace character, so an ordinary key costs a single `char` inspection, whereas full
-grammar validation is `O(length)` with category lookups. `char.IsWhiteSpace` is Unicode-aware — NBSP
-(U+00A0), EM SPACE (U+2003) and the rest all count, not just ASCII.
+- **An ASCII fast path.** `SearchValues<char>` plus `MemoryExtensions.ContainsAnyExcept` answers
+  "is every character in `[A-Za-z0-9_]`" in one SIMD pass. Within that subset the whole grammar
+  reduces to a length test and a leading-digit test, because the digits are its only members illegal
+  in leading position. Anything with a non-ASCII character falls back to the unchanged
+  rune-and-category walk, which remains the definition of the grammar — the fast path is an
+  accelerator, and the two are pinned against a shared corpus (Devanagari, Thai, NFC/NFD pairs, `Nl`,
+  astral-plane, ZWNJ, lone surrogates, the 128-code-point cap, every ASCII code point in both
+  positions) with zero permitted disagreement.
+- **A bounded cache of validated *non-ASCII* keys.** Scoped to the fallback deliberately: an ordinal
+  cache lookup hashes the whole string, which is *more* work than the fast path itself, so caching
+  ASCII keys measured slower than revalidating them. Capacity is 1,024, after which insertion stops
+  and everything else simply revalidates — no eviction, so it cannot thrash. Bounding is safe because
+  a client cannot drive growth: an invalid key is rejected with `400` before it can bind, so only
+  server-side data ever reaches the table.
 
-> **This does not make the container's contents fully valid, and does not claim to.** A key made only
-> of *format* characters — U+200B ZERO WIDTH SPACE, Unicode category `Cf` — is not whitespace by
-> `char.IsWhiteSpace`, so it passes this check while still failing the ABNF, whose leading rune must
-> be `L` or `Nl`. Such a key placed in a bag by server-side code is still emitted. The check rejects
-> what is not a name; it does not certify that what remains is a valid one. Widening it to the full
-> grammar on the serialize path is an open decision, not an oversight.
+**Measured cost.** In isolation the fast path is **4.6 ns/key**, against **16.9 ns/key** for the naive
+rune walk and **5.4 ns/key** for the declared-name hash lookup that sits beside it in the same loop —
+so full validation became cheaper than the lookup it accompanies. That isolated figure is *not*
+predictive of the in-situ cost: serializing a 1,000-row page carrying 20 dynamic keys per row is
+**~26% slower** (4.28 ms → 5.41 ms), roughly 56 ns/key of marginal cost, because the check reads every
+character of every key where `IsNullOrWhiteSpace` read one. A hand-rolled scalar-bitmask variant
+measured slower still, so that cost is inherent to the scan rather than to `SearchValues`. A model
+with **no** open complex type is unaffected — none of this code runs for it.
+
+`char.IsWhiteSpace` is no longer involved, but nothing narrowed: NBSP (U+00A0) and EM SPACE (U+2003)
+are rejected by the grammar as surely as they were by the whitespace test, since neither is in any
+permitted category.
 
 Like the collision, this cannot be checked at startup: the keys are dynamic and the condition depends
 on the runtime instance rather than on the type.

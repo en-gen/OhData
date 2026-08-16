@@ -244,28 +244,38 @@ public class OpenTypeJsonOptionsTests
         Assert.DoesNotContain("fromBag", ex.Message, StringComparison.Ordinal);
     }
 
-    // ── Nameless keys on the way OUT: empty or whitespace-only (#389) ───────────────────────────
+    // ── Keys that are not odataIdentifiers, on the way OUT (#389) ───────────────────────────────
 
     /// <summary>
-    /// A key with no non-whitespace character is not an <c>odataIdentifier</c> (CSDL 4.01 §4.1), so
-    /// emitting it produces a property no conforming OData reader can address. Measured before the
-    /// fix, the empty case serialized straight through as <c>{"Region":"declared","":"x"}</c>.
+    /// A key that is not an <c>odataIdentifier</c> (CSDL 4.01 §4.1) produces a property no conforming
+    /// OData reader can address. Measured before the fix, the empty case serialized straight through
+    /// as <c>{"Region":"declared","":"x"}</c>.
     /// <para>
     /// <b>Deliberate divergence from <c>Microsoft.AspNetCore.OData</c></b>, which silently skips the
-    /// empty key (<c>ODataResourceSerializer.cs:820</c>). Matching that skip would mean reintroducing
-    /// the clone-and-substitute machinery deleted in <c>e0edaac</c> — the getter wrapper now only
-    /// inspects and returns the same reference — and a silent drop is not worth resurrecting it.
+    /// empty key (<c>ODataResourceSerializer.cs:820</c>) and polices nothing else. Matching that skip
+    /// would mean reintroducing the clone-and-substitute machinery deleted in <c>e0edaac</c> — the
+    /// getter wrapper now only inspects and returns the same reference — and a silent drop is not
+    /// worth resurrecting it.
     /// </para>
     /// </summary>
     [Theory]
+    // The names that are not names at all — the whole of what this check used to reject.
     [InlineData("")]
     [InlineData("   ")]
     [InlineData("\t\n")]
-    // NBSP + EM SPACE: char.IsWhiteSpace is Unicode-aware, and this pins that the check is not
-    // narrowed to ASCII later. Written as escapes deliberately — the literal characters are
+    // NBSP + EM SPACE. Written as escapes deliberately — the literal characters are
     // invisible in source and an editor or a copy/paste silently turns them back into ASCII spaces.
     [InlineData("\u00A0\u2003")]
-    public void Build_ANamelessBagKey_Throws(string key)
+    // ...and the names that ARE names but are still illegal identifiers, which this check now covers
+    // too. Every one of these serialized happily before the widening.
+    [InlineData("has space")]
+    [InlineData("@odata.type")]
+    [InlineData("kebab-case")]
+    [InlineData("1leading")]
+    // A key of only FORMAT characters (U+200B ZERO WIDTH SPACE, category Cf). Not whitespace, so
+    // string.IsNullOrWhiteSpace passed it; the ABNF's leading rune must be L or Nl, so this does not.
+    [InlineData("\u200B")]
+    public void Build_ABagKeyThatIsNotAnIdentifier_Throws(string key)
     {
         JsonSerializerOptions options =
             OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjEntity>());
@@ -280,19 +290,23 @@ public class OpenTypeJsonOptionsTests
                 options));
 
         Assert.Contains(typeof(OtjBag).FullName!, ex.Message, StringComparison.Ordinal);
-        Assert.Contains("empty or whitespace-only", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("not a valid OData identifier", ex.Message, StringComparison.Ordinal);
         // Names and causes, never values.
         Assert.DoesNotContain("namelessValue", ex.Message, StringComparison.Ordinal);
+        // The offending KEY is not quoted either, unlike the collision message: a key rejected by the
+        // grammar is by definition not an identifier, so it can carry newlines or control characters
+        // into a log line. "has space" is the readable member of the corpus above to pin that with.
+        if (key == "has space") Assert.DoesNotContain(key, ex.Message, StringComparison.Ordinal);
     }
 
     /// <summary>
     /// The inspection pass used to bail out when the type had no declared property to be shadowed, so
     /// an open complex type that is <i>only</i> a container never got a wrapped getter at all. The
-    /// nameless-key check does not depend on the declared set, so that bail is gone — this is the
+    /// identifier check does not depend on the declared set, so that bail is gone — this is the
     /// regression pin for its removal.
     /// </summary>
     [Fact]
-    public void Build_ANamelessBagKey_ThrowsEvenOnATypeWithNoDeclaredProperty()
+    public void Build_ABagKeyThatIsNotAnIdentifier_ThrowsEvenOnATypeWithNoDeclaredProperty()
     {
         JsonSerializerOptions options =
             OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjBagOnlyHost>());
@@ -306,27 +320,25 @@ public class OpenTypeJsonOptionsTests
                 new OtjBagOnly { Kv = new Dictionary<string, object?> { ["   "] = 1 } },
                 options));
 
-        Assert.Contains("empty or whitespace-only", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("not a valid OData identifier", ex.Message, StringComparison.Ordinal);
     }
 
     /// <summary>
-    /// The line is "not a name at all", <b>not</b> the full identifier grammar. A key that is an
-    /// illegal <c>odataIdentifier</c> but does contain non-whitespace — <c>"has space"</c>,
-    /// <c>"@odata.type"</c> — still serializes on the read path: rejecting those would cost rune
-    /// enumeration and a Unicode category lookup per key per instance, and the WRITE path already
-    /// rejects them with a 400. This is a recorded cost decision, so it is pinned rather than left to
-    /// drift.
-    /// <para>
-    /// Same reason a key of only FORMAT characters (U+200B ZERO WIDTH SPACE, category <c>Cf</c>)
-    /// passes here: it is not whitespace by <c>char.IsWhiteSpace</c>, though it does fail the ABNF.
-    /// The check rejects what is not a name; it does not certify that what remains is a valid one.
-    /// </para>
+    /// The widened check must not become a blanket rejection: a key that <i>is</i> a conformant
+    /// identifier still serializes flat. The non-ASCII rows matter most — each has a character
+    /// outside <c>[A-Za-z0-9_]</c>, so each exercises the rune-walk fallback rather than the
+    /// <c>SearchValues</c> fast path, and an over-eager fast path would surface here first.
     /// </summary>
     [Theory]
-    [InlineData("has space")]
-    [InlineData("@odata.type")]
-    [InlineData("\u200B")]
-    public void Build_AnIllegalIdentifierThatIsStillANameIsNotRejectedOnSerialize(string key)
+    [InlineData("tier")]
+    [InlineData("_leading")]
+    [InlineData("with_1_digit")]
+    // Mc (Devanagari), Mn (Thai), Nl (a letter-number), and an astral-plane Lu.
+    [InlineData("नाम")]
+    [InlineData("ชื่อ")]
+    [InlineData("Ⅸ")]
+    [InlineData("\U0001D400bc")]
+    public void Build_AConformantBagKey_SerializesFlat(string key)
     {
         JsonSerializerOptions options =
             OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjEntity>());
@@ -674,6 +686,172 @@ public class OpenTypeJsonOptionsTests
     [Fact]
     public void IsValidDynamicPropertyName_RejectsAnUnpairedSurrogate() =>
         Assert.False(OpenTypeJsonOptions.IsValidDynamicPropertyName("a\uD800b"));
+
+    // ── The ASCII fast path is an accelerator, never a second opinion ────────────────────────────
+    //
+    // IsValidDynamicPropertyName decides an all-[A-Za-z0-9_] name with one vectorized
+    // ContainsAnyExcept pass plus a length and a leading-digit test, and only falls back to
+    // IsValidDynamicPropertyNameByRuneWalk — the normative rune-enumeration implementation, unchanged
+    // — when a character outside that set is present. That is a real risk of divergence: the fast
+    // path re-derives the length cap and the leading rule from the ASCII subset instead of reading
+    // them from the Unicode tables, and a wrong SearchValues membership (adding '-', or missing '_')
+    // would silently change the accept/reject set rather than fail to compile.
+    //
+    // So the two are held against a SHARED CORPUS and required to agree exactly, key by key. The
+    // corpus is the union of everything the theories above cover — Devanagari, Thai, both NFC and NFD
+    // spellings, Nl, astral-plane, ZWNJ, leading-mark rejection, unpaired surrogates, the 128-cap
+    // boundary from both sides, '@' '.' '-' space tab newline NUL, emoji.
+    //
+    // The exhaustive sweeps — every ASCII code point, and the lone surrogates — live in
+    // AgreeOnEveryAsciiCodePointAndLoneSurrogate below rather than in this corpus. As theory rows
+    // they would add ~512 near-identical cases to the suite, and two of them (a lone high surrogate
+    // and a lone low one) collide on xUnit's test ID, which SKIPS one of the pair silently rather
+    // than failing — the worst possible outcome for a test whose whole job is to be exhaustive.
+
+    public static TheoryData<string> EquivalenceCorpus()
+    {
+        // Deduplicated: the NFC/NFD pair is spelled both literally and via Normalize, so several
+        // entries coincide by construction. Two identical rows would give two theory cases with the
+        // same display name — an unstable test count rather than extra coverage.
+        var names = new List<string>
+        {
+            // Ordinary ASCII, the fast path's own territory.
+            "", "a", "A", "_", "z9", "tier", "region", "_leading", "with_1_digit",
+            "organizationCreatedDate", "PascalCase", "camelCase", "snake_case_name",
+            // Rejected ASCII.
+            "1leading", "9", "kebab-case", "has space", "has.dot", "@odata.type", "@odata.id",
+            "Meta@odata.count", "has\ttab", "has\nnewline", "has\0nul", "a-b", "a+b", "a/b", "a:b",
+            "$select", "#hash", "a b c", " leading", "trailing ",
+            // Non-ASCII whitespace — NBSP and EM SPACE, which the old IsNullOrWhiteSpace check
+            // rejected and which must stay rejected.
+            " ", " ", "  ", "a b",
+            // Marks and letter-numbers the ABNF admits (Mc, Mn, Nl), and NFC/NFD pairs.
+            "नाम", "ชื่อ", "Tiếng", "Ⅸ", "Ⅸ9", "naïve", "naïve",
+            "naïve".Normalize(NormalizationForm.FormD), "naïve".Normalize(NormalizationForm.FormC),
+            // Astral plane, and a surrogate half embedded in an otherwise valid name.
+            "\U0001D400", "\U0001D400bc", "a\U0001D400", "a\uD800b", "a\uDC00",
+            // Format characters (Cf): ZWNJ/ZWJ/ZWSP are legal FOLLOWING and illegal LEADING.
+            "a‌b", "a‍b", "a​b", "‌ab", "​", "​​",
+            // Leading marks and digits outside ASCII.
+            "́abc", "१abc", "٣abc",
+            // In neither category set — So, Sc, emoji (including a surrogate-pair one).
+            "☃snowman", "€uro", "\U0001F600", "a\U0001F600", "🎉party",
+            // The 128-code-point cap from both sides, in ASCII and in astral code points.
+            new string('a', 127), new string('a', 128), new string('a', 129),
+            string.Concat(Enumerable.Repeat("\U0001D400", 128)),
+            string.Concat(Enumerable.Repeat("\U0001D400", 129)),
+            new string('ï', 128), new string('ï', 128).Normalize(NormalizationForm.FormD),
+            // A long name whose ONLY non-ASCII character is at the very end, so the fast path is
+            // declined on the last code unit rather than the first.
+            new string('a', 127) + "ï",
+        };
+
+        var corpus = new TheoryData<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (string name in names)
+        {
+            if (seen.Add(name)) corpus.Add(name);
+        }
+        return corpus;
+    }
+
+    [Theory]
+    [MemberData(nameof(EquivalenceCorpus))]
+    public void IsValidDynamicPropertyName_AgreesWithTheRuneWalkOnEveryCorpusEntry(string name) =>
+        Assert.Equal(
+            OpenTypeJsonOptions.IsValidDynamicPropertyNameByRuneWalk(name),
+            OpenTypeJsonOptions.IsValidDynamicPropertyName(name));
+
+    /// <summary>
+    /// The exhaustive half of the equivalence proof: every ASCII code point in <b>leading</b> position
+    /// and in <b>following</b> position, plus every lone surrogate, compared against the rune walk.
+    /// This is precisely the boundary the <c>SearchValues</c> set draws, so an off-by-one in it — an
+    /// extra <c>'-'</c>, a missing <c>'_'</c>, <c>'@'</c> slipping in — cannot hide.
+    /// <para>
+    /// A single <c>[Fact]</c> rather than a theory: as rows these would be ~2,600 near-identical test
+    /// cases, and two of them (a lone high surrogate and a lone low one) collide on xUnit's test ID,
+    /// which silently <i>skips</i> one of the pair. Disagreements are collected and reported together
+    /// so a failure names every offending code point at once instead of only the first.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void IsValidDynamicPropertyName_AgreesWithTheRuneWalkOnEveryAsciiCodePointAndLoneSurrogate()
+    {
+        var disagreements = new List<string>();
+        void Compare(string name, string description)
+        {
+            if (OpenTypeJsonOptions.IsValidDynamicPropertyNameByRuneWalk(name)
+                != OpenTypeJsonOptions.IsValidDynamicPropertyName(name))
+            {
+                disagreements.Add(description);
+            }
+        }
+
+        for (int c = 0; c < 128; c++)
+        {
+            Compare(((char)c).ToString(), $"leading U+{c:X4}");
+            Compare("a" + (char)c, $"following U+{c:X4}");
+        }
+        // The whole surrogate range in isolation: neither half is a scalar value, so each decodes to
+        // U+FFFD and must be rejected by both implementations.
+        for (int c = 0xD800; c <= 0xDFFF; c++)
+        {
+            Compare(((char)c).ToString(), $"lone surrogate U+{c:X4}");
+        }
+
+        Assert.Empty(disagreements);
+    }
+
+    /// <summary>
+    /// The memoised wrapper used on the serialize path must be indistinguishable from the function it
+    /// memoises — including on the second call, where the answer comes from the cache. Run over the
+    /// same corpus, twice, so a miss and a hit are both compared.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(EquivalenceCorpus))]
+    public void IsValidDynamicPropertyNameCached_AgreesWithTheUncachedFunction(string name)
+    {
+        bool expected = OpenTypeJsonOptions.IsValidDynamicPropertyNameByRuneWalk(name);
+        Assert.Equal(expected, OpenTypeJsonOptions.IsValidDynamicPropertyNameCached(name));
+        // Second call: for a valid name this is now a cache hit, for an invalid one it is a second
+        // miss (invalid names are deliberately never cached).
+        Assert.Equal(expected, OpenTypeJsonOptions.IsValidDynamicPropertyNameCached(name));
+    }
+
+    /// <summary>
+    /// The cache is bounded and stops inserting once full — it never evicts, and above all it never
+    /// starts answering wrongly. This drives well past the 1024 capacity with distinct <b>non-ASCII</b>
+    /// keys — the only ones that reach the cache at all, since an all-<c>[A-Za-z0-9_]</c> key is
+    /// decided by the fast path and never looked up — and then re-checks a mixture of cached,
+    /// uncached and invalid names.
+    /// <para>
+    /// The cache is <c>static</c> and process-wide by design (validity is a pure function of the
+    /// string), so this test cannot assert an exact entry count without depending on what every other
+    /// test in the assembly happened to validate first, or on the order they ran in. It asserts the
+    /// property that matters instead: saturation changes throughput, never answers.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void IsValidDynamicPropertyNameCached_StaysCorrectPastCapacity()
+    {
+        // 'ä' keeps each of these off the ASCII fast path, so every one is a cache insert attempt.
+        for (int i = 0; i < 5000; i++)
+        {
+            Assert.True(OpenTypeJsonOptions.IsValidDynamicPropertyNameCached(
+                $"sättigung_{i}_{Guid.NewGuid():N}"));
+        }
+
+        // Cached before saturation, never seen, and outright invalid — in both character regimes.
+        Assert.True(OpenTypeJsonOptions.IsValidDynamicPropertyNameCached("tier"));
+        Assert.True(OpenTypeJsonOptions.IsValidDynamicPropertyNameCached("नाम"));
+        Assert.True(OpenTypeJsonOptions.IsValidDynamicPropertyNameCached(
+            "aKeyThisAssemblyHasNeverValidatedBefore"));
+        Assert.True(OpenTypeJsonOptions.IsValidDynamicPropertyNameCached("ключНеВиданныйРанее"));
+        Assert.False(OpenTypeJsonOptions.IsValidDynamicPropertyNameCached("@odata.type"));
+        Assert.False(OpenTypeJsonOptions.IsValidDynamicPropertyNameCached("has space"));
+        Assert.False(OpenTypeJsonOptions.IsValidDynamicPropertyNameCached("☃snowman"));
+        Assert.False(OpenTypeJsonOptions.IsValidDynamicPropertyNameCached(""));
+    }
 
     private static string? FindInvalidKey(string json)
     {

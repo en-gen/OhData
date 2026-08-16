@@ -57,24 +57,33 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ordinal, so a key differing only in case does not fail — see [docs/open-types.md](docs/open-types.md)
   for the recorded consequence of that.
 
-  **A bag key that is not a name at all — empty, whitespace-only, or `null` — fails the same way**
-  (`500` + the OData error envelope), from the same single inspection pass. A name with no
-  non-whitespace character is not an `odataIdentifier` (CSDL 4.01 §4.1), so emitting it produces a
-  property no conforming OData reader can address; previously it was emitted verbatim. A client
-  cannot cause this either — such a key in a write body is already rejected with `400` — so this
-  closes the server-side-data hole only. **This is a deliberate divergence from
-  `Microsoft.AspNetCore.OData`, which silently skips the empty key**
+  **A bag key that is not a valid `odataIdentifier` fails the same way** (`500` + the OData error
+  envelope), from the same single inspection pass — whether it is a name at all (`""`,
+  `"   "`, `null`) or a name that merely happens to be illegal (`"has space"`, `"@odata.type"`,
+  `"kebab-case"`, a key of only format characters such as U+200B). Emitting any of them produces a
+  property no conforming OData reader can address; previously they were emitted verbatim. **The read
+  and write paths now hold bag keys to exactly the same grammar** — `400` on the way in, `500` on the
+  way out — so a container's contents are fully validated rather than merely checked for emptiness. A
+  client cannot cause this either, since such a key in a write body is already rejected with `400`, so
+  this closes the server-side-data hole only. **This is a deliberate divergence from
+  `Microsoft.AspNetCore.OData`, which silently skips the empty key and polices nothing else**
   (`ODataResourceSerializer.cs:820`, `if (string.IsNullOrEmpty(dynamicProperty.Key)) continue;`).
   Matching that skip would mean reintroducing the clone-and-substitute machinery this release
   deleted — the container getter now only *inspects* and returns the same reference, which is what
   removed the corner where a pre-seeded container silently lost every write — and resurrecting it to
-  produce a *silent* drop is the wrong trade. The check is `string.IsNullOrWhiteSpace`, deliberately
-  **not** full identifier validation: `"has space"` and `"@odata.type"` *are* names that happen to be
-  illegal, and rejecting those on every serialize costs rune enumeration plus a Unicode category
-  lookup per key per instance, whereas `IsNullOrWhiteSpace` short-circuits on the first
-  non-whitespace character. It follows that this does **not** make a container's contents fully
-  valid: a key of only format characters (U+200B, category `Cf`) is not whitespace and still passes
-  — see [docs/open-types.md](docs/open-types.md).
+  produce a *silent* drop is the wrong trade.
+
+  > **Serialize-path cost, measured.** Full-grammar validation was previously declined here on cost
+  > grounds. It is implemented with an ASCII fast path (`SearchValues<char>` +
+  > `MemoryExtensions.ContainsAnyExcept`, one vectorized pass) that falls back to the rune-and-category
+  > walk only when a non-ASCII character is present, plus a bounded process-wide cache of validated
+  > **non-ASCII** keys — ASCII keys are cheaper to revalidate than to look up, so they never consult
+  > it. In isolation that is **4.6 ns/key** against **16.9 ns/key** for the naive rune walk and
+  > **5.4 ns/key** for the declared-name hash lookup already in the same loop. *In situ* it is far more
+  > expensive than that isolated figure suggests: serializing a 1,000-row page carrying 20 dynamic keys
+  > per row costs **+26%** (4.28 ms → 5.41 ms), i.e. ~56 ns/key of marginal cost, because the check
+  > reads every character of every key where `IsNullOrWhiteSpace` read one. A scalar-bitmask variant
+  > measured slower still, so the cost is inherent to the scan rather than to `SearchValues`.
 
   **No model changes are required, and none are accepted as a substitute.** Support is driven from the
   EDM: `ODataConventionModelBuilder` already infers the container and records it as a
