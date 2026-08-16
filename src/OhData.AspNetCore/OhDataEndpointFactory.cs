@@ -133,16 +133,69 @@ internal static class OhDataEndpointFactory
         return $"{req.Scheme}://{req.Host}{req.PathBase}{req.Path}?{query}";
     }
 
-    // #195: continuation link for the Priority-1 path, expressed as $skip rather than the opaque
-    // $skiptoken BuildNextPageLink emits. The Priority-1 profile re-applies the incoming
-    // ODataQueryOptions via ApplyTo, which honors $skip natively but has no handler for $skiptoken.
+    // #201: continuation link for the GetAll path, expressed as $skip rather than the opaque
+    // $skiptoken BuildNextPageLink emits. GetAll applies $skip itself (ApplyGetAllPaging), so the
+    // framework can stand behind a $skip continuation there: every hop it emits, it also honours.
+    // NOT used by the Priority-1 path — see BuildFrameworkSkipLink for why.
     private static string BuildNextPageLinkWithSkip(HttpContext ctx, int skip)
     {
         var req = ctx.Request;
         var query = HttpUtility.ParseQueryString(req.QueryString.ToString());
         query.Remove("$skiptoken");
+        query.Remove(FrameworkSkipOption);
         query["$skip"] = skip.ToString(System.Globalization.CultureInfo.InvariantCulture);
         return $"{req.Scheme}://{req.Host}{req.PathBase}{req.Path}?{query}";
+    }
+
+    // #360: the Priority-1 continuation offset, carried as a CUSTOM (non-"$"-prefixed) query option.
+    //
+    // On the Priority-1 path the profile owns query application: it calls ODataQueryOptions.ApplyTo
+    // itself and the framework only layers its MaxTop cap on top. That makes a "$skip=N" continuation
+    // unhonourable by the framework — it emits the link but never applies the skip, so a profile that
+    // does NOT re-apply the incoming options serves the identical first page forever and a client
+    // walking @odata.nextLink never terminates.
+    //
+    // Whether the profile applied $skip is not reliably observable (ODataQueryOptions.ApplyTo is
+    // virtual, but options.Skip.ApplyTo(q) bypasses any override, and expression-tree probing for a
+    // Queryable.Skip node false-negatives on the very common "materialize, then .AsQueryable()"
+    // profile shape). So instead of detecting, the framework carries its OWN offset and applies it
+    // itself: correct whether or not the profile honours the standard options, and no detection
+    // required. The incoming $skip is left verbatim on every hop, so a profile that DOES apply it
+    // re-establishes the same base page each time and the framework offset accumulates on top —
+    // no double-skip either way.
+    //
+    // It cannot be $skiptoken: ODataQueryOptions.ApplyTo THROWS on a $skiptoken it has no handler
+    // for ("Unable to parse the skiptoken value '...'. Skiptoken value should always be server
+    // generated."), which would break every profile that calls ApplyTo. A custom query option is
+    // ignored by ApplyTo (verified) and by OhData's own option gating, and @odata.nextLink is
+    // opaque to clients by spec (§11.2.5.7), so the name is a framework-private detail.
+    private const string FrameworkSkipOption = "ohdata-skiptoken";
+
+    private static string BuildFrameworkSkipLink(HttpContext ctx, int skip)
+    {
+        var req = ctx.Request;
+        var query = HttpUtility.ParseQueryString(req.QueryString.ToString());
+        query[FrameworkSkipOption] = Convert.ToBase64String(BitConverter.GetBytes(skip));
+        return $"{req.Scheme}://{req.Host}{req.PathBase}{req.Path}?{query}";
+    }
+
+    // Reads the framework continuation offset back off a follow-up request. Returns false only when
+    // the value is present but unreadable (a hand-edited/corrupted opaque link) → 400, mirroring the
+    // Priority-2 $skiptoken handling.
+    private static bool TryReadFrameworkSkip(HttpContext ctx, out int skip)
+    {
+        skip = 0;
+        if (!ctx.Request.Query.TryGetValue(FrameworkSkipOption, out var raw)) return true;
+        try
+        {
+            byte[] bytes = Convert.FromBase64String(Uri.UnescapeDataString(raw.ToString()));
+            skip = BitConverter.ToInt32(bytes, 0);
+        }
+        catch
+        {
+            return false;
+        }
+        return skip >= 0;
     }
 
     private static bool PrefersMinimal(HttpContext ctx) =>
@@ -4601,24 +4654,26 @@ internal static class OhDataEndpointFactory
                     // NextLink it is trusted to have paged; when $top is present the client has capped
                     // explicitly; neither case caps again.
                     //
-                    // The continuation link uses $skip (not the opaque $skiptoken the Priority-2 path
-                    // emits): a Priority-1 profile applies the incoming ODataQueryOptions via ApplyTo,
-                    // which natively honors $skip but throws on a $skiptoken it has no handler for.
-                    // The profile applies $skip itself on the follow-up request; the framework then
-                    // only re-applies the Take cap on top.
+                    // #360: the continuation offset is carried in the framework-private
+                    // FrameworkSkipOption custom query option and applied HERE, by the framework, on
+                    // top of whatever the profile's own ApplyTo did — it is neither $skip (which the
+                    // framework emitted but never applied, so a profile that ignores the incoming
+                    // options served the same page forever and a nextLink walk never terminated) nor
+                    // $skiptoken (which ApplyTo throws on). See BuildFrameworkSkipLink.
                     //
                     // #244: the framework deliberately does NOT inject a stabilizing order before this
                     // cap Take — unlike the Priority-2 path, where the framework owns skip/take and can
                     // order every page consistently. Here the profile owns its whole pipeline via
                     // ApplyTo, including any $skip, so the framework can't order safely: ordering after
                     // the profile's own Skip would sort a sliced subset, and ordering only the first
-                    // (unskipped) page would misalign the $skip continuation. Deterministic
+                    // (unskipped) page would misalign the continuation offset. Deterministic
                     // @odata.nextLink paging on this path is therefore the profile's responsibility — it
                     // must establish a stable order (a terminal OrderBy, or applying the client's
                     // $orderby). EF Core already surfaces the omission: warning 10102 fires when a query
                     // is skip/take'd without an ORDER BY. See docs/query-options.md.
                     string? frameworkNextLink = null;
                     int? appliedPageSize = null;
+                    int frameworkSkip = 0;
                     if (odataResult.NextLink is null && options.Top is null)
                     {
                         int? preferredPageSize = ParseMaxPageSize(ctx);
@@ -4628,8 +4683,24 @@ internal static class OhDataEndpointFactory
                                 : preferredPageSize.Value)
                             : source.MaxTop;
 
+                        if (!TryReadFrameworkSkip(ctx, out frameworkSkip))
+                        {
+                            return ODataError(400, "InvalidSkipToken",
+                                "The continuation token is invalid or has been corrupted.");
+                        }
+                        if (frameworkSkip > 0)
+                            queryable = queryable.Skip(frameworkSkip);
+
+                        // #360: fetch ONE row past the page so a full final page is distinguishable
+                        // from a full page with more behind it, WITHOUT a second round-trip to count
+                        // the total (the whole point of this path is that the profile's provider
+                        // executes exactly one query). The probe row is trimmed off below.
                         if (appliedPageSize.HasValue)
-                            queryable = queryable.Take(appliedPageSize.Value);
+                        {
+                            queryable = queryable.Take(appliedPageSize.Value == int.MaxValue
+                                ? int.MaxValue
+                                : appliedPageSize.Value + 1);
+                        }
                         if (preferredPageSize.HasValue)
                             ctx.Response.Headers["Preference-Applied"] = $"maxpagesize={appliedPageSize!.Value}";
                     }
@@ -4637,13 +4708,16 @@ internal static class OhDataEndpointFactory
                     object[] items = EvaluateQueryWithArithmeticFaultGuard(
                         () => queryable.ToArray(), options, logger, source.EntitySetName);
 
-                    // Emit a $skip continuation link when a full page was returned under the cap
-                    // (there may be more rows). The next offset is the profile-applied $skip on this
-                    // request plus the page just returned.
-                    if (appliedPageSize is int ps && ps > 0 && items.Length == ps)
+                    // #360: a continuation only when the probe row proves more rows exist — an
+                    // exactly-full FINAL page (rows % pageSize == 0) no longer gets a nextLink that
+                    // walks a client into an empty trailing page. The next offset is the
+                    // framework-applied offset on this request plus the page just returned; the
+                    // client's own $skip rides along unchanged in the link and is re-applied by the
+                    // profile (or not) identically on every hop.
+                    if (appliedPageSize is int ps && ps > 0 && items.Length > ps)
                     {
-                        int nextSkip = (options.Skip?.Value ?? 0) + items.Length;
-                        frameworkNextLink = BuildNextPageLinkWithSkip(ctx, nextSkip);
+                        items = items[..ps];
+                        frameworkNextLink = BuildFrameworkSkipLink(ctx, frameworkSkip + ps);
                     }
 
                     var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
@@ -4798,7 +4872,15 @@ internal static class OhDataEndpointFactory
                         }
                     }
 
-                    int effectiveSkip = tokenSkip ?? 0;
+                    // #360: an EXPLICIT client $skip counts toward the continuation offset too. It used
+                    // to be applied to the query but left out of effectiveSkip, so the nextLink was
+                    // computed as though the request had started at offset 0 and
+                    // "GET /Set?$skip=10" with pageSize 10 linked straight back to row 10 — an
+                    // infinite rewind. $skiptoken and $skip are mutually exclusive here by
+                    // construction (tokenSkip is only read when options.Skip is null), and both
+                    // express the SAME absolute offset, which is what BuildNextPageLink then
+                    // re-encodes as the next $skiptoken.
+                    int effectiveSkip = options.Skip?.Value ?? tokenSkip ?? 0;
                     if (options.Skip is not null)
                         filtered = (IQueryable<TModel>)options.Skip.ApplyTo(filtered, cachedQuerySettings);
                     else if (effectiveSkip > 0)
@@ -4831,8 +4913,20 @@ internal static class OhDataEndpointFactory
                                 : preferredPageSize.Value)
                             : source.MaxTop;
 
+                        // #360: fetch ONE row past the page. Whether the page is the last one is
+                        // otherwise indistinguishable from a full page with more behind it when the
+                        // row count is an exact multiple of the page size, and the only alternatives
+                        // are a spurious trailing empty page (the old behaviour) or a second
+                        // round-trip to LongCount the pre-paging total — which this path exists
+                        // specifically to avoid (it never materializes; $count=true is the only thing
+                        // that buys a count query, and that one is computed independently above and
+                        // is unaffected). The probe row is trimmed off before serialization.
                         if (appliedPageSize.HasValue)
-                            filtered = filtered.Take(appliedPageSize.Value);
+                        {
+                            filtered = filtered.Take(appliedPageSize.Value == int.MaxValue
+                                ? int.MaxValue
+                                : appliedPageSize.Value + 1);
+                        }
                         if (preferredPageSize.HasValue)
                             ctx.Response.Headers["Preference-Applied"] = $"maxpagesize={appliedPageSize!.Value}";
                     }
@@ -5114,12 +5208,18 @@ internal static class OhDataEndpointFactory
                             () => ApplySelectPushdown(filtered).ToArray(), options, logger, source.EntitySetName);
                     }
 
-                    // Gap 3: compute nextLink when MaxTop (or preferred page size) is set and page is full
+                    // Gap 3: compute nextLink when MaxTop (or preferred page size) is set and page is full.
+                    // #360: "full" now means the probe row fetched above actually came back — the page
+                    // being exactly pageSize long proves nothing (rows % pageSize == 0 used to emit a
+                    // link into an empty trailing page). Trim the probe row off before anything
+                    // downstream sees it; the pipeline, ETags, expansion shaping and @odata.count (which
+                    // is computed independently, pre-paging) are all unchanged by its existence.
                     string? nextLink = null;
                     int effectivePageSize = appliedPageSize ?? 0;
-                    if (effectivePageSize > 0 && items.Length == effectivePageSize && options.Top is null)
+                    if (effectivePageSize > 0 && items.Length > effectivePageSize && options.Top is null)
                     {
-                        int nextSkip = effectiveSkip + items.Length;
+                        items = items[..effectivePageSize];
+                        int nextSkip = effectiveSkip + effectivePageSize;
                         string token = Convert.ToBase64String(BitConverter.GetBytes(nextSkip));
                         nextLink = BuildNextPageLink(ctx, token);
                     }
