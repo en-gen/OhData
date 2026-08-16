@@ -10,7 +10,12 @@ All commands run from the repo root.
 # Build everything
 dotnet build src/OhData.sln
 
-# Run all tests
+# Run all tests - all seven test projects in one pass. CI (.github/workflows/ci.yml) runs the
+# same seven one project at a time, so this is the local equivalent, not a superset.
+dotnet test src/OhData.sln
+
+# Run the main suite only - the fast inner loop (~80% of the tests; no companion-package,
+# client, or test-bench coverage)
 dotnet test src/OhData.AspNetCore.Tests/OhData.AspNetCore.Tests.csproj
 
 # Run a single test by name
@@ -81,14 +86,14 @@ app.MapOhData()  →  returns RouteGroupBuilder
 
 **Two paths for GET collection.**
 - `GetQueryable` (IQueryable): framework constructs `ODataQueryOptions<TModel>` and applies `$filter`/`$orderby`/`$skip`/`$top` via `ApplyTo(IQueryable)`, enabling EF Core SQL pushdown. `$select` is applied via JsonNode post-processing to keep camelCase consistent.
-- `GetAll` (IEnumerable): simple enumeration, no query options applied - developer chose the opt-in simple path.
+- `GetAll` (IEnumerable): simple enumeration - developer chose the opt-in simple path. It is **not** "no query options applied": `$top`/`$skip` are applied in-memory as `Skip()`/`Take()` after materialization, and `$select`/`$expand` in the JSON pass. But `$filter` and `$orderby` are **rejected with `400` (`UnsupportedQueryOption`)** - *"This resource does not support $filter or $orderby. Configure GetQueryable to enable server-side query processing."* - not silently ignored. Pinned by `OpenTypeLimitationTests.OpenTypeDynamicKeyReadPathTests`, which asserts it for a declared property as well as a dynamic key, since the rejection is about the path having no `IQueryable`, not about what is being filtered.
 - `IODataEntitySetEndpointSource` (Priority 1): profile receives `ODataQueryOptions` directly and applies them itself.
 
 **`$select` uses JsonNode post-processing** (not `ISelectExpandWrapper`) to avoid the PascalCase/camelCase inconsistency that `ApplyTo` with `$select` introduces.
 
 **`ODataException` from invalid query options returns 400.** All collection GET handlers wrap `ODataQueryOptions` construction in try/catch to return an OData error body instead of a 500.
 
-**Query-capability flags and property allowlists are enforced at runtime, not just advertised.** `FilterEnabled`/`OrderByEnabled`/`SelectEnabled`/`ExpandEnabled`/`CountEnabled` (all default `false`) and `FilterProperties`/`OrderByProperties`/`SelectProperties`/`ExpandProperties` gate the `GetQueryable`, `GetAll`, and Priority-1 collection paths, plus `$select`/`$expand` on `GetById`: a disabled option in the request returns `400` (`UnsupportedQueryOption`); a non-allowlisted property returns `400` (`InvalidQueryOption`) via the EDM's model-bound `NotFilterable`/`NotSortable`/`NotSelectable`/`NotExpandable` annotations. `$expand` is also implemented on the single-entity `GetById` route (reuses the collection expansion pipeline). Navigation-collection routes reject unimplemented system query options (`$filter`, `$expand`, `$search`, `$apply`, `$compute`, `$skiptoken`, `$deltatoken`) with `400` rather than silently ignoring them.
+**Query-capability flags and property allowlists are enforced at runtime, not just advertised.** `FilterEnabled`/`OrderByEnabled`/`SelectEnabled`/`ExpandEnabled`/`CountEnabled` (all default `false`) and `FilterProperties`/`OrderByProperties`/`SelectProperties`/`ExpandProperties` gate the `GetQueryable`, `GetAll`, and Priority-1 collection paths, plus `$select`/`$expand` on `GetById`: a disabled option in the request returns `400` (`UnsupportedQueryOption`); a non-allowlisted property returns `400` (`InvalidQueryOption`) via the EDM's model-bound `NotFilterable`/`NotSortable`/`NotSelectable`/`NotExpandable` annotations. `$expand` is also implemented on the single-entity `GetById` route (reuses the collection expansion pipeline). Navigation-collection routes reject unimplemented system query options (`$filter`, `$expand`, `$search`, `$apply`, `$compute`, `$skiptoken`, `$deltatoken`) with `400` rather than silently ignoring them. **One exception to the allowlists, and it is not a bug in the enforcement (#401): a dynamic (open-type) property is not in the EDM, so it carries no `NotFilterable`/`NotSortable`/`NotSelectable` annotation and is not gated at all** - `Microsoft.AspNetCore.OData` behaves identically. Do not read the allowlists as a security boundary over a model with an open complex type; `docs/open-types.md` has the measured matrix, and `OpenTypeAllowlistBypassTests` pins it.
 
 **Unhandled handler exceptions get the OData error envelope, not an empty 500.** A group-level endpoint filter (registered alongside the `OData-Version`/`OData-MaxVersion` filters in `OhDataEndpointFactory.MapAll`) catches any exception a handler throws - as opposed to an `ODataError` result a handler deliberately returns - and converts it into `500` + `{"error":{"code":"InternalServerError",...}}`, logging the real exception (never leaking its message/stack trace to the client). Does not catch `OperationCanceledException` (left to ASP.NET Core's own client-disconnect handling) or startup-time validation exceptions (`MapOhData()` throws those once, before any request is served).
 
