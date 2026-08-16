@@ -57,6 +57,25 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ordinal, so a key differing only in case does not fail — see [docs/open-types.md](docs/open-types.md)
   for the recorded consequence of that.
 
+  **A bag key that is not a name at all — empty, whitespace-only, or `null` — fails the same way**
+  (`500` + the OData error envelope), from the same single inspection pass. A name with no
+  non-whitespace character is not an `odataIdentifier` (CSDL 4.01 §4.1), so emitting it produces a
+  property no conforming OData reader can address; previously it was emitted verbatim. A client
+  cannot cause this either — such a key in a write body is already rejected with `400` — so this
+  closes the server-side-data hole only. **This is a deliberate divergence from
+  `Microsoft.AspNetCore.OData`, which silently skips the empty key**
+  (`ODataResourceSerializer.cs:820`, `if (string.IsNullOrEmpty(dynamicProperty.Key)) continue;`).
+  Matching that skip would mean reintroducing the clone-and-substitute machinery this release
+  deleted — the container getter now only *inspects* and returns the same reference, which is what
+  removed the corner where a pre-seeded container silently lost every write — and resurrecting it to
+  produce a *silent* drop is the wrong trade. The check is `string.IsNullOrWhiteSpace`, deliberately
+  **not** full identifier validation: `"has space"` and `"@odata.type"` *are* names that happen to be
+  illegal, and rejecting those on every serialize costs rune enumeration plus a Unicode category
+  lookup per key per instance, whereas `IsNullOrWhiteSpace` short-circuits on the first
+  non-whitespace character. It follows that this does **not** make a container's contents fully
+  valid: a key of only format characters (U+200B, category `Cf`) is not whitespace and still passes
+  — see [docs/open-types.md](docs/open-types.md).
+
   **No model changes are required, and none are accepted as a substitute.** Support is driven from the
   EDM: `ODataConventionModelBuilder` already infers the container and records it as a
   `DynamicPropertyDictionaryAnnotation`, which OhData reads at `MapOhData()` to mark exactly that

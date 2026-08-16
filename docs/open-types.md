@@ -368,6 +368,89 @@ clean in the echo, and stored nothing. Failing loudly removes that corner entire
 
 Pre-seeding a container with any *other* key is fine and has no effect on binding.
 
+## A bag key that is not a name at all — this also fails the request
+
+Server-side data can equally put a key in the bag that is **empty or whitespace-only** — `""`,
+`"   "`, `"\t\n"`, or a `null` key from a custom `IDictionary<string, object?>` implementation.
+
+**Contract: the request fails with `500` and the OData error envelope**, exactly as the
+declared-name collision above does. The exception names the CLR type and states the condition; it
+never quotes a value.
+
+```jsonc
+// Meta.Channel = "web";  Meta.KeyValuePairs = { "": "x", "tier": 3 }
+// GET /odata/Things  →  500   (measured before the fix: {"Channel":"web","":"x","tier":3})
+{ "error": { "code": "InternalServerError", "message": "…" } }
+```
+
+A name with no non-whitespace character is not an `odataIdentifier` (CSDL 4.01 §4.1), so emitting it
+produces a property that no conforming OData reader can address — it cannot be selected with
+`$select`, referenced, or round-tripped.
+
+As with the collision, **a client cannot cause this**: an empty or whitespace-only dynamic key in a
+write body is already rejected with `400` before it can bind (see
+[Dynamic property names are validated on write](#dynamic-property-names-are-validated-on-write)
+above). This check closes the server-side-data hole only.
+
+> **On a bound or unbound function/action route this currently surfaces as `200` with a truncated
+> body rather than as `500`.** Operation routes do not run through the group-level exception filter
+> that renders the OData error envelope, so the response has already begun before the throw. That is
+> pre-existing and applies to *any* handler fault on those routes, not just this one — it is tracked
+> separately as **#396** and is not addressed here. On entity-set routes the `500` + envelope
+> contract above holds.
+
+### This is a deliberate divergence from `Microsoft.AspNetCore.OData`
+
+`Microsoft.AspNetCore.OData` **silently skips** the empty key rather than failing:
+
+```csharp
+// ODataResourceSerializer.cs:820, immediately above the declared-name collision check
+if (string.IsNullOrEmpty(dynamicProperty.Key))
+{
+    continue;
+}
+```
+
+OhData follows that library closely elsewhere — the declared-name collision above is modelled
+directly on the check that sits three lines below this one — so diverging here is recorded rather
+than accidental. Three reasons:
+
+1. **Matching the skip would mean resurrecting deleted code.** OhData's container getter no longer
+   produces a filtered copy; it inspects the bag and hands back the *same reference*, which is
+   precisely what removed the corner where a pre-seeded container silently lost every write. Dropping
+   a key requires substituting a filtered dictionary — the `TryCreateEmptyLike` / `DropShadowedKeys`
+   machinery that was deliberately deleted. Bringing it back to produce a **silent** drop is the
+   wrong trade.
+2. **It is consistent with the collision case.** Both conditions have the same cause — server-side
+   code put a key in the container that cannot be a valid dynamic property name — and the same fix.
+3. **An unaddressable property is not a lesser fault than a duplicated one.**
+
+### Why the line is "not a name at all", and not the full grammar
+
+The check is `string.IsNullOrWhiteSpace`, **not** full `odataIdentifier` validation. The distinction
+is a cost decision and it is worth being precise about:
+
+- **Rejected here:** keys that carry no identity at all. Nothing can address them.
+- **Not rejected here:** `"has space"` and `"@odata.type"` — these *are* names, which merely happen
+  to be illegal `odataIdentifier`s. Rejecting them on the read path requires rune enumeration plus a
+  Unicode category lookup per key, per instance, on **every serialize**. The write path already
+  rejects them with `400`.
+
+The asymmetry is what puts the line where it is: `string.IsNullOrWhiteSpace` short-circuits on the
+first non-whitespace character, so an ordinary key costs a single `char` inspection, whereas full
+grammar validation is `O(length)` with category lookups. `char.IsWhiteSpace` is Unicode-aware — NBSP
+(U+00A0), EM SPACE (U+2003) and the rest all count, not just ASCII.
+
+> **This does not make the container's contents fully valid, and does not claim to.** A key made only
+> of *format* characters — U+200B ZERO WIDTH SPACE, Unicode category `Cf` — is not whitespace by
+> `char.IsWhiteSpace`, so it passes this check while still failing the ABNF, whose leading rune must
+> be `L` or `Nl`. Such a key placed in a bag by server-side code is still emitted. The check rejects
+> what is not a name; it does not certify that what remains is a valid one. Widening it to the full
+> grammar on the serialize path is an open decision, not an oversight.
+
+Like the collision, this cannot be checked at startup: the keys are dynamic and the condition depends
+on the runtime instance rather than on the type.
+
 ## What is *not* supported
 
 ### Entity-root dynamic containers

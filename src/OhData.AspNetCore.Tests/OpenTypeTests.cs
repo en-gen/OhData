@@ -741,6 +741,131 @@ public class OpenTypeShadowedKeyTests
     }
 }
 
+// ── Nameless bag key: empty or whitespace-only (#389) ───────────────────────────────────────────
+
+/// <summary>
+/// Server-side data whose bag carries a key with no non-whitespace character. Same provenance as the
+/// shadowing case — a handler merging a caller-supplied dictionary — and unreachable from a request
+/// body, which is rejected with a <c>400</c> before binding.
+/// </summary>
+internal sealed class NamelessKeyHostProfile : EntitySetProfile<int, OpenTypeHost>
+{
+    /// <summary>
+    /// Set by the test before the host is built. Static because a profile is resolved per request
+    /// from DI and takes no arguments; each test method builds its own host, so the value is read
+    /// back on the very next request.
+    /// </summary>
+    internal static string Key { get; set; } = "";
+
+    public NamelessKeyHostProfile() : base(x => x.Id)
+    {
+        EntitySetName = "NamelessKeyHosts";
+        GetAll = ct => Task.FromResult<IEnumerable<OpenTypeHost>>(new[]
+        {
+            new OpenTypeHost
+            {
+                Id = 1,
+                Name = "h1",
+                Meta = new ExternalReferenceMetadataV2
+                {
+                    Channel = "web",
+                    KeyValuePairs = new Dictionary<string, object?>
+                    {
+                        [Key] = "namelessValue",
+                        ["tier"] = 3,
+                    },
+                },
+            },
+        });
+    }
+}
+
+public class OpenTypeNamelessKeyTests
+{
+    /// <summary>
+    /// Measured before the fix, the empty case emitted
+    /// <c>"Meta":{"Channel":"web","":"emptyKey","tier":3}</c> — a payload carrying a property no
+    /// conforming OData reader can address, since a name with no non-whitespace character is not an
+    /// <c>odataIdentifier</c> (CSDL 4.01 §4.1).
+    /// <para>
+    /// <b>This is a deliberate divergence from <c>Microsoft.AspNetCore.OData</c>, which silently
+    /// skips the empty key</b> (<c>ODataResourceSerializer.cs:820</c>,
+    /// <c>if (string.IsNullOrEmpty(dynamicProperty.Key)) continue;</c>). Matching that skip would mean
+    /// reintroducing the clone-and-substitute machinery deleted in <c>e0edaac</c>, because the getter
+    /// wrapper no longer produces a filtered copy — it inspects and returns the same reference.
+    /// Resurrecting deleted code to produce a <i>silent</i> drop is the wrong trade, and throwing is
+    /// consistent with the declared-name collision directly above: both have the same cause, that
+    /// server-side code put a key in the container that cannot be a valid dynamic property name.
+    /// </para>
+    /// <para>
+    /// The line is <c>string.IsNullOrWhiteSpace</c> — "not a name at all" — and deliberately not the
+    /// full identifier grammar: <c>"has space"</c> and <c>"@odata.type"</c> <i>are</i> names that
+    /// happen to be illegal, and rejecting those on the read path costs rune enumeration and a
+    /// category lookup per key per instance. The write path already rejects them with a 400.
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("\t\n")]
+    // Unicode whitespace, not just ASCII: this case is literally NBSP (U+00A0) followed by EM SPACE
+    // (U+2003), both of which char.IsWhiteSpace covers. It pins that nobody narrows the check to an
+    // ASCII space/tab/newline test later.
+    [InlineData("\u00A0\u2003")]
+    public async Task ANamelessBagKey_Fails500WithTheODataErrorEnvelope(string key)
+    {
+        NamelessKeyHostProfile.Key = key;
+        var capture = new WarningCapture();
+        await using TestFixture fx = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<NamelessKeyHostProfile>(),
+            configureServices: s => s.AddSingleton<ILoggerProvider>(capture));
+
+        HttpResponseMessage resp = await fx.Client.GetAsync("/odata/NamelessKeyHosts");
+        Assert.Equal(HttpStatusCode.InternalServerError, resp.StatusCode);
+
+        // The OData error envelope, not an empty body.
+        string body = await resp.Content.ReadAsStringAsync();
+        using JsonDocument doc = JsonDocument.Parse(body);
+        JsonElement error = doc.RootElement.GetProperty("error");
+        Assert.Equal("InternalServerError", error.GetProperty("code").GetString());
+
+        // The framework never leaks the bag's contents to the client.
+        Assert.DoesNotContain("namelessValue", body, StringComparison.Ordinal);
+
+        // ...but the real exception is logged, naming the CLR type. The group filter's own message is
+        // a generic "unhandled exception processing {Method} {Path}", so the cause travels as the
+        // record's attached Exception.
+        InvalidOperationException thrown = Assert.IsType<InvalidOperationException>(
+            capture.Exceptions.First(e => e is InvalidOperationException));
+        Assert.Contains("ExternalReferenceMetadataV2", thrown.Message, StringComparison.Ordinal);
+        Assert.Contains("empty or whitespace-only", thrown.Message, StringComparison.Ordinal);
+
+        // Names and causes, never values: this message reaches log aggregators.
+        Assert.DoesNotContain("namelessValue", thrown.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The widened check must not become a blanket rejection of every key: an ordinary conformant bag
+    /// still serializes flat. Without this the fix could "pass" by faulting on everything.
+    /// </summary>
+    [Fact]
+    public async Task AConformantBagKey_IsUnaffected()
+    {
+        NamelessKeyHostProfile.Key = "region";
+        await using TestFixture fx = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<NamelessKeyHostProfile>());
+
+        HttpResponseMessage resp = await fx.Client.GetAsync("/odata/NamelessKeyHosts");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        // Bag keys are emitted verbatim — extension data bypasses the naming policy — so this holds
+        // regardless of how the registration cases its declared properties.
+        Assert.Contains(
+            """region":"namelessValue","tier":3""",
+            await resp.Content.ReadAsStringAsync(),
+            StringComparison.Ordinal);
+    }
+}
+
 /// <summary>
 /// Open types are <b>on by default</b>, and <c>WithOpenTypes(false)</c> is the escape hatch back to
 /// the pre-#389 shape. These tests pin both ends of that: the default flattens without anyone asking,

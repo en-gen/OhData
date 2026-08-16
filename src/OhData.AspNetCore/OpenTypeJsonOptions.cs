@@ -157,7 +157,8 @@ internal static class OpenTypeJsonOptions
     /// </summary>
     // No ILogger parameter: the one thing this used to log — a bag key shadowing a declared property
     // — is now an InvalidOperationException, which the group-level exception filter logs (and renders
-    // as 500 + the OData error envelope) like any other handler fault.
+    // as 500 + the OData error envelope) like any other handler fault. A null/empty/whitespace-only
+    // bag key throws from the same pass, for the same reason.
     internal static JsonSerializerOptions Build(
         JsonSerializerOptions baseOptions,
         OpenComplexTypeContainers containers)
@@ -202,13 +203,20 @@ internal static class OpenTypeJsonOptions
                 }
                 // Idempotent: a member already carrying [JsonExtensionData] is simply reaffirmed.
                 property.IsExtensionData = true;
-                ThrowOnKeysShadowingADeclaredProperty(typeInfo, property);
+                ThrowOnKeysThatCannotBeEmitted(typeInfo, property);
                 break;
             }
         });
         return derived;
     }
 
+    // Wraps the container's getter with an inspection pass that rejects the two kinds of key
+    // server-side data can put in a bag but the writer cannot legally emit: a key equal to a DECLARED
+    // property's JSON name, and a key that is null, empty or whitespace-only. The rest of this
+    // comment is the reasoning for the first; the second — including why the line sits at
+    // "not a name at all" rather than at the full identifier grammar — is argued at
+    // ThrowIfAnyKeyCannotBeEmitted.
+    //
     // A bag key equal to a DECLARED property's JSON name would otherwise emit that name twice in
     // one JSON object — measured: `{"Region":"declared","Region":"fromBag"}`, which every .NET
     // reader tested resolves in the BAG's favour, making the declared value unreachable, and which
@@ -255,7 +263,7 @@ internal static class OpenTypeJsonOptions
     // lost every dynamic key in the request while reporting 201 — #389 M2. Throwing removes that
     // corner entirely: such a model now fails loudly on the first request instead of silently
     // discarding writes.)
-    private static void ThrowOnKeysShadowingADeclaredProperty(
+    private static void ThrowOnKeysThatCannotBeEmitted(
         JsonTypeInfo typeInfo, JsonPropertyInfo container)
     {
         Func<object, object?>? get = container.Get;
@@ -271,7 +279,13 @@ internal static class OpenTypeJsonOptions
         {
             if (!ReferenceEquals(property, container)) declaredNames.Add(property.Name);
         }
-        if (declaredNames.Count == 0) return;
+        // There is deliberately NO `declaredNames.Count == 0` bail here. There used to be one, when
+        // shadowing was the only condition checked and a type with no other declared property had
+        // nothing to collide with. The nameless-key check below does not depend on the declared set,
+        // so a bag-only open complex type — `{ IDictionary<string, object?> Bag { get; set; } }` and
+        // nothing else — has to be wrapped too. The cost of that widening is one wrapper delegate per
+        // open complex type and one IsNullOrWhiteSpace test per key per serialized instance, which
+        // short-circuits on the first non-whitespace character.
 
         Type ownerType = typeInfo.Type;
         container.Get = instance =>
@@ -282,10 +296,10 @@ internal static class OpenTypeJsonOptions
                 // The two shapes System.Text.Json accepts as extension data. Only the KEYS are read;
                 // the bag itself is returned untouched either way.
                 case IDictionary<string, object?> objectBag:
-                    ThrowIfAnyKeyShadowsADeclaredName(objectBag.Keys, declaredNames, ownerType);
+                    ThrowIfAnyKeyCannotBeEmitted(objectBag.Keys, declaredNames, ownerType);
                     break;
                 case IDictionary<string, JsonElement> elementBag:
-                    ThrowIfAnyKeyShadowsADeclaredName(elementBag.Keys, declaredNames, ownerType);
+                    ThrowIfAnyKeyCannotBeEmitted(elementBag.Keys, declaredNames, ownerType);
                     break;
             }
             return bag;
@@ -293,14 +307,79 @@ internal static class OpenTypeJsonOptions
     }
 
     // Throws on the FIRST offending key rather than collecting them all: the message names one
-    // concrete key the caller has to remove, and a type carrying one shadowing key almost always
-    // carries it on every instance, so an exhaustive list buys nothing. Values are never included —
-    // this message can reach a log aggregator, and a dynamic value is arbitrary caller-supplied data.
-    private static void ThrowIfAnyKeyShadowsADeclaredName(
+    // concrete key the caller has to remove, and a type carrying one bad key almost always carries it
+    // on every instance, so an exhaustive list buys nothing. Values are never included — this message
+    // can reach a log aggregator, and a dynamic value is arbitrary caller-supplied data.
+    //
+    // TWO conditions, one pass over the bag. Both have the same cause — server-side code put a key in
+    // the container that cannot be a valid OData dynamic property name — so they are checked together
+    // rather than in a second walk.
+    //
+    // The NAMELESS-KEY half is a DELIBERATE, RECORDED DIVERGENCE from Microsoft.AspNetCore.OData,
+    // which SILENTLY SKIPS the empty case: ODataResourceSerializer.cs:820,
+    // `if (string.IsNullOrEmpty(dynamicProperty.Key)) { continue; }`, immediately above the
+    // declared-name collision check this file otherwise follows exactly. Three reasons to diverge
+    // here and only here:
+    //   - Matching the skip would mean REINTRODUCING the clone-and-substitute machinery deleted in
+    //     e0edaac (TryCreateEmptyLike, DropShadowedKeys). This getter wrapper no longer produces a
+    //     filtered copy — it inspects and hands back the SAME reference, which is precisely what
+    //     removed the #389 M2 corner where a pre-seeded container silently lost every write.
+    //     Resurrecting deleted code to produce a SILENT drop is the wrong trade.
+    //   - Throwing is consistent with the house style just set for the declared-name collision
+    //     directly below, and both conditions have the identical cause and the identical fix.
+    //   - A nameless key is not an odataIdentifier (CSDL 4.01 §4.1), so emitting it produces a
+    //     payload no conforming OData reader can address — an unaddressable property is not a lesser
+    //     fault than a duplicated one.
+    //
+    // WHY NULL-OR-WHITESPACE IS THE LINE, and not the full grammar. The distinction is not arbitrary
+    // and it is a COST decision, not a correctness one:
+    //   - A key that is null, empty or entirely whitespace is NOT A NAME AT ALL. It carries no
+    //     identity: nothing can address it, reference it in $select, or round-trip it.
+    //   - "has space" and "@odata.type" ARE names, which merely happen to be illegal
+    //     odataIdentifiers. Rejecting THOSE requires full grammar validation — rune enumeration plus
+    //     a Unicode category lookup per rune — on every key of every instance on the READ path. The
+    //     write path already rejects them with a 400 (IsValidDynamicPropertyName), so the read-path
+    //     cost would buy only the server-side-data case.
+    // The asymmetry is what puts the line here: string.IsNullOrWhiteSpace SHORT-CIRCUITS on the
+    // first non-whitespace character, so an ordinary key costs exactly one char inspection, whereas
+    // full validation is O(length) with category lookups. Measured over a realistic bag of short
+    // conformant keys (stopwatch, best-of-5, warmed — order of magnitude, not BenchmarkDotNet):
+    //   declaredNames.Contains  5.2 ns/key   already in this loop
+    //   IsNullOrWhiteSpace      0.7 ns/key   added here      -> 1.3% of what STJ pays to WRITE the key
+    //   full grammar           16.6 ns/key   NOT added       ->  31% of what STJ pays to write the key
+    // So this check is free at the scale it runs, and the full-grammar option is not. Widening to the
+    // whole grammar is a separate owner decision, deliberately not taken here.
+    //
+    // char.IsWhiteSpace is Unicode-aware — U+00A0 NBSP, U+2003 EM SPACE and friends all count, not
+    // just ASCII space/tab/newline. Do NOT "optimize" this into an ASCII check.
+    //
+    // WHAT THIS DOES NOT DO, stated so it is not mistaken for a completeness guarantee: a key made
+    // only of FORMAT characters (U+200B ZERO WIDTH SPACE, category Cf) is not whitespace by
+    // char.IsWhiteSpace, so it passes here while still failing the ABNF, whose leading rune must be
+    // L or Nl. This check rejects what is not a name; it does not certify that what remains is a
+    // valid one.
+    private static void ThrowIfAnyKeyCannotBeEmitted(
         IEnumerable<string> keys, HashSet<string> declaredNames, Type ownerType)
     {
         foreach (string key in keys)
         {
+            // Also the guard that makes the rest of this loop null-safe: Dictionary<string, T>
+            // cannot hold a null key, but the container is typed as IDictionary<string, T> and a
+            // custom implementation can yield one.
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                throw new InvalidOperationException(
+                    "OhData: the dynamic-property container of open complex type " +
+                    $"'{ownerType.FullName}' holds a dynamic property name that is empty or " +
+                    "whitespace-only. An OData dynamic property name must be a simple identifier " +
+                    "(CSDL 4.01 §4.1 odataIdentifier), and a name with no non-whitespace character " +
+                    "is not one, so emitting it would produce a property that no conforming OData " +
+                    "reader can address. Remove that key from the type's dynamic-property container " +
+                    "— server-side code that merges a caller-supplied dictionary into the container " +
+                    "must exclude names that are null, empty or whitespace-only. This did not come " +
+                    "from the request body: such a key is rejected with 400 before it can bind.");
+            }
+
             if (!declaredNames.Contains(key)) continue;
             throw new InvalidOperationException(
                 $"OhData: the dynamic property name '{key}' on open complex type " +
@@ -573,7 +652,9 @@ internal static class OpenTypeJsonOptions
     /// A key equal to a declared property's name needs no check here: <c>System.Text.Json</c> binds
     /// it to the declared property and it never reaches the bag (measured) — which is also why the
     /// collision is never a client's doing. The one that arrives from server-side data is caught on
-    /// the way out by <see cref="ThrowOnKeysShadowingADeclaredProperty"/>.
+    /// the way out by <see cref="ThrowOnKeysThatCannotBeEmitted"/>, which also catches — from
+    /// server-side data, on the way out — the null/empty/whitespace-only key that this method rejects
+    /// here on the way in.
     /// </para>
     /// </remarks>
     internal static string? FindInvalidDynamicKey(

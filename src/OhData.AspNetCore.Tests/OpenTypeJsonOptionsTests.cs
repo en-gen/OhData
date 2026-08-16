@@ -244,6 +244,100 @@ public class OpenTypeJsonOptionsTests
         Assert.DoesNotContain("fromBag", ex.Message, StringComparison.Ordinal);
     }
 
+    // ── Nameless keys on the way OUT: empty or whitespace-only (#389) ───────────────────────────
+
+    /// <summary>
+    /// A key with no non-whitespace character is not an <c>odataIdentifier</c> (CSDL 4.01 §4.1), so
+    /// emitting it produces a property no conforming OData reader can address. Measured before the
+    /// fix, the empty case serialized straight through as <c>{"Region":"declared","":"x"}</c>.
+    /// <para>
+    /// <b>Deliberate divergence from <c>Microsoft.AspNetCore.OData</c></b>, which silently skips the
+    /// empty key (<c>ODataResourceSerializer.cs:820</c>). Matching that skip would mean reintroducing
+    /// the clone-and-substitute machinery deleted in <c>e0edaac</c> — the getter wrapper now only
+    /// inspects and returns the same reference — and a silent drop is not worth resurrecting it.
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("\t\n")]
+    // NBSP + EM SPACE: char.IsWhiteSpace is Unicode-aware, and this pins that the check is not
+    // narrowed to ASCII later. Written as escapes deliberately — the literal characters are
+    // invisible in source and an editor or a copy/paste silently turns them back into ASCII spaces.
+    [InlineData("\u00A0\u2003")]
+    public void Build_ANamelessBagKey_Throws(string key)
+    {
+        JsonSerializerOptions options =
+            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjEntity>());
+
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            JsonSerializer.Serialize(
+                new OtjBag
+                {
+                    Region = "declared",
+                    Kv = new Dictionary<string, object?> { [key] = "namelessValue", ["ok"] = 1 },
+                },
+                options));
+
+        Assert.Contains(typeof(OtjBag).FullName!, ex.Message, StringComparison.Ordinal);
+        Assert.Contains("empty or whitespace-only", ex.Message, StringComparison.Ordinal);
+        // Names and causes, never values.
+        Assert.DoesNotContain("namelessValue", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The inspection pass used to bail out when the type had no declared property to be shadowed, so
+    /// an open complex type that is <i>only</i> a container never got a wrapped getter at all. The
+    /// nameless-key check does not depend on the declared set, so that bail is gone — this is the
+    /// regression pin for its removal.
+    /// </summary>
+    [Fact]
+    public void Build_ANamelessBagKey_ThrowsEvenOnATypeWithNoDeclaredProperty()
+    {
+        JsonSerializerOptions options =
+            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjBagOnlyHost>());
+
+        // Premise: this type really does have a container and nothing else declared.
+        Assert.DoesNotContain(
+            options.GetTypeInfo(typeof(OtjBagOnly)).Properties, p => !p.IsExtensionData);
+
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            JsonSerializer.Serialize(
+                new OtjBagOnly { Kv = new Dictionary<string, object?> { ["   "] = 1 } },
+                options));
+
+        Assert.Contains("empty or whitespace-only", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The line is "not a name at all", <b>not</b> the full identifier grammar. A key that is an
+    /// illegal <c>odataIdentifier</c> but does contain non-whitespace — <c>"has space"</c>,
+    /// <c>"@odata.type"</c> — still serializes on the read path: rejecting those would cost rune
+    /// enumeration and a Unicode category lookup per key per instance, and the WRITE path already
+    /// rejects them with a 400. This is a recorded cost decision, so it is pinned rather than left to
+    /// drift.
+    /// <para>
+    /// Same reason a key of only FORMAT characters (U+200B ZERO WIDTH SPACE, category <c>Cf</c>)
+    /// passes here: it is not whitespace by <c>char.IsWhiteSpace</c>, though it does fail the ABNF.
+    /// The check rejects what is not a name; it does not certify that what remains is a valid one.
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("has space")]
+    [InlineData("@odata.type")]
+    [InlineData("\u200B")]
+    public void Build_AnIllegalIdentifierThatIsStillANameIsNotRejectedOnSerialize(string key)
+    {
+        JsonSerializerOptions options =
+            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjEntity>());
+
+        string json = JsonSerializer.Serialize(
+            new OtjBag { Region = "declared", Kv = new Dictionary<string, object?> { [key] = 1 } },
+            options);
+
+        Assert.Contains("declared", json, StringComparison.Ordinal);
+    }
+
     /// <summary>
     /// Ordinal, not case-insensitive — and this is a recorded decision, not an oversight. Only a
     /// byte-for-byte repeat is a duplicate JSON key, so <c>region</c> beside a declared
@@ -726,6 +820,18 @@ public class OtjCustomBagHolder
 }
 
 public class OtjCustomBagHost { public int Id { get; set; } public OtjCustomBagHolder? Bag { get; set; } }
+
+/// <summary>
+/// An open complex type with a container and <b>no other declared property</b>. This is the shape the
+/// nameless-key check newly has to reach: the inspection pass used to bail out when the declared-name
+/// set was empty, because shadowing was then the only condition it tested.
+/// </summary>
+public class OtjBagOnly
+{
+    public IDictionary<string, object?>? Kv { get; set; }
+}
+
+public class OtjBagOnlyHost { public int Id { get; set; } public OtjBagOnly? Bag { get; set; } }
 
 /// <summary>
 /// A container whose parameterless constructor SEEDS an entry — so <c>Activator.CreateInstance</c>
