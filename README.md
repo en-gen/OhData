@@ -357,6 +357,7 @@ The full documentation — getting started, the EF Core + SQLite walkthrough, an
 | Individual property access, reads/writes, and `/$value` | [docs/property-access.md](docs/property-access.md) |
 | Deep insert (nested related entities in POST) | [docs/deep-insert.md](docs/deep-insert.md) |
 | Delta mapping (DTO → entity write path, dependency-free) | [docs/delta-mapping.md](docs/delta-mapping.md) |
+| Open types (dynamic property bags on complex types) | [docs/open-types.md](docs/open-types.md) |
 | Bound functions and actions | [docs/bound-operations.md](docs/bound-operations.md) |
 | ETags and optimistic concurrency | [docs/etags.md](docs/etags.md) |
 | Authorization | [docs/authorization.md](docs/authorization.md) |
