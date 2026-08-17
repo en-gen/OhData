@@ -54,6 +54,10 @@ public static class Program
             // rides this switcher anyway because it needs the same OhData.AspNetCore project
             // reference and the same pinned-invocation-count discipline.
             typeof(OpenTypeKeyValidationBenchmarks),
+            // #396: likewise not a host-vs-host comparison — one JsonSerializer call and one Write,
+            // measuring what serializing an operation result eagerly (so a fault can still become a
+            // 500 envelope) costs against serializing it straight into the response body.
+            typeof(OperationResultBufferingBenchmarks),
         }).Run(switcherArgs);
         return 0;
     }
