@@ -11,6 +11,39 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **`@`-containing keys in an open type's payload are now treated as control information and ignored,
+  where they used to be rejected with `400` (#398).** OData JSON Format 4.01 reserves `@` for control
+  information — §4.5 for the leading form (`@odata.type`, `@odata.id`, `@odata.etag`) and §18 for the
+  embedded per-property form (`Name@odata.type`, `Items@odata.count`) — so such a name is not a
+  property name at all and cannot be a dynamic property. OhData previously applied the
+  `odataIdentifier` grammar to every unmatched key on an open type, and since `@` is in no category
+  that grammar admits, a conformant body carrying root or inline annotations was refused.
+
+  **What changes.** Inside an open complex value, a member whose name contains `@` at *any* position
+  is now skipped rather than policed, **and removed from the body before it is bound** — so it does
+  not reach the dynamic-property container and is not echoed back. Skipping alone would have been
+  worse than the `400` it replaces: `System.Text.Json` captures every unmatched member as extension
+  data, and the read path holds bag keys to the same `odataIdentifier` grammar, so a stored `@` key
+  would have made the row return `500` on every later read, permanently.
+
+  ```jsonc
+  // before: 400 InvalidBody   after: 201, annotation ignored, "tier" stored as the only dynamic key
+  POST /odata/Things   { "Meta": { "@odata.type": "#Ns.T", "tier": 3 } }
+  ```
+
+  This follows `Microsoft.AspNetCore.OData` structurally rather than by imitation: that package
+  contains no `@`-handling code at all, because ODataLib's JSON reader consumes control information
+  before the deserializer runs, making an `@`-containing name incapable of becoming a dynamic
+  property. OhData binds with `System.Text.Json`, which has no equivalent reader stage, so the rule
+  is written down explicitly.
+
+  **Unchanged, deliberately.** A declared member whose JSON name contains `@` (via
+  `[JsonPropertyName]`) still binds — declared names are matched first. `@odata.bind` on `POST` is
+  still `501 Not Implemented`; that check runs earlier. And an `@` key one level *below* an accepted
+  dynamic key is still `400`: down there the contract has run out, the whole subtree is opaque data
+  stored and echoed verbatim, so there is no annotation to distinguish and an unaddressable key is
+  still a stored fault.
+
 - **OData open types — dynamic property bags on complex types, ON BY DEFAULT (#389).** A complex type
   with an `IDictionary<string, object?>` member serializes and binds **flat**: its entries are
   siblings of the declared properties on the wire, never nested under the member's own name. Reads

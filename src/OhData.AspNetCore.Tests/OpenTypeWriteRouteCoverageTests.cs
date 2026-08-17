@@ -215,13 +215,35 @@ public class OpenTypeWriteRouteCoverageTests
 
         HttpResponseMessage resp = await fx.Client.PostAsync(
             "/odata/OtwParents(1)/Children",
-            Json("""{ "Id": 0, "Meta": { "@odata.type": "#Evil" } }"""));
+            Json("""{ "Id": 0, "Meta": { "has space": 1 } }"""));
 
-        await AssertInvalidDynamicKeyAsync(resp, "@odata.type");
+        await AssertInvalidDynamicKeyAsync(resp, "has space");
 
         // Rejected BEFORE the handler ran, so nothing reached the store.
         Assert.Null(store.LastChild);
         Assert.Empty(store.Children);
+    }
+
+    /// <summary>
+    /// #398 stage 2 on the same route: control information is ignored, not rejected — and, the part
+    /// that matters, it does not reach the child's bag. This route's own fixture, one key swapped.
+    /// </summary>
+    [Fact]
+    public async Task NavigationPost_IgnoresControlInformationWithoutStoringIt()
+    {
+        (TestFixture fx, OtwStore store) = await BuildAsync();
+        await using TestFixture _fx = fx;
+
+        HttpResponseMessage resp = await fx.Client.PostAsync(
+            "/odata/OtwParents(1)/Children",
+            Json("""{ "Id": 0, "Meta": { "@odata.type": "#Evil", "tier": 7 } }"""));
+
+        Assert.True(
+            resp.StatusCode is HttpStatusCode.Created or HttpStatusCode.OK,
+            $"unexpected {(int)resp.StatusCode}: {await resp.Content.ReadAsStringAsync()}");
+        Assert.Equal(
+            new[] { "tier" },
+            store.LastChild!.Meta!.KeyValuePairs!.Keys.OrderBy(k => k, StringComparer.Ordinal));
     }
 
     /// <summary>H1 and H2 together: a reserved key nested inside a dynamic value on the nav route.</summary>
@@ -276,10 +298,33 @@ public class OpenTypeWriteRouteCoverageTests
 
         HttpResponseMessage resp = await fx.Client.PostAsync(
             "/odata/OtwActionHosts/Stamp",
-            Json("""{ "meta": { "Region": "us", "@odata.type": "#Evil" } }"""));
+            Json("""{ "meta": { "Region": "us", "has space": 1 } }"""));
 
-        await AssertInvalidDynamicKeyAsync(resp, "@odata.type");
+        await AssertInvalidDynamicKeyAsync(resp, "has space");
         Assert.Null(store.LastActionMeta);
+    }
+
+    /// <summary>
+    /// #398 stage 2 on the action-parameter route: control information INSIDE a parameter value is
+    /// ignored and dropped. Distinct from the envelope case below, where 'meta@odata.type' is a
+    /// parameter-envelope key that was never policed in the first place.
+    /// </summary>
+    [Fact]
+    public async Task BoundAction_IgnoresControlInformationInsideAParameterWithoutStoringIt()
+    {
+        (TestFixture fx, OtwStore store) = await BuildAsync();
+        await using TestFixture _fx = fx;
+
+        HttpResponseMessage resp = await fx.Client.PostAsync(
+            "/odata/OtwActionHosts/Stamp",
+            Json("""{ "meta": { "Region": "us", "@odata.type": "#Evil", "tier": 4 } }"""));
+
+        Assert.True(
+            resp.StatusCode is HttpStatusCode.OK or HttpStatusCode.NoContent,
+            $"unexpected {(int)resp.StatusCode}: {await resp.Content.ReadAsStringAsync()}");
+        Assert.Equal(
+            new[] { "Region", "tier" },
+            store.LastActionMeta!.KeyValuePairs!.Keys.OrderBy(k => k, StringComparer.Ordinal));
     }
 
     [Fact]
@@ -343,10 +388,34 @@ public class OpenTypeWriteRouteCoverageTests
 
         HttpResponseMessage resp = await fx.Client.PostAsync(
             "/odata/OtwDictHosts",
-            Json("""{ "Id": 0, "MetaMap": { "one": { "@odata.type": "#Evil", "has space": 1 } } }"""));
+            Json("""{ "Id": 0, "MetaMap": { "one": { "has space": 1 } } }"""));
 
-        await AssertInvalidDynamicKeyAsync(resp, "@odata.type");
+        await AssertInvalidDynamicKeyAsync(resp, "has space");
         Assert.Null(store.LastDictHost);
+    }
+
+    /// <summary>
+    /// The stage-2 half of the same L1 finding: the walk must reach a dictionary-valued member's
+    /// VALUES to classify control information there too, and the rewriter must strip it at that
+    /// depth. A rewriter that copied dictionary members through verbatim would pass every other test
+    /// in this file and fail this one.
+    /// </summary>
+    [Fact]
+    public async Task Post_IgnoresControlInformationInsideADictionaryValuedMember()
+    {
+        (TestFixture fx, OtwStore store) = await BuildAsync();
+        await using TestFixture _fx = fx;
+
+        HttpResponseMessage resp = await fx.Client.PostAsync(
+            "/odata/OtwDictHosts",
+            Json("""{ "Id": 0, "MetaMap": { "one": { "@odata.type": "#Evil", "tier": 1 } } }"""));
+
+        Assert.True(
+            resp.StatusCode is HttpStatusCode.Created or HttpStatusCode.OK,
+            $"unexpected {(int)resp.StatusCode}: {await resp.Content.ReadAsStringAsync()}");
+        Assert.Equal(
+            new[] { "tier" },
+            store.LastDictHost!.MetaMap!["one"].KeyValuePairs!.Keys.OrderBy(k => k, StringComparer.Ordinal));
     }
 
     /// <summary>
@@ -361,9 +430,9 @@ public class OpenTypeWriteRouteCoverageTests
 
         HttpResponseMessage resp = await fx.Client.PostAsync(
             "/odata/OtwDictHosts",
-            Json("""{ "Id": 0, "Metadata": { "@odata.type": "#Evil" } }"""));
+            Json("""{ "Id": 0, "Metadata": { "has space": 1 } }"""));
 
-        await AssertInvalidDynamicKeyAsync(resp, "@odata.type");
+        await AssertInvalidDynamicKeyAsync(resp, "has space");
         Assert.Null(store.LastDictHost);
     }
 

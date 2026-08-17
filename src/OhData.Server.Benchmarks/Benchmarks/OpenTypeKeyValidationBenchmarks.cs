@@ -138,7 +138,11 @@ public class OpenTypeKeyValidationBenchmarks
         _armA = ArmedOpenTypeJsonOptions.Build(baseOptions, containers, SerializeKeyCheckArm.None);
         _armB = ArmedOpenTypeJsonOptions.Build(baseOptions, containers, SerializeKeyCheckArm.NullOrWhiteSpace);
         _armCReplica = ArmedOpenTypeJsonOptions.Build(baseOptions, containers, SerializeKeyCheckArm.FullGrammar);
-        _armCShipped = OpenTypeJsonOptions.Build(baseOptions, containers);
+        // No Ignore()d names: this benchmark measures the key-validation loop, and the withheld-name
+        // set only ever ADDS entries to the declared-name lookup that loop already performs — a
+        // non-empty set here would measure a bigger HashSet, not a different code path.
+        _armCShipped = OpenTypeJsonOptions.Build(
+            baseOptions, containers, IgnoredPropertyJsonOptions.EmptyNameMap);
 
         _page = Shape switch
         {

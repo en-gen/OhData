@@ -88,6 +88,20 @@ public class OtjNoOpenType
 
 public class OpenTypeJsonOptionsTests
 {
+    // #398 stage 1 threaded the Ignore()d JSON names through Build and the write-body walk. Every
+    // fixture in THIS file is a bare EDM with no profile, so nothing is ever ignored here — the
+    // withheld-name mechanism is exercised by OpenTypeIgnoreContainmentTests instead, which is where
+    // an Ignore() set can actually exist.
+    private static readonly IReadOnlyDictionary<Type, IReadOnlySet<string>> NoIgnoredNames =
+        IgnoredPropertyJsonOptions.EmptyNameMap;
+
+    // The write-body walk now answers two questions at once (an unacceptable key, and whether the
+    // body carries keys that have to be stripped before binding). These tests are all about the
+    // first, so they go through this and let the second fall on the floor.
+    private static string? FindInvalidDynamicKey(
+        JsonElement element, Type declaredType, JsonSerializerOptions options) =>
+        OpenTypeJsonOptions.ScanWriteBody(element, declaredType, options, NoIgnoredNames).InvalidKey;
+
     // The EDM is what drives everything in OpenTypeJsonOptions, so it is built here directly —
     // no profiles, no host. Complex types are registered explicitly because the entity root is
     // what the convention builder is handed.
@@ -145,15 +159,15 @@ public class OpenTypeJsonOptionsTests
         var baseOptions = new JsonSerializerOptions();
         Assert.Same(
             baseOptions,
-            OpenTypeJsonOptions.Build(baseOptions, OpenTypeJsonOptions.OpenComplexTypeContainers.Empty));
-        Assert.Same(baseOptions, OpenTypeJsonOptions.Build(baseOptions, Containers<OtjNoOpenType>()));
+            OpenTypeJsonOptions.Build(baseOptions, OpenTypeJsonOptions.OpenComplexTypeContainers.Empty, NoIgnoredNames));
+        Assert.Same(baseOptions, OpenTypeJsonOptions.Build(baseOptions, Containers<OtjNoOpenType>(), NoIgnoredNames));
     }
 
     [Fact]
     public void Build_WithContainers_ReturnsADerivedOptionsInstance()
     {
         var baseOptions = new JsonSerializerOptions();
-        JsonSerializerOptions derived = OpenTypeJsonOptions.Build(baseOptions, Containers<OtjEntity>());
+        JsonSerializerOptions derived = OpenTypeJsonOptions.Build(baseOptions, Containers<OtjEntity>(), NoIgnoredNames);
         Assert.NotSame(baseOptions, derived);
     }
 
@@ -163,7 +177,7 @@ public class OpenTypeJsonOptionsTests
     public void Build_MarksTheContainerAsExtensionData_SoTheBagSerializesFlat()
     {
         JsonSerializerOptions options =
-            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjEntity>());
+            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjEntity>(), NoIgnoredNames);
 
         string json = JsonSerializer.Serialize(
             new OtjBag { Region = "eu", Kv = new Dictionary<string, object?> { ["tier"] = 3 } }, options);
@@ -188,7 +202,7 @@ public class OpenTypeJsonOptionsTests
             typeof(OtjShadow).GetProperty("Kv"),
             containers.ByDeclaringType[typeof(OtjShadow)]);
 
-        JsonSerializerOptions options = OpenTypeJsonOptions.Build(new JsonSerializerOptions(), containers);
+        JsonSerializerOptions options = OpenTypeJsonOptions.Build(new JsonSerializerOptions(), containers, NoIgnoredNames);
         string json = JsonSerializer.Serialize(
             new OtjShadow { Region = "eu", Kv = new Dictionary<string, object?> { ["shadowed"] = 1 } },
             options);
@@ -200,7 +214,7 @@ public class OpenTypeJsonOptionsTests
     public void Build_DerivedTypeInheritsTheBaseContainer()
     {
         JsonSerializerOptions options =
-            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjEntity>());
+            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjEntity>(), NoIgnoredNames);
 
         string json = JsonSerializer.Serialize(
             new OtjDerived
@@ -228,7 +242,7 @@ public class OpenTypeJsonOptionsTests
     public void Build_ABagKeyShadowingADeclaredProperty_Throws()
     {
         JsonSerializerOptions options =
-            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjEntity>());
+            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjEntity>(), NoIgnoredNames);
 
         InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
             JsonSerializer.Serialize(
@@ -279,7 +293,7 @@ public class OpenTypeJsonOptionsTests
     public void Build_ABagKeyThatIsNotAnIdentifier_Throws(string key)
     {
         JsonSerializerOptions options =
-            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjEntity>());
+            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjEntity>(), NoIgnoredNames);
 
         InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
             JsonSerializer.Serialize(
@@ -310,7 +324,7 @@ public class OpenTypeJsonOptionsTests
     public void Build_ABagKeyThatIsNotAnIdentifier_ThrowsEvenOnATypeWithNoDeclaredProperty()
     {
         JsonSerializerOptions options =
-            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjBagOnlyHost>());
+            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjBagOnlyHost>(), NoIgnoredNames);
 
         // Premise: this type really does have a container and nothing else declared.
         Assert.DoesNotContain(
@@ -342,7 +356,7 @@ public class OpenTypeJsonOptionsTests
     public void Build_AConformantBagKey_SerializesFlat(string key)
     {
         JsonSerializerOptions options =
-            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjEntity>());
+            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjEntity>(), NoIgnoredNames);
 
         string json = JsonSerializer.Serialize(
             new OtjBag { Region = "declared", Kv = new Dictionary<string, object?> { [key] = 1 } },
@@ -362,7 +376,7 @@ public class OpenTypeJsonOptionsTests
     public void Build_ABagKeyDifferingOnlyByCase_DoesNotThrow()
     {
         JsonSerializerOptions options =
-            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjEntity>());
+            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjEntity>(), NoIgnoredNames);
 
         string json = JsonSerializer.Serialize(
             new OtjBag { Region = "declared", Kv = new Dictionary<string, object?> { ["region"] = "kept" } },
@@ -385,7 +399,7 @@ public class OpenTypeJsonOptionsTests
         // custom subclass as this type's dynamic-property container.
         Assert.Equal(typeof(OtjCustomBag), containers.ByDeclaringType[typeof(OtjCustomBagHolder)].PropertyType);
 
-        JsonSerializerOptions options = OpenTypeJsonOptions.Build(new JsonSerializerOptions(), containers);
+        JsonSerializerOptions options = OpenTypeJsonOptions.Build(new JsonSerializerOptions(), containers, NoIgnoredNames);
 
         string json = JsonSerializer.Serialize(
             new OtjCustomBagHolder { Region = "declared", Kv = new OtjCustomBag { ["ok"] = 1 } },
@@ -418,7 +432,7 @@ public class OpenTypeJsonOptionsTests
             typeof(OtjDefaultingBag),
             containers.ByDeclaringType[typeof(OtjDefaultingBagHolder)].PropertyType);
 
-        JsonSerializerOptions options = OpenTypeJsonOptions.Build(new JsonSerializerOptions(), containers);
+        JsonSerializerOptions options = OpenTypeJsonOptions.Build(new JsonSerializerOptions(), containers, NoIgnoredNames);
 
         string json = JsonSerializer.Serialize(
             new OtjDefaultingBagHolder { Region = "declared", Kv = new OtjDefaultingBag { ["ok"] = 1 } },
@@ -439,7 +453,7 @@ public class OpenTypeJsonOptionsTests
     public void Build_AContainerPreSeededWithADeclaredName_ThrowsInsteadOfSilentlyLosingWrites()
     {
         JsonSerializerOptions options =
-            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjPreSeededBagHost>());
+            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjPreSeededBagHost>(), NoIgnoredNames);
 
         // DESERIALIZE, not serialize: this is the path the old implementation corrupted. STJ calls
         // the container getter to find an existing dictionary to populate, the getter sees the
@@ -463,7 +477,7 @@ public class OpenTypeJsonOptionsTests
     public void Build_BindingIsUnaffectedByTheShadowCheckingGetter()
     {
         JsonSerializerOptions options =
-            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjEntity>());
+            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjEntity>(), NoIgnoredNames);
 
         OtjBag? bound = JsonSerializer.Deserialize<OtjBag>("""{"Region":"eu","tier":3,"note":"n"}""", options);
 
@@ -531,7 +545,7 @@ public class OpenTypeJsonOptionsTests
     public void ValidateOrThrow_WithAWellFormedContract_DoesNotThrow()
     {
         OpenTypeJsonOptions.OpenComplexTypeContainers containers = Containers<OtjEntity>();
-        JsonSerializerOptions options = OpenTypeJsonOptions.Build(new JsonSerializerOptions(), containers);
+        JsonSerializerOptions options = OpenTypeJsonOptions.Build(new JsonSerializerOptions(), containers, NoIgnoredNames);
         OpenTypeJsonOptions.ValidateOrThrow(options, containers);
     }
 
@@ -550,7 +564,7 @@ public class OpenTypeJsonOptionsTests
         // as a second, competing extension-data member once the modifier runs.
         Assert.Equal("Kv", containers.ByDeclaringType[typeof(OtjCompetingExtensionData)].Name);
 
-        JsonSerializerOptions options = OpenTypeJsonOptions.Build(new JsonSerializerOptions(), containers);
+        JsonSerializerOptions options = OpenTypeJsonOptions.Build(new JsonSerializerOptions(), containers, NoIgnoredNames);
 
         InvalidOperationException ex = Assert.Throws<InvalidOperationException>(
             () => OpenTypeJsonOptions.ValidateOrThrow(options, containers));
@@ -575,7 +589,7 @@ public class OpenTypeJsonOptionsTests
     public void ValidateOrThrow_ContractResolutionThrowsInvalidOperation_IsWrappedAtStartup()
     {
         OpenTypeJsonOptions.OpenComplexTypeContainers containers = Containers<OtjDuplicateJsonNameHost>();
-        JsonSerializerOptions options = OpenTypeJsonOptions.Build(new JsonSerializerOptions(), containers);
+        JsonSerializerOptions options = OpenTypeJsonOptions.Build(new JsonSerializerOptions(), containers, NoIgnoredNames);
 
         InvalidOperationException ex = Assert.Throws<InvalidOperationException>(
             () => OpenTypeJsonOptions.ValidateOrThrow(options, containers));
@@ -597,7 +611,7 @@ public class OpenTypeJsonOptionsTests
     {
         OpenTypeJsonOptions.OpenComplexTypeContainers containers = Containers<OtjEntity>();
         var baseOptions = new JsonSerializerOptions { TypeInfoResolver = new NoMetadataResolver() };
-        JsonSerializerOptions options = OpenTypeJsonOptions.Build(baseOptions, containers);
+        JsonSerializerOptions options = OpenTypeJsonOptions.Build(baseOptions, containers, NoIgnoredNames);
 
         InvalidOperationException ex = Assert.Throws<InvalidOperationException>(
             () => OpenTypeJsonOptions.ValidateOrThrow(options, containers));
@@ -616,7 +630,7 @@ public class OpenTypeJsonOptionsTests
     public void ValidateOrThrow_ConverterConstructorThrows_IsWrappedAtStartup()
     {
         OpenTypeJsonOptions.OpenComplexTypeContainers containers = Containers<OtjThrowingConverterHost>();
-        JsonSerializerOptions options = OpenTypeJsonOptions.Build(new JsonSerializerOptions(), containers);
+        JsonSerializerOptions options = OpenTypeJsonOptions.Build(new JsonSerializerOptions(), containers, NoIgnoredNames);
 
         InvalidOperationException ex = Assert.Throws<InvalidOperationException>(
             () => OpenTypeJsonOptions.ValidateOrThrow(options, containers));
@@ -660,7 +674,7 @@ public class OpenTypeJsonOptionsTests
     public void ValidateOrThrow_ReadOnlyDictionaryInTheContainer_WasNeverAStartupFailure()
     {
         OpenTypeJsonOptions.OpenComplexTypeContainers containers = Containers<OtjReadOnlySeededHost>();
-        JsonSerializerOptions options = OpenTypeJsonOptions.Build(new JsonSerializerOptions(), containers);
+        JsonSerializerOptions options = OpenTypeJsonOptions.Build(new JsonSerializerOptions(), containers, NoIgnoredNames);
 
         OpenTypeJsonOptions.ValidateOrThrow(options, containers);
     }
@@ -966,9 +980,9 @@ public class OpenTypeJsonOptionsTests
     private static string? FindInvalidKey(string json)
     {
         JsonSerializerOptions options =
-            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjEntity>());
+            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjEntity>(), NoIgnoredNames);
         using JsonDocument doc = JsonDocument.Parse(json);
-        return OpenTypeJsonOptions.FindInvalidDynamicKey(doc.RootElement, typeof(OtjEntity), options);
+        return FindInvalidDynamicKey(doc.RootElement, typeof(OtjEntity), options);
     }
 
     [Fact]
@@ -976,14 +990,17 @@ public class OpenTypeJsonOptionsTests
         Assert.Null(FindInvalidKey("""{"Id":1,"Bag":{"Region":"eu","tier":3}}"""));
 
     /// <summary>
-    /// A reserved key at the TOP level of a bag — <c>Bag</c> is a declared complex member of the
-    /// entity, so <c>@odata.type</c> is a first-level dynamic key of <c>OtjBag</c>. (This test was
-    /// named "…NestedInAComplexValue", which described the case below that it did not actually
-    /// cover; #389 H1 renamed it to what it asserts and added the real nested coverage.)
+    /// A non-identifier key at the TOP level of a bag — <c>Bag</c> is a declared complex member of
+    /// the entity, so this is a first-level dynamic key of <c>OtjBag</c>. (This test was named
+    /// "…NestedInAComplexValue", which described the case below that it did not actually cover;
+    /// #389 H1 renamed it to what it asserts and added the real nested coverage. #398 stage 2 then
+    /// swapped its probe from <c>@odata.type</c>, which is now classified as control information
+    /// rather than as a bad dynamic key — see
+    /// <see cref="ScanWriteBody_ClassifiesEveryAtContainingKeyAsControlInformation"/>.)
     /// </summary>
     [Fact]
-    public void FindInvalidDynamicKey_FindsAReservedKeyAtTheTopLevelOfABag() =>
-        Assert.Equal("@odata.type", FindInvalidKey("""{"Id":1,"Bag":{"@odata.type":"#Evil"}}"""));
+    public void FindInvalidDynamicKey_FindsANonIdentifierKeyAtTheTopLevelOfABag() =>
+        Assert.Equal("has space", FindInvalidKey("""{"Id":1,"Bag":{"has space":1}}"""));
 
     // ── #389 H1: the VALUE of an accepted dynamic key is walked too ─────────────────────────────
     //
@@ -1046,11 +1063,11 @@ public class OpenTypeJsonOptionsTests
     public void FindInvalidDynamicKey_WalksIntoCollectionsOfOpenComplexTypes()
     {
         JsonSerializerOptions options =
-            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjCollectionHost>());
+            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjCollectionHost>(), NoIgnoredNames);
         using JsonDocument doc = JsonDocument.Parse("""{"Id":1,"Bags":[{"Region":"eu"},{"a b":1}]}""");
         Assert.Equal(
             "a b",
-            OpenTypeJsonOptions.FindInvalidDynamicKey(doc.RootElement, typeof(OtjCollectionHost), options));
+            FindInvalidDynamicKey(doc.RootElement, typeof(OtjCollectionHost), options));
     }
 
     // ── #389 round-3 L1: a DICTIONARY-valued declared member is walked through ───────────────────
@@ -1063,12 +1080,12 @@ public class OpenTypeJsonOptionsTests
     public void FindInvalidDynamicKey_WalksThroughADictionaryValuedMemberIntoItsValues()
     {
         JsonSerializerOptions options =
-            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjDictionaryHost>());
+            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjDictionaryHost>(), NoIgnoredNames);
         using JsonDocument doc =
-            JsonDocument.Parse("""{"Id":1,"Bags":{"one":{"Region":"eu"},"two":{"@odata.type":"#Evil"}}}""");
+            JsonDocument.Parse("""{"Id":1,"Bags":{"one":{"Region":"eu"},"two":{"has space":1}}}""");
         Assert.Equal(
-            "@odata.type",
-            OpenTypeJsonOptions.FindInvalidDynamicKey(doc.RootElement, typeof(OtjDictionaryHost), options));
+            "has space",
+            FindInvalidDynamicKey(doc.RootElement, typeof(OtjDictionaryHost), options));
     }
 
     /// <summary>
@@ -1079,11 +1096,11 @@ public class OpenTypeJsonOptionsTests
     public void FindInvalidDynamicKey_DoesNotPoliceTheMapKeysOfADictionaryValuedMember()
     {
         JsonSerializerOptions options =
-            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjDictionaryHost>());
+            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjDictionaryHost>(), NoIgnoredNames);
         using JsonDocument doc =
             JsonDocument.Parse("""{"Id":1,"Bags":{"has space":{"Region":"eu","tier":3}}}""");
         Assert.Null(
-            OpenTypeJsonOptions.FindInvalidDynamicKey(doc.RootElement, typeof(OtjDictionaryHost), options));
+            FindInvalidDynamicKey(doc.RootElement, typeof(OtjDictionaryHost), options));
     }
 
     /// <summary>Without the opt-in no member is extension data, so nothing is ever a dynamic key.</summary>
@@ -1091,8 +1108,241 @@ public class OpenTypeJsonOptionsTests
     public void FindInvalidDynamicKey_WithoutTheOpenTypeModifier_FindsNothing()
     {
         var options = new JsonSerializerOptions();
-        using JsonDocument doc = JsonDocument.Parse("""{"Id":1,"Bag":{"@odata.type":"#Evil"}}""");
-        Assert.Null(OpenTypeJsonOptions.FindInvalidDynamicKey(doc.RootElement, typeof(OtjEntity), options));
+        using JsonDocument doc = JsonDocument.Parse("""{"Id":1,"Bag":{"has space":1}}""");
+        Assert.Null(FindInvalidDynamicKey(doc.RootElement, typeof(OtjEntity), options));
+    }
+
+    // ── #398 stage 2: control information ("contains '@'") ──────────────────────────────────────
+    //
+    // REVERT-SENSITIVITY for the whole block: delete the IsControlInformationName branch and every
+    // Assert.Null below reports the key instead; narrow the rule to StartsWith('@') and the embedded
+    // and trailing rows fail; drop the CarriesUnbindableKeys plumbing and every
+    // ScanWriteBody_*Flags* assertion fails.
+
+    /// <summary>
+    /// The rule, stated as data. <c>@</c> at <b>any</b> position means control information, so the
+    /// key is neither a dynamic property nor a grammar failure. OData JSON Format 4.01 gives it two
+    /// shapes that differ only in position — §4.5's leading <c>@odata.type</c> and §18's embedded
+    /// <c>Property@annotation</c> — which is why a leading-only rule would be wrong. The residue
+    /// (<c>a@b</c>, <c>x@</c>, <c>@</c>) is not valid control information either, but <c>@</c> is
+    /// <c>OtherPunctuation</c> and so is admitted by no <c>odataIdentifier</c> position, meaning no
+    /// legitimate dynamic property name is reclassified by the broad rule.
+    /// </summary>
+    [Theory]
+    [InlineData("@odata.type")]
+    [InlineData("@odata.id")]
+    [InlineData("@odata.etag")]
+    [InlineData("@odata.context")]
+    [InlineData("Region@odata.type")]
+    [InlineData("tier@odata.count")]
+    [InlineData("a@b")]
+    [InlineData("x@")]
+    [InlineData("@")]
+    public void ScanWriteBody_ClassifiesEveryAtContainingKeyAsControlInformation(string key)
+    {
+        JsonSerializerOptions options =
+            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjEntity>(), NoIgnoredNames);
+        using JsonDocument doc = JsonDocument.Parse(
+            """{"Id":1,"Bag":{KEY:1,"tier":2}}""".Replace("KEY", JsonSerializer.Serialize(key), StringComparison.Ordinal));
+
+        OpenTypeJsonOptions.WriteBodyScan scan = OpenTypeJsonOptions.ScanWriteBody(
+            doc.RootElement, typeof(OtjEntity), options, NoIgnoredNames);
+
+        Assert.Null(scan.InvalidKey);
+        Assert.True(scan.CarriesUnbindableKeys);
+
+        // And the rewrite really removes it, leaving the genuine dynamic key untouched.
+        using JsonDocument stripped = OpenTypeJsonOptions.RewriteWithoutUnbindableKeys(
+            doc.RootElement, typeof(OtjEntity), options, NoIgnoredNames);
+        JsonElement bag = stripped.RootElement.GetProperty("Bag");
+        Assert.False(bag.TryGetProperty(key, out _));
+        Assert.Equal(2, bag.GetProperty("tier").GetInt32());
+    }
+
+    /// <summary>
+    /// A body with nothing to strip must report <c>false</c>, because that is what keeps the rewrite
+    /// off the common path entirely — the caller binds the caller's own element and nothing is
+    /// copied.
+    /// </summary>
+    [Fact]
+    public void ScanWriteBody_AConformantBodyNeedsNoRewrite()
+    {
+        JsonSerializerOptions options =
+            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjEntity>(), NoIgnoredNames);
+        using JsonDocument doc = JsonDocument.Parse("""{"Id":1,"Bag":{"Region":"eu","tier":3}}""");
+
+        OpenTypeJsonOptions.WriteBodyScan scan = OpenTypeJsonOptions.ScanWriteBody(
+            doc.RootElement, typeof(OtjEntity), options, NoIgnoredNames);
+
+        Assert.Null(scan.InvalidKey);
+        Assert.False(scan.CarriesUnbindableKeys);
+    }
+
+    /// <summary>
+    /// A DECLARED member whose JSON name happens to contain <c>@</c> is not control information —
+    /// the walk tests the declared set first. Measured: <c>System.Text.Json</c> accepts
+    /// <c>[JsonPropertyName("weird@name")]</c> and reports it verbatim in
+    /// <see cref="JsonTypeInfo.Properties"/>, so without the declared-first ordering the strip would
+    /// silently delete a real property on every write.
+    /// </summary>
+    [Fact]
+    public void ScanWriteBody_ADeclaredMemberNamedWithAnAtIsNotControlInformation()
+    {
+        JsonSerializerOptions options = OpenTypeJsonOptions.Build(
+            new JsonSerializerOptions(), Containers<OtjAtNamedHost>(), NoIgnoredNames);
+        using JsonDocument doc =
+            JsonDocument.Parse("""{"Id":1,"Bag":{"weird@name":"kept","tier":1}}""");
+
+        OpenTypeJsonOptions.WriteBodyScan scan = OpenTypeJsonOptions.ScanWriteBody(
+            doc.RootElement, typeof(OtjAtNamedHost), options, NoIgnoredNames);
+
+        Assert.Null(scan.InvalidKey);
+        Assert.False(scan.CarriesUnbindableKeys);
+
+        OtjAtNamedBag? bound = doc.RootElement.Deserialize<OtjAtNamedHost>(options)!.Bag;
+        Assert.Equal("kept", bound!.Weird);
+        Assert.Equal(new[] { "tier" }, bound.Kv!.Keys.OrderBy(k => k, StringComparer.Ordinal));
+    }
+
+    /// <summary>
+    /// The asymmetry (#389 H1 preserved): below an accepted dynamic key there is no contract, so
+    /// every key down there is opaque stored data and an <c>@</c> is still a <c>400</c>. Pinned in
+    /// the same file as the tolerance tests so the two rules cannot drift apart unnoticed.
+    /// </summary>
+    [Fact]
+    public void ScanWriteBody_ControlInformationInsideADynamicValueIsStillInvalid()
+    {
+        JsonSerializerOptions options =
+            OpenTypeJsonOptions.Build(new JsonSerializerOptions(), Containers<OtjEntity>(), NoIgnoredNames);
+        using JsonDocument doc =
+            JsonDocument.Parse("""{"Id":1,"Bag":{"nested":{"@odata.type":"#Evil"}}}""");
+
+        Assert.Equal(
+            "@odata.type",
+            OpenTypeJsonOptions.ScanWriteBody(
+                doc.RootElement, typeof(OtjEntity), options, NoIgnoredNames).InvalidKey);
+    }
+
+    // ── #398 stage 1: Ignore()d names are withheld from the bag ─────────────────────────────────
+    //
+    // At complex scope the real map is always EMPTY for a container's declaring type, so these tests
+    // hand the walk a SYNTHETIC map to exercise the mechanism directly. The end-to-end no-op is
+    // asserted separately by OpenTypeIgnoreContainmentTests; this is the unit half, and it is what
+    // makes the mechanism reviewable before the #398 widening makes it load-bearing.
+    //
+    // REVERT-SENSITIVITY: remove the ignoredJsonNames test from the walk and
+    // ScanWriteBody_AWithheldNameIsDroppedNotBagged's Assert.True fails; remove it from the rewriter
+    // and the same test's Assert.False (the key survives the strip) fails.
+
+    private static IReadOnlyDictionary<Type, IReadOnlySet<string>> Withheld<T>(params string[] jsonNames) =>
+        new Dictionary<Type, IReadOnlySet<string>>
+        {
+            [typeof(T)] = new HashSet<string>(jsonNames, StringComparer.Ordinal),
+        };
+
+    /// <summary>
+    /// Reproduces what <c>IgnorePropertyJsonOptions.Build</c> does — REMOVE the member from the
+    /// contract — because that removal is the whole precondition. A withheld name only reaches the
+    /// dynamic-key branch of the walk BECAUSE it is no longer declared; a test that passed the
+    /// withheld map without removing the member would assert nothing, since the walk would match the
+    /// name in <c>declared</c> and never look at the withheld set. (Found the hard way: the first
+    /// spelling of this test did exactly that and reported no unbindable keys.)
+    /// </summary>
+    private static JsonSerializerOptions OptionsWithRegionRemoved(
+        IReadOnlyDictionary<Type, IReadOnlySet<string>> withheld)
+    {
+        var baseOptions = new JsonSerializerOptions
+        {
+            TypeInfoResolver = new DefaultJsonTypeInfoResolver().WithAddedModifier(t =>
+            {
+                if (t.Type != typeof(OtjBag)) return;
+                for (int i = t.Properties.Count - 1; i >= 0; i--)
+                    if (t.Properties[i].Name == "Region") t.Properties.RemoveAt(i);
+            }),
+        };
+        return OpenTypeJsonOptions.Build(baseOptions, Containers<OtjEntity>(), withheld);
+    }
+
+    [Fact]
+    public void ScanWriteBody_AWithheldNameIsDroppedNotBagged()
+    {
+        var withheld = Withheld<OtjBag>("Region");
+        JsonSerializerOptions options = OptionsWithRegionRemoved(withheld);
+        using JsonDocument doc =
+            JsonDocument.Parse("""{"Id":1,"Bag":{"Region":"leak","tier":3}}""");
+
+        OpenTypeJsonOptions.WriteBodyScan scan = OpenTypeJsonOptions.ScanWriteBody(
+            doc.RootElement, typeof(OtjEntity), options, withheld);
+
+        // Dropped, not rejected: no 400, and the request is free to proceed.
+        Assert.Null(scan.InvalidKey);
+        Assert.True(scan.CarriesUnbindableKeys);
+
+        using JsonDocument stripped = OpenTypeJsonOptions.RewriteWithoutUnbindableKeys(
+            doc.RootElement, typeof(OtjEntity), options, withheld);
+        JsonElement bag = stripped.RootElement.GetProperty("Bag");
+        Assert.False(bag.TryGetProperty("Region", out _));
+        Assert.Equal(3, bag.GetProperty("tier").GetInt32());
+
+        // The end of the containment claim: bind the stripped body and the withheld name is nowhere.
+        OtjEntity bound = stripped.RootElement.Deserialize<OtjEntity>(options)!;
+        Assert.DoesNotContain("Region", bound.Bag!.Kv!.Keys);
+        Assert.Null(bound.Bag.Region);
+    }
+
+    /// <summary>
+    /// The negative control that makes the test above mean something: the SAME removal, the SAME
+    /// body, but no withheld map — and the value lands in the bag and is echoed. This is the
+    /// write-then-read oracle in one test, and it is why the withheld names have to be threaded
+    /// through at all rather than derived from the contract (they are not in it any more).
+    /// </summary>
+    [Fact]
+    public void WithoutTheStrip_AWithheldNameWouldBindIntoTheBagAndBeEchoed()
+    {
+        JsonSerializerOptions options = OptionsWithRegionRemoved(NoIgnoredNames);
+
+        OtjEntity bound = JsonSerializer.Deserialize<OtjEntity>(
+            """{"Id":1,"Bag":{"Region":"leak","tier":3}}""", options)!;
+
+        Assert.Contains("Region", bound.Bag!.Kv!.Keys);
+        Assert.Null(bound.Bag.Region);
+        Assert.Contains(
+            "\"Region\":\"leak\"", JsonSerializer.Serialize(bound.Bag, options), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The read-side pair: a bag key spelled like a withheld member is the same hard
+    /// <see cref="InvalidOperationException"/> as any other declared-name collision, so server-side
+    /// data cannot shadow a withheld name either. Again with the member REMOVED, so the throw can
+    /// only be coming from the withheld set — the negative control below is the same call without it.
+    /// </summary>
+    [Fact]
+    public void Serialize_ThrowsWhenABagKeyShadowsAWithheldName()
+    {
+        JsonSerializerOptions options = OptionsWithRegionRemoved(Withheld<OtjBag>("Region"));
+
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            JsonSerializer.Serialize(
+                new OtjBag { Kv = new Dictionary<string, object?> { ["Region"] = "shadow" } },
+                options));
+
+        Assert.Contains("Region", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The negative control for the test above: the member is removed but nothing is withheld, so
+    /// the identical bag serializes fine. Without this the throw could be the ordinary declared-name
+    /// collision rather than the withheld-name one.
+    /// </summary>
+    [Fact]
+    public void Serialize_DoesNotThrowForTheSameKeyWhenNothingIsWithheld()
+    {
+        JsonSerializerOptions options = OptionsWithRegionRemoved(NoIgnoredNames);
+
+        string json = JsonSerializer.Serialize(
+            new OtjBag { Kv = new Dictionary<string, object?> { ["Region"] = "fine" } }, options);
+
+        Assert.Contains("\"Region\":\"fine\"", json, StringComparison.Ordinal);
     }
 }
 
@@ -1189,6 +1439,22 @@ public class OtjDictionaryHost
     public OtjBag? Bag { get; set; }
     public IDictionary<string, OtjBag>? Bags { get; set; }
 }
+
+/// <summary>
+/// An open complex type with a DECLARED member whose JSON name contains <c>@</c>. Legal for
+/// <c>System.Text.Json</c> (measured — it accepts the attribute and reports the name verbatim in
+/// <c>JsonTypeInfo.Properties</c>), and the reason the control-information rule is applied only to
+/// members the contract does not declare.
+/// </summary>
+public class OtjAtNamedBag
+{
+    [System.Text.Json.Serialization.JsonPropertyName("weird@name")]
+    public string? Weird { get; set; }
+
+    public IDictionary<string, object?>? Kv { get; set; }
+}
+
+public class OtjAtNamedHost { public int Id { get; set; } public OtjAtNamedBag? Bag { get; set; } }
 
 // ── Contracts System.Text.Json rejects, one per catch clause in ValidateOrThrow ──────────────────
 

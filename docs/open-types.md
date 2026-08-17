@@ -200,10 +200,13 @@ be queryable, do not put it in a dynamic bag.** Declare it and deny it with the 
 ## Dynamic property names are validated on write
 
 A dynamic key is persisted verbatim and echoed on every later read, so an unconstrained one is a
-*stored* fault against other consumers rather than a one-request nuisance: `@odata.type` inside a
-complex value is what a conforming reader (`Microsoft.OData.Client` among them) uses to resolve that
-value's type, and `@odata.id` is an entity reference. Nested under a declared container these are
-inert payload; flattened, they are control information.
+*stored* fault against other consumers rather than a one-request nuisance. `@odata.type` is what a
+conforming reader (`Microsoft.OData.Client` among them) uses to resolve a value's type, and
+`@odata.id` is an entity reference: nested under a declared container these are inert payload, but
+flattened they become control information. That is what creates the need to police bag contents at
+all — and it is why an `@`-containing name is [classified as control information and
+removed](#control-information) rather than stored, wherever the contract still describes the level it
+sits at.
 
 Every route that binds a body which can reach a dynamic bag therefore rejects a dynamic key that is
 not an OData **simple identifier**:
@@ -225,29 +228,80 @@ followed by up to 127 characters from **L**, **Nl**, **Nd**, **Mn**, **Mc**, **P
 length is a count of **code points**, so an astral-plane identifier is not charged double for its
 surrogate pair.
 
-That rules out the empty string, `@odata.type`, `Meta@odata.count`, `has.dot`, `has space` and
-`kebab-case`. It **admits** any Unicode letter and the combining marks that go with it — `नाम`,
-`ชื่อ`, `Ⅸ`, `𝐀bc`, and `naïve` in either NFC or NFD form. That last pair matters in practice:
-macOS normalises to NFD where Windows normalises to NFC, so a narrower rule would give the same key
-two different HTTP status codes depending on the client's operating system.
+That rules out the empty string, `has.dot`, `has space` and `kebab-case`. It **admits** any Unicode
+letter and the combining marks that go with it — `नाम`, `ชื่อ`, `Ⅸ`, `𝐀bc`, and `naïve` in either
+NFC or NFD form. That last pair matters in practice: macOS normalises to NFD where Windows
+normalises to NFC, so a narrower rule would give the same key two different HTTP status codes
+depending on the client's operating system.
+
+Names containing `@` are also excluded by the grammar, but they are **not** rejected — they are
+classified as control information before the grammar is consulted. See
+[Control information](#control-information) below.
 
 ```jsonc
 // POST /odata/ExternalReferences  →  400
-{ "Source": "S", "Xref": "X", "Metadata": { "@odata.type": "#Evil.Type" } }
+{ "Source": "S", "Xref": "X", "Metadata": { "has space": 1 } }
 ```
 
 ```jsonc
-{ "error": { "code": "InvalidBody", "target": "@odata.type",
-             "message": "'@odata.type' is not a valid dynamic property name. A dynamic property of
+{ "error": { "code": "InvalidBody", "target": "has space",
+             "message": "'has space' is not a valid dynamic property name. A dynamic property of
                          an OData open type must be a simple identifier: it starts with a letter (in
                          any script) or '_', continues with letters, digits, combining marks or '_',
-                         and is at most 128 characters long. '@', '.', '-' and spaces are not
-                         allowed; names containing '@' are reserved for control information such as
-                         '@odata.type'." } }
+                         and is at most 128 characters long. '.', '-' and spaces are not
+                         allowed." } }
 ```
 
 The message is deliberately plain-language rather than a recital of the Unicode category codes — it
 is read by an API consumer, and the formal grammar is the section above.
+
+<a id="control-information"></a>
+### Control information (`@`) is ignored, not rejected
+
+**Any member name containing `@`, at any position, is OData control information and is skipped.** It
+is not validated as a dynamic property name, it is not bound into the container, and it is not echoed
+back.
+
+OData JSON Format 4.01 gives `@` two shapes that differ only in position: §4.5's leading form
+(`@odata.type`, `@odata.id`, `@odata.etag`) carries control information about the enclosing object,
+and §18's embedded form (`Name@odata.type`, `Items@odata.count`) annotates a particular property. A
+leading-only rule would tolerate the first and reject the second — the more common spelling on a
+write body. Everything else containing `@` (`a@b`, `x@`, a bare `@`) is not valid control information
+either, but `@` is `OtherPunctuation`, which the `odataIdentifier` grammar admits in no position, so
+no legitimate dynamic property name is reclassified by the broad rule.
+
+```jsonc
+// POST /odata/ExternalReferences  →  201; the annotation is ignored, "tier" is the only dynamic key
+{ "Source": "S", "Xref": "X", "Metadata": { "@odata.type": "#Ns.T", "tier": 3 } }
+```
+
+This matches `Microsoft.AspNetCore.OData` structurally rather than by imitation. That package
+contains no `@`-handling code at all, because ODataLib's JSON reader consumes control information
+into `ODataResource.TypeName`/`.Id`/`.ETag` and custom annotations into `.InstanceAnnotations` before
+the deserializer runs — only `.Properties` can ever become a dynamic property there. OhData binds
+with `System.Text.Json`, which has no equivalent reader stage (measured: it routes `@odata.type`,
+`Name@odata.type`, `a@b`, `@` and `x@` alike straight into extension data), so the classification is
+written down explicitly and the key is stripped from the body before binding.
+
+**Stripping is not optional.** Classifying the key without removing it would be strictly worse than
+rejecting it: the annotation would be stored in the container, and the read path holds bag keys to
+this same grammar — so the row would return `500` on every later read, permanently.
+
+Three things this does **not** change:
+
+- A **declared** member whose JSON name contains `@` — via `[JsonPropertyName("weird@name")]` — still
+  binds normally. Declared names are matched first.
+- **`@odata.bind` on `POST` is still `501 Not Implemented`.** That check runs before any of this.
+- An `@` key **one level below an accepted dynamic key** is still `400`. Down there the contract has
+  run out: the whole subtree is opaque data that will be stored and echoed verbatim, so there is no
+  declared-versus-annotation distinction to draw and an unaddressable key is a stored fault.
+
+  ```jsonc
+  // 201 — annotation at a level the contract describes
+  { "Metadata": { "@odata.type": "#Ns.T" } }
+  // 400 — inside a dynamic value, where everything is opaque data
+  { "Metadata": { "nested": { "@odata.type": "#Ns.T" } } }
+  ```
 
 ### Invisible characters are permitted — treat dynamic keys as untrusted display text
 
@@ -283,8 +337,8 @@ it are — so the values are walked. The dictionary's own keys are map keys of a
 never dynamic property names, and are not held to the identifier grammar:
 
 ```jsonc
-// 400, target "@odata.type" — reached through a dictionary-valued declared member
-{ "Id": 0, "MetaMap": { "one": { "@odata.type": "#Evil.Type" } } }
+// 400, target "has space" — reached through a dictionary-valued declared member
+{ "Id": 0, "MetaMap": { "one": { "has space": 1 } } }
 
 // 201 — "has space" is a map key of MetaMap, not a dynamic property name
 { "Id": 0, "MetaMap": { "has space": { "tier": 7 } } }
@@ -442,10 +496,11 @@ Such a key is not an `odataIdentifier` (CSDL 4.01 §4.1), so emitting it produce
 conforming OData reader can address — it cannot be selected with `$select`, referenced, or
 round-tripped.
 
-As with the collision, **a client cannot cause this**: an invalid dynamic key in a
-write body is already rejected with `400` before it can bind (see
-[Dynamic property names are validated on write](#dynamic-property-names-are-validated-on-write)
-above). This check closes the server-side-data hole only.
+As with the collision, **a client cannot cause this**, by either of two routes: a dynamic key that
+fails the grammar is [rejected with `400`](#dynamic-property-names-are-validated-on-write) before it
+can bind, and a name containing `@` is [classified as control information and
+removed](#control-information) from the body. Either way it never reaches the container, so this
+check closes the server-side-data hole only.
 
 > **On a bound or unbound function/action route this currently surfaces as `200` with a truncated
 > body rather than as `500`.** Operation routes do not run through the group-level exception filter
@@ -486,7 +541,8 @@ than accidental. Three reasons:
 This check used to be `string.IsNullOrWhiteSpace` — "not a name at all" — on the grounds that
 `"has space"` and `"@odata.type"` *are* names and rejecting them costs rune enumeration plus a
 Unicode-category lookup per key per instance, on **every serialize**, to close a hole the write path
-already closes with a `400`. It is now the full `odataIdentifier` grammar, identical to the one the
+already closes (`"has space"` with a `400`, `"@odata.type"` by [removing
+it](#control-information)). It is now the full `odataIdentifier` grammar, identical to the one the
 write path applies, so the container's contents **are** fully validated in both directions.
 
 How it is made affordable:
@@ -548,10 +604,18 @@ declared property — an EDM/wire mismatch that predates this feature and is not
 { "Id": 1, "Name": "n", "Extras": { "dyn": "v" } }
 ```
 
-The write half is the blocker: `PATCH` builds its `Delta<TModel>` by resolving each body member
-through the EDM/CLR property map and skipping what it cannot resolve, so a root-level undeclared
-key would be silently dropped. Half-working would be worse than absent. Put the bag on a complex
-type instead.
+Put the bag on a complex type instead. Tracked by issue #398.
+
+> **Correction.** Earlier releases of this document said the blocker was `PATCH`: that
+> `Delta<TModel>` "has no mechanism" for routing an undeclared key, because the PATCH loop resolves
+> each body member through the EDM/CLR property map and skips what it cannot resolve. **That was
+> wrong.** `Microsoft.AspNetCore.OData`'s `Delta<T>` has always had a
+> `dynamicDictionaryPropertyInfo` constructor parameter, and Microsoft's own
+> `ODataResourceDeserializer` supplies it from the EDM. Measured against the referenced package
+> (9.5.0, .NET 10.0.11): `new Delta<T>(typeof(T), updatableProperties, containerPropertyInfo)`
+> accepts `TrySetPropertyValue("tier", "gold")`, and `Patch(target)` **merges** into an existing
+> container rather than replacing it. The framework simply never passed the third argument. What is
+> left for entity-root support is staged work, not a missing mechanism.
 
 <a id="filter-orderby-dynamic-key"></a>
 ### `$filter` / `$orderby` over an individual dynamic key — **provider-dependent; do not rely on it**
@@ -617,6 +681,27 @@ translates to SQL and pushes down normally.
 - `Ignore(x => x.Container)` does **not** interact with this feature at all. `Ignore(...)` takes a
   root member of a profile's *entity* type, and a container lives on a *complex* type, which is
   never a profile's model type — the two never meet.
+
+  That disjointness is why `Ignore()` is safe here today, and it is *only* true while open types are
+  scoped to complex types. It is worth knowing why, because the reason is not obvious:
+  **`Ignore()` works by removing a member from its `JsonTypeInfo`, and extension data captures
+  exactly what a `TypeInfoResolver` modifier removed.** Measured at raw `System.Text.Json` level —
+  one modifier removing `Secret`, a second marking `Bag` as extension data — a body carrying
+  `"Secret"` binds it *into the bag* and the next read echoes it back under the withheld name. (A
+  `[JsonIgnore]`d member does **not** leak that way: those stay in `JsonTypeInfo.Properties`, so
+  they are still declared as far as the binder is concerned.)
+
+  OhData therefore already carries the containment, even though nothing can reach it yet: the
+  withheld JSON names are captured before the removal and threaded into both directions of the
+  open-type path, so a withheld name is dropped from a write body before binding and a container
+  key spelled like one is a hard error on the way out. It ships ahead of the entity-root widening
+  (#398) rather than alongside it, so the security-critical half is not landing at the same moment as
+  its first real exercise. A write naming a withheld property is **silently dropped**, matching what
+  the closed-type path already does for unknown members and what `Microsoft.AspNetCore.OData` does
+  (`ODataInputFormatter` deliberately clears ODataLib's `ThrowOnUndeclaredPropertyForNonOpenType`);
+  the spec does not settle it either way, since "property value" in Protocol §11.4.2 does not clearly
+  cover a name the type does not declare, and no clause contemplates a server that deliberately
+  conceals a declared property.
 
 ## Interaction with `$expand` and cycle safety
 
