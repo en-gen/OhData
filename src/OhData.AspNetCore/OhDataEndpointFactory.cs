@@ -322,6 +322,16 @@ internal static class OhDataEndpointFactory
         }
     }
 
+    // The answer every route gives for '@odata.bind', so the four write routes wired in by #398
+    // review MEDIUM-1 cannot drift from the collection POST's long-standing one. Deliberately does
+    // NOT mention AllowDeepInsert: that flag governs nested CREATE on POST only, and offering it as
+    // the remedy on a PUT or a PATCH would be advice that does not apply. The collection POST keeps
+    // its own richer message, which does name the entity set and does mention the flag.
+    private static IResult ODataBindNotImplementedError() =>
+        ODataError(501, "NotImplemented",
+            "'@odata.bind' is not supported. Use the $ref endpoints to link an existing entity " +
+            "(OData §11.4.2.2).");
+
     // #389: policing dynamic-property names on the way in. Only a registration whose EDM actually
     // declares an open complex type pays anything here (OpenTypesActive, not OpenTypesEnabled --
     // #389 L1; and now that the flag defaults to true, that EDM half is effectively the whole gate)
@@ -335,26 +345,93 @@ internal static class OhDataEndpointFactory
     // and its declared parameter type, never the {"paramName": value} envelope -- the envelope's own
     // keys are parameter names matched by the operation's signature, so they are not dynamic keys
     // and must not be policed as such.
-    private static IResult? RejectInvalidDynamicKey(
-        bool openTypesActive, JsonElement body, Type declaredType, JsonSerializerOptions? jsonOptions)
+    //
+    // #398 stages 1-2 widened this from "reject a bad key" to "prepare the body". It answers two
+    // things from ONE walk, and the caller has to honour both:
+    //   - a key the odataIdentifier grammar rejects  -> 400, exactly as before;
+    //   - a key that must not become a dynamic property but is NOT a client error -- control
+    //     information ('@'), or a name the profile withholds with Ignore(...) -> the body is
+    //     re-emitted without it and the request proceeds. Silently, in both cases: an annotation is
+    //     not a property value, and a withheld name gets the same treatment an unknown member on a
+    //     closed type already gets. Dropping is not enough on its own -- System.Text.Json would bag
+    //     either one -- so the drop has to be a real edit to the body the binder sees.
+    //
+    // The returned JsonDocument, when non-null, MUST be disposed by the caller; PreparedWriteBody
+    // exists so `using` at the call site covers it without an extra block. On the common path it is
+    // null and Body is the caller's own element, so nothing is copied.
+    //
+    // (Disposal is right; the reason once stated for it was not. JsonDocument.Parse over a
+    // ReadOnlyMemory<byte> — which is what RewriteWithoutUnbindableKeys hands it — does NOT pool the
+    // payload: it wraps the caller's memory and only the metadata database is rented from the shared
+    // array pool. Disposing still returns that database, so the `using` earns its keep either way.)
+    private readonly record struct PreparedWriteBody(
+        IResult? Error, JsonElement Body, JsonDocument? Rewritten) : IDisposable
     {
-        if (!openTypesActive || jsonOptions is null) return null;
-        string? key = OpenTypeJsonOptions.FindInvalidDynamicKey(body, declaredType, jsonOptions);
-        if (key is null) return null;
-        // Plain terms, not the ABNF's Unicode category codes -- this is read by an API consumer, not
-        // by a spec implementer, and docs/open-types.md carries the formal grammar. It has to be
-        // accurate about what M3 actually widened the rule to, though: the pre-M3 wording ("a letter
-        // or '_' followed by letters, digits or '_'") described an ASCII-flavoured grammar that
-        // would have implied 'नाम' and NFD-spelled 'naive' were invalid, and never mentioned the cap
-        // a name can also be rejected for.
-        return ODataError(400, "InvalidBody",
+        public void Dispose() => Rewritten?.Dispose();
+    }
+
+    private static PreparedWriteBody PrepareWriteBody(
+        OhDataRegistration registration, JsonElement body, Type declaredType,
+        JsonSerializerOptions? jsonOptions)
+    {
+        if (!registration.OpenTypesActive || jsonOptions is null)
+            return new PreparedWriteBody(null, body, null);
+
+        // #398 review MEDIUM-1, and it MUST come before the scan below. Stage 2 classifies any key
+        // containing '@' as control information and STRIPS it, and 'Thing@odata.bind' contains one --
+        // so without this line every write route except the collection POST (which runs its own check
+        // earlier, unconditionally) went from answering 400 to answering 200/201 with the bind
+        // annotation silently discarded. A client asking to link an existing entity got a success and
+        // nothing happened, which is the exact failure mode the '@' rule was never meant to create.
+        //
+        // 501, not 400, and the same 501 the collection POST gives: deep insert by reference is
+        // UNIMPLEMENTED, not malformed, and it is unimplemented on every verb. The old 400 on these
+        // routes was incidental anyway -- it came from '@' failing the odataIdentifier grammar, not
+        // from anything that knew what @odata.bind meant.
+        //
+        // WHY IT LIVES HERE rather than at each route: this is the one chokepoint every body-binding
+        // write route already passes through (PUT, PATCH, the nav-POST create route, the
+        // property-route writes, and each bound/unbound ACTION parameter), so no route can be wired up
+        // later and forget it. The collection POST keeps its own earlier check because that one is
+        // UNCONDITIONAL, and this one is not: PrepareWriteBody returns above unless OpenTypesActive,
+        // because PUT and nav-POST only buffer the body into a JsonDocument for registrations whose
+        // EDM really has an open complex type -- buffering every PUT body would break the documented
+        // byte-identical no-op that OpenTypeDefaultOnIsByteIdenticalTests pins. That is the honest
+        // scope of the restoration: it puts the rejection back on exactly the registrations that had
+        // it before stage 2, and nowhere else.
+        if (ContainsODataBindAnnotation(body))
+            return new PreparedWriteBody(ODataBindNotImplementedError(), body, null);
+
+        OpenTypeJsonOptions.WriteBodyScan scan = OpenTypeJsonOptions.ScanWriteBody(
+            body, declaredType, jsonOptions, registration.IgnoredJsonNamesByType);
+
+        if (scan.InvalidKey is { } key)
+            return new PreparedWriteBody(InvalidDynamicKeyError(key), body, null);
+
+        if (!scan.CarriesUnbindableKeys) return new PreparedWriteBody(null, body, null);
+
+        JsonDocument rewritten = OpenTypeJsonOptions.RewriteWithoutUnbindableKeys(
+            body, declaredType, jsonOptions, registration.IgnoredJsonNamesByType);
+        return new PreparedWriteBody(null, rewritten.RootElement, rewritten);
+    }
+
+    // Plain terms, not the ABNF's Unicode category codes -- this is read by an API consumer, not
+    // by a spec implementer, and docs/open-types.md carries the formal grammar. It has to be
+    // accurate about what M3 actually widened the rule to, though: the pre-M3 wording ("a letter
+    // or '_' followed by letters, digits or '_'") described an ASCII-flavoured grammar that
+    // would have implied 'नाम' and NFD-spelled 'naive' were invalid, and never mentioned the cap
+    // a name can also be rejected for.
+    //
+    // The '@' clause is GONE from this message, and its absence is the point: since #398 stage 2 a
+    // name containing '@' is classified as control information and skipped, so it can no longer
+    // arrive here. Leaving the clause in would have documented a rejection that no longer happens.
+    private static IResult InvalidDynamicKeyError(string key) =>
+        ODataError(400, "InvalidBody",
             $"'{key}' is not a valid dynamic property name. A dynamic property of an OData open " +
             "type must be a simple identifier: it starts with a letter (in any script) or '_', " +
             "continues with letters, digits, combining marks or '_', and is at most 128 characters " +
-            "long. '@', '.', '-' and spaces are not allowed; names containing '@' are reserved for " +
-            "control information such as '@odata.type'.",
+            "long. '.', '-' and spaces are not allowed.",
             target: key);
-    }
 
     private static IEnumerable<string> ParseETagList(string raw)
     {
@@ -582,6 +659,16 @@ internal static class OhDataEndpointFactory
         // options instance whose resolver modifier removes the ignored members. When no profile
         // ignores anything the owned options are threaded through unchanged.
         var ignoredByType = IgnoredPropertyJsonOptions.BuildIgnoredPropertyMap(registration.Profiles);
+
+        // #398 stage 1: capture the withheld members' JSON names BEFORE the modifier below removes
+        // them from their contracts. Afterwards the JSON name is not recoverable — which is exactly
+        // why an open type's extension data can capture a withheld member and echo it back under the
+        // withheld name. Read off the real pre-ignore contract rather than re-derived from the naming
+        // policy; see BuildIgnoredJsonNameMap. Empty in, empty out, so a registration that ignores
+        // nothing allocates nothing and resolves no JsonTypeInfo here.
+        registration.IgnoredJsonNamesByType =
+            IgnoredPropertyJsonOptions.BuildIgnoredJsonNameMap(ignoredByType, startupJsonOptions);
+
         JsonSerializerOptions effectiveJsonOptions = ignoredByType.Count == 0
             ? startupJsonOptions
             : IgnoredPropertyJsonOptions.Build(startupJsonOptions, ignoredByType);
@@ -621,10 +708,25 @@ internal static class OhDataEndpointFactory
         // and the ignored-property map is keyed by profile.ModelType (an ENTITY type), which a
         // container's declaring complex type can never be, so those two modifiers never see the
         // same JsonTypeInfo.
+        //
+        // THAT ORDERING IS AN INVARIANT, NOT AN INCIDENT, and OpenTypeModifierOrderingTests asserts
+        // it. Two properties depend on it. (1) The open-type modifier snapshots its declared-name
+        // collision set from typeInfo.Properties, so it must run while every EDM NAVIGATION is still
+        // on the contract -- deriving nav suppression from startupJsonOptions instead of from these
+        // options would put the removal first and silently convert a bag key that shadows a
+        // navigation from a hard 500 into a navigation-shadowing leak. (2) Conversely it must run
+        // AFTER the ignored-property modifier, whose removals are what make Ignore()d names invisible
+        // to it -- which is why those names are threaded in separately below rather than read off the
+        // contract.
+        //
+        // Note what the ignored-name argument does NOT do: it does not make the two modifiers meet.
+        // They still never touch the same JsonTypeInfo. The withheld names cross as DATA, so the
+        // open-type modifier can refuse a bag key spelled like a member the profile withholds.
         var openTypeContainers = registration.OpenTypesEnabled
             ? OpenTypeJsonOptions.BuildOpenComplexTypeContainerMap(registration.EdmModel)
             : OpenTypeJsonOptions.OpenComplexTypeContainers.Empty;
-        effectiveJsonOptions = OpenTypeJsonOptions.Build(effectiveJsonOptions, openTypeContainers);
+        effectiveJsonOptions = OpenTypeJsonOptions.Build(
+            effectiveJsonOptions, openTypeContainers, registration.IgnoredJsonNamesByType);
         OpenTypeJsonOptions.ValidateOrThrow(effectiveJsonOptions, openTypeContainers);
 
         // Named after ValidateOrThrow so a registration that is about to fail startup does not first
@@ -885,7 +987,7 @@ internal static class OhDataEndpointFactory
 
         // Gap 7: Unbound functions/actions — registered once at service root level (§11.5.1)
         MapUnboundOperations(
-            group, registration.UnboundOperations, effectiveJsonOptions, registration.OpenTypesActive);
+            group, registration.UnboundOperations, effectiveJsonOptions, registration);
 
         return group;
     }
@@ -972,13 +1074,13 @@ internal static class OhDataEndpointFactory
         return new OhDataQueryParametersMetadata { Parameters = list };
     }
 
-    // openTypesActive is passed rather than read off an OhDataRegistration because this method has
-    // never taken one -- it needs only the unbound operation list and the serializer options.
+    // Takes the whole registration rather than the OpenTypesActive bool it used to, because #398
+    // stage 1 needs the withheld-name map alongside it and the two are always consulted together.
     private static void MapUnboundOperations(
         RouteGroupBuilder group,
         IReadOnlyList<UnboundOperationDefinition> unboundOps,
         JsonSerializerOptions? jsonOptions,
-        bool openTypesActive)
+        OhDataRegistration registration)
     {
         foreach (var op in unboundOps)
         {
@@ -1063,10 +1165,10 @@ internal static class OhDataEndpointFactory
                                     // #389 H2: same per-parameter dynamic-key check the bound
                                     // actions run. An unbound action's parameters bind into the same
                                     // CLR types and reach the same handlers.
-                                    IResult? opInvalidKey = RejectInvalidDynamicKey(
-                                        openTypesActive, val, param.ParameterType, jsonOptions);
-                                    if (opInvalidKey is not null) return opInvalidKey;
-                                    args[i] = val.Deserialize(param.ParameterType, jsonOptions);
+                                    using PreparedWriteBody opPrepared = PrepareWriteBody(
+                                        registration, val, param.ParameterType, jsonOptions);
+                                    if (opPrepared.Error is not null) return opPrepared.Error;
+                                    args[i] = opPrepared.Body.Deserialize(param.ParameterType, jsonOptions);
                                 }
                                 else if (param.HasDefaultValue)
                                 {
@@ -2661,13 +2763,38 @@ internal static class OhDataEndpointFactory
     // `TypeInfoResolver` throws `NotSupportedException` from `GetTypeInfo`, even though
     // `SerializeToNode` itself tolerates that exact options shape via its own implicit reflection
     // fallback — `_pascalCaseSerializerOptions`, this file's own defensive fallback, is exactly such
-    // an instance) — would itself emit clrNavProp for this entity instance. [JsonIgnore] removes the
-    // member from typeInfo.Properties entirely (presence check below); JsonIgnoreCondition.
-    // WhenWritingNull/WhenWritingDefault keep the member present but gate it at serialize time via
-    // JsonPropertyInfo.ShouldSerialize (invoked here with the SAME (owner, value) pair
-    // System.Text.Json itself would use); a custom [JsonConverter] on the property changes its wire
-    // shape in a way SerializeBounded's own recursive splice cannot reproduce, so that case is
-    // treated as not natively-visible too — omitted rather than corrupted with the wrong shape.
+    // an instance) — would itself emit clrNavProp for this entity instance.
+    //
+    // BOTH [JsonIgnore] SPELLINGS ARE DECIDED BY ShouldSerialize, NOT BY ABSENCE. This comment used
+    // to say that a plain [JsonIgnore] "removes the member from typeInfo.Properties entirely", with
+    // the presence check below as the mechanism. That is FALSE on .NET 10 — measured against
+    // DefaultJsonTypeInfoResolver on 10.0.11:
+    //
+    //   Hidden   get=null set=null shouldSer=fn   <- [JsonIgnore], STILL IN Properties
+    //
+    // i.e. an unconditionally ignored member stays in JsonTypeInfo.Properties with Get and Set
+    // nulled out and a ShouldSerialize delegate that returns false (verified by invoking it). So
+    // the loop below DOES find it, and the `return` inside the loop — not the `return false` after
+    // it — is what answers "not visible" for it. The method's outcome was always right; only the
+    // stated reason was wrong. JsonIgnoreCondition.WhenWritingNull/WhenWritingDefault land in the
+    // same place by the same route: present, gated at serialize time by ShouldSerialize (invoked
+    // here with the SAME (owner, value) pair System.Text.Json itself would use).
+    //
+    // Getting this right is load-bearing rather than cosmetic, because the open-type modifier
+    // (OpenTypeJsonOptions.Build) snapshots its declared-name set from exactly this collection: a
+    // navigation carrying [JsonIgnore] is still in Properties, so a dynamic bag key spelled like it
+    // still collides and still hard-fails, instead of quietly shadowing the navigation. A reader who
+    // believed the old comment would conclude the opposite.
+    //
+    // The trailing `return false` therefore covers only members genuinely absent from the base
+    // contract — most importantly one an earlier TypeInfoResolver modifier REMOVED, which is how
+    // Ignore() (#226) works and is a real difference from [JsonIgnore]: a removed member is not in
+    // Properties at all, which is precisely why extension data can capture it (see
+    // OpenTypeJsonOptions' remarks on Ignore() containment).
+    //
+    // A custom [JsonConverter] on the property changes its wire shape in a way SerializeBounded's own
+    // recursive splice cannot reproduce, so that case is treated as not natively-visible too —
+    // omitted rather than corrupted with the wrong shape.
     private static bool IsNavVisibleInBaseOptions(
         JsonSerializerOptions opts, Type clrType, PropertyInfo clrNavProp, object entityValue, object? navValue)
     {
@@ -2680,7 +2807,11 @@ internal static class OhDataEndpointFactory
             if (p.AttributeProvider is not PropertyInfo pi || pi != clrNavProp) continue;
             return p.ShouldSerialize is null || p.ShouldSerialize(entityValue, navValue);
         }
-        return false; // [JsonIgnore]'d, or otherwise excluded from the base JsonTypeInfo entirely
+        // Absent from the base contract entirely. NOT the [JsonIgnore] case — that member is still in
+        // Properties and was answered by the ShouldSerialize return above (see the note on this
+        // method). This is the modifier-REMOVED case (Ignore(), #226) and the
+        // no-metadata-for-the-type case.
+        return false;
     }
 
     // Fold-in #7 (perf hygiene): ONE derived JsonSerializerOptions per baseOptions (not one per
@@ -5951,14 +6082,14 @@ internal static class OhDataEndpointFactory
                     // persisted verbatim and echoed on every later read -- a STORED fault for any
                     // other consumer, since '@odata.type' inside a complex value is what a
                     // conforming reader uses to resolve that value's type.
-                    IResult? postInvalidKey =
-                        RejectInvalidDynamicKey(registration.OpenTypesActive, document.RootElement, typeof(TModel), jsonOptions);
-                    if (postInvalidKey is not null) return postInvalidKey;
+                    using PreparedWriteBody postPrepared =
+                        PrepareWriteBody(registration, document.RootElement, typeof(TModel), jsonOptions);
+                    if (postPrepared.Error is not null) return postPrepared.Error;
 
                     TModel? model;
                     try
                     {
-                        model = document.RootElement.Deserialize<TModel>(jsonOptions);
+                        model = postPrepared.Body.Deserialize<TModel>(jsonOptions);
                     }
                     catch (JsonException ex)
                     {
@@ -6076,10 +6207,10 @@ internal static class OhDataEndpointFactory
                         // omitting the "Path: $" that JsonSerializer.DeserializeAsync includes.
                         using JsonDocument putDocument =
                             await JsonDocument.ParseAsync(ctx.Request.Body, cancellationToken: ct);
-                        IResult? putInvalidKey = RejectInvalidDynamicKey(
-                            registration.OpenTypesActive, putDocument.RootElement, typeof(TModel), jsonOptions);
-                        if (putInvalidKey is not null) return putInvalidKey;
-                        model = putDocument.RootElement.Deserialize<TModel>(jsonOptions);
+                        using PreparedWriteBody putPrepared = PrepareWriteBody(
+                            registration, putDocument.RootElement, typeof(TModel), jsonOptions);
+                        if (putPrepared.Error is not null) return putPrepared.Error;
+                        model = putPrepared.Body.Deserialize<TModel>(jsonOptions);
                     }
                     else
                     {
@@ -6198,13 +6329,19 @@ internal static class OhDataEndpointFactory
 
                     // #389: see the POST route -- an unacceptable dynamic key is rejected before it
                     // can be bound and persisted.
-                    IResult? patchInvalidKey =
-                        RejectInvalidDynamicKey(registration.OpenTypesActive, body, typeof(TModel), jsonOptions);
-                    if (patchInvalidKey is not null) return patchInvalidKey;
+                    using PreparedWriteBody patchPrepared =
+                        PrepareWriteBody(registration, body, typeof(TModel), jsonOptions);
+                    if (patchPrepared.Error is not null) return patchPrepared.Error;
+                    // Every read of the body below this line goes through the PREPARED element, not
+                    // `body`: on the control-information path the two differ, and binding the
+                    // unstripped one would put an annotation in a bag that the read path then throws
+                    // on forever. The key-mismatch check reads it too, so PATCH cannot disagree with
+                    // itself about what the body contained.
+                    JsonElement patchBody = patchPrepared.Body;
 
                     // Only validate key mismatch if the key property was explicitly present in the body.
                     // PATCH is a partial update -- the key may be omitted. URL key is authoritative.
-                    if (TryGetJsonProperty(body, source.KeyPropertyName, out JsonElement keyEl))
+                    if (TryGetJsonProperty(patchBody, source.KeyPropertyName, out JsonElement keyEl))
                     {
                         string bodyKeyStr = keyEl.ToString();
                         string parsedKeyStr = string.Format(CultureInfo.InvariantCulture, "{0}", parsedKey);
@@ -6220,7 +6357,7 @@ internal static class OhDataEndpointFactory
                     // The handler is responsible for fetching the existing entity and applying
                     // the delta -- call delta.Patch(existing) to apply changed fields in-place.
                     var patchDelta = new Microsoft.AspNetCore.OData.Deltas.Delta<TModel>();
-                    foreach (var prop in body.EnumerateObject())
+                    foreach (var prop in patchBody.EnumerateObject())
                     {
                         // #253: request body keys are JSON names — a [JsonPropertyName]-renamed property
                         // arrives under its JSON name, so resolve by EDM name (which honors the rename)
@@ -6736,10 +6873,10 @@ internal static class OhDataEndpointFactory
                             {
                                 using JsonDocument navDocument =
                                     await JsonDocument.ParseAsync(ctx.Request.Body, cancellationToken: ct);
-                                IResult? navInvalidKey = RejectInvalidDynamicKey(
-                                    registration.OpenTypesActive, navDocument.RootElement, postNavItemType, jsonOptions);
-                                if (navInvalidKey is not null) return navInvalidKey;
-                                child = navDocument.RootElement.Deserialize(postNavItemType, jsonOptions);
+                                using PreparedWriteBody navPrepared = PrepareWriteBody(
+                                    registration, navDocument.RootElement, postNavItemType, jsonOptions);
+                                if (navPrepared.Error is not null) return navPrepared.Error;
+                                child = navPrepared.Body.Deserialize(postNavItemType, jsonOptions);
                             }
                             else
                             {
@@ -7066,16 +7203,16 @@ internal static class OhDataEndpointFactory
 
                         // #389: a property-route write replaces a whole complex value, so the same
                         // dynamic-key policing the entity routes do applies to what lands inside it.
-                        IResult? propInvalidKey =
-                            RejectInvalidDynamicKey(registration.OpenTypesActive, valueEl, propClrType, jsonOptions);
-                        if (propInvalidKey is not null) return propInvalidKey;
+                        using PreparedWriteBody propPrepared =
+                            PrepareWriteBody(registration, valueEl, propClrType, jsonOptions);
+                        if (propPrepared.Error is not null) return propPrepared.Error;
 
                         object? newValue;
                         try
                         {
-                            newValue = valueEl.ValueKind == JsonValueKind.Null
+                            newValue = propPrepared.Body.ValueKind == JsonValueKind.Null
                                 ? null
-                                : valueEl.Deserialize(propClrType, jsonOptions);
+                                : propPrepared.Body.Deserialize(propClrType, jsonOptions);
                         }
                         catch (JsonException ex)
                         {
@@ -7267,10 +7404,10 @@ internal static class OhDataEndpointFactory
                                 // POST/PUT/PATCH are policed for. Checked per PARAMETER against the
                                 // parameter's declared type, so the {"paramName": value} envelope is
                                 // never itself treated as a bag.
-                                IResult? actionInvalidKey = RejectInvalidDynamicKey(
-                                    registration.OpenTypesActive, val, param.ParameterType, jsonOptions);
-                                if (actionInvalidKey is not null) return actionInvalidKey;
-                                args[i] = val.Deserialize(param.ParameterType, jsonOptions);
+                                using PreparedWriteBody actionPrepared = PrepareWriteBody(
+                                    registration, val, param.ParameterType, jsonOptions);
+                                if (actionPrepared.Error is not null) return actionPrepared.Error;
+                                args[i] = actionPrepared.Body.Deserialize(param.ParameterType, jsonOptions);
                             }
                             else if (param.HasDefaultValue)
                             {
@@ -7415,10 +7552,11 @@ internal static class OhDataEndpointFactory
                                         // #389 H2: same per-parameter dynamic-key check as the
                                         // collection-level bound action above. The loop starts at 1
                                         // because parameter 0 of an entity-level action is the key.
-                                        IResult? actionInvalidKey = RejectInvalidDynamicKey(
-                                            registration.OpenTypesActive, val, param.ParameterType, jsonOptions);
-                                        if (actionInvalidKey is not null) return actionInvalidKey;
-                                        args[i] = val.Deserialize(param.ParameterType, jsonOptions);
+                                        using PreparedWriteBody actionPrepared = PrepareWriteBody(
+                                            registration, val, param.ParameterType, jsonOptions);
+                                        if (actionPrepared.Error is not null) return actionPrepared.Error;
+                                        args[i] = actionPrepared.Body.Deserialize(
+                                            param.ParameterType, jsonOptions);
                                     }
                                     else if (param.HasDefaultValue)
                                     {

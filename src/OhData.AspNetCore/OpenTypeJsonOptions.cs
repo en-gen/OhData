@@ -71,10 +71,38 @@ namespace OhData;
 /// <see cref="JsonTypeInfo"/> at all.
 /// </para>
 /// <para>
-/// <b>Scope: complex types only.</b> Entity-root dynamic containers are deliberately not handled
-/// (see <c>docs/open-types.md</c>): the PATCH delta loop resolves body members through
-/// <c>FindClrPropertyByEdmName</c> and skips what it cannot resolve, so a root-level undeclared
-/// key would be silently dropped on write — a half-working feature is worse than an absent one.
+/// <b>That ordering is an asserted invariant, not an emergent one</b> (<c>OpenTypeModifierOrderingTests</c>).
+/// Running before the ignored-property modifier, or having nav suppression derive from the
+/// pre-open-type options, would each break a property this file relies on — see the ordering note in
+/// <c>OhDataEndpointFactory.MapAll</c>. The <c>ignoredJsonNamesByType</c> argument to
+/// <see cref="Build"/> does <i>not</i> make the two modifiers meet: they still never touch the same
+/// <see cref="JsonTypeInfo"/>. The withheld names cross as <b>data</b>, because <c>Ignore(...)</c>
+/// works by <i>removing</i> a member and extension data captures exactly what a modifier removed —
+/// so a bag key spelled like a withheld member would otherwise be a write-then-read oracle under the
+/// withheld name. See <see cref="ThrowOnKeysThatCannotBeEmitted"/>.
+/// </para>
+/// <para>
+/// <b>Scope: complex types only</b> — entity-root dynamic containers are not handled yet (see
+/// <c>docs/open-types.md</c> and issue #398). What that scope is <i>not</i> justified by any more:
+/// this file used to claim the blocker was that <c>Delta&lt;T&gt;</c> "has no mechanism" for
+/// routing an undeclared key, because the PATCH loop resolves body members through
+/// <c>FindClrPropertyByEdmName</c> and skips what it cannot resolve. <b>The premise was false.</b>
+/// <c>Microsoft.AspNetCore.OData</c>'s <c>Delta&lt;T&gt;</c> has carried a
+/// <c>dynamicDictionaryPropertyInfo</c> constructor parameter all along
+/// (<c>Deltas/DeltaOfT.cs:112</c>), and Microsoft itself constructs it exactly that way from the EDM
+/// in <c>ODataResourceDeserializer.cs:270-286</c>. Measured against the referenced package
+/// (9.5.0, .NET 10.0.11) by direct invocation, not read off the source:
+/// <c>new Delta&lt;T&gt;(typeof(T), updatableProperties, containerPropertyInfo)</c> exists, its
+/// <c>TrySetPropertyValue("tier", "gold")</c> returns <c>true</c>, <c>Patch(target)</c> <b>merges</b>
+/// into a pre-seeded container (<c>{pre:1}</c> + <c>tier</c> → <c>{pre:1, tier:gold}</c>), and an
+/// <c>updatableProperties</c> allowlist makes it refuse a declared-but-withheld name outright rather
+/// than routing it to the bag. <c>GetChangedPropertyNames()</c> does exclude dynamic names, which is
+/// a real ergonomic gap, but it is not a blocker.
+/// <para>
+/// So what remains for entity roots is ordinary staged work — <c>Ignore()</c> containment, control
+/// -information tolerance, <c>$select</c> pushdown, then the widening itself — not an absent
+/// mechanism. Do not re-derive "entity roots are impossible" from this paragraph.
+/// </para>
 /// </para>
 /// <para>
 /// <b>Clause-bounded serialization (#325/#326) is not widened.</b> The values inside the bag
@@ -164,7 +192,8 @@ internal static class OpenTypeJsonOptions
     // odataIdentifier throws from the same pass, for the same reason.
     internal static JsonSerializerOptions Build(
         JsonSerializerOptions baseOptions,
-        OpenComplexTypeContainers containers)
+        OpenComplexTypeContainers containers,
+        IReadOnlyDictionary<Type, IReadOnlySet<string>> ignoredJsonNamesByType)
     {
         if (containers.IsEmpty) return baseOptions;
 
@@ -206,17 +235,20 @@ internal static class OpenTypeJsonOptions
                 }
                 // Idempotent: a member already carrying [JsonExtensionData] is simply reaffirmed.
                 property.IsExtensionData = true;
-                ThrowOnKeysThatCannotBeEmitted(typeInfo, property);
+                ignoredJsonNamesByType.TryGetValue(typeInfo.Type, out IReadOnlySet<string>? ignoredNames);
+                ThrowOnKeysThatCannotBeEmitted(typeInfo, property, ignoredNames);
                 break;
             }
         });
         return derived;
     }
 
-    // Wraps the container's getter with an inspection pass that rejects the two kinds of key
+    // Wraps the container's getter with an inspection pass that rejects the three kinds of key
     // server-side data can put in a bag but the writer cannot legally emit: a key equal to a DECLARED
-    // property's JSON name, and a key that is not a valid odataIdentifier at all. The rest of this
-    // comment is the reasoning for the first; the second is argued at ThrowIfAnyKeyCannotBeEmitted.
+    // property's JSON name, a key spelled like a name the profile WITHHOLDS with Ignore(...), and a
+    // key that is not a valid odataIdentifier at all. The rest of this comment is the reasoning for
+    // the first; the third is argued at ThrowIfAnyKeyCannotBeEmitted and the second at the
+    // withheld-name block below.
     //
     // A bag key equal to a DECLARED property's JSON name would otherwise emit that name twice in
     // one JSON object — measured: `{"Region":"declared","Region":"fromBag"}`, which every .NET
@@ -265,7 +297,7 @@ internal static class OpenTypeJsonOptions
     // corner entirely: such a model now fails loudly on the first request instead of silently
     // discarding writes.)
     private static void ThrowOnKeysThatCannotBeEmitted(
-        JsonTypeInfo typeInfo, JsonPropertyInfo container)
+        JsonTypeInfo typeInfo, JsonPropertyInfo container, IReadOnlySet<string>? ignoredJsonNames)
     {
         Func<object, object?>? get = container.Get;
         if (get is null) return;
@@ -275,9 +307,59 @@ internal static class OpenTypeJsonOptions
         // JSON key, and faulting on a merely case-differing key would reject data that serializes
         // perfectly well. See docs/open-types.md for the consequence — OhData binds request bodies
         // case-insensitively, so a case-differing key can still round-trip into a corrupting write.
+        //
+        // THE WITHHELD NAMES ARE NOT UNIONED INTO THIS SET, and the split is the #398 review HIGH-1
+        // fix. They are held to the BINDER's comparer instead (see below), which is a different
+        // comparer from this one whenever PropertyNameCaseInsensitive is set — i.e. always, in
+        // production. One HashSet cannot carry two comparers, so there are two.
         var declaredNames = new HashSet<string>(
             typeInfo.Properties.Where(p => !ReferenceEquals(p, container)).Select(p => p.Name),
             StringComparer.Ordinal);
+
+        // THE Ignore()d NAMES HAVE TO BE UNIONED IN, and they cannot be read off typeInfo.Properties
+        // — that is the whole reason they arrive as a separate argument. Ignore() (#226) works by
+        // REMOVING the member in an earlier TypeInfoResolver modifier, so by the time this modifier
+        // runs the member is gone from the contract and its JSON name is unrecoverable here.
+        //
+        // Extension data captures exactly what a modifier removed. Measured at raw System.Text.Json
+        // level on .NET 10.0.11, one modifier removing "Removed" and a second marking "Bag" as
+        // extension data:
+        //
+        //   Deserialize({"Id":1,"Removed":"leak","Hidden":"leak2","x":1})
+        //     -> bag: Removed=leak, x=1        <- the REMOVED member landed in the bag
+        //     -> Removed property itself: ""   <- still withheld, as intended
+        //     -> reserialize -> {"Id":1,...,"Removed":"leak","x":1}
+        //
+        // Note "Hidden" — which carries [JsonIgnore] and is therefore STILL PRESENT in
+        // typeInfo.Properties (see OhDataEndpointFactory.IsNavVisibleInBaseOptions) — did not leak.
+        // Only a modifier-REMOVED member does. So the mechanism Ignore() is built on is precisely
+        // the mechanism that would defeat it, and the consequence is not cosmetic: a bag key spelled
+        // like a withheld property is a write-then-read oracle UNDER THE EXACT WITHHELD NAME, which
+        // to any consumer or log looks like the withheld field being served.
+        //
+        // Checking them here makes such a key the same hard InvalidOperationException (-> 500 + the
+        // OData error envelope) as any other declared-name collision, and it is the read-side half of
+        // a pair: the write side drops the same name from the body in FindInvalidDynamicKey, so a
+        // withheld name cannot enter the bag from a request NOR leave it towards a client.
+        //
+        // KEPT AS A SEPARATE SET RATHER THAN UNIONED INTO declaredNames — #398 review HIGH-1, and the
+        // reason is a comparer, not tidiness. The withheld set arrives already built with
+        // IgnoredPropertyJsonOptions.WithheldNameComparer, i.e. the comparer the BINDER matches body
+        // keys with (OrdinalIgnoreCase in production). declaredNames above is deliberately ORDINAL for
+        // a different question — whether two keys would emit as one duplicate JSON key — and the two
+        // answers must not be merged: unioning an OrdinalIgnoreCase set into an Ordinal HashSet keeps
+        // the HashSet's comparer, so every case-differing spelling of a withheld name silently passed.
+        // Measured on the pre-fix tree: a server-side bag key `secret` serialized out where `Secret`
+        // threw. Do NOT re-merge these, and do not make declaredNames case-insensitive to do it — that
+        // would fault on data that serializes perfectly well (see the paragraph above, and #395).
+        //
+        // AT COMPLEX SCOPE THIS IS A NO-OP AND IS MEANT TO BE. Ignore(...) takes a root member of a
+        // profile's ENTITY type, and a container lives on a COMPLEX type, which is never a profile's
+        // model type — so ignoredJsonNames is null here for every type this modifier actually visits.
+        // It ships now, with tests, so the mechanism is proven before the entity-root widening (#398)
+        // makes it load-bearing; the alternative is landing the security-critical half and its first
+        // real exercise in the same change.
+        //
         // There is deliberately NO `declaredNames.Count == 0` bail here. There used to be one, when
         // shadowing was the only condition checked and a type with no other declared property had
         // nothing to collide with. The identifier check below does not depend on the declared set,
@@ -293,10 +375,10 @@ internal static class OpenTypeJsonOptions
                 // The two shapes System.Text.Json accepts as extension data. Only the KEYS are read;
                 // the bag itself is returned untouched either way.
                 case IDictionary<string, object?> objectBag:
-                    ThrowIfAnyKeyCannotBeEmitted(objectBag.Keys, declaredNames, ownerType);
+                    ThrowIfAnyKeyCannotBeEmitted(objectBag.Keys, declaredNames, ignoredJsonNames, ownerType);
                     break;
                 case IDictionary<string, JsonElement> elementBag:
-                    ThrowIfAnyKeyCannotBeEmitted(elementBag.Keys, declaredNames, ownerType);
+                    ThrowIfAnyKeyCannotBeEmitted(elementBag.Keys, declaredNames, ignoredJsonNames, ownerType);
                     break;
             }
             return bag;
@@ -314,9 +396,9 @@ internal static class OpenTypeJsonOptions
     // NOT an identifier — it can hold newlines, control characters or arbitrary caller-derived data,
     // which is exactly the shape that corrupts a log line.
     //
-    // TWO conditions, one pass over the bag. Both have the same cause — server-side code put a key in
-    // the container that cannot be a valid OData dynamic property name — so they are checked together
-    // rather than in a second walk.
+    // THREE conditions, one pass over the bag. All have the same cause — server-side code put a key in
+    // the container that the writer cannot legally emit — so they are checked together rather than in
+    // three walks.
     //
     // The NAMELESS-KEY half is a DELIBERATE, RECORDED DIVERGENCE from Microsoft.AspNetCore.OData,
     // which SILENTLY SKIPS the empty case: ODataResourceSerializer.cs:820,
@@ -362,8 +444,16 @@ internal static class OpenTypeJsonOptions
     //
     // Still a DELIBERATE, RECORDED DIVERGENCE from Microsoft.AspNetCore.OData in the same direction
     // and for the same three reasons — it silently skips the empty key and polices nothing else.
+    //
+    // THREE conditions now, still one pass: the identifier grammar, a collision with a DECLARED name
+    // (ordinal), and a collision with a WITHHELD name (the binder's comparer). The last two are
+    // separate parameters rather than one merged set because they are asked with different comparers
+    // — see ThrowOnKeysThatCannotBeEmitted for why, and why merging them was #398 review HIGH-1.
     private static void ThrowIfAnyKeyCannotBeEmitted(
-        IEnumerable<string> keys, HashSet<string> declaredNames, Type ownerType)
+        IEnumerable<string> keys,
+        HashSet<string> declaredNames,
+        IReadOnlySet<string>? withheldNames,
+        Type ownerType)
     {
         foreach (string key in keys)
         {
@@ -384,6 +474,27 @@ internal static class OpenTypeJsonOptions
                     "caller-supplied dictionary into the container must hold its keys to the same " +
                     "grammar. This did not come from the request body: such a key is rejected with " +
                     "400 before it can bind.");
+            }
+
+            // The WITHHELD half, checked BEFORE the declared-name collision below because a withheld
+            // name is no longer a declared one (the modifier removed it), so the two can never both
+            // match — and because its message has to say something different: this key is not
+            // shadowing a property the client can see, it is spelled like one the profile
+            // deliberately CONCEALS, so emitting it would serve the withheld name back to a caller
+            // that was never meant to see it. Matched with the binder's comparer, so
+            // 'secret'/'SECRET'/'sEcReT' are refused exactly as 'Secret' is (#398 review HIGH-1).
+            if (withheldNames is not null && withheldNames.Contains(key))
+            {
+                throw new InvalidOperationException(
+                    $"OhData: the dynamic property name '{key}' on open complex type " +
+                    $"'{ownerType.FullName}' is spelled like a property the profile withholds with " +
+                    "Ignore(...). Emitting it would serve that name back to the client, which to any " +
+                    "consumer or log is indistinguishable from the withheld property itself. Remove " +
+                    "that key from the type's dynamic-property container — server-side code that " +
+                    "merges a caller-supplied dictionary into the container must exclude withheld " +
+                    "names. A client cannot cause this: an incoming body key spelled like a withheld " +
+                    "name, in any casing the binder would match, is dropped from the body before it " +
+                    "can bind.");
             }
 
             if (!declaredNames.Contains(key)) continue;
@@ -662,9 +773,27 @@ internal static class OpenTypeJsonOptions
     // ── Write-side validation ───────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Finds the first dynamic-property key in a write body that OData does not allow as a
-    /// property name, or <c>null</c> when every key is acceptable. The caller turns a non-null
-    /// result into a <c>400</c>.
+    /// The outcome of one type-directed walk of a write body: the first key that cannot become a
+    /// dynamic property (the caller turns it into a <c>400</c>), and whether the body carries
+    /// control information that has to be stripped before it is bound.
+    /// </summary>
+    /// <param name="InvalidKey">
+    /// The first key an open type would have bagged but that OData does not allow as a property name
+    /// (the <c>odataIdentifier</c> grammar), or <c>null</c> when every key is acceptable.
+    /// </param>
+    /// <param name="CarriesUnbindableKeys">
+    /// <c>true</c> when at least one key that <b>must not become a dynamic property</b> sits at an
+    /// object level that would bag it — control information, or a name the profile withholds with
+    /// <c>Ignore(...)</c>. The caller must then re-emit the body through
+    /// <see cref="RewriteWithoutUnbindableKeys"/> before binding; see that method for why leaving
+    /// them in place is not an option.
+    /// </param>
+    internal readonly record struct WriteBodyScan(string? InvalidKey, bool CarriesUnbindableKeys);
+
+    /// <summary>
+    /// Walks a write body against the contract the binder is about to use, and reports both of the
+    /// things the caller has to act on: the first unacceptable dynamic-property key, and whether any
+    /// control information needs stripping first.
     /// </summary>
     /// <remarks>
     /// Bag keys are otherwise persisted verbatim and echoed on every subsequent read, which turns
@@ -692,9 +821,41 @@ internal static class OpenTypeJsonOptions
     /// grammar</b> to every key on the way out, so a bag key is held to identical rules in both
     /// directions — a 400 on the way in, a 500 on the way out.
     /// </para>
+    /// <para>
+    /// A name the profile <b>withholds</b> with <c>Ignore(...)</c> is the exception to the paragraph
+    /// above and is classified here explicitly — as unbindable, so it is <i>dropped</i> from the body
+    /// rather than answered with a <c>400</c>. Such a member has been <i>removed</i> from the
+    /// contract by <see cref="IgnoredPropertyJsonOptions"/>, so it is no longer declared as far as
+    /// <c>System.Text.Json</c> is concerned and extension data would capture it — see
+    /// <see cref="ThrowOnKeysThatCannotBeEmitted"/> for the measurement. That is why the ignored
+    /// JSON names have to be threaded in rather than read off <see cref="JsonTypeInfo"/>, and why
+    /// they arrive already built with <see cref="IgnoredPropertyJsonOptions.WithheldNameComparer"/>:
+    /// the binder matches body keys case-insensitively, so an ordinal withheld set would contain the
+    /// exact spelling and miss every other one (#398 review HIGH-1).
+    /// </para>
     /// </remarks>
-    internal static string? FindInvalidDynamicKey(
-        JsonElement element, Type declaredType, JsonSerializerOptions options)
+    internal static WriteBodyScan ScanWriteBody(
+        JsonElement element,
+        Type declaredType,
+        JsonSerializerOptions options,
+        IReadOnlyDictionary<Type, IReadOnlySet<string>> ignoredJsonNamesByType)
+    {
+        bool carriesUnbindableKeys = false;
+        string? invalid = FindInvalidDynamicKey(
+            element, declaredType, options, ignoredJsonNamesByType, ref carriesUnbindableKeys);
+        return new WriteBodyScan(invalid, carriesUnbindableKeys);
+    }
+
+    // `carriesUnbindableKeys` is threaded by ref rather than returned, because this method already
+    // owns its return slot for the first invalid key and the two answers are independent: a body can
+    // need a rewrite AND be rejected, or either alone. A ref bool keeps the walk allocation-free,
+    // which a state object or a tuple return would not.
+    private static string? FindInvalidDynamicKey(
+        JsonElement element,
+        Type declaredType,
+        JsonSerializerOptions options,
+        IReadOnlyDictionary<Type, IReadOnlySet<string>> ignoredJsonNamesByType,
+        ref bool carriesUnbindableKeys)
     {
         if (element.ValueKind == JsonValueKind.Array)
         {
@@ -702,13 +863,19 @@ internal static class OpenTypeJsonOptions
             // which only exists from .NET 9 and this assembly also targets net8.0.
             Type? itemType = GetEnumerableElementType(declaredType);
             if (itemType is null) return null;
-            // Short-circuits, which is the one thing worth saying about this spelling: `Select` is
-            // lazy, so `FirstOrDefault` pulls elements one at a time and stops at the first failure
-            // — no sibling subtree past it is walked. The array walk in
-            // FindInvalidKeyInDynamicValue is spelled the same way.
-            return element.EnumerateArray()
-                .Select(item => FindInvalidDynamicKey(item, itemType, options))
-                .FirstOrDefault(found => found is not null);
+            // NOT the lazy Select/FirstOrDefault spelling the other collection walks use, and the
+            // difference is forced rather than stylistic: a `ref bool` cannot be captured by a
+            // lambda. Short-circuiting on the first invalid key is preserved explicitly by the
+            // `return` below. The behavioural change is that sibling elements past a failure are no
+            // longer skipped for the CONTROL-INFORMATION flag — they are not walked at all, since
+            // the invalid key aborts the request anyway and no rewrite will happen.
+            foreach (JsonElement item in element.EnumerateArray())
+            {
+                string? found = FindInvalidDynamicKey(
+                    item, itemType, options, ignoredJsonNamesByType, ref carriesUnbindableKeys);
+                if (found is not null) return found;
+            }
+            return null;
         }
 
         if (element.ValueKind != JsonValueKind.Object) return null;
@@ -732,13 +899,17 @@ internal static class OpenTypeJsonOptions
             // also targets net8.0.
             Type? valueType = GetDictionaryValueType(declaredType);
             if (valueType is null) return null;
-            // Scalar map values terminate the walk, so they are filtered out of the sequence rather
-            // than skipped inside it. Same short-circuit as the array branch above — the whole chain
-            // is lazy, so the first failing value returns without the rest being visited.
-            return element.EnumerateObject()
-                .Where(entry => entry.Value.ValueKind is JsonValueKind.Object or JsonValueKind.Array)
-                .Select(entry => FindInvalidDynamicKey(entry.Value, valueType, options))
-                .FirstOrDefault(found => found is not null);
+            // Scalar map values terminate the walk, so they are skipped. Same short-circuit as the
+            // array branch above, and spelled as a loop for the same forced reason: `ref bool`
+            // cannot be captured by a lambda.
+            foreach (JsonProperty entry in element.EnumerateObject())
+            {
+                if (entry.Value.ValueKind is not (JsonValueKind.Object or JsonValueKind.Array)) continue;
+                string? found = FindInvalidDynamicKey(
+                    entry.Value, valueType, options, ignoredJsonNamesByType, ref carriesUnbindableKeys);
+                if (found is not null) return found;
+            }
+            return null;
         }
 
         if (typeInfo.Kind != JsonTypeInfoKind.Object) return null;
@@ -755,33 +926,303 @@ internal static class OpenTypeJsonOptions
             else declared[property.Name] = property;
         }
 
+        // The withheld set is looked up ONCE per object level rather than per member, and is null
+        // for all but a handful of types. See the classification block below for what it is for.
+        //
+        // IT ALREADY CARRIES THE RIGHT COMPARER and must not be re-wrapped here (that would be a
+        // per-request allocation). IgnoredPropertyJsonOptions.BuildIgnoredJsonNameMap builds every
+        // set with WithheldNameComparer — the same comparer `declared` above is built with, and for
+        // the same reason: this branch is reached precisely BECAUSE the key missed `declared`, so a
+        // withheld set that disagreed with it about casing would leave every case-differing spelling
+        // of a withheld name classified as an ordinary dynamic key. That was #398 review HIGH-1.
+        ignoredJsonNamesByType.TryGetValue(typeInfo.Type, out IReadOnlySet<string>? ignoredJsonNames);
+
         // Unlike the dictionary walk above, nothing here filters the sequence: every member of an
-        // open type is visited, and which of the two branches it takes — declared, so recurse with
-        // the member's own declared type; or dynamic, so validate the key and then recurse type-free
-        // — is the work, not a guard in front of it.
+        // open type is visited, and which of the branches it takes — declared, so recurse with the
+        // member's own declared type; withheld; control information; or dynamic, so validate the key
+        // and then recurse type-free — is the work, not a guard in front of it.
         foreach (JsonProperty member in element.EnumerateObject())
         {
             if (declared.TryGetValue(member.Name, out JsonPropertyInfo? property))
             {
                 if (member.Value.ValueKind is not (JsonValueKind.Object or JsonValueKind.Array)) continue;
-                string? found = FindInvalidDynamicKey(member.Value, property.PropertyType, options);
+                string? found = FindInvalidDynamicKey(
+                    member.Value, property.PropertyType, options, ignoredJsonNamesByType,
+                    ref carriesUnbindableKeys);
                 if (found is not null) return found;
             }
             // Unmatched members of a type that is NOT open are ignored on binding, exactly as they
             // are today — only a key that will actually land in a dynamic bag is policed.
             else if (isOpen)
             {
+                // ── UNBINDABLE KEYS: DROPPED, NOT POLICED ──────────────────────────────────────
+                //
+                // Two sources, one outcome. Neither may become a dynamic property, and neither is a
+                // client error, so both are removed from the body before it is bound (the flag tells
+                // the caller to re-emit it) and the request otherwise proceeds normally.
+                //
+                // (1) A NAME THE PROFILE WITHHOLDS WITH Ignore(...) -- #398 stage 1, and the
+                //     security-critical half of it. It reaches this branch precisely BECAUSE
+                //     Ignore() REMOVED the member from typeInfo.Properties, so `declared` above does
+                //     not contain it; without this line System.Text.Json routes it into the bag and
+                //     the next read echoes it back under the exact withheld name -- a write-then-read
+                //     oracle. ThrowOnKeysThatCannotBeEmitted carries the raw-STJ measurement and the
+                //     read-side pair of this check.
+                //
+                //     DROPPED RATHER THAN 400, AND THE SPEC DOES NOT MANDATE EITHER. The tempting
+                //     citation is Protocol 4.01 §11.4.2 (Create an Entity), "The service MUST fail if
+                //     unable to persist all property values specified in the request" -- but "property
+                //     value" is a term of art that already excludes things physically present in the
+                //     body (@odata.* control information is in the body and is plainly not one), and
+                //     on a type that does not declare the name there is no property for it to be a
+                //     value OF. Read that way the clause is about failing to persist LEGITIMATE
+                //     values -- a read-only member, a constraint violation -- and the only clause
+                //     addressing extra names is the SHOULD NOT aimed at the client. §11.4.1.3
+                //     "Handling of Properties Not Advertised in Metadata" sounds governing and is
+                //     not: it tells CLIENTS to be prepared to RECEIVE undeclared properties and says
+                //     nothing about the server write path. And no clause contemplates a server that
+                //     deliberately CONCEALS a declared property, which is exactly what Ignore() does.
+                //
+                //     Ambiguous, so this follows Microsoft.AspNetCore.OData, which drops:
+                //     ODataInputFormatter.cs:203 deliberately clears
+                //     ValidationKinds.ThrowOnUndeclaredPropertyForNonOpenType -- code written to STOP
+                //     ODataLib throwing, and a split between two layers of the reference
+                //     implementation (ODataLib defaults that validation ON) is close to a definition
+                //     of ambiguous. It is also what OhData's own closed-type path already does for
+                //     unknown members, and what a POST of a withheld name already did before this
+                //     change, so nothing observable moves.
+                //
+                //     AT COMPLEX SCOPE THIS IS UNREACHABLE, deliberately: Ignore(...) names a root
+                //     member of a profile's ENTITY type, containers live on COMPLEX types, and only an
+                //     open type reaches this `else if`. The entity root that IS in this map is never
+                //     open until the #398 widening, so `ignoredJsonNames` is null at every level that
+                //     gets here. It ships now, with tests, so the mechanism is proven before it is
+                //     load-bearing rather than landing with its first real exercise.
+                //
+                // (2) CONTROL INFORMATION -- #398 stage 2. See IsControlInformationName for the rule
+                //     and for why "contains '@'" is the whole of it. Measured: '@odata.type',
+                //     'Name@odata.type', 'a@b', '@' and 'x@' all land in extension data under raw
+                //     System.Text.Json, so skipping the key here without stripping it from the body
+                //     would store an annotation the read path then throws on forever.
+                if ((ignoredJsonNames is not null && ignoredJsonNames.Contains(member.Name))
+                    || IsControlInformationName(member.Name))
+                {
+                    carriesUnbindableKeys = true;
+                    continue;
+                }
+
                 if (!IsValidDynamicPropertyName(member.Name)) return member.Name;
                 // #389 H1: the VALUE of an accepted dynamic key has to be walked too. Everything
                 // below a bag key is stored verbatim and echoed on every later read, so stopping at
                 // the first level left the exact vector this check exists to close open one level
                 // down: {"Meta":{"nested":{"@odata.type":"#Evil"}}} was accepted with a 201 and then
                 // served back forever, control information and all.
+                //
+                // NOTE THE ASYMMETRY WITH THE BLOCK ABOVE, which is deliberate. Control information
+                // is tolerated at an object level the CONTRACT describes, where an '@' key genuinely
+                // is an annotation about a declared or dynamic property of a known type. Below an
+                // accepted bag key there is no contract and no declared/annotation distinction — the
+                // whole subtree is opaque data that will be stored and echoed verbatim — so an
+                // unaddressable key there stays a 400.
                 string? nested = FindInvalidKeyInDynamicValue(member.Value);
                 if (nested is not null) return nested;
             }
         }
         return null;
+    }
+
+    /// <summary>
+    /// Whether a JSON member name is OData <b>control information</b> rather than a property name.
+    /// The rule is the whole of it: <b>any</b> name containing <c>U+0040 COMMERCIAL AT</c>, at any
+    /// position.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why "contains", not "starts with".</b> OData JSON Format 4.01 gives <c>@</c> two shapes and
+    /// they differ only in position. §4.5 puts control information about the enclosing object under a
+    /// leading <c>@</c> — <c>@odata.type</c>, <c>@odata.id</c>, <c>@odata.etag</c>. §18 puts an
+    /// annotation about a <i>particular</i> property under <c>Property@annotation</c>, embedded —
+    /// <c>Name@odata.type</c>, <c>Items@odata.count</c>. A leading-only rule would tolerate the first
+    /// and reject the second, which is the more common spelling on a write body.
+    /// </para>
+    /// <para>
+    /// <b>Why every other <c>@</c> position falls under the same rule rather than needing one of its
+    /// own.</b> The residue — <c>a@b</c>, <c>@</c>, <c>x@</c> — is not valid OData control information
+    /// either, but it is <i>structurally incapable</i> of being a dynamic property: <c>@</c> is
+    /// <see cref="UnicodeCategory.OtherPunctuation"/>, which the <c>odataIdentifier</c> ABNF admits in
+    /// neither leading nor following position, so every such name was already a hard reject. There is
+    /// no name that "contains <c>@</c>" reclassifies away from being a legitimate dynamic property.
+    /// Classifying the residue as control information rather than as a 400 costs nothing and keeps
+    /// the rule statable in one line.
+    /// </para>
+    /// <para>
+    /// <b>This follows the reference implementation structurally, not by imitation.</b> There is no
+    /// <c>@</c>-handling code in <c>Microsoft.AspNetCore.OData</c> at all — no
+    /// <c>StartsWith("@")</c>, no <c>Contains("@")</c> — because ODataLib's JSON reader consumes
+    /// control information into <c>ODataResource.TypeName</c>/<c>.Id</c>/<c>.ETag</c> and custom
+    /// annotations into <c>.InstanceAnnotations</c> before the deserializer ever runs, and only
+    /// <c>.Properties</c> can become a dynamic property. An <c>@</c>-containing name is
+    /// <i>structurally</i> incapable of being a dynamic property there. OhData binds with
+    /// <c>System.Text.Json</c>, which has no such reader stage — measured, it routes all five
+    /// spellings above straight into extension data — so the classification has to be written down
+    /// explicitly. Same rule, different layer.
+    /// </para>
+    /// <para>
+    /// <b>Not consulted for a name the contract declares.</b> The caller checks declared members
+    /// first, so a member deliberately renamed into an <c>@</c>-containing JSON name with
+    /// <c>[JsonPropertyName("weird@name")]</c> still binds — measured: <c>System.Text.Json</c> accepts
+    /// such a name and reports it verbatim in <see cref="JsonTypeInfo.Properties"/>. Only an
+    /// <i>unmatched</i> key on an <i>open</i> type reaches this method.
+    /// </para>
+    /// <para>
+    /// <b>Ordering against <c>@odata.bind</c>.</b> <c>ContainsODataBindAnnotation</c> runs on the POST
+    /// route before any of this and still answers <c>501</c>, so deep-insert-by-reference keeps its
+    /// explicit non-support answer rather than being silently swallowed as an annotation.
+    /// </para>
+    /// </remarks>
+    private static bool IsControlInformationName(string name) =>
+        name.IndexOf('@') >= 0;
+
+    /// <summary>
+    /// Re-emits a write body with every <b>unbindable</b> member removed from the object levels that
+    /// would otherwise bag it — control information, and names the profile withholds with
+    /// <c>Ignore(...)</c>. Call only when <see cref="WriteBodyScan.CarriesUnbindableKeys"/> said so;
+    /// the returned <see cref="JsonDocument"/> is the caller's to dispose.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why the body has to be rewritten rather than the keys merely skipped.</b> Classifying a key
+    /// decides only that it is not a <i>dynamic property</i>. It does not stop
+    /// <c>System.Text.Json</c> binding it: extension data captures every unmatched member (measured —
+    /// see <see cref="IsControlInformationName"/> and <see cref="ThrowOnKeysThatCannotBeEmitted"/>).
+    /// Skipping a key in the walk and leaving the body alone would therefore be strictly worse than
+    /// the <c>400</c> it replaces. For control information the annotation would be stored in the bag
+    /// and every later read would throw from <see cref="ThrowOnKeysThatCannotBeEmitted"/> — because
+    /// <c>@</c> is not a valid <c>odataIdentifier</c> — turning one accepted write into a permanent
+    /// <c>500</c> on the row. For a withheld name it would be worse still: no throw, just the
+    /// withheld name echoed back to the client. <b>"Dropped" has to mean the binder never sees it.</b>
+    /// </para>
+    /// <para>
+    /// <b>Type-directed, mirroring the walk exactly.</b> Only an object level whose
+    /// <see cref="JsonTypeInfo"/> has an extension-data member strips anything, and only from members
+    /// that level's contract does not declare. Everything else — a closed type's unmatched members, a
+    /// declared member whose JSON name happens to contain <c>@</c>, and the entire subtree below an
+    /// accepted dynamic key — is copied through by <see cref="JsonElement.WriteTo"/>, which preserves
+    /// raw number text verbatim. A body whose scan reported no control information is never handed to
+    /// this method at all, so an unaffected request pays one <c>bool</c> test.
+    /// </para>
+    /// <para>
+    /// The result is re-parsed rather than mutated in place because <see cref="JsonElement"/> is
+    /// immutable and is what every call site's binder consumes. Escaping may differ from the original
+    /// bytes (<see cref="Utf8JsonWriter"/> applies its own encoder), which is lossless: the document
+    /// is parsed straight back and only the decoded values ever reach the binder.
+    /// </para>
+    /// </remarks>
+    internal static JsonDocument RewriteWithoutUnbindableKeys(
+        JsonElement element,
+        Type declaredType,
+        JsonSerializerOptions options,
+        IReadOnlyDictionary<Type, IReadOnlySet<string>> ignoredJsonNamesByType)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            WriteWithoutUnbindableKeys(writer, element, declaredType, options, ignoredJsonNamesByType);
+        }
+        return JsonDocument.Parse(buffer.WrittenMemory);
+    }
+
+    private static void WriteWithoutUnbindableKeys(
+        Utf8JsonWriter writer,
+        JsonElement element,
+        Type declaredType,
+        JsonSerializerOptions options,
+        IReadOnlyDictionary<Type, IReadOnlySet<string>> ignoredJsonNamesByType)
+    {
+        if (element.ValueKind == JsonValueKind.Array)
+        {
+            Type? itemType = GetEnumerableElementType(declaredType);
+            if (itemType is null) { element.WriteTo(writer); return; }
+            writer.WriteStartArray();
+            foreach (JsonElement item in element.EnumerateArray())
+            {
+                WriteWithoutUnbindableKeys(writer, item, itemType, options, ignoredJsonNamesByType);
+            }
+            writer.WriteEndArray();
+            return;
+        }
+
+        // Anything that is not an object, or whose contract cannot be resolved, is copied verbatim —
+        // there is no level here for a bag to exist at, so there is nothing to classify.
+        if (element.ValueKind != JsonValueKind.Object
+            || !options.TryGetTypeInfo(declaredType, out JsonTypeInfo? typeInfo))
+        {
+            element.WriteTo(writer);
+            return;
+        }
+
+        // A dictionary-valued declared member: its own keys are map keys, never dynamic property
+        // names, so none of them is ever stripped. Only the VALUES are descended into, because the
+        // value type can itself be an open complex type. Same shape as the walk's dictionary branch.
+        if (typeInfo.Kind == JsonTypeInfoKind.Dictionary)
+        {
+            Type? valueType = GetDictionaryValueType(declaredType);
+            if (valueType is null) { element.WriteTo(writer); return; }
+            writer.WriteStartObject();
+            foreach (JsonProperty entry in element.EnumerateObject())
+            {
+                writer.WritePropertyName(entry.Name);
+                WriteWithoutUnbindableKeys(writer, entry.Value, valueType, options, ignoredJsonNamesByType);
+            }
+            writer.WriteEndObject();
+            return;
+        }
+
+        if (typeInfo.Kind != JsonTypeInfoKind.Object) { element.WriteTo(writer); return; }
+
+        // Same contract read, same comparer, as the walk — so "declared" means here exactly what it
+        // means there, and the two cannot disagree about which members are candidates for stripping.
+        bool isOpen = false;
+        var declared = new Dictionary<string, JsonPropertyInfo>(
+            options.PropertyNameCaseInsensitive ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+        foreach (JsonPropertyInfo property in typeInfo.Properties)
+        {
+            if (property.IsExtensionData) isOpen = true;
+            else declared[property.Name] = property;
+        }
+
+        // Same set, same comparer as the walk — see the corresponding lookup in FindInvalidDynamicKey.
+        // The two must agree about which spellings are withheld or the scan would report a body as
+        // needing a strip and the strip would then leave the key in place.
+        ignoredJsonNamesByType.TryGetValue(typeInfo.Type, out IReadOnlySet<string>? ignoredJsonNames);
+
+        writer.WriteStartObject();
+        foreach (JsonProperty member in element.EnumerateObject())
+        {
+            if (declared.TryGetValue(member.Name, out JsonPropertyInfo? property))
+            {
+                writer.WritePropertyName(member.Name);
+                WriteWithoutUnbindableKeys(
+                    writer, member.Value, property.PropertyType, options, ignoredJsonNamesByType);
+                continue;
+            }
+            // The one thing this whole method exists to do. Exactly the pair the walk classified as
+            // unbindable, tested in the same order against the same sets, so the two cannot disagree
+            // about which members disappear.
+            if (isOpen
+                && ((ignoredJsonNames is not null && ignoredJsonNames.Contains(member.Name))
+                    || IsControlInformationName(member.Name)))
+            {
+                continue;
+            }
+
+            // An accepted dynamic key, or an unmatched member of a closed type (which the binder
+            // discards anyway). Copied verbatim in both cases: a dynamic value is opaque, and its
+            // keys were already validated by the walk.
+            writer.WritePropertyName(member.Name);
+            member.Value.WriteTo(writer);
+        }
+        writer.WriteEndObject();
     }
 
     /// <summary>

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
@@ -77,6 +78,34 @@ public sealed class OhDataRegistration
     /// </para>
     /// </remarks>
     internal bool OpenTypesActive { get; set; }
+
+    /// <summary>
+    /// #398 stage 1: for each CLR model type, the <b>JSON</b> names of the members that
+    /// <c>EntitySetProfile.Ignore(...)</c> withholds. Set once by
+    /// <c>OhDataEndpointFactory.MapAll</c>, alongside <see cref="OpenTypesActive"/>; empty for a
+    /// registration that ignores nothing.
+    /// </summary>
+    /// <remarks>
+    /// Carried on the registration rather than passed down the mapping call chain for the same reason
+    /// <see cref="OpenTypesActive"/> is: the per-request open-type checks live inside route closures
+    /// that already capture the registration, and every one of them needs both values together.
+    /// <para>
+    /// <b>Why it exists at all.</b> <c>Ignore(...)</c> works by removing the member from its
+    /// <see cref="System.Text.Json.Serialization.Metadata.JsonTypeInfo"/>, and an open type's
+    /// extension data captures precisely what a resolver modifier removed — so without a separate
+    /// record of the withheld names, a write naming one would land in the dynamic bag and a read
+    /// would echo it under the exact withheld name. The names are captured before the removal (see
+    /// <c>IgnoredPropertyJsonOptions.BuildIgnoredJsonNameMap</c>), because afterwards the JSON name
+    /// is not recoverable from the contract.
+    /// </para>
+    /// <para>
+    /// Populated even when the registration has no open type. It costs one startup pass over a map
+    /// that is usually empty, and keeping the two concerns independent means the entity-root widening
+    /// (#398) does not have to remember to turn this on.
+    /// </para>
+    /// </remarks>
+    internal IReadOnlyDictionary<Type, IReadOnlySet<string>> IgnoredJsonNamesByType { get; set; } =
+        IgnoredPropertyJsonOptions.EmptyNameMap;
 
     /// <summary>The OData entity set names exposed by this registration.</summary>
     public IEnumerable<string> EntitySetNames => Profiles.Select(p => p.EntitySetName);

@@ -410,13 +410,16 @@ public class OpenTypeWriteTests
     /// Nested under a declared container these are inert payload; flattened, they are control
     /// information — so flattening is exactly what creates the need to police them.
     /// </summary>
+    /// <remarks>
+    /// The <c>@</c>-carrying rows this theory used to include — <c>@odata.type</c>,
+    /// <c>@odata.id</c>, <c>Meta@odata.count</c> — moved to
+    /// <see cref="ControlInformationIsIgnoredNotRejected"/> when #398 stage 2 reclassified them as
+    /// control information. What is left is the grammar, which is unchanged.
+    /// </remarks>
     [Theory]
-    [InlineData("@odata.type", "\"#Evil.Type\"")]
-    [InlineData("@odata.id", "\"http://evil/x\"")]
     [InlineData("", "1")]
     [InlineData("has.dot", "1")]
     [InlineData("has space", "1")]
-    [InlineData("Meta@odata.count", "1")]
     public async Task Post_RejectsANonConformantDynamicKey(string key, string value)
     {
         (TestFixture fx, ExternalReferenceStore store) = await BuildAsync();
@@ -446,7 +449,7 @@ public class OpenTypeWriteTests
             $"/odata/ExternalReferences({ExternalReferenceStore.Seed})", Json(
             $$"""
             { "Id": "{{ExternalReferenceStore.Seed}}", "Source": "S", "Xref": "X",
-              "Metadata": { "@odata.type": "#Evil.Type" } }
+              "Metadata": { "has space": 1 } }
             """));
 
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
@@ -462,7 +465,7 @@ public class OpenTypeWriteTests
         using var req = new HttpRequestMessage(HttpMethod.Patch,
             $"/odata/ExternalReferences({ExternalReferenceStore.Seed})")
         {
-            Content = Json("""{ "Metadata": { "@odata.id": "http://evil/x" } }"""),
+            Content = Json("""{ "Metadata": { "has.dot": 1 } }"""),
         };
         HttpResponseMessage resp = await fx.Client.SendAsync(req);
 
@@ -479,9 +482,315 @@ public class OpenTypeWriteTests
         using var req = new HttpRequestMessage(HttpMethod.Put,
             $"/odata/ExternalReferences({ExternalReferenceStore.Seed})/Metadata")
         {
-            Content = Json("""{ "value": { "@odata.type": "#Evil.Type" } }"""),
+            Content = Json("""{ "value": { "has space": 1 } }"""),
         };
         HttpResponseMessage resp = await fx.Client.SendAsync(req);
+
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Null(store.LastWritten);
+    }
+
+    // ── #398 stage 2: control information is IGNORED, not rejected ──────────────────────────────
+    //
+    // These four are the shipped-path behaviour change, and each is an existing route's own reserved
+    // -key fixture with the key swapped rather than a new model built around one. The assertion that
+    // matters is NOT the status code — it is that the annotation did not reach the container.
+    // Accepting the write and then storing '@odata.type' in the bag would be strictly worse than the
+    // 400 these replace: the read path holds bag keys to the same odataIdentifier grammar, so the row
+    // would 500 on every subsequent GET, forever.
+    //
+    // REVERT-SENSITIVITY: drop the IsControlInformationName branch in the walk and all four report
+    // 400 again; keep the branch but skip the body rewrite and all four fail on the bag assertion.
+
+    /// <summary>
+    /// OData JSON Format 4.01 reserves <c>@</c> for control information (§4.5 for the leading form,
+    /// §18 for the embedded <c>Property@annotation</c> form), so an <c>@</c>-containing name is not a
+    /// property name at all and cannot be a dynamic property. <c>Microsoft.AspNetCore.OData</c>
+    /// reaches the same place structurally: ODataLib's reader consumes control information before the
+    /// deserializer runs, so such a name can never become a dynamic property there. OhData binds with
+    /// <c>System.Text.Json</c>, which has no such reader stage, so the classification is explicit —
+    /// and has to be paired with removing the key from the body, because extension data would
+    /// otherwise capture it.
+    /// </summary>
+    [Theory]
+    [InlineData("@odata.type", "\"#Evil.Type\"")]
+    [InlineData("@odata.id", "\"http://evil/x\"")]
+    [InlineData("@odata.etag", "\"W/\\\"1\\\"\"")]
+    [InlineData("Meta@odata.count", "1")]
+    [InlineData("Source@odata.type", "\"#String\"")]
+    // Not legal OData control information either, but structurally incapable of being a dynamic
+    // property for the same reason — '@' is in no odataIdentifier category — so the one rule covers
+    // it. Pinned so "contains '@'" is not quietly narrowed to "starts with '@'".
+    [InlineData("a@b", "1")]
+    [InlineData("x@", "1")]
+    [InlineData("@", "1")]
+    public async Task ControlInformationIsIgnoredNotRejected(string key, string value)
+    {
+        (TestFixture fx, ExternalReferenceStore store) = await BuildAsync();
+        await using TestFixture _fx = fx;
+
+        HttpResponseMessage resp = await fx.Client.PostAsync("/odata/ExternalReferences", Json(
+            $$"""
+            { "Source": "S", "Xref": "X",
+              "Metadata": { {{JsonSerializer.Serialize(key)}}: {{value}}, "tier": 3 } }
+            """));
+
+        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
+
+        // The handler ran, and the bag holds the real dynamic key and ONLY it.
+        Assert.NotNull(store.LastWritten);
+        Assert.Equal(
+            new[] { "tier" },
+            store.LastWritten!.Metadata!.KeyValuePairs!.Keys.OrderBy(k => k, StringComparer.Ordinal));
+
+        // And it is not echoed back inside the complex value. Checked against the Metadata object
+        // rather than the raw response text on purpose: the OData envelope legitimately carries
+        // '@odata.context'/'@odata.id' of its own, so a whole-body substring test would be measuring
+        // the envelope rather than the bag.
+        using JsonDocument echoed = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        JsonElement echoedMeta = echoed.RootElement.GetProperty("Metadata");
+        Assert.False(echoedMeta.TryGetProperty(key, out _));
+        Assert.Equal(3, echoedMeta.GetProperty("tier").GetInt32());
+    }
+
+    [Fact]
+    public async Task Put_IgnoresControlInformation()
+    {
+        (TestFixture fx, ExternalReferenceStore store) = await BuildAsync();
+        await using TestFixture _fx = fx;
+
+        HttpResponseMessage resp = await fx.Client.PutAsync(
+            $"/odata/ExternalReferences({ExternalReferenceStore.Seed})", Json(
+            $$"""
+            { "Id": "{{ExternalReferenceStore.Seed}}", "Source": "S", "Xref": "X",
+              "Metadata": { "@odata.type": "#Evil.Type", "tier": 3 } }
+            """));
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.NotNull(store.LastWritten);
+        Assert.Equal(
+            new[] { "tier" },
+            store.LastWritten!.Metadata!.KeyValuePairs!.Keys.OrderBy(k => k, StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public async Task Patch_IgnoresControlInformation()
+    {
+        (TestFixture fx, ExternalReferenceStore store) = await BuildAsync();
+        await using TestFixture _fx = fx;
+
+        using var req = new HttpRequestMessage(HttpMethod.Patch,
+            $"/odata/ExternalReferences({ExternalReferenceStore.Seed})")
+        {
+            Content = Json("""{ "Metadata": { "@odata.id": "http://evil/x", "tier": 3 } }"""),
+        };
+        HttpResponseMessage resp = await fx.Client.SendAsync(req);
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.NotNull(store.LastWritten);
+        Assert.Equal(
+            new[] { "tier" },
+            store.LastWritten!.Metadata!.KeyValuePairs!.Keys.OrderBy(k => k, StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public async Task PropertyWrite_IgnoresControlInformation()
+    {
+        (TestFixture fx, ExternalReferenceStore store) = await BuildAsync();
+        await using TestFixture _fx = fx;
+
+        using var req = new HttpRequestMessage(HttpMethod.Put,
+            $"/odata/ExternalReferences({ExternalReferenceStore.Seed})/Metadata")
+        {
+            Content = Json("""{ "value": { "@odata.type": "#Evil.Type", "tier": 3 } }"""),
+        };
+        HttpResponseMessage resp = await fx.Client.SendAsync(req);
+
+        Assert.Equal(HttpStatusCode.NoContent, resp.StatusCode);
+        Assert.NotNull(store.LastWritten);
+        Assert.Equal(
+            new[] { "tier" },
+            store.LastWritten!.Metadata!.KeyValuePairs!.Keys.OrderBy(k => k, StringComparer.Ordinal));
+    }
+
+    /// <summary>
+    /// The stripped body must still round-trip everything else byte-for-byte in meaning. This is the
+    /// regression guard on the rewriter: it re-emits the whole document through a
+    /// <c>Utf8JsonWriter</c>, so a bug there would corrupt values rather than keys — a long that lost
+    /// precision, an escape that changed, a nested array that reordered.
+    /// </summary>
+    [Fact]
+    public async Task ControlInformationStrip_PreservesEverythingElse()
+    {
+        (TestFixture fx, ExternalReferenceStore store) = await BuildAsync();
+        await using TestFixture _fx = fx;
+
+        HttpResponseMessage resp = await fx.Client.PostAsync("/odata/ExternalReferences", Json(
+            """
+            { "Source": "Sé\"quote\"", "Xref": "X",
+              "Metadata": { "@odata.type": "#Evil.Type",
+                            "big": 9007199254740993,
+                            "frac": 1.7976931348623157E+308,
+                            "arr": [1, {"k": "v"}, null, true],
+                            "uni": "naïve 😀" } }
+            """));
+
+        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
+        IDictionary<string, object?> bag = store.LastWritten!.Metadata!.KeyValuePairs!;
+        Assert.Equal(
+            new[] { "arr", "big", "frac", "uni" },
+            bag.Keys.OrderBy(k => k, StringComparer.Ordinal));
+        Assert.Equal("Sé\"quote\"", store.LastWritten!.Source);
+        // A JSON number too large for double must survive as its exact raw text.
+        Assert.Equal("9007199254740993", ((JsonElement)bag["big"]!).GetRawText());
+        Assert.Equal("1.7976931348623157E+308", ((JsonElement)bag["frac"]!).GetRawText());
+        Assert.Equal("naïve 😀", ((JsonElement)bag["uni"]!).GetString());
+        JsonElement arr = (JsonElement)bag["arr"]!;
+        Assert.Equal(4, arr.GetArrayLength());
+        Assert.Equal("v", arr[1].GetProperty("k").GetString());
+        Assert.Equal(JsonValueKind.Null, arr[2].ValueKind);
+        Assert.Equal(JsonValueKind.True, arr[3].ValueKind);
+    }
+
+    /// <summary>
+    /// <c>@odata.bind</c> must keep its explicit <c>501</c> and not be swallowed by the new
+    /// control-information rule. It survives because <c>ContainsODataBindAnnotation</c> runs on the
+    /// POST route <b>before</b> any dynamic-key work — an ordering that was previously untested, and
+    /// which the <c>@</c> rule now depends on: without it, a client asking to link an existing entity
+    /// would get a <c>201</c> that silently did not link anything.
+    /// </summary>
+    [Theory]
+    [InlineData("""{ "Source": "S", "Xref": "X", "Ref@odata.bind": "ExternalReferences(1)" }""")]
+    [InlineData("""{ "Source": "S", "Xref": "X", "Metadata": { "x@odata.bind": "Things(1)" } }""")]
+    public async Task ODataBindIsStill501AndIsCheckedBeforeTheControlInformationRule(string body)
+    {
+        (TestFixture fx, ExternalReferenceStore store) = await BuildAsync();
+        await using TestFixture _fx = fx;
+
+        HttpResponseMessage resp = await fx.Client.PostAsync("/odata/ExternalReferences", Json(body));
+
+        Assert.Equal(HttpStatusCode.NotImplemented, resp.StatusCode);
+        Assert.Null(store.LastWritten);
+    }
+
+    /// <summary>
+    /// #398 review MEDIUM-1. The broad <c>@</c> rule classifies <c>Thing@odata.bind</c> as control
+    /// information and strips it, so for one commit every write route except the collection POST
+    /// answered <c>200</c>/<c>201</c> and silently discarded a client's request to link an existing
+    /// entity — where <c>develop</c> had answered <c>400</c>, incidentally, via the identifier
+    /// grammar. <c>PUT</c> and <c>PATCH</c> now run the same detection the collection POST does, and
+    /// give the same <c>501</c>: deep insert by reference is unimplemented on every verb, not
+    /// malformed on any of them.
+    /// <para>
+    /// Both the leading (<c>@odata.bind</c> as a whole key) and the embedded
+    /// (<c>Property@odata.bind</c>) forms, at the entity root and nested inside a complex value, since
+    /// the detection is a type-free walk of the whole body.
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData(""""{ "Id": "#KEY#", "Source": "S", "Xref": "X", "Ref@odata.bind": "ExternalReferences(1)" }"""")]
+    [InlineData(""""{ "Id": "#KEY#", "Source": "S", "Xref": "X", "Metadata": { "x@odata.bind": "Things(1)" } }"""")]
+    public async Task Put_ABindAnnotationIs501AndIsNotSilentlyStripped(string template)
+    {
+        (TestFixture fx, ExternalReferenceStore store) = await BuildAsync();
+        await using TestFixture _fx = fx;
+
+        HttpResponseMessage resp = await fx.Client.PutAsync(
+            $"/odata/ExternalReferences({ExternalReferenceStore.Seed})",
+            Json(template.Replace(
+                "#KEY#",
+                ExternalReferenceStore.Seed.ToString(),
+                StringComparison.Ordinal)));
+
+        Assert.Equal(HttpStatusCode.NotImplemented, resp.StatusCode);
+        await AssertErrorCodeAsync(resp, "NotImplemented");
+        Assert.Null(store.LastWritten);
+    }
+
+    [Theory]
+    [InlineData("""{ "Ref@odata.bind": "ExternalReferences(1)" }""")]
+    [InlineData("""{ "Metadata": { "x@odata.bind": "Things(1)" } }""")]
+    public async Task Patch_ABindAnnotationIs501AndIsNotSilentlyStripped(string body)
+    {
+        (TestFixture fx, ExternalReferenceStore store) = await BuildAsync();
+        await using TestFixture _fx = fx;
+
+        HttpResponseMessage resp = await fx.Client.PatchAsync(
+            $"/odata/ExternalReferences({ExternalReferenceStore.Seed})", Json(body));
+
+        Assert.Equal(HttpStatusCode.NotImplemented, resp.StatusCode);
+        await AssertErrorCodeAsync(resp, "NotImplemented");
+        Assert.Null(store.LastWritten);
+    }
+
+    /// <summary>
+    /// The structural-property write route, which replaces a whole complex value and so can carry a
+    /// bind annotation inside it exactly as <c>PUT</c> can. Its body is the <c>{"value": …}</c>
+    /// envelope, and the check runs on the <c>value</c> member — the same element the binder gets.
+    /// </summary>
+    [Fact]
+    public async Task PropertyWrite_ABindAnnotationIs501AndIsNotSilentlyStripped()
+    {
+        (TestFixture fx, ExternalReferenceStore store) = await BuildAsync();
+        await using TestFixture _fx = fx;
+
+        HttpResponseMessage resp = await fx.Client.PutAsync(
+            $"/odata/ExternalReferences({ExternalReferenceStore.Seed})/Metadata",
+            Json("""{ "value": { "x@odata.bind": "Things(1)", "tier": 3 } }"""));
+
+        Assert.Equal(HttpStatusCode.NotImplemented, resp.StatusCode);
+        await AssertErrorCodeAsync(resp, "NotImplemented");
+        Assert.Null(store.LastWritten);
+    }
+
+    /// <summary>
+    /// The negative control the four tests above need: an ordinary <c>@</c> annotation that is NOT
+    /// <c>@odata.bind</c> is still control information and is still silently stripped, on the very
+    /// same route. Without this, all the tests above would also pass if the <c>@</c> rule had simply
+    /// been reverted.
+    /// </summary>
+    [Fact]
+    public async Task Put_ANonBindAnnotationIsStillStrippedRatherThanRejected()
+    {
+        (TestFixture fx, ExternalReferenceStore store) = await BuildAsync();
+        await using TestFixture _fx = fx;
+
+        HttpResponseMessage resp = await fx.Client.PutAsync(
+            $"/odata/ExternalReferences({ExternalReferenceStore.Seed})", Json(
+            $$"""
+            { "Id": "{{ExternalReferenceStore.Seed}}", "Source": "S", "Xref": "X",
+              "Metadata": { "@odata.type": "#Ns.Meta", "tier": 3 } }
+            """));
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal(
+            new[] { "tier" },
+            store.LastWritten!.Metadata!.KeyValuePairs!.Keys.OrderBy(k => k, StringComparer.Ordinal));
+    }
+
+    private static async Task AssertErrorCodeAsync(HttpResponseMessage resp, string expected)
+    {
+        using JsonDocument doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        Assert.Equal(expected, doc.RootElement.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    /// <summary>
+    /// The asymmetry, pinned: an <c>@</c> key one level BELOW an accepted dynamic key is still a
+    /// <c>400</c> (#389 H1). Down there the contract has run out — the whole subtree is opaque data
+    /// stored and echoed verbatim — so there is no declared/annotation distinction to make and an
+    /// unaddressable key is a stored fault exactly as it was before stage 2.
+    /// </summary>
+    [Fact]
+    public async Task ControlInformationInsideADynamicValueIsStillRejected()
+    {
+        (TestFixture fx, ExternalReferenceStore store) = await BuildAsync();
+        await using TestFixture _fx = fx;
+
+        HttpResponseMessage resp = await fx.Client.PostAsync("/odata/ExternalReferences", Json(
+            """
+            { "Source": "S", "Xref": "X",
+              "Metadata": { "nested": { "@odata.type": "#Evil.Type" } } }
+            """));
 
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
         Assert.Null(store.LastWritten);
@@ -928,8 +1237,11 @@ public class OpenTypeOptOutTests
         (TestFixture fx, ExternalReferenceStore _) = await BuildAsync(openTypes: null);
         await using TestFixture _fx = fx;
 
+        // '@odata.type' is control information since #398 stage 2 and is ignored rather than
+        // rejected, so this uses a key that fails the GRAMMAR — which is what this test was always
+        // about: the write-side check runs at all without anyone opting in.
         using var content = new StringContent(
-            """{ "Source": "S", "Xref": "X", "Metadata": { "@odata.type": "#Evil" } }""",
+            """{ "Source": "S", "Xref": "X", "Metadata": { "has space": 1 } }""",
             Encoding.UTF8, "application/json");
         HttpResponseMessage resp = await fx.Client.PostAsync("/odata/ExternalReferences", content);
 
