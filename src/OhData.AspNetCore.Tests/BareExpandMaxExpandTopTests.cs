@@ -293,11 +293,139 @@ public sealed class BareLeafCeilingTests : IAsyncLifetime
         // ValidateNestedTopCeiling check (E1 in MaxExpandTopTests.cs), not the new default-leaf bound —
         // confirms $top still "wins" (defaultLeafBound is null whenever Top is not null) and the request
         // still 400s via the expected, unrelated pre-query rejection, not a different code path.
+        //
+        // Asserting only "400 + InvalidQueryOption" would NOT test that premise: both rejections carry
+        // that code, so such an assertion passes byte-identically whichever one fired, and could not
+        // tell the guarded-against path from the intended one. The two are distinguished by their
+        // messages, so pin both directions — the pre-query $top wording must be present, and
+        // EnsureWithinExpandCeiling's post-materialization wording must be absent.
         HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/BeAuthors?$expand=Books($top=4)");
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
 
         string body = await resp.Content.ReadAsStringAsync();
         Assert.Contains("InvalidQueryOption", body);
+        // ValidateNestedTopCeiling's message, verbatim in shape: it names $top, its value and the cap.
+        Assert.Contains("The value of '$top' (4) on the expanded navigation 'Books' exceeds the maximum allowed value (3).", body);
+        // NOT the ceiling breach the new default-leaf bound would have raised.
+        Assert.DoesNotContain("cannot be computed", body);
+        Assert.DoesNotContain("Narrow it with a nested $filter", body);
+    }
+
+    // ── MEDIUM-4: the 200→400 flip covers EVERY nested-option combination except $count and $top ─────
+    // The bare-leaf arm is gated `!hasChildren && e.Top is null && !e.Count`, so a nested $select,
+    // $orderby or $filter that leaves the collection over the ceiling flips 200→400 just as the truly
+    // bare shape does. Only $skip had coverage; these three are the rest of the real blast radius.
+
+    [Fact]
+    public async Task BareLeaf_WithNestedSelect_OverCeiling_Returns400()
+    {
+        HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/BeAuthors?$expand=Books($select=Title)");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("InvalidQueryOption", body);
+        Assert.Contains("cannot be computed", body);
+        Assert.Contains("maximum of 3", body);
+    }
+
+    [Fact]
+    public async Task BareLeaf_WithNestedOrderBy_OverCeiling_Returns400()
+    {
+        HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/BeAuthors?$expand=Books($orderby=Title desc)");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("InvalidQueryOption", body);
+        Assert.Contains("cannot be computed", body);
+        Assert.Contains("maximum of 3", body);
+    }
+
+    [Fact]
+    public async Task BareLeaf_WithNestedFilter_StillOverCeiling_Returns400()
+    {
+        // A nested $filter that does NOT narrow below the ceiling (all 5 books match) still breaches.
+        HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/BeAuthors?$expand=Books($filter=Id gt 0)");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("InvalidQueryOption", body);
+        Assert.Contains("cannot be computed", body);
+        Assert.Contains("maximum of 3", body);
+    }
+
+    [Fact]
+    public async Task BareLeaf_WithNarrowingNestedFilter_Returns200()
+    {
+        // The message's advice ("Narrow it with a nested $filter") must actually work: the SAME request
+        // with a filter that brings the collection under the ceiling succeeds. Without this, the other
+        // three above only prove the rejection is broad, not that it is escapable.
+        HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/BeAuthors?$expand=Books($filter=Id le 2)");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        using JsonDocument doc = JsonDocument.Parse(body);
+        JsonElement books = doc.RootElement.GetProperty("value")[0].GetProperty("Books");
+        Assert.Equal(2, books.GetArrayLength());
+    }
+}
+
+// ── MEDIUM-3: `MaxExpandTop = null` opts out of the STATUS CODE and of the wire ORDERING ────────────
+// `paging` in ApplyNavShape now includes `defaultLeafBound is not null`, which appends the nav element's
+// key as a final tiebreaker. So a capped registration returns nested collections in child-key order
+// (deterministic), while `MaxExpandTop = null` composes no tiebreaker and leaves the order to the
+// provider. That is a behavioral difference flipped by a config knob, not just a status-code one — it is
+// documented in docs/query-options.md and pinned here from both directions.
+public sealed class BareLeafOrderingOptOutTests
+{
+    [Fact]
+    public async Task Capped_BareLeaf_AppendsChildKeyTiebreaker_AndReturnsKeyOrder()
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        var sink = new SqlCaptureSink();
+        await using TestFixture fx = await BareExpandSqliteHarness.BuildAsync(
+            connection, sink, defaults: d => { d.MaxExpandTop = 10; d.MaxTop = null; });
+        sink.Clear();
+
+        HttpResponseMessage resp = await fx.Client.GetAsync("/odata/BeAuthors?$expand=Books");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        // The window function orders by the child key, and the outer ORDER BY carries it too.
+        string sql = BareExpandSqliteHarness.LastSelectAgainst(sink, "Authors");
+        Assert.Contains("ROW_NUMBER() OVER(PARTITION BY \"b\".\"AuthorId\" ORDER BY \"b\".\"Id\")", sql);
+        Assert.Contains("\"b1\".\"Id\"", sql[sql.LastIndexOf("ORDER BY", StringComparison.Ordinal)..]);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        using JsonDocument doc = JsonDocument.Parse(body);
+        JsonElement books = doc.RootElement.GetProperty("value")[0].GetProperty("Books");
+        int[] ids = books.EnumerateArray().Select(b => b.GetProperty("Id").GetInt32()).ToArray();
+        Assert.Equal(new[] { 1, 2, 3, 4, 5 }, ids);
+    }
+
+    [Fact]
+    public async Task Uncapped_BareLeaf_ComposesNoChildKeyTiebreaker()
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        var sink = new SqlCaptureSink();
+        await using TestFixture fx = await BareExpandSqliteHarness.BuildAsync(
+            connection, sink, defaults: d => { d.MaxExpandTop = null; d.MaxTop = null; });
+        sink.Clear();
+
+        HttpResponseMessage resp = await fx.Client.GetAsync("/odata/BeAuthors?$expand=Books");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        // No window function and no child-key term anywhere in the ORDER BY: the nested collection's
+        // order is whatever the provider yields. Only the ROOT key orders the query.
+        string sql = BareExpandSqliteHarness.LastSelectAgainst(sink, "Authors");
+        Assert.DoesNotContain("ROW_NUMBER()", sql);
+        string orderBy = sql[sql.LastIndexOf("ORDER BY", StringComparison.Ordinal)..];
+        Assert.Contains("\"a\".\"Id\"", orderBy);
+        Assert.DoesNotContain("\"b\".\"Id\"", orderBy);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        using JsonDocument doc = JsonDocument.Parse(body);
+        Assert.Equal(5, doc.RootElement.GetProperty("value")[0].GetProperty("Books").GetArrayLength());
     }
 }
 
@@ -391,5 +519,153 @@ public sealed class BareSingleValuedNavUnaffectedTests : IAsyncLifetime
         string body = await resp.Content.ReadAsStringAsync();
         Assert.Contains("\"Publisher\":", body);
         Assert.Contains("\"Pub1\"", body);
+    }
+}
+
+// ── Bare $levels: the ceiling must not have a one-parameter bypass ───────────────────────────────
+// `Nav($levels=1)` is a spec-equivalent restatement of a bare `$expand=Nav` — identical response bodies
+// — so a ceiling that rejects one and not the other is not a ceiling. It was exactly that: a $levels
+// expand takes ApplyNavShape's deferPagingToJson path (no SQL bound composed AT ALL, and maxExpandTop
+// passed as null), and ShapeLevelsInJson's two arms both required an option the bare shape does not
+// carry ($count / $skip>0 / $top), so NEITHER fired. Measured on the pre-fix tree with MaxExpandTop = 1
+// (Root has 2 children): `$expand=Children` → 400, `($levels=1)` → 200 with both children,
+// `($levels=2)` → 200 with the whole hierarchy, `($levels=2;$select=name)` → 200 likewise.
+//
+// Reuses the self-referential LvNode fixture from LevelsWithOptionsPushdownSqliteTests.cs ($levels is
+// only legal on a self-referential navigation, which the BeAuthor/BeBook fixture above has none of):
+//   Root(1) ├─ A(2) ├─ A1(4) ── A1a(8)   └─ B(3) └─ B1(7)
+//           │       ├─ A2(5)
+//           │       └─ A3(6)
+// Root has 2 children, A has 3 — so a cap of 2 is under at level 1 and over at level 2, which is what
+// proves the bound applies at EVERY level rather than only the first.
+public sealed class BareLevelsCeilingTests
+{
+    private static Task<TestFixture> BuildAsync(SqliteConnection connection, int? cap) =>
+        LevelsOptionsSqliteHarness.BuildAsync(
+            connection, new LevelsDelegateCounter(), sink: null, defaults: d => d.MaxExpandTop = cap);
+
+    private static string RootQuery(string expand) =>
+        $"/odata/LvNodes?$filter=parentId eq null&$expand={expand}";
+
+    [Fact]
+    public async Task Levels1_OverCeiling_Returns400_ByteIdenticallyToBareExpand()
+    {
+        // THE bypass: `($levels=1)` must now behave exactly like the bare `$expand` it restates —
+        // same status, same error code, same message text.
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        await using TestFixture fx = await BuildAsync(connection, cap: 1);
+
+        HttpResponseMessage bare = await fx.Client.GetAsync(RootQuery("Children"));
+        HttpResponseMessage levels1 = await fx.Client.GetAsync(RootQuery("Children($levels=1)"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, bare.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, levels1.StatusCode);
+        Assert.Equal(await bare.Content.ReadAsStringAsync(), await levels1.Content.ReadAsStringAsync());
+
+        string body = await levels1.Content.ReadAsStringAsync();
+        Assert.Contains("InvalidQueryOption", body);
+        Assert.Contains("Children", body);
+        Assert.Contains("cannot be computed", body);
+        Assert.Contains("maximum of 1", body);
+    }
+
+    [Fact]
+    public async Task Levels2_BreachAtDeeperLevelOnly_Returns400()
+    {
+        // Cap 2: level 1 (Root's 2 children) is exactly AT the ceiling and must not trip; level 2
+        // (A's 3 children) breaches. Proves the check runs at every level, not just the first.
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        await using TestFixture fx = await BuildAsync(connection, cap: 2);
+
+        // Level 1 alone is fine.
+        HttpResponseMessage shallow = await fx.Client.GetAsync(RootQuery("Children($levels=1)"));
+        Assert.Equal(HttpStatusCode.OK, shallow.StatusCode);
+
+        HttpResponseMessage deep = await fx.Client.GetAsync(RootQuery("Children($levels=2)"));
+        Assert.Equal(HttpStatusCode.BadRequest, deep.StatusCode);
+
+        string body = await deep.Content.ReadAsStringAsync();
+        Assert.Contains("InvalidQueryOption", body);
+        Assert.Contains("cannot be computed", body);
+        Assert.Contains("maximum of 2", body);
+    }
+
+    [Fact]
+    public async Task Levels_WithNestedSelect_OverCeiling_Returns400()
+    {
+        // A nested $select alone reached ShapeLevelsInJson before the fix (NestedSelect is not null) yet
+        // still fired neither arm, so it was unbounded too — same fourth shape, same rejection now.
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        await using TestFixture fx = await BuildAsync(connection, cap: 1);
+
+        HttpResponseMessage resp = await fx.Client.GetAsync(RootQuery("Children($levels=2;$select=name)"));
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("InvalidQueryOption", body);
+        Assert.Contains("cannot be computed", body);
+        Assert.Contains("maximum of 1", body);
+    }
+
+    [Fact]
+    public async Task Levels_UnderCeiling_Returns200_WholeHierarchyIntact()
+    {
+        // Under the ceiling the response must be byte-for-byte what it always was — the new arm only
+        // inspects, it never windows or strips.
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        await using TestFixture fx = await BuildAsync(connection, cap: 10);
+
+        HttpResponseMessage resp = await fx.Client.GetAsync(RootQuery("Children($levels=2)"));
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        using JsonDocument doc = JsonDocument.Parse(body);
+        JsonElement root = LevelsOptionsSqliteHarness.Root(doc);
+        JsonElement level1 = root.GetProperty("Children");
+        Assert.Equal(new[] { "A", "B" }, LevelsOptionsSqliteHarness.Names(level1));
+        Assert.Equal(new[] { "A1", "A2", "A3" }, LevelsOptionsSqliteHarness.Names(level1[0].GetProperty("Children")));
+        Assert.Equal(new[] { "B1" }, LevelsOptionsSqliteHarness.Names(level1[1].GetProperty("Children")));
+    }
+
+    [Fact]
+    public async Task Uncapped_Levels_StaysUnbounded()
+    {
+        // MaxExpandTop = null is still a full opt-out on this path: ShapePushedExpandsInJson's
+        // needsLeafCeilingCheck requires `maxExpandTop is int`, so a bare $levels is not even walked.
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        await using TestFixture fx = await BuildAsync(connection, cap: null);
+
+        HttpResponseMessage resp = await fx.Client.GetAsync(RootQuery("Children($levels=2)"));
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        using JsonDocument doc = JsonDocument.Parse(body);
+        JsonElement level1 = LevelsOptionsSqliteHarness.Root(doc).GetProperty("Children");
+        Assert.Equal(new[] { "A", "B" }, LevelsOptionsSqliteHarness.Names(level1));
+        Assert.Equal(3, level1[0].GetProperty("Children").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Levels_SingleValuedSelfReference_Unaffected()
+    {
+        // A single-valued $levels recursion holds at most one related entity per level, so no ceiling
+        // applies and the walk is still skipped outright (needsLeafCeilingCheck requires IsCollection).
+        // LvRenamedNodes is the [JsonPropertyName]-renamed self-nav set: R-Root(1) → R-A(2) → R-A1(3),
+        // one child per level, so even a cap of 1 must leave it untouched.
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        await using TestFixture fx = await BuildAsync(connection, cap: 1);
+
+        HttpResponseMessage resp = await fx.Client.GetAsync(
+            "/odata/LvRenamedNodes?$filter=parentId eq null&$expand=kids($levels=2)");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("R-A1", body);
     }
 }

@@ -58,6 +58,10 @@ public static class Program
             // measuring what serializing an operation result eagerly (so a fault can still become a
             // 500 envelope) costs against serializing it straight into the response body.
             typeof(OperationResultBufferingBenchmarks),
+            // #313: also not a host-vs-host comparison — both arms are OhData, differing only in
+            // MaxExpandTop, measuring what the newly-default bare-$expand bound costs on the
+            // under-ceiling requests every existing app will now serve through it.
+            typeof(BareExpandCeilingBenchmarks),
         }).Run(switcherArgs);
         return 0;
     }

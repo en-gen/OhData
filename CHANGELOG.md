@@ -241,9 +241,41 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   above `1000`, or a nested `$count` over a related collection with more than `1000` rows. Set
   `WithDefaults(d => d.MaxExpandTop = N)` to raise it, or `= null` to restore the previous unbounded
   behavior (a profile-level `MaxExpandTop = null` means *inherit* the resolved default instead — it
-  does not itself remove the ceiling). An **omitted** nested `$top` without `$count` stays unbounded by
-  design: silently windowing an expanded collection with no `Nav@odata.nextLink` would be a worse spec
-  violation than the cost.
+  does not itself remove the ceiling). An **omitted** nested `$top` without `$count` stayed unbounded
+  in #254 — that hole is closed by #313 below, in this same unreleased cycle.
+
+- **`MaxExpandTop` now bounds the bare `$expand` too — every collection expand level, at every depth
+  (#313).** #254 left the single most common `$expand` shape uncovered: a collection level carrying
+  neither a nested `$count` nor an explicit nested `$top` composed no SQL `Take` and got no size check
+  at all, so `?$expand=Children` over a 5,000-row related collection returned all 5,000 rows under a
+  `MaxExpandTop` of `1000`. It now returns `400 InvalidQueryOption` with the same
+  "exceeds the maximum of N entities — narrow it with a nested `$filter`" message the `$count` and
+  `$top`/`$skip` breaches already used.
+
+  **The rule is broader than "bare", and the blast radius is worth reading literally:** the ceiling
+  applies to any collection expand level with **no** nested `$count` and **no** explicit nested `$top`,
+  *whatever else it carries*. So `Children($select=…)`, `Children($orderby=…)`, `Children($filter=…)`
+  and `Children($skip=N)` are all in scope — none of them bounds the collection either. An explicit
+  nested `$top` still wins (it is validated against the ceiling up front and windows the collection
+  itself, so no default bound is composed beside it).
+
+  Enforcement mirrors the shape split #254 established. At a projection **leaf** the bound is pushed
+  into SQL as `Take(MaxExpandTop + 1)`, so a breach is detected without transferring the collection —
+  EF Core translates that inside a collection projection as the standard top-N-per-group
+  `ROW_NUMBER() OVER (PARTITION BY … ORDER BY …)`, the same form an explicit nested `$top` has always
+  produced. At a level with its own nested `$expand`, and at **every level of a `$levels=N`
+  recursion**, it stays a post-materialization check in the JSON pass (`APPLY`/`LATERAL`, per #298).
+  `$levels` mattered specifically: `Children($levels=1)` is a spec-equivalent restatement of
+  `$expand=Children` — identical response bodies — so leaving it unchecked would have made the whole
+  ceiling bypassable with one parameter.
+
+  > **BEHAVIOR CHANGE, and this one ships enabled for every existing app** — `MaxExpandTop` defaults
+  > to `1000`, so any request whose expanded collection exceeds `1000` related entities flips `200` →
+  > `400`. Two further consequences of the default bound: nested collections now come back in
+  > **child-key order** (the deterministic tiebreaker #254 added for nested paging now applies to the
+  > bare shape too), and the leaf query plan gains the `ROW_NUMBER()` window. `MaxExpandTop = null`
+  > opts out of **all three** — the `400`, the ordering, and the window function — restoring the plain
+  > `LEFT JOIN` exactly as before.
 
 - **#298 / #300 fixes: two silent-degrade regressions in the #254 pushdown, both now fixed.** Post-merge
   adversarial review of #297 found that (a) `$count=true` on a pushed expand level that ALSO carried a

@@ -3708,6 +3708,17 @@ internal static class OhDataEndpointFactory
         // countBound-suppressing children level) so the deferred JSON window (ShapePushedExpandsInJson /
         // ShapeLevelsInJson) still pages over a deterministic SQL order. A composite/unresolvable key is
         // left to the provider (best-effort, never throws).
+        //
+        // #313 note on that best-effort miss: when TryGetKeyClrProperty returns null the Skip/Take below
+        // is STILL composed, so EF sees a row-limiting operator with no OrderBy and logs
+        // RowLimitingOperationWithoutOrderByWarning — which an app that opted into
+        // ConfigureWarnings(w => w.Throw(...)) turns into an exception. That is pre-existing for the
+        // explicit-$top/$skip and $count arms; defaultLeafBound only widens WHICH requests reach it.
+        // Deliberately left as-is rather than substituting some arbitrary non-key OrderBy: the shape is
+        // not reachable through ODataConventionModelBuilder at all (it rejects a composite-key
+        // navigation target outright), only through an AdvancedConfigure-built EDM, and inventing an
+        // order for a type whose key we could not resolve would change the wire order of exactly the
+        // cases we cannot reason about.
         bool paging = (engaged.Skip is int s && s > 0) || engaged.Top is int || countBound is not null
             || defaultLeafBound is not null;
         if (paging && TryGetKeyClrProperty(model, elem) is { } keyProp)
@@ -3928,7 +3939,10 @@ internal static class OhDataEndpointFactory
             // #313: a bare collection leaf (no $count, no $top/$skip of its own) now carries a SQL
             // Take(MaxExpandTop+1) bound composed by ApplyNavShape (defaultLeafBound) — so it still
             // needs to be visited here to enforce the ceiling, even though there is no count/select/
-            // children work to do otherwise.
+            // children work to do otherwise. Also the entry point for a BARE $levels recursion (which
+            // carries no children by construction — TryBuildEngagedExpand defers a nested $expand under
+            // $levels off pushdown), whose per-level ceiling ShapeLevelsInJson enforces below. Gated on
+            // `maxExpandTop is int` so an uncapped registration keeps skipping the walk outright.
             bool needsLeafCeilingCheck = e.Binding.IsCollection && !hasChildren && e.Top is null && maxExpandTop is int;
             if (!e.Count && e.NestedSelect is null && !hasChildren && !levelsNeedsJsonPaging && !needsLeafCeilingCheck)
                 continue;
@@ -4093,6 +4107,16 @@ internal static class OhDataEndpointFactory
                 // collapse to empty, not be skipped).
                 if (e.Count) WriteNestedCountAndWindow(parent, key, arr, e, maxExpandTop);
                 else if ((e.Skip is int sk && sk > 0) || e.Top is int) WriteNestedWindowOnly(arr, key, e, maxExpandTop);
+                // #313: a BARE level (no $count, no $skip/$top of its own — a nested $select alone
+                // included) fired NEITHER arm above, so the ceiling was enforced NOWHERE on this path:
+                // BuildLevelsNavAccess passes deferPagingToJson: true AND maxExpandTop: null, so
+                // ApplyNavShape composes no SQL bound either. That made `Nav($levels=1)` — a
+                // spec-equivalent restatement of a bare `$expand=Nav`, byte-identical response and all —
+                // a one-parameter bypass of the very ceiling the bare shape is now rejected by. Checked
+                // per level, on every level, so a breach 400s before the walk descends any further.
+                // Same verb as the bare pushed-expand arm in ShapePushedExpandsInJson, so the two
+                // spellings of the same request produce the same message.
+                else EnsureWithinExpandCeiling(arr, key, maxExpandTop, "'$expand'");
                 next.AddRange(arr.OfType<JsonObject>());
             }
             else if (!e.Binding.IsCollection && node is JsonObject one)
