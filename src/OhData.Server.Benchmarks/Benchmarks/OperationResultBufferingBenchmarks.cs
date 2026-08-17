@@ -174,22 +174,21 @@ public class OperationResultBufferingBenchmarks
 
     /// <summary>Eager into a pooled buffer — no steady-state allocation and no LOH traffic at all,
     /// at the cost of a rent/return around the write.</summary>
+    /// <remarks>The rent/return round-trip is the cost this arm exists to price, so the dispose
+    /// stays INSIDE the measured method — every other arm likewise pays for its buffer in full
+    /// here. Hoisting it into teardown would flatter this arm and make the four no longer
+    /// comparable. <c>using var</c> and the try/finally it replaced compile to the same exception
+    /// handler over the same try region (verified against the IL); only the finally body differs,
+    /// by the null test <c>using</c> emits for a reference type.</remarks>
     [Benchmark]
     public async Task Eager_PooledBufferWriter()
     {
-        var buffer = new PooledBufferWriter();
-        try
+        using var buffer = new PooledBufferWriter();
+        using (var writer = new Utf8JsonWriter(buffer))
         {
-            using (var writer = new Utf8JsonWriter(buffer))
-            {
-                JsonSerializer.Serialize(writer, _result, _options);
-            }
-            await Stream.Null.WriteAsync(buffer.WrittenMemory);
+            JsonSerializer.Serialize(writer, _result, _options);
         }
-        finally
-        {
-            buffer.Dispose();
-        }
+        await Stream.Null.WriteAsync(buffer.WrittenMemory);
     }
 
     private sealed class PooledBufferWriter : IBufferWriter<byte>, IDisposable

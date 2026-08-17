@@ -282,7 +282,7 @@ public class OperationResultSerializationFaultTests
         var (fx, _logs) = await BuildAsync();
         await using var _ = fx;
 
-        var request = new HttpRequestMessage(HttpMethod.Get, "/odata/OpHealthy/HealthyFunction");
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/OpHealthy/HealthyFunction");
         request.Headers.Add("Accept", "application/xml");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
 
@@ -295,7 +295,7 @@ public class OperationResultSerializationFaultTests
         var (fx, _logs) = await BuildAsync();
         await using var _ = fx;
 
-        var request = new HttpRequestMessage(HttpMethod.Get, "/odata/OpHealthy/HealthyFunction");
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/OpHealthy/HealthyFunction");
         request.Headers.Add("OData-MaxVersion", "3.0");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
 
