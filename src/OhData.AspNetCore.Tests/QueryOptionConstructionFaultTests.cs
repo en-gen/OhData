@@ -168,9 +168,10 @@ public class QueryOptionConstructionFaultTests
             var ex = Assert.ThrowsAny<ArgumentException>(() => Construct(context, q));
             Assert.IsNotType<Microsoft.OData.ODataException>(ex);
         }
-        foreach (string q in lazyCases)
+        foreach (ODataQueryOptions<QocWidget> options in lazyCases.Select(q => Construct(context, q)))
         {
-            ODataQueryOptions<QocWidget> options = Construct(context, q);
+            // Constructing inside the enumeration is the assertion: these cases must survive
+            // construction and throw only on first property access.
             Assert.Throws<Microsoft.OData.ODataException>(() => TouchEveryOption(options));
         }
         foreach (string q in noThrowCases)
