@@ -890,6 +890,14 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Set using either this overload or the string overload, not both.
     /// Pass no arguments (or call with <c>null</c>) to allow all properties.
     /// </summary>
+    /// <remarks>
+    /// <b>Does not restrict dynamic (open-type) properties.</b> The allowlist is enforced through
+    /// the EDM's model-bound <c>NotFilterable</c> annotation, and a dynamic property is not in the
+    /// EDM - so there is nothing to annotate and nothing to enforce. On a model with an open
+    /// complex type, <c>$filter</c> over a dynamic key is not gated by this allowlist at all
+    /// (<c>Microsoft.AspNetCore.OData</c> behaves the same way). If a value must not be filterable,
+    /// do not put it in a dynamic bag. See <c>docs/open-types.md</c> and issue #401.
+    /// </remarks>
     protected void FilterProperties(params Expression<Func<TModel, object?>>[] properties)
     {
         _filterProperties = ExtractNames(properties);
@@ -900,6 +908,14 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Set using either this overload or the expression overload, not both.
     /// Pass no arguments (or call with <c>null</c>) to allow all properties.
     /// </summary>
+    /// <remarks>
+    /// <b>Does not restrict dynamic (open-type) properties.</b> The allowlist is enforced through
+    /// the EDM's model-bound <c>NotFilterable</c> annotation, and a dynamic property is not in the
+    /// EDM - so there is nothing to annotate and nothing to enforce. On a model with an open
+    /// complex type, <c>$filter</c> over a dynamic key is not gated by this allowlist at all
+    /// (<c>Microsoft.AspNetCore.OData</c> behaves the same way). If a value must not be filterable,
+    /// do not put it in a dynamic bag. See <c>docs/open-types.md</c> and issue #401.
+    /// </remarks>
     protected void FilterProperties(params string[]? properties)
     {
         _filterProperties = properties;
@@ -910,6 +926,14 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Set using either this overload or the string overload, not both.
     /// Pass no arguments (or call with <c>null</c>) to allow all properties.
     /// </summary>
+    /// <remarks>
+    /// <b>Does not restrict dynamic (open-type) properties.</b> The allowlist is enforced through
+    /// the EDM's model-bound <c>NotSortable</c> annotation, and a dynamic property is not in the
+    /// EDM - so there is nothing to annotate and nothing to enforce. On a model with an open
+    /// complex type, <c>$orderby</c> over a dynamic key is not gated by this allowlist at all
+    /// (<c>Microsoft.AspNetCore.OData</c> behaves the same way). See <c>docs/open-types.md</c> and
+    /// issue #401.
+    /// </remarks>
     protected void OrderByProperties(params Expression<Func<TModel, object?>>[] properties)
     {
         _orderByProperties = ExtractNames(properties);
@@ -920,6 +944,14 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Set using either this overload or the expression overload, not both.
     /// Pass no arguments (or call with <c>null</c>) to allow all properties.
     /// </summary>
+    /// <remarks>
+    /// <b>Does not restrict dynamic (open-type) properties.</b> The allowlist is enforced through
+    /// the EDM's model-bound <c>NotSortable</c> annotation, and a dynamic property is not in the
+    /// EDM - so there is nothing to annotate and nothing to enforce. On a model with an open
+    /// complex type, <c>$orderby</c> over a dynamic key is not gated by this allowlist at all
+    /// (<c>Microsoft.AspNetCore.OData</c> behaves the same way). See <c>docs/open-types.md</c> and
+    /// issue #401.
+    /// </remarks>
     protected void OrderByProperties(params string[]? properties)
     {
         _orderByProperties = properties;
@@ -930,6 +962,15 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Set using either this overload or the string overload, not both.
     /// Pass no arguments (or call with <c>null</c>) to allow all properties.
     /// </summary>
+    /// <remarks>
+    /// <b>Does not restrict dynamic (open-type) properties - and on an open type it can be
+    /// circumvented for declared ones too.</b> The allowlist is enforced through the EDM's
+    /// model-bound <c>NotSelectable</c> annotation, which a dynamic property has no place to carry.
+    /// Worse: <c>$select</c> over a dynamic key silently degrades to selecting the whole containing
+    /// complex value, so <c>$select=Meta/anyUndeclaredName</c> returns the entire <c>Meta</c> value
+    /// including declared sub-properties this allowlist denies. See <c>docs/open-types.md</c> and
+    /// issue #401.
+    /// </remarks>
     protected void SelectProperties(params Expression<Func<TModel, object?>>[] properties)
     {
         _selectProperties = ExtractNames(properties);
@@ -940,6 +981,15 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Set using either this overload or the expression overload, not both.
     /// Pass no arguments (or call with <c>null</c>) to allow all properties.
     /// </summary>
+    /// <remarks>
+    /// <b>Does not restrict dynamic (open-type) properties - and on an open type it can be
+    /// circumvented for declared ones too.</b> The allowlist is enforced through the EDM's
+    /// model-bound <c>NotSelectable</c> annotation, which a dynamic property has no place to carry.
+    /// Worse: <c>$select</c> over a dynamic key silently degrades to selecting the whole containing
+    /// complex value, so <c>$select=Meta/anyUndeclaredName</c> returns the entire <c>Meta</c> value
+    /// including declared sub-properties this allowlist denies. See <c>docs/open-types.md</c> and
+    /// issue #401.
+    /// </remarks>
     protected void SelectProperties(params string[]? properties)
     {
         _selectProperties = properties;
