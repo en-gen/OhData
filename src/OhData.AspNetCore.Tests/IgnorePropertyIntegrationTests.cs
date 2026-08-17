@@ -12,18 +12,38 @@ using Xunit;
 namespace OhData.AspNetCore.Tests;
 
 // Parent entity: ignores a primitive (CostBasis) and a complex property (Audit).
+//
+// #398: THIS FIXTURE CARRIES AN OPEN COMPLEX TYPE ON PURPOSE (IgnSpec, below), and that is the
+// point of it. #395's open-type suite was green while shipping a CRITICAL defect because every
+// fixture in it was green-field — a fresh model built around a bag, asserting the bag worked. None
+// asserted that an EXISTING feature still worked in the PRESENCE of a bag. So the rule is now: an
+// open-type fixture is an existing feature's fixture with a container added, and the original
+// assertions stay. Every Ignore() assertion in this file therefore runs against a registration
+// where OpenTypesActive is TRUE, which is what makes them meaningful as containment tests: the
+// mechanism Ignore() is built on (removing a member in a TypeInfoResolver modifier) is exactly the
+// mechanism extension data uses to CAPTURE a removed member.
 public sealed class IgnProduct
 {
     public int Id { get; set; }
     public string Name { get; set; } = "";
     public decimal CostBasis { get; set; }
     public IgnAudit? Audit { get; set; }
+    public IgnSpec? Spec { get; set; }
     public List<IgnTag>? Tags { get; set; }
 }
 
 public sealed class IgnAudit
 {
     public string CreatedBy { get; set; } = "";
+}
+
+// The container. ODataConventionModelBuilder infers a dynamic-property dictionary from the
+// IDictionary<string, object?> member, marks IgnSpec OpenType="true" and omits Extras from the
+// declared properties — so this type is an OData open complex type with no attribute anywhere.
+public sealed class IgnSpec
+{
+    public string Material { get; set; } = "";
+    public IDictionary<string, object?>? Extras { get; set; }
 }
 
 // Navigation child with its own profile ignoring InternalCode — proves $expand-nested hiding.
@@ -52,6 +72,11 @@ internal static class IgnData
             Name = "Widget",
             CostBasis = 8.5m,
             Audit = new IgnAudit { CreatedBy = "internal-user" },
+            Spec = new IgnSpec
+            {
+                Material = "steel",
+                Extras = new Dictionary<string, object?> { ["finish"] = "matte" },
+            },
         },
         new IgnProduct { Id = 2, Name = "Gadget", CostBasis = 12.0m },
     };
