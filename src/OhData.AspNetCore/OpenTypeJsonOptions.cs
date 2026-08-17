@@ -243,10 +243,12 @@ internal static class OpenTypeJsonOptions
         return derived;
     }
 
-    // Wraps the container's getter with an inspection pass that rejects the two kinds of key
+    // Wraps the container's getter with an inspection pass that rejects the three kinds of key
     // server-side data can put in a bag but the writer cannot legally emit: a key equal to a DECLARED
-    // property's JSON name, and a key that is not a valid odataIdentifier at all. The rest of this
-    // comment is the reasoning for the first; the second is argued at ThrowIfAnyKeyCannotBeEmitted.
+    // property's JSON name, a key spelled like a name the profile WITHHOLDS with Ignore(...), and a
+    // key that is not a valid odataIdentifier at all. The rest of this comment is the reasoning for
+    // the first; the third is argued at ThrowIfAnyKeyCannotBeEmitted and the second at the
+    // withheld-name block below.
     //
     // A bag key equal to a DECLARED property's JSON name would otherwise emit that name twice in
     // one JSON object — measured: `{"Region":"declared","Region":"fromBag"}`, which every .NET
@@ -305,6 +307,11 @@ internal static class OpenTypeJsonOptions
         // JSON key, and faulting on a merely case-differing key would reject data that serializes
         // perfectly well. See docs/open-types.md for the consequence — OhData binds request bodies
         // case-insensitively, so a case-differing key can still round-trip into a corrupting write.
+        //
+        // THE WITHHELD NAMES ARE NOT UNIONED INTO THIS SET, and the split is the #398 review HIGH-1
+        // fix. They are held to the BINDER's comparer instead (see below), which is a different
+        // comparer from this one whenever PropertyNameCaseInsensitive is set — i.e. always, in
+        // production. One HashSet cannot carry two comparers, so there are two.
         var declaredNames = new HashSet<string>(
             typeInfo.Properties.Where(p => !ReferenceEquals(p, container)).Select(p => p.Name),
             StringComparer.Ordinal);
@@ -330,10 +337,21 @@ internal static class OpenTypeJsonOptions
         // like a withheld property is a write-then-read oracle UNDER THE EXACT WITHHELD NAME, which
         // to any consumer or log looks like the withheld field being served.
         //
-        // Unioning them here makes such a key the same hard InvalidOperationException (-> 500 + the
+        // Checking them here makes such a key the same hard InvalidOperationException (-> 500 + the
         // OData error envelope) as any other declared-name collision, and it is the read-side half of
-        // a pair: the write side rejects the same name with a 400 in FindInvalidDynamicKey, so a
-        // withheld name is refused in both directions.
+        // a pair: the write side drops the same name from the body in FindInvalidDynamicKey, so a
+        // withheld name cannot enter the bag from a request NOR leave it towards a client.
+        //
+        // KEPT AS A SEPARATE SET RATHER THAN UNIONED INTO declaredNames — #398 review HIGH-1, and the
+        // reason is a comparer, not tidiness. The withheld set arrives already built with
+        // IgnoredPropertyJsonOptions.WithheldNameComparer, i.e. the comparer the BINDER matches body
+        // keys with (OrdinalIgnoreCase in production). declaredNames above is deliberately ORDINAL for
+        // a different question — whether two keys would emit as one duplicate JSON key — and the two
+        // answers must not be merged: unioning an OrdinalIgnoreCase set into an Ordinal HashSet keeps
+        // the HashSet's comparer, so every case-differing spelling of a withheld name silently passed.
+        // Measured on the pre-fix tree: a server-side bag key `secret` serialized out where `Secret`
+        // threw. Do NOT re-merge these, and do not make declaredNames case-insensitive to do it — that
+        // would fault on data that serializes perfectly well (see the paragraph above, and #395).
         //
         // AT COMPLEX SCOPE THIS IS A NO-OP AND IS MEANT TO BE. Ignore(...) takes a root member of a
         // profile's ENTITY type, and a container lives on a COMPLEX type, which is never a profile's
@@ -341,7 +359,7 @@ internal static class OpenTypeJsonOptions
         // It ships now, with tests, so the mechanism is proven before the entity-root widening (#398)
         // makes it load-bearing; the alternative is landing the security-critical half and its first
         // real exercise in the same change.
-        if (ignoredJsonNames is not null) declaredNames.UnionWith(ignoredJsonNames);
+        //
         // There is deliberately NO `declaredNames.Count == 0` bail here. There used to be one, when
         // shadowing was the only condition checked and a type with no other declared property had
         // nothing to collide with. The identifier check below does not depend on the declared set,
@@ -357,10 +375,10 @@ internal static class OpenTypeJsonOptions
                 // The two shapes System.Text.Json accepts as extension data. Only the KEYS are read;
                 // the bag itself is returned untouched either way.
                 case IDictionary<string, object?> objectBag:
-                    ThrowIfAnyKeyCannotBeEmitted(objectBag.Keys, declaredNames, ownerType);
+                    ThrowIfAnyKeyCannotBeEmitted(objectBag.Keys, declaredNames, ignoredJsonNames, ownerType);
                     break;
                 case IDictionary<string, JsonElement> elementBag:
-                    ThrowIfAnyKeyCannotBeEmitted(elementBag.Keys, declaredNames, ownerType);
+                    ThrowIfAnyKeyCannotBeEmitted(elementBag.Keys, declaredNames, ignoredJsonNames, ownerType);
                     break;
             }
             return bag;
@@ -378,9 +396,9 @@ internal static class OpenTypeJsonOptions
     // NOT an identifier — it can hold newlines, control characters or arbitrary caller-derived data,
     // which is exactly the shape that corrupts a log line.
     //
-    // TWO conditions, one pass over the bag. Both have the same cause — server-side code put a key in
-    // the container that cannot be a valid OData dynamic property name — so they are checked together
-    // rather than in a second walk.
+    // THREE conditions, one pass over the bag. All have the same cause — server-side code put a key in
+    // the container that the writer cannot legally emit — so they are checked together rather than in
+    // three walks.
     //
     // The NAMELESS-KEY half is a DELIBERATE, RECORDED DIVERGENCE from Microsoft.AspNetCore.OData,
     // which SILENTLY SKIPS the empty case: ODataResourceSerializer.cs:820,
@@ -426,8 +444,16 @@ internal static class OpenTypeJsonOptions
     //
     // Still a DELIBERATE, RECORDED DIVERGENCE from Microsoft.AspNetCore.OData in the same direction
     // and for the same three reasons — it silently skips the empty key and polices nothing else.
+    //
+    // THREE conditions now, still one pass: the identifier grammar, a collision with a DECLARED name
+    // (ordinal), and a collision with a WITHHELD name (the binder's comparer). The last two are
+    // separate parameters rather than one merged set because they are asked with different comparers
+    // — see ThrowOnKeysThatCannotBeEmitted for why, and why merging them was #398 review HIGH-1.
     private static void ThrowIfAnyKeyCannotBeEmitted(
-        IEnumerable<string> keys, HashSet<string> declaredNames, Type ownerType)
+        IEnumerable<string> keys,
+        HashSet<string> declaredNames,
+        IReadOnlySet<string>? withheldNames,
+        Type ownerType)
     {
         foreach (string key in keys)
         {
@@ -450,6 +476,27 @@ internal static class OpenTypeJsonOptions
                     "400 before it can bind.");
             }
 
+            // The WITHHELD half, checked BEFORE the declared-name collision below because a withheld
+            // name is no longer a declared one (the modifier removed it), so the two can never both
+            // match — and because its message has to say something different: this key is not
+            // shadowing a property the client can see, it is spelled like one the profile
+            // deliberately CONCEALS, so emitting it would serve the withheld name back to a caller
+            // that was never meant to see it. Matched with the binder's comparer, so
+            // 'secret'/'SECRET'/'sEcReT' are refused exactly as 'Secret' is (#398 review HIGH-1).
+            if (withheldNames is not null && withheldNames.Contains(key))
+            {
+                throw new InvalidOperationException(
+                    $"OhData: the dynamic property name '{key}' on open complex type " +
+                    $"'{ownerType.FullName}' is spelled like a property the profile withholds with " +
+                    "Ignore(...). Emitting it would serve that name back to the client, which to any " +
+                    "consumer or log is indistinguishable from the withheld property itself. Remove " +
+                    "that key from the type's dynamic-property container — server-side code that " +
+                    "merges a caller-supplied dictionary into the container must exclude withheld " +
+                    "names. A client cannot cause this: an incoming body key spelled like a withheld " +
+                    "name, in any casing the binder would match, is dropped from the body before it " +
+                    "can bind.");
+            }
+
             if (!declaredNames.Contains(key)) continue;
             throw new InvalidOperationException(
                 $"OhData: the dynamic property name '{key}' on open complex type " +
@@ -459,9 +506,7 @@ internal static class OpenTypeJsonOptions
                 "dynamic-property container — server-side code that merges a caller-supplied " +
                 "dictionary into the container must exclude names that are declared properties of " +
                 "the type. A client cannot cause this: an incoming body key matching a declared " +
-                "name binds to the declared property and never reaches the container, and one " +
-                "matching a name the profile withholds with Ignore(...) is rejected with 400 before " +
-                "it can bind.");
+                "name binds to the declared property and never reaches the container.");
         }
     }
 
@@ -778,11 +823,15 @@ internal static class OpenTypeJsonOptions
     /// </para>
     /// <para>
     /// A name the profile <b>withholds</b> with <c>Ignore(...)</c> is the exception to the paragraph
-    /// above and is rejected here explicitly. Such a member has been <i>removed</i> from the
+    /// above and is classified here explicitly — as unbindable, so it is <i>dropped</i> from the body
+    /// rather than answered with a <c>400</c>. Such a member has been <i>removed</i> from the
     /// contract by <see cref="IgnoredPropertyJsonOptions"/>, so it is no longer declared as far as
     /// <c>System.Text.Json</c> is concerned and extension data would capture it — see
     /// <see cref="ThrowOnKeysThatCannotBeEmitted"/> for the measurement. That is why the ignored
-    /// JSON names have to be threaded in rather than read off <see cref="JsonTypeInfo"/>.
+    /// JSON names have to be threaded in rather than read off <see cref="JsonTypeInfo"/>, and why
+    /// they arrive already built with <see cref="IgnoredPropertyJsonOptions.WithheldNameComparer"/>:
+    /// the binder matches body keys case-insensitively, so an ordinal withheld set would contain the
+    /// exact spelling and miss every other one (#398 review HIGH-1).
     /// </para>
     /// </remarks>
     internal static WriteBodyScan ScanWriteBody(
@@ -879,6 +928,13 @@ internal static class OpenTypeJsonOptions
 
         // The withheld set is looked up ONCE per object level rather than per member, and is null
         // for all but a handful of types. See the classification block below for what it is for.
+        //
+        // IT ALREADY CARRIES THE RIGHT COMPARER and must not be re-wrapped here (that would be a
+        // per-request allocation). IgnoredPropertyJsonOptions.BuildIgnoredJsonNameMap builds every
+        // set with WithheldNameComparer — the same comparer `declared` above is built with, and for
+        // the same reason: this branch is reached precisely BECAUSE the key missed `declared`, so a
+        // withheld set that disagreed with it about casing would leave every case-differing spelling
+        // of a withheld name classified as an ordinary dynamic key. That was #398 review HIGH-1.
         ignoredJsonNamesByType.TryGetValue(typeInfo.Type, out IReadOnlySet<string>? ignoredJsonNames);
 
         // Unlike the dictionary walk above, nothing here filters the sequence: every member of an
@@ -1135,6 +1191,9 @@ internal static class OpenTypeJsonOptions
             else declared[property.Name] = property;
         }
 
+        // Same set, same comparer as the walk — see the corresponding lookup in FindInvalidDynamicKey.
+        // The two must agree about which spellings are withheld or the scan would report a body as
+        // needing a strip and the strip would then leave the key in place.
         ignoredJsonNamesByType.TryGetValue(typeInfo.Type, out IReadOnlySet<string>? ignoredJsonNames);
 
         writer.WriteStartObject();

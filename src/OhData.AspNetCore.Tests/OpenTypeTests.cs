@@ -674,16 +674,83 @@ public class OpenTypeWriteTests
     }
 
     /// <summary>
-    /// The honest counterpart, recorded rather than hidden: <c>PUT</c> has <b>no</b>
-    /// <c>@odata.bind</c> check of its own (only <c>POST</c> does), so a bind annotation inside a
-    /// complex value there used to be rejected incidentally by the identifier grammar and is now
-    /// ignored like any other annotation. That is a real consequence of the broad <c>@</c> rule.
-    /// Deep insert by reference is documented non-support on every verb, so neither answer links
-    /// anything — but a <c>400</c> turning into a silent success is worth pinning so it is a decision
-    /// rather than a surprise.
+    /// #398 review MEDIUM-1. The broad <c>@</c> rule classifies <c>Thing@odata.bind</c> as control
+    /// information and strips it, so for one commit every write route except the collection POST
+    /// answered <c>200</c>/<c>201</c> and silently discarded a client's request to link an existing
+    /// entity — where <c>develop</c> had answered <c>400</c>, incidentally, via the identifier
+    /// grammar. <c>PUT</c> and <c>PATCH</c> now run the same detection the collection POST does, and
+    /// give the same <c>501</c>: deep insert by reference is unimplemented on every verb, not
+    /// malformed on any of them.
+    /// <para>
+    /// Both the leading (<c>@odata.bind</c> as a whole key) and the embedded
+    /// (<c>Property@odata.bind</c>) forms, at the entity root and nested inside a complex value, since
+    /// the detection is a type-free walk of the whole body.
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData(""""{ "Id": "#KEY#", "Source": "S", "Xref": "X", "Ref@odata.bind": "ExternalReferences(1)" }"""")]
+    [InlineData(""""{ "Id": "#KEY#", "Source": "S", "Xref": "X", "Metadata": { "x@odata.bind": "Things(1)" } }"""")]
+    public async Task Put_ABindAnnotationIs501AndIsNotSilentlyStripped(string template)
+    {
+        (TestFixture fx, ExternalReferenceStore store) = await BuildAsync();
+        await using TestFixture _fx = fx;
+
+        HttpResponseMessage resp = await fx.Client.PutAsync(
+            $"/odata/ExternalReferences({ExternalReferenceStore.Seed})",
+            Json(template.Replace(
+                "#KEY#",
+                ExternalReferenceStore.Seed.ToString(),
+                StringComparison.Ordinal)));
+
+        Assert.Equal(HttpStatusCode.NotImplemented, resp.StatusCode);
+        await AssertErrorCodeAsync(resp, "NotImplemented");
+        Assert.Null(store.LastWritten);
+    }
+
+    [Theory]
+    [InlineData("""{ "Ref@odata.bind": "ExternalReferences(1)" }""")]
+    [InlineData("""{ "Metadata": { "x@odata.bind": "Things(1)" } }""")]
+    public async Task Patch_ABindAnnotationIs501AndIsNotSilentlyStripped(string body)
+    {
+        (TestFixture fx, ExternalReferenceStore store) = await BuildAsync();
+        await using TestFixture _fx = fx;
+
+        HttpResponseMessage resp = await fx.Client.PatchAsync(
+            $"/odata/ExternalReferences({ExternalReferenceStore.Seed})", Json(body));
+
+        Assert.Equal(HttpStatusCode.NotImplemented, resp.StatusCode);
+        await AssertErrorCodeAsync(resp, "NotImplemented");
+        Assert.Null(store.LastWritten);
+    }
+
+    /// <summary>
+    /// The structural-property write route, which replaces a whole complex value and so can carry a
+    /// bind annotation inside it exactly as <c>PUT</c> can. Its body is the <c>{"value": …}</c>
+    /// envelope, and the check runs on the <c>value</c> member — the same element the binder gets.
     /// </summary>
     [Fact]
-    public async Task Put_ABindAnnotationInsideAComplexValueIsNowIgnoredRatherThanRejected()
+    public async Task PropertyWrite_ABindAnnotationIs501AndIsNotSilentlyStripped()
+    {
+        (TestFixture fx, ExternalReferenceStore store) = await BuildAsync();
+        await using TestFixture _fx = fx;
+
+        HttpResponseMessage resp = await fx.Client.PutAsync(
+            $"/odata/ExternalReferences({ExternalReferenceStore.Seed})/Metadata",
+            Json("""{ "value": { "x@odata.bind": "Things(1)", "tier": 3 } }"""));
+
+        Assert.Equal(HttpStatusCode.NotImplemented, resp.StatusCode);
+        await AssertErrorCodeAsync(resp, "NotImplemented");
+        Assert.Null(store.LastWritten);
+    }
+
+    /// <summary>
+    /// The negative control the four tests above need: an ordinary <c>@</c> annotation that is NOT
+    /// <c>@odata.bind</c> is still control information and is still silently stripped, on the very
+    /// same route. Without this, all the tests above would also pass if the <c>@</c> rule had simply
+    /// been reverted.
+    /// </summary>
+    [Fact]
+    public async Task Put_ANonBindAnnotationIsStillStrippedRatherThanRejected()
     {
         (TestFixture fx, ExternalReferenceStore store) = await BuildAsync();
         await using TestFixture _fx = fx;
@@ -692,13 +759,19 @@ public class OpenTypeWriteTests
             $"/odata/ExternalReferences({ExternalReferenceStore.Seed})", Json(
             $$"""
             { "Id": "{{ExternalReferenceStore.Seed}}", "Source": "S", "Xref": "X",
-              "Metadata": { "x@odata.bind": "Things(1)", "tier": 3 } }
+              "Metadata": { "@odata.type": "#Ns.Meta", "tier": 3 } }
             """));
 
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         Assert.Equal(
             new[] { "tier" },
             store.LastWritten!.Metadata!.KeyValuePairs!.Keys.OrderBy(k => k, StringComparer.Ordinal));
+    }
+
+    private static async Task AssertErrorCodeAsync(HttpResponseMessage resp, string expected)
+    {
+        using JsonDocument doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        Assert.Equal(expected, doc.RootElement.GetProperty("error").GetProperty("code").GetString());
     }
 
     /// <summary>

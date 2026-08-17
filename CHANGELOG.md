@@ -38,11 +38,49 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is written down explicitly.
 
   **Unchanged, deliberately.** A declared member whose JSON name contains `@` (via
-  `[JsonPropertyName]`) still binds — declared names are matched first. `@odata.bind` on `POST` is
-  still `501 Not Implemented`; that check runs earlier. And an `@` key one level *below* an accepted
-  dynamic key is still `400`: down there the contract has run out, the whole subtree is opaque data
-  stored and echoed verbatim, so there is no annotation to distinguish and an unaddressable key is
-  still a stored fault.
+  `[JsonPropertyName]`) still binds — declared names are matched first. `@odata.bind` is still
+  `501 Not Implemented` on every write route; that check runs earlier (see the `@odata.bind` entry
+  below — the first cut of this change ran it on the collection `POST` only). And an `@` key one level
+  *below* an accepted dynamic key is still `400`: down there the contract has run out, the whole
+  subtree is opaque data stored and echoed verbatim, so there is no annotation to distinguish and an
+  unaddressable key is still a stored fault.
+
+- **`Ignore()`d properties are contained against an open type's dynamic-property bag (#398).**
+  `Ignore()` works by *removing* a member from its `JsonTypeInfo`, and `System.Text.Json` extension
+  data captures exactly what a `TypeInfoResolver` modifier removed — so on a type carrying both, a
+  request body naming a withheld property would bind it *into the bag* and every later read would
+  echo it back **under the withheld name**. Measured at raw `System.Text.Json` level.
+
+  The withheld members' **JSON** names are now captured off the *pre-ignore* contract (never
+  re-derived from the naming policy, which would be a hand-written re-implementation of
+  `System.Text.Json`'s naming rules in the one place a naming bug becomes a disclosure) and threaded
+  into both directions of the open-type path: a write naming one is dropped from the body before
+  binding, and a container key spelled like one is a hard error on the way out.
+
+  **This is a no-op today and is meant to be** — `Ignore(...)` names a root member of an *entity*
+  type and a container lives on a *complex* type, so the two cannot meet until open types widen to
+  entity roots. It ships ahead of that widening so the security-critical half is not landing at the
+  same moment as its first real exercise. A write naming a withheld property is **silently dropped**,
+  not `400`, matching what the closed-type path already does for unknown members and what
+  `Microsoft.AspNetCore.OData` does (`ODataInputFormatter` deliberately clears ODataLib's
+  `ThrowOnUndeclaredPropertyForNonOpenType`); the spec settles neither.
+
+- **Two documented claims about open types were measured false and corrected (#398).** No behaviour
+  change; both were load-bearing for the entity-root design.
+
+  `IsNavVisibleInBaseOptions`' comment said a `[JsonIgnore]`d member is removed from
+  `JsonTypeInfo.Properties`. Measured false on .NET 10.0.11 — such members stay in `Properties` with
+  `Get`/`Set` `null` and a `ShouldSerialize` returning `false`, so the method's answer came from the
+  `ShouldSerialize` branch rather than the fallthrough. Right answer, wrong reason, and the reason
+  matters: the open-type modifier snapshots its declared-name collision set from that same
+  collection, so a `[JsonIgnore]`d navigation *does* collide with a bag key rather than being
+  shadowed by one.
+
+  `docs/open-types.md` and `OpenTypeJsonOptions` said `Delta<T>` "has no mechanism" for routing an
+  undeclared key into a dynamic bag, and named that as the blocker for open entity roots. Also false:
+  `Delta<T>` has carried a `dynamicDictionaryPropertyInfo` constructor parameter all along, which
+  `Microsoft.AspNetCore.OData` supplies from the EDM, and it was measured working — merge semantics,
+  dictionary creation, and an `updatableProperties` allowlist that refuses a withheld name.
 
 - **OData open types — dynamic property bags on complex types, ON BY DEFAULT (#389).** A complex type
   with an `IDictionary<string, object?>` member serializes and binds **flat**: its entries are
@@ -228,6 +266,42 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   recommended registration. Additive API only — no runtime behavior change.
 
 ### Fixed
+
+- **`Ignore()` containment was case-sensitive while body binding is case-insensitive (#398).** The
+  withheld-name sets were built and compared with `StringComparer.Ordinal`, but the declared-member
+  lookup they are consulted *after* uses `OrdinalIgnoreCase` whenever `PropertyNameCaseInsensitive`
+  is set — which in an ASP.NET Core host is always. So with `Secret` withheld, a body key spelled
+  `secret` missed the declared lookup (the member is no longer in the contract), missed the ordinal
+  withheld set, and was classified as an ordinary dynamic key: bagged on the way in, echoed on the
+  way out. Measured — `Secret` was contained; `secret`, `SECRET` and `sEcReT` all round-tripped. The
+  read side was broken independently: a server-side bag key `secret` serialized out where `Secret`
+  faulted.
+
+  The withheld sets now carry the **binder's** comparer, at the one place they are built and at every
+  place they are consulted (the write-body walk, the body rewriter, and the read-side container
+  inspection). The declared-name collision check keeps its **ordinal** semantics deliberately and is
+  now a separate set: its question is whether two keys would emit as one duplicate JSON key, which a
+  case-differing key does not, so faulting on one there would reject data that serializes perfectly
+  well. The two are no longer merged, and merging them is what produced the bypass.
+
+  Only reachable once open types widen to entity roots (nothing today puts an `Ignore()`d entity
+  member and a dynamic container on the same type), so no shipped release is affected.
+
+- **`@odata.bind` went from `400` to silently accepted on every write route except the collection
+  `POST` (#398).** Unreleased regression from the `@`-as-control-information rule above:
+  `Thing@odata.bind` contains an `@`, so it was classified as control information and stripped, and
+  only the collection `POST` ran a bind-specific check of its own. A `PUT`, `PATCH`, navigation-`POST`
+  or structural-property write asking to link an existing entity got a `200`/`201` and nothing
+  happened.
+
+  The detection now runs at the shared write-body preparation step, so every route that binds a body
+  through it — `PUT`, `PATCH`, the navigation-`POST` create route, the structural-property writes, and
+  each bound/unbound action parameter — answers `501 Not Implemented`, the same status the collection
+  `POST` has always given. `501` rather than `400` because deep insert by reference is *unimplemented*,
+  not malformed, on every verb; the previous `400` was incidental, produced by `@` failing the
+  `odataIdentifier` grammar rather than by anything that knew what `@odata.bind` meant. Those routes
+  carry the check on registrations whose EDM declares an open complex type, which is the only
+  condition under which they buffer the request body at all.
 
 - **Three server-driven-paging defects that break a client following `@odata.nextLink` (#360, #399).**
   None had test coverage: every pre-existing paging fixture was sized so the final page is partial,

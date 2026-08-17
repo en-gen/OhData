@@ -322,6 +322,16 @@ internal static class OhDataEndpointFactory
         }
     }
 
+    // The answer every route gives for '@odata.bind', so the four write routes wired in by #398
+    // review MEDIUM-1 cannot drift from the collection POST's long-standing one. Deliberately does
+    // NOT mention AllowDeepInsert: that flag governs nested CREATE on POST only, and offering it as
+    // the remedy on a PUT or a PATCH would be advice that does not apply. The collection POST keeps
+    // its own richer message, which does name the entity set and does mention the flag.
+    private static IResult ODataBindNotImplementedError() =>
+        ODataError(501, "NotImplemented",
+            "'@odata.bind' is not supported. Use the $ref endpoints to link an existing entity " +
+            "(OData §11.4.2.2).");
+
     // #389: policing dynamic-property names on the way in. Only a registration whose EDM actually
     // declares an open complex type pays anything here (OpenTypesActive, not OpenTypesEnabled --
     // #389 L1; and now that the flag defaults to true, that EDM half is effectively the whole gate)
@@ -346,9 +356,14 @@ internal static class OhDataEndpointFactory
     //     closed type already gets. Dropping is not enough on its own -- System.Text.Json would bag
     //     either one -- so the drop has to be a real edit to the body the binder sees.
     //
-    // The returned JsonDocument, when non-null, owns pooled memory and MUST be disposed by the
-    // caller; PreparedWriteBody exists so `using` at the call site covers it without an extra block.
-    // On the common path it is null and Body is the caller's own element, so nothing is copied.
+    // The returned JsonDocument, when non-null, MUST be disposed by the caller; PreparedWriteBody
+    // exists so `using` at the call site covers it without an extra block. On the common path it is
+    // null and Body is the caller's own element, so nothing is copied.
+    //
+    // (Disposal is right; the reason once stated for it was not. JsonDocument.Parse over a
+    // ReadOnlyMemory<byte> — which is what RewriteWithoutUnbindableKeys hands it — does NOT pool the
+    // payload: it wraps the caller's memory and only the metadata database is rented from the shared
+    // array pool. Disposing still returns that database, so the `using` earns its keep either way.)
     private readonly record struct PreparedWriteBody(
         IResult? Error, JsonElement Body, JsonDocument? Rewritten) : IDisposable
     {
@@ -361,6 +376,31 @@ internal static class OhDataEndpointFactory
     {
         if (!registration.OpenTypesActive || jsonOptions is null)
             return new PreparedWriteBody(null, body, null);
+
+        // #398 review MEDIUM-1, and it MUST come before the scan below. Stage 2 classifies any key
+        // containing '@' as control information and STRIPS it, and 'Thing@odata.bind' contains one --
+        // so without this line every write route except the collection POST (which runs its own check
+        // earlier, unconditionally) went from answering 400 to answering 200/201 with the bind
+        // annotation silently discarded. A client asking to link an existing entity got a success and
+        // nothing happened, which is the exact failure mode the '@' rule was never meant to create.
+        //
+        // 501, not 400, and the same 501 the collection POST gives: deep insert by reference is
+        // UNIMPLEMENTED, not malformed, and it is unimplemented on every verb. The old 400 on these
+        // routes was incidental anyway -- it came from '@' failing the odataIdentifier grammar, not
+        // from anything that knew what @odata.bind meant.
+        //
+        // WHY IT LIVES HERE rather than at each route: this is the one chokepoint every body-binding
+        // write route already passes through (PUT, PATCH, the nav-POST create route, the
+        // property-route writes, and each bound/unbound ACTION parameter), so no route can be wired up
+        // later and forget it. The collection POST keeps its own earlier check because that one is
+        // UNCONDITIONAL, and this one is not: PrepareWriteBody returns above unless OpenTypesActive,
+        // because PUT and nav-POST only buffer the body into a JsonDocument for registrations whose
+        // EDM really has an open complex type -- buffering every PUT body would break the documented
+        // byte-identical no-op that OpenTypeDefaultOnIsByteIdenticalTests pins. That is the honest
+        // scope of the restoration: it puts the rejection back on exactly the registrations that had
+        // it before stage 2, and nowhere else.
+        if (ContainsODataBindAnnotation(body))
+            return new PreparedWriteBody(ODataBindNotImplementedError(), body, null);
 
         OpenTypeJsonOptions.WriteBodyScan scan = OpenTypeJsonOptions.ScanWriteBody(
             body, declaredType, jsonOptions, registration.IgnoredJsonNamesByType);
@@ -1034,8 +1074,6 @@ internal static class OhDataEndpointFactory
         return new OhDataQueryParametersMetadata { Parameters = list };
     }
 
-    // openTypesActive is passed rather than read off an OhDataRegistration because this method has
-    // never taken one -- it needs only the unbound operation list and the serializer options.
     // Takes the whole registration rather than the OpenTypesActive bool it used to, because #398
     // stage 1 needs the withheld-name map alongside it and the two are always consulted together.
     private static void MapUnboundOperations(

@@ -246,6 +246,32 @@ public class OpenTypeWriteRouteCoverageTests
             store.LastChild!.Meta!.KeyValuePairs!.Keys.OrderBy(k => k, StringComparer.Ordinal));
     }
 
+    /// <summary>
+    /// #398 review MEDIUM-1 on the nav-POST create route. <c>@odata.bind</c> is the one <c>@</c> key
+    /// that must NOT take the silent-strip path the test above pins: it is a request to link an
+    /// existing entity, which this framework does not implement, so it keeps the <c>501</c> the
+    /// collection POST has always given rather than a <c>201</c> that linked nothing. Both forms, at
+    /// the entity root and inside the complex value.
+    /// </summary>
+    [Theory]
+    [InlineData("""{ "Id": 0, "Parent@odata.bind": "OtwParents(1)" }""")]
+    [InlineData("""{ "Id": 0, "Meta": { "x@odata.bind": "Things(1)" } }""")]
+    public async Task NavigationPost_ABindAnnotationIs501AndIsNotSilentlyStripped(string body)
+    {
+        (TestFixture fx, OtwStore store) = await BuildAsync();
+        await using TestFixture _fx = fx;
+
+        HttpResponseMessage resp = await fx.Client.PostAsync("/odata/OtwParents(1)/Children", Json(body));
+
+        Assert.Equal(HttpStatusCode.NotImplemented, resp.StatusCode);
+        using JsonDocument doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        Assert.Equal("NotImplemented", doc.RootElement.GetProperty("error").GetProperty("code").GetString());
+
+        // Rejected BEFORE the handler ran, so nothing was created.
+        Assert.Null(store.LastChild);
+        Assert.Empty(store.Children);
+    }
+
     /// <summary>H1 and H2 together: a reserved key nested inside a dynamic value on the nav route.</summary>
     [Fact]
     public async Task NavigationPost_RejectsAReservedKeyNestedInsideADynamicValue()

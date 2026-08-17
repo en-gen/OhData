@@ -146,6 +146,14 @@ or nested inside a deep-insert child), the framework rejects the request with
 Use the [`$ref` endpoints](navigation-routing.md#ref---managing-links-between-entities) to link
 an existing entity to a parent instead.
 
+The other write routes answer `501` too — `PUT`, `PATCH`, the navigation-`POST` create route, the
+structural-property writes, and each bound/unbound action parameter — with a shorter message that
+does not mention `AllowDeepInsert`, since that flag governs nested *create* on `POST` only. Those
+routes carry the check only when the registration's EDM actually declares an open complex type,
+because that is the one condition under which they buffer the body at all; a model with no dictionary
+member streams straight into the deserializer on `PUT` and the annotation is an unmatched member the
+binder discards, exactly as it always has.
+
 ## Response semantics
 
 | Condition | Response |

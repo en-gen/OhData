@@ -291,7 +291,13 @@ Three things this does **not** change:
 
 - A **declared** member whose JSON name contains `@` — via `[JsonPropertyName("weird@name")]` — still
   binds normally. Declared names are matched first.
-- **`@odata.bind` on `POST` is still `501 Not Implemented`.** That check runs before any of this.
+- **`@odata.bind` is still `501 Not Implemented`** — on the collection `POST`, and on every other
+  route that binds a body through the open-type write-body preparation (`PUT`, `PATCH`, the
+  navigation-`POST` create route, the structural-property writes, and each bound/unbound action
+  parameter). The check runs before any of this, so a request to link an existing entity keeps its
+  explicit non-support answer rather than being swallowed as an annotation. Deep insert by reference
+  is unimplemented on every verb, not malformed on any of them, which is why it is `501` and not the
+  `400` the identifier grammar used to give it incidentally.
 - An `@` key **one level below an accepted dynamic key** is still `400`. Down there the contract has
   run out: the whole subtree is opaque data that will be stored and echoed verbatim, so there is no
   declared-versus-annotation distinction to draw and an unaddressable key is a stored fault.
@@ -694,7 +700,17 @@ translates to SQL and pushes down normally.
   OhData therefore already carries the containment, even though nothing can reach it yet: the
   withheld JSON names are captured before the removal and threaded into both directions of the
   open-type path, so a withheld name is dropped from a write body before binding and a container
-  key spelled like one is a hard error on the way out. It ships ahead of the entity-root widening
+  key spelled like one is a hard error on the way out.
+
+  **"Spelled like one" means in any casing the binder would have matched**, not just the exact
+  spelling. The withheld-name sets carry the *binder's* comparer — `OrdinalIgnoreCase` whenever
+  `PropertyNameCaseInsensitive` is set, which in an ASP.NET Core host is always. That is deliberately
+  a *different* comparer from the one the declared-name collision check uses, which stays ordinal:
+  a case-differing key does not produce a duplicate JSON key, so faulting on it there would reject
+  data that serializes perfectly well, whereas here a case-differing spelling is exactly the bypass.
+  With `Secret` withheld and an ordinal set, a body key `secret` misses the declared lookup (the
+  member is no longer in the contract), misses the withheld set, and is bagged as an ordinary
+  dynamic key — measured, and fixed in review of #398. It ships ahead of the entity-root widening
   (#398) rather than alongside it, so the security-critical half is not landing at the same moment as
   its first real exercise. A write naming a withheld property is **silently dropped**, matching what
   the closed-type path already does for unknown members and what `Microsoft.AspNetCore.OData` does
