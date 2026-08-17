@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -1017,7 +1018,10 @@ internal static class OhDataEndpointFactory
                         }
                     }
                     object? result = await opCapture.Invoke(args, ct);
-                    return result is not null ? Results.Json(result, jsonOptions ?? _pascalCaseSerializerOptions) : Results.NoContent();
+                    // #396: an unbound operation returns an arbitrary CLR graph and gets no
+                    // JsonNode stage, so it is serialized here, inside the endpoint-filter
+                    // pipeline, rather than deferred to IResult execution. See PreRenderedJson.
+                    return result is not null ? PreRenderedJson(result, jsonOptions ?? _pascalCaseSerializerOptions) : Results.NoContent();
                 }).Produces(400);
                 AddUnboundOperationProduces(rb, opCapture);
                 // Issue #181: document the function's query-string parameters.
@@ -1081,7 +1085,10 @@ internal static class OhDataEndpointFactory
                         }
                     }
                     object? result = await opCapture.Invoke(args, ct);
-                    return result is not null ? Results.Json(result, jsonOptions ?? _pascalCaseSerializerOptions) : Results.NoContent();
+                    // #396: an unbound operation returns an arbitrary CLR graph and gets no
+                    // JsonNode stage, so it is serialized here, inside the endpoint-filter
+                    // pipeline, rather than deferred to IResult execution. See PreRenderedJson.
+                    return result is not null ? PreRenderedJson(result, jsonOptions ?? _pascalCaseSerializerOptions) : Results.NoContent();
                 }).Produces(400).Produces(415);
                 AddUnboundOperationProduces(rb, opCapture);
                 // Leg 2: an action's parameters are deserialized by name out of a JSON body object
@@ -1116,6 +1123,75 @@ internal static class OhDataEndpointFactory
             404 => Results.NotFound(body),
             _ => Results.Json(body, statusCode: status)
         };
+    }
+
+    // #396: serialize NOW, inside the endpoint-filter pipeline, and return the bytes.
+    //
+    // An IResult returned from a minimal-API handler is executed by RequestDelegateFactory AFTER
+    // the whole endpoint-filter chain has unwound, so anything that throws while the result
+    // executes is outside the group-level exception filter's try -- and by that point the status
+    // line and headers are already on the wire. Measured on the pre-fix tree: a bound function
+    // whose return value faults during serialization logs "Request finished ... - 200" and the
+    // client gets HTTP 200 with a truncated body. That is strictly worse than the envelope-less
+    // 500 the S7 filter was written to eliminate: a success status with a malformed body defeats
+    // client-side error handling completely, where a 500 at least fails loudly.
+    //
+    // Most routes are already immune, and for a reason worth stating: they build their response as
+    // a JsonNode inside the handler (SerializeBounded / ODataEntityNode /
+    // ApplyCollectionPipelineAsync), so every user-supplied converter, getter and ToString runs
+    // where the filter can still see it, and executing a materialized JsonNode afterwards cannot
+    // re-enter user code. The routes that handed a RAW CLR object to Results.Json -- the bound and
+    // unbound function/action results, and the structural-property read envelope -- had no such
+    // stage. This gives them one.
+    //
+    // Byte-identical to Results.Json by construction: same declared TValue (so JsonSerializer
+    // resolves the same JsonTypeInfo -- do NOT "simplify" the call sites to pass object), same
+    // options instance, same "application/json; charset=utf-8". The one header difference is that
+    // Content-Length is now written explicitly instead of being inferred by the server from a
+    // fully-buffered response body.
+    //
+    // Cancellation is unaffected: SerializeToUtf8Bytes is synchronous and takes no token, so it
+    // cannot manufacture an OperationCanceledException, and the S7 filter still declines to catch
+    // one raised by a user converter.
+    //
+    // Cost, measured (OperationResultBufferingBenchmarks, BenchmarkDotNet, against a Stream.Null
+    // write so the baseline is as cheap as it can possibly be): a small DTO -- the shape a bound
+    // function actually returns -- gets FASTER, 0.74x, because SerializeAsync's async state machine
+    // and flush cost dominate a payload of tens of bytes. A 189 KB result costs +18% and a 9.4 MB
+    // result +74%, both entirely the extra full-payload byte[] (and, past 85 KB, its LOH traffic).
+    // That is accepted rather than optimised away: driving a pooled Utf8JsonWriter directly is
+    // faster still at every size (measured, kept as an arm in that class) but requires transcribing
+    // the JsonSerializerOptions -> JsonWriterOptions mapping by hand, and getting one member of it
+    // wrong or missing one a future runtime adds would change the response bytes -- against a fix
+    // whose whole non-faulting requirement is byte-identity. Worth revisiting only behind
+    // byte-for-byte differential tests. For scale: the entity and collection routes already
+    // materialise a whole JsonNode tree for payloads of this size, which allocates far more than a
+    // byte[] does, so this is nowhere near the framework's buffering ceiling.
+    private static IResult PreRenderedJson<TValue>(
+        TValue value, JsonSerializerOptions options, int statusCode = StatusCodes.Status200OK)
+        => new Utf8JsonHttpResult(JsonSerializer.SerializeToUtf8Bytes(value, options), statusCode);
+
+    // The pre-rendered counterpart to JsonHttpResult: holds bytes that are already final, so its
+    // ExecuteAsync runs no serialization and therefore cannot fail after the status line commits.
+    private sealed class Utf8JsonHttpResult : IResult
+    {
+        private readonly byte[] _utf8Json;
+        private readonly int _statusCode;
+
+        internal Utf8JsonHttpResult(byte[] utf8Json, int statusCode)
+        {
+            _utf8Json = utf8Json;
+            _statusCode = statusCode;
+        }
+
+        public Task ExecuteAsync(HttpContext httpContext)
+        {
+            httpContext.Response.StatusCode = _statusCode;
+            httpContext.Response.ContentType = "application/json; charset=utf-8";
+            httpContext.Response.ContentLength = _utf8Json.Length;
+            return httpContext.Response.Body.WriteAsync(
+                _utf8Json, 0, _utf8Json.Length, httpContext.RequestAborted);
+        }
     }
 
     // Every keyed route peels off the FormatException that ODataKeyParser.Parse throws on an
@@ -1335,6 +1411,72 @@ internal static class OhDataEndpointFactory
         options.Filter?.Validate(settings);
         options.OrderBy?.Validate(settings);
         options.SelectExpand?.Validate(settings);
+    }
+
+    // #402: construct ODataQueryOptions inside a try whose scope is EXACTLY the construction, and
+    // whose catch is deliberately broad.
+    //
+    // Every route that reads query options used to build them inline inside the handler's
+    // whole-body `try`, whose only mapped catch is `catch (ODataException)`. That is wrong on both
+    // axes. Measured (see QueryOptionConstructionFaultTests, which probes every system query option
+    // this framework accepts with empty, malformed and hostile values):
+    //
+    //   * Microsoft.OData.ODataException  — empty value for $filter/$orderby/$top/$skip/$count/
+    //                                       $search/$apply/$compute, thrown from the constructor.
+    //   * System.ArgumentException        — `$skiptoken=` (or a bare `$skiptoken`), thrown by
+    //                                       SkipTokenQueryOption's ctor via BuildQueryOptions.
+    //                                       NOT an ODataException, so it escaped to the group
+    //                                       filter as a 500 on a request any client can send.
+    //
+    // The tempting fix — add ArgumentException to the catch list — repeats a mistake this file has
+    // already made twice (ValidateOrThrow, the continuation-token readers): the throw set of
+    // somebody else's constructor is not ours to enumerate. ODataQueryOptions.BuildQueryOptions
+    // news up one option object per recognized $-option, each with its own argument validation, and
+    // nothing in Microsoft.AspNetCore.OData's contract says those are ODataException-only — the
+    // $skiptoken case proves they are not, and a package bump can add another tomorrow.
+    //
+    // So: catch everything. That is defensible HERE and only here, because the try contains nothing
+    // but option parsing — no handler, no data source, no serialization. Any failure inside it is by
+    // definition a statement about the request URL, which makes 400 the right answer for the whole
+    // set, known and unknown. That is precisely why the scope had to be tightened first: the old
+    // whole-handler try also contains InvokeGetQueryableAsync, so broadening the catch THERE would
+    // have turned a genuine handler fault (database down) into a 400 and destroyed the S7 guarantee
+    // from the other direction.
+    //
+    // ODataException keeps its existing message pass-through, so the eight empty-value cases above
+    // stay byte-identical. Anything else gets a generic message (an unrecognized exception type's
+    // Message is not vetted for client exposure — same reasoning as the S7 filter) and the real
+    // exception is logged at Warning so an operator can see what actually happened.
+    //
+    // True on success (options set); false on failure (error set to the 400 result to return).
+    private static bool TryBuildQueryOptions<TModel>(
+        ODataQueryContext context, HttpContext ctx, ILogger? logger,
+        [NotNullWhen(true)] out ODataQueryOptions<TModel>? options,
+        [NotNullWhen(false)] out IResult? error)
+    {
+        try
+        {
+            options = new ODataQueryOptions<TModel>(context, ctx.Request);
+            error = null;
+            return true;
+        }
+        catch (Microsoft.OData.ODataException ex)
+        {
+            options = null;
+            error = ODataError(400, "InvalidQueryOption", ex.Message);
+            return false;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            options = null;
+            logger?.LogWarning(ex,
+                "OhData: query options for {Method} {Path} could not be parsed",
+                SanitizeLogValue(ctx.Request.Method),
+                SanitizeLogValue(ctx.Request.Path.ToString()));
+            error = ODataError(400, "InvalidQueryOption",
+                "One or more system query options in the request URL could not be parsed.");
+            return false;
+        }
     }
 
     // #254 (E1): enforce the per-navigation MaxExpandTop ceiling on an EXPLICIT nested $top at every
@@ -4630,7 +4772,12 @@ internal static class OhDataEndpointFactory
 
                     var s = ResolveHandlers(ctx);
                     var odataSrc = (IODataEntitySetEndpointSource)s;
-                    var options = new ODataQueryOptions<TModel>(cachedODataQueryContext, ctx.Request);
+                    // #402: broad-catch-to-400 around exactly the construction. See TryBuildQueryOptions.
+                    if (!TryBuildQueryOptions<TModel>(cachedODataQueryContext, ctx, logger,
+                            out ODataQueryOptions<TModel>? options, out IResult? optionsError))
+                    {
+                        return optionsError;
+                    }
                     // B1 fix: enforce FilterProperties/OrderByProperties/SelectProperties/
                     // ExpandProperties allowlists before handing options to the profile — the
                     // profile's own ApplyTo call has no opportunity to reject a disallowed
@@ -4821,7 +4968,12 @@ internal static class OhDataEndpointFactory
                     var queryable = (IQueryable<TModel>)(await s.InvokeGetQueryableAsync(ct))
                                     .Cast<TModel>();
 
-                    var options = new ODataQueryOptions<TModel>(cachedODataQueryContext, ctx.Request);
+                    // #402: broad-catch-to-400 around exactly the construction. See TryBuildQueryOptions.
+                    if (!TryBuildQueryOptions<TModel>(cachedODataQueryContext, ctx, logger,
+                            out ODataQueryOptions<TModel>? options, out IResult? optionsError))
+                    {
+                        return optionsError;
+                    }
                     // B1 fix: enforce FilterProperties/OrderByProperties/SelectProperties/
                     // ExpandProperties allowlists before any ApplyTo call below.
                     ValidatePropertyAllowlists(options, cachedValidationSettings);
@@ -5361,7 +5513,12 @@ internal static class OhDataEndpointFactory
                     var s = ResolveHandlers(ctx);
                     logger?.LogDebug("GET {Prefix}/{Name}", prefix, name);
 
-                    var options = new ODataQueryOptions<TModel>(cachedODataQueryContext, ctx.Request);
+                    // #402: broad-catch-to-400 around exactly the construction. See TryBuildQueryOptions.
+                    if (!TryBuildQueryOptions<TModel>(cachedODataQueryContext, ctx, logger,
+                            out ODataQueryOptions<TModel>? options, out IResult? optionsError))
+                    {
+                        return optionsError;
+                    }
 
                     // Leg 1 (docs-fidelity): $filter/$orderby remain structurally unsupported on
                     // this path — GetAll has no ApplyTo/IQueryable pipeline to push them down to.
@@ -5546,7 +5703,12 @@ internal static class OhDataEndpointFactory
                     if (countCapabilityError is not null) return countCapabilityError;
 
                     var s = ResolveHandlers(ctx);
-                    var options = new ODataQueryOptions<TModel>(cachedODataQueryContext, ctx.Request);
+                    // #402: broad-catch-to-400 around exactly the construction. See TryBuildQueryOptions.
+                    if (!TryBuildQueryOptions<TModel>(cachedODataQueryContext, ctx, logger,
+                            out ODataQueryOptions<TModel>? options, out IResult? optionsError))
+                    {
+                        return optionsError;
+                    }
                     // B1 fix: enforce the FilterProperties allowlist here too.
                     ValidatePropertyAllowlists(options, cachedValidationSettings);
 
@@ -5642,7 +5804,12 @@ internal static class OhDataEndpointFactory
                     List<string>? selectedProps = null;
                     if (hasSelect || hasExpand)
                     {
-                        options = new ODataQueryOptions<TModel>(cachedODataQueryContext, ctx.Request);
+                        // #402: broad-catch-to-400 around exactly the construction. See TryBuildQueryOptions.
+                        if (!TryBuildQueryOptions<TModel>(cachedODataQueryContext, ctx, logger,
+                                out options, out IResult? optionsError))
+                        {
+                            return optionsError;
+                        }
                         // B1 fix: enforce SelectProperties/ExpandProperties allowlists.
                         ValidatePropertyAllowlists(options, cachedValidationSettings);
                         // #301: reject a nested $top above MaxExpandTop at any depth. GetById shares
@@ -6737,7 +6904,10 @@ internal static class OhDataEndpointFactory
                             // of leaking the host's HttpJsonOptions policy via the Results.Ok pipeline.
                             // (Envelope keys are Dictionary keys — unaffected by PropertyNamingPolicy —
                             // and primitive values have no member names, so both are unchanged.)
-                            return Results.Json(envelope, jsonOptions ?? _pascalCaseSerializerOptions);
+                            // #396: `value` is a raw CLR property value (a complex type's whole
+                            // sub-graph, for a complex property), so this envelope is serialized
+                            // inside the filter's scope rather than deferred. See PreRenderedJson.
+                            return PreRenderedJson(envelope, jsonOptions ?? _pascalCaseSerializerOptions);
                         }
                         catch (FormatException ex)
                         {
@@ -7387,7 +7557,10 @@ internal static class OhDataEndpointFactory
         // Primitive/other (e.g. a non-TModel DTO) — no context wrapping. Serialize through the
         // owned options so its property names follow OhData's casing (#252) rather than leaking the
         // host's HttpJsonOptions naming policy via the ASP.NET Core Results.Ok serialization path.
-        return Results.Json(result, jsonOptions ?? _pascalCaseSerializerOptions);
+        // #396: this is the one branch of this method that hands an arbitrary CLR graph to the
+        // serializer — the two above emit a materialized JsonArray or an Edm primitive — so it is
+        // the branch that has to serialize inside the filter's scope. See PreRenderedJson.
+        return PreRenderedJson(result, jsonOptions ?? _pascalCaseSerializerOptions);
     }
 
     // m5: CLR type -> Edm primitive type name, used to build the individual-value response
