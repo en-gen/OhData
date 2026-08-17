@@ -136,6 +136,7 @@ public IDictionary<string, object?>? Bag { get; set; }                          
 | `$select=<ComplexProp>` | The container is preserved in full — dynamic keys are not stripped |
 | `$metadata` | `OpenType="true"`; container omitted from the declared properties |
 | Inheritance | A derived complex type inherits its base's container |
+| `$filter`/`$orderby`/`$select` over an **individual dynamic key** | **Not a supported surface.** Outcome depends on the read path and, for `$filter`/`$orderby`, on the LINQ provider — see [below](#filter-orderby-dynamic-key). Not gated by the property allowlists either — see [the next section](#dynamic-keys-outside-allowlists) |
 
 Values arrive in the dictionary as `JsonElement` (System.Text.Json's representation for an
 `object`-typed slot), which is what a handler should expect when reading them.
@@ -148,6 +149,53 @@ check:
 ```csharp
 object? tier = entity.Metadata?.KeyValuePairs?.GetValueOrDefault("tier");
 ```
+
+<a id="dynamic-keys-outside-allowlists"></a>
+## Dynamic keys are outside the query-option property allowlists
+
+> **`FilterProperties`, `OrderByProperties` and `SelectProperties` do not restrict dynamic keys. If
+> you treat those allowlists as a security boundary, an open type is a hole in it.**
+
+Those allowlists are enforced through the EDM's model-bound `NotFilterable` / `NotSortable` /
+`NotSelectable` annotations. A dynamic property is **not in the EDM** — that is what makes it
+dynamic — so there is nothing to annotate and nothing to enforce.
+`Microsoft.AspNetCore.OData` behaves the same way, so this is not a divergence from the ecosystem;
+it is simply not stated anywhere else.
+
+Measured against a profile whose allowlists deny `Metadata` outright — `FilterProperties(x =>
+x.Source)`, `OrderByProperties(x => x.Source)`, `SelectProperties(x => x.Id, x => x.Source)` — over
+an in-memory `IQueryable`:
+
+| Request | Result |
+|---|---|
+| `$select=Metadata` (declared) | `400` `InvalidQueryOption` — allowlist enforced |
+| `$select=Metadata/Region` (declared) | `400` `InvalidQueryOption` — allowlist enforced |
+| `$filter=Metadata/Region eq 'eu'` (declared) | `400` `InvalidQueryOption` — allowlist enforced |
+| `$filter=Metadata/tier eq 3` (**dynamic**) | **`200`, correctly filtered** — allowlist not consulted |
+| `$orderby=Metadata/tier` (**dynamic**) | **`200`, correctly sorted** — allowlist not consulted |
+| `$select=Metadata/tier` (**dynamic**) | **`200`, and the body carries the whole `Metadata` value — including the denied declared `Region`** |
+
+**The last row is the one to plan around.** Because `$select` over a dynamic key degrades to
+`$select=<the whole container>`
+([above](#filter-orderby-dynamic-key)), naming *any* undeclared key is a way to read declared
+properties the allowlist denies. That row is provider-independent: it returns `200` and leaks the
+denied declared property on EF Core too, where the `$filter`/`$orderby` rows instead return `500`
+(#390) — a different failure, not an enforcement.
+
+The open-type-ness is precisely what opens the hole. Against a **closed** complex type all three
+dynamic-key requests are rejected with `400 InvalidQueryOption` ("Could not find a property named
+'tier' on type …"), because the path cannot be parsed at all.
+
+An **entity-root** container is the same story without the complex-type hop: with
+`FilterProperties(x => x.Id)` / `OrderByProperties(x => x.Id)`, `$filter=<dynamicKey> eq 3` filters
+and `$orderby=<dynamicKey>` sorts, both `200`. (`$select=<dynamicKey>` returns `200` with an empty
+object — a root container is not flattened, so there is nothing to project.)
+
+**There is no flag to turn this off today**, and one is not planned here; whether dynamic-key
+queryability should be gateable is an open design question tracked with this behaviour in
+[**#401**](https://github.com/en-gen/OhData/issues/401). Until it is decided: **if a value must not
+be queryable, do not put it in a dynamic bag.** Declare it and deny it with the allowlist, or
+`Ignore()` it off the OData surface entirely.
 
 ## Dynamic property names are validated on write
 
@@ -505,11 +553,26 @@ through the EDM/CLR property map and skipping what it cannot resolve, so a root-
 key would be silently dropped. Half-working would be worse than absent. Put the bag on a complex
 type instead.
 
-### `$filter` / `$orderby` over an individual dynamic key
+<a id="filter-orderby-dynamic-key"></a>
+### `$filter` / `$orderby` over an individual dynamic key — **provider-dependent; do not rely on it**
 
-Not supported, and **it does not degrade gracefully**. Microsoft's query binder builds a
-property-bag indexer access for `$filter=Metadata/tier eq 3`, which faults while the expression
-tree is being constructed:
+This is worse than "not supported". **The same URL against the same model either returns correctly
+filtered data or a `500`, decided by the LINQ provider behind the read path.** Measured with
+identical CLR types on both sides — only the source of the `IQueryable` differs:
+
+| Read path | `$filter=Metadata/tier eq 3` | `$orderby=Metadata/tier` |
+|---|---|---|
+| `GetAll` (`IEnumerable`) | `400` `UnsupportedQueryOption` | `400` `UnsupportedQueryOption` |
+| `GetQueryable` over an **in-memory** `IQueryable` (`List<T>.AsQueryable()`) | **`200` — filters correctly** | **`200` — sorts correctly** |
+| `GetQueryable` over **EF Core** (measured on SQLite) | **`500`** | **`500`** |
+
+The `GetAll` row is not about dynamic keys at all: that path implements no `$filter`/`$orderby`
+whatsoever, so it rejects *every* filter — dynamic or declared — with `"This resource does not
+support $filter or $orderby. Configure GetQueryable to enable server-side query processing."`
+
+The other two rows are the trap. Microsoft's query binder builds a property-bag indexer access for
+a dynamic-key path; against EF Core that faults while the expression tree is still being
+constructed:
 
 ```
 System.ArgumentException: Method 'System.Object get_Item(System.String)' declared on type
@@ -517,11 +580,22 @@ System.ArgumentException: Method 'System.Object get_Item(System.String)' declare
 instance of type 'System.Object'
 ```
 
-Over an EF Core-backed `GetQueryable` this surfaces as a **500**, and **no query reaches the
-database** — the request fails before materialization, so it is not a silent client-side
-evaluation of the whole table. `$orderby` over a dynamic key faults identically. `$select` over a
-dynamic key (`$select=Metadata/tier`) does *not* fault: it returns `200` and behaves as
-`$select=Metadata`, emitting the whole complex value.
+**No query reaches the database** — the request fails before materialization, so it is not a silent
+client-side evaluation of the whole table. That the failure surfaces as a `500` rather than a `400`
+is pre-existing, originates inside `ODataQueryOptions.ApplyTo`, and is tracked separately as
+[**#390**](https://github.com/en-gen/OhData/issues/390).
+
+Over an in-memory `IQueryable` that same expression is built successfully and evaluated against the
+CLR dictionary, so the request returns correctly filtered — and correctly sorted — data. **Treat
+that as an accident of the provider, not as a feature.** A profile that starts on a
+`List<T>.AsQueryable()` and later moves to an EF Core `DbSet` — otherwise a pure performance
+improvement — turns every working dynamic-key `$filter` into a `500`, with no source change to
+point at and no signal at the call site.
+
+`$select` over a dynamic key (`$select=Metadata/tier`) faults on *neither* provider: it returns
+`200` and behaves as `$select=Metadata`, emitting the whole complex value. That behaviour has a
+security consequence — see
+[Dynamic keys are outside the query-option property allowlists](#dynamic-keys-outside-allowlists).
 
 Filter on a **declared** property of the complex type (`$filter=Metadata/Region eq 'eu'`) — that
 translates to SQL and pushes down normally.

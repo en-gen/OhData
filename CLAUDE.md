@@ -10,7 +10,12 @@ All commands run from the repo root.
 # Build everything
 dotnet build src/OhData.sln
 
-# Run all tests
+# Run all tests - all seven test projects in one pass. CI (.github/workflows/ci.yml) runs the
+# same seven one project at a time, so this is the local equivalent, not a superset.
+dotnet test src/OhData.sln
+
+# Run the main suite only - the fast inner loop (~80% of the tests; no companion-package,
+# client, or test-bench coverage)
 dotnet test src/OhData.AspNetCore.Tests/OhData.AspNetCore.Tests.csproj
 
 # Run a single test by name
@@ -81,14 +86,14 @@ app.MapOhData()  →  returns RouteGroupBuilder
 
 **Two paths for GET collection.**
 - `GetQueryable` (IQueryable): framework constructs `ODataQueryOptions<TModel>` and applies `$filter`/`$orderby`/`$skip`/`$top` via `ApplyTo(IQueryable)`, enabling EF Core SQL pushdown. `$select` is applied via JsonNode post-processing to keep camelCase consistent.
-- `GetAll` (IEnumerable): simple enumeration, no query options applied - developer chose the opt-in simple path.
+- `GetAll` (IEnumerable): simple enumeration - developer chose the opt-in simple path. It is **not** "no query options applied": `$top`/`$skip` are applied in-memory as `Skip()`/`Take()` after materialization, and `$select`/`$expand` in the JSON pass. But `$filter` and `$orderby` are **rejected with `400` (`UnsupportedQueryOption`)** - *"This resource does not support $filter or $orderby. Configure GetQueryable to enable server-side query processing."* - not silently ignored. Pinned by `OpenTypeLimitationTests.OpenTypeDynamicKeyReadPathTests`, which asserts it for a declared property as well as a dynamic key, since the rejection is about the path having no `IQueryable`, not about what is being filtered.
 - `IODataEntitySetEndpointSource` (Priority 1): profile receives `ODataQueryOptions` directly and applies them itself.
 
 **`$select` uses JsonNode post-processing** (not `ISelectExpandWrapper`) to avoid the PascalCase/camelCase inconsistency that `ApplyTo` with `$select` introduces.
 
 **`ODataException` from invalid query options returns 400.** All collection GET handlers wrap `ODataQueryOptions` construction in try/catch to return an OData error body instead of a 500.
 
-**Query-capability flags and property allowlists are enforced at runtime, not just advertised.** `FilterEnabled`/`OrderByEnabled`/`SelectEnabled`/`ExpandEnabled`/`CountEnabled` (all default `false`) and `FilterProperties`/`OrderByProperties`/`SelectProperties`/`ExpandProperties` gate the `GetQueryable`, `GetAll`, and Priority-1 collection paths, plus `$select`/`$expand` on `GetById`: a disabled option in the request returns `400` (`UnsupportedQueryOption`); a non-allowlisted property returns `400` (`InvalidQueryOption`) via the EDM's model-bound `NotFilterable`/`NotSortable`/`NotSelectable`/`NotExpandable` annotations. `$expand` is also implemented on the single-entity `GetById` route (reuses the collection expansion pipeline). Navigation-collection routes reject unimplemented system query options (`$filter`, `$expand`, `$search`, `$apply`, `$compute`, `$skiptoken`, `$deltatoken`) with `400` rather than silently ignoring them.
+**Query-capability flags and property allowlists are enforced at runtime, not just advertised.** `FilterEnabled`/`OrderByEnabled`/`SelectEnabled`/`ExpandEnabled`/`CountEnabled` (all default `false`) and `FilterProperties`/`OrderByProperties`/`SelectProperties`/`ExpandProperties` gate the `GetQueryable`, `GetAll`, and Priority-1 collection paths, plus `$select`/`$expand` on `GetById`: a disabled option in the request returns `400` (`UnsupportedQueryOption`); a non-allowlisted property returns `400` (`InvalidQueryOption`) via the EDM's model-bound `NotFilterable`/`NotSortable`/`NotSelectable`/`NotExpandable` annotations. `$expand` is also implemented on the single-entity `GetById` route (reuses the collection expansion pipeline). Navigation-collection routes reject unimplemented system query options (`$filter`, `$expand`, `$search`, `$apply`, `$compute`, `$skiptoken`, `$deltatoken`) with `400` rather than silently ignoring them. **One exception to the allowlists, and it is not a bug in the enforcement (#401): a dynamic (open-type) property is not in the EDM, so it carries no `NotFilterable`/`NotSortable`/`NotSelectable` annotation and is not gated at all** - `Microsoft.AspNetCore.OData` behaves identically. Do not read the allowlists as a security boundary over a model with an open complex type; `docs/open-types.md` has the measured matrix, and `OpenTypeAllowlistBypassTests` pins it.
 
 **Unhandled handler exceptions get the OData error envelope, not an empty 500.** A group-level endpoint filter (registered alongside the `OData-Version`/`OData-MaxVersion` filters in `OhDataEndpointFactory.MapAll`) catches any exception a handler throws - as opposed to an `ODataError` result a handler deliberately returns - and converts it into `500` + `{"error":{"code":"InternalServerError",...}}`, logging the real exception (never leaking its message/stack trace to the client). Does not catch `OperationCanceledException` (left to ASP.NET Core's own client-disconnect handling) or startup-time validation exceptions (`MapOhData()` throws those once, before any request is served).
 
@@ -128,17 +133,36 @@ app.MapOhData()  →  returns RouteGroupBuilder
 
 ### Project layout
 
+Sixteen projects, all in `src/OhData.sln`. The `Target` column is the literal
+`TargetFramework(s)` from each `.csproj` - **read it before reaching for a .NET 9+ or .NET 10 API**.
+
 | Project | Target | Role |
 |---|---|---|
-| `OhData.AspNetCore` | net10.0 | All core and runtime types: `EntitySetProfile<TKey,TModel>`, `IEntitySetEndpointSource` (internal), `IVisitModelBuilder` (internal), `AuthorizationConfig`, `NavigationRouteDefinition`, `BoundOperationDefinition`, `OhDataBuilder`, `OhDataEndpointFactory`, `OhDataRegistration`, `OhDataRegistrationCollection`, `OhDataDefaults`, `AddOhDataVersion` / `MapOhDataVersion` versioning helpers, `ODataEntitySetProfile<TKey,TModel>`, `IODataEntitySetEndpointSource`, `DeltaProfile` / `DeltaMapping<TModel,TEntity>` / `IDeltaFactory` (delta mapping) and `Delta<T>` sugar, extension methods |
-| `OhData.Client` | net10.0 | Typed .NET OData 4.0 client with fluent LINQ-based filter/select/expand translation |
-| `OhData.TestBench.AspNetCore` | net10.0 | Runnable demo app with EF Core InMemory, Swagger UI + Scalar, versioned v1/v2 registrations |
+| `OhData.AspNetCore` | net8.0;net10.0 | Ships as `EnGen.OhData.AspNetCore`. All core and runtime types: `EntitySetProfile<TKey,TModel>`, `IEntitySetEndpointSource` (internal), `IVisitModelBuilder` (internal), `AuthorizationConfig`, `NavigationRouteDefinition`, `BoundOperationDefinition`, `OhDataBuilder`, `OhDataEndpointFactory`, `OhDataRegistration`, `OhDataRegistrationCollection`, `OhDataDefaults`, `AddOhDataVersion` / `MapOhDataVersion` versioning helpers, `ODataEntitySetProfile<TKey,TModel>`, `IODataEntitySetEndpointSource`, `OpenTypeJsonOptions` / `IgnoredPropertyJsonOptions` (internal), `DeltaProfile` / `DeltaMapping<TModel,TEntity>` / `IDeltaFactory` (delta mapping) and `Delta<T>` sugar, extension methods |
+| `OhData.Client` | net8.0;net10.0 | Ships as `EnGen.OhData.Client`. Typed .NET OData 4.0 client with fluent LINQ-based filter/select/expand translation and pagination |
+| `OhData.AspNetCore.OpenApi` | **net10.0** | Ships as `EnGen.OhData.AspNetCore.OpenApi` (#264). `Microsoft.AspNetCore.OpenApi` integration: `IOpenApiOperationTransformer`/`IOpenApiSchemaTransformer` implementations that document the OData query parameters per entity set's capability flags, apply auth/security requirements, and omit `Ignore()`d properties. **Single-TFM** - `Microsoft.AspNetCore.OpenApi` is referenced at `[10.*, 11)`, so there is no net8.0 build of this one |
+| `OhData.AspNetCore.NSwag` | net8.0;net10.0 | Ships as `EnGen.OhData.AspNetCore.NSwag` (#264). Same surface as an NSwag `IOperationProcessor`/`ISchemaProcessor` |
+| `OhData.AspNetCore.Swashbuckle` | net8.0;net10.0 | Ships as `EnGen.OhData.AspNetCore.Swashbuckle` (#264). Same surface as a Swashbuckle `IOperationFilter`/`ISchemaFilter` |
+| `OhData.TestBench.AspNetCore` | net10.0 | Runnable demo app with EF Core InMemory, Swagger UI (via the Swashbuckle companion package) + Scalar, versioned v1/v2 registrations |
 | `OhData.ClientTestBench.AspNetCore` | net10.0 | Runnable demo app used as server target for client integration tests |
-| `OhData.AspNetCore.Tests` | net10.0 | xUnit integration tests using `WebApplicationFactory` via `TestHostBuilder` |
+| `OhData.AspNetCore.Tests` | net10.0 | xUnit integration tests using `WebApplicationFactory` via `TestHostBuilder`. The main suite |
+| `OhData.AspNetCore.OpenApi.Tests` | net10.0 | xUnit tests for the `Microsoft.AspNetCore.OpenApi` companion package |
+| `OhData.AspNetCore.NSwag.Tests` | net10.0 | xUnit tests for the NSwag companion package |
+| `OhData.AspNetCore.Swashbuckle.Tests` | net10.0 | xUnit tests for the Swashbuckle companion package |
+| `OhData.TestBench.AspNetCore.Tests` | net10.0 | xUnit tests over the test bench host (`DbContext` lifetime / scoped-profile wiring) |
 | `OhData.Client.Tests` | net10.0 | xUnit tests for OhData.Client |
+| `OhData.MicrosoftODataClient.Tests` | net10.0 | Compatibility tests against Microsoft.OData.Client |
 | `OhData.Client.Benchmarks` | net10.0 | BenchmarkDotNet project for client library performance |
 | `OhData.Server.Benchmarks` | net10.0 | BenchmarkDotNet project comparing OhData's minimal-API pipeline against `Microsoft.AspNetCore.OData`'s `ODataController`+`[EnableQuery]` pipeline; report in `docs/server-comparison-report.md` |
-| `OhData.MicrosoftODataClient.Tests` | net10.0 | Compatibility tests against Microsoft.OData.Client |
+
+**`net8.0` on the two shipping libraries is load-bearing, not vestigial.** Several deliberate API
+choices exist *because* of it and will silently break the net8.0 build if "simplified" against the
+net10.0 API surface: `OpenTypeJsonOptions.FindInvalidDynamicKey` resolves array element and
+dictionary value types by CLR reflection rather than `JsonTypeInfo.ElementType` (.NET 9+), and
+`ETagValueFormatter.StableTypeName` avoids `Type.FullName` because a constructed generic embeds
+`Version=8.0.0.0` on net8.0 and `Version=10.0.0.0` on net10.0. Each is commented at the site; check
+the TFM before removing one. `dotnet build src/OhData.sln` builds every TFM, so a net8.0-only break
+does surface locally.
 
 ### `InternalsVisibleTo`
 
@@ -147,7 +171,7 @@ There is no `AssemblyInfo.cs`. The grants are MSBuild `<InternalsVisibleTo Inclu
 | Grantee | Why |
 |---|---|
 | `OhData.AspNetCore.Tests` | Access to the internal `IEntitySetEndpointSource` and `IVisitModelBuilder` interfaces. |
-| `OhData.AspNetCore.OpenApi` | #228: the OpenAPI companion packages read the internal per-profile `IgnoredPropertyNames` (via `IgnoredPropertyDocsMap`) so generated schemas omit `Ignore()`d properties, matching the real wire shape. |
+| `OhData.AspNetCore.OpenApi` | #228: the OpenAPI companion packages read the internal per-profile `IgnoredPropertyNames` (via `IgnoredPropertyDocsMap`) so generated schemas omit `Ignore()`d properties, matching the real wire shape. They also read the internal `SchemaPropertyCasing` so schema property names match the casing the serializer actually emits. |
 | `OhData.AspNetCore.NSwag` | Same as above. |
 | `OhData.AspNetCore.Swashbuckle` | Same as above. |
 | `OhData.Server.Benchmarks` | #389: the open-type serialize path is reachable only through internals (`OpenTypeJsonOptions`, its `Build`/`BuildOpenComplexTypeContainerMap` entry points, `IsValidDynamicPropertyNameCached`). The grant exists so `OpenTypeKeyValidationBenchmarks` measures the **shipped** validator rather than a transcribed copy of it — a copy is exactly the mistake that produced a 12x-wrong number for this code path once already. It widens no public API and changes no behaviour. |

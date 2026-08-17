@@ -202,6 +202,16 @@ a path through a navigation property. `$filter=Lines/any(l: l/Quantity gt 1)` is
 (`OrderLine` here) have no allowlist surface of their own - only `FilterProperties` on the
 navigated-to entity set's own profile (if it has one) governs its properties.
 
+> **⚠ It does not restrict dynamic (open-type) properties either.** The allowlist is enforced
+> through the EDM's model-bound `NotFilterable` annotation, and a dynamic property is not in the
+> EDM - so there is nothing to annotate and nothing to enforce. On a model with an
+> [open complex type](open-types.md), `$filter` over a dynamic key is not gated by
+> `FilterProperties` at all. `Microsoft.AspNetCore.OData` behaves the same way. **If a value must
+> not be filterable, do not put it in a dynamic bag.** See
+> [Dynamic keys are outside the query-option property allowlists](open-types.md#dynamic-keys-outside-allowlists)
+> for the measured behaviour (which also varies by LINQ provider) and issue
+> [#401](https://github.com/en-gen/OhData/issues/401).
+
 ### `round()` midpoint rounding
 
 OData Part 2 §5.1.1.9 specifies that the `round()` canonical function rounds a midpoint value
@@ -263,6 +273,10 @@ OrderByProperties(x => x.Price, x => x.Name);
 Sorting on a property outside the allowlist returns `400 Bad Request` (`InvalidQueryOption`).
 As with `FilterProperties`, this only restricts the entity's own structural properties -
 `$orderby=Category/Name` (a path through a navigation property) is unaffected.
+
+> **⚠ It does not restrict dynamic (open-type) properties either** - same reason as
+> `FilterProperties`: the `NotSortable` annotation has nothing to attach to. See
+> [Dynamic keys are outside the query-option property allowlists](open-types.md#dynamic-keys-outside-allowlists).
 
 ---
 
@@ -399,6 +413,16 @@ SelectProperties(x => x.Id, x => x.Name, x => x.Price);
 ```
 
 Selecting a property outside the allowlist returns `400 Bad Request` (`InvalidQueryOption`).
+
+> **⚠ It does not restrict dynamic (open-type) properties - and on an open type it can be
+> circumvented for *declared* ones too.** The allowlist is enforced through the EDM's model-bound
+> `NotSelectable` annotation, which a dynamic property has no place to carry. Worse: `$select` over
+> a dynamic key silently degrades to selecting the **whole containing complex value**, so on a
+> model with an [open complex type](open-types.md), `$select=Meta/<anyUndeclaredName>` returns the
+> entire `Meta` value - including declared sub-properties the allowlist denies. Measured, and
+> provider-independent. See
+> [Dynamic keys are outside the query-option property allowlists](open-types.md#dynamic-keys-outside-allowlists)
+> and issue [#401](https://github.com/en-gen/OhData/issues/401).
 
 ---
 
