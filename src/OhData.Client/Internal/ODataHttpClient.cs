@@ -74,6 +74,109 @@ internal sealed class ODataHttpClient
         };
     }
 
+    // ── GET collection, annotation-preserving ───────────────────────────────────
+
+    // These sit ALONGSIDE the methods above rather than replacing them. Recovering OData control
+    // information means buffering the body and reading it a second time as a JsonDocument, and the
+    // methods above deliberately stream (HttpCompletionOption.ResponseHeadersRead + a single
+    // ReadFromJsonAsync). Every existing read would otherwise pay for a feature most callers never
+    // look at, so the cost is confined to the terminal operations that return an annotated result.
+    // Entity binding is literally the same code — same envelope type, same JsonSerializerOptions —
+    // so an annotated read cannot bind an entity differently from a plain one.
+
+    internal async Task<ODataAnnotatedPage<T>> GetAnnotatedPageAsync<T>(string url, CancellationToken ct)
+        where T : class
+    {
+        using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+        await EnsureSuccessAsync(response, url, ct);
+        return await ReadAnnotatedPageAsync<T>(response, ct);
+    }
+
+    /// <summary>
+    /// Annotation-preserving counterpart of
+    /// <see cref="GetPageByAbsoluteUrlAsync{T}(string, CancellationToken)"/>.
+    /// </summary>
+    internal async Task<ODataAnnotatedPage<T>> GetAnnotatedPageByAbsoluteUrlAsync<T>(
+        string absoluteUrl, CancellationToken ct)
+        where T : class
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, absoluteUrl);
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        await EnsureSuccessAsync(response, absoluteUrl, ct);
+        return await ReadAnnotatedPageAsync<T>(response, ct);
+    }
+
+    private async Task<ODataAnnotatedPage<T>> ReadAnnotatedPageAsync<T>(
+        HttpResponseMessage response, CancellationToken ct)
+        where T : class
+    {
+        byte[] body = await response.Content.ReadAsByteArrayAsync(ct);
+        ODataCollectionResponse<T>? envelope = body.Length == 0
+            ? null
+            : JsonSerializer.Deserialize<ODataCollectionResponse<T>>(body, _options.JsonOptions);
+
+        (ODataEntityAnnotations envelopeAnnotations, IReadOnlyList<ODataEntityAnnotations> itemAnnotations) =
+            ODataAnnotationReader.ReadCollection(body, AnnotationNameComparer);
+
+        List<T> items = envelope?.Value ?? [];
+        var entries = new List<ODataAnnotatedEntity<T>>(items.Count);
+        for (int i = 0; i < items.Count; i++)
+        {
+            // A JSON null inside `value` is not a legal OData entity but a broken server can send
+            // one, and ODataAnnotatedEntity refuses to pair annotations with a null entity — drop it
+            // rather than throwing out of a read. Alignment is positional and both lists come from
+            // the same bytes, so the index guard can only fire for a non-array `value`.
+            if (items[i] is not T entity) continue;
+            ODataEntityAnnotations annotations = i < itemAnnotations.Count
+                ? itemAnnotations[i]
+                : ODataEntityAnnotations.Empty;
+            entries.Add(new ODataAnnotatedEntity<T>(
+                entity, annotations, _options.JsonOptions.PropertyNamingPolicy));
+        }
+
+        return new ODataAnnotatedPage<T>
+        {
+            Entries = entries,
+            TotalCount = envelope?.Count,
+            NextLink = envelope?.NextLink,
+            Annotations = envelopeAnnotations,
+        };
+    }
+
+    // ── GET single, annotation-preserving ───────────────────────────────────────
+
+    internal async Task<ODataAnnotatedEntity<T>?> GetAnnotatedSingleAsync<T>(string url, CancellationToken ct)
+        where T : class
+    {
+        using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            if (_options.NotFoundBehavior == NotFoundBehavior.Throw)
+                throw await ODataClientException.FromResponseAsync(response, url, ct);
+            return null;
+        }
+        await EnsureSuccessAsync(response, url, ct);
+        if (response.StatusCode == HttpStatusCode.NoContent) return null;
+
+        byte[] body = await response.Content.ReadAsByteArrayAsync(ct);
+        if (body.Length == 0) return null;
+
+        T? entity = JsonSerializer.Deserialize<T>(body, _options.JsonOptions);
+        if (entity is null) return null;
+
+        return new ODataAnnotatedEntity<T>(
+            entity,
+            ODataAnnotationReader.ReadSingle(body, AnnotationNameComparer),
+            _options.JsonOptions.PropertyNamingPolicy);
+    }
+
+    // Annotations are looked up with the BINDER's comparer, so a camelCase server's annotations
+    // resolve exactly as its entity properties do. PropertyNameCaseInsensitive is true by default.
+    private StringComparer AnnotationNameComparer =>
+        _options.JsonOptions.PropertyNameCaseInsensitive
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal;
+
     // ── GET single ──────────────────────────────────────────────────────────────
 
     internal async Task<T?> GetSingleAsync<T>(string url, CancellationToken ct)
