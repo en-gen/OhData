@@ -83,6 +83,10 @@ public sealed class BeAuthorProfile : EntitySetProfile<int, BeAuthor>
         ExpandEnabled = true;
         OrderByEnabled = true;
         FilterEnabled = true;
+        // #313 stage 5: a root $select is what STRIPS THE PARENT KEY from the payload before the
+        // shaping pass runs (G6), and that is the case the continuation link's key must survive. One
+        // capability flag added to a stage-2 fixture, not a new fixture built around the behaviour.
+        SelectEnabled = true;
         GetQueryable = _ => Task.FromResult(db.Authors.AsQueryable());
         HasMany(x => x.Books); // delegate-less → pushable, including its own Chapters chain
         HasOptional(x => x.Publisher!); // delegate-less single-valued nav (nullable FK)
@@ -100,13 +104,23 @@ internal static class BareExpandSqliteHarness
         // #313 stage 3: lets a caller add its own services (an ILoggerProvider, for the startup
         // diagnostic) without a second copy of this harness. Additive and optional — every existing
         // call site is unaffected.
-        Action<IServiceCollection>? configureExtraServices = null)
+        Action<IServiceCollection>? configureExtraServices = null,
+        // #313 stage 5: lets a caller seed EXTRA rows (authors with 0/1/7 books, a second author
+        // sharing a name) without a second copy of this fixture. The stage-2 seed below is untouched,
+        // so every existing call site sees exactly the data it did before; the continuation tests
+        // isolate their own authors with a root $filter. Additive and optional, same as above.
+        Action<BareExpandDbContext>? seedExtra = null,
+        // #313 stage 5: a second profile registered over the SAME BeAuthor EDM entity type, for the
+        // delegate-safety partition (a sibling that declares Books WITH a delegate makes the
+        // treatment Blank for BOTH sets).
+        Action<OhDataBuilder>? configureExtraProfiles = null)
     {
         TestFixture fx = await TestHostBuilder.BuildAsync(
             b =>
             {
                 if (defaults is not null) b.WithDefaults(defaults);
                 b.AddEntitySetProfile<BeAuthorProfile>();
+                configureExtraProfiles?.Invoke(b);
             },
             configureServices: services =>
             {
@@ -141,6 +155,12 @@ internal static class BareExpandSqliteHarness
             new BeChapter { Id = 2, BookId = 1, Heading = "Outro" });
 
         db.SaveChanges();
+
+        if (seedExtra is not null)
+        {
+            seedExtra(db);
+            db.SaveChanges();
+        }
         return fx;
     }
 

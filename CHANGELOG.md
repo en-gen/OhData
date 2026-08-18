@@ -314,10 +314,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   delegate-less, on a profile that has `GetQueryable`, `ExpandEnabled` **and** `ExpandPushdownEnabled`,
   when that profile's resolved `MaxExpandTop` is `null` — exactly the navigations a bare
   `?$expand=Nav` will materialize in full. It names the entity set, the navigation and
-  `MaxExpandTop`, and prescribes no number: leaving it unset is a legitimate choice for a collection
-  you know is small. It deliberately does **not** name `ExpandPagingEnabled` — that flag resolves
-  but nothing acts on it yet, and a log line is the worst place for a claim that outruns the code,
-  because a warning is exactly what someone acts on. Emitted once at startup, never per request. Because `ExpandEnabled` is `false` by default,
+  `MaxExpandTop` **and** `ExpandPagingEnabled`, in that order — the second does nothing without the
+  first — and prescribes no number: leaving it unset is a legitimate choice for a collection you know
+  is small. Emitted once at startup, never per request. Because `ExpandEnabled` is `false` by default,
   a registration that never opts into `$expand` gets **no** warning at all — measured across the
   suite, 1370 of 1512 registrations (90.6%) are silent and the loudest emits 7.
 
@@ -337,11 +336,60 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   there is deliberately no second page-size knob, and a `bool?` (unlike a second `int?`) lets a
   profile-level `false` genuinely opt **out** of a server-wide `true`.
 
-  **The knob is inert in this release: nothing reads it but the diagnostic.** No route is
-  registered, no annotation is emitted, and every request behaves identically at any value — the
-  continuation route it gates is not implemented yet, so an over-ceiling bare `$expand` still
-  returns `400` regardless. `Prefer: odata.maxpagesize` remains unhonoured on nested collections
-  (#412), an unmet spec `SHOULD` rather than a violation, since nothing claims it was applied.
+  **What the knob does is the entry below.** `Prefer: odata.maxpagesize` remains unhonoured on
+  nested collections (#412), an unmet spec `SHOULD` rather than a violation, since nothing claims it
+  was applied.
+
+- **`ExpandPagingEnabled` pages a truly bare `$expand` instead of rejecting it, via
+  `Nav@odata.nextLink` and a `$skip`-only continuation route (#313).** With **both** knobs set —
+  `MaxExpandTop` to a ceiling and `ExpandPagingEnabled` to `true` — a bare `?$expand=Nav` whose
+  related collection exceeds the ceiling is served as its first `MaxExpandTop` children plus
+
+  ```jsonc
+  { "Id": 1, "Books": [ /* MaxExpandTop rows */ ],
+    "Books@odata.nextLink": "https://host/odata/Authors(1)/Books?$skip=3" }
+  ```
+
+  and `GET /{Set}({key})/{Nav}?$skip=N` is registered to serve the rest. Follow it to exhaustion the
+  way you would any server-driven page.
+
+  **Only the truly bare leaf pages.** "Bare" means a nested option list that normalizes to the
+  identity transform: `$skip=0` and `$count=false` are the only two no-ops the parser lets through
+  and both page. Everything else keeps the `400` it has today — a nested
+  `$filter`/`$orderby`/`$select`/`$skip>0`/`$count=true` (a `$skip`-only link cannot carry it), a
+  level with its own nested `$expand` and any `$levels` (neither is SQL-bounded at all, so a link
+  there would advertise a bound that does not exist), depth ≥ 2, a navigation whose element type has
+  a composite or unresolvable key, and any navigation a profile in the candidate set declares with a
+  delegate. An explicit nested `$top` never links: the client asked for exactly N rows and got them.
+
+  **The continuation accepts `$skip` and nothing else.** Every other system query option — including
+  `$select`/`$orderby`/`$top`/`$count`, which the delegate-backed navigation route does accept —
+  returns `400 UnsupportedQueryOption`. There is nothing to carry: the link is only ever emitted for
+  an expand that had no nested options at all. The page size is `MaxExpandTop`, for the first page
+  and every continuation alike; it is never `MaxTop`, which is an independent knob with its own
+  default.
+
+  **Ordering is total on both sides.** The continuation composes an unconditional
+  `OrderBy(childKey)` — resolved through the same call that composes the first page's tiebreaker —
+  rather than reusing the root's `EnsureStableOrder`, which skips appending the key when the source
+  is already ordered and would leave a pre-ordered parent's continuation without a total order. The
+  emitted plan is an `INNER JOIN … LIMIT/OFFSET` index seek, not the partitioned `ROW_NUMBER()`
+  window the first page uses.
+
+  **A continuation for a key that does not exist returns `200` with an empty `value` and no link**,
+  where `Microsoft.AspNetCore.OData` returns `404`. A `SelectMany` cannot distinguish "no such
+  parent" from "a parent with no children", and an existence probe would cost a second round trip on
+  every continuation. Documented divergence.
+
+  **Inert unless you opt in.** With `ExpandPagingEnabled` at its `false` default — or with it `true`
+  and no `MaxExpandTop` — no route is registered, no annotation is emitted, `$metadata` is
+  unchanged, and every response and every SQL statement is byte-identical to the previous release.
+
+  One new startup failure, and it can only fire on a registration that opted in: an entity-level
+  bound function sharing a name with a pageable navigation now throws from `MapOhData()`. Both would
+  claim `GET /{Set}({key})/{Name}`; the pre-existing collision check compares bound functions against
+  structural properties only, which excludes declared navigations, so that pairing was legal until
+  the continuation route existed.
 
 - **`$levels` may now carry other nested expand options (#254).** A `$levels=N` / `$levels=max`
   self-referential expand combined with `$filter`, `$orderby`, `$skip`, `$top`, `$count`, or `$select`

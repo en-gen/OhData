@@ -254,24 +254,33 @@ public class ExpandPagingStartupDiagnosticTests
     }
 
     /// <summary>
-    /// The message must NOT name <c>ExpandPagingEnabled</c>. That flag ships in this same stage, but
-    /// nothing acts on it yet and the stages are stacked — this one necessarily reaches <c>develop</c>
-    /// before the paging it gates does, so naming it would be a log line telling a developer to set a
-    /// flag that does nothing. A warning is the worst place for a claim that outruns the code, because
-    /// a warning is exactly what someone acts on. Stage 5 extends the message when the flag starts
-    /// meaning something; this test is what makes that a deliberate edit rather than a silent drift,
-    /// and it is why a "(not yet active)" hedge was rejected — a hedge is a second thing to remember
-    /// to delete, and this assertion is the reminder instead.
+    /// #313 stage 5 REPLACES stage 3's <c>DoesNotName_ExpandPagingEnabled_WhileNothingActsOnIt</c>.
+    /// That assertion existed to stop the warning naming a flag nothing acted on, and its own doc
+    /// comment said stage 5 would extend the message "when the flag starts meaning something" — which
+    /// is now. Deleting it is therefore the deliberate edit it was written to force, and this test is
+    /// what keeps the extension honest in the other direction: the message must name BOTH knobs, and
+    /// must still prescribe no number.
     /// </summary>
     [Fact]
-    public async Task DoesNotName_ExpandPagingEnabled_WhileNothingActsOnIt()
+    public async Task Names_ExpandPagingEnabled_NowThatItRegistersARouteAndEmitsALink()
     {
         (TestFixture fx, WarningCapture logs) = await BuildAsync(o => o.AddEntitySetProfile<EpdExposedProfile>());
         await using TestFixture _ = fx;
 
         string warning = Assert.Single(BareExpandWarnings(logs));
-        Assert.DoesNotContain("ExpandPagingEnabled", warning, StringComparison.Ordinal);
-        Assert.DoesNotContain("nextLink", warning, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ExpandPagingEnabled", warning, StringComparison.Ordinal);
+        Assert.Contains("Nav@odata.nextLink", warning, StringComparison.Ordinal);
+
+        // MaxExpandTop is still named FIRST: it is a complete answer on its own, and the second knob
+        // is inert without it. Ordering is the whole advice here, so it is asserted rather than assumed.
+        Assert.True(
+            warning.IndexOf("MaxExpandTop", StringComparison.Ordinal)
+                < warning.IndexOf("ExpandPagingEnabled", StringComparison.Ordinal),
+            "the warning must name MaxExpandTop before ExpandPagingEnabled — the second knob does " +
+            "nothing without the first.");
+
+        // Still no prescribed number. That is what stage 1 removed and what this diagnostic replaces.
+        Assert.DoesNotContain("1000", warning, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -395,17 +404,21 @@ public class ExpandPagingEnabledIsInertTests
     }
 
     /// <summary>
-    /// Stage 3's whole contract: the flag is readable and nothing acts on it. Run over the four shapes
-    /// stage 2's ceiling actually discriminates between — under, at and over the ceiling, and the
-    /// uncapped case — because those are where an accidental early read of the flag would show up.
+    /// Stage 3's contract was "the flag is readable and NOTHING acts on it", asserted over four shapes
+    /// including the over-ceiling bare one. Stage 5 narrows it, deliberately: the over-ceiling BARE
+    /// row is exactly the one shape the flag now changes (400 → 200 + <c>Books@odata.nextLink</c>),
+    /// so it has moved to
+    /// <see cref="BareExpandContinuationInertnessTests.Capped_TheTrulyBareSubsetIsExactlyWhereTheFlagChangesTheAnswer"/>
+    /// where it is asserted as a REQUIRED difference. Everything left here is a shape stage 5 does not
+    /// touch, and it stays byte-identical — which is what keeps the blast radius the truly-bare subset
+    /// and nothing wider.
     /// </summary>
     [Theory]
-    [InlineData("/odata/BeAuthors?$expand=Books", 10)]  // under the ceiling
-    [InlineData("/odata/BeAuthors?$expand=Books", 5)]   // exactly at it
-    [InlineData("/odata/BeAuthors?$expand=Books", 3)]   // over it — stage 2's 400
+    [InlineData("/odata/BeAuthors?$expand=Books", 10)]  // under the ceiling — no boundary to continue from
+    [InlineData("/odata/BeAuthors?$expand=Books", 5)]   // exactly at it — the rows % pageSize == 0 case
     [InlineData("/odata/BeAuthors?$expand=Books($top=2)", 3)]
     [InlineData("/odata/BeAuthors?$expand=Publisher", 3)]
-    public async Task SettingTheFlag_ChangesNoResponseByte_WhenAceilingIsInForce(string url, int ceiling)
+    public async Task SettingTheFlag_ChangesNoResponseByte_OutsideTheTrulyBareOverCeilingShape(string url, int ceiling)
     {
         string off = await BodyAsync(d => d.MaxExpandTop = ceiling, url);
         string on = await BodyAsync(d => { d.MaxExpandTop = ceiling; d.ExpandPagingEnabled = true; }, url);
