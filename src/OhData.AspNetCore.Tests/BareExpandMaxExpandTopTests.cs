@@ -287,6 +287,72 @@ public sealed class BareLeafCeilingTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SkipOnlyLeaf_UnderCeiling_Returns200_CountsThePostSkipRemainder()
+    {
+        // Review fold-in (F3): the OVER-ceiling $skip case above cannot tell WHICH population the
+        // ceiling counts, because 5 books breach a cap of 3 whether you count before or after the
+        // $skip. This one can: $skip=3 leaves a remainder of 2, which is UNDER the cap of 3, while
+        // the pre-skip collection (5) is over it. A regression to counting the pre-skip population
+        // would 400 here — and would have passed the whole suite without this test, because the
+        // bound is composed AFTER the Skip (`access.Skip(sk).Take(cap+1)`) so it is the remainder
+        // that reaches EnsureWithinExpandCeiling.
+        //
+        // Deliberately also asserts the emitted UPPER row bound, which is what makes this a revert
+        // detector rather than only a future-regression guard. Measured on both trees, since the
+        // obvious assertion is wrong: a $skip-only leaf ALREADY composed the ROW_NUMBER window before
+        // #313 (Skip alone needs it), so `Assert.Contains("ROW_NUMBER()")` passes with the production
+        // change reverted. What #313 adds is the second half of the predicate — pre-#313
+        // `WHERE 3 < "b0"."row"`, post-#313 `WHERE 3 < "b0"."row" AND "b0"."row" <= 7`
+        // (the $skip of 3 plus the cap+1 probe of 4).
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        var sink = new SqlCaptureSink();
+        await using TestFixture fx = await BareExpandSqliteHarness.BuildAsync(
+            connection, sink, defaults: d => { d.MaxExpandTop = 3; d.MaxTop = null; });
+
+        HttpResponseMessage resp = await fx.Client.GetAsync("/odata/BeAuthors?$expand=Books($skip=3)");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        using JsonDocument doc = JsonDocument.Parse(body);
+        JsonElement books = doc.RootElement.GetProperty("value")[0].GetProperty("Books");
+        Assert.Equal(2, books.GetArrayLength());
+        Assert.Equal("Bk4", books[0].GetProperty("Title").GetString());
+        Assert.Equal("Bk5", books[1].GetProperty("Title").GetString());
+
+        string sql = BareExpandSqliteHarness.LastSelectAgainst(sink, "Authors");
+        Assert.Contains("ROW_NUMBER()", sql);
+        Assert.Contains("\"row\" <= 7", sql); // Skip(3).Take(cap + 1 = 4) — absent without #313
+    }
+
+    [Fact]
+    public async Task ExplicitTopUnderCeiling_OverLargeCollection_WindowsToTop_NoCeilingBreach()
+    {
+        // Review fold-in (F2): ExplicitTop_StillWins_… below names the "$top wins over the default
+        // bound" rule but only exercises $top ABOVE the cap, which the pre-existing
+        // ValidateNestedTopCeiling rejects before ApplyNavShape ever runs. The case the rule is
+        // actually about is $top = N <= cap over a collection that is itself over the cap: the
+        // collection breaches, the request does not, and exactly N rows come back.
+        //
+        // Stated plainly so it is not mistaken for one: this is a GUARD, not a revert detector. The
+        // shape is by construction identical on develop — `defaultLeafBound` is null whenever Top is
+        // set, and the JSON ceiling arm requires `e.Top is null` — so it passes with the production
+        // change reverted, and must. What it pins is that neither gate ever loses its `Top` clause:
+        // drop either one and a client's own explicit, under-cap window starts 400ing because the
+        // collection behind it is large.
+        HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/BeAuthors?$expand=Books($top=2)");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        using JsonDocument doc = JsonDocument.Parse(body);
+        JsonElement books = doc.RootElement.GetProperty("value")[0].GetProperty("Books");
+        Assert.Equal(2, books.GetArrayLength()); // the client's $top, not the cap of 3 and not cap+1
+        Assert.Equal("Bk1", books[0].GetProperty("Title").GetString());
+        Assert.Equal("Bk2", books[1].GetProperty("Title").GetString());
+        Assert.DoesNotContain("cannot be computed", body);
+    }
+
+    [Fact]
     public async Task ExplicitTop_StillWins_OverLeafCeiling_NotBoundedByDefault()
     {
         // An explicit nested $top above the DEFAULT ceiling bound is caught by the PRE-EXISTING
@@ -299,6 +365,13 @@ public sealed class BareLeafCeilingTests : IAsyncLifetime
         // tell the guarded-against path from the intended one. The two are distinguished by their
         // messages, so pin both directions — the pre-query $top wording must be present, and
         // EnsureWithinExpandCeiling's post-materialization wording must be absent.
+        //
+        // Review fold-in (F2), recorded rather than papered over: this test passes with the
+        // production change reverted, and cannot be made to fail — the rejection it asserts is
+        // ValidateNestedTopCeiling's, which predates #313 entirely. Its job is to prove #313 did not
+        // SHADOW that rejection with a different one, which is a real risk (both are 400
+        // InvalidQueryOption, so a bare status assertion could not tell them apart) but is not the
+        // "$top wins" case. That case is ExplicitTopUnderCeiling_OverLargeCollection_… above.
         HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/BeAuthors?$expand=Books($top=4)");
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
 
@@ -486,6 +559,45 @@ public sealed class BareChildrenCeilingTests : IAsyncLifetime
         Assert.Equal(2, chapters.GetArrayLength());
         Assert.Contains(chapters.EnumerateArray(), c => c.GetProperty("Heading").GetString() == "Intro");
         Assert.Contains(chapters.EnumerateArray(), c => c.GetProperty("Heading").GetString() == "Outro");
+    }
+
+    // Review fold-in (F7): the two shapes count DIFFERENT populations against the same ceiling, and
+    // #313 is what makes the difference reachable from a bare request. The pair below is the whole
+    // asymmetry in one place, measured rather than argued, and docs/query-options.md states it.
+    //
+    // Same author, same 5 books, same ceiling of 3, same $skip=4 — the only difference is whether the
+    // level also carries a nested $expand:
+    //   leaf     → ApplyNavShape composes Skip(4).Take(cap+1), so EnsureWithinExpandCeiling sees the
+    //              POST-skip remainder of 1 → under the ceiling → 200.
+    //   children → no SQL window is composable at all (APPLY/LATERAL, #298/#304), so the collection is
+    //              materialized in full and WriteNestedWindowOnly checks the ceiling BEFORE applying
+    //              the window — the PRE-skip 5 → over the ceiling → 400.
+    // Neither is wrong on its own terms; both follow from where the check can physically run. It goes
+    // away when #299 removes the unbounded materialization, and not before.
+    //
+    // Like the other negative guards here, this passes with the production change reverted, and must:
+    // the children half is #304 behaviour that predates #313 entirely, and the leaf half returns the
+    // same one row either way (develop composes the Skip without the cap+1 Take). #313's contribution
+    // is only that a request can now reach the leaf arm without carrying $count or $top.
+    [Fact]
+    public async Task SkipPastCeiling_LeafCountsPostSkip_ButChildrenCountPreSkip()
+    {
+        HttpResponseMessage leaf = await _fx.Client.GetAsync("/odata/BeAuthors?$expand=Books($skip=4)");
+        Assert.Equal(HttpStatusCode.OK, leaf.StatusCode);
+
+        string leafBody = await leaf.Content.ReadAsStringAsync();
+        using JsonDocument leafDoc = JsonDocument.Parse(leafBody);
+        JsonElement leafBooks = leafDoc.RootElement.GetProperty("value")[0].GetProperty("Books");
+        Assert.Equal(1, leafBooks.GetArrayLength());
+        Assert.Equal("Bk5", leafBooks[0].GetProperty("Title").GetString());
+
+        HttpResponseMessage children = await _fx.Client.GetAsync(
+            "/odata/BeAuthors?$expand=Books($skip=4;$expand=Chapters)");
+        Assert.Equal(HttpStatusCode.BadRequest, children.StatusCode);
+
+        string childrenBody = await children.Content.ReadAsStringAsync();
+        Assert.Contains("InvalidQueryOption", childrenBody);
+        Assert.Contains("maximum of 3", childrenBody);
     }
 }
 

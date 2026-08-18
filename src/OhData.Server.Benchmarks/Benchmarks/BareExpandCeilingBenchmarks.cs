@@ -63,7 +63,7 @@ internal sealed class CeilParentProfile : EntitySetProfile<int, CeilParent>
 }
 
 /// <summary>
-/// #313: what the default <c>MaxExpandTop</c> bound costs on the shape it newly covers — a BARE
+/// #313: what an opted-in <c>MaxExpandTop</c> bound costs on the shape it newly covers — a BARE
 /// <c>$expand</c> of a collection navigation, with no nested <c>$count</c> and no explicit nested
 /// <c>$top</c>.
 ///
@@ -73,11 +73,11 @@ internal sealed class CeilParentProfile : EntitySetProfile<int, CeilParent>
 /// query EF Core composes:
 /// </para>
 /// <code>
-/// MaxExpandTop = null  (baseline, == pre-#313 behavior on every shape)
+/// MaxExpandTop = null  (the DEFAULT; == pre-#313 behavior on every shape)
 ///     LEFT JOIN "CeilChildren" AS "c" ON "p"."Id" = "c"."ParentId"
 ///     ORDER BY "p"."Id"
 ///
-/// MaxExpandTop = 1000  (the shipped default)
+/// MaxExpandTop = 1000  (opted in)
 ///     LEFT JOIN (
 ///         SELECT ... FROM (
 ///             SELECT ..., ROW_NUMBER() OVER(PARTITION BY "c"."ParentId" ORDER BY "c"."Id") AS "row"
@@ -90,8 +90,14 @@ internal sealed class CeilParentProfile : EntitySetProfile<int, CeilParent>
 /// the standard top-N-per-group shape, not something OhData chooses — and it is the same shape an
 /// explicit nested <c>$top</c> has always produced. The question this class answers is whether paying
 /// for the window function (plus the key tiebreaker it drags into the <c>ORDER BY</c>) costs anything
-/// that matters on a request that is comfortably UNDER the ceiling, since that is the case #313 makes
-/// every existing app pay: <c>MaxExpandTop</c> defaults to 1000, so this ships on by default.
+/// that matters on a request that is comfortably UNDER the ceiling, since that is the case an
+/// implementor who sets the knob pays on every request thereafter.
+/// </para>
+/// <para>
+/// <b>This measures an opt-in price, not an imposed one.</b> <c>MaxExpandTop</c> is unset by default
+/// (#313 stage 1), so the "capped" arm below is what a deployment chooses when it decides an
+/// unbounded related-collection materialization is the larger risk. The number belongs in the knob's
+/// documentation so that choice can be made with it in hand — it is not a regression budget.
 /// </para>
 /// <para>
 /// <b>Every parameterization stays under the ceiling on purpose.</b> The over-ceiling case is a
@@ -135,8 +141,12 @@ public class BareExpandCeilingBenchmarks
     /// <summary>Fixed parent fan-out; only the child-collection size varies.</summary>
     private const int ParentCount = 20;
 
-    /// <summary>The shipped default — the value every existing app gets without asking for it.</summary>
-    private const int DefaultCeiling = 1000;
+    /// <summary>
+    /// The ceiling the "capped" arm opts in to. <c>1000</c> is not a default any more (#313 stage 1
+    /// moved the default to <c>null</c>) — it is kept here as the representative value an implementor
+    /// would plausibly pick, and because every parameterization below stays under it on purpose.
+    /// </summary>
+    private const int OptedInCeiling = 1000;
 
     /// <summary>
     /// Children per parent. 5 is the everyday shape (small related collection), 50 a mid-size one, 500
@@ -158,7 +168,7 @@ public class BareExpandCeilingBenchmarks
     [GlobalSetup]
     public async Task Setup()
     {
-        (_cappedApp, _cappedClient, _cappedConnection) = await StartAsync(DefaultCeiling, ChildrenPerParent);
+        (_cappedApp, _cappedClient, _cappedConnection) = await StartAsync(OptedInCeiling, ChildrenPerParent);
         (_uncappedApp, _uncappedClient, _uncappedConnection) = await StartAsync(null, ChildrenPerParent);
 
         // Correctness gate, in the same spirit as SmokeCheck: a measurement of two arms that return
@@ -188,13 +198,14 @@ public class BareExpandCeilingBenchmarks
         _uncappedConnection.Dispose();
     }
 
-    // Baseline is the UNCAPPED arm: it is what develop did on this shape, so the reported ratio reads
-    // directly as "what turning the default ceiling on costs".
+    // Baseline is the UNCAPPED arm: it is the SHIPPING DEFAULT (MaxExpandTop unset) and it is also
+    // byte-for-byte what develop did on this shape, so the reported ratio reads directly as "what
+    // setting the ceiling costs the deployment that sets it".
     [Benchmark(Baseline = true), BenchmarkCategory("BareExpand")]
-    public Task<string> Uncapped_NoCeiling() => GetAsync(_uncappedClient, Url);
+    public Task<string> Uncapped_Default() => GetAsync(_uncappedClient, Url);
 
     [Benchmark, BenchmarkCategory("BareExpand")]
-    public Task<string> Capped_Default1000() => GetAsync(_cappedClient, Url);
+    public Task<string> Capped_OptedIn1000() => GetAsync(_cappedClient, Url);
 
     private static async Task<string> GetAsync(HttpClient client, string url)
     {

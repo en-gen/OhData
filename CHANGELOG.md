@@ -36,8 +36,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   child-key `ORDER BY` tiebreaker is no longer composed either — it existed only to make the bounded
   page deterministic, and with no bound there is no page to stabilize.
 
-  A bare `$expand=Nav` was never bounded by this setting and is unaffected; #313 tracks bounding and
-  paging that shape behind a separate opt-in.
+  A bare `$expand=Nav` was never bounded by this setting before this cycle. It is now — but only
+  once the knob is set; see the #313 entry below, which is inert on a registration that leaves
+  `MaxExpandTop` unset.
 
 - **`@`-containing keys in an open type's payload are now treated as control information and ignored,
   where they used to be rejected with `400` (#398).** OData JSON Format 4.01 reserves `@` for control
@@ -242,15 +243,20 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `WithDefaults(d => d.MaxExpandTop = N)` to raise it, or `= null` to restore the previous unbounded
   behavior (a profile-level `MaxExpandTop = null` means *inherit* the resolved default instead — it
   does not itself remove the ceiling). An **omitted** nested `$top` without `$count` stayed unbounded
-  in #254 — that hole is closed by #313 below, in this same unreleased cycle.
+  in #254 — that hole is closed by #313 below, in this same unreleased cycle, on any registration
+  that sets the knob.
 
-- **`MaxExpandTop` now bounds the bare `$expand` too — every collection expand level, at every depth
-  (#313).** #254 left the single most common `$expand` shape uncovered: a collection level carrying
-  neither a nested `$count` nor an explicit nested `$top` composed no SQL `Take` and got no size check
-  at all, so `?$expand=Children` over a 5,000-row related collection returned all 5,000 rows under a
-  `MaxExpandTop` of `1000`. It now returns `400 InvalidQueryOption` with the same
-  "exceeds the maximum of N entities — narrow it with a nested `$filter`" message the `$count` and
-  `$top`/`$skip` breaches already used.
+- **`MaxExpandTop`, once set, now bounds the bare `$expand` too — every collection expand level, at
+  every depth (#313).** #254 left the single most common `$expand` shape uncovered: a collection level
+  carrying neither a nested `$count` nor an explicit nested `$top` composed no SQL `Take` and got no
+  size check at all, so `?$expand=Children` over a 5,000-row related collection returned all 5,000
+  rows even with a `MaxExpandTop` of `1000` configured. It now returns `400 InvalidQueryOption` with
+  the same "exceeds the maximum of N entities — narrow it with a nested `$filter`" message the
+  `$count` and `$top`/`$skip` breaches already used.
+
+  **Read this together with the `MaxExpandTop` default change above: the knob is unset by default, so
+  this entry describes an opt-in, not a flip.** On a registration that never sets `MaxExpandTop`
+  nothing here happens — no SQL bound, no key tiebreaker, no `400`, no `ROW_NUMBER()` window.
 
   **The rule is broader than "bare", and the blast radius is worth reading literally:** the ceiling
   applies to any collection expand level with **no** nested `$count` and **no** explicit nested `$top`,
@@ -269,13 +275,18 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `$expand=Children` — identical response bodies — so leaving it unchecked would have made the whole
   ceiling bypassable with one parameter.
 
-  > **BEHAVIOR CHANGE, and this one ships enabled for every existing app** — `MaxExpandTop` defaults
-  > to `1000`, so any request whose expanded collection exceeds `1000` related entities flips `200` →
-  > `400`. Two further consequences of the default bound: nested collections now come back in
-  > **child-key order** (the deterministic tiebreaker #254 added for nested paging now applies to the
-  > bare shape too), and the leaf query plan gains the `ROW_NUMBER()` window. `MaxExpandTop = null`
-  > opts out of **all three** — the `400`, the ordering, and the window function — restoring the plain
-  > `LEFT JOIN` exactly as before.
+  > **What setting `MaxExpandTop = N` now buys you, and costs you.** Three things arrive together and
+  > cannot be taken separately: (1) any request whose expanded collection exceeds `N` related
+  > entities answers `400` instead of `200`; (2) nested collections come back in **child-key order**
+  > (the deterministic tiebreaker #254 added for nested paging now applies to the bare shape too),
+  > where before the order was whatever the provider yielded; and (3) the leaf query plan gains the
+  > `ROW_NUMBER() OVER (PARTITION BY …)` window in place of a plain `LEFT JOIN`. Measured end to end
+  > over HTTP, both arms differing only in this setting (`BareExpandCeilingBenchmarks`, 20 parents,
+  > every arm under the ceiling): **1.02× at 5 children per parent (1.811 → 1.848 ms), 1.37× at 50
+  > (2.844 → 3.898 ms), 1.37× at 500 (24.662 → 33.737 ms)**; allocation is unchanged (≤1.01×). Near
+  > free where related collections are small, ~1.4× where they are large — which is exactly where the
+  > unbounded materialization it removes is worth removing. Leaving the knob unset keeps all three
+  > off and is byte-identical, in response body *and* emitted SQL, to the pre-#313 behavior.
 
 - **#298 / #300 fixes: two silent-degrade regressions in the #254 pushdown, both now fixed.** Post-merge
   adversarial review of #297 found that (a) `$count=true` on a pushed expand level that ALSO carried a

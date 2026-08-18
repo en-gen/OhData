@@ -72,7 +72,15 @@ public sealed class EntitySetDefaults
     /// A nested <c>$count</c> whose related collection exceeds the ceiling is also rejected with
     /// <c>400</c> rather than silently truncated, because OData §11.2.4.2 requires
     /// <c>Nav@odata.count</c> to report the FULL filtered collection, not the returned page.
-    /// Must be a positive integer or <c>null</c> (no ceiling).
+    /// #313 widened what the value covers once it is set: it now bounds <b>every</b> collection
+    /// <c>$expand</c> level — including a bare <c>?$expand=Children</c>, one carrying only
+    /// <c>$select</c>/<c>$orderby</c>/<c>$filter</c>/<c>$skip</c>, and every level of a
+    /// <c>$levels=N</c> recursion — not just the two #254 shapes. Setting it also composes the
+    /// child-key <c>ORDER BY</c> tiebreaker on those shapes, so it governs the nested wire order as
+    /// well as the status code.
+    /// Must be a positive integer or <c>null</c> (no ceiling). Use <c>null</c>, not a large sentinel:
+    /// <c>int.MaxValue</c> counts as set, so it pays for every bound and tiebreaker while making the
+    /// check unable to fire.
     /// </summary>
     public int? MaxExpandTop
     {

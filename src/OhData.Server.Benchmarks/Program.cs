@@ -59,8 +59,9 @@ public static class Program
             // 500 envelope) costs against serializing it straight into the response body.
             typeof(OperationResultBufferingBenchmarks),
             // #313: also not a host-vs-host comparison — both arms are OhData, differing only in
-            // MaxExpandTop, measuring what the newly-default bare-$expand bound costs on the
-            // under-ceiling requests every existing app will now serve through it.
+            // MaxExpandTop, measuring what the opt-in bare-$expand bound costs on the under-ceiling
+            // requests a deployment that sets the knob will serve through it. MaxExpandTop is unset
+            // by default, so this is a price someone chooses, not one the framework imposes.
             typeof(BareExpandCeilingBenchmarks),
         }).Run(switcherArgs);
         return 0;
