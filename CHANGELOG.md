@@ -313,11 +313,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   At `MapOhData()` OhData now logs one `Warning` per navigation that is collection-valued,
   delegate-less, on a profile that has `GetQueryable`, `ExpandEnabled` **and** `ExpandPushdownEnabled`,
   when that profile's resolved `MaxExpandTop` is `null` — exactly the navigations a bare
-  `?$expand=Nav` will materialize in full. It names the entity set, the navigation and both knobs,
-  and prescribes no number: leaving both unset is a legitimate choice for a collection you know is
-  small. Emitted once at startup, never per request. Because `ExpandEnabled` is `false` by default,
+  `?$expand=Nav` will materialize in full. It names the entity set, the navigation and
+  `MaxExpandTop`, and prescribes no number: leaving it unset is a legitimate choice for a collection
+  you know is small. It deliberately does **not** name `ExpandPagingEnabled` — that flag resolves
+  but nothing acts on it yet, and a log line is the worst place for a claim that outruns the code,
+  because a warning is exactly what someone acts on. Emitted once at startup, never per request. Because `ExpandEnabled` is `false` by default,
   a registration that never opts into `$expand` gets **no** warning at all — measured across the
-  suite, 1370 of 1511 registrations (90.7%) are silent and the loudest emits 7.
+  suite, 1370 of 1512 registrations (90.6%) are silent and the loudest emits 7.
 
   `ExpandPushdownEnabled` is in that list because it was measured to matter, not because the design
   called for it: with expand pushdown off no `EngagedExpand` is built, so `?$expand=Books` over a

@@ -1059,6 +1059,15 @@ internal static class OhDataEndpointFactory
                 if (nav.TargetMultiplicity() != EdmMultiplicity.Many) continue;
                 if (ResolveNavTreatment(nav.Name, candidates).Treatment != NavTreatment.ServeRaw) continue;
 
+                // MaxExpandTop is the ONLY knob this message names, deliberately. ExpandPagingEnabled
+                // ships in this same stage but nothing acts on it yet, and the stages are stacked —
+                // this stage necessarily reaches develop before the paging it gates does. A log line
+                // is the one place a claim that outruns the code does real damage, because a warning
+                // is precisely what someone acts on. Stage 5 extends this message at the point where
+                // the second knob starts doing something; until then it is not mentioned here, and a
+                // "(not yet active)" hedge is not the alternative — that trades a false statement for
+                // a confusing one and leaves something someone has to remember to delete.
+                //
                 // Each placeholder appears EXACTLY once: Microsoft.Extensions.Logging binds a template
                 // positionally, so a repeated one would consume an argument that is not there.
                 logger.LogWarning(
@@ -1067,11 +1076,9 @@ internal static class OhDataEndpointFactory
                     "materializes the ENTIRE related collection for every row of the page — with no " +
                     "ceiling, because MaxExpandTop resolves to null. OhData does not guess a limit: it " +
                     "cannot know how large this collection gets, and only you can. Set MaxExpandTop to " +
-                    "bound it (an over-ceiling $expand is then rejected with 400), and additionally set " +
-                    "ExpandPagingEnabled = true if your clients follow a Nav@odata.nextLink " +
-                    "continuation and should be served the first page instead of the 400. Leaving both " +
-                    "unset is a valid choice for a collection you know is small — this warning informs " +
-                    "that choice, it does not make it.",
+                    "bound it; an over-ceiling $expand is then rejected with 400. Leaving it unset is a " +
+                    "valid choice for a collection you know is small — this warning informs that " +
+                    "choice, it does not make it.",
                     profile.EntitySetName, nav.Name, nav.Name);
             }
         }

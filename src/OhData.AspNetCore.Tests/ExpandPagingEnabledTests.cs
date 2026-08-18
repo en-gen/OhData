@@ -231,7 +231,7 @@ public class ExpandPagingStartupDiagnosticTests
         logs.Warnings.Where(w => w.Contains("MaxExpandTop resolves to null", StringComparison.Ordinal)).ToList();
 
     [Fact]
-    public async Task Fires_OncePerCollectionNavigation_NamingTheSetTheNavAndBothKnobs()
+    public async Task Fires_OncePerCollectionNavigation_NamingTheSetTheNavAndMaxExpandTop()
     {
         (TestFixture fx, WarningCapture logs) = await BuildAsync(o => o.AddEntitySetProfile<EpdExposedProfile>());
         await using TestFixture _ = fx;
@@ -242,11 +242,8 @@ public class ExpandPagingStartupDiagnosticTests
         Assert.Contains("'EpdParents'", warning, StringComparison.Ordinal);
         Assert.Contains("'Children'", warning, StringComparison.Ordinal);
 
-        // BOTH knobs, because they are two separate decisions: MaxExpandTop bounds the shape (and, on
-        // its own, turns the over-ceiling case into a 400), and ExpandPagingEnabled is the further
-        // opt-in to serving a continuation instead of that 400.
+        // The one knob that actually does something today.
         Assert.Contains("MaxExpandTop", warning, StringComparison.Ordinal);
-        Assert.Contains("ExpandPagingEnabled", warning, StringComparison.Ordinal);
 
         // The framing the owner asked for: it informs the decision without making it. A diagnostic
         // that prescribed a number would reintroduce exactly what stage 1 removed.
@@ -254,6 +251,27 @@ public class ExpandPagingStartupDiagnosticTests
 
         // Single-valued Owner is at most one related row, so it is not the DoS and must not be named.
         Assert.DoesNotContain("'Owner'", warning, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The message must NOT name <c>ExpandPagingEnabled</c>. That flag ships in this same stage, but
+    /// nothing acts on it yet and the stages are stacked — this one necessarily reaches <c>develop</c>
+    /// before the paging it gates does, so naming it would be a log line telling a developer to set a
+    /// flag that does nothing. A warning is the worst place for a claim that outruns the code, because
+    /// a warning is exactly what someone acts on. Stage 5 extends the message when the flag starts
+    /// meaning something; this test is what makes that a deliberate edit rather than a silent drift,
+    /// and it is why a "(not yet active)" hedge was rejected — a hedge is a second thing to remember
+    /// to delete, and this assertion is the reminder instead.
+    /// </summary>
+    [Fact]
+    public async Task DoesNotName_ExpandPagingEnabled_WhileNothingActsOnIt()
+    {
+        (TestFixture fx, WarningCapture logs) = await BuildAsync(o => o.AddEntitySetProfile<EpdExposedProfile>());
+        await using TestFixture _ = fx;
+
+        string warning = Assert.Single(BareExpandWarnings(logs));
+        Assert.DoesNotContain("ExpandPagingEnabled", warning, StringComparison.Ordinal);
+        Assert.DoesNotContain("nextLink", warning, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
