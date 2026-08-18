@@ -7037,10 +7037,19 @@ internal static class OhDataEndpointFactory
                         // collection route. Rejecting by the '$' sigil rather than an allowlist of
                         // known names is deliberately fail-closed: a future OData system option this
                         // build has never heard of is refused rather than silently ignored.
+                        //
+                        // $format is the ONE exemption, and it is not a data option at all: §11.2.12
+                        // content negotiation is implemented once, on the group filter in MapAll, for
+                        // every route on the whole OData surface — it never reaches this handler and
+                        // cannot change a single row. Refusing it here would make this the only route
+                        // in the surface that 400s a conformant, already-supported option, and would
+                        // break the common client habit of appending it to a server-issued link. An
+                        // unsupported VALUE is still rejected, by that same group filter, unchanged.
                         foreach (string queryKey in ctx.Request.Query.Keys)
                         {
                             if (!queryKey.StartsWith('$') ||
-                                string.Equals(queryKey, "$skip", StringComparison.Ordinal))
+                                string.Equals(queryKey, "$skip", StringComparison.Ordinal) ||
+                                string.Equals(queryKey, "$format", StringComparison.Ordinal))
                             {
                                 continue;
                             }

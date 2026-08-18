@@ -783,7 +783,6 @@ public sealed class BareExpandContinuationFailClosedTests : IAsyncLifetime
     [InlineData("$compute=1 as x")]
     [InlineData("$skiptoken=BQAAAA%3d%3d")]
     [InlineData("$levels=2")]
-    [InlineData("$format=json")]
     public async Task TheContinuationRouteRejectsEverythingExceptSkip(string option)
     {
         HttpResponseMessage resp = await _fx.Client.GetAsync($"/odata/BeAuthors(1)/Books?$skip=3&{option}");
@@ -792,6 +791,32 @@ public sealed class BareExpandContinuationFailClosedTests : IAsyncLifetime
         string body = await resp.Content.ReadAsStringAsync();
         Assert.Contains("UnsupportedQueryOption", body, StringComparison.Ordinal);
         Assert.Contains("accepts '$skip' only", body, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <c>$format</c> is the ONE exemption from the rule above, and it is a deliberate deviation from
+    /// the brief's "reject every other query option". It is not a data option: §11.2.12 content
+    /// negotiation is implemented once on the group filter in <c>MapAll</c>, for every route on the
+    /// whole OData surface, and never reaches this handler. Refusing it would make this the only
+    /// route in the surface that <c>400</c>s a conformant, already-supported option, and would break
+    /// the common client habit of appending it to a server-issued link — at no security or
+    /// correctness benefit, since it cannot change a single row.
+    /// <para>
+    /// An unsupported VALUE is still rejected, by that same group filter — which is the second
+    /// assertion, and what shows the exemption forwards to the existing check rather than disabling it.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheContinuationRouteAcceptsFormat_BecauseTheGroupFilterOwnsIt()
+    {
+        HttpResponseMessage json = await _fx.Client.GetAsync("/odata/BeAuthors(1)/Books?$skip=3&$format=json");
+        Assert.Equal(HttpStatusCode.OK, json.StatusCode);
+        Assert.Equal(2, JsonDocument.Parse(await json.Content.ReadAsStringAsync())
+            .RootElement.GetProperty("value").GetArrayLength());
+
+        HttpResponseMessage xml = await _fx.Client.GetAsync("/odata/BeAuthors(1)/Books?$skip=3&$format=xml");
+        Assert.Equal(HttpStatusCode.BadRequest, xml.StatusCode);
+        Assert.Contains("UnsupportedFormat", await xml.Content.ReadAsStringAsync(), StringComparison.Ordinal);
     }
 
     [Theory]
