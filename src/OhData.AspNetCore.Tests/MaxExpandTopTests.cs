@@ -25,6 +25,10 @@ namespace OhData.AspNetCore.Tests;
 // An OMITTED nested $top without $count is deliberately left unbounded (E3, explicit non-goal):
 // silently windowing an expanded collection with no Nav@odata.nextLink would be a worse spec
 // violation than the cost.
+//
+// #313: the DEFAULT is now null, so E1 and E2 are both OPT-IN. Every behavioural suite below sets
+// MaxExpandTop explicitly (that was already true before the default moved), so they pin the ceiling
+// itself rather than the default that happens to be in force.
 
 // ── Resolution (profile / WithDefaults / null / invalid) ─────────────────────────────────────────
 
@@ -67,13 +71,18 @@ public class MaxExpandTopResolutionTests
             defaults ?? new EntitySetDefaults());
 
     [Fact]
-    public void MaxExpandTop_DefaultsTo1000()
+    public void MaxExpandTop_DefaultsToNull_NoCeiling()
     {
-        Assert.Equal(1000, new EntitySetDefaults().MaxExpandTop);
+        // #313: the default moved 1000 → null. 1000 was an invented number: the framework cannot know
+        // how large a child collection is, so it ships the control point instead of a guess. Both the
+        // things this governs — the explicit nested-$top rejection (E1) and the nested-$count
+        // materialization bound (E2) — are consequently OPT-IN. That is the intended contract, not a
+        // regression: a registration that wants either must now set MaxExpandTop.
+        Assert.Null(new EntitySetDefaults().MaxExpandTop);
 
         var profile = new DefaultProfile();
         Seal(profile);
-        Assert.Equal(1000, ((IEntitySetEndpointSource)profile).MaxExpandTop);
+        Assert.Null(((IEntitySetEndpointSource)profile).MaxExpandTop);
     }
 
     [Fact]
@@ -95,16 +104,22 @@ public class MaxExpandTopResolutionTests
     [Fact]
     public void MaxExpandTop_NullProfileValue_InheritsDefault_NotUncapped()
     {
-        // `MaxExpandTop = null` on the profile means "inherit", exactly like MaxTop — opting out of the
-        // ceiling entirely is done by setting the DEFAULT to null (see the next test).
+        // `MaxExpandTop = null` on the profile means "inherit", exactly like MaxTop — opting out of a
+        // ceiling set in the defaults is NOT possible per-profile. Asserted against a non-null DEFAULT
+        // because since #313 the default is itself null, and under a null default "inherit" and
+        // "uncapped" resolve to the same value — the distinction is only observable when the defaults
+        // actually carry a ceiling.
         var profile = new UncappedProfile();
-        Seal(profile);
-        Assert.Equal(1000, ((IEntitySetEndpointSource)profile).MaxExpandTop);
+        Seal(profile, new EntitySetDefaults { MaxExpandTop = 7 });
+        Assert.Equal(7, ((IEntitySetEndpointSource)profile).MaxExpandTop);
     }
 
     [Fact]
     public void MaxExpandTop_NullDefault_IsUncapped()
     {
+        // Explicitly setting the default to null is still supported and still means "no ceiling" — it
+        // is now the same value the default already carries, but the assignment path is distinct from
+        // the field initializer and stays pinned.
         var profile = new DefaultProfile();
         Seal(profile, new EntitySetDefaults { MaxExpandTop = null });
         Assert.Null(((IEntitySetEndpointSource)profile).MaxExpandTop);

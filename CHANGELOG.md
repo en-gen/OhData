@@ -11,6 +11,34 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **`MaxExpandTop` now defaults to `null` — no ceiling — instead of `1000` (#313).** The framework
+  cannot know how large any given child collection is, so it no longer guesses: it ships the
+  configuration point and lets the implementor set it. `1000` was an invented number, and a
+  developer who never touched the knob was getting two behaviours decided by that guess.
+
+  **Both of those behaviours are now opt-in, and that is the intended contract, not a regression to
+  work around.** On a registration that does not set `MaxExpandTop`:
+
+  - `?$expand=Children($top=999999)` is **answered** rather than rejected with `400`. The nested-`$top`
+    ceiling (#254 E1) does not exist until a value is set.
+  - `?$expand=Children($count=true)` materializes the related collection **with no SQL row bound**.
+    The `Take(ceiling + 1)` and its `ROW_NUMBER() OVER (PARTITION BY …)` window are not composed, and
+    the emitted count is the full filtered count with no possibility of a ceiling `400`.
+
+  Set it to get either back — `WithDefaults(d => d.MaxExpandTop = 1000)` reproduces the previous
+  behaviour exactly (verified byte-identical in response body *and* emitted SQL across every
+  `$expand` shape the suite covers), or set it per profile. A profile-level `MaxExpandTop = null`
+  still means *inherit*, not "uncapped".
+
+  **Strictly more permissive:** every request that succeeded before still succeeds, and nothing that
+  worked stops working. Two shapes that used to return `400` now return `200`. The one visible
+  side effect beyond that: for a bare `$expand=Nav($count=true)` with no nested `$top`/`$skip`, the
+  child-key `ORDER BY` tiebreaker is no longer composed either — it existed only to make the bounded
+  page deterministic, and with no bound there is no page to stabilize.
+
+  A bare `$expand=Nav` was never bounded by this setting and is unaffected; #313 tracks bounding and
+  paging that shape behind a separate opt-in.
+
 - **`@`-containing keys in an open type's payload are now treated as control information and ignored,
   where they used to be rejected with `400` (#398).** OData JSON Format 4.01 reserves `@` for control
   information — §4.5 for the leading form (`@odata.type`, `@odata.id`, `@odata.etag`) and §18 for the

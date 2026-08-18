@@ -336,8 +336,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// <c>400 Bad Request</c> before any handler runs; a nested <c>$count</c> whose related
     /// collection exceeds it is likewise rejected with <c>400</c> rather than silently truncated
     /// (OData §11.2.4.2 requires <c>Nav@odata.count</c> to report the full filtered collection).
-    /// Inherits from <see cref="EntitySetDefaults.MaxExpandTop"/> (default <c>1000</c>) when
-    /// <c>null</c>. The <b>root</b> entity set's resolved value governs at every nesting depth, the
+    /// Inherits from <see cref="EntitySetDefaults.MaxExpandTop"/> (default <c>null</c> — no
+    /// ceiling) when <c>null</c>; a profile-level <c>null</c> therefore means <b>inherit</b>, not
+    /// "uncapped". The <b>root</b> entity set's resolved value governs at every nesting depth, the
     /// same rule <see cref="MaxExpansionDepth"/> follows. Must be a positive integer or <c>null</c>
     /// (no ceiling).
     /// </summary>
