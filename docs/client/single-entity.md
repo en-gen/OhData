@@ -36,6 +36,38 @@ var keyed = client.For<Product>().Key<int>(42);
 Product? product = await client.For<Product>().Key(42).GetAsync();
 ```
 
+## `GetAnnotatedAsync`
+
+The annotation-preserving counterpart of `GetAsync`. Returns the entity together with the OData
+control information the server attached to it — most importantly `{Nav}@odata.nextLink` and
+`{Nav}@odata.count` on an expanded collection, which `GetAsync` silently discards. Returns `null` on
+`404` (or throws, per [`NotFoundBehavior`](index.md#notfoundbehavior)).
+
+```csharp
+ODataAnnotatedEntity<Author>? entry = await client.For<Author>()
+    .Expand(a => a.Books)
+    .Key(1)
+    .GetAnnotatedAsync();
+
+if (entry is not null)
+{
+    Author author = entry.Entity;
+    Uri? more = entry.NextLinkFor(a => a.Books);   // non-null ⇒ author.Books is a PREFIX
+    long? total = entry.CountFor(a => a.Books);    // the full related-collection size
+}
+```
+
+Reach for it whenever the builder carried an `Expand`. The full shape of `ODataAnnotatedEntity<T>`,
+and the cost of preserving annotations, are described under
+[annotation-preserving reads](terminal-operations.md#annotation-preserving-reads).
+
+> **Note the server-side asymmetry.** OhData's own nested-paging ceiling and its continuation link are
+> emitted on the **collection** route only; `GET /{Set}({key})?$expand=Nav` is not bounded and carries
+> no nested link ([#418](https://github.com/en-gen/OhData/issues/418)). So against an OhData server
+> today `GetAnnotatedAsync` will find no nested `nextLink` to report — correctly, because none was
+> sent. The method is not OhData-specific, though: any OData 4 service that pages an expansion on a
+> single-entity read is read correctly here.
+
 ## Get with ETag
 
 Retrieves the entity and the server's current ETag in one call. Pass the ETag to `PutAsync` or `PatchAsync` for optimistic concurrency:

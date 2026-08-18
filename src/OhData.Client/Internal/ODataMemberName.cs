@@ -1,3 +1,5 @@
+using System;
+using System.Linq.Expressions;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -24,5 +26,32 @@ internal static class ODataMemberName
         JsonPropertyNameAttribute? rename = member.GetCustomAttribute<JsonPropertyNameAttribute>();
         if (rename is not null) return rename.Name;
         return namingPolicy?.ConvertName(member.Name) ?? member.Name;
+    }
+
+    /// <summary>
+    /// Resolves the wire name of a single DIRECT member of <typeparamref name="T"/> from a
+    /// member-access lambda, stripping the boxing <c>Convert</c> wrapper that appears when the
+    /// lambda returns <c>object?</c>. Throws <see cref="ArgumentException"/> carrying
+    /// <paramref name="errorMessage"/> when the expression is chained (e.g. <c>x => x.Category.Name</c>)
+    /// rather than direct (e.g. <c>x => x.Id</c>).
+    /// </summary>
+    internal static string ResolveDirectMember<T>(
+        Expression<Func<T, object?>> expr, JsonNamingPolicy? namingPolicy, string errorMessage)
+    {
+        Expression body = expr.Body;
+        while (body is UnaryExpression u
+            && u.NodeType is ExpressionType.Convert or ExpressionType.ConvertChecked)
+        {
+            body = u.Operand;
+        }
+
+        if (body is MemberExpression member
+            && member.Expression is ParameterExpression p
+            && p == expr.Parameters[0])
+        {
+            return Resolve(member.Member, namingPolicy);
+        }
+
+        throw new ArgumentException(errorMessage);
     }
 }

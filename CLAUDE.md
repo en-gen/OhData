@@ -59,7 +59,8 @@ app.MapOhData()  →  returns RouteGroupBuilder
         │      /{EntitySet}({key})/{segment}), if an unbound function/action name collides with
         │      another unbound operation or with an entity set's own collection GET/POST route,
         │      or if a BindEntityFunction/BindEntityAction handler's first parameter isn't the
-        │      entity key (TKey)
+        │      entity key (TKey), or (#313, opted-in registrations only) if an entity-level bound
+        │      function name collides with a PAGEABLE navigation's continuation route
         └─► per profile (only routes whose handler delegate is non-null):
             GET    /{EntitySet}              (GetAll or GetQueryable)
             GET    /{EntitySet}/$count
@@ -69,6 +70,8 @@ app.MapOhData()  →  returns RouteGroupBuilder
             PATCH  /{EntitySet}({key})       (Patch)
             DELETE /{EntitySet}({key})       (Delete - returns Task<bool>; false→404 or 204, per IdempotentDelete)
             GET    /{EntitySet}({key})/{nav}          (navigation routes with handler, batch or per-entity)
+            GET    /{EntitySet}({key})/{nav}?$skip=N  (#313: bare-$expand continuation, delegate-LESS navs only,
+                                                       registered only when ExpandPagingEnabled && MaxExpandTop is set)
             GET    /{EntitySet}({key})/{nav}/$count   (collection-navigation count)
             GET/POST/PUT/DELETE /{EntitySet}({key})/{nav}/$ref  (addRef/setRef/removeRef)
             POST   /{EntitySet}({key})/{nav}          (HasMany `post` - create a related entity)

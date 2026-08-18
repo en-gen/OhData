@@ -399,4 +399,25 @@ public sealed class NestedTopUncappedTests : IAsyncLifetime
         Assert.Equal(2, author.GetProperty("Books@odata.count").GetInt32());
         Assert.Equal(1, author.GetProperty("Books").GetArrayLength());
     }
+
+    // #313: a BARE $expand (no nested $count/$top at all) is the shape #313 newly bounds by
+    // MaxExpandTop — MaxExpandTop = null must still fully opt out of THAT bound too, exactly like it
+    // already does for the $count-deferred bound above. No SQL Take composed, no ceiling check, every
+    // row returned.
+    [Fact]
+    public async Task Uncapped_BareNestedExpand_EmitsAllRows_WithNoRowBoundInSql()
+    {
+        _sink.Clear();
+        HttpResponseMessage resp = await _fx.Client.GetAsync("/odata/Authors?$orderby=id&$expand=Books");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        using JsonDocument doc = JsonDocument.Parse(body);
+        JsonElement books = doc.RootElement.GetProperty("value")[0].GetProperty("Books");
+        Assert.Equal(2, books.GetArrayLength()); // B1, B2 — no ceiling to trip regardless of count
+
+        string sql = MultiLevelSqliteHarness.LastSelectAgainst(_sink, "Authors");
+        Assert.Contains("\"Books\"", sql);
+        Assert.DoesNotContain("ROW_NUMBER()", sql);
+    }
 }

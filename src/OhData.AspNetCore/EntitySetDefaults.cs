@@ -72,7 +72,15 @@ public sealed class EntitySetDefaults
     /// A nested <c>$count</c> whose related collection exceeds the ceiling is also rejected with
     /// <c>400</c> rather than silently truncated, because OData §11.2.4.2 requires
     /// <c>Nav@odata.count</c> to report the FULL filtered collection, not the returned page.
-    /// Must be a positive integer or <c>null</c> (no ceiling).
+    /// #313 widened what the value covers once it is set: it now bounds <b>every</b> collection
+    /// <c>$expand</c> level — including a bare <c>?$expand=Children</c>, one carrying only
+    /// <c>$select</c>/<c>$orderby</c>/<c>$filter</c>/<c>$skip</c>, and every level of a
+    /// <c>$levels=N</c> recursion — not just the two #254 shapes. Setting it also composes the
+    /// child-key <c>ORDER BY</c> tiebreaker on those shapes, so it governs the nested wire order as
+    /// well as the status code.
+    /// Must be a positive integer or <c>null</c> (no ceiling). Use <c>null</c>, not a large sentinel:
+    /// <c>int.MaxValue</c> counts as set, so it pays for every bound and tiebreaker while making the
+    /// check unable to fire.
     /// </summary>
     public int? MaxExpandTop
     {
@@ -84,6 +92,26 @@ public sealed class EntitySetDefaults
             _maxExpandTop = value;
         }
     }
+
+    /// <summary>
+    /// #313: whether a <b>bare</b> collection <c>$expand</c> whose child collection exceeds the
+    /// resolved <see cref="MaxExpandTop"/> is served as its first <c>MaxExpandTop</c> children plus a
+    /// <c>Nav@odata.nextLink</c> continuation, rather than rejected with <c>400</c>. Defaults to
+    /// <c>false</c>. Profile-level <c>ExpandPagingEnabled</c> overrides this value.
+    /// <para>
+    /// Inert on its own: it does nothing unless <see cref="MaxExpandTop"/> is also set, because with
+    /// no ceiling there is no boundary at which a continuation could begin. <c>MaxExpandTop</c> is
+    /// also the page size — for the first page and every continuation alike. There is deliberately no
+    /// second page-size knob.
+    /// </para>
+    /// <para>
+    /// It is a separate opt-in from the ceiling because a continuation link is <i>worse</i> than a
+    /// <c>400</c> for a client that does not read nested annotations: the client sees a complete-looking
+    /// collection that is silently truncated. Only a deployment that knows its clients follow
+    /// <c>Nav@odata.nextLink</c> should turn this on.
+    /// </para>
+    /// </summary>
+    public bool ExpandPagingEnabled { get; set; }
 
     private long? _maxRequestBodyBytes;
 

@@ -6,7 +6,7 @@ This guide is split across several pages:
 
 - **Overview & setup** (this page) — installation, constructing the client, `IHttpClientFactory`, entity set name resolution, and client options.
 - [Querying](querying.md) — `$filter`, `$select`, `$expand`, `$orderby`, `$top`/`$skip`, `IncludeCount`.
-- [Terminal operations](terminal-operations.md) — `ToListAsync`, `ToPageAsync`, `FirstOrDefaultAsync`, `CountAsync`, `AnyAsync`, and the rest.
+- [Terminal operations](terminal-operations.md) — `ToListAsync`, `ToPageAsync`, `FirstOrDefaultAsync`, `CountAsync`, `AnyAsync`, and the rest, plus the [annotation-preserving reads](terminal-operations.md#annotation-preserving-reads) that surface a nested `{Nav}@odata.nextLink`.
 - [Single-entity operations](single-entity.md) — get, insert, replace, partial update, delete, ETags, and conditional GET.
 - [Error handling & literal types](errors-and-types.md) — `ODataClientException` and the CLR-to-OData literal mapping.
 

@@ -34,6 +34,23 @@ public sealed class KeyedEntitySetClient<T> where T : class
         => _http.GetSingleAsync<T>(_url, ct);
 
     /// <summary>
+    /// GET <c>/{EntitySet}(key)</c> keeping the OData control information the server attached to the
+    /// entity — most importantly <c>{Nav}@odata.nextLink</c> and <c>{Nav}@odata.count</c> on an
+    /// expanded collection, which <see cref="GetAsync"/> silently discards. Returns
+    /// <see langword="null"/> on 404 (or throws, per
+    /// <see cref="OhDataClientOptions.NotFoundBehavior"/>).
+    /// </summary>
+    /// <remarks>
+    /// Reach for this when the builder that produced this client carried an
+    /// <see cref="EntitySetClient{T}.Expand(string[])"/>: a server that pages an expanded collection
+    /// returns a <em>prefix</em> of it and says so with a nested <c>nextLink</c>. Preserving
+    /// annotations costs a buffered body and a second read of it, so <see cref="GetAsync"/> is
+    /// unchanged and still streams.
+    /// </remarks>
+    public Task<ODataAnnotatedEntity<T>?> GetAnnotatedAsync(CancellationToken ct = default)
+        => _http.GetAnnotatedSingleAsync<T>(_url, ct);
+
+    /// <summary>
     /// GET <c>/{EntitySet}(key)</c> with ETag — returns the entity and the server's current ETag value.
     /// Pass the ETag to <see cref="PutAsync(T, string?, bool, CancellationToken)"/> for optimistic concurrency.
     /// </summary>
