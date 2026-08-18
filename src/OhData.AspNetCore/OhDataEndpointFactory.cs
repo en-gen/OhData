@@ -2184,16 +2184,44 @@ internal static class OhDataEndpointFactory
     // closed instead of being silently decided here.
     //
     // No branch preferring the EDM's own navigation-source binding (originally proposed in #292
-    // item 1, i.e. <c>expandItem.NavigationSource</c> at the call site): reviewed via reflection
-    // over Microsoft.OData.ModelBuilder + EntitySetProfile/IVisitModelBuilder, and there is no
-    // reachable API for a profile to create a genuine cross-entity-set navigation binding — the
-    // convention builder never produces a real <see cref="IEdmEntitySet"/> binding for a
-    // navigation, only either no binding or an <see cref="IEdmUnknownEntitySet"/> placeholder
-    // (whose Name is the navigation PROPERTY's own name, never a real entity set's). A binding
-    // branch is therefore structurally unreachable and provably redundant with the union below (a
-    // single legitimate candidate resolves identically either way; an ambiguous case already falls
-    // through to the union), so this is an intentional, reviewed deviation from #292's written
-    // step 1, not an oversight. If a real binding API is ever added, prefer it here first.
+    // item 1, i.e. <c>expandItem.NavigationSource</c> at the call site). The DECISION stands; the
+    // reason originally written here did not, and was corrected by #313 (design finding B5).
+    //
+    // WHAT THIS COMMENT USED TO CLAIM, AND WHY IT WAS WRONG. It said the convention builder "never
+    // produces a real <see cref="IEdmEntitySet"/> binding for a navigation, only either no binding
+    // or an <see cref="IEdmUnknownEntitySet"/> placeholder". MEASURED FALSE on this tree, both
+    // arms, by walking <c>IEdmEntitySet.NavigationPropertyBindings</c> and
+    // <c>FindNavigationTarget</c> over a registration's own <c>OhDataRegistration.EdmModel</c>:
+    //
+    //   (A) EXACTLY ONE entity set exposes the navigation's target type → a REAL binding exists.
+    //       The parent set's NavigationPropertyBindings contains `<navName> -> <thatSet>`, and
+    //       FindNavigationTarget(nav) returns that same EdmEntitySet.
+    //   (B) TWO OR MORE entity sets expose it → NavigationPropertyBindings is EMPTY, and
+    //       FindNavigationTarget(nav) returns an EdmUnknownEntitySet whose Name is the navigation
+    //       PROPERTY's own name, never an entity set's.
+    //   (C) NO entity set exposes it → the same EdmUnknownEntitySet placeholder as (B).
+    //
+    // So the placeholder half of the old claim was right and the "never a real binding" half was
+    // not. The binding is produced by the convention builder itself, not by any profile-facing API —
+    // that part is unchanged: there is still no reachable way for a profile to DECLARE a
+    // cross-entity-set binding.
+    //
+    // WHY THE DECISION SURVIVES THE CORRECTION. The binding branch is redundant rather than
+    // unreachable, and it is redundant in exactly the cases above: in (A) a real binding exists but
+    // there is by construction exactly ONE candidate, so the union below resolves identically; in
+    // (B) and (C) — the only cases where the union could be ambiguous — there is no binding to
+    // prefer. Intentional, reviewed deviation from #292's written step 1, now for a reason that is
+    // true.
+    //
+    // DO NOT "RESTORE" THE BINDING AS LOAD-BEARING. #313 O5 restricts nested-$expand continuation
+    // links to depth 1, where the URL already names the parent set and there is no child set to
+    // disambiguate — which is precisely what took this finding OFF the critical path. A real
+    // binding is only the correct source of a child SET NAME at depth >= 2, and the hazard there is
+    // that adding a second, unrelated entity set over the child type moves the model from
+    // (A) to (B) and DELETES the binding — silently changing behaviour with no change to the
+    // navigation itself. Anything built on it must test
+    // `set.FindNavigationTarget(nav) is IEdmEntitySet and not IEdmUnknownEntitySet` and must treat
+    // the absent case as a first-class outcome, not an error.
     //
     // Returns an empty list when targetEdmType is null or no profile exposes it at all — e.g. a
     // navigation whose target type is present in the model but never registered as its own entity

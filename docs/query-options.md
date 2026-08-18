@@ -559,15 +559,197 @@ The ceiling is advertised in `$metadata` as the `Org.OData.Capabilities.V1.Expan
 - **Nested options are not gated by the parent profile's property allowlists.** `FilterProperties`/`OrderByProperties`/`SelectProperties` restrict the *root* entity set only; a navigation-target type has no allowlist surface of its own and is treated as fully queryable (this is the same design decision that lets nav-path `$filter` work — see `MarkNavigationTargetTypesFullyQueryable`). So `$expand=Children($filter=…)`/`($orderby=…)`/`($select=…)` may reference any column of the child type regardless of what the parent restricted. Model your navigation targets accordingly (e.g. don't expose a sensitive column on a type reachable via a delegate-less navigation you `$expand`), or write an expand **delegate** for that navigation (which opts it out of pushdown and lets you enforce your own shaping).
 - **`$count` on a pushed expand materializes the full filtered child collection; whether `MaxExpandTop` bounds that materialization in SQL depends on the shape — and, since #304, the same shape question governs a plain nested `$top`/`$skip` (no `$count`) too.** To report `Nav@odata.count` accurately, the whole filtered set is loaded before `$top`/`$skip` paging is applied — the same amount of data a bare `$expand=Nav` already loads. As of #254, at a **projection leaf** — a level with no nested `$expand` of its own — `$top`/`$skip` paging (with or without `$count`) pushes into SQL and transfers only the page: the framework composes a `Take(MaxExpandTop + 1)` for the `$count` case, and a related collection larger than the ceiling is rejected with `400` (`InvalidQueryOption`) rather than reported with a truncated count — §11.2.4.2 requires `Nav@odata.count` to be the count of the **full filtered** collection, so silent truncation would be a lie. At a level that **also** carries its own nested `$expand` (a level with children), or anywhere inside a `$levels` recursion, the SQL bound is **not** composed for `$count` **or** for a plain `$top`/`$skip` (#304) — windowing a collection *and* projecting a further collection out of it in the same query requires SQL `APPLY`/`LATERAL`, which not every provider (SQLite among them) translates — so the window (and, for `$count`, the count) is instead computed **after an unbounded materialization** in the JSON pass, and the request is rejected with the same `400` if the collection exceeds `MaxExpandTop`. Before #304, a nested `$top`/`$skip` at a level with its own nested `$expand` failed loud with `400` outright (e.g. `?$expand=Books($top=1;$expand=Chapters)`); it is now windowed correctly instead, the same JSON-pass trade `$levels` and `$count` already made — and #316 closed the matching ceiling gap on the `$levels` JSON-windowing path. The *correctness* of the ceiling is enforced either way (never a truncated count, never an untranslatable-query failure); [#299](https://github.com/en-gen/OhData/issues/299) tracks tightening the unbounded-materialize-then-`400` *cost*, which stays open. Narrow the collection with a nested `$filter`, or raise/remove `MaxExpandTop`.
 - **Once `MaxExpandTop` is set, it bounds every collection `$expand` level, the bare one included (#313).** `MaxExpandTop` is unset by default, so none of this applies until you set it — see the table below. Before #313 the ceiling covered an *explicit* nested `$top` and the nested-`$count` materialization only, and `$expand=Nav` with no nested `$count`/`$top` — the most common `$expand` shape there is — composed no SQL `Take` and got no post-hoc size check even with a ceiling configured, so a 5,000-row related collection under a `MaxExpandTop` of 1000 returned all 5,000 rows. It now returns `400` (`InvalidQueryOption`). The rule is: **a collection expand level carrying neither a nested `$count` nor an explicit nested `$top` is bounded by `MaxExpandTop`, whatever else it carries.** That is deliberately broad, and wider than "bare" suggests — `($select=…)`, `($orderby=…)`, `($filter=…)` and `($skip=N)` are all in scope, because none of them bounds the collection either. At a projection leaf the bound is pushed into SQL as `Take(MaxExpandTop + 1)` (so the over-cap case is detected without transferring the whole collection); at a level with its own nested `$expand`, and at every level of a `$levels` recursion, it is a post-materialization check in the JSON pass — the same `APPLY`/`LATERAL` trade the `$count` caveat above describes. **`$levels=N` is checked at each level independently**, so `Nav($levels=1)` behaves exactly like the bare `$expand=Nav` it restates, and a deeper level that breaches is rejected even when the levels above it are under the cap. An **explicit** nested `$top` still wins: it is validated against the ceiling up front (`400` if larger than `MaxExpandTop`) and windows the collection itself, so no default bound is composed alongside it.
-- **Nested server-driven paging is still not implemented, which is why an over-cap collection is a `400` and not a page.** Silently windowing an expanded collection without a `Nav@odata.nextLink` to continue from would be a worse spec violation than the cost of rejecting. Narrow the collection with a nested `$filter`, give the navigation an explicit nested `$top`, or raise/remove `MaxExpandTop`.
+- **An over-cap collection is a `400` unless it is a *truly bare* `$expand` on a profile that opted in with `ExpandPagingEnabled` — then it is a page plus a `Nav@odata.nextLink` (#313).** Silently windowing an expanded collection without a link to continue from would be a worse spec violation than the cost of rejecting, so the framework never does it: over the ceiling a shape either rejects or links, at every commit. The full rule, the exact pageable set and the continuation's own surface are in [Nested server-driven paging](#nested-server-driven-paging-expandpagingenabled-313) below. For every shape that is not truly bare — and for every profile that did not opt in — the answer is unchanged: narrow the collection with a nested `$filter`, give the navigation an explicit nested `$top`, or raise/remove `MaxExpandTop`.
 - **Nested paging without a nested `$orderby` is stabilized by the child's key.** When `$top`/`$skip` are pushed to SQL without a nested `$orderby`, the navigation element's single key is appended as a deterministic tiebreaker (mirroring the root path). A composite-keyed child type is left to the provider's order. Since #313 a **bare** collection expand carries a default bound too once `MaxExpandTop` is set, so the same tiebreaker applies to it — which makes `MaxExpandTop` govern the nested **wire order**, not only the status code: with a ceiling in force a nested collection comes back in child-key order; with `MaxExpandTop` unset (the default) no tiebreaker is composed at all and the order is whatever the provider yields. Setting the ceiling therefore opts *in* to the `400` **and** to deterministic nested ordering, together; there is no way to take one without the other.
 - **The SQL bound at a projection leaf needs window functions.** `Take(MaxExpandTop + 1)` inside a collection projection is translated by EF Core as the standard top-N-per-group form, `ROW_NUMBER() OVER (PARTITION BY <fk> ORDER BY <key>)` — the same shape an explicit nested `$top` has always produced. Every provider OhData tests against (SQLite, EF Core InMemory) supports it, as do SQL Server, PostgreSQL, Oracle, MySQL 8.0+ and MariaDB 10.2+. The only relational providers that cannot translate it are MySQL before 8.0 (2018) and MariaDB before 10.2 (2017), both long past end-of-life and neither referenced or tested here. On such a provider, leave `MaxExpandTop` unset (the default) to keep the plain join.
 - **Which rows the ceiling counts differs by shape, and it is worth knowing which.** At a projection **leaf** the bound is composed *after* any nested `$skip`, so what is measured against the ceiling is the **post-`$skip` remainder** — `Children($skip=4995)` over 5,000 rows at a ceiling of 1000 succeeds and returns 5. At a level with its own nested `$expand`, or inside a `$levels` recursion, no SQL window is composable and the check runs over the **fully materialized, pre-window** collection, so the same request is rejected. That asymmetry predates #313 (it is the #304 deferred-window shape, where `EnsureWithinExpandCeiling` necessarily runs before the JSON-pass window because there is nothing to window until the collection is materialized); #313 only makes it reachable from more requests. It goes away if and when [#299](https://github.com/en-gen/OhData/issues/299) removes the unbounded materialization, and not before.
 - **Use `null` — not a very large number — to mean "no ceiling".** `MaxExpandTop = int.MaxValue` still counts as *set*, so every bound and every key tiebreaker is composed exactly as for a small value; the only difference is that the resulting check can never fire. You pay the `ROW_NUMBER()` window for a rejection that cannot happen. Unset (the default `null`) is the opt-out; a sentinel number is not.
-- **With no ceiling set, a startup `Warning` names each exposed navigation (#313).** That is what replaced the arbitrary `1000` default. At `MapOhData()` OhData logs one warning per navigation that is collection-valued, delegate-less, on a profile that has `GetQueryable`, `ExpandEnabled` **and** `ExpandPushdownEnabled`, when that profile's resolved `MaxExpandTop` is `null` — i.e. exactly the navigations a bare `?$expand=Nav` will materialize without bound. It names the entity set, the navigation and `MaxExpandTop`, and it deliberately prescribes no number: the framework cannot know how large your child collections are. Leaving it unset is a legitimate choice for a collection you know is small; the warning informs that choice rather than making it. It does **not** mention `ExpandPagingEnabled` — that flag resolves but nothing acts on it yet, and a warning is the worst place to name a knob that does nothing. Because `ExpandEnabled` is `false` by default, a registration that never opts into `$expand` gets no warning at all. Emitted once at startup, never per request.
+- **With no ceiling set, a startup `Warning` names each exposed navigation (#313).** That is what replaced the arbitrary `1000` default. At `MapOhData()` OhData logs one warning per navigation that is collection-valued, delegate-less, on a profile that has `GetQueryable`, `ExpandEnabled` **and** `ExpandPushdownEnabled`, when that profile's resolved `MaxExpandTop` is `null` — i.e. exactly the navigations a bare `?$expand=Nav` will materialize without bound. It names the entity set, the navigation, `MaxExpandTop` **and** `ExpandPagingEnabled` — in that order, because the second is inert without the first — and it deliberately prescribes no *number*: the framework cannot know how large your child collections are. Leaving it unset is a legitimate choice for a collection you know is small; the warning informs that choice rather than making it. Because `ExpandEnabled` is `false` by default, a registration that never opts into `$expand` gets no warning at all. Emitted once at startup, never per request.
 - **`Prefer: odata.maxpagesize` is not honoured on nested collections ([#412](https://github.com/en-gen/OhData/issues/412)).** It is honoured on **root** collections. On a nested collection inside a `$expand` it is ignored, and no `Preference-Applied` is emitted on its behalf — an unmet spec `SHOULD` (§11.2.5.7 / §8.2.8.5), not a violation, since nothing claims it was applied. A nested collection's size is governed by `MaxExpandTop` alone.
 
 To also expose navigation as a standalone HTTP route (`GET /Orders(id)/Lines`), provide a handler to `HasMany` - see [navigation-routing.md](navigation-routing.md).
+
+### Nested server-driven paging (`ExpandPagingEnabled`, #313)
+
+A bare `?$expand=Nav` whose related collection exceeds `MaxExpandTop` can be served as its first
+`MaxExpandTop` children plus a `Nav@odata.nextLink` continuation, instead of being rejected with
+`400`. This is **off by default** and needs **two** settings, both of them yours to make.
+
+#### The two knobs, and how they interact
+
+| `MaxExpandTop` | `ExpandPagingEnabled` | What an over-large bare `$expand` does |
+|---|---|---|
+| unset (`null`, the default) | `false` (the default) | Returns the **whole** related collection. No bound, no `400`, no link. A startup `Warning` names each navigation in this state. |
+| unset (`null`) | `true` | Identical to the row above — the flag is **inert without a ceiling**: no route is registered, no link is emitted, and there is no boundary at which a continuation could begin. |
+| set to `N` | `false` | `400 InvalidQueryOption` — *"the related collection exceeds the maximum of N entities. Narrow it with a nested `$filter`."* |
+| set to `N` | `true` | `200` with the first `N` children and a `Nav@odata.nextLink` — **but only for a truly bare `$expand`**. Every other over-ceiling shape keeps the `400` from the row above. |
+
+`MaxExpandTop` is **also the page size**, for the first page and every continuation alike. There is
+deliberately no second page-size knob: a number you have no basis on which to pick is the mistake
+that removed `MaxExpandTop`'s own `1000` default, and a second one would need disambiguating at four
+enforcement sites. The page size is **never** `MaxTop` — that is an independent knob with its own
+default, and paging the continuation at it would serve `MaxExpandTop` rows on page 1 and `MaxTop`
+rows on page 2, or (with `MaxTop = null`) an unbounded page 2.
+
+`ExpandPagingEnabled` is a separate opt-in from the ceiling, not a refinement of it, because **a
+continuation link is worse than a `400` for a client that does not read nested annotations** — that
+client sees a complete-looking collection that has been silently truncated, with no error to notice.
+Only turn it on if you know your clients follow `Nav@odata.nextLink`. Note that **OhData's own
+first-party [`OhData.Client`](client/index.md) is not yet such a client**: it binds four envelope
+members and drops every other annotation, and its page walker follows only the envelope-level link,
+so a `Nav@odata.nextLink` never reaches the caller
+([#417](https://github.com/en-gen/OhData/issues/417)). If that client is your consumer, leave this
+off.
+
+#### The pageable set is exactly "a truly bare `$expand`"
+
+**One shape pages: `$expand=Nav`, carrying no nested options at all.** The rule, stated once: *a
+nested option list that normalizes to the identity transform is bare; anything else is not.* Only
+two no-ops survive the parser, and both count as bare —
+
+| Shape | Answer over the ceiling | Why |
+|---|---|---|
+| `$expand=Books` | **pages** | the case #313 is about |
+| `$expand=Books($skip=0)` | **pages** | `$skip=0` is the identity; the continuation is still a faithful `?$skip={cap}` |
+| `$expand=Books($count=false)` | **pages** | `$count=false` and an absent `$count` are already the same value |
+| `$expand=Books($top=0)` | `200`, `[]`, **no link** | the client asked for zero rows and got zero rows — the response is complete with respect to the request |
+| `$expand=Books($top=N)`, `N ≤ cap` | `200`, **no link** | same reasoning; an explicit `$top` wins over the default bound |
+| `$expand=Books()` | `400` | rejected by the OData URI parser before OhData sees it — *"Missing expand option on navigation property 'Books'"* |
+| `$expand=Books($filter=…)` / `($orderby=…)` / `($select=…)` | `400` | a `$skip`-only link cannot carry a nested option, so hop 2 could not reproduce hop 1 |
+| `$expand=Books($skip=N)`, `N > 0` | `400` | same: the offset is already in play and the link carries only `$skip` |
+| `$expand=Books($count=true)` | `400` | §11.2.4.2 requires `Nav@odata.count` to be the **full filtered** count; a paged collection cannot report one. `Nav@odata.count` and `Nav@odata.nextLink` therefore never coexist |
+| `$expand=Books($expand=Chapters)` | `400` | a level with children is not SQL-bounded at all (`APPLY`/`LATERAL`); the rows were already fully materialized, so a link would advertise a bound that does not exist |
+| `$expand=Nav($levels=N)` | `400` | same, at every level |
+| a nav whose element type has a composite or unresolvable key | `400` | no single key ⇒ no total order ⇒ no sound `$skip` walk |
+| depth ≥ 2 — the leaf under `$expand=Books($expand=Chapters)` | `400` | see [Deliberate limits](#deliberate-limits-and-why-they-are-limits) |
+| a nav any profile in the candidate set declares **with a delegate** | `400`, and no route | delegate safety; see below |
+
+That is the whole matrix, and it **fails closed**: over the ceiling, a shape either pages or `400`s.
+There is no third answer and no commit at which a bound existed without one or the other, so silent
+truncation never occurs.
+
+#### The continuation
+
+```jsonc
+// GET /odata/BeAuthors?$filter=Id eq 1&$expand=Books      (MaxExpandTop = 3, ExpandPagingEnabled = true)
+// 200
+{
+  "@odata.context": "http://localhost/odata/$metadata#BeAuthors",
+  "value": [
+    {
+      "Id": 1, "Name": "Ann", "PublisherId": 100,
+      "Books": [
+        { "Id": 1, "AuthorId": 1, "Title": "Bk1" },
+        { "Id": 2, "AuthorId": 1, "Title": "Bk2" },
+        { "Id": 3, "AuthorId": 1, "Title": "Bk3" }
+      ],
+      "Books@odata.nextLink": "http://localhost/odata/BeAuthors(1)/Books?$skip=3"
+    }
+  ]
+}
+```
+
+```jsonc
+// GET /odata/BeAuthors(1)/Books?$skip=3
+// 200
+{
+  "@odata.context": "http://localhost/odata/$metadata#BeAuthors(1)/Books",
+  "value": [
+    { "Id": 4, "AuthorId": 1, "Title": "Bk4" },
+    { "Id": 5, "AuthorId": 1, "Title": "Bk5" }
+  ]
+}
+```
+
+Follow it to exhaustion the way you would any server-driven page. The continuation emits its own
+envelope-level `@odata.nextLink` (at the absolute offset `$skip + MaxExpandTop`) while rows remain,
+and omits it on the last page — a page that is exactly `MaxExpandTop` long is **not** assumed to have
+more behind it, the same one-row probe the root path uses (#360).
+
+Four properties of that route worth knowing:
+
+- **It accepts `$skip` and nothing else.** Every other system query option returns
+  `400 UnsupportedQueryOption` — including `$select`/`$orderby`/`$top`/`$count`, which the
+  *delegate-backed* [navigation route](navigation-routing.md) on the same URL shape does accept.
+  There is nothing to carry: the link is only ever emitted for an expand that had no nested options at all. Rejection is
+  by the `$` sigil rather than a name allowlist, so a future OData system option this build has never
+  heard of is refused rather than silently ignored.
+- **`$format` is the one exemption, and it is not a data option.** §11.2.12 content negotiation is
+  implemented once, on the group filter that wraps the whole OData surface, so `$format` never
+  reaches this handler and cannot change a single row. Refusing it would make this the only route in
+  the surface that `400`s a conformant, already-supported option, and would break the common client
+  habit of appending it to a server-issued link. An unsupported `$format` **value** is still
+  rejected, by that same group filter, unchanged.
+- **It is ordered by the child key, unconditionally.** Not through the root path's
+  `EnsureStableOrder`, which skips appending the key when the source is already ordered and would
+  leave a pre-ordered parent's continuation without a total order. The key comes from the same
+  resolution that composes the first page's tiebreaker, so both sides agree on the ordering column by
+  construction. The emitted plan is an `INNER JOIN … LIMIT/OFFSET` index seek, not the partitioned
+  `ROW_NUMBER()` window the first page uses.
+- **It composes off the parent profile's own `GetQueryable`**, so a tenant filter or soft-delete
+  predicate baked into that queryable scopes the continuation exactly as it scoped the first page,
+  and the route requires no foreign-key knowledge (which the convention EDM does not have). Profile
+  authorization applies to it as to every other route on the set.
+
+The link's parent key is read from the **CLR entity**, never from the response JSON — a root
+`$select` strips the key before the shaping pass runs, so `?$select=Name&$expand=Books` still emits
+`"Books@odata.nextLink": ".../BeAuthors(1)/Books?$skip=3"` with a payload containing no `Id` at all.
+
+Root paging and nested paging coexist without interacting. The root's continuation is a
+`$skiptoken` on the collection route; the nested one is a plain `$skip` on a different path served by
+a different route that has no `$skiptoken` concept. Neither link builder reads the response body, so
+neither can rewrite the other, and a parent appearing on root page 2 gets its own independent child
+links.
+
+One **new startup failure**, and it can only fire on a registration that opted in: an entity-level
+bound function sharing a name with a pageable navigation now throws from `MapOhData()`. Both would
+claim `GET /{Set}({key})/{Name}`, and the pre-existing collision check compares bound functions
+against structural properties only — which excludes declared navigations — so that pairing was legal
+until this route existed. (The same check still does not cover a bound function colliding with a
+**delegate-backed** navigation route; that collision predates #313 and is tracked in
+[#416](https://github.com/en-gen/OhData/issues/416).)
+
+#### Deliberate limits, and why they are limits
+
+These are decisions, not gaps waiting to be filled. The first three are tracked together in
+[#410](https://github.com/en-gen/OhData/issues/410) so they are not rediscovered as bugs.
+
+- **A continuation for a parent key that does not exist returns `200` with an empty `value` and no
+  link**, where `Microsoft.AspNetCore.OData` returns `404`. **This is a documented divergence.** The
+  continuation is a `SelectMany` over the pinned parent, and a `SelectMany` cannot distinguish "no
+  such parent" from "a parent that has no children" — both yield zero rows. Telling them apart would
+  cost an existence probe, i.e. a second round trip on **every** continuation, to improve the status
+  code of a request a well-behaved client never issues (it only ever follows a link the server
+  emitted, which by construction names a parent that existed). Note the contrast with the
+  delegate-backed navigation route on the same URL shape, where the handler decides — returning
+  `null` there produces `404`. This route has no handler to ask, and does not probe for one.
+- **Depth ≥ 2 stays `400`.** `$expand=Books` pages; `$expand=Books($expand=Chapters)` does not, at
+  either level. The asymmetry is real and deliberate: a level with children cannot be SQL-bounded at
+  all, so it is **unbounded in materialization** regardless of what the response says — a link there
+  would advertise a bound that does not exist. Restricting emission to depth 1 also removes the
+  set-authority question entirely, because at depth 1 the URL already names the parent set and there
+  is no child entity set to disambiguate.
+- **Delegate-backed navigations stay unbounded, and #313 does not close their DoS.** A navigation
+  declared with a handler is never in the engaged pushdown tree, so no ceiling, no bound and no link
+  applies to it; a nested `$top`/`$skip` on one is already `400` (#294). Bounding it would mean the
+  framework silently truncating a collection the developer's delegate deliberately returned, which
+  directly weakens the delegate-safety invariant. The real fix is a **contract** change — a delegate
+  overload taking `(key, skip, take, ct)` — not a ceiling applied behind the delegate's back. Until
+  then, a delegate is where you own the size of your own answer.
+- **Delegate safety is enforced across profiles, in both directions.** Route registration and link
+  emission share one predicate, and the `ServeRaw` test in it is resolved over the parent type's
+  whole candidate set — every profile exposing the same EDM entity type — not over "this profile owns
+  no handler for it". So a *sibling* profile that declares the navigation **with** a delegate
+  suppresses both the route and the link for the delegate-less set, which keeps that shape exactly
+  where it was rather than giving it a raw continuation endpoint. (Note what this does **not** claim:
+  a sibling delegate does not blank a *root-level* `$expand` — the root resolves its treatment
+  against the URL-named profile alone, so those rows are served raw there today. That is a
+  pre-existing property of the root level, unchanged by #313 and tracked in
+  [#415](https://github.com/en-gen/OhData/issues/415).)
+- **`Prefer: odata.maxpagesize` is not honoured on the nested page size**
+  ([#412](https://github.com/en-gen/OhData/issues/412)) — see the caveat above. Honouring it would
+  make the nested page size request-dependent while the link carries only `$skip`, so hop 2 could not
+  reproduce hop 1's page size.
 
 ---
 
@@ -579,7 +761,7 @@ Five ceilings bound how expensive a single request's query options may be. Each 
 |---|---|---|
 | `MaxExpansionDepth` | `3` | Nesting depth of `$expand`, and the ceiling `$levels` is resolved and capped to (`$levels=max` becomes exactly this value). **Enforced** as of #202 — a deeper `$expand`/`$levels` returns `400` rather than a silently-truncated result. Advertised per entity set in `$metadata` as `Org.OData.Capabilities.V1.ExpandRestrictions/MaxLevels` (#206). Raise it to allow deeper graph/hierarchy queries, or lower it to harden. |
 | `MaxExpandTop` | `null` (no ceiling) | Per-navigation ceiling on how many related entities **any** collection `$expand` level may return, and on an explicit **nested** `$top` (`?$expand=Children($top=N)`). **The whole ceiling is opt-in (#313):** the default moved from `1000` to `null` because `1000` was an invented number — the framework cannot know how large a child collection is, so it ships the control point and lets the implementor set it. Until it is set there is no ceiling of any kind: `?$expand=Children($top=999999)` is answered rather than rejected, a nested `$count` materializes the related collection with no bound, and a bare `?$expand=Children` composes no SQL `Take` and gets no size check — byte-identical response *and* emitted SQL to the pre-#313 behavior. Set it (`WithDefaults(d => d.MaxExpandTop = N)`, or per profile) to turn all of that on at once. With a value in force: an over-large nested `$top` returns `400` (`InvalidQueryOption`) at any depth, on any read path, and whether or not the navigation would have been pushed down — the same "what may a client ask for" rule as the root `MaxTop`; a nested `$count` whose related collection exceeds the ceiling also returns `400` rather than a truncated count (§11.2.4.2, #254); and, as of #313, so does the remaining shape — a level with **neither** a nested `$count` **nor** an explicit nested `$top`, which includes the plain `$expand=Nav` and anything carrying only `$select`/`$orderby`/`$filter`/`$skip`, and every level of a `$levels=N` recursion. The **root** entity set's resolved value governs at every nesting depth, exactly like `MaxExpansionDepth`. On a profile, `MaxExpandTop = null` means *inherit* the resolved default, not "uncapped" — a profile cannot opt out of a ceiling set in the defaults. Setting a value also composes the nested **key tiebreaker** on shapes that previously had none, so it governs the nested wire *order* as well as the status code (see the nested-paging caveat above). **Cost caveat (#299):** where the ceiling applies it is always *correct* — the request `400`s rather than returning a truncated count or a silently-clipped page — but not always *cheap* to enforce. At a projection **leaf** it is a SQL `Take(MaxExpandTop + 1)`, so a breach is detected without transferring the collection. At a level with its own nested `$expand`, or anywhere inside a `$levels` recursion, it can't be pushed into SQL as a `Take` (the same `APPLY`/`LATERAL` translation problem the nested-`$count` caveat above describes), so the `400` is thrown only **after** the full related collection — for `$levels`, the full recursive hierarchy — is materialized in memory. A hostile `$expand=Children($levels=N)` therefore buys that full materialization before being rejected on breach — a broad but *under*-cap hierarchy just materializes fully and returns `200` like any other under-cap page; the cost only bites once the collection actually exceeds the ceiling. |
-| `ExpandPagingEnabled` | `false` | **Not a ceiling — the companion opt-in to `MaxExpandTop` (#313).** Whether a *truly bare* collection `$expand` (one carrying no nested options at all) whose child collection exceeds the resolved `MaxExpandTop` is served as its first `MaxExpandTop` children plus a `Nav@odata.nextLink` continuation, instead of being rejected with `400`. Inert unless `MaxExpandTop` is also set — with no ceiling there is no boundary at which a continuation could begin — and `MaxExpandTop` is also the page size, for the first page and every continuation alike. There is deliberately no second page-size knob. It is a *separate* opt-in from the ceiling because a continuation link is **worse** than a `400` for a client that does not read nested annotations: that client sees a complete-looking collection that has been silently truncated. Only enable it if you know your clients follow `Nav@odata.nextLink`. On a profile it is a `bool?`, so a profile-level `false` genuinely opts **out** of a server-wide `ExpandPagingEnabled = true` — unlike `MaxExpandTop`, whose profile-level `null` means *inherit*. **Currently inert in every configuration:** the knob resolves and the startup diagnostic reads it, but the continuation route and the `Nav@odata.nextLink` emission it gates are not implemented yet, so an over-ceiling bare `$expand` still returns `400` whatever this is set to. |
+| `ExpandPagingEnabled` | `false` | **Not a ceiling — the companion opt-in to `MaxExpandTop` (#313).** Whether a *truly bare* collection `$expand` (one carrying no nested options at all) whose child collection exceeds the resolved `MaxExpandTop` is served as its first `MaxExpandTop` children plus a `Nav@odata.nextLink` continuation, instead of being rejected with `400`. Inert unless `MaxExpandTop` is also set — with no ceiling there is no boundary at which a continuation could begin — and `MaxExpandTop` is also the page size, for the first page and every continuation alike. There is deliberately no second page-size knob. It is a *separate* opt-in from the ceiling because a continuation link is **worse** than a `400` for a client that does not read nested annotations: that client sees a complete-looking collection that has been silently truncated. Only enable it if you know your clients follow `Nav@odata.nextLink`. On a profile it is a `bool?`, so a profile-level `false` genuinely opts **out** of a server-wide `ExpandPagingEnabled = true` — unlike `MaxExpandTop`, whose profile-level `null` means *inherit*. When it is on (with a ceiling set) it registers `GET /{Set}({key})/{Nav}?$skip=N` for each pageable navigation and emits the link; with it off — or on with no ceiling — no route is registered and no annotation is emitted. Turning it on changes **nothing** outside the truly-bare over-ceiling subset: with `MaxExpandTop` unset, and for every non-bare shape with it set, the status, the response body and the emitted SQL are byte-identical either way, and `$metadata` is byte-identical in every configuration. Full rules, the exact pageable set and the deliberate limits: [Nested server-driven paging](#nested-server-driven-paging-expandpagingenabled-313). |
 | `MaxFilterNodeCount` | `10000` | Number of nodes in a `$filter` expression tree. |
 | `MaxOrderByNodeCount` | `1000` | Number of nodes in an `$orderby`. |
 | `MaxAnyAllExpressionDepth` | `1000` | Nesting depth of `any()`/`all()` lambdas in a `$filter`. |
