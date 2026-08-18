@@ -94,7 +94,13 @@ internal static class BareExpandSqliteHarness
     // Author 1 has 5 books (Id 1..5); Book 1 additionally has 2 chapters, so a $expand=Books($expand=
     // Chapters) exercises the "bare children" shape with a non-trivial child graph.
     public static async Task<TestFixture> BuildAsync(
-        SqliteConnection connection, SqlCaptureSink? sink, Action<EntitySetDefaults>? defaults = null)
+        SqliteConnection connection,
+        SqlCaptureSink? sink,
+        Action<EntitySetDefaults>? defaults = null,
+        // #313 stage 3: lets a caller add its own services (an ILoggerProvider, for the startup
+        // diagnostic) without a second copy of this harness. Additive and optional — every existing
+        // call site is unaffected.
+        Action<IServiceCollection>? configureExtraServices = null)
     {
         TestFixture fx = await TestHostBuilder.BuildAsync(
             b =>
@@ -104,6 +110,7 @@ internal static class BareExpandSqliteHarness
             },
             configureServices: services =>
             {
+                configureExtraServices?.Invoke(services);
                 if (sink is not null) services.AddSingleton(sink);
                 services.AddDbContext<BareExpandDbContext>(o =>
                 {

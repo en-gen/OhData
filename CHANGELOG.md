@@ -305,6 +305,42 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A startup `Warning` for a bare `$expand` with no ceiling, and the `ExpandPagingEnabled` knob it
+  points at (#313).** These are the replacement for the arbitrary `MaxExpandTop` default removed
+  above — the framework stops guessing a number and instead names the exposure to the one person who
+  can price it.
+
+  At `MapOhData()` OhData now logs one `Warning` per navigation that is collection-valued,
+  delegate-less, on a profile that has `GetQueryable`, `ExpandEnabled` **and** `ExpandPushdownEnabled`,
+  when that profile's resolved `MaxExpandTop` is `null` — exactly the navigations a bare
+  `?$expand=Nav` will materialize in full. It names the entity set, the navigation and both knobs,
+  and prescribes no number: leaving both unset is a legitimate choice for a collection you know is
+  small. Emitted once at startup, never per request. Because `ExpandEnabled` is `false` by default,
+  a registration that never opts into `$expand` gets **no** warning at all — measured across the
+  suite, 1370 of 1511 registrations (90.7%) are silent and the loudest emits 7.
+
+  `ExpandPushdownEnabled` is in that list because it was measured to matter, not because the design
+  called for it: with expand pushdown off no `EngagedExpand` is built, so `?$expand=Books` over a
+  seeded five-book author returns `"Books":[]` and issues no child query at all. There is no
+  materialization for `MaxExpandTop` to bound, so warning would name a knob that changes nothing
+  for that registration. It defaults to `true`, so this narrows little in practice.
+
+  `ExpandPagingEnabled` (profile-level `bool?`, inheriting `EntitySetDefaults.ExpandPagingEnabled`,
+  default `false`) is the companion opt-in: whether a *truly bare* collection `$expand` over the
+  resolved `MaxExpandTop` is served as its first `MaxExpandTop` children plus a
+  `Nav@odata.nextLink` continuation instead of being rejected with `400`. It is a separate opt-in
+  from the ceiling because a continuation link is **worse** than a `400` for a client that does not
+  read nested annotations — that client sees a complete-looking collection that has been silently
+  truncated. `MaxExpandTop` is also the page size, for the first page and every continuation alike;
+  there is deliberately no second page-size knob, and a `bool?` (unlike a second `int?`) lets a
+  profile-level `false` genuinely opt **out** of a server-wide `true`.
+
+  **The knob is inert in this release: nothing reads it but the diagnostic.** No route is
+  registered, no annotation is emitted, and every request behaves identically at any value — the
+  continuation route it gates is not implemented yet, so an over-ceiling bare `$expand` still
+  returns `400` regardless. `Prefer: odata.maxpagesize` remains unhonoured on nested collections
+  (#412), an unmet spec `SHOULD` rather than a violation, since nothing claims it was applied.
+
 - **`$levels` may now carry other nested expand options (#254).** A `$levels=N` / `$levels=max`
   self-referential expand combined with `$filter`, `$orderby`, `$skip`, `$top`, `$count`, or `$select`
   is no longer deferred off the pushdown path — it pushes, with those options applied at **every level

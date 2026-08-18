@@ -989,7 +989,92 @@ internal static class OhDataEndpointFactory
         MapUnboundOperations(
             group, registration.UnboundOperations, effectiveJsonOptions, registration);
 
+        // #313: named LAST, after every route has mapped, so a registration whose startup validation
+        // is about to throw does not first emit advice about a surface it will never serve. Same
+        // rationale as WarnWireShapeIsFlat above, which sits after ValidateOrThrow for the same reason.
+        WarnUnboundedBareExpand(registration, groupLogger);
+
         return group;
+    }
+
+    // #313: the startup diagnostic that stands in for the ceiling that MaxExpandTop no longer defaults to.
+    //
+    // Stage 1 removed an invented 1000 because the framework cannot know how large a child collection
+    // is. That leaves a real exposure — a bare ?$expand=Children materializes the WHOLE child
+    // collection — and nothing to point at it, since with no ceiling the shape answers 200 and looks
+    // healthy. This names each affected navigation once at startup so the decision is made by someone
+    // who knows the data, and it deliberately stops at informing: it prescribes no number, because
+    // picking one is exactly the mistake stage 1 undid.
+    //
+    // The conditions are ALL of the conditions under which the exposure is live, which is what
+    // keeps this from being noise:
+    //   - ExpandEnabled  — false by DEFAULT, and by itself enough to silence the whole diagnostic for
+    //                      a registration that never opts into $expand. This is the load-bearing one.
+    //   - HasGetQueryable— the pushdown path is the only one that materializes a raw child collection
+    //                      from the database; GetAll/Priority-1/GetById are out of scope (G11).
+    //   - ExpandPushdownEnabled — NOT one of the five conditions #313's design lists, and it belongs.
+    //                      MEASURED: with it false, /BeAuthors?$expand=Books over a seeded 5-book author
+    //                      returns "Books":[] and issues no child query at all — no EngagedExpand is
+    //                      built (see the gate at the ApplyIncludeFallback site), so the delegate path's
+    //                      ServeRaw case no-ops over a graph nothing ever loaded. There is no
+    //                      materialization to bound, so warning about it would name a knob that changes
+    //                      nothing for that registration. It defaults to TRUE, so this narrows almost
+    //                      nothing in practice — it just keeps the rule "all of the conditions under
+    //                      which the exposure is live" honest rather than approximately true.
+    //   - collection-valued — a single-valued navigation is one row and cannot be the DoS.
+    //   - ServeRaw       — a delegate-backed navigation is never in the engaged tree, and a BLANKED one
+    //                      (a sibling profile over the same EDM type disagrees) is not served at all.
+    //                      Resolved through the SAME ResolveNavTreatment the pushdown gate uses rather
+    //                      than a per-profile "owns no NavigationRouteDefinition" test, so the two
+    //                      cannot drift — the identical sharing rule stage 5's route registration is
+    //                      required to follow.
+    //   - MaxExpandTop is null — with a ceiling set there is a bound, and #313 stage 2 already turns
+    //                      the over-ceiling shape into a 400. Nothing to warn about.
+    //
+    // Emitted once per registration at startup, never per request.
+    private static void WarnUnboundedBareExpand(OhDataRegistration registration, ILogger? logger)
+    {
+        if (logger is null) return;
+
+        foreach (IEntitySetEndpointSource profile in registration.Profiles)
+        {
+            if (!profile.ExpandEnabled || !profile.HasGetQueryable ||
+                !profile.ExpandPushdownEnabled || profile.MaxExpandTop is not null)
+            {
+                continue;
+            }
+
+            IEdmEntityType? entityType = registration.EdmModel.EntityContainer?
+                .FindEntitySet(profile.EntitySetName)?.EntityType;
+            if (entityType is null) continue;
+
+            // The candidate set is the one for the type that DECLARES the navigation — the profile
+            // itself plus any sibling profile exposing the same EDM entity type — which is exactly
+            // what ResolveNavTreatment's decision table is defined over.
+            IReadOnlyList<IEntitySetEndpointSource> candidates =
+                ResolveProfilesForEdmType(entityType, registration);
+
+            foreach (IEdmNavigationProperty nav in entityType.NavigationProperties())
+            {
+                if (nav.TargetMultiplicity() != EdmMultiplicity.Many) continue;
+                if (ResolveNavTreatment(nav.Name, candidates).Treatment != NavTreatment.ServeRaw) continue;
+
+                // Each placeholder appears EXACTLY once: Microsoft.Extensions.Logging binds a template
+                // positionally, so a repeated one would consume an argument that is not there.
+                logger.LogWarning(
+                    "OhData: '{EntitySet}' allows $expand and its navigation '{Navigation}' is a " +
+                    "delegate-less collection served straight from GetQueryable, so '?$expand={Nav}' " +
+                    "materializes the ENTIRE related collection for every row of the page — with no " +
+                    "ceiling, because MaxExpandTop resolves to null. OhData does not guess a limit: it " +
+                    "cannot know how large this collection gets, and only you can. Set MaxExpandTop to " +
+                    "bound it (an over-ceiling $expand is then rejected with 400), and additionally set " +
+                    "ExpandPagingEnabled = true if your clients follow a Nav@odata.nextLink " +
+                    "continuation and should be served the first page instead of the 400. Leaving both " +
+                    "unset is a valid choice for a collection you know is small — this warning informs " +
+                    "that choice, it does not make it.",
+                    profile.EntitySetName, nav.Name, nav.Name);
+            }
+        }
     }
 
     // Leg 3 (docs-fidelity): an unbound function/action's success response is the bare

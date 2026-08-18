@@ -358,6 +358,26 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     }
     private int? _resolvedMaxExpandTop;
 
+    /// <summary>
+    /// #313: whether a <b>bare</b> collection <c>$expand</c> on this entity set whose child collection
+    /// exceeds the resolved <see cref="MaxExpandTop"/> is served as its first <c>MaxExpandTop</c>
+    /// children plus a <c>Nav@odata.nextLink</c> continuation, rather than rejected with <c>400</c>.
+    /// Inherits from <see cref="EntitySetDefaults.ExpandPagingEnabled"/> (default <c>false</c>) when
+    /// <c>null</c>.
+    /// <para>
+    /// Three states, and the third is the point: <c>null</c> means inherit, so a profile can set
+    /// <c>false</c> to opt <b>out</b> of a server-wide <c>ExpandPagingEnabled = true</c>. That is why
+    /// the second knob is a boolean and not a second page size — <c>int?</c> has no way to express
+    /// "uncapped" distinctly from "inherit" (see <see cref="MaxExpandTop"/>, where a profile-level
+    /// <c>null</c> means inherit and there is consequently no per-profile opt-out).
+    /// </para>
+    /// <para>
+    /// Inert unless <see cref="MaxExpandTop"/> also resolves non-null; <c>MaxExpandTop</c> is the page
+    /// size for the first page and every continuation alike.
+    /// </para>
+    /// </summary>
+    protected bool? ExpandPagingEnabled { get; init; }
+
     private long? _maxRequestBodyBytes;
 
     /// <summary>
@@ -446,6 +466,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private bool _resolvedOrderByEnabled;
     private bool _resolvedSelectEnabled;
     private bool _resolvedExpandEnabled;
+    private bool _resolvedExpandPagingEnabled;
     private bool _resolvedCountEnabled;
     private bool _resolvedPropertyAccessEnabled;
     private bool _resolvedSelectPushdownEnabled;
@@ -675,6 +696,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _resolvedOrderByEnabled = OrderByEnabled ?? defaults.OrderByEnabled;
         _resolvedSelectEnabled = SelectEnabled ?? defaults.SelectEnabled;
         _resolvedExpandEnabled = ExpandEnabled ?? defaults.ExpandEnabled;
+        _resolvedExpandPagingEnabled = ExpandPagingEnabled ?? defaults.ExpandPagingEnabled;
         _resolvedCountEnabled = CountEnabled ?? defaults.CountEnabled;
         _resolvedPropertyAccessEnabled = PropertyAccessEnabled ?? defaults.PropertyAccessEnabled;
         _resolvedSelectPushdownEnabled = SelectPushdownEnabled ?? defaults.SelectPushdownEnabled;
@@ -1958,6 +1980,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     bool IEntitySetEndpointSource.OrderByEnabled => _resolvedOrderByEnabled;
     bool IEntitySetEndpointSource.SelectEnabled => _resolvedSelectEnabled;
     bool IEntitySetEndpointSource.ExpandEnabled => _resolvedExpandEnabled;
+    bool IEntitySetEndpointSource.ExpandPagingEnabled => _resolvedExpandPagingEnabled;
     bool IEntitySetEndpointSource.CountEnabled => _resolvedCountEnabled;
     bool IEntitySetEndpointSource.PropertyAccessEnabled => _resolvedPropertyAccessEnabled;
     bool IEntitySetEndpointSource.PropertyRouteDocsEnabled => _resolvedPropertyRouteDocsEnabled;

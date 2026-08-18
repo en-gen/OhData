@@ -93,6 +93,26 @@ public sealed class EntitySetDefaults
         }
     }
 
+    /// <summary>
+    /// #313: whether a <b>bare</b> collection <c>$expand</c> whose child collection exceeds the
+    /// resolved <see cref="MaxExpandTop"/> is served as its first <c>MaxExpandTop</c> children plus a
+    /// <c>Nav@odata.nextLink</c> continuation, rather than rejected with <c>400</c>. Defaults to
+    /// <c>false</c>. Profile-level <c>ExpandPagingEnabled</c> overrides this value.
+    /// <para>
+    /// Inert on its own: it does nothing unless <see cref="MaxExpandTop"/> is also set, because with
+    /// no ceiling there is no boundary at which a continuation could begin. <c>MaxExpandTop</c> is
+    /// also the page size — for the first page and every continuation alike. There is deliberately no
+    /// second page-size knob.
+    /// </para>
+    /// <para>
+    /// It is a separate opt-in from the ceiling because a continuation link is <i>worse</i> than a
+    /// <c>400</c> for a client that does not read nested annotations: the client sees a complete-looking
+    /// collection that is silently truncated. Only a deployment that knows its clients follow
+    /// <c>Nav@odata.nextLink</c> should turn this on.
+    /// </para>
+    /// </summary>
+    public bool ExpandPagingEnabled { get; set; }
+
     private long? _maxRequestBodyBytes;
 
     /// <summary>
