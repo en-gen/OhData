@@ -17,6 +17,15 @@ public sealed class ODataAnnotatedEntity<T> where T : class
     private readonly JsonNamingPolicy? _namingPolicy;
 
     /// <summary>Creates an annotated entity.</summary>
+    /// <remarks>
+    /// <c>internal</c>: the only annotation set a caller could supply is
+    /// <see cref="ODataEntityAnnotations.Empty"/>, because that type's own constructor is internal —
+    /// so a public constructor here offered nothing but an entity wrapped in no annotations. This
+    /// matches <see cref="ODataPage{T}"/>, which exposes no constructor either. Instances come from
+    /// <see cref="EntitySetClient{T}.ToAnnotatedPageAsync"/>,
+    /// <see cref="EntitySetClient{T}.ToAnnotatedAsyncEnumerable"/> and
+    /// <see cref="KeyedEntitySetClient{T}.GetAnnotatedAsync"/>.
+    /// </remarks>
     /// <param name="entity">The deserialized entity.</param>
     /// <param name="annotations">The entity's annotations, or <see cref="ODataEntityAnnotations.Empty"/>.</param>
     /// <param name="namingPolicy">
@@ -30,7 +39,7 @@ public sealed class ODataAnnotatedEntity<T> where T : class
     /// <exception cref="ArgumentNullException">
     /// Thrown when <paramref name="entity"/> or <paramref name="annotations"/> is null.
     /// </exception>
-    public ODataAnnotatedEntity(T entity, ODataEntityAnnotations annotations, JsonNamingPolicy? namingPolicy = null)
+    internal ODataAnnotatedEntity(T entity, ODataEntityAnnotations annotations, JsonNamingPolicy? namingPolicy = null)
     {
         ArgumentNullException.ThrowIfNull(entity);
         ArgumentNullException.ThrowIfNull(annotations);

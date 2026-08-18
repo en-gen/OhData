@@ -311,7 +311,9 @@ public sealed class EntitySetClient<T> where T : class
 
         while (page.NextLink is not null)
         {
-            page = await _http.GetAnnotatedPageByAbsoluteUrlAsync<T>(page.NextLink, ct);
+            // OriginalString, not ToString(): a server-issued link is followed verbatim as an opaque
+            // URL, and ToString() can decode percent-escapes that were deliberately encoded.
+            page = await _http.GetAnnotatedPageByAbsoluteUrlAsync<T>(page.NextLink.OriginalString, ct);
             foreach (ODataAnnotatedEntity<T> entry in page.Entries)
                 yield return entry;
         }

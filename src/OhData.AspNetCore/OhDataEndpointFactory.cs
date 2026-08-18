@@ -4307,10 +4307,15 @@ internal static class OhDataEndpointFactory
                     // bound without either a link or a 400") holds at this commit as at every other.
                     else if (!hasChildren && e.Top is null && maxExpandTop is int leafCap)
                     {
-                        if (pageableNav is { } pnav && arr.Count > leafCap)
-                            WriteNestedNextLink(parent, key, arr, leafCap, pnav, paging!, parentIndex);
-                        else
+                        // WriteNestedNextLink reports false when it could not build a link (a null key
+                        // value); it leaves the array untouched in that case, so the ceiling's 400
+                        // applies exactly as it would for any other non-pageable over-ceiling shape.
+                        // Never a trim without a link.
+                        if (pageableNav is not { } pnav || arr.Count <= leafCap
+                            || !WriteNestedNextLink(parent, key, arr, leafCap, pnav, paging!, parentIndex))
+                        {
                             EnsureWithinExpandCeiling(arr, key, maxExpandTop, "'$expand'");
+                        }
                     }
                     // Recurse into deeper pushed levels on the (paged) elements BEFORE this level's
                     // $select strip — the strip keeps expanded-nav names (ExtractSelectedProperties), so
@@ -4354,10 +4359,16 @@ internal static class OhDataEndpointFactory
     // <c>Nav@odata.nextLink</c>. The counterpart of EnsureWithinExpandCeiling for the one shape a
     // $skip-only continuation can faithfully serve.
     //
-    // Trimming is unconditional here because the caller only reaches this for arr.Count > cap, and
-    // ApplyNavShape bounded the SQL to cap + 1 rows — so the excess is exactly the probe row. Trimming
-    // by "while > cap" rather than assuming a single extra row keeps this correct if the bound ever
-    // widens.
+    // TRIM AND LINK ARE ONE STEP, OR NEITHER HAPPENS. Both bail-outs below are checked BEFORE the
+    // array is touched, and the method reports whether it linked so the caller can fall back to the
+    // ceiling's 400. An earlier revision trimmed first and returned early on a bail-out, which left a
+    // silently truncated array carrying neither a link nor an error — the one outcome #313's M1 rule
+    // forbids outright. (The comment that justified it, "a page that is complete-as-far-as-it-goes",
+    // was wrong on its own terms: the probe row and every row above the cap were already gone.)
+    //
+    // Trimming is by "while > cap" rather than removing a single assumed probe row: the caller only
+    // reaches this for arr.Count > cap and ApplyNavShape bounded the SQL to cap + 1 rows, so today the
+    // excess is exactly one row, but the loop stays correct if that bound ever widens.
     //
     // ANNOTATION NAME: `Nav@odata.nextLink`, the 4.0 long form. The 4.01 short form is a SHOULD and
     // this framework emits OData-Version: 4.0 with @odata.-prefixed control information everywhere.
@@ -4372,18 +4383,25 @@ internal static class OhDataEndpointFactory
     // and this pass runs after the strip, so `parent["Id"]` is absent for exactly the requests that
     // most need a working link. paging.ParentItems is the index-parallel CLR page threaded in for
     // this one purpose.
-    private static void WriteNestedNextLink(
+    // Returns true when the array was trimmed AND annotated; false when no link could be built, in
+    // which case the array is left EXACTLY as it was and the caller applies the ceiling's 400 instead.
+    private static bool WriteNestedNextLink(
         JsonObject parent, string key, JsonArray arr, int cap,
         in ExpandPagingNav nav, ExpandPagingContext paging, int parentIndex)
     {
-        while (arr.Count > cap) arr.RemoveAt(arr.Count - 1);
-
         // Defensive: a desynchronised index would silently produce a link for the WRONG parent, which
-        // is worse than no link. Emitting nothing leaves a page that is complete-as-far-as-it-goes
-        // with no false continuation; it cannot happen through the single call site.
-        if ((uint)parentIndex >= (uint)paging.ParentItems.Count) return;
+        // is worse than no link. Unreachable through the single call site, which builds ParentItems
+        // index-parallel with the JsonObject list it iterates — kept as an assertion, not as a case
+        // the tests can reach.
+        if ((uint)parentIndex >= (uint)paging.ParentItems.Count) return false;
+
+        // Reachable: TKey is unconstrained, so a string or Nullable<T> key property can hold null on a
+        // returned entity, and ODataEntityKeyUrlFormatter.Format throws on null. Without a key there is
+        // no addressable continuation, so this collection is not pageable after all and takes the 400.
         object? parentKey = paging.ParentKeyProperty.GetValue(paging.ParentItems[parentIndex]);
-        if (parentKey is null) return;
+        if (parentKey is null) return false;
+
+        while (arr.Count > cap) arr.RemoveAt(arr.Count - 1);
 
         // Page 1's child offset is always 0 — a bare expand carries no $skip by definition — so the
         // first continuation hop is always ?$skip={cap}. The root page's own offset never appears
@@ -4392,6 +4410,7 @@ internal static class OhDataEndpointFactory
         parent[$"{key}@odata.nextLink"] =
             $"{paging.BaseUrl}/{paging.EntitySetName}({ODataEntityKeyUrlFormatter.Format(parentKey)})" +
             $"/{nav.EdmName}?$skip={cap.ToString(CultureInfo.InvariantCulture)}";
+        return true;
     }
 
     // #206 phase 2 (optioned expand) / #254: emit <c>Nav@odata.count</c> for one pushed collection

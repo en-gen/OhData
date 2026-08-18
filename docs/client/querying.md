@@ -106,6 +106,8 @@ For unsupported patterns, pass a raw OData string:
 .Expand("Category($select=Name;$expand=Parent($select=Id))")
 ```
 
+> **An expanded collection may come back incomplete, and the ordinary read path cannot tell you.** A server that pages an expansion (OhData's own [`ExpandPagingEnabled`](../query-options.md#nested-server-driven-paging-expandpagingenabled-313), or any other OData 4 service) returns a **prefix** of the related collection and says so with a per-entity `{Nav}@odata.nextLink` — an annotation `ToListAsync`/`ToPageAsync`/`GetAsync` discard, leaving a truncated collection indistinguishable from a complete one. Whenever a query carries `Expand`, prefer the [annotation-preserving terminals](terminal-operations.md#annotation-preserving-reads) (`ToAnnotatedPageAsync`, `ToAnnotatedAsyncEnumerable`, `GetAnnotatedAsync`), which surface `NextLinkFor(x => x.Nav)` and `CountFor(x => x.Nav)`.
+
 ## `$orderby`
 
 ```csharp

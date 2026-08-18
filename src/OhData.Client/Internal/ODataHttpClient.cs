@@ -138,7 +138,13 @@ internal sealed class ODataHttpClient
         {
             Entries = entries,
             TotalCount = envelope?.Count,
-            NextLink = envelope?.NextLink,
+            // The annotation surface represents every link as a Uri (see ODataAnnotatedPage.NextLink).
+            // RelativeOrAbsolute because OData permits either; an unparseable value becomes null rather
+            // than throwing out of a read, matching ODataEntityAnnotations.NextLinkFor.
+            NextLink = envelope?.NextLink is string nextLink
+                && Uri.TryCreate(nextLink, UriKind.RelativeOrAbsolute, out Uri? nextLinkUri)
+                    ? nextLinkUri
+                    : null,
             Annotations = envelopeAnnotations,
         };
     }

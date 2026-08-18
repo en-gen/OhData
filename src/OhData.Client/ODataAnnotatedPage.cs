@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace OhData.Client;
@@ -28,7 +29,13 @@ namespace OhData.Client;
 /// <typeparam name="T">The entity type.</typeparam>
 public sealed class ODataAnnotatedPage<T> where T : class
 {
-    private IReadOnlyList<T>? _items;
+    // Racy-but-idempotent cache. `volatile` is what makes it deterministic under concurrent readers:
+    // it pairs a release store with an acquire load, so a reader that observes the reference is
+    // guaranteed to observe the fully populated array behind it. Without it the element writes below
+    // may be reordered after the reference publication, and a second thread can legally read a
+    // partially filled array. Two threads racing may still each build an array — harmless, since both
+    // are equal and every caller gets a complete one.
+    private volatile IReadOnlyList<T>? _items;
 
     /// <summary>The entities in this page, each paired with its annotations.</summary>
     public IReadOnlyList<ODataAnnotatedEntity<T>> Entries { get; init; } = [];
@@ -38,7 +45,8 @@ public sealed class ODataAnnotatedPage<T> where T : class
     {
         get
         {
-            if (_items is not null) return _items;
+            IReadOnlyList<T>? cached = _items;
+            if (cached is not null) return cached;
             var items = new T[Entries.Count];
             for (int i = 0; i < items.Length; i++) items[i] = Entries[i].Entity;
             return _items = items;
@@ -55,7 +63,22 @@ public sealed class ODataAnnotatedPage<T> where T : class
     /// The collection's own <c>@odata.nextLink</c> — the URL of the next page of <em>this</em>
     /// collection — or <see langword="null"/> when there are no more pages.
     /// </summary>
-    public string? NextLink { get; init; }
+    /// <remarks>
+    /// <para>
+    /// A <see cref="Uri"/>, not a <see cref="string"/>. Every link in the annotation surface is a
+    /// <see cref="Uri"/> — this property, <see cref="ODataEntityAnnotations.NextLinkFor(string)"/> and
+    /// <see cref="ODataAnnotatedEntity{T}.NextLinkFor"/> — so one concept has one representation.
+    /// <see cref="ODataPage{T}.NextLink"/> remains a <see cref="string"/>: it is pre-existing public
+    /// API and changing it would break callers for no benefit. That is the one seam, and it is a
+    /// compile error rather than a silent difference when you migrate
+    /// <see cref="EntitySetClient{T}.ToPageAsync"/> to
+    /// <see cref="EntitySetClient{T}.ToAnnotatedPageAsync"/>.
+    /// </para>
+    /// <para>
+    /// The URI may be relative: OData permits either form, and it is resolved against the request URL.
+    /// </para>
+    /// </remarks>
+    public Uri? NextLink { get; init; }
 
     /// <summary>
     /// Control information carried by the response envelope rather than by an individual entity.

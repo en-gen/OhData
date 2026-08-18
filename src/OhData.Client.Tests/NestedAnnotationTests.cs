@@ -654,6 +654,8 @@ public class AnnotatedPagingTests : IAsyncDisposable
         Assert.Equal(3, page.Entries.Count);
         Assert.NotNull(page.NextLink);
         Assert.True(page.Annotations.TryGetValue("@odata.nextLink", out JsonElement raw));
-        Assert.Equal(page.NextLink, raw.GetString());
+        // NextLink is a Uri (the annotation surface represents every link that way); OriginalString is
+        // what pins it byte-for-byte to the raw annotation the server sent.
+        Assert.Equal(raw.GetString(), page.NextLink!.OriginalString);
     }
 }
