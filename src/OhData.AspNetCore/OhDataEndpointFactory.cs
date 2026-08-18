@@ -989,7 +989,106 @@ internal static class OhDataEndpointFactory
         MapUnboundOperations(
             group, registration.UnboundOperations, effectiveJsonOptions, registration);
 
+        // #313: named LAST, after every route has mapped, so a registration whose startup validation
+        // is about to throw does not first emit advice about a surface it will never serve. Same
+        // rationale as WarnWireShapeIsFlat above, which sits after ValidateOrThrow for the same reason.
+        WarnUnboundedBareExpand(registration, groupLogger);
+
         return group;
+    }
+
+    // #313: the startup diagnostic that stands in for the ceiling that MaxExpandTop no longer defaults to.
+    //
+    // Stage 1 removed an invented 1000 because the framework cannot know how large a child collection
+    // is. That leaves a real exposure — a bare ?$expand=Children materializes the WHOLE child
+    // collection — and nothing to point at it, since with no ceiling the shape answers 200 and looks
+    // healthy. This names each affected navigation once at startup so the decision is made by someone
+    // who knows the data, and it deliberately stops at informing: it prescribes no number, because
+    // picking one is exactly the mistake stage 1 undid.
+    //
+    // The conditions are ALL of the conditions under which the exposure is live, which is what
+    // keeps this from being noise:
+    //   - ExpandEnabled  — false by DEFAULT, and by itself enough to silence the whole diagnostic for
+    //                      a registration that never opts into $expand. This is the load-bearing one.
+    //   - HasGetQueryable— the pushdown path is the only one that materializes a raw child collection
+    //                      from the database; GetAll/Priority-1/GetById are out of scope (G11).
+    //   - ExpandPushdownEnabled — NOT one of the five conditions #313's design lists, and it belongs.
+    //                      MEASURED: with it false, /BeAuthors?$expand=Books over a seeded 5-book author
+    //                      returns "Books":[] and issues no child query at all — no EngagedExpand is
+    //                      built (see the gate at the ApplyIncludeFallback site), so the delegate path's
+    //                      ServeRaw case no-ops over a graph nothing ever loaded. There is no
+    //                      materialization to bound, so warning about it would name a knob that changes
+    //                      nothing for that registration. It defaults to TRUE, so this narrows almost
+    //                      nothing in practice — it just keeps the rule "all of the conditions under
+    //                      which the exposure is live" honest rather than approximately true.
+    //   - collection-valued — a single-valued navigation is one row and cannot be the DoS.
+    //   - ServeRaw       — a delegate-backed navigation is never in the engaged tree, and a BLANKED one
+    //                      (a sibling profile over the same EDM type disagrees) is not served at all.
+    //                      Resolved through the SAME ResolveNavTreatment the pushdown gate uses rather
+    //                      than a per-profile "owns no NavigationRouteDefinition" test, so the two
+    //                      cannot drift — the identical sharing rule stage 5's route registration is
+    //                      required to follow.
+    //   - MaxExpandTop is null — with a ceiling set there is a bound, and #313 stage 2 already turns
+    //                      the over-ceiling shape into a 400. Nothing to warn about.
+    //
+    // Emitted once per registration at startup, never per request.
+    private static void WarnUnboundedBareExpand(OhDataRegistration registration, ILogger? logger)
+    {
+        if (logger is null) return;
+
+        foreach (IEntitySetEndpointSource profile in registration.Profiles)
+        {
+            if (!profile.ExpandEnabled || !profile.HasGetQueryable ||
+                !profile.ExpandPushdownEnabled || profile.MaxExpandTop is not null)
+            {
+                continue;
+            }
+
+            IEdmEntityType? entityType = registration.EdmModel.EntityContainer?
+                .FindEntitySet(profile.EntitySetName)?.EntityType;
+            if (entityType is null) continue;
+
+            // The candidate set is the one for the type that DECLARES the navigation — the profile
+            // itself plus any sibling profile exposing the same EDM entity type — which is exactly
+            // what ResolveNavTreatment's decision table is defined over.
+            IReadOnlyList<IEntitySetEndpointSource> candidates =
+                ResolveProfilesForEdmType(entityType, registration);
+
+            foreach (IEdmNavigationProperty nav in entityType.NavigationProperties())
+            {
+                if (nav.TargetMultiplicity() != EdmMultiplicity.Many) continue;
+                if (ResolveNavTreatment(nav.Name, candidates).Treatment != NavTreatment.ServeRaw) continue;
+
+                // #313 stage 5: the message now names ExpandPagingEnabled too. Stage 3 deliberately
+                // withheld it — and pinned that withholding with a test — because nothing acted on the
+                // flag yet and the stages are stacked, so stage 3 necessarily reached develop before
+                // the paging it gates did; a warning telling someone to set a flag that does nothing
+                // is the worst kind of false claim, because a warning is precisely what someone acts
+                // on. That condition is now gone: stage 5 registers the continuation route and emits
+                // the link, so both knobs are real and both belong here. Deleting the stage 3
+                // assertion is part of that change, not an oversight.
+                //
+                // The two knobs are named in the order they must be set: MaxExpandTop FIRST and alone
+                // is a complete answer (over-ceiling 400s), and ExpandPagingEnabled is inert without
+                // it. The message still prescribes no NUMBER — that is the mistake stage 1 undid.
+                //
+                // Each placeholder appears EXACTLY once: Microsoft.Extensions.Logging binds a template
+                // positionally, so a repeated one would consume an argument that is not there.
+                logger.LogWarning(
+                    "OhData: '{EntitySet}' allows $expand and its navigation '{Navigation}' is a " +
+                    "delegate-less collection served straight from GetQueryable, so '?$expand={Nav}' " +
+                    "materializes the ENTIRE related collection for every row of the page — with no " +
+                    "ceiling, because MaxExpandTop resolves to null. OhData does not guess a limit: it " +
+                    "cannot know how large this collection gets, and only you can. Set MaxExpandTop to " +
+                    "bound it; an over-ceiling $expand is then rejected with 400. If your clients follow " +
+                    "nested continuation links, also set ExpandPagingEnabled to serve the first " +
+                    "MaxExpandTop children plus a 'Nav@odata.nextLink' instead of that 400 — it is inert " +
+                    "on its own, and a link is worse than a 400 for a client that ignores it. Leaving " +
+                    "both unset is a valid choice for a collection you know is small — this warning " +
+                    "informs that choice, it does not make it.",
+                    profile.EntitySetName, nav.Name, nav.Name);
+            }
+        }
     }
 
     // Leg 3 (docs-fidelity): an unbound function/action's success response is the bare
@@ -2085,16 +2184,44 @@ internal static class OhDataEndpointFactory
     // closed instead of being silently decided here.
     //
     // No branch preferring the EDM's own navigation-source binding (originally proposed in #292
-    // item 1, i.e. <c>expandItem.NavigationSource</c> at the call site): reviewed via reflection
-    // over Microsoft.OData.ModelBuilder + EntitySetProfile/IVisitModelBuilder, and there is no
-    // reachable API for a profile to create a genuine cross-entity-set navigation binding — the
-    // convention builder never produces a real <see cref="IEdmEntitySet"/> binding for a
-    // navigation, only either no binding or an <see cref="IEdmUnknownEntitySet"/> placeholder
-    // (whose Name is the navigation PROPERTY's own name, never a real entity set's). A binding
-    // branch is therefore structurally unreachable and provably redundant with the union below (a
-    // single legitimate candidate resolves identically either way; an ambiguous case already falls
-    // through to the union), so this is an intentional, reviewed deviation from #292's written
-    // step 1, not an oversight. If a real binding API is ever added, prefer it here first.
+    // item 1, i.e. <c>expandItem.NavigationSource</c> at the call site). The DECISION stands; the
+    // reason originally written here did not, and was corrected by #313 (design finding B5).
+    //
+    // WHAT THIS COMMENT USED TO CLAIM, AND WHY IT WAS WRONG. It said the convention builder "never
+    // produces a real <see cref="IEdmEntitySet"/> binding for a navigation, only either no binding
+    // or an <see cref="IEdmUnknownEntitySet"/> placeholder". MEASURED FALSE on this tree, both
+    // arms, by walking <c>IEdmEntitySet.NavigationPropertyBindings</c> and
+    // <c>FindNavigationTarget</c> over a registration's own <c>OhDataRegistration.EdmModel</c>:
+    //
+    //   (A) EXACTLY ONE entity set exposes the navigation's target type → a REAL binding exists.
+    //       The parent set's NavigationPropertyBindings contains `<navName> -> <thatSet>`, and
+    //       FindNavigationTarget(nav) returns that same EdmEntitySet.
+    //   (B) TWO OR MORE entity sets expose it → NavigationPropertyBindings is EMPTY, and
+    //       FindNavigationTarget(nav) returns an EdmUnknownEntitySet whose Name is the navigation
+    //       PROPERTY's own name, never an entity set's.
+    //   (C) NO entity set exposes it → the same EdmUnknownEntitySet placeholder as (B).
+    //
+    // So the placeholder half of the old claim was right and the "never a real binding" half was
+    // not. The binding is produced by the convention builder itself, not by any profile-facing API —
+    // that part is unchanged: there is still no reachable way for a profile to DECLARE a
+    // cross-entity-set binding.
+    //
+    // WHY THE DECISION SURVIVES THE CORRECTION. The binding branch is redundant rather than
+    // unreachable, and it is redundant in exactly the cases above: in (A) a real binding exists but
+    // there is by construction exactly ONE candidate, so the union below resolves identically; in
+    // (B) and (C) — the only cases where the union could be ambiguous — there is no binding to
+    // prefer. Intentional, reviewed deviation from #292's written step 1, now for a reason that is
+    // true.
+    //
+    // DO NOT "RESTORE" THE BINDING AS LOAD-BEARING. #313 O5 restricts nested-$expand continuation
+    // links to depth 1, where the URL already names the parent set and there is no child set to
+    // disambiguate — which is precisely what took this finding OFF the critical path. A real
+    // binding is only the correct source of a child SET NAME at depth >= 2, and the hazard there is
+    // that adding a second, unrelated entity set over the child type moves the model from
+    // (A) to (B) and DELETES the binding — silently changing behaviour with no change to the
+    // navigation itself. Anything built on it must test
+    // `set.FindNavigationTarget(nav) is IEdmEntitySet and not IEdmUnknownEntitySet` and must treat
+    // the absent case as a first-class outcome, not an error.
     //
     // Returns an empty list when targetEdmType is null or no profile exposes it at all — e.g. a
     // navigation whose target type is present in the model but never registered as its own entity
@@ -3688,6 +3815,17 @@ internal static class OhDataEndpointFactory
             ? (int)Math.Min((long)cap + 1, int.MaxValue)
             : null;
 
+        // #313: a BARE pushed leaf (no $count, no explicit $top of its own — $skip alone included) used
+        // to compose NO SQL Take at all, leaving the single most common $expand shape unbounded by
+        // MaxExpandTop. Same trade as countBound above (SQL Take(cap+1), gated to a projection leaf for
+        // the same APPLY/LATERAL reason), just for the no-$count case. Mutually exclusive with
+        // countBound (that one requires engaged.Count; this one requires !engaged.Count), and with an
+        // explicit $top (Top is null here) since $top must win over the default ceiling bound.
+        int? defaultLeafBound = !deferPagingToJson && isProjectionLeaf && !engaged.Count && engaged.Top is null
+            && maxExpandTop is int defaultCap
+            ? (int)Math.Min((long)defaultCap + 1, int.MaxValue)
+            : null;
+
         // Whenever paging is in play — pushed to SQL now (no $count) OR deferred to the JSON window
         // (with $count, or under #300's deferPagingToJson) — stabilize the order so WHICH rows land in
         // the page is deterministic. Mirrors the root path's EnsureStableOrder (#241): append the nav
@@ -3697,7 +3835,19 @@ internal static class OhDataEndpointFactory
         // countBound-suppressing children level) so the deferred JSON window (ShapePushedExpandsInJson /
         // ShapeLevelsInJson) still pages over a deterministic SQL order. A composite/unresolvable key is
         // left to the provider (best-effort, never throws).
-        bool paging = (engaged.Skip is int s && s > 0) || engaged.Top is int || countBound is not null;
+        //
+        // #313 note on that best-effort miss: when TryGetKeyClrProperty returns null the Skip/Take below
+        // is STILL composed, so EF sees a row-limiting operator with no OrderBy and logs
+        // RowLimitingOperationWithoutOrderByWarning — which an app that opted into
+        // ConfigureWarnings(w => w.Throw(...)) turns into an exception. That is pre-existing for the
+        // explicit-$top/$skip and $count arms; defaultLeafBound only widens WHICH requests reach it.
+        // Deliberately left as-is rather than substituting some arbitrary non-key OrderBy: the shape is
+        // not reachable through ODataConventionModelBuilder at all (it rejects a composite-key
+        // navigation target outright), only through an AdvancedConfigure-built EDM, and inventing an
+        // order for a type whose key we could not resolve would change the wire order of exactly the
+        // cases we cannot reason about.
+        bool paging = (engaged.Skip is int s && s > 0) || engaged.Top is int || countBound is not null
+            || defaultLeafBound is not null;
         if (paging && TryGetKeyClrProperty(model, elem) is { } keyProp)
         {
             ParameterExpression e = Expression.Parameter(elem, "e");
@@ -3733,6 +3883,11 @@ internal static class OhDataEndpointFactory
                         access = Expression.Call(_enumerableSkip.MakeGenericMethod(elem), access, Expression.Constant(sk));
                     if (engaged.Top is int tp)
                         access = Expression.Call(_enumerableTake.MakeGenericMethod(elem), access, Expression.Constant(tp));
+                    // #313: no explicit $top → fall back to the default ceiling bound (composed AFTER
+                    // any $skip, same as the explicit-$top Take above) so a bare (or $skip-only) leaf is
+                    // no longer an unbounded materialization.
+                    else if (defaultLeafBound is int leafBound)
+                        access = Expression.Call(_enumerableTake.MakeGenericMethod(elem), access, Expression.Constant(leafBound));
                 }
                 // else: a level WITH children — defer the $skip/$top window to the JSON pass (#304).
             }
@@ -3857,6 +4012,173 @@ internal static class OhDataEndpointFactory
         return ODataPropertyNaming.FindClrPropertyByEdmName(elem, keys[0].Name);
     }
 
+    // ── #313 stage 5: bare-$expand continuation paging ───────────────────────────────────────────
+    //
+    // One navigation of one entity set that a bare `?$expand=Nav` may page: over the ceiling it is
+    // trimmed to MaxExpandTop and annotated with `Nav@odata.nextLink`, and a continuation route
+    // `GET /{Set}({key})/{Nav}?$skip=N` is registered to serve the rest.
+    //
+    // Everything here is resolved ONCE at startup, off structural facts only.
+    private readonly record struct ExpandPagingNav(
+        // The EDM (JSON) navigation name — the URL segment, and the key the emission site matches on.
+        // Honors [JsonPropertyName] exactly as $expand and $metadata do.
+        string EdmName,
+        PropertyInfo NavProperty,
+        Type ElementType,
+        // The child element type's single-key CLR property, resolved through the SAME
+        // TryGetKeyClrProperty call ApplyNavShape uses to compose page 1's tiebreaker. Sharing the
+        // call — not re-deriving the key — is what makes page 1's ORDER BY and the continuation's
+        // ORDER BY provably the same column (§4.5 of the design). A composite/unresolvable key makes
+        // the navigation non-pageable outright rather than silently unordered.
+        PropertyInfo ChildKeyProperty);
+
+    // THE SHARED PAGEABILITY PREDICATE. Two call sites — continuation-route registration
+    // (MapEntitySet) and link emission (ShapePushedExpandsInJson) — and they must be the same set or
+    // the feature is broken in one of two directions: a link with no route behind it is a 404 on the
+    // continuation, and a route with no link in front of it is a delegate-safety hole.
+    //
+    // The condition that most needs to be shared, and the one a naive implementation gets wrong:
+    // <b>ServeRaw is resolved through ResolveNavTreatment over the parent type's candidate set</b>,
+    // not through "this profile owns no NavigationRouteDefinition for it". A SIBLING profile over the
+    // same EDM entity type that declares the nav WITH a delegate makes the treatment Blank — and a
+    // Blank navigation is emptied by ExpandLevelAsync before ShapePushedExpandsInJson ever sees it, so
+    // no link is emitted for it. A per-profile predicate would not see the sibling and would register
+    // a route serving those rows RAW, bypassing the delegate in the very mechanism meant to preserve
+    // it. Same rule, same helper, as the stage 3 startup diagnostic (WarnUnboundedBareExpand).
+    //
+    // The remaining conditions are the ones under which a link could be emitted at all:
+    //   - ExpandPagingEnabled   the opt-in knob (default false)
+    //   - MaxExpandTop is int   the page size, for page 1 and every continuation alike. NEVER MaxTop:
+    //                           they are independent knobs, so paging the continuation at MaxTop would
+    //                           serve N rows on page 1 and MaxTop on page 2+ — and with MaxTop null,
+    //                           page 2 would be unbounded and #313's DoS would return on the link.
+    //   - ExpandEnabled         no $expand, no bare expand to page
+    //   - HasGetQueryable       the pushdown path is the only one that composes the SQL bound (G11:
+    //                           GetById/$expand of a delegate-less nav serves [] and is out of scope)
+    //   - ExpandPushdownEnabled with pushdown off no EngagedExpand is built, so nothing materializes
+    //   - collection-valued     a single-valued nav is one row; there is nothing to continue
+    //   - resolvable single key see ChildKeyProperty above
+    //
+    // Returns an empty list — the shipping default — whenever the knob is off, which is what keeps a
+    // default registration's route table byte-identical.
+    private static IReadOnlyList<ExpandPagingNav> ResolveExpandPagingNavigations(
+        IEntitySetEndpointSource profile, Type modelType, OhDataRegistration registration)
+    {
+        if (!profile.ExpandPagingEnabled || profile.MaxExpandTop is not int ||
+            !profile.ExpandEnabled || !profile.HasGetQueryable || !profile.ExpandPushdownEnabled)
+        {
+            return Array.Empty<ExpandPagingNav>();
+        }
+
+        IEdmEntityType? parentEdmType = registration.EdmModel.EntityContainer?
+            .FindEntitySet(profile.EntitySetName)?.EntityType;
+        if (parentEdmType is null) return Array.Empty<ExpandPagingNav>();
+
+        // The candidate set is the one for the type that DECLARES the navigation — this profile plus
+        // any sibling profile exposing the same EDM entity type. Exactly what ResolveNavTreatment's
+        // decision table is defined over.
+        IReadOnlyList<IEntitySetEndpointSource> candidates =
+            ResolveProfilesForEdmType(parentEdmType, registration);
+
+        List<ExpandPagingNav> result = new();
+        // NavigationPropertyNames (not the EDM's navigations) deliberately: it is the set the pushdown
+        // gate itself builds pushdownExpandNavs from, so a nav absent from it can never be in the
+        // engaged tree and could never receive a link. It is also the set BuildStructuralProperties
+        // subtracts, so a continuation route can never collide with a structural-property route.
+        foreach (string navName in profile.NavigationPropertyNames)
+        {
+            if (BuildExpandNavBinding(modelType, navName, registration.EdmModel) is not { } binding) continue;
+            if (!binding.IsCollection) continue;
+            if (ResolveNavTreatment(navName, candidates).Treatment != NavTreatment.ServeRaw) continue;
+            if (TryGetKeyClrProperty(registration.EdmModel, binding.ElementType) is not { } childKey) continue;
+
+            result.Add(new ExpandPagingNav(
+                ODataPropertyNaming.ResolveEdmName(binding.Property), binding.Property,
+                binding.ElementType, childKey));
+        }
+        return result;
+    }
+
+    // #313 stage 5: a one-field holder for the parent key value referenced from the continuation's
+    // Where predicate. Expression.Constant(box) + Expression.Field is the exact shape the C# compiler
+    // emits for a captured local, which is what EF Core's parameter extraction recognises — so the
+    // key becomes a SQL PARAMETER rather than a literal baked into the command text. An
+    // Expression.Constant of the value itself would produce a distinct SQL string per key and defeat
+    // the provider's plan cache on a route whose whole purpose is to be called repeatedly.
+    private sealed class ContinuationKeyBox<T>
+    {
+        public T Value = default!;
+    }
+
+    // #313 stage 5: the continuation page, written as plain LINQ so the composed shape is readable
+    // rather than assembled from MethodInfos. The only reason it is generic-and-reflected at all is
+    // that the navigation element type is not a type parameter of MapEntitySet; its sole caller
+    // closes it once at startup and compiles a delegate over it, so no reflection runs per request
+    // and no TargetInvocationException can wrap a provider fault.
+    //
+    // SelectMany over a key-pinned parent is what makes the provider emit an INNER JOIN with
+    // LIMIT/OFFSET rather than the partitioned ROW_NUMBER() window page 1 uses — an index seek, not
+    // a window over the whole child table. The OrderBy is unconditional (see the call site).
+    private static object[] ContinuationPage<TParent, TElement, TChildKey>(
+        IQueryable<TParent> parents,
+        Expression<Func<TParent, IEnumerable<TElement>>> navSelector,
+        Expression<Func<TElement, TChildKey>> childKeySelector,
+        int skip, int take)
+    {
+        TElement[] page = parents
+            .SelectMany(navSelector)
+            .OrderBy(childKeySelector)
+            .Skip(skip)
+            .Take(take)
+            .ToArray();
+        object[] boxed = new object[page.Length];
+        for (int i = 0; i < page.Length; i++) boxed[i] = page[i]!;
+        return boxed;
+    }
+
+    private static readonly MethodInfo _continuationPageMethod =
+        typeof(OhDataEndpointFactory).GetMethod(
+            nameof(ContinuationPage), BindingFlags.NonPublic | BindingFlags.Static)!;
+
+    // #313 stage 5: "truly bare", as a plan-time predicate over the already-parsed EngagedExpand.
+    // The rule in one sentence: a nested option list that normalizes to the IDENTITY transform is
+    // bare; anything else is not. Only two no-ops survive the parser — `$skip=0` (ApplyNavShape
+    // already guards `sk > 0`, so it composed nothing) and `$count=false` (EngagedExpand.Count is
+    // `item.CountOption == true`, so absent and false are already the same value) — and both are
+    // therefore treated as bare, giving a faithful `?$skip={cap}` continuation.
+    //
+    // Everything else keeps the 400 stage 2 gave it (§5's fail-closed matrix): a nested
+    // $filter/$orderby/$select cannot be carried by a $skip-only link; $levels and a level WITH
+    // children are not SQL-bounded at all, so a link there would advertise a bound that does not
+    // exist; an explicit $top means the client asked for exactly N rows and got them, so the response
+    // is complete with respect to the request and a link would be wrong.
+    private static bool IsBareContinuableLeaf(in EngagedExpand e) =>
+        e.Binding.IsCollection
+        && e.Levels == 0
+        && e.Children is not { Count: > 0 }
+        && e.Filter is null
+        && e.OrderBy is null
+        && e.Top is null
+        && e.Skip is null or 0
+        && !e.Count
+        && e.NestedSelect is not { Count: > 0 };
+
+    // #313 stage 5: what the JSON shaping pass needs to write a continuation link, threaded from the
+    // GetQueryable collection route. Non-null ONLY at depth 1 — the recursive ShapePushedExpandsInJson
+    // calls pass null, which is exactly what keeps depth >= 2 on its 400 (§5).
+    //
+    // ParentItems is the CLR page, index-parallel with the JsonObjects being shaped. It is threaded
+    // because <b>the parent key is not in the JSON</b>: a root $select strips it and the shaping pass
+    // runs after the strip (G6), so reading the key off the payload would produce a broken link for
+    // exactly the requests that need one most. ExpandLevelAsync maintains the same parallel
+    // items/jsonItems pair for the same reason and is the precedent followed here.
+    private sealed record ExpandPagingContext(
+        string BaseUrl,
+        string EntitySetName,
+        PropertyInfo ParentKeyProperty,
+        IReadOnlyList<object> ParentItems,
+        IReadOnlyDictionary<string, ExpandPagingNav> PageableByEdmName);
+
     // #206 phase 2 (optioned + multi-level expand): apply the JSON-side portion of a pushed expand's
     // nested options to the already-serialized parent objects (in the configured naming policy —
     // PascalCase by default) — $count (emit
@@ -3865,11 +4187,6 @@ internal static class OhDataEndpointFactory
     // $count is absent) were already applied in SQL by BuildShapedNavAccess, so this touches only the
     // navs that actually need post-serialization shaping. Reuses StripToSelectedProperties so nested
     // $select casing/annotation handling is identical to the root-level strip.
-    private static void ShapePushedExpandsInJson(
-        JsonArray parents, IReadOnlyList<EngagedExpand> engaged, JsonSerializerOptions serializerOptions,
-        int? maxExpandTop) =>
-        ShapePushedExpandsInJson(parents.OfType<JsonObject>(), engaged, serializerOptions, maxExpandTop);
-
     // #206 ($levels): the CLR property names of every navigation this request pushed with $levels,
     // walked recursively through the engaged tree. OmitUnexpandedNavigations uses this to keep the
     // bounded recursion of ONLY these (delegate-less, pushed) navs — a delegate-backed $levels nav is
@@ -3894,9 +4211,13 @@ internal static class OhDataEndpointFactory
         return names;
     }
 
+    // #313 stage 5: <paramref name="paging"/> is non-null ONLY on the depth-1 call from the
+    // GetQueryable collection route; every recursive call below passes null, which is what keeps
+    // depth >= 2 on the 400 stage 2 gave it (§5, and O5 on the issue).
     private static void ShapePushedExpandsInJson(
         IEnumerable<JsonObject> parents, IReadOnlyList<EngagedExpand> engaged,
-        JsonSerializerOptions serializerOptions, int? maxExpandTop)
+        JsonSerializerOptions serializerOptions, int? maxExpandTop,
+        ExpandPagingContext? paging = null)
     {
         foreach (EngagedExpand e in engaged)
         {
@@ -3908,7 +4229,16 @@ internal static class OhDataEndpointFactory
             // now needs the JSON pass too, or the window would silently never be applied.)
             bool hasChildren = e.Children is { Count: > 0 };
             bool levelsNeedsJsonPaging = e.Levels > 0 && (e.Skip is int || e.Top is int);
-            if (!e.Count && e.NestedSelect is null && !hasChildren && !levelsNeedsJsonPaging) continue;
+            // #313: a bare collection leaf (no $count, no $top/$skip of its own) now carries a SQL
+            // Take(MaxExpandTop+1) bound composed by ApplyNavShape (defaultLeafBound) — so it still
+            // needs to be visited here to enforce the ceiling, even though there is no count/select/
+            // children work to do otherwise. Also the entry point for a BARE $levels recursion (which
+            // carries no children by construction — TryBuildEngagedExpand defers a nested $expand under
+            // $levels off pushdown), whose per-level ceiling ShapeLevelsInJson enforces below. Gated on
+            // `maxExpandTop is int` so an uncapped registration keeps skipping the walk outright.
+            bool needsLeafCeilingCheck = e.Binding.IsCollection && !hasChildren && e.Top is null && maxExpandTop is int;
+            if (!e.Count && e.NestedSelect is null && !hasChildren && !levelsNeedsJsonPaging && !needsLeafCeilingCheck)
+                continue;
 
             // #254 (item 2): a $levels expand may now carry $count/$select. Its recursion is implicit
             // (there is no per-level EngagedExpand — the SAME binding repeats), so shape every level by
@@ -3922,12 +4252,30 @@ internal static class OhDataEndpointFactory
             PropertyInfo prop = e.Binding.Property;
             string key = ResolveNavigationJsonKey(prop.Name, prop, serializerOptions);
 
+            // #313 stage 5: is THIS engaged expand the one shape a $skip-only continuation can serve?
+            // Resolved once per expand item rather than per parent — it is a plan-time fact.
+            ExpandPagingNav? pageableNav = null;
+            if (paging is not null && maxExpandTop is int && IsBareContinuableLeaf(e) &&
+                paging.PageableByEdmName.TryGetValue(
+                    ODataPropertyNaming.ResolveEdmName(prop), out ExpandPagingNav resolvedNav))
+            {
+                pageableNav = resolvedNav;
+            }
+
+            // Index into paging.ParentItems. The two lists are built index-parallel by the caller
+            // (see the ShapePushedExpandsInJson call site in the GetQueryable route), so this counter
+            // and the foreach below stay in step by construction.
+            int parentIndex = -1;
             foreach (JsonObject parent in parents)
             {
+                parentIndex++;
                 JsonNode? node = parent[key];
                 if (e.Binding.IsCollection && node is JsonArray arr)
                 {
-                    if (e.Count) WriteNestedCountAndWindow(parent, key, arr, e, maxExpandTop);
+                    if (e.Count)
+                    {
+                        WriteNestedCountAndWindow(parent, key, arr, e, maxExpandTop);
+                    }
                     // #304: a children level with $skip/$top but no $count was never SQL-windowed
                     // (ApplyNavShape deferred it here) — apply that window now, BEFORE recursing into
                     // children, so only the surviving (windowed) parents are shaped further. $skip=0 is
@@ -3935,7 +4283,40 @@ internal static class OhDataEndpointFactory
                     // trip the MaxExpandTop ceiling below — but $top is NOT guarded on > 0: $top=0 must
                     // still window (to an empty array), never fall through to "no window at all".
                     else if (hasChildren && ((e.Skip is int sk && sk > 0) || e.Top is int))
+                    {
                         WriteNestedWindowOnly(arr, key, e, maxExpandTop);
+                    }
+                    // #313: bare children (nested $expand, no $count/$skip/$top of its own) can't be
+                    // SQL-windowed at all (the same APPLY/LATERAL constraint documented on
+                    // ApplyNavShape's isProjectionLeaf gate) — so it was, and still is, fully
+                    // materialized here. It now needs the ceiling check the windowed shapes above
+                    // already get, applied BEFORE recursing into children so a breach 400s before
+                    // descending any further.
+                    else if (hasChildren && maxExpandTop is int)
+                    {
+                        EnsureWithinExpandCeiling(arr, key, maxExpandTop, "'$expand'");
+                    }
+                    // #313: bare leaf (no children, no $count, no explicit $top — a lone $skip=0 no-op
+                    // included). ApplyNavShape now SQL-bounds this shape to MaxExpandTop+1 rows
+                    // (defaultLeafBound), so arr.Count > cap here means the true collection exceeds the
+                    // configured budget.
+                    //
+                    // #313 stage 5: for the truly-bare subset on an opted-in profile that breach becomes
+                    // a continuation instead of a 400 — trim to the ceiling and annotate. Everything
+                    // else still takes the EnsureWithinExpandCeiling 400 below, so the M1 rule ("no
+                    // bound without either a link or a 400") holds at this commit as at every other.
+                    else if (!hasChildren && e.Top is null && maxExpandTop is int leafCap)
+                    {
+                        // WriteNestedNextLink reports false when it could not build a link (a null key
+                        // value); it leaves the array untouched in that case, so the ceiling's 400
+                        // applies exactly as it would for any other non-pageable over-ceiling shape.
+                        // Never a trim without a link.
+                        if (pageableNav is not { } pnav || arr.Count <= leafCap
+                            || !WriteNestedNextLink(parent, key, arr, leafCap, pnav, paging!, parentIndex))
+                        {
+                            EnsureWithinExpandCeiling(arr, key, maxExpandTop, "'$expand'");
+                        }
+                    }
                     // Recurse into deeper pushed levels on the (paged) elements BEFORE this level's
                     // $select strip — the strip keeps expanded-nav names (ExtractSelectedProperties), so
                     // the children survive, and shaping deeper counts/selects sees the full child graph.
@@ -3972,6 +4353,64 @@ internal static class OhDataEndpointFactory
                 $"The nested {verb} on '{key}' cannot be computed: the related collection exceeds the " +
                 $"maximum of {cap} entities. Narrow it with a nested $filter.");
         }
+    }
+
+    // #313 stage 5: trim one over-ceiling bare leaf to the ceiling and annotate it with
+    // <c>Nav@odata.nextLink</c>. The counterpart of EnsureWithinExpandCeiling for the one shape a
+    // $skip-only continuation can faithfully serve.
+    //
+    // TRIM AND LINK ARE ONE STEP, OR NEITHER HAPPENS. Both bail-outs below are checked BEFORE the
+    // array is touched, and the method reports whether it linked so the caller can fall back to the
+    // ceiling's 400. An earlier revision trimmed first and returned early on a bail-out, which left a
+    // silently truncated array carrying neither a link nor an error — the one outcome #313's M1 rule
+    // forbids outright. (The comment that justified it, "a page that is complete-as-far-as-it-goes",
+    // was wrong on its own terms: the probe row and every row above the cap were already gone.)
+    //
+    // Trimming is by "while > cap" rather than removing a single assumed probe row: the caller only
+    // reaches this for arr.Count > cap and ApplyNavShape bounded the SQL to cap + 1 rows, so today the
+    // excess is exactly one row, but the loop stays correct if that bound ever widens.
+    //
+    // ANNOTATION NAME: `Nav@odata.nextLink`, the 4.0 long form. The 4.01 short form is a SHOULD and
+    // this framework emits OData-Version: 4.0 with @odata.-prefixed control information everywhere.
+    // The prefix is the payload key (naming policy + [JsonPropertyName]), so the annotation is a
+    // sibling of the property it annotates under the same spelling; the URL segment is the EDM name,
+    // which is what $metadata declares and what $expand accepts.
+    //
+    // PLACEMENT: after the array. JSON Format §20.2 exempts nextLink from the "immediately prior"
+    // rule, and JsonObject insertion order gives this for free.
+    //
+    // THE KEY COMES FROM THE CLR ENTITY, NEVER THE PAYLOAD. A root $select strips the key property
+    // and this pass runs after the strip, so `parent["Id"]` is absent for exactly the requests that
+    // most need a working link. paging.ParentItems is the index-parallel CLR page threaded in for
+    // this one purpose.
+    // Returns true when the array was trimmed AND annotated; false when no link could be built, in
+    // which case the array is left EXACTLY as it was and the caller applies the ceiling's 400 instead.
+    private static bool WriteNestedNextLink(
+        JsonObject parent, string key, JsonArray arr, int cap,
+        in ExpandPagingNav nav, ExpandPagingContext paging, int parentIndex)
+    {
+        // Defensive: a desynchronised index would silently produce a link for the WRONG parent, which
+        // is worse than no link. Unreachable through the single call site, which builds ParentItems
+        // index-parallel with the JsonObject list it iterates — kept as an assertion, not as a case
+        // the tests can reach.
+        if ((uint)parentIndex >= (uint)paging.ParentItems.Count) return false;
+
+        // Reachable: TKey is unconstrained, so a string or Nullable<T> key property can hold null on a
+        // returned entity, and ODataEntityKeyUrlFormatter.Format throws on null. Without a key there is
+        // no addressable continuation, so this collection is not pageable after all and takes the 400.
+        object? parentKey = paging.ParentKeyProperty.GetValue(paging.ParentItems[parentIndex]);
+        if (parentKey is null) return false;
+
+        while (arr.Count > cap) arr.RemoveAt(arr.Count - 1);
+
+        // Page 1's child offset is always 0 — a bare expand carries no $skip by definition — so the
+        // first continuation hop is always ?$skip={cap}. The root page's own offset never appears
+        // here: the root's continuation is a $skiptoken on a DIFFERENT path served by a DIFFERENT
+        // route, and neither link builder reads the response body (§4.6).
+        parent[$"{key}@odata.nextLink"] =
+            $"{paging.BaseUrl}/{paging.EntitySetName}({ODataEntityKeyUrlFormatter.Format(parentKey)})" +
+            $"/{nav.EdmName}?$skip={cap.ToString(CultureInfo.InvariantCulture)}";
+        return true;
     }
 
     // #206 phase 2 (optioned expand) / #254: emit <c>Nav@odata.count</c> for one pushed collection
@@ -4056,6 +4495,16 @@ internal static class OhDataEndpointFactory
                 // collapse to empty, not be skipped).
                 if (e.Count) WriteNestedCountAndWindow(parent, key, arr, e, maxExpandTop);
                 else if ((e.Skip is int sk && sk > 0) || e.Top is int) WriteNestedWindowOnly(arr, key, e, maxExpandTop);
+                // #313: a BARE level (no $count, no $skip/$top of its own — a nested $select alone
+                // included) fired NEITHER arm above, so the ceiling was enforced NOWHERE on this path:
+                // BuildLevelsNavAccess passes deferPagingToJson: true AND maxExpandTop: null, so
+                // ApplyNavShape composes no SQL bound either. That made `Nav($levels=1)` — a
+                // spec-equivalent restatement of a bare `$expand=Nav`, byte-identical response and all —
+                // a one-parameter bypass of the very ceiling the bare shape is now rejected by. Checked
+                // per level, on every level, so a breach 400s before the walk descends any further.
+                // Same verb as the bare pushed-expand arm in ShapePushedExpandsInJson, so the two
+                // spellings of the same request produce the same message.
+                else EnsureWithinExpandCeiling(arr, key, maxExpandTop, "'$expand'");
                 next.AddRange(arr.OfType<JsonObject>());
             }
             else if (!e.Binding.IsCollection && node is JsonObject one)
@@ -4709,6 +5158,17 @@ internal static class OhDataEndpointFactory
             .Select(navName => (navName, binding: BuildExpandNavBinding<TModel>(navName, registration.EdmModel)))
             .Where(pair => pair.binding is not null)
             .ToDictionary(pair => pair.navName, pair => pair.binding!.Value, StringComparer.OrdinalIgnoreCase);
+
+        // #313 stage 5: the navigations of THIS entity set whose bare $expand may page, resolved once
+        // at startup by the shared predicate. Empty on the shipping default (ExpandPagingEnabled is
+        // false), which is what makes the route table, $metadata and the three OpenAPI documents
+        // byte-identical to a registration that never heard of #313.
+        IReadOnlyList<ExpandPagingNav> expandPagingNavs =
+            ResolveExpandPagingNavigations(source, typeof(TModel), registration);
+        // Same set, keyed for the emission site's per-expand lookup. Ordinal-ignore-case to match how
+        // every other EDM-name lookup in this file compares identifiers.
+        IReadOnlyDictionary<string, ExpandPagingNav> expandPagingNavsByEdmName =
+            expandPagingNavs.ToDictionary(n => n.EdmName, StringComparer.OrdinalIgnoreCase);
 
         // #199 Layer C: per-operation authorization. When the profile declared
         // ConfigureAuthorization(...), resolve the effective rule per route category and apply it to
@@ -5582,14 +6042,49 @@ internal static class OhDataEndpointFactory
                     // $select projection — to the serialized parents. No-op unless a pushed expand
                     // actually carried $count or $select; the fallbacks above set engagedExpandNavs to
                     // null, so a request that abandoned pushdown does no shaping here.
+                    string baseUrl = BuildBaseUrl(ctx, prefix);
+
                     if (engagedExpandNavs is { Count: > 0 })
                     {
+                        // #313 stage 5: build the index-parallel (JsonObject, CLR entity) pair the link
+                        // emission needs, and ONLY when this profile actually has a pageable navigation
+                        // (the shipping default is an empty set, so this whole block is skipped and the
+                        // call below is byte-identical to stage 3's). Built explicitly rather than
+                        // relying on finalItems.OfType<JsonObject>() lining up with items positionally:
+                        // the filter and the index would silently desynchronise if a page element ever
+                        // failed to serialize to an object, and a link on the WRONG parent is worse than
+                        // no link. See ExpandLevelAsync's items/jsonItems pair for the same idiom.
+                        ExpandPagingContext? pagingCtx = null;
+                        IEnumerable<JsonObject> shapeParents;
+                        PropertyInfo? parentKeyProp = expandPagingNavs.Count > 0
+                            ? typeof(TModel).GetProperty(
+                                source.KeyPropertyName,
+                                BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance)
+                            : null;
+                        if (parentKeyProp is not null)
+                        {
+                            var pagingParents = new List<JsonObject>(finalItems.Count);
+                            var pagingItems = new List<object>(finalItems.Count);
+                            for (int i = 0; i < finalItems.Count && i < items.Length; i++)
+                            {
+                                if (finalItems[i] is not JsonObject parentObj) continue;
+                                pagingParents.Add(parentObj);
+                                pagingItems.Add(items[i]!);
+                            }
+                            shapeParents = pagingParents;
+                            pagingCtx = new ExpandPagingContext(
+                                baseUrl, name, parentKeyProp, pagingItems, expandPagingNavsByEdmName);
+                        }
+                        else
+                        {
+                            shapeParents = finalItems.OfType<JsonObject>();
+                        }
+
                         ShapePushedExpandsInJson(
-                            finalItems, engagedExpandNavs, jsonOptions ?? _pascalCaseSerializerOptions,
-                            source.MaxExpandTop);
+                            shapeParents, engagedExpandNavs, jsonOptions ?? _pascalCaseSerializerOptions,
+                            source.MaxExpandTop, pagingCtx);
                     }
 
-                    string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
                     envelope["@odata.context"] = $"{baseUrl}/$metadata#{AppendSelectSuffix(name, selectedProps)}";
                     if (odataCount.HasValue) envelope["@odata.count"] = odataCount;
@@ -6466,6 +6961,245 @@ internal static class OhDataEndpointFactory
                     $"POST handler of navigation property '{navWithPost.PropertyName}' on " +
                     $"POST /{name}({{key}})/{collidingAction.Name}. Rename the bound action or the navigation property.");
             }
+        }
+
+        // ── #313 stage 5: the bare-$expand continuation route ────────────────────────────────────
+        //
+        // GET /{Set}({key})/{Nav}?$skip=N — the target of the `Nav@odata.nextLink` the shaping pass
+        // writes. Registered only for the navigations the SHARED predicate returned, so a route can
+        // never exist without a link in front of it, nor a link without a route behind it, and a
+        // delegate-backed or Blank navigation can never be served raw through here.
+        //
+        // The whole design turns on this endpoint being SMALL. It accepts $skip and nothing else, so
+        // it constructs no ODataQueryOptions, runs no capability gate, applies no allowlist
+        // validation, and calls no EnsureStableOrder. There is nothing to carry: the link it serves
+        // was emitted for an expand that had no nested options at all, so the continuation of it
+        // cannot need any either. Extracting the ~520-line collection-route body here would be the
+        // mistake that killed the previous design.
+        foreach (ExpandPagingNav pagingNav in expandPagingNavs)
+        {
+            // Startup route-collision validation, in the shared GET /{name}({key})/{segment} space.
+            //
+            // The existing check a few hundred lines below compares entity-level bound functions
+            // against StructuralProperties ONLY — and BuildStructuralProperties subtracts every
+            // declared navigation, so a bound function named identically to a delegate-less
+            // collection navigation is perfectly legal TODAY (nothing registers that template for it)
+            // and becomes a duplicate (template, GET) the moment this route appears. ASP.NET Core
+            // would surface that as an ambiguous-match failure at REQUEST time, on a route that only
+            // exists because someone opted in. Fail at MapOhData() instead, matching the idiom of the
+            // two collision checks already in this file.
+            BoundOperationDefinition? collidingFn = source.BoundFunctions.FirstOrDefault(f =>
+                f.IsEntityLevel && string.Equals(f.Name, pagingNav.EdmName, StringComparison.Ordinal));
+            if (collidingFn is not null)
+            {
+                throw new InvalidOperationException(
+                    $"Entity set '{name}': bound function '{collidingFn.Name}' conflicts with the " +
+                    $"$expand continuation route of navigation property '{pagingNav.EdmName}' on " +
+                    $"GET /{name}({{key}})/{pagingNav.EdmName}. That route is registered because " +
+                    "ExpandPagingEnabled is on for this entity set; rename the bound function or the " +
+                    "navigation property, or turn ExpandPagingEnabled off.");
+            }
+
+            string contNavName = pagingNav.EdmName;
+            // THE PAGE SIZE IS MaxExpandTop, NEVER MaxTop. They are independent knobs: MaxTop still
+            // defaults to 1000 while MaxExpandTop now defaults to null, so paging the continuation at
+            // MaxTop would serve MaxExpandTop rows on page 1 and 1000 on page 2+ — and with MaxTop
+            // unset, page 2 would be UNBOUNDED and #313's DoS would come straight back on the
+            // continuation link. Non-null by the shared predicate.
+            int contCap = source.MaxExpandTop!.Value;
+
+            // The nav element type's EDM entity type, for the same §4.5.1/§11.2.4.2 nav-omission the
+            // existing nav-collection route applies: this route takes no $expand, so every declared
+            // navigation on the element type is omitted.
+            IEdmEntityType? contElementEdmType = rootEdmType?
+                .NavigationProperties()
+                .FirstOrDefault(np => string.Equals(np.Name, contNavName, StringComparison.OrdinalIgnoreCase))?
+                .ToEntityType();
+
+            // Compose the continuation query ONCE at startup into a compiled delegate, following this
+            // file's existing "Expression.Compile() runs at most once per type" convention. The shape:
+            //
+            //     parents.Where(p => p.Key == k)          <- request-scoped, built per request below
+            //            .SelectMany(p => p.Nav)          <- an INNER JOIN with LIMIT/OFFSET, not a
+            //            .OrderBy(c => c.ChildKey)           partitioned ROW_NUMBER() window
+            //            .Skip(skip).Take(cap + 1)
+            //
+            // DETERMINISM IS BY CONSTRUCTION, NOT BY EnsureStableOrder. That helper short-circuits
+            // when the source is already ordered — and the parent's own GetQueryable may well be
+            // pre-ordered — which would leave page 2+ with only the parent's (possibly non-unique)
+            // order and no total order over the children. So the OrderBy here is UNCONDITIONAL, and
+            // its key comes from the same TryGetKeyClrProperty call ApplyNavShape uses to compose
+            // page 1's tiebreaker (threaded through ExpandPagingNav.ChildKeyProperty). The two sides
+            // therefore agree on the ordering column by construction rather than by coincidence.
+            // The parent's own order never reaches the child collection: on page 1 it appears only in
+            // the outer ORDER BY over parents, and here the parent is pinned to a single key.
+            ParameterExpression contParentParam = Expression.Parameter(typeof(TModel), "p");
+            Type contNavSelectorType = typeof(Func<,>).MakeGenericType(
+                typeof(TModel), typeof(IEnumerable<>).MakeGenericType(pagingNav.ElementType));
+            LambdaExpression contNavSelector = Expression.Lambda(
+                contNavSelectorType,
+                Expression.Property(contParentParam, pagingNav.NavProperty),
+                contParentParam);
+
+            ParameterExpression contChildParam = Expression.Parameter(pagingNav.ElementType, "c");
+            Type contChildKeyType = pagingNav.ChildKeyProperty.PropertyType;
+            LambdaExpression contChildKeySelector = Expression.Lambda(
+                typeof(Func<,>).MakeGenericType(pagingNav.ElementType, contChildKeyType),
+                Expression.Property(contChildParam, pagingNav.ChildKeyProperty),
+                contChildParam);
+
+            MethodInfo contPageMethod = _continuationPageMethod
+                .MakeGenericMethod(typeof(TModel), pagingNav.ElementType, contChildKeyType);
+            ParameterExpression contQParam = Expression.Parameter(typeof(IQueryable<TModel>), "q");
+            ParameterExpression contSkipParam = Expression.Parameter(typeof(int), "skip");
+            ParameterExpression contTakeParam = Expression.Parameter(typeof(int), "take");
+            Func<IQueryable<TModel>, int, int, object[]> contPage =
+                Expression.Lambda<Func<IQueryable<TModel>, int, int, object[]>>(
+                    Expression.Call(
+                        contPageMethod,
+                        contQParam,
+                        Expression.Constant(contNavSelector, typeof(Expression<>).MakeGenericType(contNavSelectorType)),
+                        Expression.Constant(
+                            contChildKeySelector,
+                            typeof(Expression<>).MakeGenericType(
+                                typeof(Func<,>).MakeGenericType(pagingNav.ElementType, contChildKeyType))),
+                        contSkipParam,
+                        contTakeParam),
+                    contQParam, contSkipParam, contTakeParam)
+                .Compile();
+
+            // The parent-key CLR property, resolved exactly as ExpandLevelAsync resolves it.
+            PropertyInfo? contParentKeyProp = typeof(TModel).GetProperty(
+                source.KeyPropertyName, BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance);
+            FieldInfo contKeyBoxField = typeof(ContinuationKeyBox<TKey>)
+                .GetField(nameof(ContinuationKeyBox<TKey>.Value))!;
+
+            var contRb = entityAuthGroup.MapGet($"/{name}({{key}})/{contNavName}",
+                async (string key, HttpContext ctx, CancellationToken ct) =>
+                {
+                    try
+                    {
+                        // 1. The $skip-ONLY surface. Every other system query option is rejected —
+                        // conformant (Minimal item 7: parse the option or reject it), and the thing
+                        // that keeps this endpoint from quietly becoming a second general-purpose
+                        // collection route. Rejecting by the '$' sigil rather than an allowlist of
+                        // known names is deliberately fail-closed: a future OData system option this
+                        // build has never heard of is refused rather than silently ignored.
+                        //
+                        // $format is the ONE exemption, and it is not a data option at all: §11.2.12
+                        // content negotiation is implemented once, on the group filter in MapAll, for
+                        // every route on the whole OData surface — it never reaches this handler and
+                        // cannot change a single row. Refusing it here would make this the only route
+                        // in the surface that 400s a conformant, already-supported option, and would
+                        // break the common client habit of appending it to a server-issued link. An
+                        // unsupported VALUE is still rejected, by that same group filter, unchanged.
+                        foreach (string queryKey in ctx.Request.Query.Keys)
+                        {
+                            if (!queryKey.StartsWith('$') ||
+                                string.Equals(queryKey, "$skip", StringComparison.Ordinal) ||
+                                string.Equals(queryKey, "$format", StringComparison.Ordinal))
+                            {
+                                continue;
+                            }
+                            return ODataError(400, "UnsupportedQueryOption",
+                                $"The query option '{queryKey}' is not supported on an $expand " +
+                                "continuation. This route serves the continuation of a BARE $expand " +
+                                "and accepts '$skip' only.");
+                        }
+
+                        // 2. $skip, validated with the same idiom (and the same message shape) the
+                        // navigation-collection route already uses.
+                        int contSkip = 0;
+                        if (ctx.Request.Query.TryGetValue("$skip", out var contSkipStr) &&
+                            (!int.TryParse(contSkipStr, out contSkip) || contSkip < 0))
+                        {
+                            return ODataError(400, "InvalidQueryOption",
+                                $"The value of '$skip' ('{contSkipStr}') is invalid. It must be a non-negative integer.");
+                        }
+
+                        // 3. The key. FormatException -> the shared BadKeyError, as everywhere else.
+                        object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
+
+                        // 4. The PARENT PROFILE'S OWN GetQueryable, which is what preserves row-level
+                        // security for free: a tenant filter or soft-delete predicate baked into that
+                        // queryable scopes the continuation exactly as it scoped the first page. It
+                        // also means no foreign-key knowledge is required, which the convention EDM
+                        // does not have.
+                        var s = ResolveHandlers(ctx);
+                        IQueryable<TModel> contParents =
+                            (await s.InvokeGetQueryableAsync(ct)).Cast<TModel>();
+
+                        // 5. Pin the parent. The key is referenced through a one-field box rather than
+                        // an Expression.Constant of the value itself: that is the exact shape a C#
+                        // closure produces, so EF Core's parameter extraction turns it into a query
+                        // PARAMETER instead of baking the literal into the SQL (which would defeat the
+                        // provider's plan cache on a route designed to be called repeatedly).
+                        var contKeyBox = new ContinuationKeyBox<TKey> { Value = (TKey)parsedKey! };
+                        var contKeyPredicate = Expression.Lambda<Func<TModel, bool>>(
+                            Expression.Equal(
+                                Expression.Property(contParentParam, contParentKeyProp!),
+                                Expression.Convert(
+                                    Expression.Field(Expression.Constant(contKeyBox), contKeyBoxField),
+                                    contParentKeyProp!.PropertyType)),
+                            contParentParam);
+
+                        // 6. Materialize cap + 1 rows: the probe row is what distinguishes "this page
+                        // is exactly full and is the last one" from "there is more behind it", the
+                        // rows % pageSize == 0 trap #360 fixed at the root. Synchronous, as the
+                        // collection route's own materialization is.
+                        object[] contRows = contPage(
+                            contParents.Where(contKeyPredicate), contSkip, contCap + 1);
+
+                        // 7/8. A MISSING PARENT KEY IS 200 + EMPTY value + NO LINK, not 404 (O3 on
+                        // #313). SelectMany cannot distinguish "no such parent" from "a parent with no
+                        // children", and an existence probe would cost a second round trip on EVERY
+                        // continuation. Microsoft returns 404 here; this is a documented divergence.
+                        bool contMore = contRows.Length > contCap;
+                        if (contMore) contRows = contRows[..contCap];
+
+                        string contBaseUrl = BuildBaseUrl(ctx, prefix);
+                        var contJson = new JsonArray();
+                        foreach (object contItem in contRows)
+                        {
+                            contJson.Add(SerializeBounded(
+                                contItem, contElementEdmType, clause: null,
+                                jsonOptions ?? _pascalCaseSerializerOptions));
+                        }
+
+                        var contEnvelope = new Dictionary<string, object?>();
+                        // The same path-shaped context segment BuildNavEnvelope emits for the
+                        // delegate-backed nav route (m10, declared-not-fixed in
+                        // docs/spec-compliance.md) — the two nav-collection surfaces must not
+                        // disagree about their own context URL.
+                        contEnvelope["@odata.context"] =
+                            $"{contBaseUrl}/$metadata#{name}({key})/{contNavName}";
+                        contEnvelope["value"] = contJson;
+                        if (contMore)
+                        {
+                            // Absolute offset, formatted from the canonical key formatter so a string
+                            // key round-trips back through ODataKeyParser on the next hop.
+                            contEnvelope["@odata.nextLink"] =
+                                $"{contBaseUrl}/{name}({ODataEntityKeyUrlFormatter.Format(parsedKey!)})" +
+                                $"/{contNavName}?$skip={(contSkip + contCap).ToString(CultureInfo.InvariantCulture)}";
+                        }
+                        return Results.Ok(contEnvelope);
+                    }
+                    catch (FormatException ex)
+                    {
+                        return BadKeyError(logger, ex, key, name, withTarget: false);
+                    }
+                })
+                .WithSummary($"Continue a bare $expand of {name}/{contNavName}")
+                .WithDescription(
+                    "Serves the next page of a bare '$expand=" + contNavName + "' whose related " +
+                    "collection exceeded MaxExpandTop. Accepts '$skip' only; every other system " +
+                    "query option is rejected with 400.")
+                .WithTags(name)
+                .Produces(200,
+                    typeof(ODataCollectionResponse<>).MakeGenericType(pagingNav.ElementType),
+                    "application/json")
+                .Produces(400);
+            ApplyOperationAuth(contRb, OhDataOperation.Read);
         }
 
         // Navigation property routes

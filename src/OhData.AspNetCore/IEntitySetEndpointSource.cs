@@ -74,6 +74,14 @@ internal interface IEntitySetEndpointSource
     bool OrderByEnabled { get; }
     bool SelectEnabled { get; }
     bool ExpandEnabled { get; }
+
+    /// <summary>
+    /// #313: whether a bare collection <c>$expand</c> over the resolved <see cref="MaxExpandTop"/>
+    /// pages with a <c>Nav@odata.nextLink</c> continuation instead of being rejected with <c>400</c>.
+    /// Resolved from the profile flag / <c>EntitySetDefaults</c> (default <c>false</c>). Inert unless
+    /// <see cref="MaxExpandTop"/> also resolves non-null.
+    /// </summary>
+    bool ExpandPagingEnabled { get; }
     bool CountEnabled { get; }
     bool PropertyAccessEnabled { get; }
     bool PropertyRouteDocsEnabled { get; }

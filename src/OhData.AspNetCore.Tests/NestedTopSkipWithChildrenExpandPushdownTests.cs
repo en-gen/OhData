@@ -23,8 +23,13 @@ namespace OhData.AspNetCore.Tests;
 // byte-unchanged.
 //
 // Two review fold-ins also covered here:
-//  - #304 adversarial follow-up: a degenerate $skip=0 must be a no-op (mirroring ApplyNavShape's own
-//    `sk > 0` guard), NOT trip the MaxExpandTop ceiling — see Skip0_IsNoOp_DoesNotTripCeiling below.
+//  - #304 adversarial follow-up: a degenerate $skip=0 must be a no-op WINDOW (mirroring ApplyNavShape's
+//    own `sk > 0` guard) — it must never *window* anything away. #313 revisits the OTHER half of this:
+//    a "bare children" level (no $count, no $skip/$top that actually engages the window) is still fully
+//    materialized and now gets a pure ceiling check, so Skip0_WithNestedExpand_StillCeilingChecked_
+//    Returns400 below now 400s at a ceiling the true Book count exceeds, while
+//    Skip0_WithNestedExpand_AtCeilingTwo_StillDoesNotWindow_Returns200 confirms $skip=0 still windows
+//    nothing away once the ceiling is raised high enough not to trip.
 //  - #316: the SAME ceiling must also be enforced on the $levels JSON-windowing path
 //    (ShapeLevelsInJson) — see NestedTopSkipWithChildrenLevelsCeilingTests below, which reuses the
 //    $levels fixture from LevelsWithOptionsPushdownSqliteTests.cs rather than inventing a new DbContext.
@@ -175,19 +180,48 @@ public sealed class NestedTopSkipWithChildrenExpandPushdownTests : IAsyncLifetim
     }
 
     [Fact]
-    public async Task Skip0_WithNestedExpand_IsNoOp_DoesNotTripCeiling_Returns200()
+    public async Task Skip0_WithNestedExpand_StillCeilingChecked_Returns400()
     {
-        // Adversarial fold-in: a no-op $skip=0 must NOT engage the deferred window at all (mirroring
-        // ApplyNavShape's own `sk > 0` guard) — otherwise Books($skip=0;$expand=Chapters) would trip the
-        // MaxExpandTop ceiling and 400, while the bare Books($expand=Chapters) (no window at all) 200s,
-        // an inconsistency between two requests that ask for the exact same data. Ceiling 1, Author 1
-        // has 2 Books — if $skip=0 were treated as "engage the window", this would 400 exactly like
-        // OverMaxExpandTop above; instead it must succeed with BOTH books and their chapters intact.
+        // #313 reverses this shape's premise: a "bare children" level (no $count, no $skip/$top that
+        // actually engages the deferred window — $skip=0 is a no-op exactly like ApplyNavShape's own
+        // `sk > 0` guard) used to be VISITED by ShapePushedExpandsInJson but matched no windowing arm, so
+        // it fell through completely unbounded. #313 adds a pure ceiling check for exactly this shape
+        // (hasChildren && maxExpandTop is int, no windowing — there's nothing to window since $skip=0 is
+        // a no-op), so Books($skip=0;$expand=Chapters) is now bounded the same as every other pushed
+        // $expand shape. Ceiling 1, Author 1 has 2 Books → over the ceiling → 400, even though $skip=0
+        // itself windows nothing away (see the MaxExpandTop=2 companion below for that invariant).
         using var freshConnection = new SqliteConnection("Data Source=:memory:");
         freshConnection.Open();
         var freshCounter = new MultiLevelDelegateCounter();
         await using TestFixture fxCapped = await MultiLevelSqliteHarness.BuildAsync(
             freshConnection, freshCounter, sink: null, defaults: d => d.MaxExpandTop = 1);
+
+        HttpResponseMessage resp = await fxCapped.Client.GetAsync(
+            "/odata/Authors?$orderby=id&$expand=Books($skip=0;$expand=Chapters)");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("InvalidQueryOption", body);
+        Assert.Contains("Books", body);
+        Assert.Contains("cannot be computed", body);
+        Assert.Contains("maximum of 1", body);
+        Assert.Contains("Narrow it with a nested $filter", body);
+        Assert.DoesNotContain("Sqlite", body);
+        Assert.DoesNotContain("SQLITE", body);
+    }
+
+    [Fact]
+    public async Task Skip0_WithNestedExpand_AtCeilingTwo_StillDoesNotWindow_Returns200()
+    {
+        // Companion to the 400 above, preserving the pre-#313 "$skip=0 is a no-op window" invariant:
+        // raise the ceiling to 2 (Author 1's true Book count) so the bare-children ceiling check no
+        // longer trips, and confirm $skip=0 still windows NOTHING away — both books (and B1's chapters)
+        // survive, exactly as before #313 changed only the ceiling enforcement, never the windowing.
+        using var freshConnection = new SqliteConnection("Data Source=:memory:");
+        freshConnection.Open();
+        var freshCounter = new MultiLevelDelegateCounter();
+        await using TestFixture fxCapped = await MultiLevelSqliteHarness.BuildAsync(
+            freshConnection, freshCounter, sink: null, defaults: d => d.MaxExpandTop = 2);
 
         HttpResponseMessage resp = await fxCapped.Client.GetAsync(
             "/odata/Authors?$orderby=id&$expand=Books($skip=0;$expand=Chapters)");

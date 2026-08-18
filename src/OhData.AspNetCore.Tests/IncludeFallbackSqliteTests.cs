@@ -152,7 +152,7 @@ public sealed class NoCtorCyclicParentNoTrackingProfile : EntitySetProfile<int, 
 internal static class IncludeFallbackSqliteHarness
 {
     public static async Task<TestFixture> BuildAsync(
-        SqliteConnection connection, Action<EntitySetDefaults>? defaults = null)
+        SqliteConnection connection, Action<EntitySetDefaults>? defaults = null, SqlCaptureSink? sink = null)
     {
         var fx = await TestHostBuilder.BuildAsync(
             b =>
@@ -165,7 +165,16 @@ internal static class IncludeFallbackSqliteHarness
             },
             configureServices: services =>
             {
-                services.AddDbContext<IncludeFallbackDbContext>(o => o.UseSqlite(connection));
+                services.AddDbContext<IncludeFallbackDbContext>(o =>
+                {
+                    o.UseSqlite(connection);
+                    if (sink is not null)
+                    {
+                        o.LogTo(
+                            message => sink.Add(message),
+                            (eventId, _) => eventId == Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.CommandExecuted);
+                    }
+                });
             });
 
         using var scope = fx.App.Services.CreateScope();
@@ -320,6 +329,91 @@ public sealed class IncludeFallbackMaxExpandTopTests : IAsyncLifetime
         string body = await resp.Content.ReadAsStringAsync();
         Assert.Contains("\"Children@odata.count\":1", body);
     }
+
+    // #313 parity: the SAME bare-leaf bound ApplyNavShape now composes on the member-init projection
+    // path (BareLeafCeilingTests) must flow through the #305 Include fallback too — both call the same
+    // ApplyNavShape (see ApplyIncludeFallback's remarks).
+    [Fact]
+    public async Task BareExpand_NoCountNoTop_ChildCountAboveCeiling_Returns400()
+    {
+        // P1 has exactly 3 children; a ceiling of 2 puts the true count above the budget — a BARE
+        // $expand=Children (no $count, no $top) used to be entirely unbounded through this fallback too.
+        HttpResponseMessage resp = await _fx.Client.GetAsync(
+            "/odata/NoCtorParents?$orderby=id&$expand=Children");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("InvalidQueryOption", body);
+        Assert.Contains("Children", body);
+        Assert.Contains("cannot be computed", body);
+        Assert.Contains("maximum of 2", body);
+        Assert.Contains("Narrow it with a nested $filter", body);
+        Assert.DoesNotContain("Sqlite", body);
+        Assert.DoesNotContain("SQLITE", body);
+    }
+
+    [Fact]
+    public async Task BareExpand_NoCountNoTop_ChildCountUnderCeiling_Returns200_WithChildren()
+    {
+        // P2 has exactly 1 child — comfortably under the ceiling of 2. Isolate to P2 so the OVERALL
+        // request doesn't 400 on P1's own over-ceiling Children array.
+        HttpResponseMessage resp = await _fx.Client.GetAsync(
+            "/odata/NoCtorParents?$orderby=id&$expand=Children&$filter=name eq 'P2'");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        using JsonDocument doc = JsonDocument.Parse(body);
+        JsonElement children = doc.RootElement.GetProperty("value")[0].GetProperty("Children");
+        Assert.Single(children.EnumerateArray());
+        Assert.Equal("C2a", children[0].GetProperty("Name").GetString());
+    }
+
+    // Review fold-in (F8): the two tests above assert only a status code, so neither can fail for the
+    // RIGHT reason — a 400 that arrived some other way, or a 200 whose children were fetched in full
+    // and trimmed afterwards, would satisfy both. #313's claim on this path is specifically that the
+    // bound is composed INTO the SQL through ApplyIncludeFallback, so assert the emitted statement:
+    // a capped registration carries EF Core's top-N-per-group window, an uncapped one carries none.
+    [Fact]
+    public async Task BareExpand_Capped_PushesARowBoundIntoSql_OnTheIncludeFallbackPath()
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        var sink = new SqlCaptureSink();
+        // Ceiling 10 (over P1's 3 children, so nothing 400s) and MaxTop = null so the ONLY row bound
+        // in the statement is the nested one — the default MaxTop composes an outer LIMIT over the
+        // parent query that would satisfy a naive assertion regardless of #313.
+        await using TestFixture fx = await IncludeFallbackSqliteHarness.BuildAsync(
+            connection, defaults: d => { d.MaxExpandTop = 10; d.MaxTop = null; }, sink: sink);
+
+        HttpResponseMessage resp = await fx.Client.GetAsync("/odata/NoCtorParents?$orderby=id&$expand=Children");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        string sql = LastSelectAgainst(sink, "NoCtorParents");
+        Assert.Contains("ROW_NUMBER()", sql);
+        Assert.Contains("\"NoCtorChildren\"", sql);
+    }
+
+    [Fact]
+    public async Task BareExpand_Uncapped_ComposesNoRowBoundInSql_OnTheIncludeFallbackPath()
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        var sink = new SqlCaptureSink();
+        await using TestFixture fx = await IncludeFallbackSqliteHarness.BuildAsync(
+            connection, defaults: d => { d.MaxExpandTop = null; d.MaxTop = null; }, sink: sink);
+
+        HttpResponseMessage resp = await fx.Client.GetAsync("/odata/NoCtorParents?$orderby=id&$expand=Children");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        string sql = LastSelectAgainst(sink, "NoCtorParents");
+        Assert.Contains("\"NoCtorChildren\"", sql);
+        Assert.DoesNotContain("ROW_NUMBER()", sql);
+        Assert.DoesNotContain("LIMIT", sql);
+    }
+
+    private static string LastSelectAgainst(SqlCaptureSink sink, string table) => sink.Snapshot()
+        .Where(s => s.Contains("SELECT", StringComparison.Ordinal) && s.Contains($"\"{table}\"", StringComparison.Ordinal))
+        .Last();
 }
 
 // Include-invalid model: EF's own model does not recognize the "nav" (explicitly Ignore()d), so

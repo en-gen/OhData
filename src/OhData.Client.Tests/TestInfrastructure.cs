@@ -330,6 +330,10 @@ internal class TaggedItemProfile : EntitySetProfile<int, TaggedItem>
     {
         EntitySetName = "TaggedItems";
         FilterEnabled = true;
+        // #313 stage 4: the existing NEW-1 fixture, reused rather than replaced, so the nested
+        // Tags@odata.count regression is pinned against a model and profile this change did not
+        // author. Only the flag is new -- no existing test issues an $expand against this set.
+        ExpandEnabled = true;
         // Deliberately no FilterProperties allowlist -- the NEW-1 repro shape.
         GetQueryable = (ct) => Task.FromResult(_store.AsQueryable());
         HasMany(x => x.Tags);
