@@ -6988,9 +6988,10 @@ internal static class OhDataEndpointFactory
             // would surface that as an ambiguous-match failure at REQUEST time, on a route that only
             // exists because someone opted in. Fail at MapOhData() instead, matching the idiom of the
             // two collision checks already in this file.
-            foreach (BoundOperationDefinition collidingFn in source.BoundFunctions.Where(f => f.IsEntityLevel))
+            BoundOperationDefinition? collidingFn = source.BoundFunctions.FirstOrDefault(f =>
+                f.IsEntityLevel && string.Equals(f.Name, pagingNav.EdmName, StringComparison.Ordinal));
+            if (collidingFn is not null)
             {
-                if (!string.Equals(collidingFn.Name, pagingNav.EdmName, StringComparison.Ordinal)) continue;
                 throw new InvalidOperationException(
                     $"Entity set '{name}': bound function '{collidingFn.Name}' conflicts with the " +
                     $"$expand continuation route of navigation property '{pagingNav.EdmName}' on " +
