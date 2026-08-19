@@ -224,13 +224,6 @@ internal static class OhDataEndpointFactory
         }
     }
 
-    // BUG 1 fix: POST/PUT/PATCH bodies are read and deserialized manually (see below) rather
-    // than via a `TModel model` minimal-API parameter, so content-type negotiation must be done
-    // by hand too -- otherwise a mismatched Content-Type would either be silently ignored (we'd
-    // try to parse non-JSON as JSON) or, if left to ASP.NET Core's implicit binder/`.Accepts<T>()`
-    // metadata, would short-circuit with an empty 415 body before this OData error-formatting
-    // code ever runs. Media-type parameters (e.g. ";odata.metadata=full", ";charset=utf-8") are
-    // stripped before comparison since they don't affect whether the payload is JSON.
     // #203: the write methods that carry a request body OhData deserializes. DELETE is excluded
     // (its $ref variant reads only a small link body and no body-size limit is meaningful there).
     private static bool IsBodyBearingWriteMethod(string method) =>
@@ -284,6 +277,13 @@ internal static class OhDataEndpointFactory
         return HttpMethods.IsGet(method) ? "read-collection" : HttpMethods.IsPost(method) ? "create" : "collection";
     }
 
+    // BUG 1 fix: POST/PUT/PATCH bodies are read and deserialized manually (see below) rather
+    // than via a `TModel model` minimal-API parameter, so content-type negotiation must be done
+    // by hand too -- otherwise a mismatched Content-Type would either be silently ignored (we'd
+    // try to parse non-JSON as JSON) or, if left to ASP.NET Core's implicit binder/`.Accepts<T>()`
+    // metadata, would short-circuit with an empty 415 body before this OData error-formatting
+    // code ever runs. Media-type parameters (e.g. ";odata.metadata=full", ";charset=utf-8") are
+    // stripped before comparison since they don't affect whether the payload is JSON.
     private static bool IsJsonContentType(HttpContext ctx)
     {
         string? contentType = ctx.Request.ContentType;
@@ -396,9 +396,7 @@ internal static class OhDataEndpointFactory
         // UNCONDITIONAL, and this one is not: PrepareWriteBody returns above unless OpenTypesActive,
         // because PUT and nav-POST only buffer the body into a JsonDocument for registrations whose
         // EDM really has an open complex type -- buffering every PUT body would break the documented
-        // byte-identical no-op that OpenTypeDefaultOnIsByteIdenticalTests pins. That is the honest
-        // scope of the restoration: it puts the rejection back on exactly the registrations that had
-        // it before stage 2, and nowhere else.
+        // byte-identical no-op that OpenTypeDefaultOnIsByteIdenticalTests pins.
         if (ContainsODataBindAnnotation(body))
             return new PreparedWriteBody(ODataBindNotImplementedError(), body, null);
 
@@ -416,11 +414,7 @@ internal static class OhDataEndpointFactory
     }
 
     // Plain terms, not the ABNF's Unicode category codes -- this is read by an API consumer, not
-    // by a spec implementer, and docs/open-types.md carries the formal grammar. It has to be
-    // accurate about what M3 actually widened the rule to, though: the pre-M3 wording ("a letter
-    // or '_' followed by letters, digits or '_'") described an ASCII-flavoured grammar that
-    // would have implied 'नाम' and NFD-spelled 'naive' were invalid, and never mentioned the cap
-    // a name can also be rejected for.
+    // by a spec implementer, and docs/open-types.md carries the formal grammar.
     //
     // The '@' clause is GONE from this message, and its absence is the point: since #398 stage 2 a
     // name containing '@' is classified as control information and skipped, so it can no longer
@@ -965,8 +959,6 @@ internal static class OhDataEndpointFactory
         group.MapGet("/$metadata", () => Results.Content(metadataXml, "application/xml; charset=utf-8"))
             .ExcludeFromDescription();
 
-        // loggerFactory resolved once at the top of this method (see groupLogger above).
-
         // One set of CRUD routes per registered profile
         foreach (var profile in registration.Profiles)
         {
@@ -1059,15 +1051,6 @@ internal static class OhDataEndpointFactory
                 if (nav.TargetMultiplicity() != EdmMultiplicity.Many) continue;
                 if (ResolveNavTreatment(nav.Name, candidates).Treatment != NavTreatment.ServeRaw) continue;
 
-                // #313 stage 5: the message now names ExpandPagingEnabled too. Stage 3 deliberately
-                // withheld it — and pinned that withholding with a test — because nothing acted on the
-                // flag yet and the stages are stacked, so stage 3 necessarily reached develop before
-                // the paging it gates did; a warning telling someone to set a flag that does nothing
-                // is the worst kind of false claim, because a warning is precisely what someone acts
-                // on. That condition is now gone: stage 5 registers the continuation route and emits
-                // the link, so both knobs are real and both belong here. Deleting the stage 3
-                // assertion is part of that change, not an oversight.
-                //
                 // The two knobs are named in the order they must be set: MaxExpandTop FIRST and alone
                 // is a complete answer (over-ceiling 400s), and ExpandPagingEnabled is inert without
                 // it. The message still prescribes no NUMBER — that is the mistake stage 1 undid.
@@ -1173,8 +1156,6 @@ internal static class OhDataEndpointFactory
         return new OhDataQueryParametersMetadata { Parameters = list };
     }
 
-    // Takes the whole registration rather than the OpenTypesActive bool it used to, because #398
-    // stage 1 needs the withheld-name map alongside it and the two are always consulted together.
     private static void MapUnboundOperations(
         RouteGroupBuilder group,
         IReadOnlyList<UnboundOperationDefinition> unboundOps,
@@ -1516,18 +1497,6 @@ internal static class OhDataEndpointFactory
         return sr;
     }
 
-    // B1 fix (property allowlists): FilterProperties/OrderByProperties/SelectProperties/
-    // ExpandProperties are wired into the EDM at startup via EntityTypeConfiguration.Filter/
-    // .OrderBy/.Select/.Expand (EntitySetProfile.cs), which mark the non-allowlisted properties
-    // NotFilterable/NotSortable/NotSelectable/NotExpandable in the model. Those restrictions are
-    // only enforced when something calls ODataQueryOptions.Validate(...) — ApplyTo alone ignores
-    // them. This settings object is deliberately permissive on every OTHER axis
-    // (AllowedQueryOptions = All, no arithmetic/function/logical-operator restrictions, no node-
-    // count/expansion-depth ceiling) so Validate's only effect here is the per-property
-    // allowlist check the profile already declared. The coarse per-category enable/disable is
-    // handled separately by CheckCollectionQueryOptionCapabilities with its own
-    // "UnsupportedQueryOption" code and message; this only needs to surface *a* 400 (via the
-    // existing ODataException catch clauses), so Microsoft's default validator wording is fine.
     // S1/B1 fix: system query options the navigation collection GET route does not implement.
     // $select, $orderby, $skip, $top, and $count ARE implemented (parsed directly off the query
     // string in the nav-route handler); everything else — most notably $filter — was previously
@@ -1596,6 +1565,16 @@ internal static class OhDataEndpointFactory
         MaxOrderByNodeCount = source.MaxOrderByNodeCount,
     };
 
+    // B1 fix (property allowlists): FilterProperties/OrderByProperties/SelectProperties/
+    // ExpandProperties are wired into the EDM at startup via EntityTypeConfiguration.Filter/
+    // .OrderBy/.Select/.Expand (EntitySetProfile.cs), which mark the non-allowlisted properties
+    // NotFilterable/NotSortable/NotSelectable/NotExpandable in the model. Those restrictions are
+    // only enforced when something calls ODataQueryOptions.Validate(...) — ApplyTo alone ignores
+    // them. The coarse per-category enable/disable is handled separately by
+    // CheckCollectionQueryOptionCapabilities with its own "UnsupportedQueryOption" code and
+    // message; this only needs to surface *a* 400 (via the existing ODataException catch
+    // clauses), so Microsoft's default validator wording is fine.
+    //
     // Runs only the per-option validators that enforce the property allowlists
     // (NotFilterable/NotSortable/NotSelectable/NotExpandable model-bound annotations written by
     // FilterProperties/OrderByProperties/SelectProperties/ExpandProperties at EDM-build time).
@@ -6088,7 +6067,6 @@ internal static class OhDataEndpointFactory
                     var envelope = new Dictionary<string, object?>();
                     envelope["@odata.context"] = $"{baseUrl}/$metadata#{AppendSelectSuffix(name, selectedProps)}";
                     if (odataCount.HasValue) envelope["@odata.count"] = odataCount;
-                    // Gap 3: add nextLink to envelope
                     if (nextLink is not null) envelope["@odata.nextLink"] = nextLink;
                     envelope["value"] = finalItems;
                     return Results.Ok(envelope);
@@ -8349,7 +8327,6 @@ internal static class OhDataEndpointFactory
     {
         var resultType = result.GetType();
 
-        // Check for collection of TModel
         bool isCollectionOfModel = false;
         if (resultType != typeof(string))
         {
@@ -8400,7 +8377,6 @@ internal static class OhDataEndpointFactory
             });
         }
 
-        // Check for single TModel
         if (resultType == modelType || modelType.IsAssignableFrom(resultType))
         {
             // #179: a single-TModel bound-op result rides the same omission + ETag path as GetById
