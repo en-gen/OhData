@@ -37,8 +37,8 @@ release-prep PR), and add one to newly published packages after their first rele
 exists to bridge *one* release — it records a diff against the old baseline. Once the baseline moves
 past the release that shipped that diff, the entry is dead: the new baseline already contains the new
 surface, so the diagnostic can no longer fire and the suppression only hides *future* breaks to the
-same target. Leaving them behind is how #376 happened (68 entries for the `OhData.Abstractions`
-removal survived a release that had already legitimised it). The mechanical check is to delete the
+same target. Leaving them behind is how #376 happened (68 entries for a namespace removal
+survived a release that had already legitimised it). The mechanical check is to delete the
 suppression files, pack, and re-add only what still errors:
 
 ```bash
