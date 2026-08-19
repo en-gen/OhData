@@ -1014,12 +1014,21 @@ internal static class OhDataEndpointFactory
     //                      nothing in practice — it just keeps the rule "all of the conditions under
     //                      which the exposure is live" honest rather than approximately true.
     //   - collection-valued — a single-valued navigation is one row and cannot be the DoS.
-    //   - ServeRaw       — a delegate-backed navigation is never in the engaged tree, and a BLANKED one
-    //                      (a sibling profile over the same EDM type disagrees) is not served at all.
-    //                      Resolved through the SAME ResolveNavTreatment the pushdown gate uses rather
-    //                      than a per-profile "owns no NavigationRouteDefinition" test, so the two
-    //                      cannot drift — the identical sharing rule stage 5's route registration is
-    //                      required to follow.
+    //   - ServeRaw       — a delegate-backed navigation is never in the engaged tree. Resolved through
+    //                      the SAME ResolveNavTreatment stage 5's route registration uses
+    //                      (ResolveExpandPagingNavigations), so the warning and the routes cannot
+    //                      drift, rather than through a per-profile "owns no NavigationRouteDefinition"
+    //                      test. #415: this clause used to add "and a BLANKED one (a sibling profile
+    //                      over the same EDM type disagrees) is not served at all" — MEASURED FALSE at
+    //                      the ROOT, which is the only level this diagnostic describes. Model B gives
+    //                      the URL-named set authority over its own navigations, so a nav this
+    //                      union-based check calls Blank is still served RAW and unbounded by
+    //                      /{Set}?$expand={Nav}. The consequence is a real (narrow) hole in the
+    //                      diagnostic itself: the warning goes SILENT for exactly the profile that
+    //                      needs it, whenever any sibling profile over the same EDM type delegates the
+    //                      nav. Left as-is with the rest of the #415 asymmetry — see
+    //                      ResolveExpandPagingNavigations' remarks for the measurement and the
+    //                      refutation of #415's original diagnosis.
     //   - MaxExpandTop is null — with a ceiling set there is a bound, and #313 stage 2 already turns
     //                      the over-ceiling shape into a 400. Nothing to warn about.
     //
@@ -4016,14 +4025,40 @@ internal static class OhDataEndpointFactory
     // the feature is broken in one of two directions: a link with no route behind it is a 404 on the
     // continuation, and a route with no link in front of it is a delegate-safety hole.
     //
-    // The condition that most needs to be shared, and the one a naive implementation gets wrong:
-    // <b>ServeRaw is resolved through ResolveNavTreatment over the parent type's candidate set</b>,
-    // not through "this profile owns no NavigationRouteDefinition for it". A SIBLING profile over the
-    // same EDM entity type that declares the nav WITH a delegate makes the treatment Blank — and a
-    // Blank navigation is emptied by ExpandLevelAsync before ShapePushedExpandsInJson ever sees it, so
-    // no link is emitted for it. A per-profile predicate would not see the sibling and would register
-    // a route serving those rows RAW, bypassing the delegate in the very mechanism meant to preserve
-    // it. Same rule, same helper, as the stage 3 startup diagnostic (WarnUnboundedBareExpand).
+    // The condition that most needs to be shared: <b>ServeRaw is resolved through ResolveNavTreatment
+    // over the parent type's candidate set</b>, not through "this profile owns no
+    // NavigationRouteDefinition for it". A SIBLING profile over the same EDM entity type that declares
+    // the nav WITH a delegate makes the treatment Blank here, so neither a route nor a link is
+    // produced for it. Same rule, same helper, as the stage 3 startup diagnostic
+    // (WarnUnboundedBareExpand).
+    //
+    // WHAT THIS COMMENT USED TO CLAIM, AND WHY IT WAS WRONG (#415). It justified the union with "a
+    // Blank navigation is emptied by ExpandLevelAsync before ShapePushedExpandsInJson ever sees it,
+    // so no link is emitted for it", and with a per-profile predicate therefore "serving those rows
+    // RAW, bypassing the delegate". Both halves are FALSE at depth 1 — the only depth this predicate
+    // governs, since #313 O5 restricts continuation links to the root.
+    //
+    //   (1) ExpandLevelAsync does NOT empty it at the root. ApplyCollectionPipelineAsync passes
+    //       `new[] { requestSource }` — the URL-named profile ALONE — so ResolveNavTreatment never
+    //       sees the sibling and answers ServeRaw. MEASURED:
+    //       `/BeAuthors?$filter=Id eq 1&$expand=Books` with the delegate-backed sibling registered
+    //       serves the five raw books (BareExpandContinuationDelegateSafetyTests
+    //       .RootExpand_WithASiblingDelegate_StillServesTheDeclaringSetsOwnRawRows), and over a
+    //       ceiling it returns the stage-2 400 — a status only reachable once the rows have been
+    //       materialized and counted.
+    //   (2) That is not a delegate bypass, so serving those rows raw is not one either. Under Model B
+    //       declaring-set authority (FROZEN, owner decision 2026-07-26 on #293, which says in terms
+    //       "Root (depth 1): KEEP as-is — already reads only the URL-named set"), BeAuthors declares
+    //       Books delegate-less and is authoritative for its OWN navigation; the sibling's delegate
+    //       governs the sibling's set. The union at depth >= 2 is ambiguity resolution — the EDM has
+    //       no binding to say which set a nested path resolves to — and the root has nothing to
+    //       disambiguate because the URL names the set.
+    //
+    // So this predicate is deliberately MORE CONSERVATIVE than the root read path beside it, not
+    // consistent with it: it withholds a continuation route for rows that same request serves raw.
+    // Fail-closed, and left as-is here rather than quietly widened — the asymmetry is real and is the
+    // open half of #415, whose original diagnosis (that the ROOT was the drifted site) is refuted
+    // above. Do not "fix" either side to match the other without an owner decision.
     //
     // The remaining conditions are the ones under which a link could be emitted at all:
     //   - ExpandPagingEnabled   the opt-in knob (default false)

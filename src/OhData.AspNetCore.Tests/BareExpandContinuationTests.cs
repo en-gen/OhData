@@ -604,6 +604,16 @@ public sealed class BareExpandContinuationDelegateSafetyTests
     /// That is a pre-existing property of the root level, not something this stage introduces.
     /// </para>
     /// <para>
+    /// RESOLVED by #415: that property is also CORRECT, and the follow-up issue's proposal to make the
+    /// root use the <c>#292</c> union was refuted rather than implemented. The FROZEN Model B spec
+    /// (owner decision 2026-07-26, issue #293) says "Root (depth 1): KEEP as-is — already reads only
+    /// the URL-named set (correct under Model B)" and names the <c>$levels</c> suite among the tests
+    /// that must stay green for exactly that reason. The three <c>RootExpand_*</c> tests at the end of
+    /// this class pin it directly. What remains open is the OTHER direction — this predicate is
+    /// union-based at the root while the read path is not — documented at
+    /// <c>ResolveExpandPagingNavigations</c>.
+    /// </para>
+    /// <para>
     /// What the shared predicate therefore buys is narrower than the brief claimed, and still the
     /// thing that matters: stage 5 does not WIDEN that exposure. Registering on
     /// <c>ResolveNavTreatment</c> over the parent type's candidate set means the sibling's delegate
@@ -701,6 +711,113 @@ public sealed class BareExpandContinuationDelegateSafetyTests
             "/odata/BeAuthors?$filter=Id eq 1&$expand=Books");
         Assert.Equal(5, root.GetProperty("value")[0].GetProperty("Books").GetArrayLength());
         Assert.Empty(BareExpandContinuation.AllNextLinkKeys(root));
+    }
+
+    // ── #415: the ROOT level's candidate set is the URL-named set ALONE, and that is CORRECT ──────
+    //
+    // #415 proposed that ApplyCollectionPipelineAsync's depth-1 `ExpandLevelAsync(..., new[] {
+    // requestSource }, ...)` was DRIFT from the #292 union used at depth >= 2, and should be changed
+    // to ResolveRequestSourcesForEdmType. It is not drift. The FROZEN Model B implementation spec
+    // (owner decision 2026-07-26, recorded on issue #293) settles it in as many words:
+    //
+    //     "Root (depth 1): KEEP as-is — already reads only the URL-named set (correct under Model B)."
+    //
+    // and lists among the tests that must STAY GREEN:
+    //
+    //     "the entire $levels suite (LvNodes/LvShallowNodes/LvSecureNodes resolve from the URL-named
+    //      set only ...)"
+    //
+    // The union at depth >= 2 is AMBIGUITY RESOLUTION, not delegate contagion. It exists because when
+    // 2+ entity sets expose a navigation's target type the EDM has NO binding to say which set the
+    // path resolves to (measured cases (B)/(C) in ResolveRequestSourcesForEdmType's remarks), so the
+    // framework cannot tell whose declaration governs and fails closed. At the root there is nothing
+    // to disambiguate: the URL names the entity set. Model B's declaring-set authority then applies
+    // in full — "a delegate on a sibling/derived set never retroactively poisons a nav that ANOTHER
+    // set legitimately serves raw".
+    //
+    // MEASURED blast radius of making the root use the union anyway (the #415 proposal, implemented
+    // and reverted): 32 of 2125 tests in this project fail. The bulk is the $levels suite the frozen
+    // spec named — LevelsWithOptionsPushdownSqliteTests, BareLevelsCeilingTests,
+    // LevelsSkipTopPushdownTests, LevelsWithCountCeilingTests — whose harness ALWAYS registers
+    // LvSecureNodeProfile (delegate-backed Children) beside LvNodeProfile (delegate-less Children)
+    // over the same LvNode EDM type. Every one of those tests stops exercising anything, because
+    // /LvNodes?$expand=Children($levels=N) blanks. It also deletes the dual-exposure pattern outright
+    // (MultiSetDelegateSafetyExpandTests.RootExpand_DualExposure_DelegatelessServesRaw_DelegateBackedRuns):
+    // a public unfiltered set would be permanently blanked by the mere existence of a secured sibling.
+    //
+    // The three tests below pin that root semantics directly, on #415's own reproduction, so the
+    // proposal cannot be re-applied silently.
+
+    /// <summary>
+    /// #415, half 1. With the delegate-backed sibling registered, the delegate-LESS set still serves
+    /// its OWN raw rows at the root — declaring-set authority — and the sibling's delegate is not run.
+    /// </summary>
+    [Fact]
+    public async Task RootExpand_WithASiblingDelegate_StillServesTheDeclaringSetsOwnRawRows()
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        await using TestFixture fx = await BareExpandContinuation.BuildAsync(
+            connection, cap: null, pagingEnabled: false,
+            extraProfiles: b => b.AddEntitySetProfile<BeDelegatedAuthorProfile>());
+
+        BeDelegatedAuthorProfile.Invocations = 0;
+        JsonElement root = await fx.Client.GetFromJsonAsync<JsonElement>(
+            "/odata/BeAuthors?$filter=Id eq 1&$expand=Books");
+
+        // BeAuthors declares Books delegate-less; its own declaration governs, so the five raw books
+        // are served. Under #415's proposal this array would be empty.
+        Assert.Equal(5, root.GetProperty("value")[0].GetProperty("Books").GetArrayLength());
+        Assert.Equal(0, BeDelegatedAuthorProfile.Invocations);
+    }
+
+    /// <summary>
+    /// #415, half 2 — the other side of the dual-exposure pattern, in the same registration: the
+    /// sibling's OWN root $expand over the SAME EDM type routes through ITS OWN delegate. This is what
+    /// makes half 1 "each set served by its own declaration" rather than "the delegate is ignored".
+    /// </summary>
+    [Fact]
+    public async Task RootExpand_TheDelegateBackedSiblingRunsItsOwnDelegate()
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        await using TestFixture fx = await BareExpandContinuation.BuildAsync(
+            connection, cap: null, pagingEnabled: false,
+            extraProfiles: b => b.AddEntitySetProfile<BeDelegatedAuthorProfile>());
+
+        BeDelegatedAuthorProfile.Invocations = 0;
+        JsonElement root = await fx.Client.GetFromJsonAsync<JsonElement>(
+            "/odata/BeDelegatedAuthors?$filter=Id eq 1&$expand=Books");
+
+        Assert.Equal(5, root.GetProperty("value")[0].GetProperty("Books").GetArrayLength());
+        Assert.Equal(1, BeDelegatedAuthorProfile.Invocations);
+    }
+
+    /// <summary>
+    /// #415, half 3. Adding the sibling changes the delegate-less set's root $expand response NOT AT
+    /// ALL — byte-for-byte. This is the control that gives halves 1 and 2 their meaning: it pins that
+    /// registering a second profile over the same EDM type is invisible to the first one's root read
+    /// path, which is precisely the property the union proposal would remove.
+    /// </summary>
+    [Fact]
+    public async Task RootExpand_AddingTheSiblingIsByteIdenticalForTheDelegatelessSet()
+    {
+        const string Url = "/odata/BeAuthors?$filter=Id eq 1&$expand=Books";
+
+        using var soloConnection = new SqliteConnection("Data Source=:memory:");
+        soloConnection.Open();
+        await using TestFixture solo = await BareExpandContinuation.BuildAsync(
+            soloConnection, cap: null, pagingEnabled: false);
+        string aloneBody = await (await solo.Client.GetAsync(Url)).Content.ReadAsStringAsync();
+
+        using var pairConnection = new SqliteConnection("Data Source=:memory:");
+        pairConnection.Open();
+        await using TestFixture pair = await BareExpandContinuation.BuildAsync(
+            pairConnection, cap: null, pagingEnabled: false,
+            extraProfiles: b => b.AddEntitySetProfile<BeDelegatedAuthorProfile>());
+        string withSiblingBody = await (await pair.Client.GetAsync(Url)).Content.ReadAsStringAsync();
+
+        Assert.Equal(aloneBody, withSiblingBody);
     }
 }
 
