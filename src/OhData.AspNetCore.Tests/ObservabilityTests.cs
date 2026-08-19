@@ -20,10 +20,57 @@ namespace OhData.AspNetCore.Tests;
 /// their assertions to a uniquely-named entity set (<c>ObsWidgets</c>) — concurrent tests hitting
 /// other sets are filtered out by the <c>odata.entity_set</c> tag.
 /// </summary>
+/// <remarks>
+/// <para>
+/// #394: every assertion in this class must go through <see cref="WaitForAsync"/> rather than read
+/// its captured collection the instant <c>GetAsync</c> returns. Awaiting the HTTP response does
+/// <b>not</b> order the observability callbacks before the test's next statement.
+/// </para>
+/// <para>
+/// The reason is in the product and is deliberate: the span is stopped and the duration histogram /
+/// active-request counter are recorded inside <c>HttpResponse.OnCompleted</c> (see the observability
+/// group filter in <c>OhDataEndpointFactory.MapAll</c>), because the final HTTP status code is not
+/// knowable from an endpoint filter after <c>next()</c> — the <c>IResult</c> executes later. Nothing
+/// orders that callback ahead of the client's response task, so the capture is genuinely
+/// asynchronous with respect to the assertion.
+/// </para>
+/// <para>
+/// <b>Measured</b> (20,000 request/assert cycles against one host, polling for up to 300 ms after
+/// each miss): the callback fired late but <b>never</b> failed to fire — <c>never-arrived = 0</c> in
+/// all four arms. Rate of "not yet captured at assert time": <b>4/6000</b> (0.07%) with no
+/// concurrency at all; <b>29/6000</b> with concurrent requests to the same host; <b>22/6000</b> with
+/// concurrent <c>ActivityListener</c> add/dispose churn on the process-global
+/// <c>ActivitySource</c>; <b>45/6000</b> (0.75%) with both. So solution-wide parallel load is an
+/// amplifier, not the cause — the unloaded rate alone is enough to flake a CI suite regularly, which
+/// is exactly the history #394 records. Observed lateness was always well under the 300 ms probe
+/// window, so the 10 s ceiling below is pure headroom, not a tuned timeout.
+/// </para>
+/// <para>
+/// This is a missing happens-before in the <b>test</b>, not a defect in the emission: no span, no
+/// measurement and no tag was ever lost. Do not "fix" it by moving the product's <c>OnCompleted</c>
+/// work earlier — that would report the wrong <c>http.response.status_code</c>.
+/// </para>
+/// </remarks>
 public class ObservabilityTests
 {
     private const string Url = "/odata/ObsWidgets";
     private const string Set = "ObsWidgets";
+
+    /// <summary>
+    /// Waits (bounded) for an observability callback that fires from <c>HttpResponse.OnCompleted</c>,
+    /// i.e. after the client's response task has already completed. Returns as soon as
+    /// <paramref name="captured"/> is true; on timeout it simply returns and lets the caller's own
+    /// assertion produce its normal failure message.
+    /// </summary>
+    private static async Task WaitForAsync(Func<bool> captured)
+    {
+        long deadline = Stopwatch.GetTimestamp() + (long)(10 * Stopwatch.Frequency);
+        while (!captured())
+        {
+            if (Stopwatch.GetTimestamp() > deadline) return;
+            await Task.Delay(5);
+        }
+    }
 
     private static bool ForOurSet(ReadOnlySpan<KeyValuePair<string, object?>> tags)
     {
@@ -56,7 +103,10 @@ public class ObservabilityTests
         var resp = await fx.Client.GetAsync(Url);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
-        var activity = Assert.Single(stopped);
+        await WaitForAsync(() => { lock (stopped) return stopped.Count > 0; });
+
+        Activity activity;
+        lock (stopped) activity = Assert.Single(stopped);
         Assert.Equal("read-collection", activity.GetTagItem("odata.operation"));
         Assert.Equal(200, activity.GetTagItem("http.response.status_code"));
         Assert.NotNull(activity.GetTagItem("http.route"));
@@ -82,7 +132,10 @@ public class ObservabilityTests
 
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ObsWidgetProfile>());
         await fx.Client.GetAsync(Url);
-        meterListener.Dispose(); // flush
+        // #394: the histogram is recorded from Response.OnCompleted; Dispose() does not flush an
+        // in-flight measurement, it only unsubscribes. Wait for the measurement, then unsubscribe.
+        await WaitForAsync(() => { lock (durations) return durations.Count > 0; });
+        meterListener.Dispose();
 
         Assert.Single(durations);
         Assert.True(durations[0] >= 0);
@@ -113,6 +166,8 @@ public class ObservabilityTests
 
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ObsWidgetProfile>());
         await fx.Client.GetAsync(Url);
+        // #394: the -1 is recorded from Response.OnCompleted, so it can land after GetAsync returns.
+        await WaitForAsync(() => Volatile.Read(ref measurements) >= 2);
         meterListener.Dispose();
 
         // A +1 on entry and a -1 on completion → two measurements netting to zero.
@@ -155,24 +210,15 @@ public class ObservabilityTests
         await fx.Client.GetAsync("/odata/ObsRich(1)/Children");        // read-navigation
         await fx.Client.GetAsync("/odata/ObsRich/$count");            // read-count
 
-        // An activity is stopped in a middleware finally block that can run just after the HTTP
-        // response has flushed, so the last request's classification may not be recorded yet when
-        // we reach the asserts. Poll for the full set (bounded) rather than asserting immediately
-        // (pre-existing race — see #257).
+        // #257/#394: each span is stopped from Response.OnCompleted, which can run after the client's
+        // response task has completed, so the last request's classification may not be recorded yet.
+        // Same bounded wait as every other test in this class — see the class remarks for the
+        // measured rates and for why the product cannot close the span any earlier.
         string[] expected = { "read-entity", "create", "update-entity", "delete-entity", "read-navigation", "read-count" };
-        for (int i = 0; i < 200; i++)
+        await WaitForAsync(() =>
         {
-            bool all = true;
-            lock (ops)
-            {
-                foreach (string e in expected)
-                {
-                    if (!ops.Contains(e)) { all = false; break; }
-                }
-            }
-            if (all) break;
-            await Task.Delay(25);
-        }
+            lock (ops) return expected.All(ops.Contains);
+        });
 
         lock (ops)
         {
@@ -205,7 +251,8 @@ public class ObservabilityTests
 
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ObsWidgetProfile>());
         await fx.Client.GetAsync("/odata/$metadata");
-        Assert.Contains("metadata", seen);
+        await WaitForAsync(() => { lock (seen) return seen.Count > 0; });
+        lock (seen) Assert.Contains("metadata", seen);
     }
 
     [Fact]
@@ -218,7 +265,7 @@ public class ObservabilityTests
             Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
             ActivityStopped = a =>
             {
-                if ((a.GetTagItem("odata.entity_set") as string) == "ObsThrow") errorActivity = a;
+                if ((a.GetTagItem("odata.entity_set") as string) == "ObsThrow") Volatile.Write(ref errorActivity, a);
             },
         };
         ActivitySource.AddActivityListener(listener);
@@ -226,6 +273,8 @@ public class ObservabilityTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ThrowingObsProfile>());
         var resp = await fx.Client.GetAsync("/odata/ObsThrow");
         Assert.Equal(HttpStatusCode.InternalServerError, resp.StatusCode);
+
+        await WaitForAsync(() => Volatile.Read(ref errorActivity) is not null);
 
         Assert.NotNull(errorActivity);
         Assert.Equal(ActivityStatusCode.Error, errorActivity!.Status);
