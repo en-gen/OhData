@@ -33,6 +33,30 @@ published release — so every pack is diffed against that shipped API surface a
 changes fail the build. **Bump the baseline on all packable csproj files as part of each release** (the
 release-prep PR), and add one to newly published packages after their first release.
 
+**Re-evaluate `CompatibilitySuppressions.xml` in the same PR as the baseline bump.** A suppression
+exists to bridge *one* release — it records a diff against the old baseline. Once the baseline moves
+past the release that shipped that diff, the entry is dead: the new baseline already contains the new
+surface, so the diagnostic can no longer fire and the suppression only hides *future* breaks to the
+same target. Leaving them behind is how #376 happened (68 entries for the `OhData.Abstractions`
+removal survived a release that had already legitimised it). The mechanical check is to delete the
+suppression files, pack, and re-add only what still errors:
+
+```bash
+# ApiCompat is incremental — it will silently skip if the semaphore is current.
+find src -name "Microsoft.NET.ApiCompat.ValidatePackage.semaphore" -delete
+dotnet pack src/OhData.sln -c Release
+```
+
+That `find` is not optional. `RunPackageValidation` is gated on
+`obj/<Config>/Microsoft.NET.ApiCompat.ValidatePackage.semaphore`, and on a second pack MSBuild logs
+`Skipping target "RunPackageValidation" because all output files are up-to-date` — a clean pack that
+validated nothing looks exactly like a clean pack that passed. CI is unaffected (it always builds
+from a cold `obj/`); this only bites local verification.
+
+Note what package validation does **not** cover: it compares API *shape* only. A changed default
+value, a changed status code, or any other behavioural break passes it silently. ApiCompat green is
+not evidence that a release is non-breaking — the CHANGELOG and the test suite are.
+
 ## One-time setup
 
 Publishing uses **nuget.org Trusted Publishing** (OIDC) — no API key, no repository secret to store
