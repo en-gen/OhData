@@ -628,6 +628,31 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`$levels=max` bypassed the depth cap the numeric form is validated against (#428).**
+  Microsoft's `SelectExpandQueryValidator` rejects a *numeric* `$levels=N` when
+  `N > min(MaxExpansionDepth, modelBoundMaxDepth)`; for the `max` literal it only requires that
+  minimum to be non-zero — it does not clamp. OhData then resolved `max` against
+  `MaxExpansionDepth` alone and never consulted the model-bound cap, in **two** independently
+  transcribed places (the pushdown projection builder and the JSON keep/strip pass). So
+  `$levels=max` was served at depths every numeric spelling returned `400` for. Measured with the
+  model-bound cap lowered to 5 and a profile at `MaxExpansionDepth = 8`:
+
+  ```
+  $levels=5     -> 200    609 ms   joins=6
+  $levels=6..9  -> 400              <- rejected by the model-bound cap
+  $levels=max   -> 200  5,477 ms   joins=9   <- served at depth 8
+  ```
+
+  At ~3× translation cost per level (#328) that is a cost multiplier, not a cosmetic
+  inconsistency: on a stock build a profile at `MaxExpansionDepth = 15` served `max` at depth 15 —
+  `3¹⁶` translation units, extrapolated at **~2.2 hours of single-core CPU for one request**.
+
+  Both call sites now share one `ResolveLevelsBudget` function that consults **both** bounds, and
+  #328 additionally derives the model-bound cap from the new `MaxExpansionDepthCeiling`, so the two
+  can no longer diverge at all. The second half is what actually closes the hole on a shipped build
+  — the shared function is what stops it re-opening if the ceiling is ever widened, and
+  `ExpandLevelsResolutionTests` asserts the tie as a tripwire.
+
 - **`$levels=N` emitted N+1 join levels; the extra one was pure waste and cost a factor of 3
   (#335).** The `$levels` recursion terminated its deepest level with
   `n.Nav.Take(0).ToList()` — an expression that still *names* the navigation, so EF Core composed a

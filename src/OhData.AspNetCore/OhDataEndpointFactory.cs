@@ -1903,6 +1903,34 @@ internal static class OhDataEndpointFactory
     // ExpandDepthCeilingTieTests is the tripwire.
     internal const int MaxNestedExpandDepth = EntitySetDefaults.MaxExpansionDepthCeiling;
 
+    // #428: the ONE place `$levels` is turned into a number of levels to load. Both substrates call
+    // it — the pushdown projection builder (TryBuildEngagedExpand) and the JSON keep/strip pass
+    // (BuildExpandLookup) — because they used to be independent transcriptions of the same rule and
+    // they disagreed about `$levels=max`.
+    //
+    // The bug: `$levels=max` was resolved against <paramref name="remainingDepth"/> ALONE (the
+    // profile's resolved MaxExpansionDepth), while a NUMERIC `$levels=N` is validated by Microsoft's
+    // SelectExpandQueryValidator against min(MaxExpansionDepth, modelBoundMaxDepth) — and for the
+    // IsMaxLevel case that validator only requires the minimum to be non-zero, it does not clamp. So
+    // a profile at MaxExpansionDepth = 15 with a model-bound cap of 12 rejected `$levels=13/14/15`
+    // with 400 and served `$levels=max` at depth 15. The more expensive spelling was the one that got
+    // through, and at ~3x per level (#328) that is a cost multiplier, not a cosmetic inconsistency:
+    // 3^16 translation units, extrapolated at ~2.2 hours of single-core CPU for one request.
+    //
+    // <paramref name="modelBoundCap"/> is that model-bound cap. Since #328 it is DERIVED from the
+    // MaxExpansionDepth ceiling, so on a shipped build it can no longer be lower than
+    // remainingDepth and this clamp cannot fire — which is the point: the divergence is now
+    // unrepresentable rather than merely fixed. The parameter stays explicit so the rule is a
+    // testable function of its inputs (ExpandLevelsResolutionTests drives it with a cap BELOW
+    // remainingDepth, the configuration that used to be reachable) and so re-widening the ceiling
+    // cannot silently re-open #428.
+    internal static int ResolveLevelsBudget(bool isMaxLevel, long requestedLevel, int remainingDepth, int modelBoundCap)
+    {
+        int cap = Math.Min(remainingDepth, modelBoundCap);
+        long levels = isMaxLevel ? cap : requestedLevel;
+        return (int)Math.Min(levels, (long)cap);
+    }
+
     // Issue #183 / OData §11.2.4.2: recursively inject $expand'd navigation properties for one
     // level of a page of entities, then descend into each expanded navigation's own nested
     // $expand/$select clause. <paramref name="items"/> are the CLR entities at this level and
@@ -2458,9 +2486,14 @@ internal static class OhDataEndpointFactory
                     [navName] = expandItem.SelectAndExpand;
                 if (expandItem.LevelsOption is { } lv && levelsNavNames is not null && levelsNavNames.Contains(navName))
                 {
-                    int resolved = lv.IsMaxLevel ? maxLevels : (int)Math.Min(lv.Level, maxLevels);
+                    // #428: the SAME resolution rule TryBuildEngagedExpand uses, called rather than
+                    // re-spelled — these two used to be independent transcriptions of "what does
+                    // $levels resolve to", and they disagreed. Math.Max(_, 1) stays HERE and not in
+                    // the shared helper: this side wants a floor (a kept nav needs at least one
+                    // level of budget), while TryBuildEngagedExpand wants < 1 to mean "not pushable".
+                    int resolved = ResolveLevelsBudget(lv.IsMaxLevel, lv.Level, maxLevels, MaxNestedExpandDepth);
                     (levelsRemaining ??= new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase))[navName] =
-                        Math.Min(Math.Max(resolved, 1), maxLevels);
+                        Math.Max(resolved, 1);
                 }
             }
         }
@@ -3505,8 +3538,8 @@ internal static class OhDataEndpointFactory
             if (lc is not null && lc.SelectedItems.OfType<ExpandedNavigationSelectItem>().Any())
                 return false; // $levels + nested $expand — deferred
 
-            int levels = item.LevelsOption.IsMaxLevel ? remainingDepth : (int)item.LevelsOption.Level;
-            levels = Math.Min(levels, remainingDepth);
+            int levels = ResolveLevelsBudget(
+                item.LevelsOption.IsMaxLevel, item.LevelsOption.Level, remainingDepth, MaxNestedExpandDepth);
             if (levels < 1) return false;
             if (!IsMemberInitProjectable(binding.ElementType, model)) return false;
 
