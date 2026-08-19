@@ -795,7 +795,7 @@ Five ceilings bound how expensive a single request's query options may be. Each 
 
 | Limit | Default | Bounds |
 |---|---|---|
-| `MaxExpansionDepth` | `3` | Nesting depth of `$expand`, and the ceiling `$levels` is resolved and capped to (`$levels=max` becomes exactly this value). **Enforced** as of #202 — a deeper `$expand`/`$levels` returns `400` rather than a silently-truncated result. Advertised per entity set in `$metadata` as `Org.OData.Capabilities.V1.ExpandRestrictions/MaxLevels` (#206). Raise it to allow deeper graph/hierarchy queries, or lower it to harden. |
+| `MaxExpansionDepth` | `3` (hard ceiling **6**) | Nesting depth of `$expand`, and the ceiling `$levels` is resolved and capped to (`$levels=max` becomes exactly this value). **Enforced** as of #202 — a deeper `$expand`/`$levels` returns `400` rather than a silently-truncated result. Advertised per entity set in `$metadata` as `Org.OData.Capabilities.V1.ExpandRestrictions/MaxLevels` (#206). Raise it to allow deeper graph/hierarchy queries, or lower it to harden — but **not above `EntitySetDefaults.MaxExpansionDepthCeiling` (6)**, which throws `ArgumentOutOfRangeException` at startup (#328). See [The depth ceiling](#the-depth-ceiling-328) below for why the ceiling exists and why it is 6. |
 | `MaxExpandTop` | `null` (no ceiling) | Per-navigation ceiling on how many related entities **any** collection `$expand` level may return, and on an explicit **nested** `$top` (`?$expand=Children($top=N)`). **The whole ceiling is opt-in (#313):** the default moved from `1000` to `null` because `1000` was an invented number — the framework cannot know how large a child collection is, so it ships the control point and lets the implementor set it. Until it is set there is no ceiling of any kind: `?$expand=Children($top=999999)` is answered rather than rejected, a nested `$count` materializes the related collection with no bound, and a bare `?$expand=Children` composes no SQL `Take` and gets no size check — byte-identical response *and* emitted SQL to the pre-#313 behavior. Set it (`WithDefaults(d => d.MaxExpandTop = N)`, or per profile) to turn all of that on at once. With a value in force, three mechanisms engage, and **their reach differs — see the callout above the table.** (1) An over-large **explicit nested `$top`** returns `400` (`InvalidQueryOption`) at any depth, whether or not the navigation would have been pushed down, on all three collection read paths and on `GET /{Set}({key})` — the same "what may a client ask for" rule as the root `MaxTop`. (2) A **nested `$count`** whose related collection exceeds the ceiling returns `400` rather than a truncated count (§11.2.4.2, #254). (3) As of #313, so does the **remaining shape** — a level with **neither** a nested `$count` **nor** an explicit nested `$top`, which includes the plain `$expand=Nav` and anything carrying only `$select`/`$orderby`/`$filter`/`$skip`, and every level of a `$levels=N` recursion. **(2) and (3) are enforced in the pushdown's JSON shaping pass, so they apply on the `GetQueryable` collection route only**; on `GET /{Set}({key})` a bare `$expand` is still unbounded ([#418](https://github.com/en-gen/OhData/issues/418)). The **root** entity set's resolved value governs at every nesting depth, exactly like `MaxExpansionDepth`. On a profile, `MaxExpandTop = null` means *inherit* the resolved default, not "uncapped" — a profile cannot opt out of a ceiling set in the defaults. Setting a value also composes the nested **key tiebreaker** on shapes that previously had none, so it governs the nested wire *order* as well as the status code (see the nested-paging caveat above). **Cost caveat (#299):** where the ceiling applies it is always *correct* — the request `400`s rather than returning a truncated count or a silently-clipped page — but not always *cheap* to enforce. At a projection **leaf** it is a SQL `Take(MaxExpandTop + 1)`, so a breach is detected without transferring the collection. At a level with its own nested `$expand`, or anywhere inside a `$levels` recursion, it can't be pushed into SQL as a `Take` (the same `APPLY`/`LATERAL` translation problem the nested-`$count` caveat above describes), so the `400` is thrown only **after** the full related collection — for `$levels`, the full recursive hierarchy — is materialized in memory. A hostile `$expand=Children($levels=N)` therefore buys that full materialization before being rejected on breach — a broad but *under*-cap hierarchy just materializes fully and returns `200` like any other under-cap page; the cost only bites once the collection actually exceeds the ceiling. |
 | `ExpandPagingEnabled` | `false` | **Not a ceiling — the companion opt-in to `MaxExpandTop` (#313).** Whether a *truly bare* collection `$expand` (one carrying no nested options at all) whose child collection exceeds the resolved `MaxExpandTop` is served as its first `MaxExpandTop` children plus a `Nav@odata.nextLink` continuation, instead of being rejected with `400`. Inert unless `MaxExpandTop` is also set — with no ceiling there is no boundary at which a continuation could begin — and `MaxExpandTop` is also the page size, for the first page and every continuation alike. There is deliberately no second page-size knob. It is a *separate* opt-in from the ceiling because a continuation link is **worse** than a `400` for a client that does not read nested annotations: that client sees a complete-looking collection that has been silently truncated. Only enable it if you know your clients follow `Nav@odata.nextLink`. On a profile it is a `bool?`, so a profile-level `false` genuinely opts **out** of a server-wide `ExpandPagingEnabled = true` — unlike `MaxExpandTop`, whose profile-level `null` means *inherit*. When it is on (with a ceiling set) it registers `GET /{Set}({key})/{Nav}?$skip=N` for each pageable navigation and emits the link; with it off — or on with no ceiling — no route is registered and no annotation is emitted. Turning it on changes **nothing** outside the truly-bare over-ceiling subset: with `MaxExpandTop` unset, and for every non-bare shape with it set, the status, the response body and the emitted SQL are byte-identical either way, and `$metadata` is byte-identical in every configuration. Full rules, the exact pageable set and the deliberate limits: [Nested server-driven paging](#nested-server-driven-paging-expandpagingenabled-313). |
 | `MaxFilterNodeCount` | `10000` | Number of nodes in a `$filter` expression tree. |
@@ -820,6 +820,50 @@ builder.Services.AddOhData(o => o
     .WithDefaults(d => d.MaxExpandTop = 200)   // opt in to the ceiling; the default is null (none)
     .AddEntitySetProfile<OrderProfile>());
 ```
+
+### The depth ceiling (#328)
+
+`MaxExpansionDepth` is capped at **`EntitySetDefaults.MaxExpansionDepthCeiling`, which is 6**.
+Configuring a larger value — in `WithDefaults` or on a profile — throws
+`ArgumentOutOfRangeException` at startup, not at request time.
+
+**Why a ceiling exists.** Relational query translation for a pushed nested projection is
+`Θ(3ⁿ)` in the nesting depth. EF Core re-translates each nested-collection subtree three times with
+no memoization, so every extra level triples the CPU spent *building* the query — before a single
+row is read. This is not a data-volume problem: it reproduces with no database, no connection and no
+rows, purely through `ToQueryString()`. Measured on a 16-node self-referential chain returning a
+~6 KB body, one navigation per level:
+
+| depth | translation |
+|---:|---:|
+| 5 | 0.09 s |
+| **6** | **0.24 s** ← the ceiling |
+| 8 | 3.8 s |
+| 10 | 32 s |
+| 12 | 291 s |
+
+291 seconds is 4.9 minutes of single-core CPU for **one unauthenticated request with no body**, and
+the growth is a clean ×3.0 per level with no discontinuity — there is no cliff to stay below, only a
+curve to stop climbing.
+
+**Why 6 and not 3.** The blow-up is at 10+, not at 5. Depth 5 costs ~90 ms, and this document's own
+example above uses `MaxExpansionDepth = 5`, as do two of the framework's own tests. Capping at the
+default of 3 would invalidate a documented configuration for a shape that is not expensive. 6 leaves
+headroom above 5 while keeping the worst *configurable* depth under a quarter-second on the depth
+axis.
+
+**This is a mitigation, not a fix.** Nothing about `$levels=12` over a 16-node chain returning 6 KB
+is unreasonable — it is expensive only because of upstream re-translation. The real answer is one
+flat query per level instead of one nested projection, tracked in
+[#430](https://github.com/en-gen/OhData/issues/430). Until then the ceiling bounds the damage.
+
+**If you need a deeper graph**, fetch it as separate requests, or expand a **delegate-backed**
+navigation (`HasMany(x => x.Children, getAll: ...)`) — a delegate-backed navigation is loaded once
+per level by the expansion pipeline rather than composed into one nested projection, so it does not
+pay the `3ⁿ` translation cost at all.
+
+**Depth is only one axis.** Breadth multiplies on top of it and is bounded separately by
+[`MaxExpandBreadth`](#the-breadth-guard-429).
 
 ---
 

@@ -1886,13 +1886,22 @@ internal static class OhDataEndpointFactory
         return selectedProps.Contains(key, StringComparer.OrdinalIgnoreCase);
     }
 
-    // Deepest nesting level ExpandLevelAsync will follow. The clause tree the OData parser builds
-    // is already finite (bounded by the depth the client actually wrote in $expand), so this is
-    // not needed for correctness on well-formed requests — it is a guard against a pathological /
-    // adversarial request that nests $expand extremely deep (§11.2.4.2 places no hard cap, and
-    // this framework disables Microsoft's MaxExpansionDepth validator). Beyond this depth the
-    // deeper related entities are simply not loaded.
-    internal const int MaxNestedExpandDepth = 12;
+    // Deepest nesting level ExpandLevelAsync will follow, AND the model-bound `entityType.Expand(N)`
+    // cap written into the EDM at startup (EntitySetProfile.VisitModelBuilder) — the cap Microsoft's
+    // SelectExpandQueryValidator validates a NUMERIC $levels=N against. The clause tree the OData
+    // parser builds is already finite (bounded by the depth the client actually wrote in $expand),
+    // so this is not needed for correctness on well-formed requests — it is a guard against a
+    // pathological / adversarial request that nests $expand extremely deep (§11.2.4.2 places no hard
+    // cap). Beyond this depth the deeper related entities are simply not loaded.
+    //
+    // #328/#428: TIED to the MaxExpansionDepth ceiling, deliberately, and it must stay tied.
+    // MaxExpansionDepth is what $levels=max resolves to; MaxNestedExpandDepth is what a numeric
+    // $levels=N is validated against. While they could diverge (this was 12 while MaxExpansionDepth
+    // was unbounded above), a profile at MaxExpansionDepth = 15 rejected $levels=13/14/15 with 400
+    // and served $levels=max at depth 15 — the more expensive spelling was the one that got through
+    // (#428). Deriving one from the other makes that divergence unrepresentable.
+    // ExpandDepthCeilingTieTests is the tripwire.
+    internal const int MaxNestedExpandDepth = EntitySetDefaults.MaxExpansionDepthCeiling;
 
     // Issue #183 / OData §11.2.4.2: recursively inject $expand'd navigation properties for one
     // level of a page of entities, then descend into each expanded navigation's own nested

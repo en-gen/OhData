@@ -407,7 +407,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
     /// <summary>#202/#206: maximum nested <c>$expand</c> depth for this set, and the ceiling
     /// <c>$levels</c> is resolved/capped to (400 beyond it). Inherits
-    /// <see cref="EntitySetDefaults.MaxExpansionDepth"/> (default 3) when null. Must be positive.</summary>
+    /// <see cref="EntitySetDefaults.MaxExpansionDepth"/> (default 3) when null. Must be positive and
+    /// no greater than <see cref="EntitySetDefaults.MaxExpansionDepthCeiling"/> (#328) — see that
+    /// constant for the measured cost curve the ceiling exists to bound.</summary>
     protected int? MaxExpansionDepth
     {
         get => _maxExpansionDepth;
@@ -415,6 +417,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         {
             if (value is <= 0)
                 throw new ArgumentOutOfRangeException(nameof(MaxExpansionDepth), value, "MaxExpansionDepth must be a positive integer.");
+            // #328: validated HERE as well as on EntitySetDefaults. The two are independent entry
+            // points — a profile-level value never passes through the defaults setter — so a check
+            // on one alone leaves the other wide open.
+            if (value is int depth && depth > EntitySetDefaults.MaxExpansionDepthCeiling)
+                throw new ArgumentOutOfRangeException(nameof(MaxExpansionDepth), value, EntitySetDefaults.ExpansionDepthCeilingMessage(depth));
             _maxExpansionDepth = value;
         }
     }

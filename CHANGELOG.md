@@ -11,6 +11,49 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **`MaxExpansionDepth` is now hard-capped at `6`; configuring more throws at startup (#328).**
+  `EntitySetDefaults.MaxExpansionDepthCeiling` is a new public constant, and both configuration
+  entry points — `WithDefaults(d => d.MaxExpansionDepth = N)` and a profile's own
+  `MaxExpansionDepth` — throw `ArgumentOutOfRangeException` above it.
+
+  > **⚠ BREAKING CHANGE.** A registration that configured `MaxExpansionDepth` above `6` no longer
+  > starts: it throws `ArgumentOutOfRangeException` from `AddOhData` (defaults) or from the profile
+  > constructor. It fails loudly at boot, not under load, and the default of `3` is unchanged — so
+  > **a deployment that never set the knob is unaffected**, as is any value from 1 to 6. The
+  > exception message carries the measured cost curve and what to do instead.
+
+  **Why.** Relational query translation for a pushed nested projection is `Θ(3ⁿ)` in the nesting
+  depth: EF Core re-translates each nested-collection subtree three times with no memoization, so
+  every extra level triples the CPU spent *building* the query, before a single row is read. It is
+  not a data-volume problem — it reproduces with no database, no connection and no rows, through
+  `ToQueryString()` alone. Measured on a 16-node self-referential chain returning a ~6 KB body, one
+  navigation per level:
+
+  | depth | translation |
+  |---:|---:|
+  | 5 | 0.09 s |
+  | **6** | **0.24 s** ← the ceiling |
+  | 8 | 3.8 s |
+  | 10 | 32 s |
+  | 12 | 291 s |
+
+  291 seconds is 4.9 minutes of single-core CPU for **one unauthenticated request with no body**,
+  and growth is a clean ×3.0 per level — there is no cliff to stay below, only a curve to stop
+  climbing.
+
+  **Why 6 and not 3 (the default).** The blow-up is at 10+, not at 5: depth 5 costs ~90 ms, and
+  `docs/query-options.md` and two of this project's own tests already use `MaxExpansionDepth = 5`.
+  Capping at the default would have invalidated a documented configuration for a shape that is not
+  expensive.
+
+  **This is a mitigation, not a fix.** Nothing about `$levels=12` over a 16-node chain returning
+  6 KB is unreasonable; it is expensive only because of upstream re-translation. The real answer is
+  one flat query per level instead of one nested projection
+  ([#430](https://github.com/en-gen/OhData/issues/430)). If you need a deeper graph today, fetch it
+  as separate requests, or expand a **delegate-backed** navigation — those are loaded once per level
+  by the expansion pipeline rather than composed into one nested projection, so they never pay the
+  `3ⁿ` cost.
+
 - **`MaxExpandTop` now defaults to `null` — no ceiling — instead of `1000` (#313).** The framework
   cannot know how large any given child collection is, so it no longer guesses: it ships the
   configuration point and lets the implementor set it. `1000` was an invented number, and a

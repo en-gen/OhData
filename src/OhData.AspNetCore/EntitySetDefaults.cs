@@ -141,6 +141,41 @@ public sealed class EntitySetDefaults
     private int _maxAnyAllExpressionDepth = 1000;
 
     /// <summary>
+    /// #328: the hard upper bound on <see cref="MaxExpansionDepth"/> — server-wide and per profile.
+    /// Configuring a deeper value throws <see cref="ArgumentOutOfRangeException"/> at startup.
+    /// <para>
+    /// <b>Why a ceiling exists at all.</b> Relational query translation for a pushed nested
+    /// projection is <c>Θ(3ⁿ)</c> in the nesting depth: EF Core re-translates each nested-collection
+    /// subtree three times with no memoization, so every additional level triples the CPU spent
+    /// building the query — before a single row is read. Measured on a 16-node chain returning a
+    /// ~6 KB body, one navigation per level, no database round trip needed to reproduce it:
+    /// </para>
+    /// <code>
+    /// depth  5 →     0.09 s
+    /// depth  6 →     0.24 s   ← this ceiling
+    /// depth  8 →     3.8  s
+    /// depth 10 →    32    s
+    /// depth 12 →   291    s   (4.9 minutes of single-core CPU, unauthenticated, one request)
+    /// </code>
+    /// <para>
+    /// <b>Why 6 and not 3.</b> The blow-up is at 10+, not at 5: depth 5 costs ~90 ms, and this
+    /// project's own documentation and tests already use <c>MaxExpansionDepth = 5</c>. Capping at
+    /// the default of 3 would invalidate a documented example for a shape that is not expensive.
+    /// 6 leaves real headroom above the documented 5 while keeping the worst configurable depth
+    /// under a quarter-second on the depth axis.
+    /// </para>
+    /// <para>
+    /// <b>This is a mitigation, not a fix.</b> Nothing about <c>$levels=12</c> over a 16-node chain
+    /// returning 6 KB is unreasonable; it is expensive only because of upstream re-translation. The
+    /// real answer is one flat query per level instead of one nested projection
+    /// (<a href="https://github.com/en-gen/OhData/issues/430">#430</a>). The ceiling bounds the
+    /// damage in the meantime. Depth is also only one axis; breadth multiplies on top of it
+    /// (<a href="https://github.com/en-gen/OhData/issues/429">#429</a>).
+    /// </para>
+    /// </summary>
+    public const int MaxExpansionDepthCeiling = 6;
+
+    /// <summary>
     /// #202/#206: maximum nested <c>$expand</c> depth accepted on the collection read paths, and the
     /// ceiling <c>$levels</c> is resolved and capped to (<c>$levels=max</c> becomes exactly this
     /// value; a numeric <c>$levels=N</c> is clamped to it). A request nesting <c>$expand</c> deeper —
@@ -148,8 +183,9 @@ public sealed class EntitySetDefaults
     /// runs. Defaults to <c>3</c>. Advertised in <c>$metadata</c> as the
     /// <c>Org.OData.Capabilities.V1.ExpandRestrictions/MaxLevels</c> annotation on each entity set so
     /// clients can discover it. Raise it to allow deeper graph queries, or lower it to harden against
-    /// them; must be a positive integer. Profile-level
-    /// <see cref="EntitySetProfile{TKey,TModel}.MaxExpansionDepth"/> overrides this value.
+    /// them; must be a positive integer <b>no greater than <see cref="MaxExpansionDepthCeiling"/></b>
+    /// (#328). Profile-level <see cref="EntitySetProfile{TKey,TModel}.MaxExpansionDepth"/> overrides
+    /// this value.
     /// </summary>
     public int MaxExpansionDepth
     {
@@ -158,9 +194,24 @@ public sealed class EntitySetDefaults
         {
             if (value <= 0)
                 throw new ArgumentOutOfRangeException(nameof(MaxExpansionDepth), value, "MaxExpansionDepth must be a positive integer.");
+            if (value > MaxExpansionDepthCeiling)
+                throw new ArgumentOutOfRangeException(nameof(MaxExpansionDepth), value, ExpansionDepthCeilingMessage(value));
             _maxExpansionDepth = value;
         }
     }
+
+    // #328: the message says WHY, not just what. An implementor who set 15 did so on purpose and is
+    // owed the reason it is now refused — otherwise the obvious reading is "arbitrary new limit" and
+    // the obvious response is to go looking for a way around it.
+    internal static string ExpansionDepthCeilingMessage(int value) =>
+        $"MaxExpansionDepth must be no greater than {MaxExpansionDepthCeiling} (requested {value}). " +
+        "Relational query translation for a pushed nested $expand is O(3^depth) — EF Core " +
+        "re-translates each nested-collection subtree three times with no memoization — so each " +
+        "extra level triples the CPU spent building the query before any row is read. Measured on " +
+        "a 16-node chain returning ~6 KB: depth 6 = 0.24 s, depth 8 = 3.8 s, depth 10 = 32 s, " +
+        "depth 12 = 291 s of single-core CPU for ONE unauthenticated request. If you need a deeper " +
+        "graph, fetch it as separate requests, or expand a delegate-backed navigation (which is " +
+        "loaded per level rather than as one nested projection) instead of raising this limit.";
 
     /// <summary>
     /// #202: maximum node count in a <c>$filter</c> expression tree (OData's
