@@ -400,6 +400,52 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`MaxExpandBreadth` — a breadth guard on `$expand`, defaulting to `50` (#429, shipping #202's
+  never-shipped guard).** `$expand` cost was bounded on the **depth** axis (`MaxExpansionDepth`) and
+  completely unbounded on the **breadth** axis: there was no navigation-count limit of any kind. A
+  request whose `$expand` contains more than `MaxExpandBreadth` navigation expansions, counted
+  across **every level of the tree**, is now rejected with `400` (`InvalidQueryOption`) before any
+  handler runs — on all three collection read paths and on `GET /{Set}({key})`.
+
+  > **⚠ BREAKING CHANGE, in the restrictive direction.** A client sending an `$expand` with more
+  > than 50 navigation expansions now gets `400` where it previously got `200`. Fifty is far above
+  > any realistic request, so an existing consumer is unlikely to hit it — but it is a new rejection
+  > on a previously-accepted request, and it is configurable:
+  > `WithDefaults(d => d.MaxExpandBreadth = N)` server-wide, or `MaxExpandBreadth` on the profile.
+  > There is deliberately no "unlimited" setting; a guard that defaults to unlimited protects nobody.
+
+  **Why depth alone was not enough.** Translation cost multiplies by ~3 per level *and* by the
+  number of navigations expanded at each level. Measured at the **default** `MaxExpansionDepth` of
+  3, on a six-navigation model, with no breadth guard:
+
+  | navigations per level | wall clock | response |
+  |---:|---:|---:|
+  | 1 | 240 ms | 1,440 B |
+  | 4 | 1,010 ms | 1,696 B |
+  | 6 | 4,084 ms | 1,952 B |
+
+  4.1 s of single-core CPU for a 1,952-byte response, at defaults, unauthenticated — and the EF
+  compiled-query cache is no defence, because each distinct navigation **subset** is a distinct
+  cache key, so cycling subsets never warms it. (That table is the original #429 measurement; the
+  "why 50" figures below were taken later on a faster machine, where the same shape reproduces at
+  ~1.6 s. Compare each set internally, not across the two — the ratios hold in both.)
+
+  **Why the count spans the whole tree rather than one level.** A per-level cap of `B` under the
+  depth ceiling of 6 still admits `B⁶` expansions — 55,986 at `B=6`. Counting every node bounds both
+  axes together. Counting *distinct navigation names* would be weaker still: the most expensive
+  shapes measured reuse six names over six levels. A `$levels=N` expansion counts as `N` — its
+  resolved level count — because that is what it costs.
+
+  **Why 50.** Far above any realistic request (a three-level chain expanding three navigations at
+  every level is 39 nodes and is already unusual; typical rich requests are under 15), while keeping
+  the worst legal request measurable: ~0.4 s at the default depth of 3, and — over a systematic
+  sweep of every branching vector within the budget at the maximum legal depth of 6 — **1.0–1.4 s**
+  for the worst legal request (shape `[1,1,1,1,2,6]`, only 18 nodes: deep-and-narrow is more
+  expensive per node than flat-and-wide). Unguarded, the same model reaches 2,850 nodes and **36 s**
+  for a 111-byte error response; that request now returns `400` in **56 ms**, essentially all of it
+  URL parsing.
+
+
 - **A startup `Warning` for a bare `$expand` with no ceiling, and the `ExpandPagingEnabled` knob it
   points at (#313).** These are the replacement for the arbitrary `MaxExpandTop` default removed
   above — the framework stops guessing a number and instead names the exposure to the one person who

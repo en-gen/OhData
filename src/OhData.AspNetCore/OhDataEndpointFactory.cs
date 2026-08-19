@@ -1699,6 +1699,66 @@ internal static class OhDataEndpointFactory
         return null;
     }
 
+    // #429 (#202's unshipped breadth guard): reject a $expand tree containing more navigation
+    // expansions than the resolved MaxExpandBreadth, before any handler or query runs.
+    //
+    // WHY THIS EXISTS ALONGSIDE MaxExpansionDepth. Depth is one axis. Translation cost for a pushed
+    // nested projection multiplies by ~3 per level AND by the number of navigations expanded at each
+    // level, so capping depth alone leaves the other factor free. Measured at the DEFAULT depth of 3
+    // on a six-navigation model, with no breadth guard: 4.1 s of single-core CPU for a 1,952-byte
+    // response. The EF compiled-query cache is no defence — each distinct navigation SUBSET is a
+    // distinct cache key, so cycling subsets never warms it.
+    //
+    // WHY THE COUNT SPANS THE WHOLE TREE. A per-level cap of B under a depth ceiling of D still
+    // admits B^D expansions (6^6 = 55,986 at the shipped ceiling). Counting every node bounds the
+    // two axes together. Counting DISTINCT NAMES would be weaker still — the most expensive shapes
+    // measured reuse six names over six levels.
+    //
+    // Deliberately pushdown-independent, like ValidateNestedTopCeiling: a delegate-backed expansion
+    // at this breadth is N+1-per-level expensive rather than 3^n expensive, but it is still a
+    // statement about what the client may ASK for, not about how the server would have served it.
+    //
+    // Returns the 400 OData error to return, or null when the request is within the limit.
+    private static IResult? ValidateExpandBreadth(SelectExpandClause? clause, int cap, int maxExpansionDepth)
+    {
+        if (clause is null) return null;
+        int count = CountExpandNodes(clause, maxExpansionDepth, cap);
+        if (count <= cap) return null;
+
+        // The message states the LIMIT, not the request's actual count: CountExpandNodes stops as
+        // soon as the limit is passed, because an adversarial tree is exactly the input we must not
+        // walk in full in order to reject it. The limit is the actionable half anyway.
+        return ODataError(400, "InvalidQueryOption",
+            $"The request expands more than {cap} navigations. '$expand' is limited to {cap} " +
+            "navigation expansions counted across every level of the expansion tree (a " +
+            "'$levels=N' expansion counts as N). Request fewer navigations, or raise " +
+            "MaxExpandBreadth on the entity set profile or in WithDefaults.");
+    }
+
+    // Counts navigation expansions in the whole $expand tree, stopping as soon as <paramref
+    // name="cap"/> is exceeded. A $levels=N item counts as N — its resolved level count, through the
+    // SAME ResolveLevelsBudget the loaders use (#428), so the guard cannot disagree with them about
+    // what a $levels resolves to — because that is what it costs: one nested projection level each,
+    // exactly like the equivalent explicit chain.
+    private static int CountExpandNodes(SelectExpandClause clause, int maxExpansionDepth, int cap)
+    {
+        int count = 0;
+        foreach (ExpandedNavigationSelectItem item in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
+        {
+            count += item.LevelsOption is { } lv
+                ? Math.Max(1, ResolveLevelsBudget(lv.IsMaxLevel, lv.Level, maxExpansionDepth, MaxNestedExpandDepth))
+                : 1;
+            if (count > cap) return count;
+
+            if (item.SelectAndExpand is { } nested)
+            {
+                count += CountExpandNodes(nested, maxExpansionDepth, cap - count);
+                if (count > cap) return count;
+            }
+        }
+        return count;
+    }
+
     /// <remarks>
     /// This check is advisory, not atomic. Between the ETag read and the caller's write,
     /// another request may modify the resource. For true atomic concurrency, use
@@ -5445,6 +5505,11 @@ internal static class OhDataEndpointFactory
                     IResult? nestedTopError = ValidateNestedTopCeiling(
                         options.SelectExpand?.SelectExpandClause, source.MaxExpandTop);
                     if (nestedTopError is not null) return nestedTopError;
+                    // #429: reject a $expand tree wider than MaxExpandBreadth, counted across every
+                    // level. Depth alone does not bound translation cost; breadth multiplies on top.
+                    IResult? breadthError = ValidateExpandBreadth(
+                        options.SelectExpand?.SelectExpandClause, source.MaxExpandBreadth, source.MaxExpansionDepth);
+                    if (breadthError is not null) return breadthError;
                     // #195: reject $top > MaxTop before invoking the profile. The Priority-1 path
                     // delegates query application to the profile, so without this guard a client
                     // could request an arbitrarily large page. Mirrors the Priority-2 path.
@@ -5639,6 +5704,11 @@ internal static class OhDataEndpointFactory
                     IResult? nestedTopError = ValidateNestedTopCeiling(
                         options.SelectExpand?.SelectExpandClause, source.MaxExpandTop);
                     if (nestedTopError is not null) return nestedTopError;
+                    // #429: reject a $expand tree wider than MaxExpandBreadth, counted across every
+                    // level. Depth alone does not bound translation cost; breadth multiplies on top.
+                    IResult? breadthError = ValidateExpandBreadth(
+                        options.SelectExpand?.SelectExpandClause, source.MaxExpandBreadth, source.MaxExpansionDepth);
+                    if (breadthError is not null) return breadthError;
 
                     // Gap 4: $search on GetQueryable path — delegate to the Search handler, then
                     // apply remaining OData query options on top of the in-memory result set.
@@ -6249,6 +6319,11 @@ internal static class OhDataEndpointFactory
                     IResult? nestedTopError = ValidateNestedTopCeiling(
                         options.SelectExpand?.SelectExpandClause, source.MaxExpandTop);
                     if (nestedTopError is not null) return nestedTopError;
+                    // #429: reject a $expand tree wider than MaxExpandBreadth, counted across every
+                    // level. Depth alone does not bound translation cost; breadth multiplies on top.
+                    IResult? breadthError = ValidateExpandBreadth(
+                        options.SelectExpand?.SelectExpandClause, source.MaxExpandBreadth, source.MaxExpansionDepth);
+                    if (breadthError is not null) return breadthError;
 
                     // Post-materialization paging for GetAll, applied AFTER the handler call (GetAll
                     // or Search) fills the array and BEFORE $select/$expand serialization.
@@ -6511,6 +6586,11 @@ internal static class OhDataEndpointFactory
                         IResult? nestedTopError = ValidateNestedTopCeiling(
                             options.SelectExpand?.SelectExpandClause, source.MaxExpandTop);
                         if (nestedTopError is not null) return nestedTopError;
+                        // #429: reject a $expand tree wider than MaxExpandBreadth, counted across every
+                        // level. Depth alone does not bound translation cost; breadth multiplies on top.
+                        IResult? breadthError = ValidateExpandBreadth(
+                            options.SelectExpand?.SelectExpandClause, source.MaxExpandBreadth, source.MaxExpansionDepth);
+                        if (breadthError is not null) return breadthError;
                         selectedProps = options.SelectExpand?.SelectExpandClause is not null
                             ? ExtractSelectedProperties(options.SelectExpand.SelectExpandClause)
                             : null;

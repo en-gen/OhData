@@ -282,3 +282,107 @@ public sealed class Issue328WorstShapeTests
         return string.Join(",", names.Select(n => $"{n}($expand={inner})"));
     }
 }
+
+public sealed class Issue429PostBundleWorstCaseTests
+{
+    private readonly ITestOutputHelper _out;
+    public Issue429PostBundleWorstCaseTests(ITestOutputHelper output) => _out = output;
+
+    // #429: search the WHOLE legal domain after the bundle lands - depth <= the #328 ceiling of 6
+    // and total expansion nodes <= the shipped MaxExpandBreadth default of 50 - for the most
+    // expensive shape a client can still get served. Enumerates every per-level branching vector
+    // over {1,2,3,6} at depth 6 whose node count is within the budget (289 shapes), and reports the
+    // worst. Skipped in CI - run explicitly.
+    [Fact(Skip = "#429 worst-case search - opt-in only; several minutes. Run explicitly by name.")]
+    public async Task Probe_PostBundleWorstCase()
+    {
+        using var conn = new SqliteConnection("DataSource=:memory:");
+        conn.Open();
+        TestFixture fx = await TestHostBuilder.BuildAsync(
+            b => b.AddEntitySetProfile<WideDeepNodeProfile>(),
+            configureServices: s => s.AddDbContext<WideDbContext>(o => o.UseSqlite(conn)));
+        await using (fx)
+        {
+            using (IServiceScope scope = fx.App.Services.CreateScope())
+            {
+                WideDbContext db = scope.ServiceProvider.GetRequiredService<WideDbContext>();
+                db.Database.EnsureCreated();
+                for (int i = 1; i <= 16; i++) db.WideNodes.Add(new WideNode { Id = i });
+                await db.SaveChangesAsync();
+            }
+            await fx.Client.GetAsync("/odata/WideDeepNodes?$expand=N1");
+
+            int[] alphabet = { 1, 2, 3, 6 };
+            var shapes = new List<int[]>();
+            foreach (int a in alphabet)
+            {
+                foreach (int b in alphabet)
+                {
+                    foreach (int c in alphabet)
+                    {
+                        foreach (int d in alphabet)
+                        {
+                            foreach (int e in alphabet)
+                            {
+                                foreach (int f in alphabet)
+                                {
+                                    int[] v = { a, b, c, d, e, f };
+                                    if (Nodes(v) <= 50) shapes.Add(v);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            long worst = -1;
+            string worstShape = "";
+            int worstNodes = 0;
+            foreach (int[] shape in shapes)
+            {
+                string clause = Shape(shape, 0);
+                var sw = Stopwatch.StartNew();
+                HttpResponseMessage resp = await fx.Client.GetAsync($"/odata/WideDeepNodes?$expand={clause}");
+                await resp.Content.ReadAsStringAsync();
+                sw.Stop();
+                if ((int)resp.StatusCode != 200)
+                {
+                    _out.WriteLine($"NON-200 [{string.Join(",", shape)}] nodes={Nodes(shape)} -> {(int)resp.StatusCode}");
+                    continue;
+                }
+                if (sw.ElapsedMilliseconds > worst)
+                {
+                    worst = sw.ElapsedMilliseconds;
+                    worstShape = string.Join(",", shape);
+                    worstNodes = Nodes(shape);
+                    _out.WriteLine($"new worst [{worstShape}] nodes={worstNodes} {worst} ms");
+                }
+            }
+            _out.WriteLine($"WORST LEGAL REQUEST: shape=[{worstShape}] nodes={worstNodes} {worst} ms over {shapes.Count} shapes");
+
+            // And the cost of the first REJECTED request, one node over the budget.
+            var rejected = Stopwatch.StartNew();
+            // 89 nodes - one shape past the shipped MaxExpandBreadth default of 50.
+            HttpResponseMessage over = await fx.Client.GetAsync(
+                $"/odata/WideDeepNodes?$expand={Shape(new[] { 1, 1, 1, 2, 6, 6 }, 0)}");
+            string overBody = await over.Content.ReadAsStringAsync();
+            rejected.Stop();
+            _out.WriteLine($"OVER BUDGET -> {(int)over.StatusCode} {rejected.ElapsedMilliseconds} ms len={overBody.Length}");
+        }
+    }
+
+    private static int Nodes(int[] shape)
+    {
+        int total = 0, level = 1;
+        foreach (int b in shape) { level *= b; total += level; }
+        return total;
+    }
+
+    private static string Shape(int[] shape, int i)
+    {
+        string[] names = Enumerable.Range(1, shape[i]).Select(k => "N" + k).ToArray();
+        if (i == shape.Length - 1) return string.Join(",", names);
+        string inner = Shape(shape, i + 1);
+        return string.Join(",", names.Select(n => $"{n}($expand={inner})"));
+    }
+}
