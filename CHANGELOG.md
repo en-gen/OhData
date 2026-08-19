@@ -585,6 +585,30 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`$levels=N` emitted N+1 join levels; the extra one was pure waste and cost a factor of 3
+  (#335).** The `$levels` recursion terminated its deepest level with
+  `n.Nav.Take(0).ToList()` — an expression that still *names* the navigation, so EF Core composed a
+  real join for it: a full-table `ROW_NUMBER()` window whose every row was then discarded by
+  `WHERE "row" <= 0`. The terminator is now `new List<T>()`, which names nothing and is evaluated
+  per row on the client.
+
+  The dead level was not a constant cost. Translation of a pushed nested projection costs ~3× per
+  collection level (#328), so removing one level divides the whole request's translation cost.
+  Measured end-to-end (16-node self-referential chain, SQLite in-memory, warm host):
+
+  | `$levels` | before | after |
+  |---|---:|---:|
+  | 5 | 309 ms | 94 ms |
+  | 6 | 883 ms | 238 ms |
+  | 7 | 2,404 ms | 677 ms |
+  | 9 | 9,856 ms | 2,196 ms |
+
+  **Pure optimisation — no payload changes.** The terminating level still serializes as an empty
+  array (`"Children":[]`), including its `Nav@odata.count` of `0` under `$count=true`.
+  `LevelsJoinCountSqliteTests` pins both halves: the join count against the table is now exactly `N`
+  for `$levels=N` and no `ROW_NUMBER()` is emitted, and four response bodies captured from the
+  **pre**-fix build are asserted byte-for-byte against the post-fix one.
+
 - **`Ignore()` containment was case-sensitive while body binding is case-insensitive (#398).** The
   withheld-name sets were built and compared with `StringComparer.Ordinal`, but the declared-member
   lookup they are consulted *after* uses `OrdinalIgnoreCase` whenever `PropertyNameCaseInsensitive`

@@ -3960,12 +3960,23 @@ internal static class OhDataEndpointFactory
             AddScalarBindings(bindings, n, elem, model);
             Expression deeper = remaining > 1
                 ? BuildLevelsNavAccess(n, engaged, remaining - 1, model, bound)
-                // Leaf: an empty page of the self-navigation (Take(0)) so it serializes as [] rather
-                // than null, and the recursion terminates without loading a further level.
-                : Expression.Call(
-                    _enumerableToList.MakeGenericMethod(elem),
-                    Expression.Call(_enumerableTake.MakeGenericMethod(elem),
-                        Expression.Property(n, nav.Property), Expression.Constant(0)));
+                // Leaf (#335): a NEW empty list, so the self-navigation serializes as [] rather than
+                // null and the recursion terminates without loading a further level.
+                //
+                // This used to be `n.Nav.Take(0).ToList()`, which reads the same [] but is not free:
+                // it still NAMES the navigation, so EF Core composes a real N+1'th join level for it —
+                // a full-table ROW_NUMBER() window whose every row is then discarded by
+                // `WHERE "row" <= 0` (#335). Worse, translation cost for a pushed nested projection is
+                // ~3x per collection level (#328), so the dead level is a full FACTOR OF 3 on the whole
+                // request, not a constant. Measured on the #328 harness: depth 9, 3,830 ms -> 1,544 ms;
+                // depth 10, 11,453 ms -> 4,582 ms. Expression.New(List<elem>) names no navigation, so
+                // EF evaluates it client-side per row and emits exactly N joins for $levels=N.
+                //
+                // Byte-identical by construction: both shapes produce an empty List<elem> assigned to
+                // the same member, and the deepest level is where the recursion stops, so no level that
+                // carries data is affected. LevelsJoinCountSqliteTests pins both halves — the join
+                // count AND the exact response bytes.
+                : Expression.New(typeof(List<>).MakeGenericType(elem));
             bindings.Add(Expression.Bind(nav.Property, deeper));
             LambdaExpression proj = Expression.Lambda(Expression.MemberInit(Expression.New(elem), bindings), n);
             Expression projected = Expression.Call(_enumerableSelect.MakeGenericMethod(elem, elem), access, proj);
