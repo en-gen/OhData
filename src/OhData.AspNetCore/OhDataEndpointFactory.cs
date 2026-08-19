@@ -1638,11 +1638,49 @@ internal static class OhDataEndpointFactory
     // exception is logged at Warning so an operator can see what actually happened.
     //
     // True on success (options set); false on failure (error set to the 400 result to return).
+    //
+    // #426: the ODataQueryContext is built HERE, per request, and this method takes the IEdmModel
+    // rather than a context so that no caller is able to hand it a shared one. It used to be built
+    // once per entity set at startup and captured by all five read-route closures, which is a
+    // documented contract violation, not merely a risky optimisation: ODataQueryOptions' own
+    // constructor WRITES to the context it is given —
+    //
+    //     Contract.Assert(context.RequestContainer == null);      // ODataQueryOptions.cs:76
+    //     context.RequestContainer = request.GetRouteServices();
+    //     context.Request = request;
+    //
+    // — and Initialize then reads `context.Request` back off that shared field (:1165,
+    // IsNoDollarQueryEnable) rather than using the constructor's own `request` parameter. Two
+    // requests in flight against one context therefore race on Request: the second write lands
+    // between the first request's write and its read, so the first request dereferences a DIFFERENT
+    // request's HttpContext — concurrently with that request's own owner, and in production
+    // possibly after it has completed and been recycled (DefaultHttpContext.Uninitialize nulls
+    // _features). Either way the FeatureReferences read tears and throws NullReferenceException out
+    // of DefaultHttpContext.get_RequestServices — swallowed by the broad catch below and relabelled
+    // 400, which is why #384 was first reported as a 500 and presents as a 400 today. Measured on
+    // the pre-fix tree: 16-89 failures (four runs: 43/31/16/89) in 32,000 constructions over 16
+    // threads sharing one context, every one of them a NullReferenceException thrown from
+    // DefaultHttpContext.get_RequestServices; 0 in 32,000 with a fresh context each, and 0 across
+    // 55 repeats of the full solution suite (QueryContextPerRequestTests). MS's Contract.Assert is
+    // the library stating outright that the type is per-request, and every construction site in
+    // Microsoft.AspNetCore.OData itself builds one per request.
+    //
+    // The (IEdmModel, IEdmType, ODataPath) overload does NOT work as the cheap path here, despite
+    // being the obvious candidate: it leaves ElementClrType null, and ODataQueryOptions<TEntity>'s
+    // constructor throws ArgumentException ("ElementClrTypeNull") unless
+    // Context.ElementClrType == typeof(TEntity). FilterQueryOption.ApplyTo throws on a null
+    // ElementClrType too. The CLR-type overload is the only usable one, and it is what MS uses.
     private static bool TryBuildQueryOptions<TModel>(
-        ODataQueryContext context, HttpContext ctx, ILogger? logger,
+        IEdmModel model, HttpContext ctx, ILogger? logger,
         [NotNullWhen(true)] out ODataQueryOptions<TModel>? options,
         [NotNullWhen(false)] out IResult? error)
     {
+        // Deliberately outside the try: a model that does not contain TModel is a server
+        // misconfiguration, not a statement about the request URL, so it must not be relabelled
+        // 400. It cannot happen for a registered profile (the EDM is built by visiting TModel), and
+        // if it ever does the group filter turns it into a logged 500 + OData error envelope.
+        var context = new ODataQueryContext(model, typeof(TModel), null);
+
         try
         {
             options = new ODataQueryOptions<TModel>(context, ctx.Request);
@@ -5120,9 +5158,20 @@ internal static class OhDataEndpointFactory
         // Collection-level routes use a sub-group so they can use the short "" template.
         var entityGroup = entityAuthGroup.MapGroup($"/{name}");
 
-        // Cache ODataQueryContext and ODataQuerySettings once at startup so each request
-        // does not allocate new instances. Both are read-only after construction.
-        var cachedODataQueryContext = new ODataQueryContext(registration.EdmModel, typeof(TModel), null);
+        // Cache ODataQuerySettings once at startup so each request does not allocate new instances.
+        // Safe to share BECAUSE OF HOW IT IS USED, not because the type is immutable — it is a
+        // mutable POCO. Every consumer these instances reach (FilterQueryOption/OrderByQueryOption/
+        // SkipQueryOption/TopQueryOption.ApplyTo, and QueryBinderContext, which holds it behind a
+        // get-only property) only reads it; the settings-mutating paths in Microsoft.AspNetCore
+        // .OData all mutate an instance they created themselves — ODataQueryOptions.ApplyTo starts
+        // with `querySettings = Context.UpdateQuerySettings(querySettings, query)`, which CopyFroms
+        // into a new ODataQuerySettings, and the IgnoredQueryOptions/MaxFunctionCallDepth writes sit
+        // on objects from GetODataQuerySettings() or `new ODataQuerySettings()`. Verified against
+        // the Microsoft.AspNetCore.OData source, not assumed (#426).
+        //
+        // NOT the case for ODataQueryContext, which used to be cached on this line under the same
+        // comment: it is written by ODataQueryOptions' constructor on every use and cannot be
+        // shared. It is now built per request inside TryBuildQueryOptions — see the note there.
         var cachedCountSettings = new ODataQuerySettings();
         var cachedQuerySettings = new ODataQuerySettings { PageSize = source.MaxTop };
         // #206 phase 2 (optioned expand): settings for the FilterBinder/OrderByBinder that translate a
@@ -5378,7 +5427,7 @@ internal static class OhDataEndpointFactory
                     var s = ResolveHandlers(ctx);
                     var odataSrc = (IODataEntitySetEndpointSource)s;
                     // #402: broad-catch-to-400 around exactly the construction. See TryBuildQueryOptions.
-                    if (!TryBuildQueryOptions<TModel>(cachedODataQueryContext, ctx, logger,
+                    if (!TryBuildQueryOptions<TModel>(registration.EdmModel, ctx, logger,
                             out ODataQueryOptions<TModel>? options, out IResult? optionsError))
                     {
                         return optionsError;
@@ -5574,7 +5623,7 @@ internal static class OhDataEndpointFactory
                                     .Cast<TModel>();
 
                     // #402: broad-catch-to-400 around exactly the construction. See TryBuildQueryOptions.
-                    if (!TryBuildQueryOptions<TModel>(cachedODataQueryContext, ctx, logger,
+                    if (!TryBuildQueryOptions<TModel>(registration.EdmModel, ctx, logger,
                             out ODataQueryOptions<TModel>? options, out IResult? optionsError))
                     {
                         return optionsError;
@@ -6153,7 +6202,7 @@ internal static class OhDataEndpointFactory
                     logger?.LogDebug("GET {Prefix}/{Name}", prefix, name);
 
                     // #402: broad-catch-to-400 around exactly the construction. See TryBuildQueryOptions.
-                    if (!TryBuildQueryOptions<TModel>(cachedODataQueryContext, ctx, logger,
+                    if (!TryBuildQueryOptions<TModel>(registration.EdmModel, ctx, logger,
                             out ODataQueryOptions<TModel>? options, out IResult? optionsError))
                     {
                         return optionsError;
@@ -6343,7 +6392,7 @@ internal static class OhDataEndpointFactory
 
                     var s = ResolveHandlers(ctx);
                     // #402: broad-catch-to-400 around exactly the construction. See TryBuildQueryOptions.
-                    if (!TryBuildQueryOptions<TModel>(cachedODataQueryContext, ctx, logger,
+                    if (!TryBuildQueryOptions<TModel>(registration.EdmModel, ctx, logger,
                             out ODataQueryOptions<TModel>? options, out IResult? optionsError))
                     {
                         return optionsError;
@@ -6444,7 +6493,7 @@ internal static class OhDataEndpointFactory
                     if (hasSelect || hasExpand)
                     {
                         // #402: broad-catch-to-400 around exactly the construction. See TryBuildQueryOptions.
-                        if (!TryBuildQueryOptions<TModel>(cachedODataQueryContext, ctx, logger,
+                        if (!TryBuildQueryOptions<TModel>(registration.EdmModel, ctx, logger,
                                 out options, out IResult? optionsError))
                         {
                             return optionsError;

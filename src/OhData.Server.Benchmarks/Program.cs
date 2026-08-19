@@ -63,6 +63,10 @@ public static class Program
             // requests a deployment that sets the knob will serve through it. MaxExpandTop is unset
             // by default, so this is a price someone chooses, not one the framework imposes.
             typeof(BareExpandCeilingBenchmarks),
+            // #426: not a host-vs-host comparison either — both arms build the same
+            // ODataQueryOptions, differing only in whether the ODataQueryContext is shared (the
+            // pre-fix shape, which raced) or built per request (the shipped, correct one).
+            typeof(QueryContextConstructionBenchmarks),
         }).Run(switcherArgs);
         return 0;
     }
