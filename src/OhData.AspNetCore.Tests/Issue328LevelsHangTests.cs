@@ -318,8 +318,7 @@ public sealed class Issue328LevelsHangTests
             {
                 using var fresh = new HangDbContext(
                     new DbContextOptionsBuilder<HangDbContext>().UseSqlite(conn).Options);
-                s_leaf = kind;
-                IQueryable<HangNode> q = fresh.HangNodes.AsNoTracking().Select(BuildRootProjection(levels));
+                IQueryable<HangNode> q = fresh.HangNodes.AsNoTracking().Select(BuildRootProjection(levels, kind));
                 var sw = Stopwatch.StartNew();
                 List<HangNode> rows = await q.ToListAsync();
                 sw.Stop();
@@ -333,20 +332,18 @@ public sealed class Issue328LevelsHangTests
     [Fact(Skip = "#328 investigation harness — opt-in only; several probes take minutes to hours. Run explicitly by name.")]
     public void Probe_Smallest_NoDatabase()
     {
-        s_leaf = LeafKind.TakeZero;
         for (int levels = 1; levels <= 9; levels++)
         {
             using var db = new HangDbContext(new DbContextOptionsBuilder<HangDbContext>()
                 .UseSqlite("DataSource=file:nonexistent?mode=memory").Options);
             var sw = Stopwatch.StartNew();
-            string sql = db.HangNodes.Select(BuildRootProjection(levels)).ToQueryString();
+            string sql = db.HangNodes.Select(BuildRootProjection(levels, LeafKind.TakeZero)).ToQueryString();
             sw.Stop();
             _out.WriteLine($"no-DB levels={levels,2} translate={sw.ElapsedMilliseconds,7} ms sqlLen={sql.Length}");
         }
     }
 
     public enum LeafKind { TakeZero, NewEmptyList, Unbound }
-    private static LeafKind s_leaf = LeafKind.TakeZero;
 
     private static readonly PropertyInfo ChildrenProp = typeof(HangNode).GetProperty(nameof(HangNode.Children))!;
     private static readonly PropertyInfo[] Scalars =
@@ -365,32 +362,36 @@ public sealed class Issue328LevelsHangTests
         .First(m => m.Name == "Take" && m.GetParameters()[1].ParameterType == typeof(int))
         .MakeGenericMethod(typeof(HangNode));
 
-    private static Expression<Func<HangNode, HangNode>> BuildRootProjection(int levels)
+    // #328: the leaf shape is threaded as a PARAMETER rather than held in a static field.
+    // Two probes select different LeafKinds, and the projection builders are static, so a shared
+    // mutable field would let two concurrently-running probes silently build each other's shape -
+    // producing WRONG measurements rather than an error, in a harness whose only output is numbers.
+    private static Expression<Func<HangNode, HangNode>> BuildRootProjection(int levels, LeafKind leaf)
     {
         ParameterExpression x = Expression.Parameter(typeof(HangNode), "x");
-        return Expression.Lambda<Func<HangNode, HangNode>>(Init(x, levels), x);
+        return Expression.Lambda<Func<HangNode, HangNode>>(Init(x, levels, leaf), x);
     }
 
-    private static Expression Init(Expression owner, int remaining)
+    private static Expression Init(Expression owner, int remaining, LeafKind leaf)
     {
         var bindings = new List<MemberBinding>();
         foreach (PropertyInfo p in Scalars) bindings.Add(Expression.Bind(p, Expression.Property(owner, p)));
-        if (remaining > 0 || s_leaf != LeafKind.Unbound)
-            bindings.Add(Expression.Bind(ChildrenProp, Nav(owner, remaining)));
+        if (remaining > 0 || leaf != LeafKind.Unbound)
+            bindings.Add(Expression.Bind(ChildrenProp, Nav(owner, remaining, leaf)));
         return Expression.MemberInit(Expression.New(typeof(HangNode)), bindings);
     }
 
-    private static Expression Nav(Expression owner, int remaining)
+    private static Expression Nav(Expression owner, int remaining, LeafKind leaf)
     {
         Expression access = Expression.Property(owner, ChildrenProp);
         if (remaining <= 0)
         {
-            return s_leaf == LeafKind.NewEmptyList
+            return leaf == LeafKind.NewEmptyList
                 ? Expression.New(typeof(List<HangNode>))
                 : Expression.Call(EnumToList, Expression.Call(EnumTake, access, Expression.Constant(0)));
         }
         ParameterExpression n = Expression.Parameter(typeof(HangNode), "n");
-        LambdaExpression proj = Expression.Lambda(Init(n, remaining - 1), n);
+        LambdaExpression proj = Expression.Lambda(Init(n, remaining - 1, leaf), n);
         return Expression.Call(EnumToList, Expression.Call(EnumSelect, access, proj));
     }
 
