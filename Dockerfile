@@ -18,5 +18,13 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0
 WORKDIR /app
 COPY --from=build /app .
 ENV ASPNETCORE_URLS=http://+:8080
+# Disable config reload-on-change. WebApplication.CreateBuilder registers appsettings.json
+# with reloadOnChange:true, and FileConfigurationProvider's ctor then creates a
+# FileSystemWatcher -> one inotify instance per config source. Containers get a small
+# per-user inotify budget (Render hit the 128-instance limit), and StartRaisingEvents()
+# throws IOException out of CreateBuilder before the app can start - a crash loop, not a
+# degraded start. The watcher also buys nothing here: the image is immutable, so
+# appsettings.json cannot change at runtime.
+ENV DOTNET_hostBuilder__reloadConfigOnChange=false
 EXPOSE 8080
 ENTRYPOINT ["dotnet", "OhData.TestBench.AspNetCore.dll"]
