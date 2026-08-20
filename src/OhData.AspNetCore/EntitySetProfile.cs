@@ -401,13 +401,16 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private long? _resolvedMaxRequestBodyBytes;
 
     private int? _maxExpansionDepth;
+    private int? _maxExpandBreadth;
     private int? _maxFilterNodeCount;
     private int? _maxOrderByNodeCount;
     private int? _maxAnyAllExpressionDepth;
 
     /// <summary>#202/#206: maximum nested <c>$expand</c> depth for this set, and the ceiling
     /// <c>$levels</c> is resolved/capped to (400 beyond it). Inherits
-    /// <see cref="EntitySetDefaults.MaxExpansionDepth"/> (default 3) when null. Must be positive.</summary>
+    /// <see cref="EntitySetDefaults.MaxExpansionDepth"/> (default 3) when null. Must be positive and
+    /// no greater than <see cref="EntitySetDefaults.MaxExpansionDepthCeiling"/> (#328) — see that
+    /// constant for the measured cost curve the ceiling exists to bound.</summary>
     protected int? MaxExpansionDepth
     {
         get => _maxExpansionDepth;
@@ -415,7 +418,29 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         {
             if (value is <= 0)
                 throw new ArgumentOutOfRangeException(nameof(MaxExpansionDepth), value, "MaxExpansionDepth must be a positive integer.");
+            // #328: validated HERE as well as on EntitySetDefaults. The two are independent entry
+            // points — a profile-level value never passes through the defaults setter — so a check
+            // on one alone leaves the other wide open.
+            if (value is int depth && depth > EntitySetDefaults.MaxExpansionDepthCeiling)
+                throw new ArgumentOutOfRangeException(nameof(MaxExpansionDepth), value, EntitySetDefaults.ExpansionDepthCeilingMessage(depth));
             _maxExpansionDepth = value;
+        }
+    }
+
+    /// <summary>#429: maximum number of navigation expansions this set's <c>$expand</c> may contain,
+    /// counted across every level of the tree (a <c>$levels=N</c> item counts as <c>N</c>). Over the
+    /// limit is <c>400</c> before any handler runs. Inherits
+    /// <see cref="EntitySetDefaults.MaxExpandBreadth"/> (default 50) when null. Must be positive.
+    /// See that property for the measured cost curve and why the count spans the whole tree rather
+    /// than one level.</summary>
+    protected int? MaxExpandBreadth
+    {
+        get => _maxExpandBreadth;
+        init
+        {
+            if (value is <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxExpandBreadth), value, "MaxExpandBreadth must be a positive integer.");
+            _maxExpandBreadth = value;
         }
     }
 
@@ -459,6 +484,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         }
     }
     private int _resolvedMaxExpansionDepth;
+    private int _resolvedMaxExpandBreadth;
     private int _resolvedMaxFilterNodeCount;
     private int _resolvedMaxOrderByNodeCount;
     private int _resolvedMaxAnyAllExpressionDepth;
@@ -687,6 +713,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _resolvedMaxExpandTop = MaxExpandTop ?? defaults.MaxExpandTop;
         _resolvedMaxRequestBodyBytes = MaxRequestBodyBytes ?? defaults.MaxRequestBodyBytes;
         _resolvedMaxExpansionDepth = MaxExpansionDepth ?? defaults.MaxExpansionDepth;
+        _resolvedMaxExpandBreadth = MaxExpandBreadth ?? defaults.MaxExpandBreadth;
         _resolvedMaxFilterNodeCount = MaxFilterNodeCount ?? defaults.MaxFilterNodeCount;
         _resolvedMaxOrderByNodeCount = MaxOrderByNodeCount ?? defaults.MaxOrderByNodeCount;
         _resolvedMaxAnyAllExpressionDepth = MaxAnyAllExpressionDepth ?? defaults.MaxAnyAllExpressionDepth;
@@ -1970,6 +1997,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     int? IEntitySetEndpointSource.MaxExpandTop => _resolvedMaxExpandTop;
     long? IEntitySetEndpointSource.MaxRequestBodyBytes => _resolvedMaxRequestBodyBytes;
     int IEntitySetEndpointSource.MaxExpansionDepth => _resolvedMaxExpansionDepth;
+    int IEntitySetEndpointSource.MaxExpandBreadth => _resolvedMaxExpandBreadth;
     int IEntitySetEndpointSource.MaxFilterNodeCount => _resolvedMaxFilterNodeCount;
     int IEntitySetEndpointSource.MaxOrderByNodeCount => _resolvedMaxOrderByNodeCount;
     int IEntitySetEndpointSource.MaxAnyAllExpressionDepth => _resolvedMaxAnyAllExpressionDepth;
