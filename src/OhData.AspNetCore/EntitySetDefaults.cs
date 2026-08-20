@@ -141,6 +141,41 @@ public sealed class EntitySetDefaults
     private int _maxAnyAllExpressionDepth = 1000;
 
     /// <summary>
+    /// #328: the hard upper bound on <see cref="MaxExpansionDepth"/> — server-wide and per profile.
+    /// Configuring a deeper value throws <see cref="ArgumentOutOfRangeException"/> at startup.
+    /// <para>
+    /// <b>Why a ceiling exists at all.</b> Relational query translation for a pushed nested
+    /// projection is <c>Θ(3ⁿ)</c> in the nesting depth: EF Core re-translates each nested-collection
+    /// subtree three times with no memoization, so every additional level triples the CPU spent
+    /// building the query — before a single row is read. Measured on a 16-node chain returning a
+    /// ~6 KB body, one navigation per level, no database round trip needed to reproduce it:
+    /// </para>
+    /// <code>
+    /// depth  5 →     0.09 s
+    /// depth  6 →     0.24 s   ← this ceiling
+    /// depth  8 →     3.8  s
+    /// depth 10 →    32    s
+    /// depth 12 →   291    s   (4.9 minutes of single-core CPU, unauthenticated, one request)
+    /// </code>
+    /// <para>
+    /// <b>Why 6 and not 3.</b> The blow-up is at 10+, not at 5: depth 5 costs ~90 ms, and this
+    /// project's own documentation and tests already use <c>MaxExpansionDepth = 5</c>. Capping at
+    /// the default of 3 would invalidate a documented example for a shape that is not expensive.
+    /// 6 leaves real headroom above the documented 5 while keeping the worst configurable depth
+    /// under a quarter-second on the depth axis.
+    /// </para>
+    /// <para>
+    /// <b>This is a mitigation, not a fix.</b> Nothing about <c>$levels=12</c> over a 16-node chain
+    /// returning 6 KB is unreasonable; it is expensive only because of upstream re-translation. The
+    /// real answer is one flat query per level instead of one nested projection
+    /// (<a href="https://github.com/en-gen/OhData/issues/430">#430</a>). The ceiling bounds the
+    /// damage in the meantime. Depth is also only one axis; breadth multiplies on top of it — see
+    /// <see cref="MaxExpandBreadth"/>.
+    /// </para>
+    /// </summary>
+    public const int MaxExpansionDepthCeiling = 6;
+
+    /// <summary>
     /// #202/#206: maximum nested <c>$expand</c> depth accepted on the collection read paths, and the
     /// ceiling <c>$levels</c> is resolved and capped to (<c>$levels=max</c> becomes exactly this
     /// value; a numeric <c>$levels=N</c> is clamped to it). A request nesting <c>$expand</c> deeper —
@@ -148,8 +183,9 @@ public sealed class EntitySetDefaults
     /// runs. Defaults to <c>3</c>. Advertised in <c>$metadata</c> as the
     /// <c>Org.OData.Capabilities.V1.ExpandRestrictions/MaxLevels</c> annotation on each entity set so
     /// clients can discover it. Raise it to allow deeper graph queries, or lower it to harden against
-    /// them; must be a positive integer. Profile-level
-    /// <see cref="EntitySetProfile{TKey,TModel}.MaxExpansionDepth"/> overrides this value.
+    /// them; must be a positive integer <b>no greater than <see cref="MaxExpansionDepthCeiling"/></b>
+    /// (#328). Profile-level <see cref="EntitySetProfile{TKey,TModel}.MaxExpansionDepth"/> overrides
+    /// this value.
     /// </summary>
     public int MaxExpansionDepth
     {
@@ -158,7 +194,80 @@ public sealed class EntitySetDefaults
         {
             if (value <= 0)
                 throw new ArgumentOutOfRangeException(nameof(MaxExpansionDepth), value, "MaxExpansionDepth must be a positive integer.");
+            if (value > MaxExpansionDepthCeiling)
+                throw new ArgumentOutOfRangeException(nameof(MaxExpansionDepth), value, ExpansionDepthCeilingMessage(value));
             _maxExpansionDepth = value;
+        }
+    }
+
+    // #328: the message says WHY, not just what. An implementor who set 15 did so on purpose and is
+    // owed the reason it is now refused — otherwise the obvious reading is "arbitrary new limit" and
+    // the obvious response is to go looking for a way around it.
+    internal static string ExpansionDepthCeilingMessage(int value) =>
+        $"MaxExpansionDepth must be no greater than {MaxExpansionDepthCeiling} (requested {value}). " +
+        "Relational query translation for a pushed nested $expand is O(3^depth) — EF Core " +
+        "re-translates each nested-collection subtree three times with no memoization — so each " +
+        "extra level triples the CPU spent building the query before any row is read. Measured on " +
+        "a 16-node chain returning ~6 KB: depth 6 = 0.24 s, depth 8 = 3.8 s, depth 10 = 32 s, " +
+        "depth 12 = 291 s of single-core CPU for ONE unauthenticated request. If you need a deeper " +
+        "graph, fetch it as separate requests, or expand a delegate-backed navigation (which is " +
+        "loaded per level rather than as one nested projection) instead of raising this limit.";
+
+    private int _maxExpandBreadth = 50;
+
+    /// <summary>
+    /// #429/#202: maximum number of navigation expansions a single request's <c>$expand</c> may
+    /// contain, counted across <b>every level of the tree</b>. Defaults to <c>50</c>. A request over
+    /// the limit is rejected with <c>400</c> (<c>InvalidQueryOption</c>) before any handler runs.
+    /// Must be a positive integer. Profile-level
+    /// <see cref="EntitySetProfile{TKey,TModel}.MaxExpandBreadth"/> overrides this value; the
+    /// <b>root</b> entity set's resolved value governs the whole request (the same rule
+    /// <see cref="MaxExpansionDepth"/> follows).
+    /// <para>
+    /// <b>Why breadth needs its own guard.</b> <see cref="MaxExpansionDepth"/> bounds one axis only.
+    /// Translation cost for a pushed nested projection multiplies by ~3 per level <i>and</i> by the
+    /// number of navigations expanded at each level, so depth alone does not bound it. Measured at
+    /// the <b>default</b> depth of 3 on a model with six collection navigations, before this guard
+    /// existed: 6 navigations per level cost <b>4.1 s of single-core CPU for a 1,952-byte
+    /// response</b>, unauthenticated. Nor does the query cache help — each distinct navigation
+    /// <i>subset</i> is a distinct EF compiled-query cache key, so an attacker cycling subsets pays
+    /// full translation cost every time.
+    /// </para>
+    /// <para>
+    /// <b>Why the count is over the whole tree, not per level.</b> A per-level cap of <c>B</c> with a
+    /// depth ceiling of <c>D</c> still admits <c>B^D</c> expansions — at <c>B</c>=6, <c>D</c>=6 that
+    /// is 55,986 nodes, which is not a bound in any useful sense. Counting every node in the tree
+    /// bounds the two axes together. Counting <i>distinct navigation names</i> would be weaker still:
+    /// the most expensive shapes measured reuse six names over six levels.
+    /// </para>
+    /// <para>
+    /// <b>Why 50.</b> It is far above any realistic request — a three-level chain expanding three
+    /// navigations at every level is 39 nodes and is already an unusual shape; typical rich requests
+    /// are under 15 — and it keeps the worst legal request measurable. Measured on this project's
+    /// calibration harness (warm host, SQLite in-memory): at the default depth of 3, a 50-node
+    /// <c>$expand</c> costs ~0.4 s (interpolated between 39 nodes = 308 ms and 84 nodes = 699 ms).
+    /// At the <i>maximum legal</i> depth of 6, a systematic sweep of every branching vector within
+    /// the budget put the worst legal request at <b>1.0-1.4 s</b> (shape <c>[1,1,1,1,2,6]</c>, only
+    /// 18 nodes — deep-and-narrow is more expensive per node than flat-and-wide). Unguarded, the same
+    /// model reaches 2,850 nodes and <b>36 s</b> for a 111-byte error response; that request now
+    /// returns <c>400</c> in <b>56 ms</b>, essentially all of it parsing the URL.
+    /// Raise it if your model genuinely needs more; it is a knob precisely because 50 is a judgement
+    /// call, not a law.
+    /// </para>
+    /// <para>
+    /// A <c>$levels=N</c> item counts as <c>N</c> (its resolved level count, after clamping),
+    /// because that is what it costs — one nested projection level each, exactly like the equivalent
+    /// explicit chain. Every other expansion counts as one.
+    /// </para>
+    /// </summary>
+    public int MaxExpandBreadth
+    {
+        get => _maxExpandBreadth;
+        set
+        {
+            if (value <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxExpandBreadth), value, "MaxExpandBreadth must be a positive integer.");
+            _maxExpandBreadth = value;
         }
     }
 

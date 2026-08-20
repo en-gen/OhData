@@ -11,6 +11,49 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **`MaxExpansionDepth` is now hard-capped at `6`; configuring more throws at startup (#328).**
+  `EntitySetDefaults.MaxExpansionDepthCeiling` is a new public constant, and both configuration
+  entry points — `WithDefaults(d => d.MaxExpansionDepth = N)` and a profile's own
+  `MaxExpansionDepth` — throw `ArgumentOutOfRangeException` above it.
+
+  > **⚠ BREAKING CHANGE.** A registration that configured `MaxExpansionDepth` above `6` no longer
+  > starts: it throws `ArgumentOutOfRangeException` from `AddOhData` (defaults) or from the profile
+  > constructor. It fails loudly at boot, not under load, and the default of `3` is unchanged — so
+  > **a deployment that never set the knob is unaffected**, as is any value from 1 to 6. The
+  > exception message carries the measured cost curve and what to do instead.
+
+  **Why.** Relational query translation for a pushed nested projection is `Θ(3ⁿ)` in the nesting
+  depth: EF Core re-translates each nested-collection subtree three times with no memoization, so
+  every extra level triples the CPU spent *building* the query, before a single row is read. It is
+  not a data-volume problem — it reproduces with no database, no connection and no rows, through
+  `ToQueryString()` alone. Measured on a 16-node self-referential chain returning a ~6 KB body, one
+  navigation per level:
+
+  | depth | translation |
+  |---:|---:|
+  | 5 | 0.09 s |
+  | **6** | **0.24 s** ← the ceiling |
+  | 8 | 3.8 s |
+  | 10 | 32 s |
+  | 12 | 291 s |
+
+  291 seconds is 4.9 minutes of single-core CPU for **one unauthenticated request with no body**,
+  and growth is a clean ×3.0 per level — there is no cliff to stay below, only a curve to stop
+  climbing.
+
+  **Why 6 and not 3 (the default).** The blow-up is at 10+, not at 5: depth 5 costs ~90 ms, and
+  `docs/query-options.md` and two of this project's own tests already use `MaxExpansionDepth = 5`.
+  Capping at the default would have invalidated a documented configuration for a shape that is not
+  expensive.
+
+  **This is a mitigation, not a fix.** Nothing about `$levels=12` over a 16-node chain returning
+  6 KB is unreasonable; it is expensive only because of upstream re-translation. The real answer is
+  one flat query per level instead of one nested projection
+  ([#430](https://github.com/en-gen/OhData/issues/430)). If you need a deeper graph today, fetch it
+  as separate requests, or expand a **delegate-backed** navigation — those are loaded once per level
+  by the expansion pipeline rather than composed into one nested projection, so they never pay the
+  `3ⁿ` cost.
+
 - **`MaxExpandTop` now defaults to `null` — no ceiling — instead of `1000` (#313).** The framework
   cannot know how large any given child collection is, so it no longer guesses: it ships the
   configuration point and lets the implementor set it. `1000` was an invented number, and a
@@ -357,6 +400,52 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`MaxExpandBreadth` — a breadth guard on `$expand`, defaulting to `50` (#429, shipping #202's
+  never-shipped guard).** `$expand` cost was bounded on the **depth** axis (`MaxExpansionDepth`) and
+  completely unbounded on the **breadth** axis: there was no navigation-count limit of any kind. A
+  request whose `$expand` contains more than `MaxExpandBreadth` navigation expansions, counted
+  across **every level of the tree**, is now rejected with `400` (`InvalidQueryOption`) before any
+  handler runs — on all three collection read paths and on `GET /{Set}({key})`.
+
+  > **⚠ BREAKING CHANGE, in the restrictive direction.** A client sending an `$expand` with more
+  > than 50 navigation expansions now gets `400` where it previously got `200`. Fifty is far above
+  > any realistic request, so an existing consumer is unlikely to hit it — but it is a new rejection
+  > on a previously-accepted request, and it is configurable:
+  > `WithDefaults(d => d.MaxExpandBreadth = N)` server-wide, or `MaxExpandBreadth` on the profile.
+  > There is deliberately no "unlimited" setting; a guard that defaults to unlimited protects nobody.
+
+  **Why depth alone was not enough.** Translation cost multiplies by ~3 per level *and* by the
+  number of navigations expanded at each level. Measured at the **default** `MaxExpansionDepth` of
+  3, on a six-navigation model, with no breadth guard:
+
+  | navigations per level | wall clock | response |
+  |---:|---:|---:|
+  | 1 | 240 ms | 1,440 B |
+  | 4 | 1,010 ms | 1,696 B |
+  | 6 | 4,084 ms | 1,952 B |
+
+  4.1 s of single-core CPU for a 1,952-byte response, at defaults, unauthenticated — and the EF
+  compiled-query cache is no defence, because each distinct navigation **subset** is a distinct
+  cache key, so cycling subsets never warms it. (That table is the original #429 measurement; the
+  "why 50" figures below were taken later on a faster machine, where the same shape reproduces at
+  ~1.6 s. Compare each set internally, not across the two — the ratios hold in both.)
+
+  **Why the count spans the whole tree rather than one level.** A per-level cap of `B` under the
+  depth ceiling of 6 still admits `B⁶` expansions — 55,986 at `B=6`. Counting every node bounds both
+  axes together. Counting *distinct navigation names* would be weaker still: the most expensive
+  shapes measured reuse six names over six levels. A `$levels=N` expansion counts as `N` — its
+  resolved level count — because that is what it costs.
+
+  **Why 50.** Far above any realistic request (a three-level chain expanding three navigations at
+  every level is 39 nodes and is already unusual; typical rich requests are under 15), while keeping
+  the worst legal request measurable: ~0.4 s at the default depth of 3, and — over a systematic
+  sweep of every branching vector within the budget at the maximum legal depth of 6 — **1.0–1.4 s**
+  for the worst legal request (shape `[1,1,1,1,2,6]`, only 18 nodes: deep-and-narrow is more
+  expensive per node than flat-and-wide). Unguarded, the same model reaches 2,850 nodes and **36 s**
+  for a 111-byte error response; that request now returns `400` in **56 ms**, essentially all of it
+  URL parsing.
+
+
 - **A startup `Warning` for a bare `$expand` with no ceiling, and the `ExpandPagingEnabled` knob it
   points at (#313).** These are the replacement for the arbitrary `MaxExpandTop` default removed
   above — the framework stops guessing a number and instead names the exposure to the one person who
@@ -584,6 +673,55 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   recommended registration. Additive API only — no runtime behavior change.
 
 ### Fixed
+
+- **`$levels=max` bypassed the depth cap the numeric form is validated against (#428).**
+  Microsoft's `SelectExpandQueryValidator` rejects a *numeric* `$levels=N` when
+  `N > min(MaxExpansionDepth, modelBoundMaxDepth)`; for the `max` literal it only requires that
+  minimum to be non-zero — it does not clamp. OhData then resolved `max` against
+  `MaxExpansionDepth` alone and never consulted the model-bound cap, in **two** independently
+  transcribed places (the pushdown projection builder and the JSON keep/strip pass). So
+  `$levels=max` was served at depths every numeric spelling returned `400` for. Measured with the
+  model-bound cap lowered to 5 and a profile at `MaxExpansionDepth = 8`:
+
+  ```
+  $levels=5     -> 200    609 ms   joins=6
+  $levels=6..9  -> 400              <- rejected by the model-bound cap
+  $levels=max   -> 200  5,477 ms   joins=9   <- served at depth 8
+  ```
+
+  At ~3× translation cost per level (#328) that is a cost multiplier, not a cosmetic
+  inconsistency: on a stock build a profile at `MaxExpansionDepth = 15` served `max` at depth 15 —
+  `3¹⁶` translation units, extrapolated at **~2.2 hours of single-core CPU for one request**.
+
+  Both call sites now share one `ResolveLevelsBudget` function that consults **both** bounds, and
+  #328 additionally derives the model-bound cap from the new `MaxExpansionDepthCeiling`, so the two
+  can no longer diverge at all. The second half is what actually closes the hole on a shipped build
+  — the shared function is what stops it re-opening if the ceiling is ever widened, and
+  `ExpandLevelsResolutionTests` asserts the tie as a tripwire.
+
+- **`$levels=N` emitted N+1 join levels; the extra one was pure waste and cost a factor of 3
+  (#335).** The `$levels` recursion terminated its deepest level with
+  `n.Nav.Take(0).ToList()` — an expression that still *names* the navigation, so EF Core composed a
+  real join for it: a full-table `ROW_NUMBER()` window whose every row was then discarded by
+  `WHERE "row" <= 0`. The terminator is now `new List<T>()`, which names nothing and is evaluated
+  per row on the client.
+
+  The dead level was not a constant cost. Translation of a pushed nested projection costs ~3× per
+  collection level (#328), so removing one level divides the whole request's translation cost.
+  Measured end-to-end (16-node self-referential chain, SQLite in-memory, warm host):
+
+  | `$levels` | before | after |
+  |---|---:|---:|
+  | 5 | 309 ms | 94 ms |
+  | 6 | 883 ms | 238 ms |
+  | 7 | 2,404 ms | 677 ms |
+  | 9 | 9,856 ms | 2,196 ms |
+
+  **Pure optimisation — no payload changes.** The terminating level still serializes as an empty
+  array (`"Children":[]`), including its `Nav@odata.count` of `0` under `$count=true`.
+  `LevelsJoinCountSqliteTests` pins both halves: the join count against the table is now exactly `N`
+  for `$levels=N` and no `ROW_NUMBER()` is emitted, and four response bodies captured from the
+  **pre**-fix build are asserted byte-for-byte against the post-fix one.
 
 - **`Ignore()` containment was case-sensitive while body binding is case-insensitive (#398).** The
   withheld-name sets were built and compared with `StringComparer.Ordinal`, but the declared-member

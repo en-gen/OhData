@@ -64,6 +64,14 @@ internal interface IEntitySetEndpointSource
     int? MaxExpandTop { get; }
     long? MaxRequestBodyBytes { get; }
     int MaxExpansionDepth { get; }
+
+    /// <summary>
+    /// #429: maximum number of navigation expansions a request's <c>$expand</c> may contain, counted
+    /// across every level of the tree. Resolved from the profile flag / <c>EntitySetDefaults</c>
+    /// (default <c>50</c>). The <b>root</b> entity set's value governs the whole request, as
+    /// <see cref="MaxExpansionDepth"/> does.
+    /// </summary>
+    int MaxExpandBreadth { get; }
     int MaxFilterNodeCount { get; }
     int MaxOrderByNodeCount { get; }
     int MaxAnyAllExpressionDepth { get; }
