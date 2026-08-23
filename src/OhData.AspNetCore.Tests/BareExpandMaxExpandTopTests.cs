@@ -113,7 +113,12 @@ internal static class BareExpandSqliteHarness
         // #313 stage 5: a second profile registered over the SAME BeAuthor EDM entity type, for the
         // delegate-safety partition (a sibling that declares Books WITH a delegate makes the
         // treatment Blank for BOTH sets).
-        Action<OhDataBuilder>? configureExtraProfiles = null)
+        Action<OhDataBuilder>? configureExtraProfiles = null,
+        // #412: render parameter VALUES into the captured command text. The nested page size reaches
+        // SQL as a query parameter (deliberately — see ContinuationKeyBox's remarks on the plan
+        // cache), so without this every LIMIT logs as `@p2='?'` and the bound is unassertable. Off by
+        // default, so every existing call site captures exactly the text it did before.
+        bool logSqlParameterValues = false)
     {
         TestFixture fx = await TestHostBuilder.BuildAsync(
             b =>
@@ -129,6 +134,7 @@ internal static class BareExpandSqliteHarness
                 services.AddDbContext<BareExpandDbContext>(o =>
                 {
                     o.UseSqlite(connection);
+                    if (logSqlParameterValues) o.EnableSensitiveDataLogging();
                     if (sink is not null)
                     {
                         o.LogTo(
