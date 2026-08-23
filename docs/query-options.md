@@ -572,7 +572,7 @@ The ceiling is advertised in `$metadata` as the `Org.OData.Capabilities.V1.Expan
 - **The SQL bound at a projection leaf needs window functions.** `Take(MaxExpandTop + 1)` inside a collection projection is translated by EF Core as the standard top-N-per-group form, `ROW_NUMBER() OVER (PARTITION BY <fk> ORDER BY <key>)` — the same shape an explicit nested `$top` has always produced. Every provider OhData tests against (SQLite, EF Core InMemory) supports it, as do SQL Server, PostgreSQL, Oracle, MySQL 8.0+ and MariaDB 10.2+. The only relational providers that cannot translate it are MySQL before 8.0 (2018) and MariaDB before 10.2 (2017), both long past end-of-life and neither referenced or tested here. On such a provider, leave `MaxExpandTop` unset (the default) to keep the plain join.
 - **Which rows the ceiling counts differs by shape, and it is worth knowing which.** At a projection **leaf** the bound is composed *after* any nested `$skip`, so what is measured against the ceiling is the **post-`$skip` remainder** — `Children($skip=4995)` over 5,000 rows at a ceiling of 1000 succeeds and returns 5. At a level with its own nested `$expand`, or inside a `$levels` recursion, no SQL window is composable and the check runs over the **fully materialized, pre-window** collection, so the same request is rejected. That asymmetry predates #313 (it is the #304 deferred-window shape, where `EnsureWithinExpandCeiling` necessarily runs before the JSON-pass window because there is nothing to window until the collection is materialized); #313 only makes it reachable from more requests. It goes away if and when [#299](https://github.com/en-gen/OhData/issues/299) removes the unbounded materialization, and not before.
 - **Use `null` — not a very large number — to mean "no ceiling".** `MaxExpandTop = int.MaxValue` still counts as *set*, so every bound and every key tiebreaker is composed exactly as for a small value; the only difference is that the resulting check can never fire. You pay the `ROW_NUMBER()` window for a rejection that cannot happen. Unset (the default `null`) is the opt-out; a sentinel number is not.
-- **With no ceiling set, a startup `Warning` names each exposed navigation (#313).** That is what replaced the arbitrary `1000` default. At `MapOhData()` OhData logs one warning per navigation that is collection-valued, delegate-less, on a profile that has `GetQueryable`, `ExpandEnabled` **and** `ExpandPushdownEnabled`, when that profile's resolved `MaxExpandTop` is `null` — i.e. exactly the navigations a bare `?$expand=Nav` will materialize without bound. It names the entity set, the navigation, `MaxExpandTop` **and** `ExpandPagingEnabled` — in that order, because the second is inert without the first — and it deliberately prescribes no *number*: the framework cannot know how large your child collections are. Leaving it unset is a legitimate choice for a collection you know is small; the warning informs that choice rather than making it. Because `ExpandEnabled` is `false` by default, a registration that never opts into `$expand` gets no warning at all. Emitted once at startup, never per request.
+- **With no ceiling set, a startup `Warning` names each exposed navigation (#313).** That is what replaced the arbitrary `1000` default. At `MapOhData()` OhData logs one warning per navigation that is collection-valued, delegate-less **on that profile's own declaration**, on a profile that has `GetQueryable`, `ExpandEnabled` **and** `ExpandPushdownEnabled`, when that profile's resolved `MaxExpandTop` is `null` — i.e. exactly the navigations a bare `?$expand=Nav` will materialize without bound. A *sibling* profile over the same EDM entity type declaring the navigation with a delegate does **not** silence it ([#421](https://github.com/en-gen/OhData/issues/421)): that sibling's delegate governs the sibling's own set, and this one still serves the navigation raw and unbounded. It names the entity set, the navigation, `MaxExpandTop` **and** `ExpandPagingEnabled` — in that order, because the second is inert without the first — and it deliberately prescribes no *number*: the framework cannot know how large your child collections are. Leaving it unset is a legitimate choice for a collection you know is small; the warning informs that choice rather than making it. Because `ExpandEnabled` is `false` by default, a registration that never opts into `$expand` gets no warning at all. Emitted once at startup, never per request.
 - **`Prefer: odata.maxpagesize` narrows a nested page too, as of [#412](https://github.com/en-gen/OhData/issues/412).** §8.2.8.5 scopes the preference to *"each collection within the response"*, so it is not a root-only header. It applies to a nested collection **only where a `Nav@odata.nextLink` is going out** — a truly bare `$expand` on a profile that opted into `ExpandPagingEnabled` — because trimming a collection that gets no link is the silent truncation the framework never does. It is clamped **down** to `MaxExpandTop` and never up (a client preference cannot lift the server's ceiling, mirroring the root's clamp to `MaxTop`), and it never lowers the *ceiling*, so it can never turn a `200` into a `400`. The continuation route reads the same header, so a client that keeps sending it pages at its requested size all the way down; one that stops gets `MaxExpandTop`-sized pages from there on, with nothing skipped or repeated. `Preference-Applied` is unchanged and stays a single header: §8.2.8.5 makes the echo a `MAY` and defines its value as *"the maximum page size applied"* for the whole response, so no per-collection echo is added.
 
 To also expose navigation as a standalone HTTP route (`GET /Orders(id)/Lines`), provide a handler to `HasMany` - see [navigation-routing.md](navigation-routing.md).
@@ -645,7 +645,7 @@ two no-ops survive the parser, and both count as bare —
 | `$expand=Nav($levels=N)` | `400` | same, at every level |
 | a nav whose element type has a composite or unresolvable key | `400` | no single key ⇒ no total order ⇒ no sound `$skip` walk |
 | depth ≥ 2 — the leaf under `$expand=Books($expand=Chapters)` | `400` | see [Deliberate limits](#deliberate-limits-and-why-they-are-limits) |
-| a nav any profile in the candidate set declares **with a delegate** | `400`, and no route | delegate safety; see below |
+| a nav **this profile** declares with a delegate | `400`, and no route | delegate safety; see below |
 
 That is the whole matrix, and it **fails closed**: over the ceiling, a shape either pages or `400`s.
 There is no third answer and no commit at which a bound existed without one or the other, so silent
@@ -759,16 +759,25 @@ These are decisions, not gaps waiting to be filled. The first three are tracked 
   directly weakens the delegate-safety invariant. The real fix is a **contract** change — a delegate
   overload taking `(key, skip, take, ct)` — not a ceiling applied behind the delegate's back. Until
   then, a delegate is where you own the size of your own answer.
-- **Delegate safety is enforced across profiles, in both directions.** Route registration and link
-  emission share one predicate, and the `ServeRaw` test in it is resolved over the parent type's
-  whole candidate set — every profile exposing the same EDM entity type — not over "this profile owns
-  no handler for it". So a *sibling* profile that declares the navigation **with** a delegate
-  suppresses both the route and the link for the delegate-less set, which keeps that shape exactly
-  where it was rather than giving it a raw continuation endpoint. (Note what this does **not** claim:
-  a sibling delegate does not blank a *root-level* `$expand` — the root resolves its treatment
-  against the URL-named profile alone, so those rows are served raw there today. That is a
-  pre-existing property of the root level, unchanged by #313 and tracked in
-  [#415](https://github.com/en-gen/OhData/issues/415).)
+- **Delegate safety is the declaring set's own declaration, and a sibling's delegate does not
+  suppress paging** ([#421](https://github.com/en-gen/OhData/issues/421)). Route registration and
+  link emission share one predicate, whose `ServeRaw` test is resolved by `ResolveNavTreatment` over
+  **the URL-named set alone** — byte-for-byte the candidate set the root read path uses. A navigation
+  *this* profile declares with a delegate is `RunDelegate`, so it never gets a raw continuation route
+  or a link; that is the invariant, and it is unchanged.
+
+  Until #421 the predicate resolved over the whole sibling union instead, so a *sibling* profile
+  declaring the navigation with a delegate suppressed both the route and the link on the
+  **delegate-less** set. That protected nothing: under declaring-set authority the root `$expand` on
+  the delegate-less set serves those rows **raw** regardless — the root resolves its treatment
+  against the URL-named profile alone — so the withheld route only
+  removed the paging escape hatch, leaving an over-ceiling bare `$expand` at a permanent `400` on a
+  navigation the profile itself declared delegate-less, with `ExpandPagingEnabled` silently inert for
+  that entity set. The continuation reads the parent profile's own `GetQueryable` under that set's
+  own authorization, so the rows it serves are a strict subset of what the `$expand` beside it
+  already returns to the same caller; nothing crosses an entity-set boundary. The related claim that
+  a sibling delegate blanks a *root-level* `$expand` was measured false and is why
+  [#415](https://github.com/en-gen/OhData/issues/415) was closed as refuted.
 - **`Prefer: odata.maxpagesize` *is* honoured on the nested page size, as of
   [#412](https://github.com/en-gen/OhData/issues/412).** It **narrows** the nested page and is clamped
   down to `MaxExpandTop`, never up — the ceiling is the server's DoS bound and a request header may

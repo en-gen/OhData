@@ -1020,19 +1020,19 @@ internal static class OhDataEndpointFactory
     //   - collection-valued — a single-valued navigation is one row and cannot be the DoS.
     //   - ServeRaw       — a delegate-backed navigation is never in the engaged tree. Resolved through
     //                      the SAME ResolveNavTreatment stage 5's route registration uses
-    //                      (ResolveExpandPagingNavigations), so the warning and the routes cannot
-    //                      drift, rather than through a per-profile "owns no NavigationRouteDefinition"
-    //                      test. #415: this clause used to add "and a BLANKED one (a sibling profile
-    //                      over the same EDM type disagrees) is not served at all" — MEASURED FALSE at
-    //                      the ROOT, which is the only level this diagnostic describes. Model B gives
-    //                      the URL-named set authority over its own navigations, so a nav this
-    //                      union-based check calls Blank is still served RAW and unbounded by
-    //                      /{Set}?$expand={Nav}. The consequence is a real (narrow) hole in the
-    //                      diagnostic itself: the warning goes SILENT for exactly the profile that
-    //                      needs it, whenever any sibling profile over the same EDM type delegates the
-    //                      nav. Left as-is with the rest of the #415 asymmetry — see
-    //                      ResolveExpandPagingNavigations' remarks for the measurement and the
-    //                      refutation of #415's original diagnosis.
+    //                      (ResolveExpandPagingNavigations), over the SAME candidate set, so the
+    //                      warning and the routes cannot drift — rather than through a per-profile
+    //                      "owns no NavigationRouteDefinition" test. #415: this clause used to add
+    //                      "and a BLANKED one (a sibling profile over the same EDM type disagrees) is
+    //                      not served at all" — MEASURED FALSE at the ROOT, which is the only level
+    //                      this diagnostic describes. Model B gives the URL-named set authority over
+    //                      its own navigations, so a nav the old union-based check called Blank is
+    //                      still served RAW and unbounded by /{Set}?$expand={Nav}, and the warning
+    //                      went SILENT for exactly the profile that needed it whenever ANY sibling
+    //                      over the same EDM type delegated the nav. #421 fixed that by resolving the
+    //                      candidate set the way the root read path does — `new[] { profile }`. A
+    //                      navigation THIS profile delegates still yields RunDelegate and is still
+    //                      silent, which is the clause's actual point.
     //   - MaxExpandTop is null — with a ceiling set there is a bound, and #313 stage 2 already turns
     //                      the over-ceiling shape into a 400. Nothing to warn about.
     //
@@ -1053,11 +1053,11 @@ internal static class OhDataEndpointFactory
                 .FindEntitySet(profile.EntitySetName)?.EntityType;
             if (entityType is null) continue;
 
-            // The candidate set is the one for the type that DECLARES the navigation — the profile
-            // itself plus any sibling profile exposing the same EDM entity type — which is exactly
-            // what ResolveNavTreatment's decision table is defined over.
-            IReadOnlyList<IEntitySetEndpointSource> candidates =
-                ResolveProfilesForEdmType(entityType, registration);
+            // #421: `new[] { profile }` — the URL-named set ALONE, byte-for-byte the array
+            // ApplyCollectionPipelineAsync passes as the root level's `levelSources`. This diagnostic
+            // describes what `GET /{Set}?$expand={Nav}` materializes, so it must be resolved from the
+            // same candidate set that request resolves from. See the ServeRaw clause above.
+            IReadOnlyList<IEntitySetEndpointSource> candidates = new[] { profile };
 
             foreach (IEdmNavigationProperty nav in entityType.NavigationProperties())
             {
@@ -4747,18 +4747,22 @@ internal static class OhDataEndpointFactory
     // the feature is broken in one of two directions: a link with no route behind it is a 404 on the
     // continuation, and a route with no link in front of it is a delegate-safety hole.
     //
-    // The condition that most needs to be shared: <b>ServeRaw is resolved through ResolveNavTreatment
-    // over the parent type's candidate set</b>, not through "this profile owns no
-    // NavigationRouteDefinition for it". A SIBLING profile over the same EDM entity type that declares
-    // the nav WITH a delegate makes the treatment Blank here, so neither a route nor a link is
-    // produced for it. Same rule, same helper, as the stage 3 startup diagnostic
+    // The condition that most needs to be shared: <b>ServeRaw is resolved through ResolveNavTreatment</b>,
+    // not through "this profile owns no NavigationRouteDefinition for it". That is what keeps a
+    // navigation THIS profile routes through a delegate from ever getting a raw continuation route —
+    // its own candidate set puts it in DB, so the treatment is RunDelegate, never ServeRaw. Same rule,
+    // same helper, and now the same CANDIDATE SET as the stage 3 startup diagnostic
     // (WarnUnboundedBareExpand).
     //
-    // WHAT THIS COMMENT USED TO CLAIM, AND WHY IT WAS WRONG (#415). It justified the union with "a
+    // #421: THE CANDIDATE SET IS `new[] { profile }` — the URL-named set ALONE. It used to be
+    // ResolveProfilesForEdmType, the sibling union, which is what the root read path beside it does
+    // NOT do; the two disagreed about which profile's declaration governs a navigation at depth 1 —
+    // the only depth this predicate governs, since #313 O5 restricts continuation links to the root.
+    //
+    // WHAT THE UNION WAS JUSTIFIED WITH, AND WHY BOTH HALVES ARE FALSE (#415, #421). It claimed "a
     // Blank navigation is emptied by ExpandLevelAsync before ShapePushedExpandsInJson ever sees it,
-    // so no link is emitted for it", and with a per-profile predicate therefore "serving those rows
-    // RAW, bypassing the delegate". Both halves are FALSE at depth 1 — the only depth this predicate
-    // governs, since #313 O5 restricts continuation links to the root.
+    // so no link is emitted for it", and that a per-profile predicate would therefore "serve those
+    // rows RAW, bypassing the delegate".
     //
     //   (1) ExpandLevelAsync does NOT empty it at the root. ApplyCollectionPipelineAsync passes
     //       `new[] { requestSource }` — the URL-named profile ALONE — so ResolveNavTreatment never
@@ -4776,11 +4780,21 @@ internal static class OhDataEndpointFactory
     //       no binding to say which set a nested path resolves to — and the root has nothing to
     //       disambiguate because the URL names the set.
     //
-    // So this predicate is deliberately MORE CONSERVATIVE than the root read path beside it, not
-    // consistent with it: it withholds a continuation route for rows that same request serves raw.
-    // Fail-closed, and left as-is here rather than quietly widened — the asymmetry is real and is the
-    // open half of #415, whose original diagnosis (that the ROOT was the drifted site) is refuted
-    // above. Do not "fix" either side to match the other without an owner decision.
+    // WHY THE ALIGNED PREDICATE IS NOT A DELEGATE-SAFETY HOLE, which is the whole question #421 turns
+    // on. The continuation route reads the PARENT PROFILE'S OWN GetQueryable (step 4 of the handler),
+    // pins one parent by key and SelectManys the navigation — the same queryable, the same entity
+    // set, the same `entityAuthGroup` authorization as the root read. And the aligned candidate set is
+    // BYTE-FOR-BYTE the array the root read path uses, so the navigations this predicate now returns
+    // are exactly {navigations `GET /{Set}?$expand={Nav}` already serves RAW} ∩ {pageable}. The route
+    // can therefore expose no row the read path beside it does not already expose to the same caller;
+    // it exposes a strictly narrower window on one of them. Nothing crosses an entity-set boundary:
+    // the sibling's delegate still governs the sibling's own routes, which are untouched.
+    //
+    // The direction of the old error was also not the harmless one it looks like. Withholding the
+    // route withheld the LINK too (both call sites read this one predicate), so an over-ceiling bare
+    // $expand on a set that declares the navigation delegate-less 400'd forever with no paging escape
+    // hatch — ExpandPagingEnabled inert for that entity set, silently, on a navigation the profile
+    // itself declared delegate-less. Fail-closed against a hazard that does not exist is not free.
     //
     // The remaining conditions are the ones under which a link could be emitted at all:
     //   - ExpandPagingEnabled   the opt-in knob (default false)
@@ -4806,15 +4820,16 @@ internal static class OhDataEndpointFactory
             return Array.Empty<ExpandPagingNav>();
         }
 
-        IEdmEntityType? parentEdmType = registration.EdmModel.EntityContainer?
-            .FindEntitySet(profile.EntitySetName)?.EntityType;
-        if (parentEdmType is null) return Array.Empty<ExpandPagingNav>();
+        // The entity set must exist in the container for the continuation URL this predicate implies
+        // to be addressable at all. Kept as a guard only — #421 removed the sibling union that used
+        // to be the reason this lookup was here.
+        if (registration.EdmModel.EntityContainer?.FindEntitySet(profile.EntitySetName) is null)
+            return Array.Empty<ExpandPagingNav>();
 
-        // The candidate set is the one for the type that DECLARES the navigation — this profile plus
-        // any sibling profile exposing the same EDM entity type. Exactly what ResolveNavTreatment's
-        // decision table is defined over.
-        IReadOnlyList<IEntitySetEndpointSource> candidates =
-            ResolveProfilesForEdmType(parentEdmType, registration);
+        // #421: THE CANDIDATE SET IS `new[] { profile }` — the URL-named set ALONE, byte-for-byte the
+        // array ApplyCollectionPipelineAsync passes as the root level's `levelSources`. See this
+        // method's remarks above for why the sibling union that used to be here protected nothing.
+        IReadOnlyList<IEntitySetEndpointSource> candidates = new[] { profile };
 
         List<ExpandPagingNav> result = new();
         // NavigationPropertyNames (not the EDM's navigations) deliberately: it is the set the pushdown
