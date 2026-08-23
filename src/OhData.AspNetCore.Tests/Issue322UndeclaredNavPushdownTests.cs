@@ -614,22 +614,27 @@ public sealed class Issue322NonEfProjectionUnificationTests
     }
 
     /// <summary>
-    /// THE PAYLOAD DIFFERENCE, asserted post-fix, with the declared control alongside it so the
-    /// unification is visible rather than claimed in prose. Both provenances now project the
-    /// navigation away and serialize <c>null</c>; before the fix the UNDECLARED one alone survived
-    /// the projection and echoed the in-memory object, because <c>BuildStructuralProperties</c> had
-    /// classified it as a plain structural property instead of a navigation.
+    /// #322's payload difference, RE-SCOPED by #440 symptom 1 — and this is the one place in the
+    /// suite where the two fixes disagree about the same request, so it is worth being exact.
     /// <para>
-    /// If this ever flips back to <c>{"Id":5,"Name":"IN-MEMORY"}</c>, that is a REGRESSION of #322,
-    /// not a fix: it would mean an undeclared navigation is once again being treated as a
-    /// projectable column, which is the condition that abandoned pushdown for the whole entity set.
-    /// Making BOTH sides serve the in-memory value would be a different (and legitimate) change to
-    /// how $select pushdown treats delegate-less navigations on a non-EF source — but it would have
-    /// to move the declared control too, or the two provenances have diverged again.
+    /// #322 made both provenances project the navigation away and serialize <c>null</c>. #440 then
+    /// established that <c>null</c> is the one answer that is definitely wrong for a navigation the
+    /// server never loaded (OData JSON Format v4.01 §8.3: an inline navigation value IS the
+    /// expanded representation, and a null single-valued one asserts the relationship is empty).
+    /// So the UNDECLARED navigation is now <b>omitted</b>, and the declared control keeps its
+    /// <c>null</c> — a deliberate divergence, and the rule behind it is that <b>declaring</b> a
+    /// navigation is what makes it servable at all. The declared one was projected away by a
+    /// mechanism that knows it is a navigation and could have loaded it; the undeclared one was
+    /// never in any load path.
+    /// </para>
+    /// <para>
+    /// If the undeclared side ever flips back to <c>{"Id":5,"Name":"IN-MEMORY"}</c> that is still a
+    /// REGRESSION of #322 (an undeclared navigation treated as a projectable column again). If it
+    /// flips to <c>null</c>, that is a regression of #440.
     /// </para>
     /// </summary>
     [Fact]
-    public async Task SelectPushdownOverANonEfQueryable_NullsAPopulatedUndeclaredNav_ExactlyAsItAlreadyDidTheDeclaredOne()
+    public async Task SelectPushdownOverANonEfQueryable_OmitsAPopulatedUndeclaredNav_WhileTheDeclaredOneStillNulls()
     {
         await using TestFixture fx = await TestHostBuilder.BuildAsync(
             b => b.AddEntitySetProfile<UdMemOrderProfile>());
@@ -638,23 +643,35 @@ public sealed class Issue322NonEfProjectionUnificationTests
         JsonElement declared = await RowAsync(
             fx, "/odata/UdMemOrders?$select=note,declaredCust&$expand=DeclaredCust", _out);
 
-        Assert.Equal(JsonValueKind.Null, undeclared.GetProperty("Cust").ValueKind);
+        // #440: not present at all — the server never loaded it, so it asserts nothing about it.
+        Assert.False(undeclared.TryGetProperty("Cust", out _));
+        // The declared control, unchanged by #440.
         Assert.Equal(JsonValueKind.Null, declared.GetProperty("DeclaredCust").ValueKind);
     }
 
     /// <summary>
-    /// The bound on how narrow that difference is: with no <c>$select</c> there is no member-init
-    /// projection to drop the value, so a bare <c>$expand</c> over the same non-EF source still
-    /// serves the in-memory object — for BOTH provenances, unchanged by the fix.
+    /// The bare-<c>$expand</c> bound, also re-scoped by #440 symptom 1. With no <c>$select</c>
+    /// there is no member-init projection to drop the value, so the DECLARED delegate-less
+    /// navigation still serves the in-memory object exactly as it always did.
+    /// <para>
+    /// The undeclared one no longer does, and this is #440's measured COST rather than a free win:
+    /// a non-EF <c>GetQueryable</c>/<c>GetAll</c> whose graph is already populated used to echo
+    /// that value, and now omits it. It is accepted because the alternative is worse in both
+    /// directions — on an EF-backed source the same profile, same request answered <c>null</c>,
+    /// which is wrong data under 200, so the framework's answer for one navigation depended on the
+    /// query provider. It no longer does: undeclared means "not served", on every source. The
+    /// startup warning names exactly this profile and navigation, and declaring it restores the
+    /// value on both.
+    /// </para>
     /// </summary>
     [Fact]
-    public async Task BareExpandOverANonEfQueryable_StillServesTheInMemoryGraph_ForBothProvenances()
+    public async Task BareExpandOverANonEfQueryable_StillServesTheInMemoryGraph_ForTheDeclaredProvenanceOnly()
     {
         await using TestFixture fx = await TestHostBuilder.BuildAsync(
             b => b.AddEntitySetProfile<UdMemOrderProfile>());
 
         JsonElement undeclared = await RowAsync(fx, "/odata/UdMemOrders?$expand=Cust", _out);
-        Assert.Equal("IN-MEMORY", undeclared.GetProperty("Cust").GetProperty("Name").GetString());
+        Assert.False(undeclared.TryGetProperty("Cust", out _));
 
         JsonElement declared = await RowAsync(fx, "/odata/UdMemOrders?$expand=DeclaredCust", _out);
         Assert.Equal("DECLARED-IN-MEMORY", declared.GetProperty("DeclaredCust").GetProperty("Name").GetString());

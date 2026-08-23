@@ -1096,6 +1096,15 @@ internal static class OhDataEndpointFactory
     // with no attributes and no fluent declaration. Throwing would break startup for every adopter
     // who has one, with no migration but editing every profile.
     //
+    // WHY IT STILL EARNS ITS PLACE NOW THAT BOTH #440 SYMPTOMS ARE FIXED. It no longer reports a
+    // DEFECT — it reports the disagreement itself, which the fixes do not remove and cannot: the
+    // framework must not decide whether an undeclared navigation was meant to be exposed. $metadata
+    // still advertises a navigation that this entity set will never serve by any means — $expand
+    // omits it, and no navigation route stands behind it — so a client generated from $metadata
+    // asks for related data it can never receive, with nothing in any response saying why. That is
+    // a true, actionable, startup-time statement about a configuration gap, and it is the only
+    // channel that reaches the person who can close it.
+    //
     // WHAT IS NOT LISTED, deliberately, AND WHY THE LIST KEEPS SHRINKING. This message states only
     // what is still true at the moment it is emitted, and every time the framework closes one of the
     // consequences the sentence naming it comes out in the SAME commit. Already removed:
@@ -1105,15 +1114,20 @@ internal static class OhDataEndpointFactory
     //   - structural-property routes (#440 symptom 2): GET /{Set}({key})/{Nav}, its /$value, and
     //     PUT/PATCH/DELETE alongside a Patch handler used to register over the navigation. Route
     //     registration now subtracts the EDM's navigation names, so those templates do not exist.
+    //   - "$expand answers 200 with null" (#440 symptom 1): it answers 200 with the navigation
+    //     OMITTED now, which is a different and much smaller claim — the payload no longer asserts
+    //     that the relationship is empty. The message says "omitted", and must keep saying whatever
+    //     is actually emitted.
     // #313 stage 3 shipped a diagnostic that outlived the behaviour it described and needed a
-    // follow-up to correct; this comment exists so the next person to fix a consequence deletes the
+    // follow-up to correct; this comment exists so the next person to fix a consequence edits the
     // sentence rather than leaving it.
     //
     // The gate is "the remaining consequence is REACHABLE on this profile": ExpandEnabled. With
     // $expand off, the entity set expands nothing at all, so an undeclared navigation is no more
-    // unreachable than a declared one and there is nothing to report beyond a $metadata-only
-    // discrepancy. PropertyAccessEnabled/HasGetById/HasPatch are no longer part of the gate — they
-    // gated the property-route consequence, which no longer exists.
+    // unreachable than a declared delegate-less one and there is nothing to distinguish. It is also
+    // the load-bearing half of the targeting, exactly as in WarnUnboundedBareExpand: ExpandEnabled
+    // is false by default. PropertyAccessEnabled/HasGetById/HasPatch are no longer part of the gate
+    // — they gated the property-route consequence, which no longer exists.
     //
     // Emitted once per registration at startup, never per request.
     private static void WarnUndeclaredConventionNavigations(OhDataRegistration registration, ILogger? logger)
@@ -1148,13 +1162,17 @@ internal static class OhDataEndpointFactory
                     "OhData: '{EntitySet}' has a navigation '{Navigation}' that the OData convention " +
                     "builder discovered on '{Model}' but the profile never declared with HasOptional/" +
                     "HasRequired/HasMany. $metadata advertises it as a navigation, yet only a DECLARED " +
-                    "navigation is ever loaded, so '?$expand={Nav}' answers 200 with null (or an empty " +
-                    "array) for it — the client asked for related data and got a wrong answer under a " +
-                    "success status. Declare it with HasOptional/HasRequired/HasMany (adding an expand " +
+                    "navigation is ever loaded or routed, so this entity set will never serve it: " +
+                    "'?$expand={Nav}' is accepted and answers 200 with the navigation OMITTED from " +
+                    "every entity, and there is no 'GET /{EntitySet2}({{key}})/{Nav2}' behind it " +
+                    "either. A client that reads $metadata will keep asking for related data it can " +
+                    "never receive. Declare it with HasOptional/HasRequired/HasMany (adding an expand " +
                     "delegate if loading it needs real logic), or Ignore() it if it should not be " +
-                    "exposed at all — Ignore() takes it out of $metadata and out of the route table. " +
-                    "OhData does not choose for you: both are valid answers and only you know which.",
-                    profile.EntitySetName, nav.Name, profile.ModelType.Name, nav.Name);
+                    "exposed at all — Ignore() takes it out of $metadata as well, so $metadata and " +
+                    "the served surface agree again. OhData does not choose for you: both are valid " +
+                    "answers and only you know which.",
+                    profile.EntitySetName, nav.Name, profile.ModelType.Name, nav.Name,
+                    profile.EntitySetName, nav.Name);
             }
         }
     }
@@ -1991,9 +2009,16 @@ internal static class OhDataEndpointFactory
                 }
             }
 
+            // #440: pushedLevelsNavNames is threaded in so the ServeRaw branch can tell a navigation
+            // that was pushed through BuildLevelsNavBinding (loaded, keep it) from one nothing ever
+            // loaded (omit it). The candidate set here is the SINGLE requesting profile, so
+            // AnyCandidateHasOpinion at this level is exactly "this profile declares or routes the
+            // navigation" — the same per-profile question WarnUndeclaredConventionNavigations asks,
+            // and deliberately not a sibling-union question (a sibling entity set declaring the same
+            // CLR member does not make THIS entity set able to serve it).
             await ExpandLevelAsync(
                 rootItems, rootObjects, rootClause, new[] { requestSource }, rootEdmType,
-                registration, requestServices, serializerOptions, depth: 1, ct);
+                registration, requestServices, serializerOptions, depth: 1, ct, pushedLevelsNavNames);
         }
 
         // Stage 3.5: Omit navigation properties that were not $expand'd (issue #176).
@@ -2132,7 +2157,8 @@ internal static class OhDataEndpointFactory
         IServiceProvider requestServices,
         JsonSerializerOptions serializerOptions,
         int depth,
-        CancellationToken ct)
+        CancellationToken ct,
+        HashSet<string>? pushedLevelsNavNames = null)
     {
         if (items.Count == 0 || depth > MaxNestedExpandDepth || levelSources.Count == 0) return;
 
@@ -2167,17 +2193,72 @@ internal static class OhDataEndpointFactory
             // startup-profile candidate set for the child element type) — reusing it here means the
             // gate and this delegate path can never disagree: the gate only ever pushes down a
             // ServeRaw navigation (so RunDelegate/Blank always arrive here needing action), and this
-            // path only ever runs the sole RunDelegate route or blanks a Blank one.
+            // path only ever runs the sole RunDelegate route or blanks a Blank one — plus, since
+            // #440, omits a ServeRaw navigation that NO candidate at this level declares or routes
+            // (see the ServeRaw branch: that sub-case is not a delegate decision at all, it is
+            // "nothing ever loaded this, so there is no raw value to serve").
             NavTreatmentResult treatment = ResolveNavTreatment(propName, levelSources);
             bool isCollectionNav = (expandItem.PathToNavigationProperty.FirstSegment as NavigationPropertySegment)?
                 .NavigationProperty?.Type.IsCollection() ?? false;
 
             if (treatment.Treatment == NavTreatment.ServeRaw)
             {
-                // DB(X) = ∅ over every candidate at this level: nobody delegates this navigation, so
-                // whatever is already sitting at jsonItems[i][expandKey] — an EF Include pushed down by
-                // the query, or the plain serialized CLR graph — IS the raw, authoritative answer.
-                // Nothing to inject or blank; leave it exactly as serialized.
+                // #440 symptom 1: ServeRaw has TWO populations and only one of them has an answer.
+                //
+                // The frozen reading — "DB(X) = ∅, so whatever is already sitting at
+                // jsonItems[i][expandKey] IS the raw, authoritative answer" — holds when some
+                // candidate DECLARED the navigation: the declaration is what puts it in
+                // pushdownExpandNavs, so an EF-backed read really did JOIN it in and the value is
+                // loaded data. It does NOT hold for a navigation the OData convention builder
+                // discovered and NO candidate at this level declares or routes (#293's "has no
+                // opinion" category, reported by ResolveNavTreatment as AnyCandidateHasOpinion =
+                // false). Nothing ever chose to load that one — it is absent from
+                // pushdownExpandNavs, has no delegate, and is not in the engaged tree — so what
+                // survives serialization is an unpopulated CLR member, and emitting it means
+                // emitting `"Customer": null` (or `[]`) under a 200.
+                //
+                // That is the one answer that is definitely wrong. OData JSON Format v4.01 §8.3
+                // defines the inline representation of a navigation property as the representation
+                // of an EXPANDED one, and a single-valued expanded navigation whose value is null
+                // is the positive statement that the relationship is empty. The server never
+                // determined that. §8.1 covers the other case: a navigation that was not expanded
+                // is represented by its (computed, and in metadata=minimal omitted) navigation
+                // link, not inline — which is exactly what OmitUnexpandedNavigations already does
+                // for every navigation this request did not expand. So the member is REMOVED: the
+                // payload then asserts only "not expanded", which is true, instead of "expanded,
+                // and empty", which is not.
+                //
+                // NOT a 400, deliberately. The framework's fail-loud convention (#294, #402, #405)
+                // rejects an option the CLIENT got wrong or that the server parsed and could not
+                // honour. This is neither: the request is valid against the $metadata the server
+                // published, and the gap is the SERVER's configuration — a navigation the profile
+                // never declared. A 400 would charge the client for the developer's omission, on
+                // the ordinary `public Customer? Customer { get; set; }` shape, turning a currently
+                // succeeding request into an error across every adopter who has one. The loud
+                // channel for a configuration defect is startup, and that is where it is:
+                // WarnUndeclaredConventionNavigations names this exact condition once per
+                // (entity set, navigation) at MapOhData().
+                //
+                // THE ONE EXCLUSION: a $levels expand. The root pushdown loop resolves a $levels
+                // navigation through BuildLevelsNavBinding, which does NOT consult
+                // NavigationPropertyNames — so `?$expand=Self($levels=2)` over an undeclared
+                // self-referential navigation IS pushed and IS loaded. pushedLevelsNavNames is the
+                // set that was actually pushed that way, so those keep their loaded value. Nested
+                // levels reached from here are never pushed (a ServeRaw parent returns below
+                // without recursing, so this method only ever descends through a delegate), which
+                // is why the recursive call passes none.
+                if (!treatment.AnyCandidateHasOpinion &&
+                    !(pushedLevelsNavNames?.Contains(propName) ?? false))
+                {
+                    for (int i = 0; i < items.Count; i++) jsonItems[i].Remove(expandKey);
+                    continue;
+                }
+
+                // DB(X) = ∅ over every candidate at this level and at least one DECLARED it: nobody
+                // delegates this navigation, so whatever is already sitting at
+                // jsonItems[i][expandKey] — an EF Include pushed down by the query, or the plain
+                // serialized CLR graph — IS the raw, authoritative answer. Nothing to inject or
+                // blank; leave it exactly as serialized.
                 continue;
             }
 
@@ -2501,10 +2582,28 @@ internal static class OhDataEndpointFactory
     // delegate expansion path (candidates = levelSources, the same profiles re-resolved through the
     // request scope) — see the two call sites — so they can never diverge: the gate only ever pushes
     // down a ServeRaw navigation (RunDelegate/Blank always defer to the delegate path), and the delegate
-    // path's ServeRaw case is a no-op (the pushed/serialized raw value already present is correct).
+    // path's ServeRaw case is a no-op (the pushed/serialized raw value already present is correct)
+    // WHENEVER some candidate declared the navigation. #440 split off the other half of ServeRaw —
+    // nobody declares OR routes it, so nothing ever loaded it — which the delegate path OMITS rather
+    // than emitting as null; see AnyCandidateHasOpinion below and the ServeRaw branch that reads it.
     private enum NavTreatment { ServeRaw, RunDelegate, Blank }
 
-    private readonly record struct NavTreatmentResult(NavTreatment Treatment, NavigationRouteDefinition? Route);
+    // #440: AnyCandidateHasOpinion is "DB(navName) ∪ DL(navName) is non-empty" — i.e. at least one
+    // candidate at this level either routes or declares the navigation. It is the COMPLEMENT of the
+    // decision table's own "a candidate that neither routes nor declares the nav has no opinion on it
+    // and is ignored" clause: when every candidate is in that category, DB and DL are both empty and
+    // this is false. Reported here rather than recomputed by the caller so the two can never disagree
+    // about what "has an opinion" means.
+    //
+    // It changes NO Treatment. The four rows above are byte-identical, the pushdown gate reads only
+    // .Treatment, and Issue322ModelBClassificationTests pins the whole table through the Treatment
+    // property alone. What it lets ExpandLevelAsync do is distinguish ServeRaw's two populations,
+    // which are NOT the same claim: "a candidate declared this nav delegate-less, so the raw value is
+    // authoritative" versus "nobody at this level has any opinion, so nothing ever chose to load it
+    // and there is no authoritative value to serve". Emitting the second as null asserts that no
+    // related entity exists, which the framework never determined.
+    private readonly record struct NavTreatmentResult(
+        NavTreatment Treatment, NavigationRouteDefinition? Route, bool AnyCandidateHasOpinion);
 
     private static NavTreatmentResult ResolveNavTreatment(string navName, IReadOnlyList<IEntitySetEndpointSource> candidates)
     {
@@ -2525,10 +2624,11 @@ internal static class OhDataEndpointFactory
             }
         }
 
-        if (delegateBacked is null) return new NavTreatmentResult(NavTreatment.ServeRaw, null);
+        bool anyOpinion = delegateBacked is not null || anyDelegateLess;
+        if (delegateBacked is null) return new NavTreatmentResult(NavTreatment.ServeRaw, null, anyOpinion);
         if (delegateBacked.Count == 1 && !anyDelegateLess)
-            return new NavTreatmentResult(NavTreatment.RunDelegate, delegateBacked[0]);
-        return new NavTreatmentResult(NavTreatment.Blank, null); // disagreement, or 2+ distinct routes
+            return new NavTreatmentResult(NavTreatment.RunDelegate, delegateBacked[0], anyOpinion);
+        return new NavTreatmentResult(NavTreatment.Blank, null, anyOpinion); // disagreement, or 2+ distinct routes
     }
 
     // OData JSON Format v4.01 §4.5.1 / §11.2.4.2: a navigation property that was not requested

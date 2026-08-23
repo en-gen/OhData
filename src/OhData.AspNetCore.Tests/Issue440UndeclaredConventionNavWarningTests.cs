@@ -21,17 +21,28 @@ namespace OhData.AspNetCore.Tests;
 // over a navigation. Both share #322's root cause — the profile's navigation set and the EDM's
 // disagree — which #322's fix reconciled for the QUERY PLAN only.
 //
-// SYMPTOM 2 IS FIXED HERE: route registration now subtracts the EDM's own navigation names from the
-// set it iterates, exactly as #322 already did for the projection's member set, so no property route
-// is registered over a navigation. NavigationPropertyNames is untouched (see the fix site for why).
+// BOTH SYMPTOMS ARE FIXED HERE.
+//   Symptom 2 — route registration now subtracts the EDM's own navigation names from the set it
+//   iterates, exactly as #322 already did for the projection's member set, so no property route is
+//   registered over a navigation.
+//   Symptom 1 — ExpandLevelAsync's ServeRaw branch separates its two populations. A navigation some
+//   candidate DECLARED keeps its raw value (that value is loaded data). One no candidate declares or
+//   routes is REMOVED, because nothing ever chose to load it: OData JSON Format v4.01 §8.3 makes an
+//   inline navigation value the representation of an EXPANDED navigation, so `"Customer": null`
+//   asserts the relationship is empty — which the server never determined. §8.1's non-expanded
+//   representation (the navigation link, omitted under metadata=minimal) is the honest one.
+// NavigationPropertyNames is untouched by both (see the fix sites for why).
 //
-// The warning stays, because the disagreement itself outlives the symptom — but it now states ONLY
-// what is still true, and the property-route sentence came out in the same commit as the fix. The
-// content test carries explicit guards against every consequence that has been retired.
+// The warning stays, because the disagreement outlives the symptoms and only the developer can close
+// it — $metadata still advertises a navigation this entity set will never serve. But it states ONLY
+// what is still true, and each retired consequence came out in the same commit as its fix. The
+// content test carries an explicit guard against every one of them.
 //
 // This suite pins three things:
-//   1. the SYMPTOMS: symptom 2 is gone (and a real structural property still has its routes, so the
-//      subtraction is not over-broad),
+//   1. the SYMPTOMS, now as fixes — with bounding assertions on both, so neither can pass vacuously:
+//      a real structural property (and the navigation's own FK) still has its routes, and a $levels
+//      expand of an undeclared self-referential navigation — the one shape that IS pushed and loaded
+//      — still serves its data,
 //   2. the warning's exact CONTENT, and
 //   3. its TARGETING: a profile with no undeclared navigation, and a profile on which the remaining
 //      consequence is not reachable, stay silent.
@@ -67,6 +78,22 @@ public sealed class W440Plain
     public string Label { get; set; } = "";
 }
 
+/// <summary>
+/// A SELF-REFERENTIAL undeclared navigation. This is the one shape that #440's symptom-1 fix must
+/// NOT touch: the root pushdown loop resolves a <c>$levels</c> expand through
+/// <c>BuildLevelsNavBinding</c>, which does not consult <c>NavigationPropertyNames</c>, so
+/// <c>?$expand=Children($levels=2)</c> really is pushed to SQL and really does load — even though
+/// the profile declares nothing.
+/// </summary>
+public sealed class W440Node
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public int? ParentId { get; set; }
+    public W440Node? Parent { get; set; }              // convention-discovered, NEVER declared
+    public List<W440Node> Children { get; set; } = new(); // convention-discovered, NEVER declared
+}
+
 public sealed class W440DbContext : DbContext
 {
     public W440DbContext(DbContextOptions<W440DbContext> options) : base(options) { }
@@ -75,17 +102,30 @@ public sealed class W440DbContext : DbContext
     public DbSet<W440Customer> Customers => Set<W440Customer>();
     public DbSet<W440Invoice> Invoices => Set<W440Invoice>();
     public DbSet<W440Plain> Plains => Set<W440Plain>();
+    public DbSet<W440Node> Nodes => Set<W440Node>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<W440Order>().HasOne(o => o.Customer).WithMany().HasForeignKey(o => o.CustomerId);
         b.Entity<W440Invoice>().HasOne(i => i.Payer).WithMany().HasForeignKey(i => i.PayerId);
+        b.Entity<W440Node>().HasOne(n => n.Parent).WithMany(n => n.Children).HasForeignKey(n => n.ParentId);
+    }
+}
+
+/// <summary>Declares nothing; both <c>Parent</c> and <c>Children</c> are convention-discovered.</summary>
+public sealed class W440NodeProfile : EntitySetProfile<int, W440Node>
+{
+    public W440NodeProfile(W440DbContext db) : base(x => x.Id)
+    {
+        EntitySetName = "W440Nodes";
+        ExpandEnabled = true; SelectEnabled = true; FilterEnabled = true; OrderByEnabled = true;
+        GetQueryable = _ => Task.FromResult(db.Nodes.AsQueryable());
     }
 }
 
 /// <summary>
 /// The affected shape: $expand enabled, GetById AND Patch configured, PropertyAccessEnabled left at
-/// its default of <c>true</c>. Both #440 symptoms are live here.
+/// its default of <c>true</c>. Both #440 symptoms were live here before the fixes.
 /// </summary>
 public sealed class W440OrderProfile : EntitySetProfile<int, W440Order>
 {
@@ -171,6 +211,8 @@ internal static class W440Harness
         db.Orders.Add(new W440Order { Id = 1, Note = "N1", CustomerId = 7 });
         db.Invoices.Add(new W440Invoice { Id = 1, Ref = "R1", PayerId = 7 });
         db.Plains.Add(new W440Plain { Id = 1, Label = "L1" });
+        db.Nodes.Add(new W440Node { Id = 1, Name = "root" });
+        db.Nodes.Add(new W440Node { Id = 2, Name = "child", ParentId = 1 });
         db.SaveChanges();
         return fx;
     }
@@ -199,15 +241,31 @@ public sealed class Issue440UndeclaredConventionNavWarningTests
     // ------------------------------------------------------------------ symptom 1: $expand
 
     /// <summary>
-    /// #440 symptom 1, and the reason the warning exists: <c>$expand</c> of the undeclared
-    /// navigation answers <b>200 with null</b> for a row whose related entity exists. #322's
-    /// projection fix does NOT change this — the navigation is still absent from
-    /// <c>NavigationPropertyNames</c>, which is what <c>pushdownExpandNavs</c> is built from, so
-    /// nothing ever loads it. If this test ever starts failing, the warning is claiming a
-    /// consequence that no longer holds and must be re-scoped.
+    /// #440 symptom 1, FIXED: <c>$expand</c> of the undeclared navigation used to answer
+    /// <b>200 with null</b> for a row whose related entity exists. The navigation is still absent
+    /// from <c>NavigationPropertyNames</c> — which is what <c>pushdownExpandNavs</c> is built from,
+    /// so nothing ever loads it — but it is no longer EMITTED. <c>ExpandLevelAsync</c>'s
+    /// <c>ServeRaw</c> branch now separates its two populations: a navigation some candidate
+    /// DECLARED (the raw value is loaded data, keep it) from one no candidate declares or routes
+    /// (#293's "has no opinion" category — nothing chose to load it, so there is no value to serve
+    /// and the member is removed).
+    /// <para>
+    /// The spec line is OData JSON Format v4.01 §8.3: an inline navigation value <i>is</i> the
+    /// representation of an EXPANDED navigation, so a null single-valued one is the positive claim
+    /// that the relationship is empty — a claim the server never evaluated. §8.1 covers the honest
+    /// alternative: a non-expanded navigation is represented by its navigation link (computed, and
+    /// omitted under metadata=minimal), not inline. Omission is therefore the payload that asserts
+    /// only true things, and it is what <c>OmitUnexpandedNavigations</c> already does for every
+    /// navigation a request did not expand.
+    /// </para>
+    /// <para>
+    /// NOT a 400. The request is valid against the <c>$metadata</c> this server published; the gap
+    /// is the server's own configuration. The loud channel for that is startup, and the warning
+    /// below is it.
+    /// </para>
     /// </summary>
     [Fact]
-    public async Task Symptom1_ExpandOfAnUndeclaredNavigation_StillReturnsNullUnder200()
+    public async Task Symptom1_ExpandOfAnUndeclaredNavigation_OmitsIt_InsteadOfEmittingNull()
     {
         var capture = new WarningCapture();
         using var connection = new SqliteConnection("Data Source=:memory:");
@@ -216,20 +274,103 @@ public sealed class Issue440UndeclaredConventionNavWarningTests
 
         HttpResponseMessage resp = await fx.Client.GetAsync("/odata/W440Orders?$expand=Customer");
         string body = await resp.Content.ReadAsStringAsync();
-        _out.WriteLine($"undeclared: {(int)resp.StatusCode} {body}");
+        _out.WriteLine($"undeclared (collection): {(int)resp.StatusCode} {body}");
 
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         using JsonDocument doc = JsonDocument.Parse(body);
         JsonElement row = doc.RootElement.GetProperty("value")[0];
-        Assert.Equal(JsonValueKind.Null, row.GetProperty("Customer").ValueKind);
+        Assert.False(row.TryGetProperty("Customer", out _));
+        // The row is otherwise intact — the omission is one member, not a broken projection.
+        Assert.Equal("N1", row.GetProperty("Note").GetString());
+        Assert.Equal(7, row.GetProperty("CustomerId").GetInt32());
 
-        // The declared control over the SAME CLR model and the SAME row loads it. The difference
-        // is provenance and nothing else.
+        // The single-entity read goes through the same pipeline and must agree; before the fix it
+        // emitted "Customer":null too.
+        HttpResponseMessage byId = await fx.Client.GetAsync("/odata/W440Orders(1)?$expand=Customer");
+        string byIdBody = await byId.Content.ReadAsStringAsync();
+        _out.WriteLine($"undeclared (by key):     {(int)byId.StatusCode} {byIdBody}");
+        Assert.Equal(HttpStatusCode.OK, byId.StatusCode);
+        using JsonDocument byIdDoc = JsonDocument.Parse(byIdBody);
+        Assert.False(byIdDoc.RootElement.TryGetProperty("Customer", out _));
+
+        // THE DECLARED CONTROL, over the SAME CLR model and the SAME row: unchanged, still loads
+        // the related entity. Declaring the navigation is the whole difference, which is what makes
+        // the startup warning's remedy actionable rather than advisory.
         HttpResponseMessage ok = await fx.Client.GetAsync("/odata/W440DeclaredOrders?$expand=Customer");
         string okBody = await ok.Content.ReadAsStringAsync();
-        _out.WriteLine($"declared:   {(int)ok.StatusCode} {okBody}");
+        _out.WriteLine($"declared:                {(int)ok.StatusCode} {okBody}");
         Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
         Assert.Contains("\"C7\"", okBody, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// THE EXCLUSION, and it is not hypothetical. A <c>$levels</c> expand of an undeclared
+    /// SELF-REFERENTIAL navigation is resolved by <c>BuildLevelsNavBinding</c>, which does not
+    /// consult <c>NavigationPropertyNames</c> — so that one shape really is pushed to SQL and really
+    /// does load, undeclared or not. Omitting it would delete data the server had actually fetched,
+    /// which is the mistake #440 symptom 1 exists to prevent, pointed the other way. The fix
+    /// therefore keeps any navigation named in <c>pushedLevelsNavNames</c>.
+    /// <para>
+    /// Verified to bite: with the <c>pushedLevelsNavNames</c> clause removed, this test fails and
+    /// its siblings above still pass — so it is guarding a live branch, not dead code.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Symptom1Fix_KeepsALevelsExpandOfAnUndeclaredSelfReferentialNav_BecauseThatOneIsActuallyLoaded()
+    {
+        var capture = new WarningCapture();
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        // Its own registration: W440Nodes carries TWO undeclared navigations, so folding it into
+        // ConfigureAll would change the warning-count pins below for no benefit to them.
+        await using TestFixture fx = await W440Harness.BuildAsync(
+            connection, capture, b => b.AddEntitySetProfile<W440NodeProfile>());
+
+        HttpResponseMessage resp = await fx.Client.GetAsync(
+            "/odata/W440Nodes?$filter=Id eq 1&$expand=Children($levels=2)");
+        string body = await resp.Content.ReadAsStringAsync();
+        _out.WriteLine($"$levels: {(int)resp.StatusCode} {body}");
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        using JsonDocument doc = JsonDocument.Parse(body);
+        JsonElement root = doc.RootElement.GetProperty("value")[0];
+        JsonElement children = root.GetProperty("Children");
+        Assert.Equal(1, children.GetArrayLength());
+        Assert.Equal("child", children[0].GetProperty("Name").GetString());
+
+        // The SAME entity set, the SAME undeclared navigation, WITHOUT $levels: not pushed, not
+        // loaded, so omitted. The two halves of the rule in one assertion pair.
+        HttpResponseMessage bare = await fx.Client.GetAsync("/odata/W440Nodes?$filter=Id eq 1&$expand=Parent");
+        string bareBody = await bare.Content.ReadAsStringAsync();
+        _out.WriteLine($"bare:    {(int)bare.StatusCode} {bareBody}");
+        Assert.Equal(HttpStatusCode.OK, bare.StatusCode);
+        using JsonDocument bareDoc = JsonDocument.Parse(bareBody);
+        Assert.False(bareDoc.RootElement.GetProperty("value")[0].TryGetProperty("Parent", out _));
+    }
+
+    /// <summary>
+    /// The omission is scoped to the navigation the request named: a plain read with no
+    /// <c>$expand</c> at all is byte-identical to before (the undeclared navigation was already
+    /// stripped by <c>OmitUnexpandedNavigations</c>, so there is nothing for this fix to change),
+    /// and a request that expands NOTHING still returns every structural member.
+    /// </summary>
+    [Fact]
+    public async Task Symptom1Fix_DoesNotTouchAReadThatNeverAskedToExpand()
+    {
+        var capture = new WarningCapture();
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        await using TestFixture fx = await W440Harness.BuildAsync(connection, capture, ConfigureAll);
+
+        HttpResponseMessage resp = await fx.Client.GetAsync("/odata/W440Orders");
+        string body = await resp.Content.ReadAsStringAsync();
+        _out.WriteLine(body);
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal(
+            "{\"@odata.context\":\"http://localhost/odata/$metadata#W440Orders\"," +
+            "\"value\":[{\"Id\":1,\"Note\":\"N1\",\"CustomerId\":7}]}",
+            body);
     }
 
     // ------------------------------------------------------- symptom 2: property routes
@@ -323,17 +464,24 @@ public sealed class Issue440UndeclaredConventionNavWarningTests
         Assert.Contains("convention builder discovered", warning, StringComparison.Ordinal);
         Assert.Contains("never declared with HasOptional/HasRequired/HasMany", warning, StringComparison.Ordinal);
 
-        // THE SURVIVING CONSEQUENCE — wrong data under a success status.
-        Assert.Contains("'?$expand=Customer' answers 200 with null", warning, StringComparison.Ordinal);
+        // THE SURVIVING STATEMENT: $metadata advertises a navigation the entity set will never
+        // serve. It is no longer a defect report — both symptoms are fixed — it is the
+        // advertise/serve disagreement itself, which only the developer can close.
+        Assert.Contains("will never serve it", warning, StringComparison.Ordinal);
+        Assert.Contains("'?$expand=Customer' is accepted and answers 200 with the navigation OMITTED",
+            warning, StringComparison.Ordinal);
+        Assert.Contains("no 'GET /W440Orders({key})/Customer' behind it", warning, StringComparison.Ordinal);
 
         // BOTH remedies.
         Assert.Contains("Declare it with HasOptional/HasRequired/HasMany", warning, StringComparison.Ordinal);
         Assert.Contains("Ignore()", warning, StringComparison.Ordinal);
 
-        // NOT a consequence any more, and the message must not say otherwise. Two generations of
+        // NOT a consequence any more, and the message must not say otherwise. Three generations of
         // this list have now been retired, each in the commit that closed the behaviour:
-        //   #322 — pushdown disqualification.
-        //   #440 symptom 2 — structural-property routes over the navigation, reads and writes.
+        //   #322            — pushdown disqualification.
+        //   #440 symptom 2  — structural-property routes over the navigation, reads and writes.
+        //   #440 symptom 1  — "$expand answers 200 with null". It answers with the navigation
+        //                     OMITTED now, which asserts nothing about the relationship.
         // #313 stage 3 shipped a diagnostic that outlived what it described; these are the guards
         // that stop this one from doing the same.
         Assert.DoesNotContain("pushdown", warning, StringComparison.OrdinalIgnoreCase);
@@ -342,6 +490,8 @@ public sealed class Issue440UndeclaredConventionNavWarningTests
         Assert.DoesNotContain("PropertyAccessEnabled", warning, StringComparison.Ordinal);
         Assert.DoesNotContain("PUT/PATCH/DELETE", warning, StringComparison.Ordinal);
         Assert.DoesNotContain("/$value", warning, StringComparison.Ordinal);
+        Assert.DoesNotContain("with null", warning, StringComparison.Ordinal);
+        Assert.DoesNotContain("empty array", warning, StringComparison.Ordinal);
     }
 
     // --------------------------------------------------------------------- targeting
