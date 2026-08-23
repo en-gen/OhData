@@ -565,7 +565,7 @@ The ceiling is advertised in `$metadata` as the `Org.OData.Capabilities.V1.Expan
 - **Which rows the ceiling counts differs by shape, and it is worth knowing which.** At a projection **leaf** the bound is composed *after* any nested `$skip`, so what is measured against the ceiling is the **post-`$skip` remainder** — `Children($skip=4995)` over 5,000 rows at a ceiling of 1000 succeeds and returns 5. At a level with its own nested `$expand`, or inside a `$levels` recursion, no SQL window is composable and the check runs over the **fully materialized, pre-window** collection, so the same request is rejected. That asymmetry predates #313 (it is the #304 deferred-window shape, where `EnsureWithinExpandCeiling` necessarily runs before the JSON-pass window because there is nothing to window until the collection is materialized); #313 only makes it reachable from more requests. It goes away if and when [#299](https://github.com/en-gen/OhData/issues/299) removes the unbounded materialization, and not before.
 - **Use `null` — not a very large number — to mean "no ceiling".** `MaxExpandTop = int.MaxValue` still counts as *set*, so every bound and every key tiebreaker is composed exactly as for a small value; the only difference is that the resulting check can never fire. You pay the `ROW_NUMBER()` window for a rejection that cannot happen. Unset (the default `null`) is the opt-out; a sentinel number is not.
 - **With no ceiling set, a startup `Warning` names each exposed navigation (#313).** That is what replaced the arbitrary `1000` default. At `MapOhData()` OhData logs one warning per navigation that is collection-valued, delegate-less, on a profile that has `GetQueryable`, `ExpandEnabled` **and** `ExpandPushdownEnabled`, when that profile's resolved `MaxExpandTop` is `null` — i.e. exactly the navigations a bare `?$expand=Nav` will materialize without bound. It names the entity set, the navigation, `MaxExpandTop` **and** `ExpandPagingEnabled` — in that order, because the second is inert without the first — and it deliberately prescribes no *number*: the framework cannot know how large your child collections are. Leaving it unset is a legitimate choice for a collection you know is small; the warning informs that choice rather than making it. Because `ExpandEnabled` is `false` by default, a registration that never opts into `$expand` gets no warning at all. Emitted once at startup, never per request.
-- **`Prefer: odata.maxpagesize` is not honoured on nested collections ([#412](https://github.com/en-gen/OhData/issues/412)).** It is honoured on **root** collections. On a nested collection inside a `$expand` it is ignored, and no `Preference-Applied` is emitted on its behalf — an unmet spec `SHOULD` (§11.2.5.7 / §8.2.8.5), not a violation, since nothing claims it was applied. A nested collection's size is governed by `MaxExpandTop` alone.
+- **`Prefer: odata.maxpagesize` narrows a nested page too, as of [#412](https://github.com/en-gen/OhData/issues/412).** §8.2.8.5 scopes the preference to *"each collection within the response"*, so it is not a root-only header. It applies to a nested collection **only where a `Nav@odata.nextLink` is going out** — a truly bare `$expand` on a profile that opted into `ExpandPagingEnabled` — because trimming a collection that gets no link is the silent truncation the framework never does. It is clamped **down** to `MaxExpandTop` and never up (a client preference cannot lift the server's ceiling, mirroring the root's clamp to `MaxTop`), and it never lowers the *ceiling*, so it can never turn a `200` into a `400`. The continuation route reads the same header, so a client that keeps sending it pages at its requested size all the way down; one that stops gets `MaxExpandTop`-sized pages from there on, with nothing skipped or repeated. `Preference-Applied` is unchanged and stays a single header: §8.2.8.5 makes the echo a `MAY` and defines its value as *"the maximum page size applied"* for the whole response, so no per-collection echo is added.
 
 To also expose navigation as a standalone HTTP route (`GET /Orders(id)/Lines`), provide a handler to `HasMany` - see [navigation-routing.md](navigation-routing.md).
 
@@ -761,10 +761,23 @@ These are decisions, not gaps waiting to be filled. The first three are tracked 
   against the URL-named profile alone, so those rows are served raw there today. That is a
   pre-existing property of the root level, unchanged by #313 and tracked in
   [#415](https://github.com/en-gen/OhData/issues/415).)
-- **`Prefer: odata.maxpagesize` is not honoured on the nested page size**
-  ([#412](https://github.com/en-gen/OhData/issues/412)) — see the caveat above. Honouring it would
-  make the nested page size request-dependent while the link carries only `$skip`, so hop 2 could not
-  reproduce hop 1's page size.
+- **`Prefer: odata.maxpagesize` *is* honoured on the nested page size, as of
+  [#412](https://github.com/en-gen/OhData/issues/412).** It **narrows** the nested page and is clamped
+  down to `MaxExpandTop`, never up — the ceiling is the server's DoS bound and a request header may
+  not lift it, exactly as the root collection clamps `maxpagesize` to `MaxTop`. It applies only where
+  a continuation link is actually going out (a truly bare expand on a pageable navigation): trimming
+  a collection that gets no link would be the silent truncation the M1 rule forbids, so a
+  non-pageable over-ceiling shape keeps its `400` and ignores the header entirely. Both spellings are
+  accepted (`odata.maxpagesize` is the OData 4.0 name, `maxpagesize` the 4.01 rename). The
+  continuation route honours it too, so a client that keeps sending the header gets a consistent page
+  size all the way down; a client that stops simply gets `MaxExpandTop`-sized pages from there on,
+  and nothing is skipped or repeated either way because `$skip` is an absolute offset advanced by the
+  rows each hop actually served. `Preference-Applied` is **unchanged** — §8.2.8.5 makes the echo a
+  `MAY` and gives it a single value for the whole response ("the maximum page size applied"), so
+  there is no per-collection echo to add. This is what closes #412's stated blocker: the spec says in
+  terms that *"the client MAY specify a different value for this preference with every request
+  following a next link"*, so the page size is expected to travel on the request rather than inside
+  the link, and the `$skip`-only continuation surface did not have to widen.
 - **The continuation *link* is `GetQueryable`-collection-route-only. The *ceiling* now also applies on
   `GET /{Set}({key})`, as a `400`** ([#418](https://github.com/en-gen/OhData/issues/418)). With
   `MaxExpandTop` set, a single-entity read whose expanded collection exceeds it returns `400`

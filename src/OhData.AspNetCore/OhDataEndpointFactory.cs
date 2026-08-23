@@ -4687,12 +4687,16 @@ internal static class OhDataEndpointFactory
     // runs after the strip (G6), so reading the key off the payload would produce a broken link for
     // exactly the requests that need one most. ExpandLevelAsync maintains the same parallel
     // items/jsonItems pair for the same reason and is the precedent followed here.
+    // #412: <paramref name="RequestedPageSize"/> is this request's `Prefer: [odata.]maxpagesize=N`,
+    // or null when the client asked for nothing. It NARROWS the nested page — never the ceiling — and
+    // only on the one arm that emits a continuation link. See ShapePushedExpandsInJson's bare-leaf arm.
     private sealed record ExpandPagingContext(
         string BaseUrl,
         string EntitySetName,
         PropertyInfo ParentKeyProperty,
         IReadOnlyList<object> ParentItems,
-        IReadOnlyDictionary<string, ExpandPagingNav> PageableByEdmName);
+        IReadOnlyDictionary<string, ExpandPagingNav> PageableByEdmName,
+        int? RequestedPageSize);
 
     // #206 phase 2 (optioned + multi-level expand): apply the JSON-side portion of a pushed expand's
     // nested options to the already-serialized parent objects (in the configured naming policy —
@@ -4853,12 +4857,25 @@ internal static class OhDataEndpointFactory
                     // bound without either a link or a 400") holds at this commit as at every other.
                     else if (!hasChildren && e.Top is null && maxExpandTop is int leafCap)
                     {
+                        // #412: the client may ask for a SMALLER nested page with
+                        // `Prefer: [odata.]maxpagesize=N` (Protocol §8.2.8.5 — "each collection within
+                        // the response"). It narrows the page, never the ceiling: clamping the ceiling
+                        // to a client-supplied number would let a header turn a 200 into a 400, and
+                        // MaxExpandTop is the server's own DoS bound. So the preference is read ONLY
+                        // on this arm, and ONLY when a link is actually going out — trimming without a
+                        // link is the silent truncation M1 forbids, which is why a non-pageable
+                        // navigation below still measures itself against maxExpandTop and not against
+                        // the request.
+                        int leafPage = leafCap;
+                        if (pageableNav is not null && paging!.RequestedPageSize is int requested && requested < leafCap)
+                            leafPage = requested;
+
                         // WriteNestedNextLink reports false when it could not build a link (a null key
                         // value); it leaves the array untouched in that case, so the ceiling's 400
                         // applies exactly as it would for any other non-pageable over-ceiling shape.
                         // Never a trim without a link.
-                        if (pageableNav is not { } pnav || arr.Count <= leafCap
-                            || !WriteNestedNextLink(parent, key, arr, leafCap, pnav, paging!, parentIndex))
+                        if (pageableNav is not { } pnav || arr.Count <= leafPage
+                            || !WriteNestedNextLink(parent, key, arr, leafPage, pnav, paging!, parentIndex))
                         {
                             EnsureWithinExpandCeiling(arr, key, maxExpandTop, "'$expand'");
                         }
@@ -6897,8 +6914,14 @@ internal static class OhDataEndpointFactory
                             shapeParents = pagingParents;
                             if (parentKeyProp is not null)
                             {
+                                // #412: `preferredPageSize` is this request's Prefer: maxpagesize,
+                                // already parsed above for the ROOT page. The same number governs the
+                                // nested page — §8.2.8.5 scopes the preference to "each collection
+                                // within the response", not to the top-level one — clamped down to
+                                // MaxExpandTop at the emission site, never up.
                                 pagingCtx = new ExpandPagingContext(
-                                    baseUrl, name, parentKeyProp, pagingItems, expandPagingNavsByEdmName);
+                                    baseUrl, name, parentKeyProp, pagingItems, expandPagingNavsByEdmName,
+                                    preferredPageSize);
                             }
                             if (carrierCounts is not null)
                             {
@@ -8000,19 +8023,35 @@ internal static class OhDataEndpointFactory
                                     contParentKeyProp!.PropertyType)),
                             contParentParam);
 
-                        // 6. Materialize cap + 1 rows: the probe row is what distinguishes "this page
-                        // is exactly full and is the last one" from "there is more behind it", the
-                        // rows % pageSize == 0 trap #360 fixed at the root. Synchronous, as the
+                        // 5b. #412: `Prefer: [odata.]maxpagesize=N` narrows THIS hop's page, clamped
+                        // down to MaxExpandTop and never up — the ceiling is the server's bound and a
+                        // client preference must not lift it, exactly as the root route clamps to
+                        // MaxTop. This is what makes honouring the preference on the first hop sound:
+                        // §8.2.8.5 states in terms that "the client MAY specify a different value for
+                        // this preference with every request following a next link", so the page size
+                        // is expected to travel on the request rather than inside the link, and the
+                        // $skip-only continuation surface #313 chose does not have to widen to carry
+                        // it. A client that stops sending the header simply gets MaxExpandTop-sized
+                        // pages from there on; nothing is skipped or repeated either way, because
+                        // $skip is an ABSOLUTE offset and the next one is computed from the rows this
+                        // hop actually served.
+                        int contPageSize = ParseMaxPageSize(ctx) is int contPreferred && contPreferred < contCap
+                            ? contPreferred
+                            : contCap;
+
+                        // 6. Materialize pageSize + 1 rows: the probe row is what distinguishes "this
+                        // page is exactly full and is the last one" from "there is more behind it",
+                        // the rows % pageSize == 0 trap #360 fixed at the root. Synchronous, as the
                         // collection route's own materialization is.
                         object[] contRows = contPage(
-                            contParents.Where(contKeyPredicate), contSkip, contCap + 1);
+                            contParents.Where(contKeyPredicate), contSkip, contPageSize + 1);
 
                         // 7/8. A MISSING PARENT KEY IS 200 + EMPTY value + NO LINK, not 404 (O3 on
                         // #313). SelectMany cannot distinguish "no such parent" from "a parent with no
                         // children", and an existence probe would cost a second round trip on EVERY
                         // continuation. Microsoft returns 404 here; this is a documented divergence.
-                        bool contMore = contRows.Length > contCap;
-                        if (contMore) contRows = contRows[..contCap];
+                        bool contMore = contRows.Length > contPageSize;
+                        if (contMore) contRows = contRows[..contPageSize];
 
                         string contBaseUrl = BuildBaseUrl(ctx, prefix);
                         var contJson = new JsonArray();
@@ -8035,9 +8074,12 @@ internal static class OhDataEndpointFactory
                         {
                             // Absolute offset, formatted from the canonical key formatter so a string
                             // key round-trips back through ODataKeyParser on the next hop.
+                            // #412: the offset advances by the rows THIS hop served, not by the
+                            // ceiling — otherwise a narrowed page would skip everything between the
+                            // page size and the ceiling.
                             contEnvelope["@odata.nextLink"] =
                                 $"{contBaseUrl}/{name}({ODataEntityKeyUrlFormatter.Format(parsedKey!)})" +
-                                $"/{contNavName}?$skip={(contSkip + contCap).ToString(CultureInfo.InvariantCulture)}";
+                                $"/{contNavName}?$skip={(contSkip + contPageSize).ToString(CultureInfo.InvariantCulture)}";
                         }
                         return Results.Ok(contEnvelope);
                     }
