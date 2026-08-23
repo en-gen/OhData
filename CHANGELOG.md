@@ -704,6 +704,48 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A sibling profile's delegate silently disabled `$expand` paging — and the unbounded-`$expand`
+  warning — on the set that still served the navigation raw (#421).**
+  `#313`'s two root-level resolvers (`ResolveExpandPagingNavigations`, which drives both continuation-
+  route registration and `Nav@odata.nextLink` emission, and the `WarnUnboundedBareExpand` startup
+  diagnostic) resolved `ServeRaw` over the cross-profile **union** — every profile exposing the same
+  EDM entity type. The root **read path** beside them resolves over the URL-named set alone, which
+  the [frozen Model B spec](https://github.com/en-gen/OhData/issues/293) settles as correct
+  (*"Root (depth 1): KEEP as-is"*, and why [#415](https://github.com/en-gen/OhData/issues/415) was
+  refuted). Both resolvers now use that same candidate set.
+
+  Measured, with a delegate-less `BeAuthors` and a delegate-backed `BeDelegatedAuthors` over the same
+  EDM type (`MaxExpandTop = 3`, `ExpandPagingEnabled = true`):
+
+  | request | before | after |
+  |---|---|---|
+  | `GET /BeAuthors?$filter=Id eq 1&$expand=Books` (5 books) | `400` — forever, no escape hatch | `200`, 3 books + `Books@odata.nextLink` |
+  | `GET /BeAuthors(1)/Books?$skip=3` | `404` (no route registered) | `200`, the remaining 2 books |
+  | `GET /BeDelegatedAuthors(1)/Books` | the delegate | the delegate, unchanged |
+  | startup, `MaxExpandTop = null` | **no** unbounded-`$expand` warning | one warning naming `'BeAuthors'` / `'Books'` |
+
+  The `400` was the proof the old behaviour protected nothing: it is only reachable *after* the rows
+  have been materialized and counted, so `/BeAuthors?$expand=Books` was already serving those books
+  raw. Withholding the route removed the paging escape hatch without removing an exposure, and left
+  `ExpandPagingEnabled` inert for that entity set with no diagnostic.
+
+  **The delegate-safety invariant is unchanged**, because it never depended on the union: a
+  navigation *this* profile declares with a delegate resolves to `RunDelegate` on its own candidate
+  set and still gets no continuation route and no link. And the aligned candidate set is byte-for-byte
+  the one the root read path uses, so the pageable set is now exactly *{navigations
+  `GET /{Set}?$expand={Nav}` already serves raw} ∩ {pageable}* — the continuation composes off the
+  parent profile's own `GetQueryable` under that set's own authorization, so it can expose no row the
+  `$expand` beside it does not already expose to the same caller. Pinned directly by
+  `TheContinuationServesNoRowTheRootExpandDoesNotAlreadyServeRaw`.
+
+  **Both call sites got the same answer**, which is what the code already required of them: the
+  diagnostic describes what a root `$expand` materializes, and the route is the escape hatch from
+  that same materialization's ceiling, so they must be resolved from the same candidate set or they
+  drift. Only registrations with **two or more entity sets over one EDM entity type** are affected;
+  every single-profile registration is byte-identical, and `ExpandPagingEnabled` is still `false` by
+  default. Two of the three flipped tests were asserting the withheld route on brownfield fixtures
+  (`BeAuthors`, and the `$levels` suite's `LvNodes`/`LvSecureNodes` pair); they now assert the paging.
+
 - **`$expand` of a convention-discovered navigation the profile never declared returned `null` under
   `200` (#440).**
   Only a *declared* navigation is ever loaded — `pushdownExpandNavs` is built from the profile's own

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
+using System.Net.Http.Json;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -363,6 +364,63 @@ public class ExpandPagingStartupDiagnosticTests
 
         // Therefore: nothing to warn about.
         Assert.Empty(BareExpandWarnings(capture));
+    }
+
+    /// <summary>
+    /// #421: a delegate-backed SIBLING over the same EDM entity type no longer silences the
+    /// diagnostic on the set that still serves the navigation raw and unbounded.
+    /// <para>
+    /// WHAT THIS MEASURED BEFORE. The diagnostic resolved <c>ServeRaw</c> through
+    /// <c>ResolveProfilesForEdmType</c> — the sibling union — so with both profiles registered
+    /// <c>ResolveNavTreatment</c> answered <c>Blank</c> and NEITHER set warned. Measured on the
+    /// pre-fix tree: <b>zero</b> bare-expand warnings, while <c>/BeAuthors?$expand=Books</c> returned
+    /// all five of author 1's books with no ceiling at all. The profile that most needed the warning
+    /// was the one that did not get it.
+    /// </para>
+    /// <para>
+    /// BROWNFIELD, and it has to be: both profiles and the whole SQLite fixture predate #421, and the
+    /// raw serve is already pinned independently by
+    /// <c>BareExpandContinuationDelegateSafetyTests.RootExpand_WithASiblingDelegate_StillServesTheDeclaringSetsOwnRawRows</c>.
+    /// The first assertion here is that same measurement restated in this file, so the warning is not
+    /// pinned without establishing that what it claims is true. An earlier draft used the
+    /// <c>EpdParent</c> fixtures above and would have been VACUOUS: under EF InMemory that model's
+    /// <c>Children</c> comes back <c>[]</c> whether a sibling is registered or not, so the warning
+    /// would have been "correct" about an exposure that fixture does not have.
+    /// </para>
+    /// <para>
+    /// The <c>Single</c> is the bound: <c>BeDelegatedAuthors</c> routes <c>Books</c> through its own
+    /// delegate, so on its own candidate set the treatment is <c>RunDelegate</c> and it stays silent.
+    /// This is not "the diagnostic got louder everywhere".
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Fires_ForTheSetThatServesRaw_EvenWhenADelegateBackedSiblingSharesTheEdmType()
+    {
+        using var connection = new Microsoft.Data.Sqlite.SqliteConnection("Data Source=:memory:");
+        connection.Open();
+
+        var capture = new WarningCapture();
+        await using TestFixture fx = await BareExpandSqliteHarness.BuildAsync(
+            connection,
+            sink: null,
+            defaults: null, // MaxExpandTop stays null — the condition the diagnostic is about
+            configureExtraServices: s => s.AddSingleton<ILoggerProvider>(capture),
+            configureExtraProfiles: b => b.AddEntitySetProfile<BeDelegatedAuthorProfile>());
+
+        // THE MEASUREMENT: the exposure the warning describes is live on BeAuthors. All five books
+        // come back from the delegate-less set with no ceiling, which is the whole content of the
+        // warning — and the sibling's delegate is not what served them.
+        BeDelegatedAuthorProfile.Invocations = 0;
+        System.Text.Json.JsonElement root = await fx.Client
+            .GetFromJsonAsync<System.Text.Json.JsonElement>("/odata/BeAuthors?$filter=Id eq 1&$expand=Books");
+        Assert.Equal(5, root.GetProperty("value")[0].GetProperty("Books").GetArrayLength());
+        Assert.Equal(0, BeDelegatedAuthorProfile.Invocations);
+
+        // Therefore the warning fires, exactly once, naming the set that serves raw.
+        string warning = Assert.Single(BareExpandWarnings(capture));
+        Assert.Contains("'BeAuthors'", warning, StringComparison.Ordinal);
+        Assert.Contains("'Books'", warning, StringComparison.Ordinal);
+        Assert.DoesNotContain("'BeDelegatedAuthors'", warning, StringComparison.Ordinal);
     }
 
     /// <summary>

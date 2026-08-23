@@ -537,10 +537,18 @@ public sealed class BareExpandContinuationCoexistenceTests
 
 /// <summary>
 /// A SIBLING profile over the SAME <c>BeAuthor</c> EDM entity type that declares <c>Books</c> WITH a
-/// delegate. Its whole purpose is the hole a per-profile registration predicate would leave: this
-/// sibling makes <c>ResolveNavTreatment</c> return <c>Blank</c> for BOTH sets, and a predicate that
-/// only looked at <c>BeAuthorProfile</c>'s own <c>NavigationRoutes</c> would still register a
-/// continuation route on <c>BeAuthors</c> serving those rows raw.
+/// delegate.
+/// <para>
+/// #421 CHANGED WHAT THIS FIXTURE PROVES. It was authored to demonstrate a hole a per-profile
+/// registration predicate would supposedly leave: the sibling made the old union-based
+/// <c>ResolveNavTreatment</c> call return <c>Blank</c> for BOTH sets, and a per-profile predicate
+/// "would still register a continuation route on <c>BeAuthors</c> serving those rows raw". The second
+/// half was measured false — <c>/BeAuthors?$expand=Books</c> serves those rows raw ANYWAY, because the
+/// root read path resolves from the URL-named set alone (Model B, FROZEN on #293). So the sibling was
+/// suppressing a route and a link for rows the very same request already served. It now suppresses
+/// neither. What it still proves is the invariant that always mattered: the SIBLING's own
+/// <c>Books</c> is delegate-backed on its own set, so IT gets no continuation route.
+/// </para>
 /// </summary>
 public sealed class BeDelegatedAuthorProfile : EntitySetProfile<int, BeAuthor>
 {
@@ -563,12 +571,27 @@ public sealed class BeDelegatedAuthorProfile : EntitySetProfile<int, BeAuthor>
 public sealed class BareExpandContinuationDelegateSafetyTests
 {
     /// <summary>
-    /// STRUCTURAL: no continuation route exists for a navigation that any profile in the candidate
-    /// set routes through a delegate. Read off the live route table rather than off the predicate, so
-    /// it fails if registration ever stops consulting <c>ResolveNavTreatment</c>.
+    /// STRUCTURAL, and this is the invariant that actually carries the delegate safety: no
+    /// continuation route exists for a navigation THIS profile routes through a delegate. Its own
+    /// candidate set puts the route in <c>DB</c>, so <c>ResolveNavTreatment</c> answers
+    /// <c>RunDelegate</c> and the predicate rejects it. Read off the live route table rather than off
+    /// the predicate, so it fails if registration ever stops consulting <c>ResolveNavTreatment</c>.
+    /// <para>
+    /// The <c>Single</c> is load-bearing: <c>BeDelegatedAuthors({key})/Books</c> is already claimed by
+    /// the delegate-backed navigation route, so a continuation route registered over it would be a
+    /// duplicate <c>(template, GET)</c> pair — an ambiguous-match failure at request time. Counting
+    /// endpoints catches that where a <c>Contains</c> could not.
+    /// </para>
+    /// <para>
+    /// WHAT THIS TEST USED TO ASSERT (#421). The opposite of its first assertion: that
+    /// <c>BeAuthors({key})/Books</c> must NOT exist, because the sibling's delegate made the old
+    /// union-based treatment <c>Blank</c> for both sets. It passed for the wrong reason — the rows it
+    /// was protecting are served raw by <c>/BeAuthors?$expand=Books</c> regardless, so the withheld
+    /// route protected nothing and only removed the paging escape hatch.
+    /// </para>
     /// </summary>
     [Fact]
-    public async Task NoContinuationRouteExists_ForANavigationASiblingProfileDelegates()
+    public async Task NoContinuationRouteExists_ForANavigationTHISProfileDelegates()
     {
         using var connection = new SqliteConnection("Data Source=:memory:");
         connection.Open();
@@ -581,48 +604,47 @@ public sealed class BareExpandContinuationDelegateSafetyTests
             .Select(e => e.RoutePattern.RawText ?? "")
             .ToList();
 
-        // BeAuthors declares Books delegate-LESS, but its sibling delegates it — so the treatment is
-        // Blank for both and NEITHER set may have a raw continuation route.
-        Assert.DoesNotContain(patterns, p => p.Contains("BeAuthors({key})/Books", StringComparison.Ordinal));
+        // The sibling declares Books WITH a delegate, so on ITS OWN set the treatment is RunDelegate:
+        // exactly one endpoint on that template, and it is the delegate-backed navigation route.
+        Assert.Single(patterns, p => string.Equals(p, "/odata/BeDelegatedAuthors({key})/Books", StringComparison.Ordinal));
 
-        // The sibling's own delegate-backed nav route is untouched and still there.
-        Assert.Contains(patterns, p => p.Contains("BeDelegatedAuthors({key})/Books", StringComparison.Ordinal));
+        // And BeAuthors, which declares the same navigation delegate-LESS, DOES get its continuation
+        // route — the sibling's declaration does not govern BeAuthors' navigation (#293 Model B).
+        Assert.Contains(patterns, p => p.Contains("BeAuthors({key})/Books", StringComparison.Ordinal));
+
+        // The bound: the delegate really is what answers on the sibling's template.
+        BeDelegatedAuthorProfile.Invocations = 0;
+        JsonElement viaDelegate = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/BeDelegatedAuthors(1)/Books");
+        Assert.Equal(5, viaDelegate.GetProperty("value").GetArrayLength());
+        Assert.Equal(1, BeDelegatedAuthorProfile.Invocations);
     }
 
     /// <summary>
-    /// BEHAVIOURAL: with the sibling present, the delegate-less set emits NO link and its continuation
-    /// URL is a hard 404 — the over-ceiling shape keeps the <c>400</c> stage 2 gave it, unchanged.
+    /// BEHAVIOURAL, and the whole of #421: with the sibling present, the delegate-less set pages its
+    /// OWN raw rows — <c>200</c> + <c>Books@odata.nextLink</c>, and the continuation serves the rest.
+    /// The sibling's delegate is never invoked, on either hop.
     /// <para>
-    /// MEASURED CORRECTION to the premise this test was written against. The brief asserted that a
-    /// sibling delegate "blanks the expand", so a per-profile registration predicate would be the only
-    /// thing serving those rows raw. That is <b>false at depth 1</b>: <c>ApplyCollectionPipelineAsync</c>
-    /// calls <c>ExpandLevelAsync</c> with <c>new[] { requestSource }</c> — the URL-named profile ALONE
-    /// — so at the root <c>ResolveNavTreatment</c> never sees the sibling, returns <c>ServeRaw</c> for
-    /// <c>BeAuthors</c>, and the rows really are served raw. (Measured: <c>/BeAuthors?$expand=Books</c>
-    /// with the sibling registered returns the stage-2 ceiling <c>400</c>, which is only reachable
-    /// once the rows have been materialized and counted — a blanked array would be empty and pass.)
-    /// That is a pre-existing property of the root level, not something this stage introduces.
+    /// WHAT THIS TEST ASSERTED BEFORE, AND WHY IT WAS THE WRONG THING. It asserted the exact opposite
+    /// — <c>400</c>, no link, and a <c>404</c> on the continuation URL — under the heading "the shape
+    /// keeps its stage-two 400". Its own remarks already recorded the measurement that refutes the
+    /// premise: <c>ApplyCollectionPipelineAsync</c> calls <c>ExpandLevelAsync</c> with
+    /// <c>new[] { requestSource }</c>, the URL-named profile ALONE, so at the root
+    /// <c>ResolveNavTreatment</c> never sees the sibling and answers <c>ServeRaw</c>. The stage-2
+    /// <c>400</c> it was pinning is itself proof the rows were materialized and counted — a blanked
+    /// array would have been empty and passed under the ceiling. So the test was pinning a
+    /// continuation route withheld from rows the SAME request served raw: no protection, and the
+    /// paging escape hatch gone, on a navigation <c>BeAuthorProfile</c> itself declared delegate-less.
     /// </para>
     /// <para>
-    /// RESOLVED by #415: that property is also CORRECT, and the follow-up issue's proposal to make the
-    /// root use the <c>#292</c> union was refuted rather than implemented. The FROZEN Model B spec
-    /// (owner decision 2026-07-26, issue #293) says "Root (depth 1): KEEP as-is — already reads only
-    /// the URL-named set (correct under Model B)" and names the <c>$levels</c> suite among the tests
-    /// that must stay green for exactly that reason. The three <c>RootExpand_*</c> tests at the end of
-    /// this class pin it directly. What remains open is the OTHER direction — this predicate is
-    /// union-based at the root while the read path is not — documented at
-    /// <c>ResolveExpandPagingNavigations</c>.
-    /// </para>
-    /// <para>
-    /// What the shared predicate therefore buys is narrower than the brief claimed, and still the
-    /// thing that matters: stage 5 does not WIDEN that exposure. Registering on
-    /// <c>ResolveNavTreatment</c> over the parent type's candidate set means the sibling's delegate
-    /// suppresses both the route and the link, so the shape stays exactly where stage 2 left it
-    /// instead of gaining a raw continuation endpoint. Fail-closed in the safe direction.
+    /// The delegate safety is unchanged and is asserted here too, in the only place it ever lived:
+    /// the sibling's own <c>Books</c> is delegate-backed on the sibling's own set, so the sibling
+    /// answers from its delegate and nothing on <c>BeAuthors</c> reaches it. Nothing crosses an
+    /// entity-set boundary — the continuation route reads <c>BeAuthorProfile</c>'s own
+    /// <c>GetQueryable</c>, under <c>BeAuthors</c>' own authorization.
     /// </para>
     /// </summary>
     [Fact]
-    public async Task WithASiblingDelegate_NoLinkAndNoRoute_AndTheShapeKeepsItsStageTwo400()
+    public async Task WithASiblingDelegate_TheDeclaringSetPagesItsOwnRawRows_AndTheSiblingIsUntouched()
     {
         using var connection = new SqliteConnection("Data Source=:memory:");
         connection.Open();
@@ -630,21 +652,75 @@ public sealed class BareExpandContinuationDelegateSafetyTests
             connection, cap: 3, pagingEnabled: true,
             extraProfiles: b => b.AddEntitySetProfile<BeDelegatedAuthorProfile>());
 
-        HttpResponseMessage overCeiling = await fx.Client.GetAsync(
-            "/odata/BeAuthors?$filter=Id eq 1&$expand=Books");
-        Assert.Equal(HttpStatusCode.BadRequest, overCeiling.StatusCode);
-        string body = await overCeiling.Content.ReadAsStringAsync();
-        Assert.Contains("maximum of 3", body, StringComparison.Ordinal);
-        Assert.DoesNotContain("@odata.nextLink", body, StringComparison.Ordinal);
-
-        HttpResponseMessage cont = await fx.Client.GetAsync("/odata/BeAuthors(1)/Books?$skip=3");
-        Assert.Equal(HttpStatusCode.NotFound, cont.StatusCode);
-
-        // The delegate's own path still works, and is the only thing that serves those rows.
         BeDelegatedAuthorProfile.Invocations = 0;
+        JsonElement page1 = await fx.Client.GetFromJsonAsync<JsonElement>(
+            "/odata/BeAuthors?$filter=Id eq 1&$expand=Books");
+
+        JsonElement author = page1.GetProperty("value")[0];
+        Assert.Equal(3, author.GetProperty("Books").GetArrayLength());
+        string link = author.GetProperty("Books@odata.nextLink").GetString()!;
+        Assert.Contains("/BeAuthors(1)/Books?$skip=3", link, StringComparison.Ordinal);
+
+        JsonElement rest = await fx.Client.GetFromJsonAsync<JsonElement>(new Uri(link).PathAndQuery);
+        Assert.Equal(2, rest.GetProperty("value").GetArrayLength());
+        Assert.False(rest.TryGetProperty("@odata.nextLink", out _));
+
+        // Neither hop touched the sibling's delegate: BeAuthors is served entirely by its own profile.
+        Assert.Equal(0, BeDelegatedAuthorProfile.Invocations);
+
+        // And the sibling's own path is still the only thing serving the sibling's rows.
         JsonElement viaDelegate = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/BeDelegatedAuthors(1)/Books");
         Assert.Equal(5, viaDelegate.GetProperty("value").GetArrayLength());
         Assert.Equal(1, BeDelegatedAuthorProfile.Invocations);
+    }
+
+    /// <summary>
+    /// THE DELEGATE-SAFETY BOUND on #421, stated as an equality rather than an absence: the rows the
+    /// continuation route serves are a strict SUBSET of the rows the root <c>$expand</c> beside it
+    /// already serves raw to the same caller. Page 1's three books plus the continuation's two are
+    /// exactly the five the uncapped root expand returns, in the same order — so the route opened no
+    /// new surface, it only windowed an existing one.
+    /// <para>
+    /// This is the assertion the withheld route was supposedly buying, made directly instead of
+    /// inferred from a <c>404</c>.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheContinuationServesNoRowTheRootExpandDoesNotAlreadyServeRaw()
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+
+        // The same registration, uncapped: what /BeAuthors?$expand=Books serves raw with the sibling
+        // present and no ceiling at all.
+        await using (TestFixture uncapped = await BareExpandContinuation.BuildAsync(
+            connection, cap: null, pagingEnabled: false,
+            extraProfiles: b => b.AddEntitySetProfile<BeDelegatedAuthorProfile>()))
+        {
+            JsonElement raw = await uncapped.Client.GetFromJsonAsync<JsonElement>(
+                "/odata/BeAuthors?$filter=Id eq 1&$expand=Books");
+            List<int> rawIds = raw.GetProperty("value")[0].GetProperty("Books").EnumerateArray()
+                .Select(b => b.GetProperty("Id").GetInt32()).ToList();
+            Assert.Equal(new[] { 1, 2, 3, 4, 5 }, rawIds);
+        }
+
+        using var connection2 = new SqliteConnection("Data Source=:memory:");
+        connection2.Open();
+        await using TestFixture capped = await BareExpandContinuation.BuildAsync(
+            connection2, cap: 3, pagingEnabled: true,
+            extraProfiles: b => b.AddEntitySetProfile<BeDelegatedAuthorProfile>());
+
+        JsonElement page1 = await capped.Client.GetFromJsonAsync<JsonElement>(
+            "/odata/BeAuthors?$filter=Id eq 1&$expand=Books");
+        JsonElement author = page1.GetProperty("value")[0];
+        var walked = author.GetProperty("Books").EnumerateArray()
+            .Select(b => b.GetProperty("Id").GetInt32()).ToList();
+
+        string link = author.GetProperty("Books@odata.nextLink").GetString()!;
+        JsonElement rest = await capped.Client.GetFromJsonAsync<JsonElement>(new Uri(link).PathAndQuery);
+        walked.AddRange(rest.GetProperty("value").EnumerateArray().Select(b => b.GetProperty("Id").GetInt32()));
+
+        Assert.Equal(new[] { 1, 2, 3, 4, 5 }, walked);
     }
 
     /// <summary>
@@ -1011,38 +1087,62 @@ public sealed class BareExpandContinuationLevelsTests
     }
 
     /// <summary>
-    /// On this fixture even the BARE <c>$expand=Children</c> keeps its <c>400</c>, and the reason is
-    /// the shared predicate rather than anything about <c>$levels</c>: <c>LvSecureNodeProfile</c> is a
-    /// sibling entity set over the SAME <c>LvNode</c> EDM entity type that declares <c>Children</c>
-    /// WITH a delegate, so <c>ResolveNavTreatment</c> over the candidate set is not
-    /// <c>ServeRaw</c> and neither a route nor a link may exist for it.
+    /// #421, on a BROWNFIELD fixture — neither this stage nor stage 2 authored it. <c>LvNodes</c>
+    /// declares <c>Children</c> delegate-less; <c>LvSecureNodeProfile</c> is a sibling entity set over
+    /// the SAME <c>LvNode</c> EDM entity type that declares <c>Children</c> WITH a delegate. The bare
+    /// <c>$expand=Children</c> on <c>LvNodes</c> pages, because <c>LvNodes</c>' own declaration
+    /// governs its own navigation, and the secure sibling keeps running its own delegate on its own
+    /// set — the dual-exposure pattern Model B exists to support, now paging on the public half.
     /// <para>
-    /// This is the delegate-safety partition asserted on a fixture NEITHER this stage NOR stage 2
-    /// authored — the strongest provenance available for that claim, and the reason this test lives
-    /// here rather than beside the purpose-built sibling in the T4 block. Its counterpart, that a
-    /// nav with no delegating sibling DOES page at the same ceiling, is
+    /// WHAT THIS TEST ASSERTED BEFORE (#421): a <c>400</c>, no link, and no
+    /// <c>LvNodes({key})/Children</c> route, "because a sibling profile delegates the nav". It was
+    /// pinning the union, and the same registration's <c>/LvNodes?$expand=Children</c> serves those
+    /// children RAW at every ceiling — this suite's own <c>$levels</c> tests depend on exactly that,
+    /// which is why the FROZEN Model B spec lists them under "tests that STAY GREEN". So the withheld
+    /// route was protecting rows that were never protected.
+    /// </para>
+    /// <para>
+    /// Its counterpart, that a nav with no delegating sibling pages at the same ceiling, is
     /// <see cref="BareExpandContinuationWalkTests.FiveChildren_CeilingThree_WalksToExhaustion_InOrder"/>.
     /// </para>
     /// </summary>
     [Fact]
-    public async Task OnThisFixtureEvenTheBareShapeIsRefused_BecauseASiblingProfileDelegatesTheNav()
+    public async Task OnThisBrownfieldFixture_TheDelegateLessSetPages_AndItsDelegatingSiblingDoesNot()
     {
         using var connection = new SqliteConnection("Data Source=:memory:");
         connection.Open();
+        var counter = new LevelsDelegateCounter();
         await using TestFixture fx = await LevelsOptionsSqliteHarness.BuildAsync(
-            connection, new LevelsDelegateCounter(), sink: null,
+            connection, counter, sink: null,
             defaults: d => { d.MaxExpandTop = 1; d.ExpandPagingEnabled = true; });
 
-        HttpResponseMessage resp = await fx.Client.GetAsync(
+        // Root(1) has two children (A, B), so a ceiling of 1 puts it exactly one row over.
+        JsonElement root = await fx.Client.GetFromJsonAsync<JsonElement>(
             "/odata/LvNodes?$filter=parentId eq null&$expand=Children");
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-        Assert.DoesNotContain("@odata.nextLink", await resp.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        JsonElement node = root.GetProperty("value")[0];
+        Assert.Equal(1, node.GetProperty("Children").GetArrayLength());
+        string link = node.GetProperty("Children@odata.nextLink").GetString()!;
+        Assert.Contains("/LvNodes(1)/Children?$skip=1", link, StringComparison.Ordinal);
+
+        JsonElement rest = await fx.Client.GetFromJsonAsync<JsonElement>(new Uri(link).PathAndQuery);
+        Assert.Equal(1, rest.GetProperty("value").GetArrayLength());
+
+        // Not one hop reached the secure sibling's delegate.
+        Assert.Equal(0, counter.ChildCalls);
 
         var patterns = fx.App.Services.GetRequiredService<EndpointDataSource>().Endpoints
             .OfType<RouteEndpoint>()
             .Select(e => e.RoutePattern.RawText ?? "")
             .ToList();
-        Assert.DoesNotContain(patterns, p => p.Contains("LvNodes({key})/Children", StringComparison.Ordinal));
+        Assert.Contains(patterns, p => p.Contains("LvNodes({key})/Children", StringComparison.Ordinal));
+
+        // THE INVARIANT: the secure set delegates Children on its OWN set, so it gets exactly one
+        // endpoint on that template — its delegate-backed navigation route, not a raw continuation.
+        Assert.Single(patterns, p => string.Equals(p, "/odata/LvSecureNodes({key})/Children", StringComparison.Ordinal));
+        JsonElement secure = await fx.Client.GetFromJsonAsync<JsonElement>(
+            "/odata/LvSecureNodes?$filter=parentId eq null&$expand=Children");
+        Assert.Equal(2, secure.GetProperty("value")[0].GetProperty("Children").GetArrayLength());
+        Assert.True(counter.ChildCalls > 0);
     }
 }
 
