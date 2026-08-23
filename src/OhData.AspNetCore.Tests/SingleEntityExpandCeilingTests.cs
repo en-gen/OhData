@@ -249,10 +249,18 @@ public sealed class SingleEntityExpandCeilingTests
     }
 
     // A single-valued navigation is at most one row; there is nothing to bound, and the ceiling must
-    // not start rejecting it. Publisher comes out null here because this profile's GetById Includes
-    // only Books — which is precisely the point: the ceiling reads the SERIALIZED array and a
-    // single-valued nav has none, so it is not in the ceiling map at all (the startup filter requires
+    // not start rejecting it. The ceiling reads the SERIALIZED array and a single-valued nav has none,
+    // so it is not in the ceiling map at all (the startup filter requires
     // IEdmNavigationProperty.Type.IsCollection()).
+    //
+    // Publisher is OMITTED rather than emitted as null, and that is #446's doing, not the ceiling's:
+    // BeAuthorByIdProfile declares only HasMany(Books), so Publisher is a convention-discovered
+    // navigation this profile never declared, and an undeclared nav is omitted (JSON Format v4.01
+    // §8.3 - the inline form IS the expanded form, so "Publisher":null would positively assert an
+    // empty relationship the server never evaluated). This assertion was authored against a tree
+    // where #446 had not yet landed; the two PRs could not see each other, and develop went red on
+    // the composition. Do NOT "restore" the null: that would mean an undeclared nav is being served
+    // again. If this line ever needs to change back, the profile has started declaring Publisher.
     [Fact]
     public async Task ByteIdentical_SingleValuedNavigation_IsUntouched()
     {
@@ -263,7 +271,7 @@ public sealed class SingleEntityExpandCeilingTests
             Assert.Equal(
                 "{\"@odata.context\":\"http://localhost/odata/$metadata#BeAuthorsById/$entity\"," +
                 "\"@odata.id\":\"http://localhost/odata/BeAuthorsById(1)\",\"Id\":1,\"Name\":\"Ann\"," +
-                "\"PublisherId\":100,\"Publisher\":null}",
+                "\"PublisherId\":100}",
                 body);
         }
         conn.Dispose();
