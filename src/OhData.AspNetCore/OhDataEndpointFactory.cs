@@ -5582,7 +5582,45 @@ internal static class OhDataEndpointFactory
         // whose structural properties differ only by case makes that lookup ambiguous, so such
         // a profile is pushdown-ineligible outright rather than crashing the dictionary build.
         bool pushdownCtorOk = typeof(TModel).GetConstructor(Type.EmptyTypes) is not null;
+        // #322: the projection's structural member set is EDM-AWARE, and this is the ONLY place the
+        // two navigation name spaces are reconciled.
+        //
+        // source.StructuralProperties is "every public readable CLR property MINUS every
+        // PROFILE-DECLARED navigation" — BuildStructuralProperties subtracts only
+        // _navigationPropertyNames (HasOptional/HasRequired/HasMany). A navigation the
+        // ODataConventionModelBuilder discovered on its own but the profile never declared therefore
+        // SURVIVES as a structural property, and carries IsComplex = true because its CLR type is not
+        // an OData primitive. TryBuildProjectionInit's complex-member bail then fires for every
+        // request whose projection member set contains it — which is every bare $expand (no narrowing
+        // $select projects EVERY structural name) and every $select that names the navigation — so
+        // $select column pruning AND $expand JOIN pushdown are abandoned for the whole entity set,
+        // and a nested $filter/$orderby/$expand becomes the #305 400. The EDM is the authority on
+        // what is a navigation; a navigation is not a projectable column, so it is subtracted here.
+        //
+        // Scope is deliberately THIS dictionary and nothing else. source.NavigationPropertyNames is
+        // NOT re-sourced from the EDM: it feeds Model B's DB/DL partitioning (ResolveNavTreatment,
+        // #292/#293), whose FROZEN spec has "a candidate that neither routes nor declares the nav has
+        // no opinion on it and is ignored" as a load-bearing category. Convention-sourcing it would
+        // make every candidate declare every EDM navigation of its type, emptying that category and
+        // collapsing the honored-sole-route case (RunDelegate) to Blank — a delegate that no longer
+        // runs and data silently replaced by null. The two sets are separable and stay separate;
+        // Issue322ModelBClassificationTests pins the classification for the multi-candidate shapes.
+        //
+        // Both name spaces are EDM names, so the match is exact rather than approximate:
+        // StructuralPropertyInfo.Name is ODataPropertyNaming.ResolveEdmName(prop), and
+        // OhDataBuilder.ApplyJsonPropertyNameRenames gives every EDM navigation that same
+        // [JsonPropertyName]-resolved name (#253). OrdinalIgnoreCase because that is how OData
+        // resolves identifiers, matching the dictionary this feeds. NavigationProperties() (not
+        // DeclaredNavigationProperties()) so an inherited navigation on a derived entity type is
+        // subtracted too — the same enumeration WarnUnboundedBareExpand walks.
+        var edmNavigationNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (rootEdmType is not null)
+        {
+            foreach (IEdmNavigationProperty edmNav in rootEdmType.NavigationProperties())
+                edmNavigationNames.Add(edmNav.Name);
+        }
         var pushdownNameGroups = source.StructuralProperties
+            .Where(p => !edmNavigationNames.Contains(p.Name))
             .GroupBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
         bool pushdownNamesUnambiguous = pushdownNameGroups.All(g => g.Count() == 1);
