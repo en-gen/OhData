@@ -514,13 +514,12 @@ public sealed class OhDataBuilder
 
             var edmModel = modelBuilder.GetEdmModel();
 
-            // #206: advertise the resolved MaxExpansionDepth per entity set as the
-            // Org.OData.Capabilities.V1.ExpandRestrictions/MaxLevels annotation, so a client can
-            // discover the server's $expand/$levels ceiling from $metadata before it 400s a too-deep
-            // request. Best-effort: the convention builder returns a concrete EdmModel (the only type
-            // that accepts vocabulary annotations); if that ever changes, the annotation is skipped
-            // rather than failing startup — the limit is still enforced at request time.
-            AnnotateExpandRestrictions(edmModel, profiles, logger);
+            // #206/#303: advertise the runtime $expand gates per entity set as
+            // Org.OData.Capabilities.V1 annotations, so a client can discover them from $metadata
+            // before it 400s. Best-effort: the convention builder returns a concrete EdmModel (the
+            // only type that accepts vocabulary annotations); if that ever changes, the annotations
+            // are skipped rather than failing startup — every limit is still enforced at request time.
+            AnnotateCapabilities(edmModel, profiles, logger);
 
             logger?.LogInformation(
                 "OhData: initialized {Count} entity set(s) [{Names}] at prefix '{Prefix}'",
@@ -543,35 +542,109 @@ public sealed class OhDataBuilder
         }
     }
 
-    // #206: attach an Org.OData.Capabilities.V1.ExpandRestrictions vocabulary annotation carrying
-    // MaxLevels = the profile's resolved MaxExpansionDepth to each entity set, so the ceiling is
-    // discoverable from $metadata. Emitted inline (inside the EntitySet element) so a CSDL reader
-    // finds it without an out-of-line lookup. Best-effort and non-fatal: any missing model/term/set
-    // is skipped (the depth limit is still enforced by the request-time validator regardless).
-    private static void AnnotateExpandRestrictions(
+    // #206/#303/#367: the single place OhData translates its runtime query-capability gates into
+    // Org.OData.Capabilities.V1 vocabulary annotations on the EDM. One pass, one term per method, so
+    // #367's wider set (FilterRestrictions / SortRestrictions / CountRestrictions / SelectSupport)
+    // is a new call here rather than a second mechanism.
+    //
+    // ---------------------------------------------------------------------------------------------
+    // WHAT IS AND IS NOT EXPRESSIBLE (#303). Read this before adding a numeric limit here.
+    //
+    // Org.OData.Capabilities.V1 contains exactly ONE numeric slot: `MaxLevels` (Edm.Int32), which
+    // appears in ExpandRestrictionsType, FilterRestrictionsType, and the Insert/Update/Delete
+    // restriction types. In every one of those it means a NESTING / TRAVERSAL DEPTH, never a count
+    // of entities. There is NO term, at entity-set scope or navigation-property scope, that
+    // expresses a maximum result count, page size, or $top ceiling.
+    //
+    // Verified two independent ways, both on 2026-08-23:
+    //   (1) the Capabilities CSDL bundled in Microsoft.OData.Edm 8.4.0 — the exact package this
+    //       repo resolves — dumped via CsdlWriter over CapabilitiesVocabularyModel.Instance;
+    //   (2) the upstream OASIS source of truth,
+    //       oasis-tcs/odata-vocabularies @ main, vocabularies/Org.OData.Capabilities.V1.xml.
+    // Both agree: grep for a numeric-typed property returns MaxLevels and nothing else.
+    //
+    // Therefore:
+    //   MaxExpansionDepth  -> EXPRESSIBLE as ExpandRestrictions/MaxLevels. Emitted below (#206).
+    //   ExpandEnabled      -> EXPRESSIBLE as ExpandRestrictions/Expandable. Emitted below (#303).
+    //   MaxExpandTop       -> NOT EXPRESSIBLE. It is a count of related entities per expanded
+    //                         navigation, not a depth. TopSupported/SkipSupported are Core.Tag
+    //                         booleans with no numeric slot, and advertising TopSupported=false
+    //                         would be a lie (a nested $top IS supported, up to the ceiling).
+    //                         Deliberately left unadvertised — see the note on inventing terms below.
+    //   MaxExpandBreadth   -> NOT EXPRESSIBLE. A count of expansions across the tree; same reason.
+    //   MaxTop (#367)      -> NOT EXPRESSIBLE, same reason as MaxExpandTop.
+    //
+    // We do NOT mint a custom `OhData.V1.*` term for the three inexpressible limits. A non-standard
+    // annotation is not discoverable by any client that does not already know OhData, so it buys no
+    // interoperability while implying some; and approximating with MaxLevels or TopSupported would
+    // publish a statement that is simply false. They stay enforced at request time (400) and
+    // documented, which is the honest outcome. Do not "fix" this by inventing a term.
+    //
+    // For reference, Microsoft.AspNetCore.OData 9.5.0 advertises NONE of these: a model built with
+    // ODataConventionModelBuilder over a type carrying [Page(MaxTop=25, PageSize=10)],
+    // [Expand(MaxDepth=2)], [Count], [Filter] and [OrderBy] emits zero vocabulary annotations — its
+    // model-bound query settings are CLR-side annotations that never reach the CSDL. OhData is
+    // already ahead of them here; matching their shape would mean emitting nothing at all.
+    // ---------------------------------------------------------------------------------------------
+    private static void AnnotateCapabilities(
         IEdmModel edmModel, IReadOnlyList<IEntitySetEndpointSource> profiles, ILogger? logger)
     {
         if (edmModel is not EdmModel model) return;
+        IEdmEntityContainer? container = model.EntityContainer;
+        if (container is null) return;
+
+        (IEntitySetEndpointSource Profile, IEdmEntitySet EntitySet)[] targets = profiles
+            .Select(profile => (Profile: profile, EntitySet: container.FindEntitySet(profile.EntitySetName)))
+            .Where(pair => pair.EntitySet is not null)
+            .Select(pair => (pair.Profile, pair.EntitySet!))
+            .ToArray();
+        if (targets.Length == 0) return;
+
+        AnnotateExpandRestrictions(model, targets, logger);
+    }
+
+    // #206/#303: attach an Org.OData.Capabilities.V1.ExpandRestrictions vocabulary annotation to each
+    // entity set, carrying the profile's RESOLVED (profile override falling back to
+    // EntitySetDefaults) $expand gates:
+    //
+    //   Expandable = false  — only when $expand is disabled outright. `true` is the vocabulary's own
+    //                         default, so emitting it would add bytes and assert nothing; omitting it
+    //                         keeps every set that already advertised correctly byte-identical.
+    //                         Without this an entity set with ExpandEnabled=false advertised
+    //                         `MaxLevels=3` and nothing else — actively misleading, since it read as
+    //                         "expand up to 3 levels" for a set that 400s every $expand (#367's
+    //                         headline evidence).
+    //   MaxLevels           — the resolved MaxExpansionDepth (#206). Emitted unconditionally,
+    //                         including when Expandable=false: it is not false there, merely moot,
+    //                         and keeping it unconditional is what makes this change a strict
+    //                         addition rather than a rewrite of existing metadata.
+    //
+    // Property order follows the vocabulary's own declaration order (Expandable before MaxLevels).
+    // Emitted inline (inside the EntitySet element) so a CSDL reader finds it without an
+    // out-of-line lookup. Best-effort and non-fatal: a missing term is skipped (the gates are still
+    // enforced by the request-time validator regardless).
+    private static void AnnotateExpandRestrictions(
+        EdmModel model,
+        IReadOnlyList<(IEntitySetEndpointSource Profile, IEdmEntitySet EntitySet)> targets,
+        ILogger? logger)
+    {
         IEdmTerm? term = CapabilitiesVocabularyModel.Instance
             .FindDeclaredTerm("Org.OData.Capabilities.V1.ExpandRestrictions");
         if (term is null) return;
 
-        IEdmEntityContainer? container = model.EntityContainer;
-        if (container is null) return;
-
-        foreach ((IEntitySetEndpointSource profile, IEdmEntitySet entitySet) in profiles
-            .Select(profile => (profile, entitySet: container.FindEntitySet(profile.EntitySetName)))
-            .Where(pair => pair.entitySet is not null)
-            .Select(pair => (pair.profile, pair.entitySet!)))
+        foreach ((IEntitySetEndpointSource profile, IEdmEntitySet entitySet) in targets)
         {
-            var record = new EdmRecordExpression(
-                new EdmPropertyConstructor("MaxLevels", new EdmIntegerConstant(profile.MaxExpansionDepth)));
-            var annotation = new EdmVocabularyAnnotation(entitySet, term, record);
+            var properties = new List<EdmPropertyConstructor>(2);
+            if (!profile.ExpandEnabled)
+                properties.Add(new EdmPropertyConstructor("Expandable", new EdmBooleanConstant(false)));
+            properties.Add(new EdmPropertyConstructor("MaxLevels", new EdmIntegerConstant(profile.MaxExpansionDepth)));
+
+            var annotation = new EdmVocabularyAnnotation(entitySet, term, new EdmRecordExpression(properties));
             annotation.SetSerializationLocation(model, EdmVocabularyAnnotationSerializationLocation.Inline);
             model.AddVocabularyAnnotation(annotation);
         }
 
-        logger?.LogDebug("OhData: advertised ExpandRestrictions/MaxLevels for {Count} entity set(s).", profiles.Count);
+        logger?.LogDebug("OhData: advertised ExpandRestrictions for {Count} entity set(s).", targets.Count);
     }
 
     // Marks every structural type the builder discovered that is NOT one of the root profiles'

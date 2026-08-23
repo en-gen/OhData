@@ -17,7 +17,10 @@ public sealed class EntitySetDefaults
 
     /// <summary>
     /// Whether <c>$expand</c> is enabled by default on all entity sets (OData §11.2.4.2).
-    /// Profile-level <c>ExpandEnabled</c> overrides this value.
+    /// Profile-level <c>ExpandEnabled</c> overrides this value. When it resolves to <c>false</c>,
+    /// <c>$metadata</c> advertises <c>Org.OData.Capabilities.V1.ExpandRestrictions/Expandable</c>
+    /// as <c>false</c> on that entity set (#303), so a client discovers the gate rather than
+    /// learning about it from a <c>400</c>.
     /// </summary>
     public bool ExpandEnabled { get; set; }
 
@@ -81,6 +84,14 @@ public sealed class EntitySetDefaults
     /// Must be a positive integer or <c>null</c> (no ceiling). Use <c>null</c>, not a large sentinel:
     /// <c>int.MaxValue</c> counts as set, so it pays for every bound and tiebreaker while making the
     /// check unable to fire.
+    /// <para>
+    /// <b>Not advertised in <c>$metadata</c> (#303).</b> <c>Org.OData.Capabilities.V1</c> has no term
+    /// for a maximum result <i>count</i> at any scope — its only numeric slot, <c>MaxLevels</c>, is a
+    /// nesting <i>depth</i>, and <c>TopSupported</c>/<c>SkipSupported</c> are booleans with no numeric
+    /// slot. Rather than mint a custom term no client understands, or publish a false approximation,
+    /// this ceiling stays enforced at request time only. Same for <see cref="MaxExpandBreadth"/> and
+    /// <see cref="MaxTop"/>. See the expressibility note on <c>OhDataBuilder.AnnotateCapabilities</c>.
+    /// </para>
     /// </summary>
     public int? MaxExpandTop
     {
