@@ -985,6 +985,10 @@ internal static class OhDataEndpointFactory
         // is about to throw does not first emit advice about a surface it will never serve. Same
         // rationale as WarnWireShapeIsFlat above, which sits after ValidateOrThrow for the same reason.
         WarnUnboundedBareExpand(registration, groupLogger);
+        // #440: same placement rationale — after every route has mapped, so a registration whose
+        // startup validation is about to throw does not first emit advice about a surface it will
+        // never serve.
+        WarnUndeclaredConventionNavigations(registration, groupLogger);
 
         return group;
     }
@@ -1079,6 +1083,86 @@ internal static class OhDataEndpointFactory
                     "both unset is a valid choice for a collection you know is small — this warning " +
                     "informs that choice, it does not make it.",
                     profile.EntitySetName, nav.Name, nav.Name);
+            }
+        }
+    }
+
+    // #440: the startup diagnostic for the OTHER half of #322's root cause — the profile's
+    // navigation set and the EDM's disagree, and #322's projection fix reconciles them for the
+    // QUERY PLAN only. Two correctness symptoms are left, and both need the DEVELOPER to declare
+    // the navigation (or hide it), which the framework can detect but must not decide.
+    //
+    // A WARNING, not a throw. The shape that triggers this is `public Publisher? Publisher { get; set; }`
+    // beside an `int? PublisherId` — the ordinary EF Core reference navigation on a profiled entity,
+    // with no attributes and no fluent declaration. Throwing would break startup for every adopter
+    // who has one, with no migration but editing every profile.
+    //
+    // WHAT IS NOT LISTED, deliberately: pushdown disqualification. Before #322 an undeclared
+    // navigation also abandoned $select/$expand pushdown for the whole entity set; it does not any
+    // more, and naming a consequence the framework has already fixed is how a diagnostic starts
+    // lying (#313 stage 3 made the mirror-image mistake and needed a follow-up).
+    //
+    // The gate is "at least one consequence is REACHABLE on this profile", which is what keeps it
+    // off models where the disagreement has no symptom:
+    //   - ExpandEnabled                                  -> the wrong-data-under-200 symptom is live
+    //   - PropertyAccessEnabled && (HasGetById||HasPatch) -> the property-route symptom is live
+    //     (PropertyAccessEnabled defaults TRUE, but the routes still need GetById for the reads and
+    //     Patch for the writes; a profile with neither registers nothing over the navigation)
+    // A profile with $expand off, property access off, and no GetById/Patch has a $metadata-only
+    // discrepancy and no reachable defect, so it stays silent.
+    //
+    // Both enabling conditions are named IN the message rather than split into two templates:
+    // Microsoft.Extensions.Logging groups by the template, so it stays a single constant string.
+    //
+    // Emitted once per registration at startup, never per request.
+    private static void WarnUndeclaredConventionNavigations(OhDataRegistration registration, ILogger? logger)
+    {
+        if (logger is null) return;
+
+        foreach (IEntitySetEndpointSource profile in registration.Profiles)
+        {
+            bool expandSymptomLive = profile.ExpandEnabled;
+            bool propertyRouteSymptomLive =
+                profile.PropertyAccessEnabled && (profile.HasGetById || profile.HasPatch);
+            if (!expandSymptomLive && !propertyRouteSymptomLive) continue;
+
+            IEdmEntityType? entityType = registration.EdmModel.EntityContainer?
+                .FindEntitySet(profile.EntitySetName)?.EntityType;
+            if (entityType is null) continue;
+
+            foreach (IEdmNavigationProperty nav in entityType.NavigationProperties())
+            {
+                // The profile's OWN declared set — never a sibling's. Unlike WarnUnboundedBareExpand
+                // this is not a Model B question: the defect is that THIS profile's route table and
+                // expansion set were built from a name list that does not contain this navigation,
+                // so no candidate set and no ResolveNavTreatment decision enter into it.
+                // OrdinalIgnoreCase because both sides are EDM identifiers.
+                if (profile.NavigationPropertyNames.Any(
+                        n => string.Equals(n, nav.Name, StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue;
+                }
+
+                // Each placeholder appears EXACTLY once — Microsoft.Extensions.Logging binds a
+                // template positionally, so a repeated one would consume an argument that is not
+                // there. Repeated VALUES are passed again under a distinct name.
+                logger.LogWarning(
+                    "OhData: '{EntitySet}' has a navigation '{Navigation}' that the OData convention " +
+                    "builder discovered on '{Model}' but the profile never declared with HasOptional/" +
+                    "HasRequired/HasMany. $metadata advertises it as a navigation, yet only a DECLARED " +
+                    "navigation is ever loaded or routed, so the two sides disagree about what this " +
+                    "member is. With $expand enabled, '?$expand={Nav}' answers 200 with null (or an " +
+                    "empty array) for it — the client asked for related data and got a wrong answer " +
+                    "under a success status. And with PropertyAccessEnabled at its default of true, " +
+                    "OhData registers structural-PROPERTY routes over it: " +
+                    "'GET /{EntitySet2}({{key}})/{Nav2}' and '/$value' alongside a GetById handler, and " +
+                    "PUT/PATCH/DELETE alongside a Patch handler — property writes aimed at a " +
+                    "navigation. Declare it with HasOptional/HasRequired/HasMany (adding an expand " +
+                    "delegate if loading it needs real logic), or Ignore() it if it should not be " +
+                    "exposed at all — Ignore() takes it out of $metadata and out of the route table. " +
+                    "OhData does not choose for you: both are valid answers and only you know which.",
+                    profile.EntitySetName, nav.Name, profile.ModelType.Name, nav.Name,
+                    profile.EntitySetName, nav.Name);
             }
         }
     }
