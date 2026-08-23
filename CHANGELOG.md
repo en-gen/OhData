@@ -717,6 +717,29 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   | `?$expand=Books` | `200` | `200`, SQL identical |
   | `?$select=name&$expand=Books($filter=…)` | `200` | `200` (never affected) |
 
+  Two scope notes, both measured rather than assumed. A **bare** `?$expand=Books` emits
+  **byte-identical SQL** on both trees — the `Include` fallback and the member-init projection
+  produce the same `LEFT JOIN` for an unoptioned expand, so what that shape recovers is the
+  materialization path and `$select` column pruning, not the emitted query. And a nested `$top`
+  *alone* was never affected: the `#305` fallback uses an EF Core **filtered include**, which
+  carries `Take()`, so `?$expand=Books($top=1)` already answered `200` with a `ROW_NUMBER()` window
+  in SQL. Only a nested `$filter`/`$orderby` (which a filtered include cannot carry) and a nested
+  `$expand`/`$levels` produced the `400`.
+
+  > **One payload difference, and it is a unification.** On a **non-EF** `GetQueryable` whose
+  > in-memory graph already holds the related object, a `$select` that *names* the undeclared
+  > navigation together with a `$expand` of it now serializes `null` where it previously echoed the
+  > in-memory value (`?$select=note,cust&$expand=Cust`:
+  > `{"Cust":{"Id":5,"Name":"IN-MEMORY"}}` → `{"Cust":null}`). `$expand` pushdown is EF-gated, so
+  > nothing ever *loaded* that value — it was only whatever the profile's own graph happened to
+  > carry, and it survived the projection solely because the navigation had been misclassified as a
+  > projectable column. A **declared** delegate-less navigation on the same model, same source and
+  > same request already returned `null` before and after, so the two provenances are now
+  > indistinguishable on this path. Pinned, with that declared control alongside it, by
+  > `Issue322NonEfProjectionUnificationTests`. Nothing else moves: without the `$select` there is no
+  > projection to drop the value, and on an EF-backed source the navigation is un-`Include`d and
+  > therefore `null` either way.
+
   The fix subtracts the **EDM's own** navigation names when building the projection's structural
   member set: the EDM is the authority on what is a navigation, and a navigation is not a
   projectable column. Scoped to that one dictionary — the profile's navigation set is *not*
