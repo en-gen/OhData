@@ -87,6 +87,18 @@ public sealed class DcBook
     public int Id { get; set; }
     public int AuthorId { get; set; }
     public string Title { get; set; } = "";
+    // Scope check (issue #322, second half): an undeclared convention-discovered nav on a NESTED
+    // element type. DcBook has no profile at all, so the nested projection is built from the EDM
+    // (IsMemberInitProjectable / ScalarStructuralClrProps read edmType.StructuralProperties()),
+    // where this member is an IEdmNavigationProperty and therefore invisible to the complex bail.
+    public int? OwnerId { get; set; }
+    public DcOwner? Owner { get; set; }
+}
+
+public sealed class DcOwner
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
 }
 
 public sealed class DcPublisher
@@ -108,6 +120,7 @@ public sealed class UndeclaredNavDbContext : DbContext
     public DbSet<DcAuthor> DcAuthors => Set<DcAuthor>();
     public DbSet<DcBook> DcBooks => Set<DcBook>();
     public DbSet<DcPublisher> DcPublishers => Set<DcPublisher>();
+    public DbSet<DcOwner> DcOwners => Set<DcOwner>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -117,6 +130,7 @@ public sealed class UndeclaredNavDbContext : DbContext
         b.Entity<NpAuthor>().HasOne(a => a.Publisher).WithMany().HasForeignKey(a => a.PublisherId);
         b.Entity<DcAuthor>().HasMany(a => a.Books).WithOne().HasForeignKey(x => x.AuthorId);
         b.Entity<DcAuthor>().HasOne(a => a.Publisher).WithMany().HasForeignKey(a => a.PublisherId);
+        b.Entity<DcBook>().HasOne(x => x.Owner).WithMany().HasForeignKey(x => x.OwnerId);
     }
 }
 
@@ -224,9 +238,10 @@ internal static class UndeclaredNavHarness
 
         db.DcPublishers.Add(new DcPublisher { Id = 300, Name = "Pub-D" });
         db.DcAuthors.Add(new DcAuthor { Id = 1, Name = "A1", PublisherId = 300 });
+        db.DcOwners.Add(new DcOwner { Id = 900, Name = "Own-D" });
         db.DcBooks.AddRange(
-            new DcBook { Id = 30, AuthorId = 1, Title = "B1" },
-            new DcBook { Id = 31, AuthorId = 1, Title = "B2" });
+            new DcBook { Id = 30, AuthorId = 1, Title = "B1", OwnerId = 900 },
+            new DcBook { Id = 31, AuthorId = 1, Title = "B2", OwnerId = 900 });
 
         db.SaveChanges();
         return fx;
@@ -281,6 +296,16 @@ public sealed class Issue322UndeclaredNavProbeTests : IAsyncLifetime
         await RunAsync("/odata/DcAuthors?$expand=Books");
         await RunAsync("/odata/UdAuthors?$expand=Books");
         await RunAsync("/odata/NpAuthors?$expand=Books");
+    }
+
+    // Scope confirmation (issue #322, second half): DcBook now carries its own undeclared,
+    // convention-discovered nav (Owner) and has NO profile. If nested types were affected the same
+    // way roots are, this would 400 like the Ud/Np roots do.
+    [Fact(Skip = "#322 diagnostic probe - investigation only; run manually")]
+    public async Task Probe_NestedElementTypeUndeclaredNav_IsUnaffected()
+    {
+        await RunAsync("/odata/DcAuthors?$expand=Books($filter=contains(title,'B'))");
+        await RunAsync("/odata/DcAuthors?$expand=Books");
     }
 
     [Fact(Skip = "#322 diagnostic probe - investigation only; run manually")]
