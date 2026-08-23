@@ -676,26 +676,60 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `public Customer? Customer { get; set; }` beside an `int? CustomerId` — the ordinary EF Core
   reference navigation — is discovered by `ODataConventionModelBuilder` and advertised in
   `$metadata`, but if the profile never declared it with `HasOptional`/`HasRequired`/`HasMany` then
-  OhData's own navigation set does not contain it, and two things follow: `?$expand=Customer`
-  answers `200` with `null` (or `[]`) because only a *declared* navigation is ever loaded, and
-  `PropertyAccessEnabled` (default `true`) registers **structural-property routes over a
-  navigation** — `GET /{Set}({key})/Customer` and `/$value` alongside `GetById`, plus
-  `PUT`/`PATCH`/`DELETE` alongside `Patch`.
+  OhData's own navigation set does not contain it, so `?$expand=Customer` answers `200` with `null`
+  (or `[]`) — only a *declared* navigation is ever loaded.
 
-  Closing either one means *declaring* the navigation or hiding it with `Ignore()`. Both are valid
-  and only you know which, so the framework names the disagreement and stops there — the same
+  Closing that means *declaring* the navigation or hiding it with `Ignore()`. Both are valid and
+  only you know which, so the framework names the disagreement and stops there — the same
   "a cost the framework can detect but must not decide" line the `#313` unbounded-`$expand` warning
   draws. **It is a warning, not a throw:** throwing would break startup for every adopter with a
   plain EF reference navigation on a profiled entity, with no migration but editing every profile.
 
-  Emitted once per `(entity set, navigation)` at `MapOhData()`, and only when at least one of the
-  two symptoms is actually reachable on that profile (`ExpandEnabled`, or `PropertyAccessEnabled`
-  together with a `GetById` or `Patch` handler) — a profile with none of those has a
-  `$metadata`-only discrepancy and stays silent. Measured over this repository's full test suite:
-  **24 distinct `(entity set, navigation)` hits against 358 distinct registered entity sets**, all
-  true positives.
+  Emitted once per `(entity set, navigation)` at `MapOhData()`, gated on `ExpandEnabled` — with
+  `$expand` off the entity set expands nothing at all, so the discrepancy is `$metadata`-only and the
+  warning stays silent. Measured over this repository's full test suite: **24 distinct
+  `(entity set, navigation)` hits against 358 distinct registered entity sets**, all true positives.
+
+  > **The message states only what is still true, and shrinks as the framework closes consequences.**
+  > It has never mentioned the pushdown disqualification #322 fixed, and the structural-property
+  > routes it originally named came out in the same commit that stopped registering them (below).
+  > `Issue440UndeclaredConventionNavWarningTests` carries an explicit guard for each retired
+  > consequence, so the message cannot drift back into describing behaviour that no longer exists —
+  > which is the mistake `#313` stage 3 made and had to correct.
 
 ### Fixed
+
+- **Structural-property routes were registered over a convention-discovered navigation the profile
+  never declared — including writes (#440).**
+  A profile's `StructuralProperties` is "every public readable CLR property **minus every
+  profile-declared navigation**", and route registration read it directly. So an undeclared
+  navigation got the full property-route surface, aimed at a navigation:
+
+  | request | before | after | declared control (before *and* after) |
+  |---|---|---|---|
+  | `GET /{Set}(1)/Customer` | `204` | **`404`** | `404` |
+  | `GET /{Set}(1)/Customer/$value` | `400` | **`404`** | `404` |
+  | `PUT /{Set}(1)/Customer` | `204` | **`404`** | `404` |
+  | `PATCH /{Set}(1)/Customer` | `400` | **`404`** | `404` |
+  | `DELETE /{Set}(1)/Customer` | `204` | **`404`** | `404` |
+
+  The writes are the sharp end: each built a one-property `Delta<TModel>` over a **navigation**
+  member and handed it to the profile's `Patch` handler. Nobody opted into that, and a profile that
+  *declared* the same CLR member had no such routes at all — so two profiles over one model exposed
+  different route tables purely by declaration provenance.
+
+  The fix subtracts the **EDM's own** navigation names from the set route registration iterates —
+  the same subtraction #322 applied to the projection's structural member set, for the same reason.
+  It is applied at the registration site rather than inside `BuildStructuralProperties`, which runs
+  *while* the EDM is being built and therefore has no EDM to consult. `StructuralProperties` itself
+  is unchanged, so nothing else moves: the companion OpenAPI/NSwag/Swashbuckle packages do not read
+  it, and #313's continuation-route collision check reads the profile's navigation set instead. The
+  profile's navigation set is again **not** re-sourced from the EDM (see #322 below for the measured
+  reason), so `$expand`'s delegate-safety decision table is untouched.
+
+  A genuine structural property on the same entity set keeps its full route surface, and so does the
+  navigation's own foreign key (`CustomerId` is a scalar, and the subtraction is by navigation
+  *name*) — both pinned, so "everything 404s" cannot pass vacuously.
 
 - **An undeclared convention navigation silently disqualified its whole entity set from `$select`
   and `$expand` pushdown (#322).**

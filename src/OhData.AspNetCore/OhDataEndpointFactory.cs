@@ -1088,31 +1088,32 @@ internal static class OhDataEndpointFactory
     }
 
     // #440: the startup diagnostic for the OTHER half of #322's root cause — the profile's
-    // navigation set and the EDM's disagree, and #322's projection fix reconciles them for the
-    // QUERY PLAN only. Two correctness symptoms are left, and both need the DEVELOPER to declare
-    // the navigation (or hide it), which the framework can detect but must not decide.
+    // navigation set and the EDM's disagree, and #322's projection fix reconciled them for the
+    // QUERY PLAN only.
     //
     // A WARNING, not a throw. The shape that triggers this is `public Publisher? Publisher { get; set; }`
     // beside an `int? PublisherId` — the ordinary EF Core reference navigation on a profiled entity,
     // with no attributes and no fluent declaration. Throwing would break startup for every adopter
     // who has one, with no migration but editing every profile.
     //
-    // WHAT IS NOT LISTED, deliberately: pushdown disqualification. Before #322 an undeclared
-    // navigation also abandoned $select/$expand pushdown for the whole entity set; it does not any
-    // more, and naming a consequence the framework has already fixed is how a diagnostic starts
-    // lying (#313 stage 3 made the mirror-image mistake and needed a follow-up).
+    // WHAT IS NOT LISTED, deliberately, AND WHY THE LIST KEEPS SHRINKING. This message states only
+    // what is still true at the moment it is emitted, and every time the framework closes one of the
+    // consequences the sentence naming it comes out in the SAME commit. Already removed:
+    //   - pushdown disqualification (#322): an undeclared navigation used to abandon $select/$expand
+    //     pushdown for the whole entity set. Fixed; never named here. A test asserts the message
+    //     never contains "pushdown", "$filter" or "Include".
+    //   - structural-property routes (#440 symptom 2): GET /{Set}({key})/{Nav}, its /$value, and
+    //     PUT/PATCH/DELETE alongside a Patch handler used to register over the navigation. Route
+    //     registration now subtracts the EDM's navigation names, so those templates do not exist.
+    // #313 stage 3 shipped a diagnostic that outlived the behaviour it described and needed a
+    // follow-up to correct; this comment exists so the next person to fix a consequence deletes the
+    // sentence rather than leaving it.
     //
-    // The gate is "at least one consequence is REACHABLE on this profile", which is what keeps it
-    // off models where the disagreement has no symptom:
-    //   - ExpandEnabled                                  -> the wrong-data-under-200 symptom is live
-    //   - PropertyAccessEnabled && (HasGetById||HasPatch) -> the property-route symptom is live
-    //     (PropertyAccessEnabled defaults TRUE, but the routes still need GetById for the reads and
-    //     Patch for the writes; a profile with neither registers nothing over the navigation)
-    // A profile with $expand off, property access off, and no GetById/Patch has a $metadata-only
-    // discrepancy and no reachable defect, so it stays silent.
-    //
-    // Both enabling conditions are named IN the message rather than split into two templates:
-    // Microsoft.Extensions.Logging groups by the template, so it stays a single constant string.
+    // The gate is "the remaining consequence is REACHABLE on this profile": ExpandEnabled. With
+    // $expand off, the entity set expands nothing at all, so an undeclared navigation is no more
+    // unreachable than a declared one and there is nothing to report beyond a $metadata-only
+    // discrepancy. PropertyAccessEnabled/HasGetById/HasPatch are no longer part of the gate — they
+    // gated the property-route consequence, which no longer exists.
     //
     // Emitted once per registration at startup, never per request.
     private static void WarnUndeclaredConventionNavigations(OhDataRegistration registration, ILogger? logger)
@@ -1121,10 +1122,7 @@ internal static class OhDataEndpointFactory
 
         foreach (IEntitySetEndpointSource profile in registration.Profiles)
         {
-            bool expandSymptomLive = profile.ExpandEnabled;
-            bool propertyRouteSymptomLive =
-                profile.PropertyAccessEnabled && (profile.HasGetById || profile.HasPatch);
-            if (!expandSymptomLive && !propertyRouteSymptomLive) continue;
+            if (!profile.ExpandEnabled) continue;
 
             IEdmEntityType? entityType = registration.EdmModel.EntityContainer?
                 .FindEntitySet(profile.EntitySetName)?.EntityType;
@@ -1150,19 +1148,13 @@ internal static class OhDataEndpointFactory
                     "OhData: '{EntitySet}' has a navigation '{Navigation}' that the OData convention " +
                     "builder discovered on '{Model}' but the profile never declared with HasOptional/" +
                     "HasRequired/HasMany. $metadata advertises it as a navigation, yet only a DECLARED " +
-                    "navigation is ever loaded or routed, so the two sides disagree about what this " +
-                    "member is. With $expand enabled, '?$expand={Nav}' answers 200 with null (or an " +
-                    "empty array) for it — the client asked for related data and got a wrong answer " +
-                    "under a success status. And with PropertyAccessEnabled at its default of true, " +
-                    "OhData registers structural-PROPERTY routes over it: " +
-                    "'GET /{EntitySet2}({{key}})/{Nav2}' and '/$value' alongside a GetById handler, and " +
-                    "PUT/PATCH/DELETE alongside a Patch handler — property writes aimed at a " +
-                    "navigation. Declare it with HasOptional/HasRequired/HasMany (adding an expand " +
+                    "navigation is ever loaded, so '?$expand={Nav}' answers 200 with null (or an empty " +
+                    "array) for it — the client asked for related data and got a wrong answer under a " +
+                    "success status. Declare it with HasOptional/HasRequired/HasMany (adding an expand " +
                     "delegate if loading it needs real logic), or Ignore() it if it should not be " +
                     "exposed at all — Ignore() takes it out of $metadata and out of the route table. " +
                     "OhData does not choose for you: both are valid answers and only you know which.",
-                    profile.EntitySetName, nav.Name, profile.ModelType.Name, nav.Name,
-                    profile.EntitySetName, nav.Name);
+                    profile.EntitySetName, nav.Name, profile.ModelType.Name, nav.Name);
             }
         }
     }
@@ -5738,6 +5730,48 @@ internal static class OhDataEndpointFactory
             .Where(g => g.Count() == 1)
             .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
+        // #440 symptom 2: THE SAME SUBTRACTION, applied to the set that drives STRUCTURAL-PROPERTY
+        // ROUTE REGISTRATION. source.StructuralProperties is "every public readable CLR property
+        // MINUS every PROFILE-DECLARED navigation", so a navigation the ODataConventionModelBuilder
+        // discovered but the profile never declared survives in it — and the property-route block
+        // far below reads it directly, registering GET /{Set}({key})/{Nav} and its /$value over a
+        // NAVIGATION, plus PUT/PATCH/DELETE when a Patch handler is configured. Those writes build a
+        // one-property Delta<TModel> over a navigation member; nobody opted into that, and the
+        // declared control has no such routes at all (it 404s), so two profiles over the SAME CLR
+        // member expose different route tables purely by declaration provenance. The EDM is the
+        // authority on what is a navigation, and a navigation is not a structural property.
+        //
+        // WHY HERE AND NOT IN BuildStructuralProperties:
+        //   (a) It cannot go there. BuildStructuralProperties runs from
+        //       IVisitModelBuilder.VisitModelBuilder — i.e. WHILE the EDM is being built — so
+        //       registration.EdmModel does not exist yet and the EDM's navigation set is not merely
+        //       awkward to reach, it has not been computed. EntitySetProfile also deliberately
+        //       carries no dependency on a built IEdmModel.
+        //   (b) It should not go there even if it could. StructuralProperties is the profile-level
+        //       answer to "which CLR members did this profile not declare as navigations", and
+        //       narrowing it at the source moves every consumer at once for one route-table defect.
+        //       Both remaining production consumers are handled explicitly instead: the projection
+        //       member set (#322, subtracted above) and this route block. #313's continuation-route
+        //       collision check reads NavigationPropertyNames, not this set, and the companion
+        //       OpenAPI/NSwag/Swashbuckle packages do not read StructuralProperties at all — they
+        //       read IgnoredPropertyNames through IgnoredPropertyDocsMap plus SchemaPropertyCasing
+        //       (verified across all three packages, not assumed), so no generated schema moves.
+        //   (c) NavigationPropertyNames is still NOT touched. It feeds Model B's DB/DL partitioning
+        //       (ResolveNavTreatment, #292/#293), whose frozen "a candidate that neither routes nor
+        //       declares the nav has no opinion" category empties under convention sourcing —
+        //       measured collapsing the honored-sole-route case from RunDelegate to Blank.
+        //       Issue322ModelBClassificationTests pins that and must stay green.
+        //
+        // The bound-function collision check below iterates this SAME narrowed set deliberately:
+        // with no property route registered for an undeclared navigation there is no (template, GET)
+        // pair left to collide with, so throwing at startup would be a validation error describing a
+        // route that no longer exists. The declared case is unaffected — a declared navigation was
+        // never in StructuralProperties in the first place.
+        IReadOnlyList<StructuralPropertyInfo> structuralRouteProperties =
+            edmNavigationNames.Count == 0
+                ? source.StructuralProperties
+                : source.StructuralProperties.Where(p => !edmNavigationNames.Contains(p.Name)).ToArray();
+
         // #206 phase 2 (Option A1): $expand Include pushdown — startup-computed per-navigation
         // bindings, keyed by CLR navigation property name. THE ELIGIBILITY RULE IS PROVENANCE:
         // a navigation is pushed down ONLY when it was declared WITHOUT a custom expand delegate.
@@ -8467,7 +8501,7 @@ internal static class OhDataEndpointFactory
             // Entity-level bound actions are POST, so method disjointness rules them out here.
             foreach (var collidingFn in source.BoundFunctions.Where(f => f.IsEntityLevel))
             {
-                bool propertyNameCollision = source.StructuralProperties
+                bool propertyNameCollision = structuralRouteProperties
                     .Any(p => string.Equals(p.Name, collidingFn.Name, StringComparison.Ordinal));
                 if (propertyNameCollision)
                 {
@@ -8478,7 +8512,7 @@ internal static class OhDataEndpointFactory
                 }
             }
 
-            foreach (var propCapture in source.StructuralProperties)
+            foreach (var propCapture in structuralRouteProperties)
             {
                 // GET /{name}({key})/{Property} — property-value envelope (§11.2.6).
                 var propGetRb = DocProp(entityAuthGroup.MapGet($"/{name}({{key}})/{propCapture.Name}",
@@ -8602,7 +8636,7 @@ internal static class OhDataEndpointFactory
         // unlike property READ, GetById is not required here — Patch does its own fetching).
         if (source.PropertyAccessEnabled && source.HasPatch)
         {
-            foreach (var propCapture in source.StructuralProperties)
+            foreach (var propCapture in structuralRouteProperties)
             {
                 string propName = propCapture.Name;
                 // #253: propName is the OData/EDM name (route segment, error targets); the underlying

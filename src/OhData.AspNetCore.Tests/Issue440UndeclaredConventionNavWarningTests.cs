@@ -16,23 +16,25 @@ using Xunit.Abstractions;
 
 namespace OhData.AspNetCore.Tests;
 
-// #440: a convention-discovered navigation the profile never declared produces WRONG DATA UNDER 200
-// on $expand, and registers structural-PROPERTY routes (reads, and writes when Patch is configured)
+// #440: a convention-discovered navigation the profile never declared produced WRONG DATA UNDER 200
+// on $expand, and registered structural-PROPERTY routes (reads, and writes when Patch is configured)
 // over a navigation. Both share #322's root cause — the profile's navigation set and the EDM's
-// disagree — but #322's fix reconciles them for the QUERY PLAN only, so both symptoms survive it.
+// disagree — which #322's fix reconciled for the QUERY PLAN only.
 //
-// The framework can detect the disagreement but must not decide it: declaring the navigation and
-// hiding it are both valid, and only the developer knows which. So the remedy is a startup WARNING,
-// not a throw — a throw would break startup for every adopter with a plain EF Core reference
-// navigation on a profiled entity, which is the common case, with no migration but editing every
-// profile.
+// SYMPTOM 2 IS FIXED HERE: route registration now subtracts the EDM's own navigation names from the
+// set it iterates, exactly as #322 already did for the projection's member set, so no property route
+// is registered over a navigation. NavigationPropertyNames is untouched (see the fix site for why).
+//
+// The warning stays, because the disagreement itself outlives the symptom — but it now states ONLY
+// what is still true, and the property-route sentence came out in the same commit as the fix. The
+// content test carries explicit guards against every consequence that has been retired.
 //
 // This suite pins three things:
-//   1. the two symptoms PERSIST after #322's projection fix (which is why the warning exists — if
-//      they ever stop persisting, the warning is lying and must be re-scoped),
+//   1. the SYMPTOMS: symptom 2 is gone (and a real structural property still has its routes, so the
+//      subtraction is not over-broad),
 //   2. the warning's exact CONTENT, and
-//   3. its TARGETING: a profile with no undeclared navigation, and a profile on which neither
-//      symptom is reachable, stay silent.
+//   3. its TARGETING: a profile with no undeclared navigation, and a profile on which the remaining
+//      consequence is not reachable, stay silent.
 
 #region fixtures
 
@@ -106,9 +108,11 @@ public sealed class W440OrderProfile : EntitySetProfile<int, W440Order>
 }
 
 /// <summary>
-/// The SAME undeclared navigation, on a profile where NEITHER symptom is reachable: $expand off,
-/// property access off, no GetById and no Patch. The disagreement is still in $metadata, but there
-/// is no defect to report, so this profile must stay silent.
+/// The SAME undeclared navigation, on a profile where the remaining consequence is not reachable:
+/// <c>$expand</c> off. (Property access is off and there is no GetById/Patch here too, which used to
+/// be half the gate; after #440 symptom 2 those no longer enter into it — <c>ExpandEnabled</c> is
+/// the whole gate.) The disagreement is still in $metadata, but there is no defect to report, so
+/// this profile must stay silent.
 /// </summary>
 public sealed class W440InvoiceProfile : EntitySetProfile<int, W440Invoice>
 {
@@ -231,15 +235,27 @@ public sealed class Issue440UndeclaredConventionNavWarningTests
     // ------------------------------------------------------- symptom 2: property routes
 
     /// <summary>
-    /// #440 symptom 2: <c>BuildStructuralProperties</c> subtracts only the PROFILE-DECLARED
-    /// navigations, so the undeclared one survives as a structural property and
-    /// <c>PropertyAccessEnabled</c> (default <c>true</c>) registers property routes over it — reads
-    /// alongside <c>GetById</c>, and PUT/PATCH/DELETE alongside <c>Patch</c>. #322's fix touches
-    /// only the projection's member set, not <c>StructuralProperties</c>, so this is unchanged.
-    /// The declared control has no such routes (404), which is the correct shape.
+    /// #440 symptom 2, FIXED: no structural-property route is registered over a
+    /// convention-discovered navigation any more.
+    /// <para>
+    /// <c>BuildStructuralProperties</c> still subtracts only the PROFILE-DECLARED navigations — it
+    /// runs while the EDM is being built and has no EDM to consult — so the undeclared navigation
+    /// still survives in <c>StructuralProperties</c>. What changed is that route registration now
+    /// subtracts the EDM's own navigation names from the set it iterates, exactly as #322 already
+    /// did for the projection's member set. All seven templates that used to exist over the
+    /// navigation are gone, and the undeclared profile is now byte-identical to the DECLARED
+    /// control on every one of them (404 on both), which is the shape #440 called correct.
+    /// </para>
+    /// <para>
+    /// The 404s here are ROUTE-ABSENCE 404s (no endpoint matches the template), not handler 404s:
+    /// entity 1 exists, so a registered read route would answer 204/200 and a registered write
+    /// route 204/400. Its sibling assertion below — a real structural property on the SAME entity
+    /// set still answering non-404 on the same verbs — is what keeps that reading honest, and what
+    /// would fail if this fix had emptied the property-route surface wholesale.
+    /// </para>
     /// </summary>
     [Fact]
-    public async Task Symptom2_StructuralPropertyRoutesStillRegisterOverAnUndeclaredNavigation()
+    public async Task Symptom2_NoStructuralPropertyRouteIsRegisteredOverAnUndeclaredNavigation()
     {
         var capture = new WarningCapture();
         using var connection = new SqliteConnection("Data Source=:memory:");
@@ -255,25 +271,31 @@ public sealed class Issue440UndeclaredConventionNavWarningTests
             return r.StatusCode;
         }
 
-        // READ routes exist over the navigation (they would 404 if they were not registered).
-        Assert.NotEqual(HttpStatusCode.NotFound, await Send(HttpMethod.Get, "/odata/W440Orders(1)/Customer"));
-        Assert.NotEqual(HttpStatusCode.NotFound, await Send(HttpMethod.Get, "/odata/W440Orders(1)/Customer/$value"));
+        // The seven templates #440 tabulated, over the UNDECLARED navigation. All gone.
+        Assert.Equal(HttpStatusCode.NotFound, await Send(HttpMethod.Get, "/odata/W440Orders(1)/Customer"));
+        Assert.Equal(HttpStatusCode.NotFound, await Send(HttpMethod.Get, "/odata/W440Orders(1)/Customer/$value"));
+        Assert.Equal(HttpStatusCode.NotFound,
+            await Send(HttpMethod.Put, "/odata/W440Orders(1)/Customer", "{\"value\":null}"));
+        Assert.Equal(HttpStatusCode.NotFound,
+            await Send(HttpMethod.Patch, "/odata/W440Orders(1)/Customer", "{\"value\":null}"));
+        Assert.Equal(HttpStatusCode.NotFound, await Send(HttpMethod.Delete, "/odata/W440Orders(1)/Customer"));
 
-        // WRITE routes exist too, because Patch is configured — a structural-property write aimed
-        // at a navigation.
-        foreach (HttpMethod method in new[] { HttpMethod.Put, HttpMethod.Patch })
-        {
-            HttpStatusCode code = await Send(method, "/odata/W440Orders(1)/Customer", "{\"value\":null}");
-            Assert.NotEqual(HttpStatusCode.NotFound, code);
-            Assert.NotEqual(HttpStatusCode.MethodNotAllowed, code);
-        }
-        HttpStatusCode del = await Send(HttpMethod.Delete, "/odata/W440Orders(1)/Customer");
-        Assert.NotEqual(HttpStatusCode.NotFound, del);
-        Assert.NotEqual(HttpStatusCode.MethodNotAllowed, del);
-
-        // The DECLARED control: no property route over a navigation, which is correct.
+        // The DECLARED control, same CLR member, same row: unchanged, and now indistinguishable.
         Assert.Equal(HttpStatusCode.NotFound,
             await Send(HttpMethod.Get, "/odata/W440DeclaredOrders(1)/Customer"));
+
+        // BOUNDING ASSERTION: a genuine structural property on the same entity set still has its
+        // full route surface. Without this, "everything 404s" would pass vacuously if the fix had
+        // subtracted too much.
+        Assert.NotEqual(HttpStatusCode.NotFound, await Send(HttpMethod.Get, "/odata/W440Orders(1)/Note"));
+        Assert.NotEqual(HttpStatusCode.NotFound, await Send(HttpMethod.Get, "/odata/W440Orders(1)/Note/$value"));
+        Assert.NotEqual(HttpStatusCode.NotFound,
+            await Send(HttpMethod.Patch, "/odata/W440Orders(1)/Note", "{\"value\":\"N2\"}"));
+
+        // ...including the navigation's own FOREIGN KEY, which is a structural property and must
+        // keep its routes. The EDM subtraction is by navigation NAME, so a name-adjacent scalar
+        // ('CustomerId' vs 'Customer') must not be caught by it.
+        Assert.NotEqual(HttpStatusCode.NotFound, await Send(HttpMethod.Get, "/odata/W440Orders(1)/CustomerId"));
     }
 
     // --------------------------------------------------------------- warning content
@@ -301,23 +323,25 @@ public sealed class Issue440UndeclaredConventionNavWarningTests
         Assert.Contains("convention builder discovered", warning, StringComparison.Ordinal);
         Assert.Contains("never declared with HasOptional/HasRequired/HasMany", warning, StringComparison.Ordinal);
 
-        // CONSEQUENCE 1 — wrong data under a success status.
+        // THE SURVIVING CONSEQUENCE — wrong data under a success status.
         Assert.Contains("'?$expand=Customer' answers 200 with null", warning, StringComparison.Ordinal);
-
-        // CONSEQUENCE 2 — property routes, reads and writes.
-        Assert.Contains("PropertyAccessEnabled", warning, StringComparison.Ordinal);
-        Assert.Contains("'GET /W440Orders({key})/Customer' and '/$value'", warning, StringComparison.Ordinal);
-        Assert.Contains("PUT/PATCH/DELETE", warning, StringComparison.Ordinal);
 
         // BOTH remedies.
         Assert.Contains("Declare it with HasOptional/HasRequired/HasMany", warning, StringComparison.Ordinal);
         Assert.Contains("Ignore()", warning, StringComparison.Ordinal);
 
-        // NOT a consequence any more (#322): pushdown disqualification. Naming a consequence the
-        // framework already fixed is how a diagnostic starts lying.
+        // NOT a consequence any more, and the message must not say otherwise. Two generations of
+        // this list have now been retired, each in the commit that closed the behaviour:
+        //   #322 — pushdown disqualification.
+        //   #440 symptom 2 — structural-property routes over the navigation, reads and writes.
+        // #313 stage 3 shipped a diagnostic that outlived what it described; these are the guards
+        // that stop this one from doing the same.
         Assert.DoesNotContain("pushdown", warning, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("$filter", warning, StringComparison.Ordinal);
         Assert.DoesNotContain("Include", warning, StringComparison.Ordinal);
+        Assert.DoesNotContain("PropertyAccessEnabled", warning, StringComparison.Ordinal);
+        Assert.DoesNotContain("PUT/PATCH/DELETE", warning, StringComparison.Ordinal);
+        Assert.DoesNotContain("/$value", warning, StringComparison.Ordinal);
     }
 
     // --------------------------------------------------------------------- targeting
@@ -325,8 +349,8 @@ public sealed class Issue440UndeclaredConventionNavWarningTests
     /// <summary>
     /// One warning per (entity set, navigation) hit and no more. The registration under test has
     /// FOUR profiles and only ONE qualifies: a model with no navigation is silent; the same
-    /// undeclared navigation on a profile where neither symptom is reachable ($expand off, property
-    /// access off, no GetById/Patch) is silent; and the declared control is silent.
+    /// undeclared navigation on a profile where the remaining consequence is not reachable ($expand
+    /// off) is silent; and the declared control is silent.
     /// </summary>
     [Fact]
     public async Task Warning_FiresOncePerHit_AndIsSilentOnEveryProfileWithNoReachableSymptom()
