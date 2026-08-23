@@ -4134,10 +4134,31 @@ internal static class OhDataEndpointFactory
         // entity set. By contrast, the explicit nested form below — `$expand=Children($expand=Children)`
         // — descends one real ExpandedNavigationSelectItem per level, so EACH level re-resolves its own
         // candidate set via ResolveProfilesForClrType/ResolveNavTreatment; if that type is exposed by
-        // MULTIPLE disagreeing sets, the grandchild BLANKS (candidate disagreement) even though $levels
-        // would have served it raw. This is an intentional, accepted asymmetry (fail-closed by default
-        // for the explicit form) rather than a bug — #318 tracks optional parent-set provenance
-        // threading to unify the two under the same "serve raw" outcome.
+        // MULTIPLE disagreeing sets, the grandchild's treatment is Blank (candidate disagreement) even
+        // though $levels would have served it raw.
+        //
+        // #318, CORRECTED: this comment used to stop at "the grandchild BLANKS", which UNDERSTATES the
+        // outcome by a whole level and is measurably wrong. A non-ServeRaw child makes the childItems
+        // loop below `return false`, which defers the WHOLE PARENT BRANCH off pushdown; the parent
+        // level is then never loaded, and ExpandLevelAsync's ServeRaw branch is a no-op over it, so the
+        // PARENT navigation comes back empty too. MEASURED against the LvNodes/LvSecureNodes fixture
+        // (one LvNode type, two entity sets disagreeing on Children):
+        //
+        //   ?$expand=Children             -> 200  Children:[A, B]                 (root serves)
+        //   ?$expand=Children($levels=2)  -> 200  Children:[A[A1,A2,A3], B[B1]]   (both levels serve)
+        //   ?$expand=Children($expand=Children)
+        //                                 -> 200  Children:[]                     (BOTH levels lost)
+        //
+        // Both halves of that asymmetry are individually owner-settled on #293 and neither is a bug:
+        // micro-decision (A) ships the fail-closed Blank for the explicit nested form, and
+        // micro-decision (B) ("delegate-less pushable parent empties whole branch vs delegate-backed
+        // parent blanks only child: both leak-safe, DEFER PARITY") is exactly the extra level lost
+        // here. #318 tracks the optional parent-set provenance threading that would unify the explicit
+        // form with $levels under "serve raw"; it is a widening on a delegate-safety boundary, so it
+        // must not be done as a drive-by. Do NOT "fix" the inconsistency in the other direction by
+        // making $levels blank — the FROZEN spec lists the whole $levels suite under "tests that STAY
+        // GREEN (confirm, don't gut)", and $levels resolving from the URL-named set alone is the
+        // decision, not an oversight. Pinned end-to-end by Issue318LevelsVsExplicitNestedSelfExpandTests.
         if (item.LevelsOption is not null)
         {
             SelectExpandClause? lc = item.SelectAndExpand;
