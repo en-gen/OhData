@@ -672,7 +672,68 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   remains available as an à la carte alternative. Docs now lead with `AddOhData()` as the
   recommended registration. Additive API only — no runtime behavior change.
 
+- **A startup `Warning` for a convention-discovered navigation the profile never declared (#440).**
+  `public Customer? Customer { get; set; }` beside an `int? CustomerId` — the ordinary EF Core
+  reference navigation — is discovered by `ODataConventionModelBuilder` and advertised in
+  `$metadata`, but if the profile never declared it with `HasOptional`/`HasRequired`/`HasMany` then
+  OhData's own navigation set does not contain it, and two things follow: `?$expand=Customer`
+  answers `200` with `null` (or `[]`) because only a *declared* navigation is ever loaded, and
+  `PropertyAccessEnabled` (default `true`) registers **structural-property routes over a
+  navigation** — `GET /{Set}({key})/Customer` and `/$value` alongside `GetById`, plus
+  `PUT`/`PATCH`/`DELETE` alongside `Patch`.
+
+  Closing either one means *declaring* the navigation or hiding it with `Ignore()`. Both are valid
+  and only you know which, so the framework names the disagreement and stops there — the same
+  "a cost the framework can detect but must not decide" line the `#313` unbounded-`$expand` warning
+  draws. **It is a warning, not a throw:** throwing would break startup for every adopter with a
+  plain EF reference navigation on a profiled entity, with no migration but editing every profile.
+
+  Emitted once per `(entity set, navigation)` at `MapOhData()`, and only when at least one of the
+  two symptoms is actually reachable on that profile (`ExpandEnabled`, or `PropertyAccessEnabled`
+  together with a `GetById` or `Patch` handler) — a profile with none of those has a
+  `$metadata`-only discrepancy and stays silent. Measured over this repository's full test suite:
+  **24 distinct `(entity set, navigation)` hits against 358 distinct registered entity sets**, all
+  true positives.
+
 ### Fixed
+
+- **An undeclared convention navigation silently disqualified its whole entity set from `$select`
+  and `$expand` pushdown (#322).**
+  A profile's `StructuralProperties` is "every public readable CLR property **minus every
+  profile-declared navigation**", so a navigation the convention builder discovered but the profile
+  never declared survived as a structural property flagged complex-typed — and the projection's
+  complex-member bail then abandoned the member-init `Select` for every request whose projection
+  member set included it. The result was a silent fall back to the `#305` `Include` path (no column
+  pruning) that turned into a **`400`** as soon as the request carried a nested
+  `$filter`/`$orderby`/`$expand`. Measured, on three models differing only in the navigation's
+  provenance:
+
+  | request | before | after |
+  |---|---|---|
+  | `?$expand=Books($filter=…)` | `400` | `200`, predicate in SQL |
+  | `?$expand=Books($orderby=…)` | `400` | `200`, ordering in SQL |
+  | `?$select=name,publisher&$expand=Books($filter=…)` | `400` | `200` |
+  | `?$select=name,publisher` | `SELECT Id, Name, PublisherId` | `SELECT Name, Id` |
+  | `?$expand=Books` | `200` | `200`, SQL identical |
+  | `?$select=name&$expand=Books($filter=…)` | `200` | `200` (never affected) |
+
+  The fix subtracts the **EDM's own** navigation names when building the projection's structural
+  member set: the EDM is the authority on what is a navigation, and a navigation is not a
+  projectable column. Scoped to that one dictionary — the profile's navigation set is *not*
+  re-sourced from the EDM, because that set is what `$expand`'s delegate-safety model partitions
+  (#292/#293), where "a candidate that neither routes nor declares the navigation has no opinion on
+  it" is load-bearing; sourcing it from the convention builder would collapse the honored-sole-route
+  case to a blanked one and silently drop delegate-loaded data. The full decision table is now
+  pinned by test. The remaining correctness symptoms of the same disagreement are #440 above.
+
+- **The projection-ineligibility `400` recited the eligibility rule instead of naming the failing
+  check (#322).**
+  `"…requires a projection-eligible model, which this one isn't (an eligible model has a public
+  parameterless constructor, settable non-complex properties, and — if it uses ETags — a direct
+  UseETag selector over structural properties)"` was returned to developers whose model satisfied
+  every clause of it. The message now names the one check that failed, as reported by the check
+  itself: `"…and 'NoCtorParent' is not one because 'NoCtorParent' has no public parameterless
+  constructor (a positional record has none)"`.
 
 - **A nested `$count=true` discarded the nested `$top` SQL bound, so the whole related collection was
   materialized to return a page of it (#334).**
