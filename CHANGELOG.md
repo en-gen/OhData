@@ -676,26 +676,113 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `public Customer? Customer { get; set; }` beside an `int? CustomerId` — the ordinary EF Core
   reference navigation — is discovered by `ODataConventionModelBuilder` and advertised in
   `$metadata`, but if the profile never declared it with `HasOptional`/`HasRequired`/`HasMany` then
-  OhData's own navigation set does not contain it, and two things follow: `?$expand=Customer`
-  answers `200` with `null` (or `[]`) because only a *declared* navigation is ever loaded, and
-  `PropertyAccessEnabled` (default `true`) registers **structural-property routes over a
-  navigation** — `GET /{Set}({key})/Customer` and `/$value` alongside `GetById`, plus
-  `PUT`/`PATCH`/`DELETE` alongside `Patch`.
+  OhData's own navigation set does not contain it — so **this entity set will never serve that
+  navigation**: `?$expand=Customer` is accepted and answers `200` with the navigation omitted, and no
+  navigation route stands behind it either. A client generated from `$metadata` keeps asking for
+  related data it can never receive, and nothing in any response says why.
 
-  Closing either one means *declaring* the navigation or hiding it with `Ignore()`. Both are valid
-  and only you know which, so the framework names the disagreement and stops there — the same
+  Closing that means *declaring* the navigation or hiding it with `Ignore()`. Both are valid and
+  only you know which, so the framework names the disagreement and stops there — the same
   "a cost the framework can detect but must not decide" line the `#313` unbounded-`$expand` warning
   draws. **It is a warning, not a throw:** throwing would break startup for every adopter with a
   plain EF reference navigation on a profiled entity, with no migration but editing every profile.
 
-  Emitted once per `(entity set, navigation)` at `MapOhData()`, and only when at least one of the
-  two symptoms is actually reachable on that profile (`ExpandEnabled`, or `PropertyAccessEnabled`
-  together with a `GetById` or `Patch` handler) — a profile with none of those has a
-  `$metadata`-only discrepancy and stays silent. Measured over this repository's full test suite:
-  **24 distinct `(entity set, navigation)` hits against 358 distinct registered entity sets**, all
-  true positives.
+  Emitted once per `(entity set, navigation)` at `MapOhData()`, gated on `ExpandEnabled` — with
+  `$expand` off the entity set expands nothing at all, so the discrepancy is `$metadata`-only and the
+  warning stays silent. Measured over this repository's full test suite: **24 distinct
+  `(entity set, navigation)` hits against 358 distinct registered entity sets**, all true positives.
+
+  > **The message states only what is still true, and it has been rewritten every time the framework
+  > closed one of the consequences it named** — in the same commit as the fix, never after it. It has
+  > never mentioned the pushdown disqualification `#322` fixed; the structural-property routes and
+  > the `200`-with-`null` both came out with their fixes (below). What is left is not a defect report
+  > at all but the advertise/serve disagreement itself, which no fix can remove because the framework
+  > must not decide whether an undeclared navigation was meant to be exposed.
+  > `Issue440UndeclaredConventionNavWarningTests` carries an explicit guard for each retired
+  > consequence, so the message cannot drift back into describing behaviour that no longer exists —
+  > which is the mistake `#313` stage 3 made and had to correct.
 
 ### Fixed
+
+- **`$expand` of a convention-discovered navigation the profile never declared returned `null` under
+  `200` (#440).**
+  Only a *declared* navigation is ever loaded — `pushdownExpandNavs` is built from the profile's own
+  navigation set — but the member was still serialized, so a client that asked for related data got
+  `"Customer": null` (or `[]`) beside a `CustomerId` that pointed at a row which exists.
+
+  | request | before | after | declared control (before *and* after) |
+  |---|---|---|---|
+  | `GET /{Set}?$expand=Customer` | `{"Id":1,…,"CustomerId":7,"Customer":null}` | `{"Id":1,…,"CustomerId":7}` | `{…,"Customer":{"Id":7,"Name":"C7"}}` |
+  | `GET /{Set}(1)?$expand=Customer` | `{…,"Customer":null}` | `{…}` | *(n/a — control loads it)* |
+
+  **The navigation is now omitted.** OData JSON Format v4.01 §8.3 defines the inline representation
+  of a navigation property as the representation of an *expanded* one, so a null single-valued
+  navigation is the positive statement that the relationship is empty — a statement this server never
+  evaluated. §8.1 gives the non-expanded representation instead: the navigation link, which under
+  `metadata=minimal` is computed and therefore not written at all. Omission is the payload in which
+  every assertion is true, and it is what `OmitUnexpandedNavigations` already does for every
+  navigation a request did not expand.
+
+  **Not a `400`, deliberately**, despite the framework's fail-loud convention (#294/#402/#405). That
+  convention rejects an option the *client* got wrong, or one the server parsed and could not honour.
+  This is neither: the request is valid against the `$metadata` this server published, and the gap is
+  the *server's* configuration. Rejecting would charge the client for the developer's omission on the
+  ordinary `public Customer? Customer { get; set; }` shape — turning a currently succeeding request
+  into an error for every adopter who has one. The loud channel for a configuration gap is startup,
+  and the `#440` warning above is it.
+
+  Implemented where the decision already lives: `ExpandLevelAsync`'s `ServeRaw` branch now separates
+  its two populations, using a new flag `ResolveNavTreatment` reports alongside its (unchanged)
+  treatment — "did any candidate at this level route *or* declare this navigation", the complement of
+  Model B's own frozen *"a candidate that neither routes nor declares the nav has no opinion on it"*
+  clause. **No `NavTreatment` value moves**, the pushdown gate reads only the treatment, and
+  `Issue322ModelBClassificationTests` pins the whole decision table through it.
+
+  > **One shape is deliberately excluded, and one behaviour changes as a cost.**
+  > A `$levels` expand of an undeclared *self-referential* navigation is resolved through
+  > `BuildLevelsNavBinding`, which does not consult the profile's navigation set — so
+  > `?$expand=Children($levels=2)` genuinely is pushed to SQL and genuinely does load. Omitting it
+  > would delete fetched data, so navigations pushed that way keep their value (pinned, and verified
+  > to fail if the exclusion is removed).
+  > The cost: on a **non-EF** `GetQueryable`/`GetAll` whose in-memory graph already holds the related
+  > object, a bare `?$expand=Cust` used to echo it and now omits it, while the **declared** control on
+  > the same model still serves it. That divergence is the rule, stated: *declaring* a navigation is
+  > what makes it servable. It buys a bigger consistency — the same profile and the same request used
+  > to answer `null` on an EF source and real data on a `List<T>`, so the answer depended on the query
+  > provider. It no longer does. `Issue322NonEfProjectionUnificationTests` carries both provenances in
+  > the same assertions, so the divergence is visible rather than argued.
+
+- **Structural-property routes were registered over a convention-discovered navigation the profile
+  never declared — including writes (#440).**
+  A profile's `StructuralProperties` is "every public readable CLR property **minus every
+  profile-declared navigation**", and route registration read it directly. So an undeclared
+  navigation got the full property-route surface, aimed at a navigation:
+
+  | request | before | after | declared control (before *and* after) |
+  |---|---|---|---|
+  | `GET /{Set}(1)/Customer` | `204` | **`404`** | `404` |
+  | `GET /{Set}(1)/Customer/$value` | `400` | **`404`** | `404` |
+  | `PUT /{Set}(1)/Customer` | `204` | **`404`** | `404` |
+  | `PATCH /{Set}(1)/Customer` | `400` | **`404`** | `404` |
+  | `DELETE /{Set}(1)/Customer` | `204` | **`404`** | `404` |
+
+  The writes are the sharp end: each built a one-property `Delta<TModel>` over a **navigation**
+  member and handed it to the profile's `Patch` handler. Nobody opted into that, and a profile that
+  *declared* the same CLR member had no such routes at all — so two profiles over one model exposed
+  different route tables purely by declaration provenance.
+
+  The fix subtracts the **EDM's own** navigation names from the set route registration iterates —
+  the same subtraction #322 applied to the projection's structural member set, for the same reason.
+  It is applied at the registration site rather than inside `BuildStructuralProperties`, which runs
+  *while* the EDM is being built and therefore has no EDM to consult. `StructuralProperties` itself
+  is unchanged, so nothing else moves: the companion OpenAPI/NSwag/Swashbuckle packages do not read
+  it, and #313's continuation-route collision check reads the profile's navigation set instead. The
+  profile's navigation set is again **not** re-sourced from the EDM (see #322 below for the measured
+  reason), so `$expand`'s delegate-safety decision table is untouched.
+
+  A genuine structural property on the same entity set keeps its full route surface, and so does the
+  navigation's own foreign key (`CustomerId` is a scalar, and the subtraction is by navigation
+  *name*) — both pinned, so "everything 404s" cannot pass vacuously.
 
 - **An undeclared convention navigation silently disqualified its whole entity set from `$select`
   and `$expand` pushdown (#322).**
@@ -739,6 +826,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   > `Issue322NonEfProjectionUnificationTests`. Nothing else moves: without the `$select` there is no
   > projection to drop the value, and on an EF-backed source the navigation is un-`Include`d and
   > therefore `null` either way.
+  >
+  > **Re-scoped by #440 above, in the same release.** The undeclared side of that comparison is now
+  > *omitted* rather than `null` — `null` was the answer #440 identified as the wrong one — so the
+  > two provenances diverge again on this path, this time by design: declaring a navigation is what
+  > makes it servable at all. The #322 half of the claim is unchanged and still pinned: an undeclared
+  > navigation is no longer treated as a projectable column.
 
   The fix subtracts the **EDM's own** navigation names when building the projection's structural
   member set: the EDM is the authority on what is a navigation, and a navigation is not a
