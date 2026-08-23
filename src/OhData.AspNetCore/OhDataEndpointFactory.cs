@@ -3366,12 +3366,56 @@ internal static class OhDataEndpointFactory
         IEdmModel? edmModel = null,
         ODataQuerySettings? binderSettings = null)
     {
+        if (!TryBuildProjectionInit<TModel>(
+                selectedNames, source, hasParameterlessCtor, structuralByName, logger, expandNavs,
+                edmModel, binderSettings, carrierCounted: null,
+                out ParameterExpression px, out Expression pinit, out _))
+        {
+            return query;
+        }
+
+        return query.Select(Expression.Lambda<Func<TModel, TModel>>(pinit, px));
+    }
+
+    /// <summary>
+    /// #334: the shared core of the root member-init projection — the eligibility checks, the
+    /// structural member binds and the folded <c>$expand</c> navigation binds — extracted verbatim
+    /// from <see cref="TryApplySelectProjection"/> so the count-carrier projection
+    /// (<see cref="TryApplyCarrierProjection"/>) reuses every one of them rather than duplicating
+    /// the logic. Returns <c>false</c> for exactly the ineligibility cases that used to
+    /// <c>return query</c> unchanged.
+    /// <para>
+    /// <paramref name="carrierCounted"/> names the top-level engaged expands whose
+    /// <c>Nav@odata.count</c> is to be carried as an independent scalar subquery. Those navigations
+    /// get their nested <c>$skip</c>/<c>$top</c> pushed to SQL (<c>countViaCarrier</c>) instead of
+    /// the count bound, and one count expression each is emitted into <paramref name="countExprs"/>,
+    /// index-aligned with that list. <c>null</c> (the ordinary path) changes nothing.
+    /// </para>
+    /// </summary>
+    private static bool TryBuildProjectionInit<TModel>(
+        IReadOnlyList<string> selectedNames,
+        IEntitySetEndpointSource source,
+        bool hasParameterlessCtor,
+        IReadOnlyDictionary<string, StructuralPropertyInfo> structuralByName,
+        ILogger? logger,
+        IReadOnlyList<EngagedExpand>? expandNavs,
+        IEdmModel? edmModel,
+        ODataQuerySettings? binderSettings,
+        IReadOnlyList<EngagedExpand>? carrierCounted,
+        out ParameterExpression parameter,
+        out Expression entityInit,
+        out List<Expression?>? countExprs)
+    {
+        parameter = null!;
+        entityInit = null!;
+        countExprs = null;
+
         if (!hasParameterlessCtor)
         {
             logger?.LogDebug(
                 "OhData: $select pushdown skipped for {EntitySet}: {Model} has no public parameterless constructor.",
                 source.EntitySetName, typeof(TModel).Name);
-            return query;
+            return false;
         }
 
         // Selected names can include expanded-navigation identifiers (ExtractSelectedProperties
@@ -3400,7 +3444,7 @@ internal static class OhDataEndpointFactory
                 logger?.LogDebug(
                     "OhData: $select pushdown skipped for {EntitySet}: UseETag selector property names are unknowable (non-direct selector).",
                     source.EntitySetName);
-                return query;
+                return false;
             }
 
             foreach (string name in source.ETagPropertyNames)
@@ -3414,7 +3458,7 @@ internal static class OhDataEndpointFactory
                     logger?.LogDebug(
                         "OhData: $select pushdown skipped for {EntitySet}: UseETag property '{Property}' is not a structural property.",
                         source.EntitySetName, name);
-                    return query;
+                    return false;
                 }
 
                 members[etagProp.Name] = etagProp;
@@ -3432,7 +3476,7 @@ internal static class OhDataEndpointFactory
                 logger?.LogDebug(
                     "OhData: $select pushdown skipped for {EntitySet}: '{Property}' is complex-typed (owned-entity projection is a phase-1 boundary).",
                     source.EntitySetName, member.Name);
-                return query;
+                return false;
             }
 
             if (member.Property.SetMethod is not { IsPublic: true })
@@ -3440,7 +3484,7 @@ internal static class OhDataEndpointFactory
                 logger?.LogDebug(
                     "OhData: $select pushdown skipped for {EntitySet}: '{Property}' has no public setter.",
                     source.EntitySetName, member.Name);
-                return query;
+                return false;
             }
         }
 
@@ -3461,11 +3505,41 @@ internal static class OhDataEndpointFactory
             {
                 foreach (EngagedExpand nav in expandNavs)
                 {
+                    // #334: is this one of the navs whose count the carrier supplies as an
+                    // independent scalar subquery? Matched on the CLR PropertyInfo, which is the
+                    // identity BuildExpandNavBinding assigns once at startup.
+                    int carrierIndex = -1;
+                    if (carrierCounted is not null)
+                    {
+                        for (int ci = 0; ci < carrierCounted.Count; ci++)
+                        {
+                            if (ReferenceEquals(carrierCounted[ci].Binding.Property, nav.Binding.Property))
+                            {
+                                carrierIndex = ci;
+                                break;
+                            }
+                        }
+                    }
+
                     // #254: the ROOT entity set's resolved MaxExpandTop governs at every depth (the
                     // same rule MaxExpansionDepth follows), so it is read from `source` once here.
                     Expression access = BuildShapedNavAccess(
-                        x, nav, (IEdmModel)edmModel!, (ODataQuerySettings)binderSettings!, source.MaxExpandTop);
+                        x, nav, (IEdmModel)edmModel!, (ODataQuerySettings)binderSettings!, source.MaxExpandTop,
+                        countViaCarrier: carrierIndex >= 0);
                     bindings.Add(Expression.Bind(nav.Binding.Property, access));
+
+                    if (carrierIndex >= 0)
+                    {
+                        // #334: the count is a SECOND, INDEPENDENT expression rooted at the same
+                        // navigation-access node — filtered but never ordered or windowed — mirroring
+                        // the CreateTotalCountExpression / ProjectAsWrapper split
+                        // Microsoft.AspNetCore.OData's SelectExpandBinder.BuildExpandedProperty makes.
+                        // Because neither chain reads the other, $count=true no longer perturbs the
+                        // $top translation.
+                        (countExprs ??= new List<Expression?>(new Expression?[carrierCounted!.Count]))
+                            [carrierIndex] = BuildNavCountExpression(
+                                x, nav, (IEdmModel)edmModel!, (ODataQuerySettings)binderSettings!);
+                    }
                 }
             }
             catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException
@@ -3499,10 +3573,128 @@ internal static class OhDataEndpointFactory
             }
         }
 
-        Expression<Func<TModel, TModel>> projection = Expression.Lambda<Func<TModel, TModel>>(
-            Expression.MemberInit(Expression.New(typeof(TModel)), bindings), x);
-        return query.Select(projection);
+        parameter = x;
+        entityInit = Expression.MemberInit(Expression.New(typeof(TModel)), bindings);
+        return true;
     }
+
+    /// <summary>
+    /// #334: the count leg — <c>owner.Nav[.Where(f)].Count()</c>. Rooted at the SAME
+    /// navigation-access node the windowed page is built from, but with NO OrderBy/Skip/Take, so it
+    /// translates as a plain correlated scalar aggregate rather than a collection projected out of a
+    /// windowed set (the APPLY/LATERAL shape #298/#300/#304 established SQLite cannot translate).
+    /// <para>
+    /// The nested <c>$filter</c> rides into the count — and only the <c>$filter</c> — because OData
+    /// §11.2.4.2 defines <c>Nav@odata.count</c> as the size of the FULL filtered collection, not of
+    /// the returned page.
+    /// </para>
+    /// </summary>
+    private static Expression BuildNavCountExpression(
+        Expression owner, EngagedExpand engaged, IEdmModel model, ODataQuerySettings binderSettings)
+    {
+        Type elem = engaged.Binding.ElementType;
+        Expression access = Expression.Property(owner, engaged.Binding.Property);
+        NavShapeBindings bound = BindNavShape(engaged, elem, model, binderSettings);
+        if (bound.Predicate is not null)
+            access = Expression.Call(_enumerableWhere.MakeGenericMethod(elem), access, bound.Predicate);
+        return Expression.Call(_enumerableCount.MakeGenericMethod(elem), access);
+    }
+
+    /// <summary>
+    /// #334: the count-carrier projection —
+    /// <c>new ExpandCountCarrier&lt;TModel&gt; { Entity = new TModel { … }, C0 = x.Nav.Where(f).Count(), … }</c>
+    /// — so ONE query returns both the SQL-windowed page and an exact per-parent
+    /// <c>Nav@odata.count</c>. Returns <c>null</c> when the root projection is ineligible (the same
+    /// conditions <see cref="TryApplySelectProjection"/> bails on) or when a count expression could
+    /// not be produced for every requested nav, in which case the caller falls back to the ordinary
+    /// projection and the count-defers-paging behaviour of #254/#298/#304.
+    /// </summary>
+    private static IQueryable<ExpandCountCarrier<TModel>>? TryApplyCarrierProjection<TModel>(
+        IQueryable<TModel> query,
+        IReadOnlyList<string> selectedNames,
+        IEntitySetEndpointSource source,
+        bool hasParameterlessCtor,
+        IReadOnlyDictionary<string, StructuralPropertyInfo> structuralByName,
+        ILogger? logger,
+        IReadOnlyList<EngagedExpand> expandNavs,
+        IEdmModel edmModel,
+        ODataQuerySettings binderSettings,
+        IReadOnlyList<EngagedExpand> carrierCounted)
+    {
+        if (!TryBuildProjectionInit<TModel>(
+                selectedNames, source, hasParameterlessCtor, structuralByName, logger, expandNavs,
+                edmModel, binderSettings, carrierCounted,
+                out ParameterExpression x, out Expression entityInit, out List<Expression?>? countExprs))
+        {
+            return null;
+        }
+
+        if (countExprs is null || countExprs.Count != carrierCounted.Count ||
+            countExprs.Any(static c => c is null))
+        {
+            return null;
+        }
+
+        Type carrierType = typeof(ExpandCountCarrier<TModel>);
+        var carrierBindings = new List<MemberBinding>(countExprs.Count + 1)
+        {
+            Expression.Bind(carrierType.GetProperty(nameof(ExpandCountCarrier<TModel>.Entity))!, entityInit),
+        };
+        for (int i = 0; i < countExprs.Count; i++)
+            carrierBindings.Add(Expression.Bind(carrierType.GetProperty($"C{i}")!, countExprs[i]!));
+
+        return query.Select(Expression.Lambda<Func<TModel, ExpandCountCarrier<TModel>>>(
+            Expression.MemberInit(Expression.New(carrierType), carrierBindings), x));
+    }
+
+    /// <summary>
+    /// #334: the projection slot for a nested <c>$count</c>. The root projection normally emits
+    /// <c>new TModel { … }</c>, which has nowhere to put a count scalar — that absence is precisely
+    /// why <c>$count=true</c> used to have to suppress the <c>$top</c> SQL bound and count the
+    /// materialized array instead. (Microsoft.AspNetCore.OData has the slot already: its
+    /// <c>SelectExpandWrapper</c>'s <c>PropertyContainer</c> carries <c>Collection</c> and
+    /// <c>TotalCount</c> side by side.)
+    /// <para>
+    /// FIXED SLOTS, not an array or a List: a member-init of settable scalar members is what every
+    /// LINQ provider can translate. <see cref="ExpandCountCarrierSlots"/> covers any realistic
+    /// number of counted, windowed, top-level navigations in one request; a request that exceeds it
+    /// simply falls back to the pre-#334 path rather than failing.
+    /// </para>
+    /// <para>
+    /// The carrier NEVER reaches the serializer: the collection route unwraps it to
+    /// <c>TModel[]</c> immediately after <c>ToArray()</c>, so nothing in the JSON shaping pipeline
+    /// (SerializeBounded / SerializeBoundedCollection / SpliceKeptNavigations /
+    /// OmitUnexpandedNavigations / StripToSelectedProperties) ever sees a wrapper type.
+    /// </para>
+    /// </summary>
+    internal sealed class ExpandCountCarrier<T>
+    {
+        public T Entity { get; set; } = default!;
+        public int C0 { get; set; }
+        public int C1 { get; set; }
+        public int C2 { get; set; }
+        public int C3 { get; set; }
+        public int C4 { get; set; }
+        public int C5 { get; set; }
+        public int C6 { get; set; }
+        public int C7 { get; set; }
+
+        public int Slot(int i) => i switch
+        {
+            0 => C0,
+            1 => C1,
+            2 => C2,
+            3 => C3,
+            4 => C4,
+            5 => C5,
+            6 => C6,
+            7 => C7,
+            _ => throw new ArgumentOutOfRangeException(nameof(i)),
+        };
+    }
+
+    /// <summary>#334: how many counted navs one carrier projection can hold. See <see cref="ExpandCountCarrier{T}"/>.</summary>
+    internal const int ExpandCountCarrierSlots = 8;
 
     // #206 phase 2 (Option A1): a navigation the $expand pushdown folds into the collection
     // projection — the CLR property to bind, whether it is a collection (materialized with
@@ -3545,6 +3737,12 @@ internal static class OhDataEndpointFactory
     private static readonly MethodInfo _enumerableSelect = typeof(Enumerable).GetMethods()
         .First(m => m.Name == nameof(Enumerable.Select) && m.GetParameters().Length == 2 &&
                     m.GetParameters()[1].ParameterType.GetGenericArguments().Length == 2);
+
+    // #334: Enumerable.Count<T>(IEnumerable<T>) — the PARAMETERLESS overload. Composed on the
+    // filtered but UN-WINDOWED navigation access to obtain an exact Nav@odata.count as a correlated
+    // scalar aggregate, independent of the Skip/Take window composed on the same nav for the page.
+    private static readonly MethodInfo _enumerableCount = typeof(Enumerable).GetMethods()
+        .First(m => m.Name == nameof(Enumerable.Count) && m.GetParameters().Length == 1);
 
     // #206 phase 2 (optioned expand): the OData filter/orderby binders are stateless — all per-bind
     // state flows through the QueryBinderContext argument — so a single shared instance is reused
@@ -3788,9 +3986,13 @@ internal static class OhDataEndpointFactory
     // (bounded self-referential recursion). Runs inside the caller's try/catch: a binder that cannot
     // bind a clause throws, and the caller then abandons pushdown for the request (the nav stays
     // EDM-only) rather than surfacing a 500.
+    // #334: <paramref name="countViaCarrier"/> is set by TryBuildProjectionInit for the top-level
+    // counted navs whose Nav@odata.count the carrier projection supplies as an independent scalar
+    // subquery. It only ever reaches this level's ApplyNavShape — never a nested BuildMemberInit
+    // call below — so a counted nav at depth >= 2 keeps the pre-#334 path by construction.
     private static Expression BuildShapedNavAccess(
         Expression owner, EngagedExpand engaged, IEdmModel model, ODataQuerySettings binderSettings,
-        int? maxExpandTop)
+        int? maxExpandTop, bool countViaCarrier = false)
     {
         ExpandNavBinding nav = engaged.Binding;
 
@@ -3832,7 +4034,8 @@ internal static class OhDataEndpointFactory
         }
 
         access = ApplyNavShape(
-            access, engaged, elem, model, BindNavShape(engaged, elem, model, binderSettings), maxExpandTop);
+            access, engaged, elem, model, BindNavShape(engaged, elem, model, binderSettings), maxExpandTop,
+            countViaCarrier: countViaCarrier);
 
         // #323 (Change A): fold EVERY element-wise projection — leaf or intermediate — into the query
         // whenever the element type is member-init-projectable, not only when a nested $expand folds
@@ -3905,9 +4108,17 @@ internal static class OhDataEndpointFactory
     // among them) translates. When true, no SQL Skip/Take (nor the #298 count-bound Take below) is
     // composed at all; the caller windows in the JSON pass instead (ShapeLevelsInJson), exactly like the
     // count bound already deferred there via <paramref name="maxExpandTop"/> being null on that call.
+    //
+    // <paramref name="countViaCarrier"/> (#334): true for a top-level, projection-LEAF, non-$levels
+    // collection expand that carries BOTH $count and a nested $skip/$top window, and whose exact
+    // count the caller is obtaining as an independent correlated scalar subquery (see
+    // BuildNavCountExpression / ExpandCountCarrier). Because the count no longer rides on the
+    // materialized array's length, this level no longer has to fetch the whole filtered collection
+    // to count it: $skip/$top compose to SQL exactly as they do without $count.
     private static Expression ApplyNavShape(
         Expression access, EngagedExpand engaged, Type elem, IEdmModel model,
-        in NavShapeBindings bound, int? maxExpandTop, bool deferPagingToJson = false)
+        in NavShapeBindings bound, int? maxExpandTop, bool deferPagingToJson = false,
+        bool countViaCarrier = false)
     {
         if (bound.Predicate is not null)
             access = Expression.Call(_enumerableWhere.MakeGenericMethod(elem), access, bound.Predicate);
@@ -3942,6 +4153,13 @@ internal static class OhDataEndpointFactory
         int? countBound = !deferPagingToJson && isProjectionLeaf && engaged.Count && maxExpandTop is int cap
             ? (int)Math.Min((long)cap + 1, int.MaxValue)
             : null;
+
+        // #334: this level's count comes from an independent scalar subquery, so the count bound is
+        // NOT composed and the requested window goes to SQL instead (see the composition block
+        // below). `countBound` above is deliberately still COMPUTED — `paging` reads it, and keeping
+        // that decision byte-identical is what makes the deterministic child-key ORDER BY tiebreaker
+        // (and therefore WHICH rows land in the page, and therefore the response body) unchanged.
+        bool carrierCount = countViaCarrier && !deferPagingToJson && isProjectionLeaf && engaged.Count;
 
         // #313: a BARE pushed leaf (no $count, no explicit $top of its own — $skip alone included) used
         // to compose NO SQL Take at all, leaving the single most common $expand shape unbounded by
@@ -4003,7 +4221,29 @@ internal static class OhDataEndpointFactory
         // ceiling WriteNestedCountAndWindow already enforces for the $count case.
         if (!deferPagingToJson)
         {
-            if (!engaged.Count)
+            if (carrierCount)
+            {
+                // #334: bound the FETCH by the requested window — Skip/Take compose to SQL exactly
+                // as they do without $count. The count no longer rides on the array length, so
+                // bounding the fetch cannot under-report Nav@odata.count (OData §11.2.4.2); the
+                // JSON pass reads the carrier's exact value instead (ShapePushedExpandsInJson).
+                //
+                // The residual Take(cap + 1) when no $top was given preserves the pre-#334 DoS
+                // bound: with a true count <= cap it never truncates the window, and with a true
+                // count > cap the re-sited ceiling check 400s on the carrier's exact value before
+                // the page is ever used — so MaxExpandTop breach behaviour is unchanged. With no
+                // ceiling configured (the shipping default, #313) there is no residual bound, which
+                // is also exactly what the pre-#334 path composed for this shape (`countBound` is
+                // null when `maxExpandTop` is null): the $skip/$top the client asked for is now the
+                // only bound, where before there was none at all.
+                if (engaged.Skip is int csk && csk > 0)
+                    access = Expression.Call(_enumerableSkip.MakeGenericMethod(elem), access, Expression.Constant(csk));
+                long limit = engaged.Top is int ctp ? ctp : long.MaxValue;
+                if (maxExpandTop is int ccap) limit = Math.Min(limit, (long)ccap + 1);
+                if (limit < int.MaxValue)
+                    access = Expression.Call(_enumerableTake.MakeGenericMethod(elem), access, Expression.Constant((int)limit));
+            }
+            else if (!engaged.Count)
             {
                 if (isProjectionLeaf)
                 {
@@ -4379,10 +4619,16 @@ internal static class OhDataEndpointFactory
     // #313 stage 5: <paramref name="paging"/> is non-null ONLY on the depth-1 call from the
     // GetQueryable collection route; every recursive call below passes null, which is what keeps
     // depth >= 2 on the 400 stage 2 gave it (§5, and O5 on the issue).
+    // #334: <paramref name="carrierCounts"/> maps a counted navigation's CLR property to that nav's
+    // exact per-parent count, index-parallel with <paramref name="parents"/>. Non-null ONLY on the
+    // depth-1 call from the GetQueryable collection route (like <paramref name="paging"/>), and only
+    // for navs the carrier projection actually carried; every other counted nav still counts its
+    // materialized array through WriteNestedCountAndWindow.
     private static void ShapePushedExpandsInJson(
         IEnumerable<JsonObject> parents, IReadOnlyList<EngagedExpand> engaged,
         JsonSerializerOptions serializerOptions, int? maxExpandTop,
-        ExpandPagingContext? paging = null)
+        ExpandPagingContext? paging = null,
+        IReadOnlyDictionary<PropertyInfo, int[]>? carrierCounts = null)
     {
         foreach (EngagedExpand e in engaged)
         {
@@ -4427,6 +4673,10 @@ internal static class OhDataEndpointFactory
                 pageableNav = resolvedNav;
             }
 
+            // #334: this nav's exact per-parent counts, when the carrier projection supplied them.
+            int[]? navCounts = null;
+            carrierCounts?.TryGetValue(prop, out navCounts);
+
             // Index into paging.ParentItems. The two lists are built index-parallel by the caller
             // (see the ShapePushedExpandsInJson call site in the GetQueryable route), so this counter
             // and the foreach below stay in step by construction.
@@ -4437,7 +4687,28 @@ internal static class OhDataEndpointFactory
                 JsonNode? node = parent[key];
                 if (e.Binding.IsCollection && node is JsonArray arr)
                 {
-                    if (e.Count)
+                    if (e.Count && navCounts is not null)
+                    {
+                        // Defensive: navCounts is built index-parallel with `parents` in ONE loop at
+                        // the single call site that supplies it, so this cannot fire. It throws
+                        // rather than falling through to WriteNestedCountAndWindow, because that
+                        // path counts the materialized array — which the carrier has already
+                        // SQL-windowed — and would therefore report the PAGE size as the collection
+                        // count. A 500 is strictly better than a silently wrong @odata.count.
+                        if ((uint)parentIndex >= (uint)navCounts.Length)
+                            throw new InvalidOperationException("OhData: nested $count carrier desynchronised from the serialized page.");
+
+                        // #334: exact count from SQL, and the page was ALREADY windowed in SQL — so
+                        // no JSON window is applied here (that is the whole point: the fetch was
+                        // bounded to the requested window instead of to the ceiling). The
+                        // MaxExpandTop ceiling is re-sited from "materialized array length" to "the
+                        // exact count"; see the EnsureWithinExpandCeiling(int, …) overload for why
+                        // that is the same predicate rather than merely a similar one.
+                        int exact = navCounts[parentIndex];
+                        EnsureWithinExpandCeiling(exact, key, maxExpandTop, "'$count'");
+                        parent[$"{key}@odata.count"] = exact;
+                    }
+                    else if (e.Count)
                     {
                         WriteNestedCountAndWindow(parent, key, arr, e, maxExpandTop);
                     }
@@ -4510,9 +4781,18 @@ internal static class OhDataEndpointFactory
     // distinct-but-same-family message. Throws Microsoft.OData.ODataException, caught by the collection
     // route's existing handler and returned as a 400 InvalidQueryOption — no IResult threading through
     // this void recursive walk.
-    private static void EnsureWithinExpandCeiling(JsonArray arr, string key, int? maxExpandTop, string verb)
+    private static void EnsureWithinExpandCeiling(JsonArray arr, string key, int? maxExpandTop, string verb) =>
+        EnsureWithinExpandCeiling(arr.Count, key, maxExpandTop, verb);
+
+    // #334: the same check against a count that did NOT come from a materialized array — the
+    // carrier's exact scalar. Split out (rather than duplicated at the call site) so the message the
+    // client sees is byte-identical whichever way the count was obtained. The predicate is also
+    // equivalent, not merely similar: the pre-#334 array was Take(cap + 1)-bounded, so
+    // `arr.Count > cap` was already exactly `trueCount > cap` — with the carrier the breach signal
+    // is simply exact rather than a saturated proxy for it.
+    private static void EnsureWithinExpandCeiling(int count, string key, int? maxExpandTop, string verb)
     {
-        if (maxExpandTop is int cap && arr.Count > cap)
+        if (maxExpandTop is int cap && count > cap)
         {
             throw new Microsoft.OData.ODataException(
                 $"The nested {verb} on '{key}' cannot be computed: the related collection exceeds the " +
@@ -5990,6 +6270,47 @@ internal static class OhDataEndpointFactory
                         }
                     }
 
+                    // #334: which top-level engaged expands get their Nav@odata.count carried as an
+                    // independent correlated scalar subquery, so the nested $skip/$top can bound the
+                    // SQL fetch instead of being deferred to the JSON pass?
+                    //
+                    //  - a COLLECTION nav (a reference has no count),
+                    //  - carrying $count,
+                    //  - a projection LEAF (no nested $expand children of its own) — a level with
+                    //    children is projected element-wise further down, and windowing it while
+                    //    also projecting a collection out of each element is the APPLY/LATERAL shape
+                    //    #298/#304 established SQLite cannot translate,
+                    //  - not a $levels recursion (same reason, per #300),
+                    //  - and carrying an actual nested $skip/$top WINDOW. Without one there is
+                    //    nothing to bound: the pre-#334 path already fetched exactly what the
+                    //    ceiling allowed, so engaging the carrier would add a count subquery for no
+                    //    benefit. Gating on the window is what keeps every un-windowed counted
+                    //    request byte-identical AND cost-identical to before.
+                    //
+                    // A counted nav at depth >= 2 is excluded by construction, not by a check here:
+                    // countViaCarrier is only ever passed to the TOP-level BuildShapedNavAccess call
+                    // (TryBuildProjectionInit), never into a nested BuildMemberInit.
+                    List<EngagedExpand>? carrierCounted = null;
+                    if (engagedExpandNavs is { Count: > 0 })
+                    {
+                        foreach (EngagedExpand ce in engagedExpandNavs)
+                        {
+                            if (ce.Levels == 0 && ce.Binding.IsCollection && ce.Count
+                                && ce.Children is not { Count: > 0 }
+                                && (ce.Top is int || (ce.Skip is int cskip && cskip > 0)))
+                            {
+                                (carrierCounted ??= new List<EngagedExpand>()).Add(ce);
+                            }
+                        }
+                        // More counted+windowed navs than the carrier has slots: fall back wholesale
+                        // rather than carrying some counts and deferring others, so one request
+                        // never mixes the two count sources.
+                        if (carrierCounted is { Count: > ExpandCountCarrierSlots }) carrierCounted = null;
+                    }
+                    // Index-aligned with `items` below; re-indexed onto the serialized parents at the
+                    // ShapePushedExpandsInJson call site.
+                    Dictionary<PropertyInfo, int[]>? carrierCounts = null;
+
                     TModel[] items;
                     if (engagedExpandNavs is { Count: > 0 })
                     {
@@ -6009,11 +6330,63 @@ internal static class OhDataEndpointFactory
                                 ? combSelected
                                 : pushdownStructuralByName.Keys.ToList();
 
-                        IQueryable<TModel> pushedQuery = TryApplySelectProjection(
-                            filtered, structuralNames, source, pushdownCtorOk, pushdownStructuralByName,
-                            logger, engagedExpandNavs, registration.EdmModel, cachedBinderSettings);
+                        // #334: try the count-carrier projection FIRST. A null means either that no
+                        // nav qualified, or that the root projection is ineligible for a member-init
+                        // Select at all — in which case the request falls through to the unchanged
+                        // path below (including, ultimately, the #305 Include fallback).
+                        IQueryable<ExpandCountCarrier<TModel>>? carrierQuery =
+                            carrierCounted is { Count: > 0 }
+                                ? TryApplyCarrierProjection(
+                                    filtered, structuralNames, source, pushdownCtorOk,
+                                    pushdownStructuralByName, logger, engagedExpandNavs,
+                                    registration.EdmModel, cachedBinderSettings, carrierCounted)
+                                : null;
 
-                        if (ReferenceEquals(pushedQuery, filtered))
+                        IQueryable<TModel> pushedQuery = carrierQuery is not null
+                            ? filtered // unused on the carrier path; keeps the reference check below false
+                            : TryApplySelectProjection(
+                                filtered, structuralNames, source, pushdownCtorOk, pushdownStructuralByName,
+                                logger, engagedExpandNavs, registration.EdmModel, cachedBinderSettings);
+
+                        if (carrierQuery is not null)
+                        {
+                            try
+                            {
+                                ExpandCountCarrier<TModel>[] carriers = EvaluateQueryWithArithmeticFaultGuard(
+                                    () => carrierQuery.ToArray(), options, logger, source.EntitySetName);
+
+                                // Unwrap IMMEDIATELY: `items` is a plain TModel[] from here on, so
+                                // nothing downstream of materialization — the whole JSON shaping
+                                // pipeline included — ever sees the carrier type.
+                                items = new TModel[carriers.Length];
+                                carrierCounts = new Dictionary<PropertyInfo, int[]>(carrierCounted!.Count);
+                                for (int ci = 0; ci < carrierCounted.Count; ci++)
+                                    carrierCounts[carrierCounted[ci].Binding.Property] = new int[carriers.Length];
+                                for (int i = 0; i < carriers.Length; i++)
+                                {
+                                    items[i] = carriers[i].Entity;
+                                    for (int ci = 0; ci < carrierCounted.Count; ci++)
+                                        carrierCounts[carrierCounted[ci].Binding.Property][i] = carriers[i].Slot(ci);
+                                }
+                            }
+                            catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException
+                                or Microsoft.OData.ODataException)
+                            {
+                                // Same narrowed, fail-loud discipline (and the same message) as the
+                                // ordinary pushdown execution site below — see its comment for why
+                                // provider/infrastructure faults must NOT be relabelled 400 here.
+                                logger?.LogDebug(ex,
+                                    "OhData: $expand count-carrier pushdown query failed to translate for {EntitySet}.",
+                                    source.EntitySetName);
+                                throw new Microsoft.OData.ODataException(
+                                    $"The '$expand' on '{source.EntitySetName}' could not be processed: " +
+                                    "the query shape produced by the requested nested options could not " +
+                                    "be translated by the underlying data provider. Simplify the nested " +
+                                    "$filter/$orderby/$top/$skip/$count combination, or write an expand " +
+                                    "delegate for this navigation to take full control of its query shape.");
+                            }
+                        }
+                        else if (ReferenceEquals(pushedQuery, filtered))
                         {
                             // #305 Path A ("serve, not silently drop"): the root projection is
                             // ineligible (e.g. no parameterless ctor / unknowable ETag / a complex-or-
@@ -6240,26 +6613,48 @@ internal static class OhDataEndpointFactory
                         // the filter and the index would silently desynchronise if a page element ever
                         // failed to serialize to an object, and a link on the WRONG parent is worse than
                         // no link. See ExpandLevelAsync's items/jsonItems pair for the same idiom.
+                        // #334 shares that index-parallel construction for exactly the same reason:
+                        // the carrier's counts are positional against `items`, and a count attached
+                        // to the WRONG parent is worse than no fix at all.
                         ExpandPagingContext? pagingCtx = null;
                         IEnumerable<JsonObject> shapeParents;
+                        IReadOnlyDictionary<PropertyInfo, int[]>? shapeCounts = null;
                         PropertyInfo? parentKeyProp = expandPagingNavs.Count > 0
                             ? typeof(TModel).GetProperty(
                                 source.KeyPropertyName,
                                 BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance)
                             : null;
-                        if (parentKeyProp is not null)
+                        if (parentKeyProp is not null || carrierCounts is not null)
                         {
                             var pagingParents = new List<JsonObject>(finalItems.Count);
                             var pagingItems = new List<object>(finalItems.Count);
+                            // The source index in `items` of each kept parent, so the carrier's
+                            // counts can be re-indexed onto the (possibly shorter) parents list.
+                            var sourceIndexes = new List<int>(finalItems.Count);
                             for (int i = 0; i < finalItems.Count && i < items.Length; i++)
                             {
                                 if (finalItems[i] is not JsonObject parentObj) continue;
                                 pagingParents.Add(parentObj);
                                 pagingItems.Add(items[i]!);
+                                sourceIndexes.Add(i);
                             }
                             shapeParents = pagingParents;
-                            pagingCtx = new ExpandPagingContext(
-                                baseUrl, name, parentKeyProp, pagingItems, expandPagingNavsByEdmName);
+                            if (parentKeyProp is not null)
+                            {
+                                pagingCtx = new ExpandPagingContext(
+                                    baseUrl, name, parentKeyProp, pagingItems, expandPagingNavsByEdmName);
+                            }
+                            if (carrierCounts is not null)
+                            {
+                                var aligned = new Dictionary<PropertyInfo, int[]>(carrierCounts.Count);
+                                foreach (KeyValuePair<PropertyInfo, int[]> nc in carrierCounts)
+                                {
+                                    int[] re = new int[sourceIndexes.Count];
+                                    for (int j = 0; j < sourceIndexes.Count; j++) re[j] = nc.Value[sourceIndexes[j]];
+                                    aligned[nc.Key] = re;
+                                }
+                                shapeCounts = aligned;
+                            }
                         }
                         else
                         {
@@ -6268,7 +6663,7 @@ internal static class OhDataEndpointFactory
 
                         ShapePushedExpandsInJson(
                             shapeParents, engagedExpandNavs, jsonOptions ?? _pascalCaseSerializerOptions,
-                            source.MaxExpandTop, pagingCtx);
+                            source.MaxExpandTop, pagingCtx, shapeCounts);
                     }
 
                     var envelope = new Dictionary<string, object?>();

@@ -674,6 +674,80 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A nested `$count=true` discarded the nested `$top` SQL bound, so the whole related collection was
+  materialized to return a page of it (#334).**
+  `?$expand=Children($top=10;$count=true)` fetched `MaxExpandTop + 1` rows to return 10 — and with
+  the ceiling unset, which has been the shipping default since #313, it composed **no row bound at
+  all**. Only the emitted SQL changes; every response body is byte-identical, pinned across 12
+  nested-clause shapes × 3 ceilings by `NestedCountTopByteIdentityTests` against values captured
+  from the pre-fix build.
+
+  **Why it happened.** Under the #254/#298/#304 "`$count` defers paging to the JSON pass" design the
+  count *was* the materialized array's length, so an exact count required the full filtered
+  collection and `ApplyNavShape` had to compose the ceiling bound in place of the client's `$top`.
+  The root cause is one level down: OhData projects into the CLR entity type, `new TModel { … }`,
+  which has **nowhere to put a count scalar**. `Microsoft.AspNetCore.OData` has had that slot all
+  along — `SelectExpandWrapper`'s `PropertyContainer` carries `Collection` and `TotalCount` side by
+  side — which is exactly why `$count=true` never perturbed its `$top` translation.
+
+  **The fix.** A projection carrier supplies the missing slot, and the count becomes a *second,
+  independent* expression rooted at the same navigation node — filtered but never ordered or
+  windowed — mirroring `SelectExpandBinder`'s own `CreateTotalCountExpression` / `ProjectAsWrapper`
+  split. Neither chain reads the other, so the window composes to SQL exactly as it does without
+  `$count`. It stays one round-trip (page and count come from one snapshot, so they cannot disagree
+  under concurrent writes), and the carrier is unwrapped to `TModel[]` immediately after
+  `ToArray()` — nothing in the JSON shaping pipeline ever sees a wrapper type.
+
+  A correlated `COUNT(*)` is a scalar aggregate, **not** the `APPLY`/`LATERAL` shape a windowed
+  collection projected out of a windowed collection needs, so it composes beside the `ROW_NUMBER()`
+  window on SQLite too — verified from captured SQL and pinned as a live regression, because #300
+  established that the other shape does not translate there.
+
+  ```
+  ?$expand=Children($top=10;$count=true)      MaxExpandTop=null   MaxExpandTop=1000
+    before                                    (no bound at all)   WHERE "row" <= 1001
+    after                                     WHERE "row" <= 10   WHERE "row" <= 10
+  ```
+
+  **`Nav@odata.count` is unchanged and still exact** — OData §11.2.4.2 requires the count of the
+  full *filtered* collection, never the returned page, and a fix that bounded the fetch by
+  under-reporting the count would have been a far worse defect than the one it replaced. The nested
+  `$filter` rides into the count subquery; the `$orderby`/`$skip`/`$top` deliberately do not.
+
+  The `MaxExpandTop` ceiling is **re-sited, not relaxed**: the breach signal moves from "the
+  materialized array is longer than the cap" to "the exact count is greater than the cap". Those are
+  the same predicate — the pre-fix array was `Take(cap + 1)`-bounded, so `arr.Count > cap` already
+  *meant* `trueCount > cap` — except that the signal is now exact rather than a saturated proxy, so
+  a breach is still a `400` with a byte-identical message even when only the requested window was
+  fetched.
+
+  **Scope.** A collection-valued, projection-**leaf**, non-`$levels`, top-level expand carrying
+  `$count` **and** an actual nested `$skip`/`$top` window, on the `GetQueryable` collection route.
+  Everything else keeps the pre-#334 path exactly: a `$count` with no window (there is nothing to
+  bound, so engaging the carrier would buy a count subquery for no benefit), a counted nav that
+  itself carries nested `$expand` children or sits at depth ≥ 2, `$levels` + `$count`,
+  `GET /{Set}({key})`, the #305 Include fallback, and a delegate-backed navigation (never pushed
+  down, so never carrier-decorated).
+
+  **Measured** (BenchmarkDotNet, `ExpandComparisonBenchmarks.ExpandNestedOptions`,
+  `$expand=Employees($top=10;$orderby=id;$count=true;$select=Id,Name)`, 20 departments × 50
+  employees; `executed benchmarks: 2` per run):
+
+  | | before | after |
+  |---|---|---|
+  | OhData allocated | 1,794.4 KB | **437.3 KB** (−75.6%) |
+  | OhData Gen0 / Gen1 per 1,000 ops | 93.75 / 31.25 | **0 / 0** |
+  | OhData mean | 3.220 ms | 2.300 ms (median 2.072 ms) |
+  | `Microsoft.AspNetCore.OData` allocated (control) | 555.9 KB | 566.3 KB |
+  | allocation, MS ÷ OhData | 0.31× | **1.29×** |
+
+  This was the one scenario in the server-comparison suite where
+  `Microsoft.AspNetCore.OData` decisively beat OhData; OhData now allocates **less** than it does,
+  with no gen-0 or gen-1 collections at all, and its median latency is lower. Read the allocation
+  row as the result: it reproduced to within 0.4 KB across runs, whereas the timings on this
+  category carry documented run-to-run noise (the unchanged Microsoft arm itself moved 2.247–2.689 ms
+  across the same three runs).
+
 - **`$levels=max` bypassed the depth cap the numeric form is validated against (#428).**
   Microsoft's `SelectExpandQueryValidator` rejects a *numeric* `$levels=N` when
   `N > min(MaxExpansionDepth, modelBoundMaxDepth)`; for the `max` literal it only requires that
