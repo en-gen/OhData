@@ -3364,13 +3364,20 @@ internal static class OhDataEndpointFactory
         ILogger? logger,
         IReadOnlyList<EngagedExpand>? expandNavs = null,
         IEdmModel? edmModel = null,
-        ODataQuerySettings? binderSettings = null)
+        ODataQuerySettings? binderSettings = null,
+        Action<string>? onIneligible = null)
     {
         if (!TryBuildProjectionInit<TModel>(
                 selectedNames, source, hasParameterlessCtor, structuralByName, logger, expandNavs,
                 edmModel, binderSettings, carrierCounted: null,
-                out ParameterExpression px, out Expression pinit, out _))
+                out ParameterExpression px, out Expression pinit, out _, out string? reason))
         {
+            // #322: the ONE consumer of the reason is the #305 400 below, which used to recite the
+            // whole eligibility RULE ("a public parameterless constructor, settable non-complex
+            // properties, ...") at a developer whose model satisfied all of it. Reported, never
+            // reconstructed at the failure site — a re-derivation there would be a second copy of
+            // these checks, free to drift from the ones that actually decided.
+            if (reason is not null) onIneligible?.Invoke(reason);
             return query;
         }
 
@@ -3404,14 +3411,18 @@ internal static class OhDataEndpointFactory
         IReadOnlyList<EngagedExpand>? carrierCounted,
         out ParameterExpression parameter,
         out Expression entityInit,
-        out List<Expression?>? countExprs)
+        out List<Expression?>? countExprs,
+        out string? ineligibilityReason)
     {
         parameter = null!;
         entityInit = null!;
         countExprs = null;
+        ineligibilityReason = null;
 
         if (!hasParameterlessCtor)
         {
+            ineligibilityReason =
+                $"'{typeof(TModel).Name}' has no public parameterless constructor (a positional record has none)";
             logger?.LogDebug(
                 "OhData: $select pushdown skipped for {EntitySet}: {Model} has no public parameterless constructor.",
                 source.EntitySetName, typeof(TModel).Name);
@@ -3441,6 +3452,9 @@ internal static class OhDataEndpointFactory
         {
             if (source.ETagPropertyNames is null)
             {
+                ineligibilityReason =
+                    "its UseETag selector is not a direct property selector, so the properties the " +
+                    "ETag is computed from cannot be identified and projected";
                 logger?.LogDebug(
                     "OhData: $select pushdown skipped for {EntitySet}: UseETag selector property names are unknowable (non-direct selector).",
                     source.EntitySetName);
@@ -3455,6 +3469,9 @@ internal static class OhDataEndpointFactory
                     .FirstOrDefault(p => string.Equals(p.Property.Name, name, StringComparison.Ordinal));
                 if (etagProp is null)
                 {
+                    ineligibilityReason =
+                        $"the UseETag property '{name}' is not a structural property of " +
+                        $"'{typeof(TModel).Name}'";
                     logger?.LogDebug(
                         "OhData: $select pushdown skipped for {EntitySet}: UseETag property '{Property}' is not a structural property.",
                         source.EntitySetName, name);
@@ -3473,6 +3490,10 @@ internal static class OhDataEndpointFactory
             // primitive (s_primitiveClrTypes), so rowversion ETag inputs keep pushdown.
             if (member.IsComplex)
             {
+                ineligibilityReason =
+                    $"its structural property '{member.Name}' is complex-typed " +
+                    $"({member.Property.PropertyType.Name}), and projecting an EF-owned complex " +
+                    "property under a tracking query is not supported";
                 logger?.LogDebug(
                     "OhData: $select pushdown skipped for {EntitySet}: '{Property}' is complex-typed (owned-entity projection is a phase-1 boundary).",
                     source.EntitySetName, member.Name);
@@ -3481,6 +3502,8 @@ internal static class OhDataEndpointFactory
 
             if (member.Property.SetMethod is not { IsPublic: true })
             {
+                ineligibilityReason =
+                    $"its structural property '{member.Name}' has no public setter";
                 logger?.LogDebug(
                     "OhData: $select pushdown skipped for {EntitySet}: '{Property}' has no public setter.",
                     source.EntitySetName, member.Name);
@@ -3624,8 +3647,11 @@ internal static class OhDataEndpointFactory
         if (!TryBuildProjectionInit<TModel>(
                 selectedNames, source, hasParameterlessCtor, structuralByName, logger, expandNavs,
                 edmModel, binderSettings, carrierCounted,
-                out ParameterExpression x, out Expression entityInit, out List<Expression?>? countExprs))
+                out ParameterExpression x, out Expression entityInit, out List<Expression?>? countExprs,
+                out _))
         {
+            // No reason is surfaced here: a null return falls through to the ordinary projection
+            // below, which re-runs the same checks and reports the reason to ITS caller.
             return null;
         }
 
@@ -6380,11 +6406,15 @@ internal static class OhDataEndpointFactory
                                     registration.EdmModel, cachedBinderSettings, carrierCounted)
                                 : null;
 
+                        // #322: why the projection was ineligible, reported BY the eligibility checks
+                        // rather than re-derived at the 400 below. Stays null on the success path.
+                        string? projectionIneligibleReason = null;
                         IQueryable<TModel> pushedQuery = carrierQuery is not null
                             ? filtered // unused on the carrier path; keeps the reference check below false
                             : TryApplySelectProjection(
                                 filtered, structuralNames, source, pushdownCtorOk, pushdownStructuralByName,
-                                logger, engagedExpandNavs, registration.EdmModel, cachedBinderSettings);
+                                logger, engagedExpandNavs, registration.EdmModel, cachedBinderSettings,
+                                r => projectionIneligibleReason = r);
 
                         if (carrierQuery is not null)
                         {
@@ -6439,14 +6469,18 @@ internal static class OhDataEndpointFactory
                             // this fix does not fold through Include (a nested $expand/$levels).
                             if (HasNestedFilterOrOrderBy(engagedExpandNavs))
                             {
+                                // #322: this message used to recite the eligibility RULE — "a public
+                                // parameterless constructor, settable non-complex properties, and ... a
+                                // direct UseETag selector" — at a developer whose model had all three,
+                                // naming nothing that was actually wrong. It now names the ONE check
+                                // that failed, as reported by the check itself.
                                 throw new Microsoft.OData.ODataException(
                                     $"The '$expand' on '{source.EntitySetName}' could not be processed: " +
                                     "a nested $filter/$orderby on $expand requires a projection-eligible " +
-                                    "model, which this one isn't (an eligible model has a public " +
-                                    "parameterless constructor, settable non-complex properties, and — " +
-                                    "if it uses ETags — a direct UseETag selector over structural " +
-                                    "properties). Make the model projection-eligible, or write an " +
-                                    "expand delegate for this navigation.");
+                                    $"model, and '{typeof(TModel).Name}' is not one because " +
+                                    $"{projectionIneligibleReason ?? "its member-init projection could not be built"}. " +
+                                    "Fix that, or write an expand delegate for this navigation to take " +
+                                    "full control of its query shape.");
                             }
 
                             // #305 fold-in (review): validated here, OUTSIDE the try/catch around the
@@ -6456,14 +6490,16 @@ internal static class OhDataEndpointFactory
                             // catch that wraps the real Include call.
                             if (FindNestedExpandOrLevels(engagedExpandNavs) is { } nestedNav)
                             {
+                                // #322: same correction as the message above — name the check that
+                                // actually failed, not the whole rule.
                                 throw new Microsoft.OData.ODataException(
                                     $"The '$expand' on '{nestedNav.Binding.Property.Name}' could not be " +
                                     "served without a projection-eligible model: a nested $expand or " +
-                                    "$levels under a plain Include fallback is not supported. Make the " +
-                                    "model projection-eligible (a public parameterless constructor, " +
-                                    "settable non-complex properties, and — if it uses ETags — a direct " +
-                                    "UseETag selector over structural properties) to enable full " +
-                                    "pushdown, or write an expand delegate for this navigation.");
+                                    "$levels under a plain Include fallback is not supported, and " +
+                                    $"'{typeof(TModel).Name}' is not projection-eligible because " +
+                                    $"{projectionIneligibleReason ?? "its member-init projection could not be built"}. " +
+                                    "Fix that to enable full pushdown, or write an expand delegate for " +
+                                    "this navigation.");
                             }
 
                             // #323 (Change C) formerly rejected (400) a leaf expand whose element type

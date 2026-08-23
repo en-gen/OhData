@@ -280,6 +280,16 @@ public sealed class IncludeFallbackServeTests : IAsyncLifetime
         Assert.Contains(optionToken, body);
         Assert.DoesNotContain("Sqlite", body);
         Assert.DoesNotContain("SQLITE", body);
+
+        // #322: the message names the check that ACTUALLY failed for THIS model, reported by the
+        // eligibility check itself. It used to recite the whole rule — "a public parameterless
+        // constructor, settable non-complex properties, and ... a direct UseETag selector" — which
+        // for a model failing only one of those (and, before #322, for a model failing NONE of them
+        // and merely carrying an undeclared convention navigation) named nothing that was wrong.
+        Assert.Contains("NoCtorParent", body);
+        Assert.Contains("has no public parameterless constructor", body);
+        Assert.DoesNotContain("settable non-complex properties", body);
+        Assert.DoesNotContain("UseETag selector", body);
     }
 }
 
