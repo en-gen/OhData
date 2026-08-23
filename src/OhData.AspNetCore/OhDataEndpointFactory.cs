@@ -2259,7 +2259,45 @@ internal static class OhDataEndpointFactory
                 // jsonItems[i][expandKey] — an EF Include pushed down by the query, or the plain
                 // serialized CLR graph — IS the raw, authoritative answer. Nothing to inject or
                 // blank; leave it exactly as serialized.
+                //
+                // #320: but this branch does NOT recurse, so a DEEPER navigation reached only through
+                // this ServeRaw parent's already-materialized graph never reaches the nested-$top/$skip
+                // rejection below — its option was accepted, never applied, and answered 200. Scan the
+                // subtree for that case before leaving. The scan is skipped entirely (no candidate
+                // resolution, no profile instantiation) unless the subtree actually carries a nested
+                // $top/$skip, so the common ServeRaw expand stays a bare `continue`.
+                if (expandItem.SelectAndExpand is { } rawNested && ClauseHasNestedTopOrSkip(rawNested))
+                {
+                    IEdmEntityType? rawTargetEdmType =
+                        (expandItem.PathToNavigationProperty.FirstSegment as NavigationPropertySegment)?
+                        .NavigationProperty?.ToEntityType();
+                    EnsureNestedWindowIsApplicable(
+                        rawNested, rawTargetEdmType, registration, requestServices, depth + 1);
+                }
                 continue;
+            }
+
+            // #294 + #320 (uniform rule): a nested $top/$skip inside $expand cannot be applied to a
+            // navigation whose treatment is not ServeRaw — a RunDelegate nav's Handler/BatchHandler
+            // returns the delegate's FULL answer for the given parent key(s) and nothing downstream
+            // windows it, and a Blank nav is emptied outright. Silently ignoring the option returned
+            // every related row (or none) under an unsuspicious 200 — the #294 bug. Reject instead of
+            // guessing, consistent with the framework's "parse the option or reject it" contract, and
+            // mirroring ValidateNestedTopCeiling's over-ceiling 400 above it in the request pipeline.
+            //
+            // Checked BEFORE the Blank branch and before either delegate branch below, so no handler
+            // runs for a rejected request and the answer does not depend on which non-ServeRaw
+            // treatment the navigation resolved to. Does not apply to ServeRaw: EF pushdown honors and
+            // windows a nested $top there (and where it does NOT — a ServeRaw nav whose branch was
+            // never pushed down at all — the option is still silently ignored; see the class note on
+            // ClauseHasNestedTopOrSkip).
+            if (expandItem.TopOption is not null || expandItem.SkipOption is not null)
+            {
+                // Thrown (not returned) for the same reason EnsureWithinExpandCeiling throws below:
+                // it avoids IResult threading through this void recursive walk. All 5 collection-GET
+                // call sites of ApplyCollectionPipelineAsync already catch Microsoft.OData.ODataException
+                // and surface it as 400 InvalidQueryOption.
+                throw NestedWindowRejection(propName, treatment.Treatment);
             }
 
             if (treatment.Treatment == NavTreatment.Blank)
@@ -2281,38 +2319,6 @@ internal static class OhDataEndpointFactory
             // back, and no candidate disagrees (declares it delegate-less) — that route is the sole,
             // unambiguous authority for it. Run it.
             NavigationRouteDefinition navRoute = treatment.Route!;
-
-            // #294 (owner decision, issue #294): a nested $top/$skip inside $expand against a
-            // delegate-backed navigation cannot be safely re-windowed here — the per-entity Handler
-            // and the BatchHandler both return the delegate's FULL answer for the given parent
-            // key(s); nothing downstream applies a Skip/Take to it. Silently ignoring the option
-            // used to return every related row under an unsuspicious 200 (the #294 bug:
-            // $expand=Children($top=2) on a delegate-backed nav returned all 3 children). Reject
-            // instead of guessing, consistent with the framework's "parse the option or reject it"
-            // contract — mirrors ValidateNestedTopCeiling's over-ceiling 400 above it in the request
-            // pipeline (Priority-1/GetQueryable/GetAll/GetById all call that first), except this
-            // covers the newly-in-range case that previously reached the delegate and was dropped.
-            // Checked before EITHER branch below runs, so neither the per-entity Handler nor the
-            // BatchHandler is ever invoked for a rejected request. Does not apply to ServeRaw (EF
-            // pushdown honors/windows nested $top there) or Blank (nothing runs, and the field is
-            // already emptied above).
-            if (expandItem.TopOption is not null || expandItem.SkipOption is not null)
-            {
-                // Thrown (not returned) for the same reason EnsureWithinExpandCeiling throws below:
-                // it avoids IResult threading through this void recursive walk. All 5 collection-GET
-                // call sites of ApplyCollectionPipelineAsync already catch Microsoft.OData.ODataException
-                // and surface it as 400 InvalidQueryOption.
-                //
-                // Known gap (#320, not fixed here): this reject fires only when the navigation ITSELF
-                // resolves to RunDelegate at this level. A delegate-backed nav reached solely via a
-                // ServeRaw (delegate-less) parent's already-materialized graph never reaches this
-                // check — its nested $top/$skip is still silently ignored. Fixing that needs a
-                // treatment-independent pre-pipeline scan of the whole $expand tree; out of scope here.
-                throw new Microsoft.OData.ODataException(
-                    $"A nested $top/$skip is not supported on the delegate-backed navigation '{propName}'; " +
-                    "declare it delegate-less (no Handler/BatchHandler) to enable server-side windowing, " +
-                    "or remove the option.");
-            }
 
             // Load the related entity/collection for every entity at this level, keeping the CLR
             // results (relatedByIndex[i]) so deeper levels can read their keys.
@@ -2447,6 +2453,108 @@ internal static class OhDataEndpointFactory
             {
                 List<string>? nestedSelected = ExtractSelectedProperties((SelectExpandClause)nestedClause);
                 if (nestedSelected is not null) StripToSelectedProperties(childObjects, nestedSelected);
+            }
+        }
+    }
+
+    // #294/#320: the single place the nested-$top/$skip rejection message is built, so the two throw
+    // sites (the navigation reached directly by ExpandLevelAsync, and one reached only through a
+    // ServeRaw parent's materialized graph) can never drift apart. The RunDelegate wording is
+    // byte-identical to the message #294 shipped — it is quoted in docs and asserted in tests.
+    private static Microsoft.OData.ODataException NestedWindowRejection(string navName, NavTreatment treatment) =>
+        treatment == NavTreatment.RunDelegate
+            ? new Microsoft.OData.ODataException(
+                $"A nested $top/$skip is not supported on the delegate-backed navigation '{navName}'; " +
+                "declare it delegate-less (no Handler/BatchHandler) to enable server-side windowing, " +
+                "or remove the option.")
+            : new Microsoft.OData.ODataException(
+                $"A nested $top/$skip is not supported on the navigation '{navName}': the entity sets " +
+                "exposing this type disagree about whether it is delegate-backed, so it is served " +
+                "empty and no window can be applied. Remove the option.");
+
+    // #320: true when <paramref name="clause"/> carries a $top or $skip on ANY navigation at any depth
+    // below it. A pure clause walk — no EDM lookup, no candidate resolution, no profile instantiation —
+    // so ExpandLevelAsync's ServeRaw branch pays nothing for the overwhelmingly common expand that
+    // carries no nested window at all. Unbounded recursion, like its siblings ValidateNestedTopCeiling
+    // and CountExpandNodes: the depth and breadth ceilings (#328/#429) have already rejected an
+    // oversized tree before any of the three runs.
+    //
+    // SCOPE NOTE (deliberate, measured, NOT fixed here). "Not applicable" is resolved from the Model B
+    // treatment (RunDelegate/Blank), not from whether the option was in fact applied. A ServeRaw
+    // navigation whose branch was never SQL-pushdown-windowed — an in-memory GetAll source, a
+    // non-EF IQueryable, or a branch TryBuildEngagedExpand deferred for a structural reason — still
+    // ignores its nested $top/$skip silently. Rejecting THAT would make the answer depend on whether
+    // pushdown happened to engage, which is an internal optimization decision invisible to the client,
+    // and would turn requests that are honored today into 400s. It needs its own owner decision
+    // (reject vs. apply in memory) alongside #352's retirement of this rejection.
+    private static bool ClauseHasNestedTopOrSkip(SelectExpandClause clause)
+    {
+        foreach (ExpandedNavigationSelectItem item in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
+        {
+            if (item.TopOption is not null || item.SkipOption is not null) return true;
+            if (item.SelectAndExpand is { } deeper && ClauseHasNestedTopOrSkip(deeper)) return true;
+        }
+        return false;
+    }
+
+    // #320: walks the $expand subtree hanging off a ServeRaw navigation and throws the same 400 the
+    // direct path throws for a nested $top/$skip on any navigation whose treatment is not ServeRaw.
+    //
+    // WHY THIS IS NEEDED AT ALL. ExpandLevelAsync's ServeRaw branch `continue`s without recursing —
+    // correctly, since the raw materialized value IS the answer — so a delegate-backed grandchild
+    // reached ONLY through a delegate-less parent's graph was never resolved, and its nested
+    // $top/$skip was accepted, never applied, and answered 200 with every related row.
+    //
+    // WHY IT CANNOT TURN A HONORED REQUEST INTO A 400. A nested $top/$skip is honored only when the
+    // whole branch was pushed down, and TryBuildEngagedExpand pushes a branch only when EVERY level of
+    // it is ServeRaw (a RunDelegate or Blank child defers the whole parent). So whenever this scan
+    // finds a non-ServeRaw navigation, that branch was certainly not pushed and the option was
+    // certainly not applied.
+    //
+    // Candidates are resolved through the SAME ResolveRequestSourcesForEdmType the real descent uses,
+    // and the treatment through the SAME ResolveNavTreatment, so the scan cannot disagree with the
+    // descent it stands in for. Mirrors ExpandLevelAsync's own guards: bounded by MaxNestedExpandDepth,
+    // and silent when no profile exposes the level's type (nothing there could have applied the option
+    // either, and nothing else in the pipeline treats that as an error).
+    //
+    // #440 interaction: an UNDECLARED convention-discovered navigation has no opinion from any
+    // candidate, so ResolveNavTreatment reports it ServeRaw and this scan does not reject it. That is
+    // the intended pairing — #440 REMOVES such a navigation from the payload rather than emitting an
+    // unpopulated value, so its subtree is not served at all and there is nothing for a window to
+    // apply to. Rejecting there would also charge the client a 400 for the developer's missing
+    // declaration, which #440 deliberately declined to do; the loud channel for that is the startup
+    // warning. The call site likewise runs this scan only AFTER #440's omission branch.
+    private static void EnsureNestedWindowIsApplicable(
+        SelectExpandClause clause,
+        IEdmEntityType? levelEdmType,
+        OhDataRegistration registration,
+        IServiceProvider requestServices,
+        int depth)
+    {
+        if (levelEdmType is null || depth > MaxNestedExpandDepth) return;
+
+        IReadOnlyList<IEntitySetEndpointSource> candidates =
+            ResolveRequestSourcesForEdmType(levelEdmType, registration, requestServices);
+        if (candidates.Count == 0) return;
+
+        foreach (ExpandedNavigationSelectItem item in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
+        {
+            string navName = item.PathToNavigationProperty.FirstSegment.Identifier;
+            NavTreatment navTreatment = ResolveNavTreatment(navName, candidates).Treatment;
+
+            if (navTreatment != NavTreatment.ServeRaw &&
+                (item.TopOption is not null || item.SkipOption is not null))
+            {
+                throw NestedWindowRejection(navName, navTreatment);
+            }
+
+            if (item.SelectAndExpand is { } deeper)
+            {
+                IEdmEntityType? deeperEdmType =
+                    (item.PathToNavigationProperty.FirstSegment as NavigationPropertySegment)?
+                    .NavigationProperty?.ToEntityType();
+                EnsureNestedWindowIsApplicable(
+                    deeper, deeperEdmType, registration, requestServices, depth + 1);
             }
         }
     }
@@ -4026,10 +4134,31 @@ internal static class OhDataEndpointFactory
         // entity set. By contrast, the explicit nested form below — `$expand=Children($expand=Children)`
         // — descends one real ExpandedNavigationSelectItem per level, so EACH level re-resolves its own
         // candidate set via ResolveProfilesForClrType/ResolveNavTreatment; if that type is exposed by
-        // MULTIPLE disagreeing sets, the grandchild BLANKS (candidate disagreement) even though $levels
-        // would have served it raw. This is an intentional, accepted asymmetry (fail-closed by default
-        // for the explicit form) rather than a bug — #318 tracks optional parent-set provenance
-        // threading to unify the two under the same "serve raw" outcome.
+        // MULTIPLE disagreeing sets, the grandchild's treatment is Blank (candidate disagreement) even
+        // though $levels would have served it raw.
+        //
+        // #318, CORRECTED: this comment used to stop at "the grandchild BLANKS", which UNDERSTATES the
+        // outcome by a whole level and is measurably wrong. A non-ServeRaw child makes the childItems
+        // loop below `return false`, which defers the WHOLE PARENT BRANCH off pushdown; the parent
+        // level is then never loaded, and ExpandLevelAsync's ServeRaw branch is a no-op over it, so the
+        // PARENT navigation comes back empty too. MEASURED against the LvNodes/LvSecureNodes fixture
+        // (one LvNode type, two entity sets disagreeing on Children):
+        //
+        //   ?$expand=Children             -> 200  Children:[A, B]                 (root serves)
+        //   ?$expand=Children($levels=2)  -> 200  Children:[A[A1,A2,A3], B[B1]]   (both levels serve)
+        //   ?$expand=Children($expand=Children)
+        //                                 -> 200  Children:[]                     (BOTH levels lost)
+        //
+        // Both halves of that asymmetry are individually owner-settled on #293 and neither is a bug:
+        // micro-decision (A) ships the fail-closed Blank for the explicit nested form, and
+        // micro-decision (B) ("delegate-less pushable parent empties whole branch vs delegate-backed
+        // parent blanks only child: both leak-safe, DEFER PARITY") is exactly the extra level lost
+        // here. #318 tracks the optional parent-set provenance threading that would unify the explicit
+        // form with $levels under "serve raw"; it is a widening on a delegate-safety boundary, so it
+        // must not be done as a drive-by. Do NOT "fix" the inconsistency in the other direction by
+        // making $levels blank — the FROZEN spec lists the whole $levels suite under "tests that STAY
+        // GREEN (confirm, don't gut)", and $levels resolving from the URL-named set alone is the
+        // decision, not an oversight. Pinned end-to-end by Issue318LevelsVsExplicitNestedSelfExpandTests.
         if (item.LevelsOption is not null)
         {
             SelectExpandClause? lc = item.SelectAndExpand;
