@@ -4968,6 +4968,59 @@ internal static class OhDataEndpointFactory
         return true;
     }
 
+    // #418: the MaxExpandTop ceiling on the SINGLE-ENTITY read, GET /{Set}({key})?$expand=Nav.
+    //
+    // A 400, NEVER A TRIM-AND-LINK -- and that asymmetry with the collection route is the whole M1
+    // analysis, so it is recorded here rather than in a commit message.
+    //
+    // M1 ("no bound without either a continuation link or a 400") permits both outcomes. The link is
+    // the better one wherever it can be built, and two of the three things it needs ARE available
+    // here: the parent key is in the URL (so no ExpandPagingContext threading is required at all),
+    // and the continuation route GET /{Set}({key})/{Nav}?$skip=N is already registered whenever
+    // ResolveExpandPagingNavigations returned that navigation. The third is not, and it is decisive:
+    //
+    //   PAGE 1 AND THE CONTINUATION CANNOT BE PROVEN TO AGREE ON AN ORDER. On the collection route the
+    //   framework composes BOTH sides -- ApplyNavShape appends OrderBy(child key) to page 1's SQL and
+    //   the continuation composes the same OrderBy over the same column, so the two agree by
+    //   construction (#313 s4.5). On GetById the framework composes NEITHER: the child rows arrive
+    //   already materialized inside the TModel the developer's own GetById delegate returned, in
+    //   whatever order that delegate's query produced (measured on this tree: a plain
+    //   `LEFT JOIN "Books"` with no ORDER BY over the child at all). Re-sorting the serialized JsonArray
+    //   to compensate does not close the gap -- it would compare the child key as a JSON value, while
+    //   the continuation compares it in the DATABASE, and those two orders genuinely differ for the
+    //   ordinary key types (SQL Server orders `uniqueidentifier` by a byte permutation no JSON sort
+    //   reproduces; string keys order by the column's collation, not by ordinal).
+    //
+    // A link over a disagreeing order silently SKIPS and DUPLICATES rows across the page boundary,
+    // which is worse than the 400 and is undetectable by the client. So this site takes the 400,
+    // exactly as #418's own note recommends for the case where the ceiling is straightforward and the
+    // link is not. ExpandPagingEnabled therefore does nothing on this route, and the message below
+    // does not pretend otherwise: it points at the collection route, which really can page.
+    //
+    // The message is deliberately NOT EnsureWithinExpandCeiling's. That one ends "Narrow it with a
+    // nested $filter", which is actively false advice here -- a nested $filter is one of the options
+    // measured to be silently ignored on this route, so following it would return the same 400.
+    private static void EnforceSingleEntityExpandCeiling(
+        JsonObject entityBody, SelectExpandClause? clause,
+        IReadOnlyDictionary<string, string> ceilingNavs, int? maxExpandTop, string entitySetName)
+    {
+        if (clause is null || maxExpandTop is not int cap || ceilingNavs.Count == 0) return;
+
+        foreach (ExpandedNavigationSelectItem item in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
+        {
+            string edmName = item.PathToNavigationProperty.FirstSegment.Identifier;
+            if (!ceilingNavs.TryGetValue(edmName, out string? jsonKey)) continue;
+            if (entityBody[jsonKey] is not JsonArray arr || arr.Count <= cap) continue;
+
+            throw new Microsoft.OData.ODataException(
+                $"The nested '$expand' on '{jsonKey}' cannot be served from a single-entity read: the " +
+                $"related collection exceeds the maximum of {cap} entities. A single-entity read " +
+                "applies no nested $filter/$orderby/$top window and cannot page an expanded " +
+                $"collection, so request it through the collection route instead — e.g. " +
+                $"GET /{entitySetName}?$filter=<key eq …>&$expand={edmName}.");
+        }
+    }
+
     // #206 phase 2 (optioned expand) / #254: emit <c>Nav@odata.count</c> for one pushed collection
     // expand and apply its count-deferred $skip/$top window.
     //
@@ -5773,6 +5826,51 @@ internal static class OhDataEndpointFactory
         // every other EDM-name lookup in this file compares identifiers.
         IReadOnlyDictionary<string, ExpandPagingNav> expandPagingNavsByEdmName =
             expandPagingNavs.ToDictionary(n => n.EdmName, StringComparer.OrdinalIgnoreCase);
+
+        // #418: the navigations whose expanded collection the SINGLE-ENTITY read (GET /{Set}({key}))
+        // must hold to MaxExpandTop. Keyed by EDM name, valued by the payload key the serializer
+        // actually emits (naming policy + [JsonPropertyName]), resolved once here.
+        //
+        // WHY THIS EXISTS AT ALL. The bare-$expand ceiling and its continuation link live behind
+        // ShapePushedExpandsInJson, whose only call site is the GetQueryable COLLECTION route. GetById
+        // expands through ApplyCollectionPipelineAsync -> ExpandLevelAsync, which for a delegate-less
+        // (ServeRaw) navigation deliberately does nothing at all: whatever the GetById delegate already
+        // materialized IS the answer. So a registration that set MaxExpandTop to bound `?$expand=Books`
+        // was still serving the WHOLE child collection from `?$expand=Books` on one entity -- measured
+        // on this tree, five of five books at a ceiling of two, with neither a link nor a 400.
+        //
+        // THE CANDIDATE SET IS `new[] { source }`, NOT ResolveProfilesForEdmType. That is exactly what
+        // ApplyCollectionPipelineAsync passes as `levelSources` for the root level, so this set is
+        // precisely the set of navigations GetById really does serve raw. Using the wider sibling union
+        // (as ResolveExpandPagingNavigations does, deliberately fail-closed) would apply a ceiling to
+        // navigations this route blanks anyway.
+        //
+        // DELEGATE-BACKED AND BLANK NAVIGATIONS ARE EXCLUDED. A RunDelegate navigation's rows come from
+        // the developer's own delegate, and #313 O6 settled that the framework does not truncate those;
+        // a Blank one is already emptied by ExpandLevelAsync.
+        //
+        // EVERY NESTED SHAPE IS COVERED, not only the bare one. Measured on this tree: GetById applies
+        // NO nested option to a ServeRaw navigation -- $filter, $orderby, $select, $skip, $top and
+        // $count are all silently ignored there (the collection route honours every one of them). So a
+        // ceiling that fired only for the bare shape would be bypassable by appending any nested option
+        // at all, which is the same one-parameter hole #313's own review raised against $levels.
+        var singleEntityExpandCeilingNavs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (source.HasGetById && source.ExpandEnabled && source.MaxExpandTop is int)
+        {
+            foreach (string ceilNavName in source.NavigationPropertyNames)
+            {
+                if (ResolveNavTreatment(ceilNavName, new[] { source }).Treatment != NavTreatment.ServeRaw)
+                    continue;
+                IEdmNavigationProperty? ceilNavEdm = rootEdmType?.NavigationProperties()
+                    .FirstOrDefault(np => string.Equals(np.Name, ceilNavName, StringComparison.OrdinalIgnoreCase));
+                if (ceilNavEdm is null || !ceilNavEdm.Type.IsCollection()) continue;
+                PropertyInfo? ceilNavClr =
+                    ODataPropertyNaming.FindClrPropertyByEdmName(typeof(TModel), ceilNavName);
+                singleEntityExpandCeilingNavs[ceilNavName] = ResolveNavigationJsonKey(
+                    ceilNavClr?.Name ?? ceilNavName, ceilNavClr,
+                    jsonOptions ?? _pascalCaseSerializerOptions);
+            }
+        }
 
         // #199 Layer C: per-operation authorization. When the profile declared
         // ConfigureAuthorization(...), resolve the effective rule per route category and apply it to
@@ -7231,6 +7329,17 @@ internal static class OhDataEndpointFactory
                         var (expandedItems, expandSelectedProps) =
                             await ApplyCollectionPipelineAsync(new[] { result }, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
                         var entityBody = (JsonObject)expandedItems[0]!;
+
+                        // #418: hold every ServeRaw collection navigation in this response to
+                        // MaxExpandTop. Throws Microsoft.OData.ODataException on breach, which this
+                        // route's own catch turns into 400 InvalidQueryOption -- the same status and
+                        // code the collection route's EnsureWithinExpandCeiling produces for the same
+                        // configuration. A no-op (and byte-identical) when MaxExpandTop is null, when
+                        // the profile declares no delegate-less collection navigation, or when every
+                        // expanded collection is within the ceiling.
+                        EnforceSingleEntityExpandCeiling(
+                            entityBody, options.SelectExpand?.SelectExpandClause,
+                            singleEntityExpandCeilingNavs, source.MaxExpandTop, name);
 
                         // Rebuild with @odata.context/@odata.id first (JSON §4.5: annotations
                         // precede the properties they describe). The pipeline's own ETag stage
