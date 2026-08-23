@@ -3,6 +3,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using BenchmarkDotNet.Running;
 using OhData.Server.Benchmarks.Benchmarks;
+using OhData.Server.Benchmarks.Probes;
 using OhData.Server.Benchmarks.Smoke;
 
 namespace OhData.Server.Benchmarks;
@@ -45,6 +46,14 @@ public static class Program
         // "--smoke" runs the correctness checks only.
         if (switcherArgs.Contains("--smoke", StringComparer.OrdinalIgnoreCase))
             return 0;
+
+        // #333: "--probe-levels" runs the $levels cost-attribution probe instead of any benchmark.
+        // Investigation harness, not a measurement this suite publishes — see LevelsCostSplitProbe.
+        if (switcherArgs.Contains("--probe-levels", StringComparer.OrdinalIgnoreCase))
+        {
+            await LevelsCostSplitProbe.RunAsync(seed);
+            return 0;
+        }
 
         BenchmarkSwitcher.FromTypes(new[]
         {

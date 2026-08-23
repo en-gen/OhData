@@ -42,14 +42,17 @@ internal static class BenchmarkHosts
     public const string EntitySet = "BenchWidgets";
 
     /// <summary>OhData minimal-API pipeline host.</summary>
-    public static async Task<(WebApplication App, HttpClient Client, SqliteConnection NavConnection)> StartOhDataAsync(int seed)
+    public static async Task<(WebApplication App, HttpClient Client, SqliteConnection NavConnection)> StartOhDataAsync(
+        int seed,
+        Action<DbContextOptionsBuilder>? configureDb = null,
+        Action<ILoggingBuilder>? configureLogging = null)
     {
         SqliteConnection connection = OpenNavConnection();
 
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
-        builder.Services.AddLogging(b => b.ClearProviders());
-        builder.Services.AddDbContext<BenchOrgDbContext>(o => o.UseSqlite(connection));
+        builder.Services.AddLogging(b => { b.ClearProviders(); configureLogging?.Invoke(b); });
+        builder.Services.AddDbContext<BenchOrgDbContext>(o => { o.UseSqlite(connection); configureDb?.Invoke(o); });
         builder.Services.AddOhData(o =>
         {
             o.WithPrefix(Prefix);
@@ -69,14 +72,17 @@ internal static class BenchmarkHosts
     }
 
     /// <summary>Microsoft.AspNetCore.OData ODataController + [EnableQuery] pipeline host.</summary>
-    public static async Task<(WebApplication App, HttpClient Client, SqliteConnection NavConnection)> StartMsODataAsync(int seed)
+    public static async Task<(WebApplication App, HttpClient Client, SqliteConnection NavConnection)> StartMsODataAsync(
+        int seed,
+        Action<DbContextOptionsBuilder>? configureDb = null,
+        Action<ILoggingBuilder>? configureLogging = null)
     {
         SqliteConnection connection = OpenNavConnection();
 
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
-        builder.Services.AddLogging(b => b.ClearProviders());
-        builder.Services.AddDbContext<BenchOrgDbContext>(o => o.UseSqlite(connection));
+        builder.Services.AddLogging(b => { b.ClearProviders(); configureLogging?.Invoke(b); });
+        builder.Services.AddDbContext<BenchOrgDbContext>(o => { o.UseSqlite(connection); configureDb?.Invoke(o); });
         builder.Services
             .AddControllers()
             .AddApplicationPart(typeof(BenchWidgetsController).Assembly)
