@@ -498,8 +498,13 @@ public sealed class Issue322UndeclaredNavPushdownTests : IAsyncLifetime
 
     /// <summary>
     /// The wire shape is unchanged by the fix on the plain read: an un-$expanded navigation is
-    /// omitted (JSON Format §4.5.1) whether it was declared or convention-discovered. The fix is a
-    /// query-plan change, not a payload change.
+    /// omitted (JSON Format §4.5.1) whether it was declared or convention-discovered.
+    /// <para>
+    /// Scoped claim, deliberately: on THIS path the fix is a query-plan change only. It is NOT a
+    /// query-plan change everywhere — see
+    /// <see cref="Issue322NonEfProjectionUnificationTests"/> for the one shape whose payload does
+    /// move.
+    /// </para>
     /// </summary>
     [Fact]
     public async Task PlainRead_OmitsTheUndeclaredNavigation_LikeADeclaredOne()
@@ -514,5 +519,144 @@ public sealed class Issue322UndeclaredNavPushdownTests : IAsyncLifetime
             Assert.False(row.TryGetProperty("publisher", out _), $"{set} leaked 'publisher'");
             Assert.False(row.TryGetProperty("Publisher", out _), $"{set} leaked 'Publisher'");
         }
+    }
+}
+
+// #322, the ONE payload difference in the change — pinned here because it is invisible to every
+// other test in the suite and, without a pin, the next person to touch this path cannot tell
+// whether flipping it back is a fix or a regression.
+//
+// The shape: a NON-EF GetQueryable (a plain in-memory IQueryable) whose materialized graph already
+// HOLDS the related object, plus a $select that names the navigation and a $expand of it.
+// $expand pushdown is EF-gated (ResolveEfCoreAssembly), so nothing loads the navigation here — the
+// value on the wire was only ever whatever the profile's own in-memory graph happened to carry.
+//
+//   ?$select=note,cust&$expand=Cust      before: {"Note":"N","Cust":{"Id":5,"Name":"IN-MEMORY"}}
+//                                        after:  {"Note":"N","Cust":null}
+//
+// This is a UNIFICATION, not a regression, and the declared control in the test below is what makes
+// that visible rather than merely asserted: a DECLARED delegate-less navigation on the same model,
+// same source and same request already returned null on BOTH trees, because a declared navigation
+// was never in StructuralProperties and so was never bound into the member-init projection either.
+// The undeclared one was surviving the projection only because BuildStructuralProperties had failed
+// to recognise it as a navigation at all — the exact defect #322 fixes. After the fix the two
+// provenances are indistinguishable on this path, which is the whole point.
+//
+// Note what does NOT change, and why this is narrow: without the $select there is no projection to
+// drop the value (bare ?$expand=Cust still serves the in-memory object), and on an EF-backed source
+// the navigation is un-Included and therefore null before and after.
+
+#region non-EF fixtures
+
+public sealed class UdMemOrder
+{
+    public int Id { get; set; }
+    public string Note { get; set; } = "";
+    public int? CustId { get; set; }
+    public UdMemCust? Cust { get; set; }         // convention-discovered, NEVER declared
+    public UdMemCust? DeclaredCust { get; set; } // declared delegate-less — the control
+}
+
+public sealed class UdMemCust
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+}
+
+/// <summary>
+/// A NON-EF <c>GetQueryable</c>: a plain <c>List&lt;T&gt;.AsQueryable()</c> whose elements already
+/// hold both related objects. No <c>DbContext</c>, so <c>ResolveEfCoreAssembly</c> returns null and
+/// $expand pushdown never engages — only the $select projection does.
+/// </summary>
+public sealed class UdMemOrderProfile : EntitySetProfile<int, UdMemOrder>
+{
+    internal static List<UdMemOrder> NewData() => new()
+    {
+        new UdMemOrder
+        {
+            Id = 1,
+            Note = "N",
+            CustId = 5,
+            Cust = new UdMemCust { Id = 5, Name = "IN-MEMORY" },
+            DeclaredCust = new UdMemCust { Id = 6, Name = "DECLARED-IN-MEMORY" },
+        },
+    };
+
+    public UdMemOrderProfile() : base(x => x.Id)
+    {
+        EntitySetName = "UdMemOrders";
+        ExpandEnabled = true;
+        SelectEnabled = true;
+        List<UdMemOrder> data = NewData();
+        GetQueryable = _ => Task.FromResult(data.AsQueryable());
+        HasOptional<UdMemCust>(x => x.DeclaredCust!);
+        // Cust deliberately NOT declared.
+    }
+}
+
+#endregion
+
+public sealed class Issue322NonEfProjectionUnificationTests
+{
+    private readonly ITestOutputHelper _out;
+
+    public Issue322NonEfProjectionUnificationTests(ITestOutputHelper output) => _out = output;
+
+    private static async Task<JsonElement> RowAsync(TestFixture fx, string url, ITestOutputHelper output)
+    {
+        HttpResponseMessage resp = await fx.Client.GetAsync(url);
+        string body = await resp.Content.ReadAsStringAsync();
+        output.WriteLine($"{url}\n  -> {(int)resp.StatusCode} {body}");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        using JsonDocument doc = JsonDocument.Parse(body);
+        return doc.RootElement.GetProperty("value")[0].Clone();
+    }
+
+    /// <summary>
+    /// THE PAYLOAD DIFFERENCE, asserted post-fix, with the declared control alongside it so the
+    /// unification is visible rather than claimed in prose. Both provenances now project the
+    /// navigation away and serialize <c>null</c>; before the fix the UNDECLARED one alone survived
+    /// the projection and echoed the in-memory object, because <c>BuildStructuralProperties</c> had
+    /// classified it as a plain structural property instead of a navigation.
+    /// <para>
+    /// If this ever flips back to <c>{"Id":5,"Name":"IN-MEMORY"}</c>, that is a REGRESSION of #322,
+    /// not a fix: it would mean an undeclared navigation is once again being treated as a
+    /// projectable column, which is the condition that abandoned pushdown for the whole entity set.
+    /// Making BOTH sides serve the in-memory value would be a different (and legitimate) change to
+    /// how $select pushdown treats delegate-less navigations on a non-EF source — but it would have
+    /// to move the declared control too, or the two provenances have diverged again.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task SelectPushdownOverANonEfQueryable_NullsAPopulatedUndeclaredNav_ExactlyAsItAlreadyDidTheDeclaredOne()
+    {
+        await using TestFixture fx = await TestHostBuilder.BuildAsync(
+            b => b.AddEntitySetProfile<UdMemOrderProfile>());
+
+        JsonElement undeclared = await RowAsync(fx, "/odata/UdMemOrders?$select=note,cust&$expand=Cust", _out);
+        JsonElement declared = await RowAsync(
+            fx, "/odata/UdMemOrders?$select=note,declaredCust&$expand=DeclaredCust", _out);
+
+        Assert.Equal(JsonValueKind.Null, undeclared.GetProperty("Cust").ValueKind);
+        Assert.Equal(JsonValueKind.Null, declared.GetProperty("DeclaredCust").ValueKind);
+    }
+
+    /// <summary>
+    /// The bound on how narrow that difference is: with no <c>$select</c> there is no member-init
+    /// projection to drop the value, so a bare <c>$expand</c> over the same non-EF source still
+    /// serves the in-memory object — for BOTH provenances, unchanged by the fix.
+    /// </summary>
+    [Fact]
+    public async Task BareExpandOverANonEfQueryable_StillServesTheInMemoryGraph_ForBothProvenances()
+    {
+        await using TestFixture fx = await TestHostBuilder.BuildAsync(
+            b => b.AddEntitySetProfile<UdMemOrderProfile>());
+
+        JsonElement undeclared = await RowAsync(fx, "/odata/UdMemOrders?$expand=Cust", _out);
+        Assert.Equal("IN-MEMORY", undeclared.GetProperty("Cust").GetProperty("Name").GetString());
+
+        JsonElement declared = await RowAsync(fx, "/odata/UdMemOrders?$expand=DeclaredCust", _out);
+        Assert.Equal("DECLARED-IN-MEMORY", declared.GetProperty("DeclaredCust").GetProperty("Name").GetString());
     }
 }
