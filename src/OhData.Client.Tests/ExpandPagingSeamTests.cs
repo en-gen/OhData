@@ -314,29 +314,47 @@ public sealed class ExpandPagingSeamTests
         Assert.Equal(2, doc.RootElement.GetProperty("value").GetArrayLength());
     }
 
-    // S5 — the single-entity read. The #313 ceiling and its continuation link are COLLECTION-ROUTE
+    // S5 — the single-entity read. The #313 ceiling and its continuation link were COLLECTION-ROUTE
     // ONLY: EnsureWithinExpandCeiling and WriteNestedNextLink are reachable only through
     // ShapePushedExpandsInJson, whose sole call site is the GetQueryable collection route. So on the
-    // same registration, GET /SeamAuthors(1)?$expand=Books returns ALL FIVE books with no ceiling and
-    // no link, while GET /SeamAuthors?$expand=Books returns two plus a link. The client correctly sees
-    // nothing here, because the server emitted nothing.
+    // same registration, GET /SeamAuthors(1)?$expand=Books returned ALL FIVE books with no ceiling
+    // and no link, while GET /SeamAuthors?$expand=Books returned two plus a link.
     //
-    // This is a PRE-EXISTING gap, not a #313 regression — nothing bounded the bare shape anywhere
-    // before #313 — and it is tracked in #418. This test pins the CURRENT behaviour so that closing
-    // #418 is a deliberate, visible change rather than a silent one; it is not an endorsement.
+    // #418 CLOSED THAT — as a 400, not as a link. This test was rewritten in place rather than
+    // deleted, because what it exists to pin is the SEAM: what a client sees on the single-entity
+    // route of a registration whose collection route pages. The answer is now an error, and the
+    // client is never handed a silently truncated collection that looks complete.
+    //
+    // WHY NOT A LINK HERE. Page 1's child order on this route comes from the developer's own GetById
+    // delegate (SeamAuthorProfile Includes Books, and EF composes no ORDER BY over the child), while
+    // the continuation route orders by the child key IN THE DATABASE. The framework composes neither
+    // side, so the two orders cannot be shown to agree, and a link over a disagreeing order skips and
+    // duplicates rows invisibly. EnforceSingleEntityExpandCeiling's remarks carry the full argument.
     [Fact]
-    public async Task S5_GetById_HasNoCeilingAndNoLink_SoTheClientSeesNothing()
+    public async Task S5_GetById_TakesTheCeilingAs400_AndNeverSilentlyTruncates()
     {
         await using ExpandPagingSeamFixture fx = await ExpandPagingSeamFixture.BuildAsync();
 
-        ODataAnnotatedEntity<CliSeamAuthor>? ann = await fx.Client.For<CliSeamAuthor>("SeamAuthors")
-            .Expand(a => a.Books)
-            .Key(1)
-            .GetAnnotatedAsync();
+        // Raw bytes first: the server, not the client, is what changed.
+        HttpResponseMessage raw = await fx.Http.GetAsync("SeamAuthors(1)?$expand=Books");
+        string body = await raw.Content.ReadAsStringAsync();
 
-        Assert.NotNull(ann);
-        Assert.Equal(5, ann!.Entity.Books.Count);            // unbounded — the ceiling of 2 is not applied
-        Assert.Null(ann.NextLinkFor(a => a.Books));          // and no link either
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, raw.StatusCode);
+        Assert.Contains("\"code\":\"InvalidQueryOption\"", body);
+        Assert.Contains("maximum of 2 entities", body);
+        // Neither half of the forbidden outcome: no truncated page, and no link promising one.
+        Assert.DoesNotContain("@odata.nextLink", body);
+        Assert.DoesNotContain("\"Title\"", body);
+
+        // The collection route on the SAME registration still pages, which is what makes the
+        // asymmetry deliberate rather than an oversight.
+        ODataAnnotatedPage<CliSeamAuthor> page = await fx.Client.For<CliSeamAuthor>("SeamAuthors")
+            .Filter(a => a.Id == 1)
+            .Expand(a => a.Books)
+            .ToAnnotatedPageAsync();
+        ODataAnnotatedEntity<CliSeamAuthor> ann = Assert.Single(page.Entries);
+        Assert.Equal(2, ann.Entity.Books.Count);
+        Assert.NotNull(ann.NextLinkFor(a => a.Books));
     }
 
     // S6 — the client's own docs say a nested count is surfaced. Does a real

@@ -4779,12 +4779,16 @@ internal static class OhDataEndpointFactory
     // runs after the strip (G6), so reading the key off the payload would produce a broken link for
     // exactly the requests that need one most. ExpandLevelAsync maintains the same parallel
     // items/jsonItems pair for the same reason and is the precedent followed here.
+    // #412: <paramref name="RequestedPageSize"/> is this request's `Prefer: [odata.]maxpagesize=N`,
+    // or null when the client asked for nothing. It NARROWS the nested page — never the ceiling — and
+    // only on the one arm that emits a continuation link. See ShapePushedExpandsInJson's bare-leaf arm.
     private sealed record ExpandPagingContext(
         string BaseUrl,
         string EntitySetName,
         PropertyInfo ParentKeyProperty,
         IReadOnlyList<object> ParentItems,
-        IReadOnlyDictionary<string, ExpandPagingNav> PageableByEdmName);
+        IReadOnlyDictionary<string, ExpandPagingNav> PageableByEdmName,
+        int? RequestedPageSize);
 
     // #206 phase 2 (optioned + multi-level expand): apply the JSON-side portion of a pushed expand's
     // nested options to the already-serialized parent objects (in the configured naming policy —
@@ -4945,12 +4949,25 @@ internal static class OhDataEndpointFactory
                     // bound without either a link or a 400") holds at this commit as at every other.
                     else if (!hasChildren && e.Top is null && maxExpandTop is int leafCap)
                     {
+                        // #412: the client may ask for a SMALLER nested page with
+                        // `Prefer: [odata.]maxpagesize=N` (Protocol §8.2.8.5 — "each collection within
+                        // the response"). It narrows the page, never the ceiling: clamping the ceiling
+                        // to a client-supplied number would let a header turn a 200 into a 400, and
+                        // MaxExpandTop is the server's own DoS bound. So the preference is read ONLY
+                        // on this arm, and ONLY when a link is actually going out — trimming without a
+                        // link is the silent truncation M1 forbids, which is why a non-pageable
+                        // navigation below still measures itself against maxExpandTop and not against
+                        // the request.
+                        int leafPage = leafCap;
+                        if (pageableNav is not null && paging!.RequestedPageSize is int requested && requested < leafCap)
+                            leafPage = requested;
+
                         // WriteNestedNextLink reports false when it could not build a link (a null key
                         // value); it leaves the array untouched in that case, so the ceiling's 400
                         // applies exactly as it would for any other non-pageable over-ceiling shape.
                         // Never a trim without a link.
-                        if (pageableNav is not { } pnav || arr.Count <= leafCap
-                            || !WriteNestedNextLink(parent, key, arr, leafCap, pnav, paging!, parentIndex))
+                        if (pageableNav is not { } pnav || arr.Count <= leafPage
+                            || !WriteNestedNextLink(parent, key, arr, leafPage, pnav, paging!, parentIndex))
                         {
                             EnsureWithinExpandCeiling(arr, key, maxExpandTop, "'$expand'");
                         }
@@ -5058,6 +5075,59 @@ internal static class OhDataEndpointFactory
             $"{paging.BaseUrl}/{paging.EntitySetName}({ODataEntityKeyUrlFormatter.Format(parentKey)})" +
             $"/{nav.EdmName}?$skip={cap.ToString(CultureInfo.InvariantCulture)}";
         return true;
+    }
+
+    // #418: the MaxExpandTop ceiling on the SINGLE-ENTITY read, GET /{Set}({key})?$expand=Nav.
+    //
+    // A 400, NEVER A TRIM-AND-LINK -- and that asymmetry with the collection route is the whole M1
+    // analysis, so it is recorded here rather than in a commit message.
+    //
+    // M1 ("no bound without either a continuation link or a 400") permits both outcomes. The link is
+    // the better one wherever it can be built, and two of the three things it needs ARE available
+    // here: the parent key is in the URL (so no ExpandPagingContext threading is required at all),
+    // and the continuation route GET /{Set}({key})/{Nav}?$skip=N is already registered whenever
+    // ResolveExpandPagingNavigations returned that navigation. The third is not, and it is decisive:
+    //
+    //   PAGE 1 AND THE CONTINUATION CANNOT BE PROVEN TO AGREE ON AN ORDER. On the collection route the
+    //   framework composes BOTH sides -- ApplyNavShape appends OrderBy(child key) to page 1's SQL and
+    //   the continuation composes the same OrderBy over the same column, so the two agree by
+    //   construction (#313 s4.5). On GetById the framework composes NEITHER: the child rows arrive
+    //   already materialized inside the TModel the developer's own GetById delegate returned, in
+    //   whatever order that delegate's query produced (measured on this tree: a plain
+    //   `LEFT JOIN "Books"` with no ORDER BY over the child at all). Re-sorting the serialized JsonArray
+    //   to compensate does not close the gap -- it would compare the child key as a JSON value, while
+    //   the continuation compares it in the DATABASE, and those two orders genuinely differ for the
+    //   ordinary key types (SQL Server orders `uniqueidentifier` by a byte permutation no JSON sort
+    //   reproduces; string keys order by the column's collation, not by ordinal).
+    //
+    // A link over a disagreeing order silently SKIPS and DUPLICATES rows across the page boundary,
+    // which is worse than the 400 and is undetectable by the client. So this site takes the 400,
+    // exactly as #418's own note recommends for the case where the ceiling is straightforward and the
+    // link is not. ExpandPagingEnabled therefore does nothing on this route, and the message below
+    // does not pretend otherwise: it points at the collection route, which really can page.
+    //
+    // The message is deliberately NOT EnsureWithinExpandCeiling's. That one ends "Narrow it with a
+    // nested $filter", which is actively false advice here -- a nested $filter is one of the options
+    // measured to be silently ignored on this route, so following it would return the same 400.
+    private static void EnforceSingleEntityExpandCeiling(
+        JsonObject entityBody, SelectExpandClause? clause,
+        IReadOnlyDictionary<string, string> ceilingNavs, int? maxExpandTop, string entitySetName)
+    {
+        if (clause is null || maxExpandTop is not int cap || ceilingNavs.Count == 0) return;
+
+        foreach (ExpandedNavigationSelectItem item in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
+        {
+            string edmName = item.PathToNavigationProperty.FirstSegment.Identifier;
+            if (!ceilingNavs.TryGetValue(edmName, out string? jsonKey)) continue;
+            if (entityBody[jsonKey] is not JsonArray arr || arr.Count <= cap) continue;
+
+            throw new Microsoft.OData.ODataException(
+                $"The nested '$expand' on '{jsonKey}' cannot be served from a single-entity read: the " +
+                $"related collection exceeds the maximum of {cap} entities. A single-entity read " +
+                "applies no nested $filter/$orderby/$top window and cannot page an expanded " +
+                $"collection, so request it through the collection route instead — e.g. " +
+                $"GET /{entitySetName}?$filter=<key eq …>&$expand={edmName}.");
+        }
     }
 
     // #206 phase 2 (optioned expand) / #254: emit <c>Nav@odata.count</c> for one pushed collection
@@ -5907,6 +5977,51 @@ internal static class OhDataEndpointFactory
         // every other EDM-name lookup in this file compares identifiers.
         IReadOnlyDictionary<string, ExpandPagingNav> expandPagingNavsByEdmName =
             expandPagingNavs.ToDictionary(n => n.EdmName, StringComparer.OrdinalIgnoreCase);
+
+        // #418: the navigations whose expanded collection the SINGLE-ENTITY read (GET /{Set}({key}))
+        // must hold to MaxExpandTop. Keyed by EDM name, valued by the payload key the serializer
+        // actually emits (naming policy + [JsonPropertyName]), resolved once here.
+        //
+        // WHY THIS EXISTS AT ALL. The bare-$expand ceiling and its continuation link live behind
+        // ShapePushedExpandsInJson, whose only call site is the GetQueryable COLLECTION route. GetById
+        // expands through ApplyCollectionPipelineAsync -> ExpandLevelAsync, which for a delegate-less
+        // (ServeRaw) navigation deliberately does nothing at all: whatever the GetById delegate already
+        // materialized IS the answer. So a registration that set MaxExpandTop to bound `?$expand=Books`
+        // was still serving the WHOLE child collection from `?$expand=Books` on one entity -- measured
+        // on this tree, five of five books at a ceiling of two, with neither a link nor a 400.
+        //
+        // THE CANDIDATE SET IS `new[] { source }`, NOT ResolveProfilesForEdmType. That is exactly what
+        // ApplyCollectionPipelineAsync passes as `levelSources` for the root level, so this set is
+        // precisely the set of navigations GetById really does serve raw. Using the wider sibling union
+        // (as ResolveExpandPagingNavigations does, deliberately fail-closed) would apply a ceiling to
+        // navigations this route blanks anyway.
+        //
+        // DELEGATE-BACKED AND BLANK NAVIGATIONS ARE EXCLUDED. A RunDelegate navigation's rows come from
+        // the developer's own delegate, and #313 O6 settled that the framework does not truncate those;
+        // a Blank one is already emptied by ExpandLevelAsync.
+        //
+        // EVERY NESTED SHAPE IS COVERED, not only the bare one. Measured on this tree: GetById applies
+        // NO nested option to a ServeRaw navigation -- $filter, $orderby, $select, $skip, $top and
+        // $count are all silently ignored there (the collection route honours every one of them). So a
+        // ceiling that fired only for the bare shape would be bypassable by appending any nested option
+        // at all, which is the same one-parameter hole #313's own review raised against $levels.
+        var singleEntityExpandCeilingNavs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (source.HasGetById && source.ExpandEnabled && source.MaxExpandTop is int)
+        {
+            foreach (string ceilNavName in source.NavigationPropertyNames)
+            {
+                if (ResolveNavTreatment(ceilNavName, new[] { source }).Treatment != NavTreatment.ServeRaw)
+                    continue;
+                IEdmNavigationProperty? ceilNavEdm = rootEdmType?.NavigationProperties()
+                    .FirstOrDefault(np => string.Equals(np.Name, ceilNavName, StringComparison.OrdinalIgnoreCase));
+                if (ceilNavEdm is null || !ceilNavEdm.Type.IsCollection()) continue;
+                PropertyInfo? ceilNavClr =
+                    ODataPropertyNaming.FindClrPropertyByEdmName(typeof(TModel), ceilNavName);
+                singleEntityExpandCeilingNavs[ceilNavName] = ResolveNavigationJsonKey(
+                    ceilNavClr?.Name ?? ceilNavName, ceilNavClr,
+                    jsonOptions ?? _pascalCaseSerializerOptions);
+            }
+        }
 
         // #199 Layer C: per-operation authorization. When the profile declared
         // ConfigureAuthorization(...), resolve the effective rule per route category and apply it to
@@ -6933,8 +7048,14 @@ internal static class OhDataEndpointFactory
                             shapeParents = pagingParents;
                             if (parentKeyProp is not null)
                             {
+                                // #412: `preferredPageSize` is this request's Prefer: maxpagesize,
+                                // already parsed above for the ROOT page. The same number governs the
+                                // nested page — §8.2.8.5 scopes the preference to "each collection
+                                // within the response", not to the top-level one — clamped down to
+                                // MaxExpandTop at the emission site, never up.
                                 pagingCtx = new ExpandPagingContext(
-                                    baseUrl, name, parentKeyProp, pagingItems, expandPagingNavsByEdmName);
+                                    baseUrl, name, parentKeyProp, pagingItems, expandPagingNavsByEdmName,
+                                    preferredPageSize);
                             }
                             if (carrierCounts is not null)
                             {
@@ -7365,6 +7486,17 @@ internal static class OhDataEndpointFactory
                         var (expandedItems, expandSelectedProps) =
                             await ApplyCollectionPipelineAsync(new[] { result }, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
                         var entityBody = (JsonObject)expandedItems[0]!;
+
+                        // #418: hold every ServeRaw collection navigation in this response to
+                        // MaxExpandTop. Throws Microsoft.OData.ODataException on breach, which this
+                        // route's own catch turns into 400 InvalidQueryOption -- the same status and
+                        // code the collection route's EnsureWithinExpandCeiling produces for the same
+                        // configuration. A no-op (and byte-identical) when MaxExpandTop is null, when
+                        // the profile declares no delegate-less collection navigation, or when every
+                        // expanded collection is within the ceiling.
+                        EnforceSingleEntityExpandCeiling(
+                            entityBody, options.SelectExpand?.SelectExpandClause,
+                            singleEntityExpandCeilingNavs, source.MaxExpandTop, name);
 
                         // Rebuild with @odata.context/@odata.id first (JSON §4.5: annotations
                         // precede the properties they describe). The pipeline's own ETag stage
@@ -8025,19 +8157,35 @@ internal static class OhDataEndpointFactory
                                     contParentKeyProp!.PropertyType)),
                             contParentParam);
 
-                        // 6. Materialize cap + 1 rows: the probe row is what distinguishes "this page
-                        // is exactly full and is the last one" from "there is more behind it", the
-                        // rows % pageSize == 0 trap #360 fixed at the root. Synchronous, as the
+                        // 5b. #412: `Prefer: [odata.]maxpagesize=N` narrows THIS hop's page, clamped
+                        // down to MaxExpandTop and never up — the ceiling is the server's bound and a
+                        // client preference must not lift it, exactly as the root route clamps to
+                        // MaxTop. This is what makes honouring the preference on the first hop sound:
+                        // §8.2.8.5 states in terms that "the client MAY specify a different value for
+                        // this preference with every request following a next link", so the page size
+                        // is expected to travel on the request rather than inside the link, and the
+                        // $skip-only continuation surface #313 chose does not have to widen to carry
+                        // it. A client that stops sending the header simply gets MaxExpandTop-sized
+                        // pages from there on; nothing is skipped or repeated either way, because
+                        // $skip is an ABSOLUTE offset and the next one is computed from the rows this
+                        // hop actually served.
+                        int contPageSize = ParseMaxPageSize(ctx) is int contPreferred && contPreferred < contCap
+                            ? contPreferred
+                            : contCap;
+
+                        // 6. Materialize pageSize + 1 rows: the probe row is what distinguishes "this
+                        // page is exactly full and is the last one" from "there is more behind it",
+                        // the rows % pageSize == 0 trap #360 fixed at the root. Synchronous, as the
                         // collection route's own materialization is.
                         object[] contRows = contPage(
-                            contParents.Where(contKeyPredicate), contSkip, contCap + 1);
+                            contParents.Where(contKeyPredicate), contSkip, contPageSize + 1);
 
                         // 7/8. A MISSING PARENT KEY IS 200 + EMPTY value + NO LINK, not 404 (O3 on
                         // #313). SelectMany cannot distinguish "no such parent" from "a parent with no
                         // children", and an existence probe would cost a second round trip on EVERY
                         // continuation. Microsoft returns 404 here; this is a documented divergence.
-                        bool contMore = contRows.Length > contCap;
-                        if (contMore) contRows = contRows[..contCap];
+                        bool contMore = contRows.Length > contPageSize;
+                        if (contMore) contRows = contRows[..contPageSize];
 
                         string contBaseUrl = BuildBaseUrl(ctx, prefix);
                         var contJson = new JsonArray();
@@ -8060,9 +8208,12 @@ internal static class OhDataEndpointFactory
                         {
                             // Absolute offset, formatted from the canonical key formatter so a string
                             // key round-trips back through ODataKeyParser on the next hop.
+                            // #412: the offset advances by the rows THIS hop served, not by the
+                            // ceiling — otherwise a narrowed page would skip everything between the
+                            // page size and the ceiling.
                             contEnvelope["@odata.nextLink"] =
                                 $"{contBaseUrl}/{name}({ODataEntityKeyUrlFormatter.Format(parsedKey!)})" +
-                                $"/{contNavName}?$skip={(contSkip + contCap).ToString(CultureInfo.InvariantCulture)}";
+                                $"/{contNavName}?$skip={(contSkip + contPageSize).ToString(CultureInfo.InvariantCulture)}";
                         }
                         return Results.Ok(contEnvelope);
                     }
