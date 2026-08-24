@@ -157,8 +157,8 @@ matches the wire. See
 
 | Feature | Section | Status | Notes |
 |---------|---------|--------|-------|
-| Service document (`GET /`) | §11.1 | ✅ | Lists all entity sets |
-| CSDL metadata (`GET /$metadata`) | §11.1 | ✅ | Full EDM XML |
+| Service document (`GET /`) | §11.1 | ✅ | Lists every entity set, plus each function import whose CSDL `IncludeInServiceDocument` is set — i.e. the parameterless ones, per CSDL 4.0 §13.6. Action imports are never listed. Generated from the same EDM container `$metadata` is written from (#468), so the two cannot advertise different surfaces. |
+| CSDL metadata (`GET /$metadata`) | §11.1 | ✅ | Full EDM XML. Validated with `EdmValidator.Validate` at `MapOhData()`: an invalid construct (an `IncludeInServiceDocument` claim on a parameterized import, an operation name that is not an `odataIdentifier`) fails startup naming the construct, rather than reaching consumers that validate. Note the asymmetry — `CsdlReader.TryParse` accepts both, so a consumer that merely parses would survive while a codegen tool would not. |
 | Entity set declarations | §9.1 | ✅ | |
 | Navigation property declarations | §9.1 | ✅ | |
 | Bound function/action declarations | §9.1 | ✅ | |

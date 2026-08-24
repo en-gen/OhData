@@ -69,17 +69,17 @@ app.UseSwaggerUi();        // optional interactive UI
 
 `OhDataNSwagOperationProcessor` inspects the `OhDataQueryOptionsMetadata` that OhData attaches to each generated route and adds the corresponding query parameters, mirroring `EnGen.OhData.AspNetCore.Swashbuckle`'s `OhDataSwaggerOperationFilter` parameter-for-parameter:
 
-- `$top` / `$skip` - added once per paged collection endpoint whenever `OhDataQueryOptionsMetadata` is present and `$top` isn't already documented (a duplicate guard, in case another processor already added it). The `$top` description includes the server-side cap when the entity set sets `MaxTop`.
+- `$top` / `$skip` - added when `TopSkipSupported` (the three collection GET routes) and `$top` isn't already documented (a duplicate guard, in case another processor already added it). The `$top` description includes the server-side cap when the entity set sets `MaxTop`.
 - `$filter` - added when `FilterEnabled`.
 - `$orderby` - added when `OrderByEnabled`.
 - `$select` - added when `SelectEnabled`.
 - `$expand` - added when `ExpandEnabled`.
-- `$count` - added when `CountEnabled`.
-- `$search` - added when the entity set has a `Search` handler configured.
+- `$count` - added when `CountEnabled`, which means the `$count` **option** (`$count=true` in the response envelope) - not "this route is the `/$count` route".
+- `$search` - added when the entity set has a `Search` handler configured (the `GetQueryable`/`GetAll` collection routes; the Priority-1 route has no `$search` leg and refuses a `Search` handler at startup).
 
 Routes with no `OhDataQueryOptionsMetadata` (non-OhData minimal API endpoints in the same app, or OhData routes that don't carry query-option metadata) are left untouched.
 
-Note that `OhDataQueryOptionsMetadata` is attached to more than the top-level collection GET route - it's also present on `GET /{EntitySet}/$count` and on the single-entity `GET /{EntitySet}({key})` route (which supports `$select`/`$expand` in its own right). Because the processor's `$top`/`$skip` guard only checks "is `OhDataQueryOptionsMetadata` present and is `$top` absent", both of those routes will also pick up `$top`/`$skip` parameters even though paging doesn't apply to them - this is intentional, existing behavior shared with the Swashbuckle filter, not something specific to the NSwag integration.
+Note that `OhDataQueryOptionsMetadata` is attached to more than the top-level collection GET route - it's also present on `GET /{EntitySet}/$count` and on the single-entity `GET /{EntitySet}({key})` route (which supports `$select`/`$expand` in its own right). Every field therefore means *"this route honours this option"*, never "this route is of kind X". The processor's `$top`/`$skip` guard used to check only "is metadata present and is `$top` absent", which documented paging on both of those routes even though each drops both options - #467. It now reads `TopSkipSupported`, and the decision is made once upstream in `OhDataEndpointFactory` rather than in each of the three companion packages.
 
 ## Request bodies, typed collection responses, and read-path summaries
 

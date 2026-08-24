@@ -182,7 +182,19 @@ do **not** get any of this: the handler's result is returned as a bare JSON body
 null ? Results.Ok(result) : Results.NoContent()`). This asymmetry is a known post-1.0 cleanup
 candidate, not a bug fix planned for this release — treat unbound-operation responses as
 unenveloped JSON when writing a client against them. Unbound operations are registered in the EDM
-as `FunctionImport`/`ActionImport` and appear in `GET /$metadata` and the service document.
+as `FunctionImport`/`ActionImport` and appear in `GET /$metadata`.
+
+The **service document** lists only what can be invoked with nothing but its name (#468), and it is
+generated from the same EDM container `$metadata` is written from, so the two cannot disagree:
+
+- a **parameterless** function import carries `IncludeInServiceDocument="true"` in the CSDL and is
+  listed with `"kind": "FunctionImport"`;
+- a **parameterized** function import clears the flag and is omitted. Claiming otherwise is not
+  merely inaccurate, it is invalid CSDL — `EdmValidator` flags
+  `FunctionImportWithParameterShouldNotBeIncludedInServiceDocument` per CSDL 4.0 §13.6, and OhData
+  now runs that validator at `MapOhData()`;
+- an **action import** is never listed. It is not GET-addressable, and CSDL gives it no
+  `IncludeInServiceDocument` attribute at all.
 
 Assembly-scanning registration (`AddProfilesFrom`/`AddProfilesFromAssemblyOf`/`AddProfilesFromAssembly`) is documented in [docs/architecture.md](architecture.md#registering-profiles).
 

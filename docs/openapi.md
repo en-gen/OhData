@@ -66,13 +66,27 @@ query parameters to the generated OpenAPI document driven by the entity set's ca
 
 | Parameter | Added when |
 |---|---|
-| `$top` / `$skip` | Always, once per operation (paged collection endpoints) |
+| `$top` / `$skip` | `TopSkipSupported` - the three collection GET routes, once per operation |
 | `$filter` | `FilterEnabled` |
 | `$orderby` | `OrderByEnabled` |
 | `$select` | `SelectEnabled` |
 | `$expand` | `ExpandEnabled` |
-| `$count` | `CountEnabled` |
-| `$search` | a `Search` handler is configured |
+| `$count` | `CountEnabled` - the `$count` **option** (`$count=true`), not the `/$count` route |
+| `$search` | a `Search` handler is configured (`GetQueryable`/`GetAll` collection routes only) |
+
+Every field means *"this route honours this option"*. That is not a nicety: the metadata is
+attached to five route shapes, not only the paged collection GETs, so a field read as "this route
+is of kind X" produces a document that promises what the server drops. Both halves of #467 were
+that mistake. `$top`/`$skip` used to be added on metadata *presence* alone, which documented paging
+on `GET /{EntitySet}({key})` (answers with the whole entity, drops both) and on
+`GET /{EntitySet}/$count` (counts the whole set, drops both); and `/$count` set `CountEnabled` to
+mean "this route **is** a count" while the transformers read it as "this route documents the
+`$count` option", so a `$count` parameter appeared on a route that ignores it. `/$count` likewise
+advertises `$filter` only when the profile has a queryable source - on a `GetAll`-only profile that
+route answers `400` for any `$filter` regardless of the flag.
+
+The decision lives upstream in `OhDataEndpointFactory`'s metadata attachment, not in the
+transformers, which is why all three companion packages agree by construction.
 
 The `$top` parameter's description includes the entity set's `MaxTop` value when one is
 configured, so consumers of the generated document see the server-enforced page-size cap.
