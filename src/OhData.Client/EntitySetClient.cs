@@ -256,12 +256,33 @@ public sealed class EntitySetClient<T> where T : class
         foreach (T item in page.Items)
             yield return item;
 
+        int hops = 0;
         while (page.NextLink is not null)
         {
+            ThrowIfHopCapExceeded(++hops);
             page = await _http.GetPageByAbsoluteUrlAsync<T>(page.NextLink, ct);
             foreach (T item in page.Items)
                 yield return item;
         }
+    }
+
+    /// <summary>
+    /// #460: the walker's termination guarantee. <c>while (NextLink is not null)</c> is driven
+    /// entirely by the server — a service that echoes the same link forever makes the loop
+    /// unbounded, and <see cref="ToListAsync"/> accumulates every page until the process dies.
+    /// Nothing about a legitimate paging run distinguishes it from that one except how long it
+    /// goes on, so a hop count is the only thing that can tell them apart.
+    /// </summary>
+    private void ThrowIfHopCapExceeded(int hops)
+    {
+        if (hops <= _options.MaxNextLinkHops) return;
+
+        throw new InvalidOperationException(
+            $"Stopped following '@odata.nextLink' for '{_entitySetName}' after " +
+            $"{_options.MaxNextLinkHops} hops. A server that keeps returning a nextLink makes this " +
+            "enumeration unbounded. Raise " +
+            $"{nameof(OhDataClientOptions)}.{nameof(OhDataClientOptions.MaxNextLinkHops)} if the " +
+            "collection genuinely has this many pages.");
     }
 
     /// <summary>
@@ -309,8 +330,10 @@ public sealed class EntitySetClient<T> where T : class
         foreach (ODataAnnotatedEntity<T> entry in page.Entries)
             yield return entry;
 
+        int hops = 0;
         while (page.NextLink is not null)
         {
+            ThrowIfHopCapExceeded(++hops);
             // OriginalString, not ToString(): a server-issued link is followed verbatim as an opaque
             // URL, and ToString() can decode percent-escapes that were deliberately encoded.
             page = await _http.GetAnnotatedPageByAbsoluteUrlAsync<T>(page.NextLink.OriginalString, ct);
