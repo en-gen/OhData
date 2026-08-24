@@ -61,6 +61,7 @@ internal sealed class ODataHttpClient
     internal async Task<ODataPage<T>> GetPageByAbsoluteUrlAsync<T>(string absoluteUrl, CancellationToken ct)
         where T : class
     {
+        EnsureNextLinkOriginAllowed(absoluteUrl);
         using var request = new HttpRequestMessage(HttpMethod.Get, absoluteUrl);
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
         await EnsureSuccessAsync(response, absoluteUrl, ct);
@@ -73,6 +74,62 @@ internal sealed class ODataHttpClient
             NextLink = envelope?.NextLink,
         };
     }
+
+    // ── nextLink origin policy (#460) ───────────────────────────────────────────
+
+    /// <summary>
+    /// Refuses a <c>@odata.nextLink</c> that names an origin other than the client's
+    /// <see cref="HttpClient.BaseAddress"/>, unless
+    /// <see cref="OhDataClientOptions.FollowCrossOriginNextLinks"/> says otherwise.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The two <c>…ByAbsoluteUrlAsync</c> methods build a fresh <see cref="HttpRequestMessage"/> for
+    /// a URL that came out of a response <em>body</em>, and <see cref="HttpClient"/> attaches its
+    /// <see cref="HttpClient.DefaultRequestHeaders"/> — <c>Authorization</c> included — to it. That
+    /// is not a redirect, so <see cref="HttpClientHandler"/>'s cross-origin credential stripping
+    /// never runs, and a body-injected link exfiltrates the token to the host it names. The guard
+    /// belongs here rather than in the walker because this is the one place the request is built.
+    /// </para>
+    /// <para>
+    /// A relative link is passed through untouched: <see cref="HttpClient"/> resolves it against
+    /// <see cref="HttpClient.BaseAddress"/>, which makes it same-origin by construction. A link this
+    /// method cannot parse is also passed through, so the request layer keeps producing its own
+    /// error for a malformed URL rather than this one mislabelling it as a policy violation.
+    /// </para>
+    /// </remarks>
+    private void EnsureNextLinkOriginAllowed(string nextLink)
+    {
+        if (_options.FollowCrossOriginNextLinks) return;
+
+        if (!Uri.TryCreate(nextLink, UriKind.RelativeOrAbsolute, out Uri? target)) return;
+        if (!target.IsAbsoluteUri) return;
+
+        Uri? baseAddress = _http.BaseAddress;
+        if (baseAddress is not null && baseAddress.IsAbsoluteUri && IsSameOrigin(baseAddress, target))
+            return;
+
+        // The offending URL is quoted because it is the whole diagnostic: the caller needs to see
+        // which host the server tried to send them to. It is server-supplied text, so callers that
+        // log this should treat it as untrusted like any other response content.
+        throw new InvalidOperationException(
+            $"Refusing to follow the '@odata.nextLink' '{nextLink}': it names a different origin " +
+            $"from the client's base address ('{baseAddress?.GetLeftPart(UriPartial.Authority) ?? "<none>"}'). " +
+            "A nextLink is read out of a response body, and following it would re-attach this " +
+            "HttpClient's default headers - including Authorization - to a host the server chose. " +
+            $"Set {nameof(OhDataClientOptions)}.{nameof(OhDataClientOptions.FollowCrossOriginNextLinks)} " +
+            "to true if this service legitimately pages across origins.");
+    }
+
+    /// <summary>
+    /// RFC 6454 origin comparison: scheme, host and port must all match.
+    /// <see cref="Uri.Port"/> reports the scheme's default when none is given, so
+    /// <c>https://host</c> and <c>https://host:443</c> compare equal.
+    /// </summary>
+    private static bool IsSameOrigin(Uri a, Uri b) =>
+        string.Equals(a.Scheme, b.Scheme, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(a.Host, b.Host, StringComparison.OrdinalIgnoreCase)
+        && a.Port == b.Port;
 
     // ── GET collection, annotation-preserving ───────────────────────────────────
 
@@ -100,6 +157,7 @@ internal sealed class ODataHttpClient
         string absoluteUrl, CancellationToken ct)
         where T : class
     {
+        EnsureNextLinkOriginAllowed(absoluteUrl);
         using var request = new HttpRequestMessage(HttpMethod.Get, absoluteUrl);
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
         await EnsureSuccessAsync(response, absoluteUrl, ct);

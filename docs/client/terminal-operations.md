@@ -13,6 +13,11 @@ List<Product> items = await client.For<Product>()
     .ToListAsync();
 ```
 
+`ToListAsync` and `ToAsyncEnumerable` follow the server's `@odata.nextLink` across every page. Two guard rails apply to that walk, both configurable on [`OhDataClientOptions`](index.md#client-options):
+
+- a link naming a **different origin** from `HttpClient.BaseAddress` is refused (`InvalidOperationException`) rather than fetched, because following it would attach this client's default headers — `Authorization` included — to a host the *response body* chose. Opt in with [`FollowCrossOriginNextLinks`](index.md#followcrossoriginnextlinks) if your service legitimately pages across origins. A relative link resolves against `BaseAddress` and is always allowed;
+- the walk stops after [`MaxNextLinkHops`](index.md#maxnextlinkhops) (default `10_000`), so a server that returns the same link forever cannot drive the enumeration — or `ToListAsync`'s accumulating list — without bound.
+
 ## `ToPageAsync`
 
 Returns items plus the total count (forces `$count=true`):
