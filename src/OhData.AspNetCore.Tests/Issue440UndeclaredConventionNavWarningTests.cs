@@ -567,8 +567,9 @@ public sealed class Issue440UndeclaredConventionNavWarningTests
             { "Id": 0, "Note": "posted", "CustomerId": 7, "Customer": { "Id": 9, "Name": "C9" } }
             """;
 
+        using var undeclaredContent = new StringContent(body, Encoding.UTF8, "application/json");
         HttpResponseMessage undeclared = await fx.Client.PostAsync(
-            "/odata/W440Orders", new StringContent(body, Encoding.UTF8, "application/json"));
+            "/odata/W440Orders", undeclaredContent);
         _out.WriteLine($"undeclared: {(int)undeclared.StatusCode} {await undeclared.Content.ReadAsStringAsync()}");
         Assert.Equal(HttpStatusCode.Created, undeclared.StatusCode);
 
@@ -583,8 +584,9 @@ public sealed class Issue440UndeclaredConventionNavWarningTests
 
         // THE DECLARED CONTROL, same CLR model and same body: already correct before the fix, and
         // still correct. Declaration provenance no longer changes what the handler receives.
+        using var declaredContent = new StringContent(body, Encoding.UTF8, "application/json");
         HttpResponseMessage declared = await fx.Client.PostAsync(
-            "/odata/W440DeclaredOrders", new StringContent(body, Encoding.UTF8, "application/json"));
+            "/odata/W440DeclaredOrders", declaredContent);
         _out.WriteLine($"declared:   {(int)declared.StatusCode} {await declared.Content.ReadAsStringAsync()}");
         Assert.Equal(HttpStatusCode.Created, declared.StatusCode);
         Assert.NotNull(W440DeclaredOrderProfile.LastPosted);
