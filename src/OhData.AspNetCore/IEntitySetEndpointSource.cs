@@ -153,6 +153,16 @@ internal interface IEntitySetEndpointSource
     /// </summary>
     IReadOnlyCollection<string> IgnoredPropertyNames { get; }
 
+    /// <summary>
+    /// #458: the model-bound allowlist declarations this profile contributed to the
+    /// <b>shared, per-CLR-type</b> <c>EntityTypeConfiguration&lt;TModel&gt;</c> — the literal
+    /// arrays handed to <c>Filter</c>/<c>OrderBy</c>/<c>Select</c>/<c>Expand</c>, recorded at those
+    /// call sites. Consumed only by <see cref="ModelBoundAllowlists.Validate"/>, which refuses two
+    /// profiles over one model type declaring divergent ones (they would silently union). See
+    /// <see cref="ModelBoundAllowlists"/> for why per-entity-set settings are not an option.
+    /// </summary>
+    ModelBoundAllowlists ModelBoundAllowlists { get; }
+
     string KeyPropertyName { get; }
     string InvokeGetKeyString(object model);
 
