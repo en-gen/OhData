@@ -142,7 +142,7 @@ public class OpenTypeKeyValidationBenchmarks
         // set only ever ADDS entries to the declared-name lookup that loop already performs — a
         // non-empty set here would measure a bigger HashSet, not a different code path.
         _armCShipped = OpenTypeJsonOptions.Build(
-            baseOptions, containers, IgnoredPropertyJsonOptions.EmptyNameMap);
+            baseOptions, containers, InheritedNameSets.Empty);
 
         _page = Shape switch
         {
