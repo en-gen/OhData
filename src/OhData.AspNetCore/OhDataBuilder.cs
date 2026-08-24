@@ -466,6 +466,18 @@ public sealed class OhDataBuilder
                         var p = fn.Parameter(param.ParameterType, param.Name!);
                         if (param.IsOptional) p.Optional();
                     }
+                    // #468: FunctionConfiguration defaults IncludeInServiceDocument to true, and
+                    // OhData never touched it -- so $metadata asserted an advertisement the
+                    // hand-built service document never made, and for a PARAMETERIZED import the
+                    // claim is not even legal CSDL: EdmValidator flags
+                    // FunctionImportWithParameterShouldNotBeIncludedInServiceDocument, because
+                    // CSDL 4.0 section 13.6 reserves the service document for imports that can be
+                    // invoked with nothing but their name. A parameterless import CAN be, and
+                    // Microsoft.AspNetCore.OData's own service-document serializer honours the
+                    // flag, so those keep it and MapAll now derives the service document from the
+                    // EDM container -- flag and document come from one source, and the two can no
+                    // longer disagree.
+                    fn.IncludeInServiceDocument = op.Parameters.Length == 0;
                 }
                 else
                 {

@@ -114,6 +114,49 @@ internal static class OhDataEndpointFactory
         return sb.ToString();
     }
 
+    // #468: one entry of the OData service document (JSON Format section 5). The JSON names are
+    // pinned with [JsonPropertyName] rather than left to a naming policy: this route serializes
+    // through Results.Ok, i.e. the HOST's JsonOptions, whose casing OhData does not own, and the
+    // wire names are lower-case by spec either way.
+    private sealed record ServiceDocumentEntry(
+        [property: JsonPropertyName("name")] string Name,
+        [property: JsonPropertyName("kind")] string Kind,
+        [property: JsonPropertyName("url")] string Url);
+
+    // #468: project one EDM entity-container element onto its service-document entry, or null for
+    // an element the spec keeps out of the document. Action imports are never listed (they are not
+    // GET-addressable); a function import is listed exactly when its own IncludeInServiceDocument
+    // flag says so, which is what makes the document and $metadata agree by construction rather
+    // than by two hand-maintained lists happening to match.
+    private static ServiceDocumentEntry? ServiceDocumentEntryFor(IEdmEntityContainerElement element) => element switch
+    {
+        IEdmEntitySet set => new ServiceDocumentEntry(set.Name, "EntitySet", set.Name),
+        IEdmSingleton singleton => new ServiceDocumentEntry(singleton.Name, "Singleton", singleton.Name),
+        IEdmFunctionImport { IncludeInServiceDocument: true } fi =>
+            new ServiceDocumentEntry(fi.Name, "FunctionImport", fi.Name),
+        _ => null,
+    };
+
+    // #468: CSDL validation of the built EDM, run once at MapOhData() alongside the other startup
+    // validation passes. EdmValidator was called nowhere in this assembly, which is how
+    // IncludeInServiceDocument="true" on a parameterized function import -- illegal per CSDL 4.0
+    // section 13.6 -- reached the wire unnoticed. Note the reader-vs-validator asymmetry that
+    // hid it: CsdlReader.TryParse accepts an invalid identifier and this rule alike, so a
+    // consumer that merely parses the document survives while a codegen tool that validates does
+    // not. Failing here turns "the customer's codegen tool rejects your $metadata" into a startup
+    // exception naming the offending construct.
+    private static void ValidateEdmModelOrThrow(IEdmModel model, string prefix)
+    {
+        if (Microsoft.OData.Edm.Validation.EdmValidator.Validate(model, out var errors)) return;
+
+        string detail = string.Join("; ", errors.Select(e =>
+            $"{e.ErrorCode} at {e.ErrorLocation}: {e.ErrorMessage}"));
+        throw new InvalidOperationException(
+            $"OhData: the EDM model for the registration at prefix '{prefix}' is not valid CSDL. " +
+            "A consumer that validates $metadata (most codegen tools do) will reject it. " +
+            $"Offending construct(s): {detail}");
+    }
+
     private static string BuildBaseUrl(HttpContext ctx, string prefix) =>
         $"{ctx.Request.Scheme}://{ctx.Request.Host}{ctx.Request.PathBase}{prefix}";
 
@@ -950,11 +993,31 @@ internal static class OhDataEndpointFactory
             return await next(ctx);
         });
 
+        // #468: validate the EDM before anything is generated from it. Both generators below --
+        // the CSDL writer and the service document -- read this model, and CsdlWriter.TryWriteCsdl
+        // does NOT run these rules (it reports only serialization errors), so without this pass an
+        // invalid construct is written out verbatim and only fails at the consumer.
+        ValidateEdmModelOrThrow(registration.EdmModel, prefix);
+
         // Pre-compute static responses that are determined at startup.
         string metadataXml = BuildMetadataXml(registration.EdmModel);
-        var serviceDocEntitySets = registration.Profiles
-            .Select(p => new { name = p.EntitySetName, kind = "EntitySet", url = p.EntitySetName })
-            .ToArray();
+
+        // #468: the service document is built from the SAME EDM container $metadata is written
+        // from, not from registration.Profiles. Two generators over one model is what let
+        // $metadata assert IncludeInServiceDocument="true" for every unbound function while the
+        // hand-rolled document listed entity sets and nothing else -- an advertise-vs-serve
+        // divergence that could only ever grow. Reading the container makes the two agree by
+        // construction: an operation import appears here exactly when its own flag says it
+        // should, and the flag is set in OhDataBuilder (parameterless only -- CSDL 4.0 section
+        // 13.6). Entity sets keep coming out in profile-registration order, since that is the
+        // order they were added to the builder in.
+        var serviceDocEntitySets = registration.EdmModel.EntityContainer is null
+            ? Array.Empty<ServiceDocumentEntry>()
+            : registration.EdmModel.EntityContainer.Elements
+                .Select(ServiceDocumentEntryFor)
+                .Where(e => e is not null)
+                .Select(e => e!)
+                .ToArray();
 
         // Service document -- lists available entity sets
         group.MapGet("", (HttpContext ctx) =>
@@ -6448,6 +6511,34 @@ internal static class OhDataEndpointFactory
                 "requires a GetById handler to load the entity for the check.");
         }
 
+        // #465: a Search handler on a Priority-1 profile is DEAD CODE, and used to be advertised
+        // in the route's OpenAPI description while never being invoked. Refused at startup rather
+        // than silently ignored, for the same reason every other dead-configuration check in this
+        // file throws: a handler the framework will never call is a bug in the profile, and the
+        // only moment it is cheap to find is startup.
+        //
+        // Why the framework cannot invoke it here instead. On the GetQueryable and GetAll paths
+        // Search REPLACES the source collection and the framework then applies $filter/$orderby/
+        // $top/$skip on top of the result. The Priority-1 contract is the opposite: the profile
+        // receives ODataQueryOptions and owns the whole pipeline (see InvokeGetODataQueryableAsync).
+        // There is no seam to feed a search-derived source INTO that -- honouring $search here
+        // would mean bypassing the profile entirely, which (a) drops $filter/$orderby on the floor
+        // for exactly the requests that carry $search, reproducing this defect one option over,
+        // and (b) routes around whatever row-level scoping the profile's handler applies, which is
+        // one of the main reasons to reach for Priority-1 in the first place. $search is therefore
+        // the profile's own business on this path, reachable as options.Search inside
+        // GetODataQueryable, exactly like every other option it is handed.
+        if (source is IODataEntitySetEndpointSource searchCheckSource
+            && searchCheckSource.HasGetODataQueryable && source.HasSearch)
+        {
+            throw new InvalidOperationException(
+                $"Entity set '{name}': a Search handler is configured alongside GetODataQueryable, " +
+                "but the Priority-1 read path never invokes it -- that path hands the full " +
+                "ODataQueryOptions to the profile and the profile applies them itself. Remove the " +
+                "Search handler and honour options.Search inside GetODataQueryable, or move the " +
+                "entity set to the GetQueryable read path, where Search is invoked by the framework.");
+        }
+
         // Priority 1: ODataEntitySetProfile with direct ODataQueryOptions handler
         if (source is IODataEntitySetEndpointSource odataSource && odataSource.HasGetODataQueryable)
         {
@@ -6634,8 +6725,7 @@ internal static class OhDataEndpointFactory
                   (source.OrderByEnabled ? ", $orderby" : "") +
                   (source.SelectEnabled ? ", $select" : "") +
                   (source.ExpandEnabled ? ", $expand" : "") +
-                  (source.CountEnabled ? ", $count" : "") +
-                  (source.HasSearch ? ", $search" : "") + ".")
+                  (source.CountEnabled ? ", $count" : "") + ".")
               .WithTags(name).Produces<ODataCollectionResponse<TModel>>(200).Produces(400)
               .WithMetadata(new OhDataQueryOptionsMetadata(
                   FilterEnabled: source.FilterEnabled,
@@ -6643,8 +6733,14 @@ internal static class OhDataEndpointFactory
                   SelectEnabled: source.SelectEnabled,
                   ExpandEnabled: source.ExpandEnabled,
                   CountEnabled: source.CountEnabled,
-                  SearchEnabled: source.HasSearch,
-                  MaxTop: source.MaxTop));
+                  // #465: the Priority-1 route has no $search leg -- there is nowhere to put one
+                  // (see the startup guard above MapGet("") for the full argument), so it must not
+                  // be advertised here. A Search handler on a Priority-1 profile is refused at
+                  // startup, so source.HasSearch is provably false on this branch anyway; the
+                  // literal states the route's contract rather than restating that.
+                  SearchEnabled: false,
+                  MaxTop: source.MaxTop,
+                  TopSkipSupported: true));
             ApplyOperationAuth(collReadP1Rb, OhDataOperation.Read, keyBased: false);
         }
         // Priority 2: base GetQueryable (IQueryable without ODataQueryOptions)
@@ -7364,7 +7460,8 @@ internal static class OhDataEndpointFactory
                   ExpandEnabled: source.ExpandEnabled,
                   CountEnabled: source.CountEnabled,
                   SearchEnabled: source.HasSearch,
-                  MaxTop: source.MaxTop));
+                  MaxTop: source.MaxTop,
+                  TopSkipSupported: true));
             ApplyOperationAuth(collReadP2Rb, OhDataOperation.Read, keyBased: false);
         }
         else if (source.HasGetAll)
@@ -7551,12 +7648,14 @@ internal static class OhDataEndpointFactory
                   SearchEnabled: source.HasSearch,
                   // Leg 1: $top is now live on this path and capped by MaxTop exactly like
                   // GetQueryable, so the doc metadata should advertise the same cap.
-                  MaxTop: source.MaxTop));
+                  MaxTop: source.MaxTop,
+                  TopSkipSupported: true));
             ApplyOperationAuth(collReadAllRb, OhDataOperation.Read, keyBased: false);
         }
 
-        bool hasCountSource = (source is IODataEntitySetEndpointSource odsCheck && odsCheck.HasGetODataQueryable)
-            || source.HasGetQueryable || source.HasGetAll;
+        bool countSourceAppliesFilter = (source is IODataEntitySetEndpointSource odsCheck && odsCheck.HasGetODataQueryable)
+            || source.HasGetQueryable;
+        bool hasCountSource = countSourceAppliesFilter || source.HasGetAll;
         if (hasCountSource)
         {
             var countCollRb = entityGroup.MapGet("/$count", async (HttpContext ctx, CancellationToken ct) =>
@@ -7628,13 +7727,27 @@ internal static class OhDataEndpointFactory
                 }
             }).WithTags(name).Produces<long>(200, "text/plain").Produces(400)
               .WithMetadata(new OhDataQueryOptionsMetadata(
-                  FilterEnabled: source.FilterEnabled,
+                  // #467 (F3): the GetAll fallback branch above returns 400 UnsupportedQueryOption
+                  // for any $filter regardless of the flag -- there is no IQueryable to apply one
+                  // to. Only the Priority-1 and GetQueryable branches actually honour it, so the
+                  // advertisement is gated on the source, not on the flag alone. This is the same
+                  // fix the sibling collection route already carries ("B1 fix", FilterEnabled:
+                  // false on the GetAll route's metadata); /$count was missed.
+                  FilterEnabled: source.FilterEnabled && countSourceAppliesFilter,
                   OrderByEnabled: false,
                   SelectEnabled: false,
                   ExpandEnabled: false,
-                  CountEnabled: true,
+                  // #467 (F2): CountEnabled means "the $count OPTION is honoured here", not "this
+                  // route is a count". /$count returns a bare text/plain number: there is no
+                  // envelope to carry an inline @odata.count, and the option is ignored. It used
+                  // to be set true to say "this route IS the count", which the OpenAPI
+                  // transformers -- the metadata's only consumers -- read as the other meaning
+                  // and documented a $count query parameter that does nothing.
+                  CountEnabled: false,
                   SearchEnabled: false,
-                  MaxTop: null));
+                  MaxTop: null,
+                  // #467 (F2): /$count applies neither $top nor $skip. It counts the whole set.
+                  TopSkipSupported: false));
             ApplyOperationAuth(countCollRb, OhDataOperation.Read, keyBased: false);
         }
 
@@ -7779,7 +7892,10 @@ internal static class OhDataEndpointFactory
                   ExpandEnabled: source.ExpandEnabled,
                   CountEnabled: false,
                   SearchEnabled: false,
-                  MaxTop: null));
+                  MaxTop: null,
+                  // #467 (F2): a single-entity read has nothing to page. $top/$skip are ignored
+                  // here (200 with the whole entity), so they must not be documented.
+                  TopSkipSupported: false));
             ApplyOperationAuth(rb, OhDataOperation.Read);
         }
 

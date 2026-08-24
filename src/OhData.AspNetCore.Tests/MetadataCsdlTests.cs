@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Net.Http.Json;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Xml.Linq;
@@ -426,8 +428,15 @@ public class MetadataCsdlTests
 
     // ── Unbound operations: FunctionImport / ActionImport ──────────────────────
 
+    // #468: this test used to assert IncludeInServiceDocument="true" on a PARAMETERIZED function
+    // import and call that correct. It is not: CSDL 4.0 section 13.6 reserves the service
+    // document for imports that can be invoked with nothing but their name, and
+    // EdmValidator.Validate flags exactly this as
+    // FunctionImportWithParameterShouldNotBeIncludedInServiceDocument. The attribute defaults to
+    // false in CSDL, so the writer omits it entirely -- and OhData now runs that validator at
+    // MapOhData(), so the pre-fix model would not even start.
     [Fact]
-    public async Task Metadata_UnboundFunction_RegisteredAsFunctionImport_IncludedInServiceDocument()
+    public async Task Metadata_UnboundFunction_WithParameter_IsNotIncludedInServiceDocument()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o
             .AddEntitySetProfile<CsdlSpotCheckProfile>()
@@ -438,12 +447,87 @@ public class MetadataCsdlTests
         var import = container!.Elements(Edm + "FunctionImport")
             .FirstOrDefault(f => (string)f.Attribute("Name")! == "UnboundDouble");
         Assert.NotNull(import);
-        Assert.Equal("true", (string)import!.Attribute("IncludeInServiceDocument")!);
+        Assert.Null(import!.Attribute("IncludeInServiceDocument"));
 
         // The operation itself is declared unbound (no IsBound="true" attribute).
         var fn = Schemas(doc).Elements(Edm + "Function")
             .First(f => (string)f.Attribute("Name")! == "UnboundDouble");
         Assert.Null(fn.Attribute("IsBound"));
+
+        // And the service document really does omit it -- the whole point of the flag.
+        JsonElement sd = await fx.Client.GetFromJsonAsync<JsonElement>("/odata");
+        Assert.DoesNotContain(
+            sd.GetProperty("value").EnumerateArray(),
+            e => e.GetProperty("name").GetString() == "UnboundDouble");
+    }
+
+    // #468: a PARAMETERLESS function import CAN be invoked with only its name, so the flag is
+    // legal there -- and OhData registers GET /{prefix}/{Name} for it, so the advertisement is
+    // also true. $metadata and the service document are now generated from the same EDM
+    // container, so they cannot disagree about this.
+    [Fact]
+    public async Task Metadata_UnboundFunction_Parameterless_IsIncludedInServiceDocumentAndListedThere()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o
+            .AddEntitySetProfile<CsdlSpotCheckProfile>()
+            .AddFunction((Func<int>)(() => 42), "UnboundAnswer"));
+        var (doc, _) = await GetMetadataAsync(fx.Client);
+
+        var container = FindEntityContainer(doc);
+        var import = container!.Elements(Edm + "FunctionImport")
+            .FirstOrDefault(f => (string)f.Attribute("Name")! == "UnboundAnswer");
+        Assert.NotNull(import);
+        Assert.Equal("true", (string)import!.Attribute("IncludeInServiceDocument")!);
+
+        JsonElement sd = await fx.Client.GetFromJsonAsync<JsonElement>("/odata");
+        JsonElement entry = Assert.Single(
+            sd.GetProperty("value").EnumerateArray().ToList(),
+            e => e.GetProperty("name").GetString() == "UnboundAnswer");
+        Assert.Equal("FunctionImport", entry.GetProperty("kind").GetString());
+        Assert.Equal("UnboundAnswer", entry.GetProperty("url").GetString());
+
+        // The advertisement is honoured: the URL the document hands out is really served.
+        using HttpResponseMessage invoked = await fx.Client.GetAsync("/odata/UnboundAnswer");
+        Assert.Equal(HttpStatusCode.OK, invoked.StatusCode);
+    }
+
+    // #468: an ActionImport is never listed -- it is not GET-addressable, and CSDL gives it no
+    // IncludeInServiceDocument attribute at all. Pinned so a future "derive everything from the
+    // container" change cannot start emitting them.
+    [Fact]
+    public async Task ServiceDocument_OmitsActionImports()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o
+            .AddEntitySetProfile<CsdlSpotCheckProfile>()
+            .AddAction((Action)(() => { }), "UnboundReset"));
+
+        JsonElement sd = await fx.Client.GetFromJsonAsync<JsonElement>("/odata");
+        Assert.DoesNotContain(
+            sd.GetProperty("value").EnumerateArray(),
+            e => e.GetProperty("name").GetString() == "UnboundReset");
+        // The entity set is still there -- deriving from the container did not lose it.
+        Assert.Contains(
+            sd.GetProperty("value").EnumerateArray(),
+            e => e.GetProperty("kind").GetString() == "EntitySet");
+    }
+
+    // #468: EdmValidator.Validate is now called from MapOhData(). It was called nowhere in the
+    // server assembly, which is how an invalid function-import name reached $metadata: the
+    // compiler-generated name of an un-named lambda ("<Method>b__0_1") is not an odataIdentifier.
+    // Note the reader-vs-validator asymmetry that hid this -- CsdlReader.TryParse accepts such a
+    // name, so a consumer that merely parses survives while a codegen tool that validates does
+    // not. Failing at startup names the offending construct instead.
+    [Fact]
+    public async Task UnnamedLambdaFunction_FailsAtStartup_NamingTheOffendingConstruct()
+    {
+        InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await TestHostBuilder.BuildAsync(o => o
+                .AddEntitySetProfile<CsdlSpotCheckProfile>()
+                .AddFunction((Func<int, int>)(x => x * 2))));
+
+        Assert.Contains("not valid CSDL", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("InvalidName", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("b__", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
