@@ -912,6 +912,18 @@ internal static class OhDataEndpointFactory
         // complex type, which is what keeps an unaffected app's log untouched.
         OpenTypeJsonOptions.WarnWireShapeIsFlat(openTypeContainers, groupLogger);
 
+        // #482: map every EDM entity type to its CLR type NOW, on the very options instance every
+        // route closure below is handed, so the nav-suppression resolver modifier has the whole
+        // schema before the first request rather than after whichever request happens to arrive
+        // first. Without this the seeding still happens (GetNavSuppressedOptions does it defensively)
+        // but it happens on a request thread, and the defect this closes is exactly a
+        // whichever-thread-got-there-first defect. Must be the LAST thing done to
+        // effectiveJsonOptions' nav-suppression state and must come after the line above that
+        // finalises effectiveJsonOptions itself — it keys off that instance. Fills a dictionary only:
+        // no JsonTypeInfo is resolved and no modifier is added, so the ignore -> open-type ->
+        // nav-suppression ordering invariant is untouched.
+        PrimeNavSuppression(effectiveJsonOptions, registration.EdmModel);
+
         // #389 L1: every per-request open-type path gates on this, NOT on OpenTypesEnabled. The flag
         // says what the consumer asked for; this says whether the model gave it anything to do. Now
         // that the flag defaults to TRUE this is the ONLY thing keeping a model with no dictionary
@@ -3669,14 +3681,18 @@ internal static class OhDataEndpointFactory
             }
         }
 
-        // Populate the shared per-clrType nav-suppression state for every DISTINCT runtime type
-        // present, BEFORE the single batched serialize call below resolves each type's
-        // JsonTypeInfo for the first time — GetNavSuppressedOptions' own contract (see its remarks)
-        // requires the suppression set to be populated before first use, and a batched call
-        // resolves every element's JsonTypeInfo in that one call, so every distinct type must be
-        // pre-populated up front instead of lazily as each entity was serialized one at a time
-        // before this fix. GetNavSuppressedOptions returns the SAME derived options instance
-        // regardless of clrType (see CreateNavSuppressionState), so any successful call captures it.
+        // Walk the DISTINCT runtime types present, once, before the single batched serialize call
+        // below. GetNavSuppressedOptions returns the SAME derived options instance regardless of
+        // clrType (see CreateNavSuppressionState), so any successful call captures it.
+        //
+        // #482: this loop is NO LONGER load-bearing for suppression correctness, and must not be
+        // read as if it were. It used to be the pre-population that "guaranteed" every element type
+        // had a suppression set before its JsonTypeInfo was resolved — a guarantee that covered only
+        // the types in THIS collection and left every transitively reached type frozen
+        // un-suppressed. The modifier now computes each type's set itself from the seeded schema, so
+        // a type this loop never sees is suppressed exactly as one it does. What the loop still does
+        // is seed the model (once) and pair each runtime type with the caller's declared EDM type for
+        // the no-ClrTypeAnnotation residue — plus the polymorphism probe piggy-backed below.
         JsonSerializerOptions? navSuppressed = null;
         HashSet<Type>? seenTypes = null;
         bool polymorphic = false;
@@ -3853,12 +3869,55 @@ internal static class OhDataEndpointFactory
     // pattern (see its remarks): a single TypeInfoResolver modifier consults a type-keyed lookup
     // built INSIDE this cache entry, so N entity types sharing a registration's baseOptions share
     // ONE derived JsonSerializerOptions and therefore one JsonTypeInfo cache, instead of each type
-    // paying for (and duplicating work across) its own independent derived-options instance. The
-    // per-type nav-name set is populated via GetOrAdd BEFORE returning Derived, which guarantees it
-    // is present the first time `clrType` is ever handed to Derived for serialization — System.Text.
-    // Json resolves and permanently caches a type's JsonTypeInfo on FIRST use per options instance,
-    // so populating the lookup any later would let that first resolution see an empty entry and
-    // permanently miss the suppression for that type.
+    // paying for (and duplicating work across) its own independent derived-options instance.
+    //
+    // #482 — THE PRE-POPULATION "GUARANTEE" THAT USED TO BE ASSERTED HERE WAS FALSE, AND ITS
+    // FALSENESS WAS A 500-FOREVER. This comment used to read: "The per-type nav-name set is
+    // populated via GetOrAdd BEFORE returning Derived, which guarantees it is present the first time
+    // `clrType` is ever handed to Derived for serialization." That held only for types handed to
+    // GetNavSuppressedOptions *directly*. It said nothing about a type System.Text.Json reaches on
+    // its OWN, transitively, while walking a graph — and STJ resolves and permanently caches a
+    // type's JsonTypeInfo on FIRST use per options instance, so such a type froze UN-SUPPRESSED for
+    // the process lifetime. Measured at e3a7bd3 through the shipped code: serialize one entity whose
+    // open-type dynamic bag holds a live instance of ANOTHER entity type (bag values are stored
+    // verbatim and serialized by runtime type), and the NEXT read of that other entity set throws
+    // `JsonException: A possible object cycle was detected` on an ordinary parent/child fixup graph —
+    // rendered by the group filter as 500 on a plain GET with no query string, on every request,
+    // forever. #343 resurrected, permanently, by nothing but serialization ORDER.
+    //
+    // THE ORDER DEPENDENCE IS NOW GONE BY CONSTRUCTION, not patched edge by edge. The modifier below
+    // computes the suppression set ITSELF, as a pure function of (typeInfo.Type, the EDM), at the
+    // moment STJ resolves the contract — so it cannot matter which route reached the type, or
+    // whether any route reached it at all. `EdmEntityTypeByClrType` is what makes that function
+    // total: one walk of the schema (SeedNavSuppressionModel) maps EVERY EDM-declared entity type to
+    // its CLR type up front, before any contract can be resolved on Derived. Nothing about the
+    // caller, the call order, or the reachability path is consulted.
+    //
+    // The map is keyed CLR->EDM via ODataConventionModelBuilder's own ClrTypeAnnotation, NOT via
+    // model.FindDeclaredType(clrType.FullName) as the #343 union did. That was not a style choice:
+    // FindDeclaredType matches on the EDM type's FULL NAME, so a registration that sets
+    // `ODataConventionModelBuilder.Namespace` (or otherwise renames the schema) makes every lookup
+    // miss — measured: with `mb.Namespace = "Custom.Ns"`, `FindDeclaredType(typeof(Beta).FullName)`
+    // returns null while the annotation resolves Beta correctly. #343's runtime-type union was
+    // therefore a silent no-op on any custom-namespace model; it is not any more.
+    //
+    // Coverage this buys, beyond the measured dynamic-bag edge: an `object`-declared CLR member
+    // holding an entity, a COMPLEX type carrying an entity-typed member, an EF Core lazy-loading
+    // proxy or any other CLR subclass the EDM does not declare (the base-chain walk in
+    // BuildNavClrNames resolves it to its nearest EDM-known ancestor), and any future edge nobody
+    // has thought of — because none of them is an edge any more.
+    //
+    // The review's third reasoned edge — a navigation FindClrPropertyByEdmName cannot resolve — is
+    // REAL and is closed at AddNavClrNames instead, by reading the model builder's own
+    // ClrPropertyInfoAnnotation alongside the name lookup. See that method: an EDM-level rename
+    // (reachable through AdvancedConfigure) produced a navigation the name lookup could not see at
+    // all, so it was never suppressed on ANY route — order-independently broken rather than
+    // order-dependently broken.
+    //
+    // NOT closed, and deliberately so: a CLR type that is not an EDM entity type in ANY seeded model
+    // and holds a reference to itself. Suppression is defined by the EDM; a member the EDM does not
+    // call a navigation is data, and removing it would be a silent data loss rather than a fix.
+    // That residue is #440's territory (a CLR type absent from the EDM), not this one's.
     //
     // Also caches the BASE (un-suppressed) JsonTypeInfo per clrType — fold-in #1's
     // IsNavVisibleInBaseOptions needs it, resolved through the SAME captured BaseResolver fallback
@@ -3871,12 +3930,31 @@ internal static class OhDataEndpointFactory
     // strong-keyed dictionary leaked one entry per distinct JsonSerializerOptions for the life of
     // the process, which matters for test suites (e.g. WebApplicationFactory) that construct a fresh
     // host — and therefore fresh options — per test class.
+    //
+    // EdmEntityTypeByClrType (#482): every EDM-declared entity type of every model seeded onto this
+    // options instance, keyed by its CLR type. Filled by SeedNavSuppressionModel BEFORE any contract
+    // can be resolved on Derived; read — never written — by the resolver modifier. Together with the
+    // type it is handed, it is the WHOLE of the modifier's input.
+    //
+    // SeededModels/SeedGate (#482): which IEdmModel instances have already been walked into
+    // EdmEntityTypeByClrType, and the gate that publishes that flag LAST so a second thread which
+    // observes "seeded" also observes a COMPLETE map. See SeedNavSuppressionModel for why a bare
+    // ConcurrentDictionary flag would not be enough.
     private sealed record NavSuppressionState(
         JsonSerializerOptions Derived,
         IJsonTypeInfoResolver BaseResolver,
         ConcurrentDictionary<Type, HashSet<string>> NavClrNamesByType,
         ConcurrentDictionary<Type, JsonTypeInfo?> BaseTypeInfoByType,
-        ConcurrentDictionary<Type, bool> PolymorphicByType);
+        ConcurrentDictionary<Type, bool> PolymorphicByType,
+        ConcurrentDictionary<Type, NavSourceBinding> EdmEntityTypeByClrType,
+        ConcurrentDictionary<IEdmModel, bool> SeededModels,
+        object SeedGate);
+
+    // #482: what the seeded map holds. The MODEL travels with the EDM type because the
+    // navigation -> CLR member mapping the builder recorded lives as an annotation ON THE MODEL, and
+    // Microsoft.OData.Edm gives an IEdmNavigationProperty no back-reference to the model that owns
+    // it - the same reason IEdmModel is threaded through the SerializeBounded family (#343).
+    private readonly record struct NavSourceBinding(IEdmModel? Model, IEdmEntityType EdmType);
 
     private static readonly ConditionalWeakTable<JsonSerializerOptions, NavSuppressionState>
         s_navSuppressedOptionsCache = new();
@@ -3884,16 +3962,19 @@ internal static class OhDataEndpointFactory
     private static NavSuppressionState CreateNavSuppressionState(JsonSerializerOptions baseOptions)
     {
         var navClrNamesByType = new ConcurrentDictionary<Type, HashSet<string>>();
+        var edmEntityTypeByClrType = new ConcurrentDictionary<Type, NavSourceBinding>();
         IJsonTypeInfoResolver baseResolver = baseOptions.TypeInfoResolver ?? new DefaultJsonTypeInfoResolver();
         var derived = new JsonSerializerOptions(baseOptions);
         derived.TypeInfoResolver = baseResolver.WithAddedModifier(typeInfo =>
         {
             if (typeInfo.Kind != JsonTypeInfoKind.Object) return;
-            if (!navClrNamesByType.TryGetValue(typeInfo.Type, out HashSet<string>? navClrNames) ||
-                navClrNames.Count == 0)
-            {
-                return;
-            }
+            // #482: COMPUTE, never look up and give up. The old code did TryGetValue and returned
+            // when the type had no entry — which is precisely how a transitively reached type froze
+            // un-suppressed forever. GetOrAdd means the answer for a type is decided HERE, once, from
+            // the EDM, no matter who reached it or in what order.
+            HashSet<string> navClrNames =
+                navClrNamesByType.GetOrAdd(typeInfo.Type, t => BuildNavClrNames(t, edmEntityTypeByClrType));
+            if (navClrNames.Count == 0) return;
             for (int i = typeInfo.Properties.Count - 1; i >= 0; i--)
             {
                 if (typeInfo.Properties[i].AttributeProvider is PropertyInfo prop && navClrNames.Contains(prop.Name))
@@ -3902,7 +3983,99 @@ internal static class OhDataEndpointFactory
         });
         return new NavSuppressionState(
             derived, baseResolver, navClrNamesByType,
-            new ConcurrentDictionary<Type, JsonTypeInfo?>(), new ConcurrentDictionary<Type, bool>());
+            new ConcurrentDictionary<Type, JsonTypeInfo?>(), new ConcurrentDictionary<Type, bool>(),
+            edmEntityTypeByClrType, new ConcurrentDictionary<IEdmModel, bool>(), new object());
+    }
+
+    // #482: the modifier's pure function. The CLR property names on <paramref name="clrType"/> that
+    // back a navigation of ANY EDM entity type on <paramref name="clrType"/>'s own CLR base chain.
+    //
+    // The base walk (rather than an exact-type lookup) is what covers a runtime type the EDM does not
+    // declare at all: an EF Core lazy-loading proxy, a Castle/DynamicProxy subclass, or any derived
+    // CLR type a handler returns through a base-typed entity set. Its nearest EDM-known ancestor's
+    // navigations are resolved AGAINST THE RUNTIME TYPE — FindClrPropertyByEdmName is given
+    // <paramref name="clrType"/>, never the ancestor — so a shadowed or overridden member resolves to
+    // the member System.Text.Json will actually put on the contract.
+    //
+    // UNION over the chain, not nearest-wins, and that is not interchangeable: EDM navigation sets
+    // are a suppression boundary (#325/#326's premise is that NO navigation reaches STJ unspoken
+    // for), so a derived type's set must never shadow its base's. Same policy, same reason, as
+    // InheritedNameSets.Resolve — interfaces deliberately not walked, since an EDM entity type is
+    // always a class.
+    //
+    // Cost: one HashSet, plus one FindClrPropertyByEdmName and one annotation lookup per navigation,
+    // per DISTINCT runtime type per options instance — memoized in NavClrNamesByType, and
+    // FindClrPropertyByEdmName is itself process-wide memoized. Nothing per request, nothing per
+    // entity. The schema walk that feeds it is measured at ~0.9 us per EDM entity type (0.44 ms for a
+    // 400-entity-type model), paid once at MapOhData().
+    private static HashSet<string> BuildNavClrNames(
+        Type clrType, ConcurrentDictionary<Type, NavSourceBinding> edmEntityTypeByClrType)
+    {
+        var navClrNames = new HashSet<string>(StringComparer.Ordinal);
+        for (Type? cur = clrType; cur is not null && cur != typeof(object); cur = cur.BaseType)
+        {
+            if (edmEntityTypeByClrType.TryGetValue(cur, out NavSourceBinding binding))
+                AddNavClrNames(navClrNames, binding.Model, binding.EdmType, clrType);
+        }
+        return navClrNames;
+    }
+
+    // #482: one walk of <paramref name="model"/>'s schema, mapping every EDM entity type to its CLR
+    // type, so BuildNavClrNames above is TOTAL rather than dependent on who called first.
+    //
+    // Called from MapAll (PrimeNavSuppression — before a single request is served) and, defensively,
+    // from GetNavSuppressedOptions on every call, since the SerializeBounded family is reachable in
+    // tests and from the `_pascalCaseSerializerOptions` fallback without going through MapAll.
+    //
+    // CONCURRENCY. The whole point of #482 is that whichever thread resolves a JsonTypeInfo first
+    // decides that type's behaviour for the process lifetime, so "seeded" must never be observable
+    // before the map it promises is complete. A bare `SeededModels.TryAdd(model, true)` guard would
+    // do exactly that: thread A wins the TryAdd and starts filling the map, thread B loses it,
+    // concludes "already seeded", and serializes against a half-filled map — re-creating the defect
+    // under a different trigger. Hence the gate: the flag is written INSIDE the lock and LAST, so a
+    // lock-free reader that sees `true` is guaranteed (by ConcurrentDictionary's volatile publish and
+    // the lock's release) to see every map entry written before it. B's fast-path miss costs it the
+    // lock, where it waits for A and then returns.
+    //
+    // Idempotent per model, and additive across models: two registrations that share one
+    // JsonSerializerOptions instance (only reachable via the `_pascalCaseSerializerOptions` fallback —
+    // MapAll threads a per-registration `effectiveJsonOptions`) union their schemas rather than
+    // first-one-wins. Union is the safe direction here; the residue is a CLR type declared by BOTH
+    // models with DIFFERENT navigations, whose first-resolved contract still wins, and which #458
+    // already refuses within a registration.
+    private static void SeedNavSuppressionModel(NavSuppressionState state, IEdmModel? model)
+    {
+        if (model is null || state.SeededModels.ContainsKey(model)) return;
+        lock (state.SeedGate)
+        {
+            if (state.SeededModels.ContainsKey(model)) return;
+            foreach (IEdmEntityType edmType in model.SchemaElements.OfType<IEdmEntityType>())
+            {
+                // ODataConventionModelBuilder records the backing CLR type as a ClrTypeAnnotation on
+                // every type it builds — the same "read the builder's own annotation" route
+                // OpenTypeJsonOptions takes for a complex type's dynamic-property container, and for
+                // the same reason: it involves no name convention, so a renamed schema namespace
+                // cannot make it miss. Absent only for a hand-built IEdmModel, which OhData never
+                // produces; GetNavSuppressedOptions' caller pairing below covers that residue for
+                // directly served types.
+                Type? clrType = model
+                    .GetAnnotationValue<Microsoft.OData.ModelBuilder.ClrTypeAnnotation>(edmType)?.ClrType;
+                if (clrType is not null)
+                    state.EdmEntityTypeByClrType.TryAdd(clrType, new NavSourceBinding(model, edmType));
+            }
+            state.SeededModels[model] = true;
+        }
+    }
+
+    // #482: called once per registration from MapAll, with the SAME options instance every route
+    // closure is handed, so the schema walk happens before any request rather than on whichever
+    // request happens to arrive first. Purely a map fill — it resolves no JsonTypeInfo and installs
+    // no modifier, so it is inert with respect to the ignore -> open-type -> nav-suppression modifier
+    // ordering invariant (OpenTypeModifierOrderingTests).
+    private static void PrimeNavSuppression(JsonSerializerOptions baseOptions, IEdmModel? model)
+    {
+        SeedNavSuppressionModel(
+            s_navSuppressedOptionsCache.GetValue(baseOptions, CreateNavSuppressionState), model);
     }
 
     // #343: THE SUPPRESSION SET IS BUILT FROM THE RUNTIME TYPE, NOT THE DECLARED EDM TYPE ALONE.
@@ -3931,44 +4104,82 @@ internal static class OhDataEndpointFactory
     // ServeRaw split points the same way — a navigation no candidate declares or routes is OMITTED,
     // not emitted as null.
     //
-    // The runtime type's EDM type is resolved by model.FindDeclaredType(clrType.FullName), the same
-    // CLR->EDM convention ResolveProfilesForClrType already relies on. Union, not replace: the
-    // declared type's navigations stay in the set even if the lookup misses, so a model that does
-    // not declare the derived type at all is no worse off than before (that residue — a derived CLR
-    // type absent from the EDM — is #440's territory, not this one's).
+    // #482 SUPERSEDES THE MECHANISM, NOT THE DECISION. Everything above still holds; what changed is
+    // WHERE the runtime type's EDM type comes from and WHEN it is consulted. This method no longer
+    // computes any suppression set — the resolver modifier does, from the seeded CLR->EDM map, at
+    // contract-resolution time (see CreateNavSuppressionState). All this method contributes is the
+    // seeding, which must happen before the SerializeToNode call the caller is about to make.
     //
-    // Cost: one FindDeclaredType per DISTINCT runtime type per registration, memoized in
-    // NavClrNamesByType alongside the walk it already did. Nothing per request, nothing per entity.
+    // model.FindDeclaredType(clrType.FullName) is gone from the lookup path: it matches on the EDM
+    // type's full name, so it silently returned null — and #343's union silently did nothing — for
+    // any model whose schema namespace was renamed. The ClrTypeAnnotation route SeedNavSuppressionModel
+    // uses has no such failure mode.
+    //
+    // The two TryAdds are the residue guard for a model carrying no ClrTypeAnnotation (a hand-built
+    // IEdmModel; OhData itself always builds through ODataConventionModelBuilder, which writes the
+    // annotation). Precedence is deliberate and matches what the seed would have produced: the
+    // runtime type's OWN declared EDM type first, the caller's DECLARED base type second, and both
+    // lose to whatever the seed already put there — TryAdd never overwrites.
+    //
+    // Guarded by ContainsKey because this method runs ONCE PER ENTITY on the single-entity path,
+    // and FindDeclaredType is a schema lookup, not a field read. In steady state the whole method is
+    // two dictionary probes — the same order of cost as the single GetOrAdd it replaced.
     private static JsonSerializerOptions GetNavSuppressedOptions(
         JsonSerializerOptions baseOptions, IEdmModel? model, IEdmEntityType edmType, Type clrType)
     {
         NavSuppressionState state = s_navSuppressedOptionsCache.GetValue(baseOptions, CreateNavSuppressionState);
-        state.NavClrNamesByType.GetOrAdd(clrType, type =>
+        SeedNavSuppressionModel(state, model);
+        if (!state.EdmEntityTypeByClrType.ContainsKey(clrType))
         {
-            var navClrNames = new HashSet<string>(StringComparer.Ordinal);
-            AddNavClrNames(navClrNames, edmType, type);
-
-            IEdmEntityType? runtimeEdmType =
-                model?.FindDeclaredType(type.FullName ?? type.Name) as IEdmEntityType;
-            if (runtimeEdmType is not null && !ReferenceEquals(runtimeEdmType, edmType))
-            {
-                AddNavClrNames(navClrNames, runtimeEdmType, type);
-            }
-            return navClrNames;
-        });
+            if (model?.FindDeclaredType(clrType.FullName ?? clrType.Name) is IEdmEntityType runtimeEdmType)
+                state.EdmEntityTypeByClrType.TryAdd(clrType, new NavSourceBinding(model, runtimeEdmType));
+            state.EdmEntityTypeByClrType.TryAdd(clrType, new NavSourceBinding(model, edmType));
+        }
         return state.Derived;
     }
 
     // The CLR property names on <paramref name="clrType"/> that back <paramref name="edmType"/>'s
     // navigations (NavigationProperties() is inherited-inclusive, so a base type's navigations come
-    // along with a derived one's). Resolved through the same FindClrPropertyByEdmName the splice
-    // uses, so suppression and splice can never disagree about which member a navigation names.
-    private static void AddNavClrNames(HashSet<string> into, IEdmEntityType edmType, Type clrType)
+    // along with a derived one's).
+    //
+    // TWO routes, UNIONED, because either one alone has a blind spot (#482, the third edge the review
+    // reasoned about).
+    //
+    // (1) FindClrPropertyByEdmName - the same lookup the splice uses, so for every navigation it can
+    //     resolve, suppression and splice cannot disagree about which member is meant.
+    //
+    // (2) The model builder's own ClrPropertyInfoAnnotation on the navigation - the AUTHORITATIVE
+    //     record of the backing member, written when the navigation was built. Route (1) matches on
+    //     the EDM NAME (via [JsonPropertyName] or the CLR name, case-insensitively), so an
+    //     EDM-LEVEL rename defeats it outright: measured against the referenced package,
+    //     `mb.EntityType<Beta>().HasMany(b => b.Children).Name = "Kids"` yields an EDM navigation
+    //     named `Kids` whose annotation still reports `Children`, and `FindClrPropertyByEdmName(
+    //     typeof(Beta), "Kids")` returns null. Pre-#482 that navigation was therefore NEVER
+    //     suppressed on any route - the #343 leak and the cycle-500 both, reachable through
+    //     AdvancedConfigure's full EDM control. The annotation closes it.
+    //
+    // Union rather than either/or: (2) is absent for a hand-built IEdmModel, and (1) is what covers a
+    // member (2) never recorded. Over-suppression is not a risk from adding (2) - it names the very
+    // member the builder mapped to this navigation, and a name that is not on the contract removes
+    // nothing.
+    //
+    // KNOWN, OUT OF SCOPE, and NOT made worse here: SpliceKeptNavigations still reads the value
+    // through route (1) alone, so an EDM-renamed navigation that the clause DOES $expand is spliced
+    // as an empty array rather than its data. That is a data-plumbing defect of its own; before this
+    // change the same request ALSO emitted the whole un-suppressed CLR graph under the wrong key, so
+    // suppression strictly improves it.
+    private static void AddNavClrNames(
+        HashSet<string> into, IEdmModel? model, IEdmEntityType edmType, Type clrType)
     {
         foreach (IEdmNavigationProperty navProp in edmType.NavigationProperties())
         {
             PropertyInfo? clrProp = ODataPropertyNaming.FindClrPropertyByEdmName(clrType, navProp.Name);
             if (clrProp is not null) into.Add(clrProp.Name);
+
+            string? declaredMember = model?
+                .GetAnnotationValue<Microsoft.OData.ModelBuilder.ClrPropertyInfoAnnotation>(navProp)?
+                .ClrPropertyInfo?.Name;
+            if (declaredMember is not null) into.Add(declaredMember);
         }
     }
 
