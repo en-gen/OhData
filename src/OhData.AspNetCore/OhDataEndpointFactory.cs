@@ -565,18 +565,52 @@ internal static class OhDataEndpointFactory
             "long. '.', '-' and spaces are not allowed.",
             target: key);
 
-    private static IEnumerable<string> ParseETagList(string raw)
+    // Splits a comma-separated If-Match / If-None-Match list (RFC 7232 §3.1/§3.2, RFC 9110
+    // §13.1.1/§13.1.2) into (value, isWeak) pairs, with the surrounding quotes removed.
+    //
+    // The "W/" sentinel is detected case-INSENSITIVELY even though RFC 9110 §8.8.3 spells it
+    // %s"W/" (case-sensitive). Being lenient here is the fail-closed direction for both headers:
+    // a lowercase w/"x" is classified WEAK, which can only ever cause an If-Match to be refused
+    // and an If-None-Match to be honoured. Tightening this to Ordinal would instead let w/"x"
+    // through as an ETag literally named `w/x`, which is the direction that silently mis-answers.
+    private static IEnumerable<(string Value, bool IsWeak)> SplitETagList(string raw)
     {
-        // Split comma-separated ETags per RFC 7232 §3.1.
-        // Each entry may optionally carry a W/ weak-validator prefix; strip it before comparison.
         return raw.Split(',').Select(s =>
         {
             string t = s.Trim();
-            if (t.StartsWith("W/", StringComparison.OrdinalIgnoreCase))
-                t = t.Substring(2);
-            return t.Trim('"');
+            bool isWeak = t.StartsWith("W/", StringComparison.OrdinalIgnoreCase);
+            if (isWeak) t = t.Substring(2);
+            return (t.Trim('"'), isWeak);
         });
     }
+
+    // WEAK-comparison reader (RFC 9110 §8.8.3.2 "weak comparison"): the W/ prefix is stripped and
+    // ignored, so W/"x" and "x" are equivalent. This is the correct function for If-None-Match --
+    // both the conditional-GET 304 path and the write-path precondition -- per §13.1.2.
+    private static IEnumerable<string> ParseETagList(string raw) =>
+        SplitETagList(raw).Select(e => e.Value);
+
+    // STRONG-comparison reader (RFC 9110 §8.8.3.2 "strong comparison"): a weak validator can never
+    // participate in a strong comparison, so every weak entry is DROPPED rather than unwrapped.
+    // §13.1.1 requires strong comparison for If-Match, which means `If-Match: W/"<current>"` must
+    // evaluate false and answer 412 -- it used to be unwrapped here and answered 200 (#478). "*"
+    // is never weak, so the wildcard survives this filter unchanged.
+    //
+    // This is a DELIBERATE DIVERGENCE from Microsoft.AspNetCore.OData, not a case of matching it.
+    // Verified against the MS source at a05e1ad0: DefaultODataETagHandler.ParseETag
+    // (Formatter/DefaultODataETagHandler.cs:67-95) reads EntityTagHeaderValue.Tag only and never
+    // inspects IsWeak -- the sole `isweak` occurrence in the whole product tree is the
+    // `isWeak: true` it passes when CONSTRUCTING one (:64), so MS both emits weak ETags
+    // unconditionally and then compares them as if they were strong. That pairing is jointly
+    // non-conformant with §13.1.1, and the standing "work with MS conventions" policy does not
+    // extend to reproducing a non-conformance. It is safe here for a reason specific to OhData:
+    // OhData never emits a weak ETag at all (ETagValueFormatter has no weak path), so a W/ entry
+    // arriving in an If-Match was necessarily fabricated by the client or forwarded from some
+    // other server, and refusing it costs no legitimate caller anything. Two tests that pinned
+    // the old unwrapping behaviour were inverted with this change -- see
+    // EndpointMappingTests.ETag_WeakPrefix_IsRejectedByIfMatch.
+    private static IEnumerable<string> ParseStrongETagList(string raw) =>
+        SplitETagList(raw).Where(e => !e.IsWeak).Select(e => e.Value);
 
     private static int? ParseMaxPageSize(HttpContext ctx)
     {
@@ -2055,10 +2089,19 @@ internal static class OhDataEndpointFactory
     }
 
     /// <remarks>
+    /// <para>
     /// This check is advisory, not atomic. Between the ETag read and the caller's write,
     /// another request may modify the resource. For true atomic concurrency, use
     /// data-store-level concurrency tokens (e.g., EF Core [Timestamp] / SQL WHERE RowVersion = @expected).
     /// The HTTP ETag mechanism provides a best-effort conflict signal, not a transaction guarantee.
+    /// </para>
+    /// <para>
+    /// #478: this is the single precondition gate for every state-changing route the framework
+    /// owns and can key: entity PUT/PATCH/DELETE, the structural-property writes, the three
+    /// $ref link-management routes, and the navigation-POST create route. Bound and unbound
+    /// ACTIONS are deliberately outside it -- see the exclusion note at the entity-level bound
+    /// action route and docs/etags.md.
+    /// </para>
     /// </remarks>
     private static async Task<IResult?> CheckETagAsync(
         IEntitySetEndpointSource structuralSource,
@@ -2069,28 +2112,62 @@ internal static class OhDataEndpointFactory
     {
         if (!structuralSource.HasETag) return null;
         if (!structuralSource.HasGetById) return null;
-        if (!ctx.Request.Headers.TryGetValue("If-Match", out var ifMatch)) return null;
 
-        // RFC 7232 §3.1: If-Match may carry a comma-separated list of ETags.
-        // The precondition is satisfied if the current ETag matches any one of them.
-        var etagList = ParseETagList(ifMatch.ToString()).ToList();
+        bool hasIfMatch = ctx.Request.Headers.TryGetValue("If-Match", out var ifMatch);
+        bool hasIfNoneMatch = ctx.Request.Headers.TryGetValue("If-None-Match", out var ifNoneMatch);
+        if (!hasIfMatch && !hasIfNoneMatch) return null;
 
         // m6: the existence check must happen before the wildcard short-circuit. Per
         // RFC 7232 §3.1 / Protocol §11.4.1.1, If-Match -- including "*" -- fails with 412 when
         // no current representation exists; it must NOT fall through to whatever 404 the
         // caller's own "not found" handling would otherwise produce.
         object? current = await requestSource.InvokeGetByIdAsync(parsedKey!, ct);
-        if (current is null)
+
+        // RFC 9110 §13.2.2 fixes the evaluation order: If-Match is evaluated first, and
+        // If-None-Match is evaluated ONLY when If-Match is absent. A request carrying both is
+        // therefore not an AND -- If-Match wins outright.
+        if (hasIfMatch)
         {
-            return ODataError(412, "PreconditionFailed",
-                "If-Match precondition failed: the resource does not exist.");
+            if (current is null)
+            {
+                return ODataError(412, "PreconditionFailed",
+                    "If-Match precondition failed: the resource does not exist.");
+            }
+
+            // RFC 7232 §3.1: If-Match may carry a comma-separated list of ETags.
+            // The precondition is satisfied if the current ETag STRONGLY matches any one of them
+            // (§13.1.1) -- ParseStrongETagList drops weak entries so they can never satisfy it.
+            var etagList = ParseStrongETagList(ifMatch.ToString()).ToList();
+
+            if (etagList.Contains("*")) return null; // wildcard -- matches any existing representation
+
+            string currentETag = requestSource.InvokeGetETag(current);
+            if (!etagList.Contains(currentETag))
+                return ODataError(412, "PreconditionFailed", "The ETag does not match the current resource version.");
+            return null; // OK to proceed
         }
 
-        if (etagList.Contains("*")) return null; // wildcard -- matches any existing representation
+        // If-None-Match on a state-changing method (RFC 9110 §13.1.2): the condition is FALSE --
+        // and the method MUST NOT be performed -- when "*" is given and a current representation
+        // exists, or when any listed validator matches under WEAK comparison. When nothing
+        // matches, or the resource does not exist, the condition is true and the write proceeds
+        // (a missing resource is exactly what "*" is asking for; see the AllowUpsert create-guard
+        // on PUT, which covers the same case for a profile with no UseETag at all).
+        if (current is null) return null;
 
-        string currentETag = requestSource.InvokeGetETag(current);
-        if (!etagList.Contains(currentETag))
-            return ODataError(412, "PreconditionFailed", "The ETag does not match the current resource version.");
+        var noneMatchList = ParseETagList(ifNoneMatch.ToString()).ToList();
+        if (noneMatchList.Contains("*"))
+        {
+            return ODataError(412, "PreconditionFailed",
+                "If-None-Match: * precondition failed: a resource already exists at this key.");
+        }
+
+        if (noneMatchList.Contains(requestSource.InvokeGetETag(current)))
+        {
+            return ODataError(412, "PreconditionFailed",
+                "If-None-Match precondition failed: the ETag matches the current resource version.");
+        }
+
         return null; // OK to proceed
     }
 
@@ -9404,6 +9481,18 @@ internal static class OhDataEndpointFactory
                         var requestNav = s.NavigationRoutes.First(n => n.PropertyName == addRefNavPropertyName);
                         object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
 
+                        // #478: adding/setting a link mutates the addressed entity's relationship
+                        // state, so a received If-Match must be honoured (RFC 9110 §13.1.1 -- the
+                        // method MUST NOT be performed when the precondition evaluates false).
+                        // The addRef/setRef delegate signature is (TKey, string, CancellationToken),
+                        // so the handler author cannot implement this themselves; before this the
+                        // header was silently discarded and the link written with a 204.
+                        // Positioned after the key parse and BEFORE the body is read, matching the
+                        // structural-property write route: a refused precondition outranks a
+                        // malformed body, and nothing has been mutated when it fires.
+                        var refEtagCheck = await CheckETagAsync(source, s, ctx, parsedKey!, ct);
+                        if (refEtagCheck is not null) return refEtagCheck;
+
                         JsonElement body;
                         try
                         {
@@ -9505,6 +9594,13 @@ internal static class OhDataEndpointFactory
                             var s = ResolveHandlers(ctx);
                             var requestNav = s.NavigationRoutes.First(n => n.PropertyName == removeRefNavPropertyName);
                             object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
+
+                            // #478: unlinking mutates the addressed entity's relationship state.
+                            // Same reasoning as the add/set route above -- the removeRef delegate
+                            // gets (TKey, string, CancellationToken) and cannot check the header.
+                            var refEtagCheck = await CheckETagAsync(source, s, ctx, parsedKey!, ct);
+                            if (refEtagCheck is not null) return refEtagCheck;
+
                             // For DELETE $ref on collection nav, the related id may come from query param $id
                             string relatedId = ctx.Request.Query.TryGetValue("$id", out var idVal)
                                 ? idVal.ToString()
@@ -9547,6 +9643,18 @@ internal static class OhDataEndpointFactory
                             return BadKeyError(logger, ex, key, name);
                         }
 
+                        var s = ResolveHandlers(ctx);
+
+                        // #478: creating a related entity through the parent's navigation mutates
+                        // the parent's relationship state, so a received If-Match is honoured here
+                        // too (RFC 9110 §13.1.1). The `post` delegate gets
+                        // (TKey, TNavigation, CancellationToken) and cannot check the header
+                        // itself. ResolveHandlers is hoisted above the body read for this -- the
+                        // precondition must be evaluated before anything is deserialized, so a
+                        // refused write never runs user code.
+                        var navPostEtagCheck = await CheckETagAsync(source, s, ctx, parsedKey!, ct);
+                        if (navPostEtagCheck is not null) return navPostEtagCheck;
+
                         object? child;
                         try
                         {
@@ -9588,7 +9696,6 @@ internal static class OhDataEndpointFactory
                         if (child is null)
                             return ODataError(400, "InvalidBody", "Request body is empty or could not be deserialized.");
 
-                        var s = ResolveHandlers(ctx);
                         var requestNav = s.NavigationRoutes.First(n => n.PropertyName == postNavPropertyName);
                         logger?.LogDebug("POST {Prefix}/{Name}({Key})/{Nav}", prefix, name, SanitizeLogValue(key), postNavPropertyName);
                         object? created = await requestNav.PostChild!(parsedKey!, child, ct);
@@ -10207,6 +10314,28 @@ internal static class OhDataEndpointFactory
         }
 
         // Gap 7: Entity-level bound actions — POST /{name}({key})/{action.Name}
+        //
+        // #478 -- DELIBERATE If-Match EXCLUSION, and the one place in this file where a
+        // state-changing keyed route does NOT call CheckETagAsync. The $ref and navigation-POST
+        // routes above were brought under the precondition gate; actions were not, and the reason
+        // is the identity of the *target resource*, not convenience:
+        //
+        //   RFC 9110 §13.1.1 evaluates If-Match against "the current representation of the target
+        //   resource". The target resource of POST /Set(key)/Action is the ACTION-INVOCATION
+        //   resource (OData Protocol §11.5.4), which has no representation and therefore no
+        //   entity tag of its own. `Set(key)` is the action's binding parameter, not the request
+        //   target. A $ref write is different in kind: OData §11.4.6 defines it as a modification
+        //   of the addressed entity's own relationship state, so the entity IS the target.
+        //
+        // Consequences the exclusion accepts: an action that mutates its binding entity ignores a
+        // received If-Match, and the only way to honour it is for the profile to inject
+        // IHttpContextAccessor and hand-implement the comparison. That escape hatch exists for
+        // EVERY handler on a scoped profile, $ref delegates included -- so "the author cannot do
+        // it" is NOT the reason the $ref routes above are gated; the reason is that the addressed
+        // entity is unambiguously their target and the server should do it once, correctly.
+        // Collection-level bound actions and unbound actions have no key at all and no entity to
+        // compare against. Revisiting this needs an explicit decision, not a mechanical extension;
+        // docs/etags.md states the exclusion for API consumers.
         foreach (var action in source.BoundActions.Where(a => a.IsEntityLevel))
         {
             var actionCapture = action;
