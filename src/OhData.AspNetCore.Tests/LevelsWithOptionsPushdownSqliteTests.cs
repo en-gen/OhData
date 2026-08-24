@@ -170,9 +170,14 @@ internal static class LevelsOptionsSqliteHarness
     //     └─ B(3, inactive)    └─ B1(7, active)
     // Root has 2 children; A has 3 (more than the MaxExpandTop=2 fixture's ceiling, so the per-level
     // count bound can be proven to bite at a DEEPER level than the root).
+    // #466: <paramref name="configureExtraProfiles"/> lets a caller register further entity sets over
+    // the SAME LvNode model — the non-pushdown read paths ($levels' whole blind spot) have no
+    // representation in this fixture otherwise. Additive and optional: every existing call site
+    // registers exactly the four profiles it always did.
     public static async Task<TestFixture> BuildAsync(
         SqliteConnection connection, LevelsDelegateCounter counter, SqlCaptureSink? sink,
-        bool delegatelessFirst = true, Action<EntitySetDefaults>? defaults = null)
+        bool delegatelessFirst = true, Action<EntitySetDefaults>? defaults = null,
+        Action<OhDataBuilder>? configureExtraProfiles = null)
     {
         TestFixture fx = await TestHostBuilder.BuildAsync(
             b =>
@@ -190,6 +195,7 @@ internal static class LevelsOptionsSqliteHarness
                 }
                 b.AddEntitySetProfile<LvShallowNodeProfile>();
                 b.AddEntitySetProfile<LvRenamedNodeProfile>();
+                configureExtraProfiles?.Invoke(b);
             },
             configureServices: services =>
             {
@@ -505,13 +511,26 @@ public sealed class LevelsWithOptionsDelegateSafetyTests
     // Asserted in BOTH registration orders because the SAME CLR type is also exposed by a
     // delegate-LESS set: a delegate-carrying set must never be bypassed just because a delegate-less
     // one happened to register first (the #273 class of bug).
+    //
+    // #466 CHANGED THE LEVEL COUNT THESE CASES CAN CARRY, and deliberately: this theory used to drive
+    // `$levels=2` and close with `DoesNotContain("A1")` under the comment "the delegate path loads
+    // exactly one level; the deeper self-references stay stripped". That WAS the defect — a two-level
+    // request answered 200 with one level and no indication, while `Children($expand=Children)`, the
+    // same request spelled out, recursed through ExpandLevelAsync and served both. A multi-level
+    // $levels on a delegate-backed navigation is now a 400 (see DelegateBackedSelfNav_MultiLevel_Is400
+    // below, which also re-pins the no-self-join half for the rejected shape).
+    //
+    // The delegate-safety assertions here are unchanged and still the point of the test; only the
+    // requested depth moved to `$levels=1`, which is a spec-equivalent restatement of a bare $expand
+    // and is served, not rejected. The routeBackedNavNames skip this pins does not read the level
+    // count at all, so `$levels=1` exercises exactly the same gate `$levels=2` did.
     [Theory]
-    [InlineData(true, "$levels=2;$select=name")]
-    [InlineData(false, "$levels=2;$select=name")]
-    [InlineData(true, "$levels=2;$filter=active eq true")]
-    [InlineData(false, "$levels=2;$filter=active eq true")]
-    [InlineData(true, "$levels=2;$count=true")]
-    [InlineData(false, "$levels=2;$count=true")]
+    [InlineData(true, "$levels=1;$select=name")]
+    [InlineData(false, "$levels=1;$select=name")]
+    [InlineData(true, "$levels=1;$filter=active eq true")]
+    [InlineData(false, "$levels=1;$filter=active eq true")]
+    [InlineData(true, "$levels=1;$count=true")]
+    [InlineData(false, "$levels=1;$count=true")]
     public async Task DelegateBackedSelfNav_WithLevelsOptions_NeverSelfJoined_DelegateInvoked(
         bool delegatelessFirst, string levelsOptions)
     {
@@ -537,10 +556,95 @@ public sealed class LevelsWithOptionsDelegateSafetyTests
 
         Assert.True(counter.ChildCalls > 0, "the delegate-backed Children nav must expand through its delegate");
 
-        // The delegate path loads exactly one level; the deeper self-references stay stripped.
+        // One level requested, one level served — and the level below it stays stripped, which is
+        // the $levels budget being honoured rather than truncated.
         string body = await resp.Content.ReadAsStringAsync();
         Assert.Contains("\"A\"", body);
         Assert.DoesNotContain("\"A1\"", body);
+    }
+
+    // #466: a MULTI-LEVEL $levels on a delegate-backed navigation is rejected rather than silently
+    // truncated to one level.
+    //
+    // FAILS WITHOUT THE FIX: 200, one level served, no indication that two were asked for.
+    //
+    // The rejection fires BEFORE the delegate runs, which is why ChildCalls is asserted to be zero —
+    // a request that is going to be refused must not first load anything. The no-self-join assertion
+    // is carried here too: it is the invariant this whole class exists for, and it must hold on the
+    // rejected shape as well as the served one.
+    [Theory]
+    [InlineData(true, "$levels=2")]
+    [InlineData(false, "$levels=2")]
+    [InlineData(true, "$levels=3;$select=name")]
+    [InlineData(false, "$levels=max")]
+    public async Task DelegateBackedSelfNav_MultiLevel_Is400_NotSilentlyTruncated(
+        bool delegatelessFirst, string levelsOptions)
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        var sink = new SqlCaptureSink();
+        var counter = new LevelsDelegateCounter();
+        await using TestFixture fx = await LevelsOptionsSqliteHarness.BuildAsync(
+            connection, counter, sink, delegatelessFirst);
+        sink.Clear();
+
+        HttpResponseMessage resp = await fx.Client.GetAsync(
+            $"/odata/LvSecureNodes?$filter=parentId eq null&$expand=Children({levelsOptions})");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+
+        using JsonDocument doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        JsonElement error = doc.RootElement.GetProperty("error");
+        Assert.Equal("InvalidQueryOption", error.GetProperty("code").GetString());
+        string message = error.GetProperty("message").GetString()!;
+        Assert.Contains("'$levels'", message);
+        Assert.Contains("delegate-backed", message);
+        // The message must name the spelling that DOES serve every level.
+        Assert.Contains("nested $expand", message);
+
+        foreach (string statement in sink.Snapshot())
+        {
+            Assert.True(Regex.Matches(statement, "\"LvNodes\"").Count <= 1,
+                $"a delegate-backed self-referential nav must never be EF-included; got:\n{statement}");
+        }
+        Assert.Equal(0, counter.ChildCalls);
+    }
+
+    // WHAT THE EXPLICIT SPELLING DOES ON THIS FIXTURE, measured — because it is NOT the clean
+    // contrast it looks like, and the difference matters to why the 400 above is right.
+    //
+    // `Children($expand=Children)` here runs the delegate at level 1 and then BLANKS level 2: LvNode
+    // is exposed by three entity sets that disagree about Children, so Model B's exact-EDM-type union
+    // at depth >= 2 resolves Blank (#318, owner-settled and FROZEN; its micro-decision (B) is exactly
+    // this "delegate-backed parent blanks only the child" shape). The explicit spelling SERVES both
+    // levels only where the deeper level's candidate set agrees — a model with a single entity set
+    // over the node type, the ordinary shape — and it is that shape the $levels truncation diverged
+    // from.
+    //
+    // Note the difference in KIND between the two failures, which is the whole reason $levels was
+    // the defect and this is not: Blank emits `Children: []`, a positive statement the framework
+    // stands behind (JSON Format v4.01 §8.3 — expanded and empty), reached by a documented
+    // fail-closed rule. The $levels truncation OMITTED the level instead, which says only "not
+    // expanded" about a level the client explicitly asked for.
+    //
+    // Recorded as an assertion rather than a comment so that if the union rule ever changes, the
+    // pairing between these two spellings is re-examined rather than silently drifting.
+    [Fact]
+    public async Task DelegateBackedSelfNav_ExplicitNesting_RunsLevelOne_BlanksLevelTwo_PerFrozenModelB()
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        var counter = new LevelsDelegateCounter();
+        await using TestFixture fx = await LevelsOptionsSqliteHarness.BuildAsync(
+            connection, counter, sink: null);
+
+        string body = await fx.Client.GetStringAsync(
+            "/odata/LvSecureNodes?$filter=parentId eq null&$expand=Children($expand=Children)");
+
+        using JsonDocument doc = JsonDocument.Parse(body);
+        JsonElement children = LevelsOptionsSqliteHarness.Root(doc).GetProperty("Children");
+        Assert.Equal(new[] { "A", "B" }, LevelsOptionsSqliteHarness.Names(children));
+        Assert.Equal(0, children[0].GetProperty("Children").GetArrayLength());
+        Assert.True(counter.ChildCalls > 0, "level 1 must come from the delegate");
     }
 
     // Control: the delegate-LESS set over the SAME CLR type still pushes — the deferral is scoped to

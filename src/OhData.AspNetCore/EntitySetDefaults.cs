@@ -81,6 +81,43 @@ public sealed class EntitySetDefaults
     /// <c>$levels=N</c> recursion — not just the two #254 shapes. Setting it also composes the
     /// child-key <c>ORDER BY</c> tiebreaker on those shapes, so it governs the nested wire order as
     /// well as the status code.
+    /// <para>
+    /// <b>How an over-ceiling collection is answered depends on how it was loaded (#464/#418).</b>
+    /// Where the framework <i>composed</i> the child query — a delegate-less navigation folded into
+    /// an EF Core projection or <c>Include</c> — it also composed the child-key order, so the
+    /// response can be a trimmed page plus a <c>Nav@odata.nextLink</c> continuation when
+    /// <see cref="ExpandPagingEnabled"/> is on, and a <c>400</c> otherwise. Where it did <b>not</b> —
+    /// a <c>GetAll</c> source, a Priority-1 source, an <c>IQueryable</c> that is not EF Core-backed
+    /// (which <c>$search</c> also produces, by swapping in an in-memory queryable), a branch the
+    /// <c>$expand</c> pushdown declined, or any level of a single-entity <c>GET /Set(key)</c> — the
+    /// related rows arrive already materialized inside whatever the handler returned, in that
+    /// handler's own order. Page 1 and a continuation cannot be proven to agree on such an order, and
+    /// a link over a disagreeing order silently skips and duplicates rows, so those are answered with
+    /// <c>400</c> (<c>InvalidQueryOption</c>) and <see cref="ExpandPagingEnabled"/> buys nothing
+    /// there. Either way the bound holds: the ceiling is never silently exceeded and a collection is
+    /// never silently truncated.
+    /// </para>
+    /// <para>
+    /// <b>A navigation whose delegate actually RAN is never bounded by this value</b> (#313 O6): its
+    /// rows are the answer the profile's own <c>Handler</c>/<c>BatchHandler</c> returned, and the
+    /// framework neither truncates nor rejects those. Bound them in the delegate.
+    /// </para>
+    /// <para>
+    /// That exemption turns on the delegate having been <i>invoked</i>, not on the navigation being
+    /// <i>declared</i> with one, and the two come apart below a raw-served parent: the expand
+    /// pipeline does not recurse into a delegate-less navigation's subtree, so a delegate-backed
+    /// navigation one level under it is never called and the rows present came from the parent's own
+    /// handler. Those are bounded like any other raw rows. The exempt case is therefore the one the
+    /// ceiling walk can actually reach — a delegate-backed navigation at the root of the expansion —
+    /// and it never descends into that navigation's subtree at all.
+    /// </para>
+    /// <para>
+    /// <b>On a raw-served (non-pushed) expansion, the nested window is still not APPLIED.</b> A
+    /// nested <c>$top</c>/<c>$skip</c> within the ceiling is accepted and then ignored on those
+    /// paths, so the response is the whole collection — bounded by this ceiling, but not windowed to
+    /// what was asked for. That residue is tracked separately (#352/#464); this value is a DoS bound,
+    /// not a promise that every nested option is honoured on every substrate.
+    /// </para>
     /// Must be a positive integer or <c>null</c> (no ceiling). Use <c>null</c>, not a large sentinel:
     /// <c>int.MaxValue</c> counts as set, so it pays for every bound and tiebreaker while making the
     /// check unable to fire.

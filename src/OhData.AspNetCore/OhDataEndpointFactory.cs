@@ -2125,7 +2125,9 @@ internal static class OhDataEndpointFactory
         OhDataRegistration registration,
         IServiceProvider requestServices,
         CancellationToken ct,
-        HashSet<string>? pushedLevelsNavNames = null)
+        HashSet<string>? pushedLevelsNavNames = null,
+        IReadOnlyList<EngagedExpand>? engagedExpandNavs = null,
+        bool singleEntityRead = false)
     {
         // Stage 1: Serialize once using the configured naming policy.
         // #325/#326 (Option B): bounded by the root $expand clause (and any pushed $levels
@@ -2135,6 +2137,69 @@ internal static class OhDataEndpointFactory
         // so a cycle among them is structurally unreachable.
         var serializerOptions = jsonOptions ?? _pascalCaseSerializerOptions;
         SelectExpandClause? rootClauseForSerialize = options.SelectExpand?.SelectExpandClause;
+
+        // #466: the RAW substrate's own $levels budget, unioned onto the PUSHED one.
+        //
+        // Before this, `levelsNavNames` was exactly CollectPushedLevelsNavNames' answer — the
+        // navigations the EF projection recursed with BuildLevelsNavAccess — and it is null on
+        // GetAll, GetById, Priority-1 and a non-EF GetQueryable. BuildExpandLookup seeds a levels
+        // budget ONLY for a name in this set, so on those four paths TryKeepNav dropped the
+        // self-navigation below level 1 and `$levels=N` served ONE level, silently, while the
+        // explicit nested spelling of the same request served all N. Two spellings of one request
+        // must not give different answers.
+        //
+        // Nothing needs to LOAD anything for the raw substrate: the related rows are already in the
+        // CLR graph the handler returned (an EF fixup-populated tree, an in-memory object graph),
+        // and SerializeBounded reads them by reflection. Seeding the budget is therefore the whole
+        // fix — the same walker/keep-rule the explicit spelling already rides.
+        //
+        // MEMBERSHIP IS `ServeRaw AND some candidate has an opinion`, resolved through the SAME
+        // ResolveNavTreatment every other site uses, PER LEVEL: RunDelegate/Blank are excluded
+        // because the raw graph is NOT their answer (a delegate-backed $levels takes
+        // ExpandLevelAsync's own path, which rejects a multi-level one outright rather than
+        // truncating it — see LevelsOnDelegateRejection), and a navigation no candidate has an
+        // opinion on is excluded because nothing ever loaded it. Depth >= 2 uses the exact-EDM-type
+        // union and the walk descends only through ServeRaw parents — the raw substrate is exactly
+        // what a ServeRaw parent leaves behind (#293 Model B).
+        //
+        // THE UNION FEEDS THE TWO SERIALIZATION STAGES ONLY, NEVER ExpandLevelAsync — and that
+        // restriction is load-bearing, not tidiness. An earlier revision of this branch passed the
+        // union to all three stages, reasoning that "AnyCandidateHasOpinion keeps it inert for #440,
+        // because #440's omission arm fires only when NO candidate has an opinion". That reasoning
+        // is correct PER NAME PER LEVEL and false for a FLAT set: membership is decided at the level
+        // the name was found, while the omission arm tests the same set against a name at a
+        // DIFFERENT level. A navigation called `Children` that is ServeRaw-with-opinion at depth 2
+        // (so it enters the set) and UNDECLARED at the root therefore bypassed the omission arm
+        // there, and `?$expand=Children,Other($expand=Children($levels=2))` emitted `"Children": []`
+        // on the root entity — the exact "expanded, and empty" statement about a relationship the
+        // server never evaluated that #440 exists to prevent, under a 200, on a DEFAULT
+        // configuration (this union is built whenever the clause carries a $levels anywhere,
+        // independently of MaxExpandTop). MEASURED on that revision; base e3a7bd3 omits the member.
+        //
+        // Stage 3 therefore keeps the PUSHED set, which is the set #440's exclusion was written
+        // against: BuildLevelsNavBinding does not consult NavigationPropertyNames, so an undeclared
+        // self-referential navigation genuinely can be pushed and loaded, and only that case needs
+        // the bypass. The raw set never needs it — a raw name enters only where some candidate has
+        // an opinion at its OWN level, and a navigation with an opinion never reaches the
+        // no-opinion arm at all. Issue466NavOmissionRegressionTests is the tripwire.
+        HashSet<string>? levelsNavNames = pushedLevelsNavNames;
+        if (rootClauseForSerialize is not null && ClauseHasLevels(rootClauseForSerialize) &&
+            CollectRawServedLevelsNavNames(
+                rootClauseForSerialize, new[] { requestSource }, registration, requestServices,
+                null, depth: 1) is { } rawLevelsNavNames)
+        {
+            if (levelsNavNames is null)
+            {
+                levelsNavNames = rawLevelsNavNames;
+            }
+            else
+            {
+                // Copy rather than mutate: the pushed set belongs to the caller.
+                levelsNavNames = new HashSet<string>(levelsNavNames, StringComparer.OrdinalIgnoreCase);
+                levelsNavNames.UnionWith(rawLevelsNavNames);
+            }
+        }
+
         // Perf fix (measured regression vs. develop, see SerializeBoundedCollection's remarks):
         // ONE batched call for the whole page instead of one SerializeBounded call per entity.
         // Fold-in #5 (#325/#326 review — maxLevels asymmetry) still applies: pass the SAME
@@ -2142,7 +2207,7 @@ internal static class OhDataEndpointFactory
         // uses, instead of silently defaulting to the file-wide MaxNestedExpandDepth (12).
         JsonArray json = SerializeBoundedCollection(originalItems, rootEdmType, registration.EdmModel,
             rootClauseForSerialize,
-            serializerOptions, maxLevels: source.MaxExpansionDepth, levelsNavNames: pushedLevelsNavNames);
+            serializerOptions, maxLevels: source.MaxExpansionDepth, levelsNavNames: levelsNavNames);
 
         // Stage 2: Inject @odata.etag using the original (pre-expand) items for ETag computation.
         if (source.HasETag)
@@ -2180,9 +2245,15 @@ internal static class OhDataEndpointFactory
             // navigation" — the same per-profile question WarnUndeclaredConventionNavigations asks,
             // and deliberately not a sibling-union question (a sibling entity set declaring the same
             // CLR member does not make THIS entity set able to serve it).
+            //
+            // #466: `pushedLevelsNavNames`, NOT the `levelsNavNames` union built above. The union is
+            // flat and its membership is decided per level, so feeding it to a per-level omission
+            // test lets a deep name suppress the omission of a same-named root navigation. See the
+            // union site for the measurement.
             await ExpandLevelAsync(
                 rootItems, rootObjects, rootClause, new[] { requestSource }, rootEdmType,
-                registration, requestServices, serializerOptions, depth: 1, ct, pushedLevelsNavNames);
+                registration, requestServices, serializerOptions, depth: 1, ct,
+                source.MaxExpansionDepth, pushedLevelsNavNames);
         }
 
         // Stage 3.5: Omit navigation properties that were not $expand'd (issue #176).
@@ -2194,7 +2265,29 @@ internal static class OhDataEndpointFactory
         // own un-expanded navigations are stripped too (face 3). Runs after Stage 3 so freshly
         // injected expansions are present, and before Stage 4 so $select still has final say.
         OmitUnexpandedNavigations(json, rootEdmType, options.SelectExpand?.SelectExpandClause, source.ModelType, serializerOptions,
-            activeLevels: null, maxLevels: source.MaxExpansionDepth, levelsNavNames: pushedLevelsNavNames);
+            activeLevels: null, maxLevels: source.MaxExpansionDepth, levelsNavNames: levelsNavNames);
+
+        // Stage 3.6 (#418/#463/#464): hold every RAW-SERVED collection expansion in this response to
+        // MaxExpandTop, at every level. See EnforceRawExpandCeiling for the whole argument — what
+        // counts as raw-served, why it is a 400 rather than a trim-and-link, and why an engaged
+        // (pushed) navigation is skipped here and bounded by ShapePushedExpandsInJson instead.
+        //
+        // Sited HERE, in the shared pipeline, rather than at a route: all five read routes converge
+        // on this method, and #418's original per-route siting on GetById alone is precisely how #464
+        // (three unbounded collection paths) went unnoticed. Runs after Stage 3.5 so #440's omissions
+        // and the un-expanded strip have already happened — there is no point measuring a collection
+        // that is about to be removed — and before Stage 4 so the root $select cannot hide a breach.
+        //
+        // Inert, and byte-identically so, on the shipping default: MaxExpandTop is null.
+        if (source.MaxExpandTop is int expandCeiling &&
+            options.SelectExpand?.SelectExpandClause is { } ceilingClause)
+        {
+            EnforceRawExpandCeiling(
+                json.OfType<JsonObject>().ToList(), ceilingClause, new[] { requestSource },
+                source.ModelType, engagedExpandNavs, serializerOptions,
+                expandCeiling, source.MaxExpansionDepth, source.EntitySetName, singleEntityRead,
+                pathPrefix: string.Empty, pathSuffix: string.Empty, depth: 1);
+        }
 
         // Stage 4: Strip unselected properties at the ROOT level (if $select requested). Deeper
         // levels have already had their own $select applied by ExpandLevelAsync in Stage 3.
@@ -2322,6 +2415,7 @@ internal static class OhDataEndpointFactory
         JsonSerializerOptions serializerOptions,
         int depth,
         CancellationToken ct,
+        int maxExpansionDepth,
         HashSet<string>? pushedLevelsNavNames = null)
     {
         if (items.Count == 0 || depth > MaxNestedExpandDepth || levelSources.Count == 0) return;
@@ -2479,6 +2573,39 @@ internal static class OhDataEndpointFactory
                 continue;
             }
 
+            // #466: a MULTI-LEVEL $levels on a delegate-backed navigation is REJECTED, not truncated.
+            //
+            // The delegate loads ONE level: this branch calls Handler/BatchHandler once for this
+            // level's parents, and the $levels item's nested clause carries no expand item of its
+            // own, so `hasNestedExpand` is false and nothing recurses. The deeper self-references are
+            // then stripped by OmitUnexpandedNavigations (a delegate-backed nav is never in
+            // levelsNavNames, deliberately — see ApplyCollectionPipelineAsync's union). So
+            // `Nav($levels=3)` answered 200 with ONE level while `Nav($expand=Nav($expand=Nav))` —
+            // the same request, spelled out — answered 200 with three. Silent truncation of the
+            // requested shape, and the M1 rule ("no bound without either a continuation or a 400")
+            // rules that out.
+            //
+            // WHY 400 AND NOT AN IMPLEMENTATION. Loading level 2 means running a delegate at depth 2,
+            // and WHICH delegate is not settled for this substrate: Model B resolves depth >= 2 from
+            // the exact-EDM-type union (#293, FROZEN), which for a self-referential navigation over a
+            // type exposed by a disagreeing sibling set is Blank — while the PUSHDOWN path's $levels
+            // deliberately never re-resolves and stays on the URL-named set all the way down (#318,
+            // owner-settled). Implementing here would have to pick one of those, i.e. make an owner
+            // decision about gate resolution on a substrate that has never had one. The 400 needs no
+            // such decision, and it follows this file's own precedent exactly: #294 rejects a nested
+            // $top/$skip on a delegate-backed navigation for the very same reason (the option cannot
+            // be applied to a delegate's answer), a few lines above.
+            //
+            // $levels=1 is NOT rejected: it is a spec-equivalent restatement of a bare $expand, which
+            // this path serves correctly. The budget is resolved through the SAME ResolveLevelsBudget
+            // both loaders use, so this guard cannot disagree with them about what a $levels means.
+            if (expandItem.LevelsOption is { } delegateLevels &&
+                ResolveLevelsBudget(
+                    delegateLevels.IsMaxLevel, delegateLevels.Level, maxExpansionDepth, MaxNestedExpandDepth) > 1)
+            {
+                throw LevelsOnDelegateRejection(propName);
+            }
+
             // NavTreatment.RunDelegate: exactly one candidate at this level routes this navigation
             // back, and no candidate disagrees (declares it delegate-less) — that route is the sole,
             // unambiguous authority for it. Run it.
@@ -2601,7 +2728,8 @@ internal static class OhDataEndpointFactory
                 {
                     await ExpandLevelAsync(
                         childItems, childObjects, (SelectExpandClause)nestedClause, targetSources, targetEdmType,
-                        registration, requestServices, serializerOptions, depth + 1, ct);
+                        registration, requestServices, serializerOptions, depth + 1, ct,
+                        maxExpansionDepth);
                 }
                 // If no candidate set is registered/resolvable at all, the deeper expansion
                 // cannot be loaded here; Stage 3.5's OmitUnexpandedNavigations still keeps the
@@ -2637,6 +2765,20 @@ internal static class OhDataEndpointFactory
                 "exposing this type disagree about whether it is delegate-backed, so it is served " +
                 "empty and no window can be applied. Remove the option.");
 
+    // #466: the message for a multi-level $levels on a delegate-backed navigation. Deliberately
+    // shaped like NestedWindowRejection's RunDelegate arm — same substrate, same reason (the option
+    // cannot be applied to a delegate's answer), same two remedies — and it names the spelling that
+    // DOES have an answer, because that is the whole point of the issue: the explicit nested chain
+    // recurses through this method, so every deeper level is RESOLVED through Model B — run through
+    // the level's own delegate where the candidate set agrees, Blanked where it does not — instead of
+    // being dropped without a word.
+    private static Microsoft.OData.ODataException LevelsOnDelegateRejection(string navName) =>
+        new(
+            $"A '$levels' expansion of more than one level is not supported on the delegate-backed " +
+            $"navigation '{navName}'; the delegate loads a single level, so the deeper levels would " +
+            "be silently dropped. Spell the depth out with nested $expand, or declare the navigation " +
+            "delegate-less (no Handler/BatchHandler) to enable the server-side $levels recursion.");
+
     // #320: true when <paramref name="clause"/> carries a $top or $skip on ANY navigation at any depth
     // below it. A pure clause walk — no EDM lookup, no candidate resolution, no profile instantiation —
     // so ExpandLevelAsync's ServeRaw branch pays nothing for the overwhelmingly common expand that
@@ -2652,6 +2794,16 @@ internal static class OhDataEndpointFactory
     // pushdown happened to engage, which is an internal optimization decision invisible to the client,
     // and would turn requests that are honored today into 400s. It needs its own owner decision
     // (reject vs. apply in memory) alongside #352's retirement of this rejection.
+    //
+    // #464 AMENDMENT TO THAT NOTE. It described only the nested-$top/$skip half of the off-pushdown
+    // gap. The MaxExpandTop CEILING had the same reach hole and it is no longer open: a ServeRaw
+    // collection expansion that pushdown did not engage — a GetAll source, a Priority-1 source, a
+    // non-EF IQueryable ($search's in-memory swap included), a branch TryBuildEngagedExpand deferred,
+    // or any level of a single-entity read — is now bounded by EnforceRawExpandCeiling, which 400s
+    // rather than serving an unbounded collection. What is still true of the paragraph above is
+    // narrower than it reads: the nested $top/$skip WINDOW is still silently ignored on those paths
+    // (the client's option is not applied; the response is simply the whole, now ceiling-bounded,
+    // collection). That residue is what #352 owns.
     private static bool ClauseHasNestedTopOrSkip(SelectExpandClause clause)
     {
         foreach (ExpandedNavigationSelectItem item in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
@@ -2660,6 +2812,71 @@ internal static class OhDataEndpointFactory
             if (item.SelectAndExpand is { } deeper && ClauseHasNestedTopOrSkip(deeper)) return true;
         }
         return false;
+    }
+
+    // #466: does this $expand tree carry a $levels anywhere? A pure clause walk, and the gate that
+    // keeps CollectRawServedLevelsNavNames (which DOES resolve candidate sets per level) off the
+    // overwhelmingly common expand that carries no $levels at all. Same shape and same bounding
+    // argument as ClauseHasNestedTopOrSkip above.
+    private static bool ClauseHasLevels(SelectExpandClause clause)
+    {
+        foreach (ExpandedNavigationSelectItem item in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
+        {
+            if (item.LevelsOption is not null) return true;
+            if (item.SelectAndExpand is { } deeper && ClauseHasLevels(deeper)) return true;
+        }
+        return false;
+    }
+
+    // #466: the navigations carrying $levels whose recursion the RAW substrate serves — i.e. the ones
+    // BuildExpandLookup must seed a levels budget for so SerializeBounded/OmitUnexpandedNavigations
+    // keep the self-reference down to the depth requested, exactly as they already do for a PUSHED
+    // $levels (CollectPushedLevelsNavNames) and for the explicit nested spelling.
+    //
+    // Candidates are resolved through the SAME ResolveRequestSourcesForEdmType and the treatment
+    // through the SAME ResolveNavTreatment the real descent uses, so this cannot disagree with it.
+    // The walk descends only through a ServeRaw navigation, because that is exactly the boundary of
+    // the raw substrate: ExpandLevelAsync's ServeRaw branch leaves the materialized graph in place
+    // and does not recurse, so everything below it is read straight off that graph, while a
+    // RunDelegate/Blank navigation replaces the value and owns its own subtree.
+    //
+    // AnyCandidateHasOpinion is required — see the union at the call site for why (it is what keeps
+    // #440's omission arm untouched).
+    private static HashSet<string>? CollectRawServedLevelsNavNames(
+        SelectExpandClause clause,
+        IReadOnlyList<IEntitySetEndpointSource> levelSources,
+        OhDataRegistration registration,
+        IServiceProvider requestServices,
+        HashSet<string>? names,
+        int depth)
+    {
+        if (depth > MaxNestedExpandDepth) return names;
+
+        foreach (ExpandedNavigationSelectItem item in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
+        {
+            string navName = item.PathToNavigationProperty.FirstSegment.Identifier;
+            NavTreatmentResult treatment = ResolveNavTreatment(navName, levelSources);
+            if (treatment.Treatment != NavTreatment.ServeRaw || !treatment.AnyCandidateHasOpinion) continue;
+
+            if (item.LevelsOption is not null)
+            {
+                (names ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase)).Add(navName);
+            }
+
+            if (item.SelectAndExpand is { } nested &&
+                nested.SelectedItems.OfType<ExpandedNavigationSelectItem>().Any())
+            {
+                IEdmEntityType? childEdmType =
+                    (item.PathToNavigationProperty.FirstSegment as NavigationPropertySegment)?
+                    .NavigationProperty?.ToEntityType();
+                names = CollectRawServedLevelsNavNames(
+                    nested,
+                    ResolveRequestSourcesForEdmType(childEdmType, registration, requestServices),
+                    registration, requestServices, names, depth + 1);
+            }
+        }
+
+        return names;
     }
 
     // #320: walks the $expand subtree hanging off a ServeRaw navigation and throws the same 400 the
@@ -5472,7 +5689,75 @@ internal static class OhDataEndpointFactory
         return true;
     }
 
-    // #418: the MaxExpandTop ceiling on the SINGLE-ENTITY read, GET /{Set}({key})?$expand=Nav.
+    // #418/#463/#464: the MaxExpandTop ceiling over every RAW-SERVED collection expansion in a
+    // response — at EVERY level of the $expand tree, on EVERY read path.
+    //
+    // "RAW-SERVED" means: the rows were never loaded by anything the framework composed. They are
+    // whatever the handler's own graph already held — an EF Include inside a GetById delegate, a
+    // fixup-populated tracked graph behind GetAll, an in-memory object graph behind a non-EF
+    // IQueryable or a Priority-1 source, or a branch the $expand pushdown declined to engage. The
+    // framework applies NO nested $filter/$orderby/$top window to any of it (measured: all six
+    // nested options are silently ignored there while the collection pushdown honours every one),
+    // so the configured ceiling is the ONLY bound such a collection has.
+    //
+    // WHAT THIS REPLACED, AND WHY THE SHAPE CHANGED TWICE.
+    //   #418 shipped this as a depth-1 pass over the single-entity read, driven by a nav set resolved
+    //   ONCE at startup from the root profile. Both of those turned out to be holes:
+    //   - #463 (depth): the walk never recursed into item.SelectAndExpand and the startup set held
+    //     only the ROOT profile's navigations, so with cap = 2 `?$expand=Books($expand=Chapters)`
+    //     served every chapter. That is #454's pattern again — a validation and its enforcement
+    //     consulting different sets: ValidateNestedTopCeiling walks the WHOLE tree (an explicit
+    //     $top=1000 at depth 2 is rejected) while the ceiling that bounds SERVED data checked depth 1.
+    //     The option that would have bounded the fetch was rejected; the shape that fetched
+    //     everything passed. It closed the option axis (#418's own note) and not the depth axis.
+    //   - #464 (path): the collection route's ceiling and its continuation link both live behind
+    //     ShapePushedExpandsInJson, which runs ONLY when ResolveEfCoreAssembly found EF Core. So on a
+    //     non-EF GetQueryable ($search's in-memory swap included), on GetAll and on Priority-1 the
+    //     configured DoS bound silently did not exist — `?$expand=Children` at cap 1 served all three
+    //     children, and `?$expand=Children($top=1)` accepted the in-ceiling $top and served all three
+    //     as well. MaxExpandTop's own XML doc claimed it bounded "every collection $expand level".
+    //   Both are the same defect — a bound whose enforcement was sited on ONE substrate at ONE depth —
+    //   so they get one mechanism, resolved PER LEVEL, called from ApplyCollectionPipelineAsync where
+    //   all five read routes already converge.
+    //
+    // MODEL B GOVERNS WHICH ROOT BRANCHES ARE RAW — AT DEPTH 1, AND ONLY THERE. Through the shared
+    // ResolveNavTreatment (#293, FROZEN), over the URL-named profile alone, which is exactly what
+    // ApplyCollectionPipelineAsync passes ExpandLevelAsync as the root candidate set:
+    //   - ServeRaw is bounded, and descended into. A ServeRaw nav with NO opinion from any candidate
+    //     is bounded too — nothing can delegate it (no candidate routes it).
+    //   - RunDelegate is NOT bounded and NOT descended into: ExpandLevelAsync really did run the
+    //     delegate, so those rows are the developer's own answer and #313 O6 settled that the
+    //     framework does not truncate them. A 400 would be the same weakening by another route.
+    //   - Blank is NOT bounded — but it is also UNREACHABLE here, and that is structural rather than
+    //     incidental: the root candidate set is the single requesting profile, and over ONE candidate
+    //     ResolveNavTreatment can only answer ServeRaw or RunDelegate (a candidate either routes a
+    //     navigation or declares it, never both, so DB and DL can never both be non-empty and DB can
+    //     never hold two). The depth-1 gate is therefore "skip RunDelegate" in practice; it is
+    //     written as `!= ServeRaw` so that it stays correct if the root set ever widens, not because
+    //     a Blank root branch is a case the tests can reach.
+    //
+    // BELOW DEPTH 1 THERE IS NO CLASSIFICATION TEST AT ALL, and that is the correction #464-one-
+    // level-down needed. Everything this walk reaches below depth 1 sits under a ServeRaw parent by
+    // construction, and ExpandLevelAsync's ServeRaw branch DOES NOT RECURSE — so no delegate ran
+    // down there, nothing was blanked, and every value present is the root handler's own raw graph
+    // regardless of how the navigation naming it is classified. An earlier revision of this pass
+    // applied the depth-1 test at every level and cited #313 O6 for the exemption; MEASURED, cap = 2,
+    // GetAll, Author -Books(delegate-less)-> Book -Chapters(DELEGATE)->,
+    // `?$expand=Books($expand=Chapters)` served five chapters with the Chapters delegate invoked ZERO
+    // times. The exemption was citing a delegate that never ran, over rows the ceiling exists to
+    // bound. So below depth 1: check and descend, classification-blind.
+    //
+    // THE DESCENT STILL STOPS AT A NON-ServeRaw PARENT AT DEPTH 1, and that is the collection route's
+    // own rule, not a new one: TryBuildEngagedExpand pushes a branch only when it is delegate-less
+    // end-to-end, so the pushed ceiling likewise never reaches into a delegate-backed parent's
+    // subtree. Keeping the two the same is what stops this pass from bounding a delegate's answer —
+    // and it is a strictly narrower exemption than "any navigation a profile declares with a
+    // delegate", which is what made the earlier revision wrong.
+    //
+    // AN ENGAGED NAVIGATION IS SKIPPED WHOLESALE. ShapePushedExpandsInJson/ShapeLevelsInJson enforce
+    // the ceiling for those (and, for the one shape #313 allows, trim-and-link instead of 400) AFTER
+    // this pass runs. Checking them here as well would 400 exactly the requests that were about to be
+    // served a continuation link.
     //
     // A 400, NEVER A TRIM-AND-LINK -- and that asymmetry with the collection route is the whole M1
     // analysis, so it is recorded here rather than in a commit message.
@@ -5483,47 +5768,207 @@ internal static class OhDataEndpointFactory
     // and the continuation route GET /{Set}({key})/{Nav}?$skip=N is already registered whenever
     // ResolveExpandPagingNavigations returned that navigation. The third is not, and it is decisive:
     //
-    //   PAGE 1 AND THE CONTINUATION CANNOT BE PROVEN TO AGREE ON AN ORDER. On the collection route the
-    //   framework composes BOTH sides -- ApplyNavShape appends OrderBy(child key) to page 1's SQL and
-    //   the continuation composes the same OrderBy over the same column, so the two agree by
-    //   construction (#313 s4.5). On GetById the framework composes NEITHER: the child rows arrive
-    //   already materialized inside the TModel the developer's own GetById delegate returned, in
-    //   whatever order that delegate's query produced (measured on this tree: a plain
-    //   `LEFT JOIN "Books"` with no ORDER BY over the child at all). Re-sorting the serialized JsonArray
-    //   to compensate does not close the gap -- it would compare the child key as a JSON value, while
-    //   the continuation compares it in the DATABASE, and those two orders genuinely differ for the
-    //   ordinary key types (SQL Server orders `uniqueidentifier` by a byte permutation no JSON sort
-    //   reproduces; string keys order by the column's collation, not by ordinal).
+    //   PAGE 1 AND THE CONTINUATION CANNOT BE PROVEN TO AGREE ON AN ORDER. On the PUSHED collection
+    //   expansion the framework composes BOTH sides -- ApplyNavShape appends OrderBy(child key) to
+    //   page 1's SQL and the continuation composes the same OrderBy over the same column, so the two
+    //   agree by construction (#313 s4.5). On a raw-served expansion the framework composes NEITHER:
+    //   the child rows arrive already materialized inside whatever the developer's own handler
+    //   returned, in whatever order that handler produced (measured on this tree: a plain
+    //   `LEFT JOIN "Books"` with no ORDER BY over the child at all, and an in-memory GetAll graph has
+    //   no defined order at all). Re-sorting the serialized JsonArray to compensate does not close the
+    //   gap -- it would compare the child key as a JSON value, while the continuation compares it in
+    //   the DATABASE, and those two orders genuinely differ for the ordinary key types (SQL Server
+    //   orders `uniqueidentifier` by a byte permutation no JSON sort reproduces; string keys order by
+    //   the column's collation, not by ordinal).
     //
     // A link over a disagreeing order silently SKIPS and DUPLICATES rows across the page boundary,
     // which is worse than the 400 and is undetectable by the client. So this site takes the 400,
     // exactly as #418's own note recommends for the case where the ceiling is straightforward and the
-    // link is not. ExpandPagingEnabled therefore does nothing on this route, and the message below
-    // does not pretend otherwise: it points at the collection route, which really can page.
+    // link is not. ExpandPagingEnabled therefore buys nothing on a raw-served expansion, and neither
+    // message below pretends otherwise.
     //
-    // The message is deliberately NOT EnsureWithinExpandCeiling's. That one ends "Narrow it with a
-    // nested $filter", which is actively false advice here -- a nested $filter is one of the options
-    // measured to be silently ignored on this route, so following it would return the same 400.
-    private static void EnforceSingleEntityExpandCeiling(
-        JsonObject entityBody, SelectExpandClause? clause,
-        IReadOnlyDictionary<string, string> ceilingNavs, int? maxExpandTop, string entitySetName)
+    // Throws Microsoft.OData.ODataException, which all five read routes already catch and surface as
+    // 400 InvalidQueryOption -- no IResult threading through this void recursive walk.
+    private static void EnforceRawExpandCeiling(
+        IReadOnlyList<JsonObject> levelObjects,
+        SelectExpandClause? clause,
+        IReadOnlyList<IEntitySetEndpointSource> rootSources,
+        Type? levelClrType,
+        IReadOnlyList<EngagedExpand>? engaged,
+        JsonSerializerOptions serializerOptions,
+        int cap,
+        int maxExpansionDepth,
+        string entitySetName,
+        bool singleEntityRead,
+        string pathPrefix,
+        string pathSuffix,
+        int depth)
     {
-        if (clause is null || maxExpandTop is not int cap || ceilingNavs.Count == 0) return;
+        if (clause is null || levelObjects.Count == 0 || depth > MaxNestedExpandDepth) return;
 
         foreach (ExpandedNavigationSelectItem item in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
         {
             string edmName = item.PathToNavigationProperty.FirstSegment.Identifier;
-            if (!ceilingNavs.TryGetValue(edmName, out string? jsonKey)) continue;
-            if (entityBody[jsonKey] is not JsonArray arr || arr.Count <= cap) continue;
 
-            throw new Microsoft.OData.ODataException(
+            // Engaged: bounded (and, where #313 allows, trimmed-and-linked) by
+            // ShapePushedExpandsInJson / ShapeLevelsInJson instead. Skip the whole branch — a level
+            // under an engaged one is engaged too, so that pass covers all of it.
+            if (IsEngagedNav(engaged, edmName)) continue;
+
+            // THE MODEL B GATE IS A DEPTH-1 GATE, AND ONLY A DEPTH-1 GATE. At depth 1 a navigation's
+            // treatment decides whether anything other than the root handler produced its rows: a
+            // RunDelegate nav's rows came from the developer's own delegate (#313 O6 — not the
+            // framework's to bound), and a Blank one was overwritten with []/null by ExpandLevelAsync
+            // (nothing to bound). Both are skipped, and skipping them also stops the descent, so this
+            // walk never enters a delegate's subtree.
+            //
+            // BELOW depth 1 the same test would be wrong, and applying it there was the #464 defect
+            // reproduced one level down. Everything reached here is under a ServeRaw parent by
+            // construction, and ExpandLevelAsync's ServeRaw branch DOES NOT RECURSE — so at depth >= 2
+            // no delegate ran, nothing was blanked, and every value in the payload is the root
+            // handler's own raw graph whatever the EDM/profile classification of the navigation that
+            // names it. MEASURED, cap = 2, GetAll, Author -Books(delegate-less)-> Book
+            // -Chapters(DELEGATE)-> : `?$expand=Books($expand=Chapters)` served five chapters with the
+            // Chapters delegate invoked ZERO times. Classifying those rows as "the delegate's answer"
+            // and exempting them cited a delegate that never ran. The same holds for a Blank-
+            // classified navigation down here: nothing blanked it either, so its rows are served raw.
+            // So: check and descend regardless of classification.
+            if (depth == 1 && ResolveNavTreatment(edmName, rootSources).Treatment != NavTreatment.ServeRaw)
+            {
+                continue;
+            }
+
+            PropertyInfo? navClr = levelClrType is null
+                ? null
+                : ODataPropertyNaming.FindClrPropertyByEdmName(levelClrType, edmName);
+            string jsonKey = ResolveNavigationJsonKey(navClr?.Name ?? edmName, navClr, serializerOptions);
+
+            bool descend = item.SelectAndExpand is { } nestedClause &&
+                           nestedClause.SelectedItems.OfType<ExpandedNavigationSelectItem>().Any();
+
+            // #466 + #463: a $levels recursion serves the SAME navigation N levels down, and since
+            // #466 it does so on the raw substrate too. Its deeper levels carry no clause item of
+            // their own (the recursion is implicit — the same navigation repeats), so they would be
+            // invisible to the clause walk and unbounded, which is #463's hole re-opened along the
+            // $levels axis. Walk them explicitly, exactly as ShapeLevelsInJson does for the pushed
+            // recursion, through the SAME ResolveLevelsBudget both loaders use (#428).
+            int levelsBudget = item.LevelsOption is { } lv
+                ? ResolveLevelsBudget(lv.IsMaxLevel, lv.Level, maxExpansionDepth, MaxNestedExpandDepth)
+                : 0;
+            bool needChildren = descend || levelsBudget > 1;
+            List<JsonObject>? children = null;
+
+            foreach (JsonObject obj in levelObjects)
+            {
+                JsonNode? node = obj[jsonKey];
+                if (node is JsonArray arr)
+                {
+                    if (arr.Count > cap)
+                    {
+                        throw RawExpandCeilingBreach(
+                            jsonKey, cap, entitySetName, singleEntityRead, pathPrefix + edmName + pathSuffix);
+                    }
+                    if (needChildren) (children ??= new List<JsonObject>()).AddRange(arr.OfType<JsonObject>());
+                }
+                else if (needChildren && node is JsonObject one)
+                {
+                    // A single-valued navigation holds at most one related entity, so there is
+                    // nothing to bound here — but its own children may be collections.
+                    (children ??= new List<JsonObject>()).Add(one);
+                }
+            }
+
+            // Levels 2..N of a $levels recursion: same navigation, same key, same ceiling. Checked
+            // per level and top-down, so a breach 400s before the walk descends any further.
+            if (levelsBudget > 1 && children is not null)
+            {
+                IReadOnlyList<JsonObject> levelNodes = children;
+                for (int remaining = levelsBudget - 1; remaining >= 1 && levelNodes.Count > 0; remaining--)
+                {
+                    var deeper = new List<JsonObject>();
+                    foreach (JsonObject obj in levelNodes)
+                    {
+                        JsonNode? node = obj[jsonKey];
+                        if (node is JsonArray arr)
+                        {
+                            if (arr.Count > cap)
+                            {
+                                throw RawExpandCeilingBreach(
+                                    jsonKey, cap, entitySetName, singleEntityRead,
+                                    pathPrefix + edmName + pathSuffix);
+                            }
+                            deeper.AddRange(arr.OfType<JsonObject>());
+                        }
+                        else if (node is JsonObject one)
+                        {
+                            deeper.Add(one);
+                        }
+                    }
+                    levelNodes = deeper;
+                }
+            }
+
+            if (!descend || children is null) continue;
+
+            EnforceRawExpandCeiling(
+                children, item.SelectAndExpand,
+                // Never read again: the Model B gate above is depth-1-only, so no deeper level
+                // resolves a candidate set at all. That is why ResolveRequestSourcesForEdmType is
+                // NOT called here — a per-level candidate resolution whose answer is discarded would
+                // be per-request cost buying a decision this walk deliberately does not make.
+                rootSources,
+                NavElementClrType(navClr),
+                engaged: null, // unreachable otherwise: this level was not engaged, so no child of it is
+                serializerOptions, cap, maxExpansionDepth,
+                entitySetName, singleEntityRead,
+                pathPrefix + edmName + "($expand=", ")" + pathSuffix, depth + 1);
+        }
+    }
+
+    // #463/#464: is this navigation covered by the pushdown's own JSON shaping pass at this level?
+    // Matched on the binding's EDM name, exactly as CollectPushedLevelsNavNames records one.
+    private static bool IsEngagedNav(IReadOnlyList<EngagedExpand>? engaged, string edmName)
+    {
+        if (engaged is null) return false;
+        foreach (EngagedExpand e in engaged)
+        {
+            if (string.Equals(
+                    ODataPropertyNaming.ResolveEdmName(e.Binding.Property), edmName,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // #418/#463/#464: the two remediation messages.
+    //
+    // The single-entity arm is #418's, byte-identical: it is asserted in tests and quoted in docs,
+    // and at depth 1 <paramref name="expandPath"/> is exactly the navigation's EDM name — which is
+    // what that message always interpolated. Deeper levels get the whole path back
+    // ("Books($expand=Chapters)"), so the suggested collection-route request is the SAME request the
+    // client actually made rather than a truncation of it.
+    //
+    // Neither arm is EnsureWithinExpandCeiling's. That one ends "Narrow it with a nested $filter",
+    // which is actively false advice for a raw-served expansion: a nested $filter is one of the
+    // options this substrate silently ignores, so following it returns the same 400.
+    private static Microsoft.OData.ODataException RawExpandCeilingBreach(
+        string jsonKey, int cap, string entitySetName, bool singleEntityRead, string expandPath) =>
+        singleEntityRead
+            ? new Microsoft.OData.ODataException(
                 $"The nested '$expand' on '{jsonKey}' cannot be served from a single-entity read: the " +
                 $"related collection exceeds the maximum of {cap} entities. A single-entity read " +
                 "applies no nested $filter/$orderby/$top window and cannot page an expanded " +
                 $"collection, so request it through the collection route instead — e.g. " +
-                $"GET /{entitySetName}?$filter=<key eq …>&$expand={edmName}.");
-        }
-    }
+                $"GET /{entitySetName}?$filter=<key eq …>&$expand={expandPath}.")
+            : new Microsoft.OData.ODataException(
+                $"The nested '$expand' on '{jsonKey}' cannot be served: the related collection " +
+                $"exceeds the maximum of {cap} entities. This expansion was not pushed down to the " +
+                "data source, so no nested $filter/$orderby/$top window is applied to it and it " +
+                "cannot be paged. Narrow the related data where it is loaded, raise MaxExpandTop, or " +
+                "make the navigation pushdown-eligible (declared without a delegate, over an EF Core " +
+                "IQueryable).");
 
     // #206 phase 2 (optioned expand) / #254: emit <c>Nav@odata.count</c> for one pushed collection
     // expand and apply its count-deferred $skip/$top window.
@@ -6373,50 +6818,13 @@ internal static class OhDataEndpointFactory
         IReadOnlyDictionary<string, ExpandPagingNav> expandPagingNavsByEdmName =
             expandPagingNavs.ToDictionary(n => n.EdmName, StringComparer.OrdinalIgnoreCase);
 
-        // #418: the navigations whose expanded collection the SINGLE-ENTITY read (GET /{Set}({key}))
-        // must hold to MaxExpandTop. Keyed by EDM name, valued by the payload key the serializer
-        // actually emits (naming policy + [JsonPropertyName]), resolved once here.
-        //
-        // WHY THIS EXISTS AT ALL. The bare-$expand ceiling and its continuation link live behind
-        // ShapePushedExpandsInJson, whose only call site is the GetQueryable COLLECTION route. GetById
-        // expands through ApplyCollectionPipelineAsync -> ExpandLevelAsync, which for a delegate-less
-        // (ServeRaw) navigation deliberately does nothing at all: whatever the GetById delegate already
-        // materialized IS the answer. So a registration that set MaxExpandTop to bound `?$expand=Books`
-        // was still serving the WHOLE child collection from `?$expand=Books` on one entity -- measured
-        // on this tree, five of five books at a ceiling of two, with neither a link nor a 400.
-        //
-        // THE CANDIDATE SET IS `new[] { source }`, NOT ResolveProfilesForEdmType. That is exactly what
-        // ApplyCollectionPipelineAsync passes as `levelSources` for the root level, so this set is
-        // precisely the set of navigations GetById really does serve raw. Using the wider sibling union
-        // (as ResolveExpandPagingNavigations does, deliberately fail-closed) would apply a ceiling to
-        // navigations this route blanks anyway.
-        //
-        // DELEGATE-BACKED AND BLANK NAVIGATIONS ARE EXCLUDED. A RunDelegate navigation's rows come from
-        // the developer's own delegate, and #313 O6 settled that the framework does not truncate those;
-        // a Blank one is already emptied by ExpandLevelAsync.
-        //
-        // EVERY NESTED SHAPE IS COVERED, not only the bare one. Measured on this tree: GetById applies
-        // NO nested option to a ServeRaw navigation -- $filter, $orderby, $select, $skip, $top and
-        // $count are all silently ignored there (the collection route honours every one of them). So a
-        // ceiling that fired only for the bare shape would be bypassable by appending any nested option
-        // at all, which is the same one-parameter hole #313's own review raised against $levels.
-        var singleEntityExpandCeilingNavs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (source.HasGetById && source.ExpandEnabled && source.MaxExpandTop is int)
-        {
-            foreach (string ceilNavName in source.NavigationPropertyNames)
-            {
-                if (ResolveNavTreatment(ceilNavName, new[] { source }).Treatment != NavTreatment.ServeRaw)
-                    continue;
-                IEdmNavigationProperty? ceilNavEdm = rootEdmType?.NavigationProperties()
-                    .FirstOrDefault(np => string.Equals(np.Name, ceilNavName, StringComparison.OrdinalIgnoreCase));
-                if (ceilNavEdm is null || !ceilNavEdm.Type.IsCollection()) continue;
-                PropertyInfo? ceilNavClr =
-                    ODataPropertyNaming.FindClrPropertyByEdmName(typeof(TModel), ceilNavName);
-                singleEntityExpandCeilingNavs[ceilNavName] = ResolveNavigationJsonKey(
-                    ceilNavClr?.Name ?? ceilNavName, ceilNavClr,
-                    jsonOptions ?? _pascalCaseSerializerOptions);
-            }
-        }
+        // #418/#463/#464: the ceiling on a raw-served expansion USED TO BE precomputed here, as a
+        // startup-resolved dictionary of this profile's own delegate-less collection navigations,
+        // consulted by a depth-1 pass on the GetById route alone. Both of those were holes (#463
+        // depth, #464 path) and the whole mechanism now lives in ApplyCollectionPipelineAsync's
+        // Stage 3.6, resolved PER LEVEL through the shared ResolveNavTreatment. Nothing is
+        // precomputed because nothing can be: the candidate set below depth 1 is a property of the
+        // request's own $expand tree, not of this entity set. See EnforceRawExpandCeiling.
 
         // #199 Layer C: per-operation authorization. When the profile declared
         // ConfigureAuthorization(...), resolve the effective rule per route category and apply it to
@@ -7369,7 +7777,11 @@ internal static class OhDataEndpointFactory
                     List<string>? selectedProps;
                     try
                     {
-                        (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct, pushedLevelsNavNames);
+                        // #464: engagedExpandNavs is threaded in so Stage 3.6's ceiling skips exactly
+                        // the navigations ShapePushedExpandsInJson bounds (and, where #313 allows,
+                        // pages) below — and bounds every OTHER expanded collection in the response,
+                        // which on a non-EF source is all of them.
+                        (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct, pushedLevelsNavNames, engagedExpandNavs);
                     }
                     catch (JsonException ex) when (engagedExpandNavs is { Count: > 0 })
                     {
@@ -7879,19 +8291,14 @@ internal static class OhDataEndpointFactory
                         // single-element array so GetById gets the same expand/batch-handler/
                         // select behavior as GET /{Set}, instead of a bespoke reimplementation.
                         var (expandedItems, expandSelectedProps) =
-                            await ApplyCollectionPipelineAsync(new[] { result }, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
+                            // #418/#463: `singleEntityRead: true` selects the single-entity
+                            // remediation message. The ceiling itself now runs INSIDE the pipeline
+                            // (Stage 3.6), at every level of the $expand tree — #418's own depth-1
+                            // pass on this route is what #463 found the hole in.
+                            await ApplyCollectionPipelineAsync(
+                                new[] { result }, options, source, s, jsonOptions, rootEdmType,
+                                registration, ctx.RequestServices, ct, singleEntityRead: true);
                         var entityBody = (JsonObject)expandedItems[0]!;
-
-                        // #418: hold every ServeRaw collection navigation in this response to
-                        // MaxExpandTop. Throws Microsoft.OData.ODataException on breach, which this
-                        // route's own catch turns into 400 InvalidQueryOption -- the same status and
-                        // code the collection route's EnsureWithinExpandCeiling produces for the same
-                        // configuration. A no-op (and byte-identical) when MaxExpandTop is null, when
-                        // the profile declares no delegate-less collection navigation, or when every
-                        // expanded collection is within the ceiling.
-                        EnforceSingleEntityExpandCeiling(
-                            entityBody, options.SelectExpand?.SelectExpandClause,
-                            singleEntityExpandCeilingNavs, source.MaxExpandTop, name);
 
                         // Rebuild with @odata.context/@odata.id first (JSON §4.5: annotations
                         // precede the properties they describe). The pipeline's own ETag stage
