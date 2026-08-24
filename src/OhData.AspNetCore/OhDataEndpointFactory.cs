@@ -654,6 +654,13 @@ internal static class OhDataEndpointFactory
         // ignores anything the owned options are threaded through unchanged.
         var ignoredByType = IgnoredPropertyJsonOptions.BuildIgnoredPropertyMap(registration.Profiles);
 
+        // #458: same hazard shape as the line above, for the model-bound allowlists. Two profiles
+        // over one CLR model type write the same per-TYPE ModelBoundQuerySettings, so divergent
+        // FilterProperties/OrderByProperties/SelectProperties/ExpandProperties declarations union
+        // and each entity set silently accepts what the other allows. Refused here rather than at
+        // request time -- see ModelBoundAllowlists for why per-entity-set settings do not exist.
+        ModelBoundAllowlists.Validate(registration.Profiles);
+
         // #398 stage 1: capture the withheld members' JSON names BEFORE the modifier below removes
         // them from their contracts. Afterwards the JSON name is not recoverable — which is exactly
         // why an open type's extension data can capture a withheld member and echo it back under the
@@ -8085,14 +8092,49 @@ internal static class OhDataEndpointFactory
                     // itself about what the body contained.
                     JsonElement patchBody = patchPrepared.Body;
 
-                    // Only validate key mismatch if the key property was explicitly present in the body.
-                    // PATCH is a partial update -- the key may be omitted. URL key is authoritative.
-                    if (TryGetJsonProperty(patchBody, source.KeyPropertyName, out JsonElement keyEl))
+                    // #454: the key property is immutable (§11.4.9), and the guard below must
+                    // validate EXACTLY the set the delta loop applies -- otherwise a body can pass
+                    // validation on one occurrence and be applied through another.
+                    //
+                    // It previously did not. `TryGetJsonProperty` returns the FIRST case-insensitive
+                    // match and stops, and it matched on the key's CLR name; the loop below resolves
+                    // EVERY body property through `FindClrPropertyByEdmName` (case-insensitive AND
+                    // [JsonPropertyName]-aware) into a last-writer-wins Delta<T>. Three bodies
+                    // therefore moved the key and returned 200: {"Id":1,"Id":999},
+                    // {"id":1,"Id":999}, and -- with a renamed key -- a single {"code":"ZZ"}, which
+                    // the CLR-name lookup could not see at all.
+                    //
+                    // Both halves now resolve through the same function against the same CLR
+                    // property: every occurrence is validated here, and the loop never writes the
+                    // key into the delta at all. A mismatch is REJECTED rather than silently
+                    // dropped, matching both the pre-existing single-occurrence 400 and the
+                    // structural-property write route's KeyImmutableError.
+                    //
+                    // A body that omits the key is still valid -- PATCH is a partial update and the
+                    // URL key is authoritative.
+                    PropertyInfo? patchKeyClrProp =
+                        ODataPropertyNaming.FindClrPropertyByEdmName(typeof(TModel), source.KeyPropertyName);
+                    string patchParsedKeyStr = string.Format(CultureInfo.InvariantCulture, "{0}", parsedKey);
+                    foreach (var prop in patchBody.EnumerateObject())
                     {
-                        string bodyKeyStr = keyEl.ToString();
-                        string parsedKeyStr = string.Format(CultureInfo.InvariantCulture, "{0}", parsedKey);
-                        if (!string.Equals(parsedKeyStr, bodyKeyStr, StringComparison.Ordinal))
+                        if (!IsPatchKeyOccurrence(prop.Name, patchKeyClrProp, source.KeyPropertyName)) continue;
+                        if (!string.Equals(patchParsedKeyStr, prop.Value.ToString(), StringComparison.Ordinal))
                             return ODataError(400, "BadRequest", "Key in URL does not match key in request body.", target: "key");
+                    }
+
+                    // Local: does this body property name resolve to the entity's key property?
+                    // Resolution goes through the same helper the delta loop uses, so the two cannot
+                    // disagree. The name-only fallback covers the (unexpected) case where the key
+                    // property does not resolve to a CLR property at all -- it preserves the old
+                    // behaviour rather than silently validating nothing.
+                    static bool IsPatchKeyOccurrence(string jsonName, PropertyInfo? keyClrProp, string keyPropertyName)
+                    {
+                        if (keyClrProp is null)
+                            return string.Equals(jsonName, keyPropertyName, StringComparison.OrdinalIgnoreCase);
+                        PropertyInfo? resolved =
+                            ODataPropertyNaming.FindClrPropertyByEdmName(typeof(TModel), jsonName);
+                        return resolved is not null
+                            && string.Equals(resolved.Name, keyClrProp.Name, StringComparison.Ordinal);
                     }
 
                     // ETag check via If-Match header -- handler owns fetch-for-merge.
@@ -8109,6 +8151,17 @@ internal static class OhDataEndpointFactory
                         // arrives under its JSON name, so resolve by EDM name (which honors the rename)
                         // rather than a plain CLR-name lookup that would silently drop the renamed member.
                         var clrProp = ODataPropertyNaming.FindClrPropertyByEdmName(typeof(TModel), prop.Name);
+                        // #454: the key never enters the delta. Every occurrence was validated
+                        // against the URL key above (and a mismatch already returned 400), so what
+                        // reaches here can only be a restatement of the key the URL already carries
+                        // -- applying it would be a no-op at best, and leaving it out is what makes
+                        // "the key cannot move" a structural property of this loop rather than a
+                        // consequence of the guard having seen every occurrence.
+                        if (patchKeyClrProp is not null && clrProp is not null
+                            && string.Equals(clrProp.Name, patchKeyClrProp.Name, StringComparison.Ordinal))
+                        {
+                            continue;
+                        }
                         // #226: ignored properties get the same silent-skip as unknown members.
                         // This loop resolves members via CLR reflection (not the EDM), so EDM
                         // removal alone would not stop an ignored member from binding here.
