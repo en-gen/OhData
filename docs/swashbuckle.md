@@ -58,24 +58,26 @@ parameters, driven by the entity set's capability flags:
 
 | Parameter | Added when |
 |---|---|
-| `$top` / `$skip` | Always, once per operation (whenever `OhDataQueryOptionsMetadata` is present and `$top` isn't already documented) |
+| `$top` / `$skip` | `TopSkipSupported` — the three collection GET routes, once per operation |
 | `$filter` | `FilterEnabled` |
 | `$orderby` | `OrderByEnabled` |
 | `$select` | `SelectEnabled` |
 | `$expand` | `ExpandEnabled` |
-| `$count` | `CountEnabled` |
+| `$count` | `CountEnabled` — the `$count` **option** (`$count=true`), not the `/$count` route |
 | `$search` | a `Search` handler is configured (`SearchEnabled`) |
 
 The `$top` parameter's description includes the entity set's `MaxTop` value when one is configured,
 so consumers of the generated document see the server-enforced page-size cap. The `$top`/`$skip`
-guard only checks whether `OhDataQueryOptionsMetadata` is present and `$top` isn't already
-documented, so it is idempotent with respect to a parameter another filter added under the same
-name.
+guard also checks that `$top` isn't already documented, so it is idempotent with respect to a
+parameter another filter added under the same name.
 
 `OhDataQueryOptionsMetadata` is attached to more than the top-level collection GET route — it is
 also present on `GET /{EntitySet}/$count` and on the single-entity `GET /{EntitySet}({key})` route
-(which supports `$select`/`$expand` in its own right), so those routes pick up `$top`/`$skip` too.
-This is intentional, existing behavior shared with the OpenAPI and NSwag companions.
+(which supports `$select`/`$expand` in its own right). Every field therefore means *"this route
+honours this option"*, never "this route is of kind X". Both of those routes used to pick up
+`$top`/`$skip`, because the filter added them on metadata *presence* alone while each route drops
+them — #467. The gate is now `TopSkipSupported`, decided once upstream in `OhDataEndpointFactory`
+so the OpenAPI, NSwag and Swashbuckle companions cannot drift apart.
 
 ## Request bodies, typed collection responses, and read-path summaries
 

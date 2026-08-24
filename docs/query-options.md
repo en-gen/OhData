@@ -1033,6 +1033,8 @@ Without a `Search` handler, `$search` requests return `400 Bad Request` (`Unsupp
 
 On the `GetQueryable` path, `$search` composes with the other query options: the handler's results become the base sequence, and `$filter`, `$orderby`, `$top`, and `$skip` are then applied on top of the search results (in that order). On the `GetAll` path, `$search` composes the same way with the options `GetAll` supports: the handler's results become the base sequence, and `$top`/`$skip` are applied on top of them (`$filter`/`$orderby` remain unsupported on this path regardless of `$search`).
 
+**The `Search` handler belongs to those two paths only, and a `Priority-1` profile that sets one is refused at startup (#465).** Both compositions above work the same way — the handler *replaces the source*, and the framework then applies the remaining options on top — and that is only possible where the framework owns the pipeline. `GetODataQueryable` inverts the contract: the profile receives the whole `ODataQueryOptions<TModel>` and applies them itself, so there is nowhere to feed a search-derived source in. Honouring `$search` there would mean bypassing the profile outright, which would drop `$filter`/`$orderby` on exactly the requests that carry `$search`, and route around whatever row-level scoping the handler applies. So `$search` on the Priority-1 path is the profile's own business, reachable as `options.Search` inside `GetODataQueryable` exactly like every other option it is handed — and a `Search` handler beside it is dead configuration, refused with an `InvalidOperationException` from `MapOhData()` rather than silently ignored. It used to be silently ignored *and* advertised in the generated OpenAPI description.
+
 ---
 
 ## `$skiptoken` (server-driven paging)
