@@ -322,12 +322,24 @@ public sealed class OhDataBuilder
     /// is detected and injected automatically if present.
     /// </summary>
     /// <param name="handler">The function delegate. The method name is used as the route segment unless <paramref name="name"/> is specified.</param>
-    /// <param name="name">Optional explicit route name. Use when passing lambdas to override the compiler-generated name.</param>
+    /// <param name="name">
+    /// Optional explicit route name, also the operation's name in <c>$metadata</c>. Required when
+    /// the handler is an anonymous lambda or a local function: the compiler-generated method name
+    /// is not a valid OData identifier, and passing one is now enforced rather than silently
+    /// producing invalid CSDL (#468).
+    /// </param>
+    /// <exception cref="ArgumentException">
+    /// The resolved name is not a valid OData identifier (CSDL 4.0 section 4.1,
+    /// <c>odataIdentifier</c>).
+    /// </exception>
     public OhDataBuilder AddFunction(Delegate handler, string? name = null)
     {
         if (handler is null) throw new ArgumentNullException(nameof(handler));
         var op = UnboundOperationDefinition.From(handler, isAction: false);
         if (name is not null) op = op with { Name = name };
+        ValidateUnboundOperationName(
+            op.Name, isAction: false, explicitName: name is not null,
+            paramName: name is not null ? nameof(name) : nameof(handler));
         _unboundOps.Add(op);
         return this;
     }
@@ -338,14 +350,74 @@ public sealed class OhDataBuilder
     /// is detected and injected automatically if present.
     /// </summary>
     /// <param name="handler">The action delegate. The method name is used as the route segment unless <paramref name="name"/> is specified.</param>
-    /// <param name="name">Optional explicit route name. Use when passing lambdas to override the compiler-generated name.</param>
+    /// <param name="name">
+    /// Optional explicit route name, also the operation's name in <c>$metadata</c>. Required when
+    /// the handler is an anonymous lambda or a local function: the compiler-generated method name
+    /// is not a valid OData identifier, and passing one is now enforced rather than silently
+    /// producing invalid CSDL (#468).
+    /// </param>
+    /// <exception cref="ArgumentException">
+    /// The resolved name is not a valid OData identifier (CSDL 4.0 section 4.1,
+    /// <c>odataIdentifier</c>).
+    /// </exception>
     public OhDataBuilder AddAction(Delegate handler, string? name = null)
     {
         if (handler is null) throw new ArgumentNullException(nameof(handler));
         var op = UnboundOperationDefinition.From(handler, isAction: true);
         if (name is not null) op = op with { Name = name };
+        ValidateUnboundOperationName(
+            op.Name, isAction: true, explicitName: name is not null,
+            paramName: name is not null ? nameof(name) : nameof(handler));
         _unboundOps.Add(op);
         return this;
+    }
+
+    // #468: an unbound operation's name is written into $metadata as the FunctionImport/
+    // ActionImport name AND used verbatim as the route segment, so it must be an OData simple
+    // identifier. Nothing checked it. The reachable failure is an anonymous lambda or local
+    // function: UnboundOperationDefinition.From falls back to method.Name, and the compiler emits
+    // an unspeakable name ("<Caller>b__2_1") that is not a valid identifier -- which shipped as
+    // invalid CSDL, because CsdlWriter does not police names and CsdlReader.TryParse accepts them,
+    // so only a consumer that VALIDATES the document ever noticed.
+    //
+    // Checked here, at registration, rather than only at MapOhData(): this fires at the call site
+    // that caused it with the developer's own code on the stack, and it can name the remedy --
+    // which is sitting in the signature as the optional 'name' parameter. EdmValidator.Validate in
+    // MapAll stays as the backstop for constructs this cannot see.
+    //
+    // The grammar comes from OpenTypeJsonOptions.IsValidDynamicPropertyName -- the SHIPPED
+    // validator, deliberately not a second transcription of the ABNF. It dispatches the ASCII fast
+    // path or the rune walk that is its normative oracle (see the remarks there and CLAUDE.md);
+    // the *Cached variant beside it is not used, since its 1024-entry cache exists to memoise
+    // per-request dynamic keys on the serialize path and a handful of startup-time operation names
+    // would only evict them.
+    private static void ValidateUnboundOperationName(
+        string operationName, bool isAction, bool explicitName, string paramName)
+    {
+        if (OpenTypeJsonOptions.IsValidDynamicPropertyName(operationName)) return;
+
+        string method = isAction ? "AddAction" : "AddFunction";
+        string kind = isAction ? "action" : "function";
+
+        if (explicitName)
+        {
+            throw new ArgumentException(
+                $"OhData: '{operationName}' is not a valid OData identifier, so it cannot name an " +
+                $"unbound {kind}. The name is written into $metadata as the " +
+                $"{(isAction ? "ActionImport" : "FunctionImport")} name and used as the route " +
+                $"segment {(isAction ? "POST" : "GET")} /{{prefix}}/{operationName}. An identifier " +
+                "is 1 to 128 characters: it starts with a Unicode letter or '_', and continues " +
+                "with letters, digits, combining marks, connector punctuation or format characters " +
+                "(CSDL 4.0 section 4.1, odataIdentifier).",
+                paramName);
+        }
+
+        throw new ArgumentException(
+            $"OhData: {method} derived the name '{operationName}' from the handler's method, and it " +
+            $"is not a valid OData identifier, so it cannot name an unbound {kind}. This is what an " +
+            "anonymous lambda or a local function produces -- the compiler generates an unspeakable " +
+            $"name. Pass an explicit one: {method}(handler, \"My{(isAction ? "Action" : "Function")}\").",
+            paramName);
     }
 
     internal void Register()

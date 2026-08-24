@@ -511,23 +511,58 @@ public class MetadataCsdlTests
             e => e.GetProperty("kind").GetString() == "EntitySet");
     }
 
-    // #468: EdmValidator.Validate is now called from MapOhData(). It was called nowhere in the
-    // server assembly, which is how an invalid function-import name reached $metadata: the
-    // compiler-generated name of an un-named lambda ("<Method>b__0_1") is not an odataIdentifier.
-    // Note the reader-vs-validator asymmetry that hid this -- CsdlReader.TryParse accepts such a
-    // name, so a consumer that merely parses survives while a codegen tool that validates does
-    // not. Failing at startup names the offending construct instead.
-    [Fact]
-    public async Task UnnamedLambdaFunction_FailsAtStartup_NamingTheOffendingConstruct()
+    // #468: an un-named lambda's compiler-generated method name ("<Method>b__0_1") is not an
+    // odataIdentifier, and it used to be written straight into $metadata as the FunctionImport
+    // name. Nothing caught it: CsdlWriter does not police names, and CsdlReader.TryParse accepts
+    // them -- the reader-vs-validator asymmetry that hid this, under which a consumer that merely
+    // parses survives while a codegen tool that validates does not.
+    //
+    // Refused at REGISTRATION rather than only at MapOhData(), so the failure lands on the
+    // developer's own AddFunction/AddAction call with the remedy named: the optional 'name'
+    // parameter. EdmValidator.Validate at MapOhData() stays as the backstop for constructs this
+    // check cannot see -- it is proven live by the parameterized-IncludeInServiceDocument case,
+    // which no registration-time check could catch.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void UnnamedLambdaOperation_FailsAtRegistration_NamingTheRemedy(bool isAction)
     {
-        InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            async () => await TestHostBuilder.BuildAsync(o => o
-                .AddEntitySetProfile<CsdlSpotCheckProfile>()
-                .AddFunction((Func<int, int>)(x => x * 2))));
+        var services = new ServiceCollection();
+        services.AddLogging();
 
-        Assert.Contains("not valid CSDL", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("InvalidName", ex.Message, StringComparison.Ordinal);
+        ArgumentException ex = Assert.Throws<ArgumentException>(() => services.AddOhData(o =>
+        {
+            o.AddEntitySetProfile<CsdlSpotCheckProfile>();
+            if (isAction) o.AddAction((Action<string>)(s => { }));
+            else o.AddFunction((Func<int, int>)(x => x * 2));
+        }));
+
+        // Names the offending construct, why it is wrong, and the fix -- rather than a
+        // compiler-mangled name inside a generic CSDL-validation failure.
+        Assert.Equal("handler", ex.ParamName);
         Assert.Contains("b__", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("not a valid OData identifier", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("anonymous lambda", ex.Message, StringComparison.Ordinal);
+        Assert.Contains(isAction ? "AddAction(handler," : "AddFunction(handler,", ex.Message, StringComparison.Ordinal);
+    }
+
+    // The same grammar applies to an EXPLICIT name: the parameter is the remedy for the lambda
+    // case, not an escape hatch from the identifier rules.
+    [Fact]
+    public void ExplicitlyNamedOperation_WithInvalidIdentifier_FailsAtRegistration()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+
+        ArgumentException ex = Assert.Throws<ArgumentException>(() => services.AddOhData(o =>
+        {
+            o.AddEntitySetProfile<CsdlSpotCheckProfile>();
+            o.AddFunction((Func<int, int>)(x => x * 2), "Not An Identifier");
+        }));
+
+        Assert.Equal("name", ex.ParamName);
+        Assert.Contains("Not An Identifier", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("odataIdentifier", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
