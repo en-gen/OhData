@@ -126,6 +126,9 @@ resolves conventions, validates every rule, and compiles each plan once. It thro
 
 - a writable model property is not convention-matched, renamed, converted, or ignored;
 - a rename/convert target entity property does not exist or is not writable;
+- a target entity property exists and is writable but `Delta<TEntity>` does not **track** it, so the
+  write would be discarded at runtime (see below);
+- the entity type cannot be instantiated by `Delta<TEntity>` (see below);
 - a convention or convert mapping is type-incompatible (per the policy above);
 - a `.Convert(...)` converter's input type does not match the model property (do **not** cast inside
   the source selector — write `.Convert(d => d.Count, e => e.Count, c => (long)c)`, not
@@ -136,6 +139,29 @@ resolves conventions, validates every rule, and compiles each plan once. It thro
 
 A "writable model property" is a public instance property with both a public getter and a public
 setter. Get-only computed properties are out of scope automatically and need no `Ignore()`.
+
+### What the entity type has to satisfy
+
+`Delta<TEntity>` is `Microsoft.AspNetCore.OData`'s type, and it keeps its own rules about what it
+will track and what it can construct. Both are checked at startup, against `Delta<TEntity>` itself
+rather than against a copy of its rules:
+
+- **It must be trackable.** `Delta<T>` tracks a public instance property only when it has a public
+  getter *and* a public setter, and is not excluded by `[NotMapped]`, `[IgnoreDataMember]`, or being
+  an unmarked property of a `[DataContract]` type. Note the last one is a **whole-type** switch: put
+  `[DataContract]` on an entity and every property without `[DataMember]` stops being tracked at
+  once. A mapping onto an untracked property used to compile clean and then discard the write
+  silently — it is now a startup error naming the property and the attribute responsible. Remedy:
+  `Ignore()` the model property, or map it onto a tracked entity property.
+- **It must be instantiable.** `Delta<T>` builds an instance with `Activator.CreateInstance` on every
+  `Create` call, so the entity type must be a concrete class with a **public** parameterless
+  constructor. A protected/private parameterless constructor beside a public parameterized one (the
+  usual EF Core shape), a positional `record`, and an abstract type all fail this — previously at
+  request time, on every request; now at startup.
+
+If a write is ever rejected at runtime despite this validation, `Create` throws
+`InvalidOperationException` naming the model and entity property rather than returning a delta that
+silently lost it.
 
 ## Updatable-property allowlist translation
 

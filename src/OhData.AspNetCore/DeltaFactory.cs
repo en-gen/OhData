@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations.Schema;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
+using System.Runtime.Serialization;
 using Microsoft.AspNetCore.OData.Deltas;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -72,12 +74,25 @@ internal sealed class DeltaMappingPlan
 /// </summary>
 internal static class DeltaMappingCompiler
 {
+    /// <param name="modelType">The DTO / view-model type.</param>
+    /// <param name="entityType">The backing entity type.</param>
+    /// <param name="renames">Model property name → entity property name.</param>
+    /// <param name="ignored">Model property names excluded from the mapping.</param>
+    /// <param name="converters">Model property name → explicit converter rule.</param>
+    /// <param name="trackedEntityProperties">
+    /// Reads the property names <c>Delta&lt;TEntity&gt;</c> will actually track, off a real
+    /// <c>Delta&lt;TEntity&gt;</c> (see <see cref="TrackedEntityProperties{TEntity}"/>). Supplied
+    /// as a delegate because the compiler is type-erased while the probe needs the closed generic.
+    /// Invoked only after <see cref="DescribeUnconstructableEntity"/> has cleared the entity type —
+    /// constructing the probe runs the entity's parameterless constructor.
+    /// </param>
     public static DeltaMappingPlan Compile(
         Type modelType,
         Type entityType,
         IReadOnlyDictionary<string, string> renames,
         IReadOnlyCollection<string> ignored,
-        IReadOnlyDictionary<string, DeltaConverterRule> converters)
+        IReadOnlyDictionary<string, DeltaConverterRule> converters,
+        Func<IReadOnlyCollection<string>> trackedEntityProperties)
     {
         // All public instance properties (for existence checks); the "in-scope" model surface is
         // the subset with both a public getter and a public setter — a get-only computed property
@@ -91,6 +106,33 @@ internal static class DeltaMappingCompiler
         var errors = new List<string>();
         var rules = new List<CompiledPropertyRule>();
         var updatable = new List<string>();
+
+        // #480: Delta<T>.Reset instantiates the entity with Activator.CreateInstance on EVERY
+        // Create call, so an entity type it cannot instantiate is a guaranteed per-request 500.
+        // Checked before the probe below, which would otherwise be the thing that threw.
+        string? unconstructable = DescribeUnconstructableEntity(entityType);
+        if (unconstructable is not null) errors.Add(unconstructable);
+
+        // #479: the entity-side admission rules are Delta<T>'s, not ours — a target outside them
+        // is absent from its property surface, TrySetPropertyValue answers false, and the write
+        // vanishes. Rather than transcribe those rules (they are Microsoft's and can change), read
+        // the resulting set off a real Delta<TEntity>. Null when the type is not constructable:
+        // the mapping is already failing, and the remaining checks still produce useful errors.
+        HashSet<string>? tracked = null;
+        if (unconstructable is null)
+        {
+            try
+            {
+                tracked = new HashSet<string>(trackedEntityProperties(), StringComparer.Ordinal);
+            }
+            catch (Exception ex)
+            {
+                errors.Add(
+                    $"Delta<{entityType.Name}> could not be constructed for validation: " +
+                    $"{ex.GetType().Name}: {ex.Message}. Every Create call constructs one, so this " +
+                    "mapping would fail on every request.");
+            }
+        }
 
         // Declarations must reference real properties — catch typos/refactor drift at startup.
         foreach (string ign in ignored)
@@ -131,7 +173,8 @@ internal static class DeltaMappingCompiler
 
             if (converters.TryGetValue(modelProp.Name, out DeltaConverterRule? conv))
             {
-                EntityPropResolution res = ResolveEntityProp(entityProps, conv.EntityName, out PropertyInfo? ep);
+                EntityPropResolution res = ResolveEntityProp(
+                    entityProps, tracked, entityType, conv.EntityName, out PropertyInfo? ep, out string? convReason);
                 if (res == EntityPropResolution.Missing)
                 {
                     errors.Add($"Convert() target '{conv.EntityName}' (from model property '{modelProp.Name}') does not exist on {entityType.Name}.");
@@ -140,6 +183,14 @@ internal static class DeltaMappingCompiler
                 if (res == EntityPropResolution.NotWritable)
                 {
                     errors.Add($"Convert() target '{conv.EntityName}' (from model property '{modelProp.Name}') is not writable.");
+                    continue;
+                }
+                if (res == EntityPropResolution.NotTracked)
+                {
+                    errors.Add(
+                        $"Convert() target '{conv.EntityName}' (from model property '{modelProp.Name}') is not " +
+                        $"tracked by Delta<{entityType.Name}> — {convReason}. A write to it would be silently " +
+                        "discarded at runtime; Ignore() the model property, or target a tracked entity property.");
                     continue;
                 }
                 // The converter's INPUT type must match the model property so the runtime unbox
@@ -188,7 +239,8 @@ internal static class DeltaMappingCompiler
 
             string entityName = renames.TryGetValue(modelProp.Name, out string? renamed) ? renamed : modelProp.Name;
             bool wasRenamed = renamed is not null;
-            EntityPropResolution cres = ResolveEntityProp(entityProps, entityName, out PropertyInfo? entityProp);
+            EntityPropResolution cres = ResolveEntityProp(
+                entityProps, tracked, entityType, entityName, out PropertyInfo? entityProp, out string? untrackedReason);
             if (cres == EntityPropResolution.Missing)
             {
                 errors.Add(wasRenamed
@@ -201,6 +253,15 @@ internal static class DeltaMappingCompiler
             if (cres == EntityPropResolution.NotWritable)
             {
                 errors.Add($"Entity property '{entityName}' (mapped from model property '{modelProp.Name}') is not writable.");
+                continue;
+            }
+            if (cres == EntityPropResolution.NotTracked)
+            {
+                errors.Add(
+                    $"Entity property '{entityName}' (mapped from model property '{modelProp.Name}') is not " +
+                    $"tracked by Delta<{entityType.Name}> — {untrackedReason}. A write to it would be silently " +
+                    "discarded at runtime; Ignore() the model property, or map it onto a tracked entity " +
+                    "property with .Rename(...) / .Convert(...).");
                 continue;
             }
 
@@ -233,19 +294,106 @@ internal static class DeltaMappingCompiler
         return new DeltaMappingPlan(modelType, entityType, updatable.ToArray(), rules);
     }
 
-    private enum EntityPropResolution { Ok, Missing, NotWritable }
+    private enum EntityPropResolution { Ok, Missing, NotWritable, NotTracked }
 
     private static EntityPropResolution ResolveEntityProp(
-        Dictionary<string, PropertyInfo> entityProps, string entityName, out PropertyInfo? entityProp)
+        Dictionary<string, PropertyInfo> entityProps,
+        HashSet<string>? tracked,
+        Type entityType,
+        string entityName,
+        out PropertyInfo? entityProp,
+        out string? untrackedReason)
     {
+        untrackedReason = null;
         if (!entityProps.TryGetValue(entityName, out entityProp))
             return EntityPropResolution.Missing;
+
+        // OhData's own, deliberately STRICTER rule, kept ahead of the Delta<T> check so its
+        // clearer message wins. Delta<T> also admits a setter-less COLLECTION property (it
+        // clears-and-refills the existing instance); OhData does not auto-write those and says
+        // so at startup instead of at runtime. Widening to match is tracked as #488 item 4 — the
+        // divergence below is the one that loses data, and it is only ever narrowing.
         if (entityProp.SetMethod is not { IsPublic: true })
         {
             entityProp = null;
             return EntityPropResolution.NotWritable;
         }
+
+        // #479: everything Delta<T> refuses to track. Decided by the set read off Delta<T>
+        // itself, never by a transcription of its predicate.
+        if (tracked is not null && !tracked.Contains(entityName))
+        {
+            untrackedReason = DescribeWhyDeltaSkips(entityType, entityProp);
+            entityProp = null;
+            return EntityPropResolution.NotTracked;
+        }
+
         return EntityPropResolution.Ok;
+    }
+
+    /// <summary>
+    /// The exact set of property names a <c>Delta&lt;TEntity&gt;</c> tracks — read off a real one
+    /// rather than re-implementing <c>Delta&lt;T&gt;.InitializeProperties</c>'s predicate
+    /// (<c>DeltaOfT.cs:699-705</c>), which is Microsoft's and free to change. Constructed with a
+    /// null <c>updatableProperties</c>, for which <c>UpdatableProperties</c> is exactly the
+    /// internal <c>_allProperties</c> key set (<c>DeltaOfT.cs:706-715</c>) that
+    /// <c>TrySetPropertyValue</c> tests membership in. Runs the entity's public parameterless
+    /// constructor, so callers must clear <see cref="DescribeUnconstructableEntity"/> first.
+    /// </summary>
+    /// <typeparam name="TEntity">The backing entity type.</typeparam>
+    internal static IReadOnlyCollection<string> TrackedEntityProperties<TEntity>() where TEntity : class =>
+        new Delta<TEntity>(typeof(TEntity)).UpdatableProperties.ToArray();
+
+    /// <summary>
+    /// #480: <c>Delta&lt;T&gt;.Reset</c> instantiates the entity with
+    /// <c>Activator.CreateInstance</c> (<c>DeltaOfT.cs:688</c>) on every <c>Create</c> call.
+    /// Returns the startup error for an entity type that cannot satisfy it, or <c>null</c>.
+    /// </summary>
+    /// <param name="entityType">The backing entity type.</param>
+    private static string? DescribeUnconstructableEntity(Type entityType)
+    {
+        string tail =
+            $"Delta<{entityType.Name}> instantiates the entity with Activator.CreateInstance on every " +
+            "Create call, so the mapped entity type must be a concrete class with a PUBLIC parameterless " +
+            "constructor.";
+
+        if (entityType.IsInterface)
+            return $"Entity type {entityType.Name} is an interface. {tail} Map to the concrete type instead.";
+        if (entityType.IsAbstract)
+            return $"Entity type {entityType.Name} is abstract. {tail} Map to a concrete derived type instead.";
+        if (entityType.GetConstructor(Type.EmptyTypes) is null)
+        {
+            return
+                $"Entity type {entityType.Name} has no public parameterless constructor. {tail} A protected " +
+                "or private parameterless constructor beside a public parameterized one (the usual EF Core " +
+                "shape) and a positional record both fail this — add a public parameterless constructor.";
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Advisory diagnosis only — the DECISION is the set read from <c>Delta&lt;T&gt;</c>. Mirrors
+    /// the precedence in <c>Delta&lt;T&gt;.IsIgnoredProperty</c> (<c>DeltaOfT.cs:722-741</c>) so
+    /// the startup message names the attribute the developer has to remove. Falls back to a
+    /// generic sentence if Microsoft's rules ever grow a case this does not know about.
+    /// </summary>
+    /// <param name="entityType">The entity type whose delta refused the property.</param>
+    /// <param name="prop">The refused property.</param>
+    private static string DescribeWhyDeltaSkips(Type entityType, PropertyInfo prop)
+    {
+        if (prop.GetCustomAttributes(typeof(NotMappedAttribute), inherit: true).Length > 0)
+            return "it is marked [NotMapped]";
+        // Delta<T> reads the [DataContract] marker off the ENTITY type, not the declaring type.
+        if (entityType.GetCustomAttributes(typeof(DataContractAttribute), inherit: true).Length > 0 &&
+            prop.GetCustomAttributes(typeof(DataMemberAttribute), inherit: true).Length == 0)
+        {
+            return $"{entityType.Name} is a [DataContract] type and this property is not marked [DataMember]";
+        }
+        if (prop.GetCustomAttributes(typeof(IgnoreDataMemberAttribute), inherit: true).Length > 0)
+            return "it is marked [IgnoreDataMember]";
+        if (prop.GetMethod is not { IsPublic: true })
+            return "it has no public getter";
+        return "Microsoft.AspNetCore.OData excludes it from the delta's property surface";
     }
 
     /// <summary>
@@ -417,7 +565,8 @@ internal sealed class DeltaFactory : IDeltaFactory
             if (!plan.RulesByModelName.TryGetValue(modelName, out CompiledPropertyRule? rule)) continue;
             delta.TryGetPropertyValue(modelName, out object? value);
             if (rule.Converter is not null) value = rule.Converter(value);
-            entityDelta.TrySetPropertyValue(rule.EntityName, value);
+            if (!entityDelta.TrySetPropertyValue(rule.EntityName, value))
+                throw RejectedWrite(typeof(TModel), typeof(TEntity), rule, value);
         }
 
         return entityDelta;
@@ -436,11 +585,29 @@ internal sealed class DeltaFactory : IDeltaFactory
         {
             object? value = rule.ModelAccessor(model);
             if (rule.Converter is not null) value = rule.Converter(value);
-            entityDelta.TrySetPropertyValue(rule.EntityName, value);
+            if (!entityDelta.TrySetPropertyValue(rule.EntityName, value))
+                throw RejectedWrite(typeof(TModel), typeof(TEntity), rule, value);
         }
 
         return entityDelta;
     }
+
+    /// <summary>
+    /// #479: <c>Delta&lt;T&gt;.TrySetPropertyValue</c> returning <c>false</c> means the write was
+    /// NOT applied. Every reachable cause is a mapping the startup compiler is supposed to have
+    /// rejected, so this is an invariant assertion, not an error path — and discarding the bool
+    /// (which is what shipped) turned a lost write into a silent 200/204. Throwing surfaces it as
+    /// a 500 in the OData error envelope, which is strictly better than persisting a partial write
+    /// under a success status.
+    /// </summary>
+    private static InvalidOperationException RejectedWrite(
+        Type modelType, Type entityType, CompiledPropertyRule rule, object? value) =>
+        new(
+            $"OhData: delta mapping ({modelType.Name} → {entityType.Name}) produced a write that " +
+            $"Delta<{entityType.Name}> rejected, so it was NOT applied: model property " +
+            $"'{rule.ModelName}' → entity property '{rule.EntityName}' " +
+            $"(value type: {(value is null ? "null" : value.GetType().Name)}). Startup validation " +
+            "should make this unreachable — please report it with the mapping declaration.");
 
     private DeltaMappingPlan Resolve(Type modelType, Type entityType)
     {
