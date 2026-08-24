@@ -763,9 +763,16 @@ public class EndpointMappingTests
         Assert.Equal(JsonValueKind.Array, value.ValueKind);
     }
 
-    // ── M6: Weak ETag prefix W/"..." handled correctly ───────────────────────
+    // ── M6 (INVERTED by #478): a weak validator never satisfies If-Match ──────
+    //
+    // This test used to be ETag_WeakPrefix_IsStrippedBeforeComparison and asserted 200 — it
+    // pinned the defect. RFC 9110 §13.1.1 requires STRONG comparison for If-Match and §8.8.3.2
+    // says a weak validator can never participate in one, so W/"<current>" must be 412.
+    // The old expectation was a deliberate behaviour change, not an accidental break; see the
+    // CHANGELOG entry and ParseStrongETagList's comment for why it is safe (OhData never emits a
+    // weak ETag, so no OhData-issued validator can be affected).
     [Fact]
-    public async Task ETag_WeakPrefix_IsStrippedBeforeComparison()
+    public async Task ETag_WeakPrefix_IsRejectedByIfMatch()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagWidgetProfile>());
         // First GET to obtain the strong ETag value
@@ -773,14 +780,14 @@ public class EndpointMappingTests
         string? etag = getResp.Headers.ETag?.Tag?.Trim('"');
         Assert.NotNull(etag);
 
-        // PUT with W/"<etag>" — should NOT return 412 (weak prefix must be stripped)
+        // PUT with W/"<etag>" — the value is current, but the validator is weak → 412.
         var req = new HttpRequestMessage(HttpMethod.Put, "/odata/ETagWidgets(1)")
         {
             Content = JsonContent.Create(new Widget { Id = 1, Name = "Sprocket" }),
         };
         req.Headers.TryAddWithoutValidation("If-Match", $"W/\"{etag}\"");
         var putResp = await fx.Client.SendAsync(req);
-        Assert.Equal(HttpStatusCode.OK, putResp.StatusCode);
+        Assert.Equal(HttpStatusCode.PreconditionFailed, putResp.StatusCode);
     }
 
     // ── M9: AuthorizationConfig.Roles is IReadOnlyList (immutable) ───────────
@@ -2272,17 +2279,21 @@ public class EndpointMappingTests
         Assert.Equal(HttpStatusCode.PreconditionFailed, response.StatusCode);
     }
 
+    // INVERTED by #478 — was IfMatch_WeakEtagInList_IsStripped, asserting 200. See the note on
+    // ETag_WeakPrefix_IsRejectedByIfMatch above. (Despite the old name this sends a single weak
+    // entry, not a list; the genuine mixed-list case — a weak entry alongside a matching strong
+    // one, which must still succeed — is covered by
+    // ConcurrencyTests.IfMatch_WeakValidatorAlongsideStrongMatch_StillSucceeds.)
     [Fact]
-    public async Task IfMatch_WeakEtagInList_IsStripped()
+    public async Task IfMatch_WeakEtag_IsRejected()
     {
-        // W/"<actual-etag>" should match (W/ stripped before comparison) → 200
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ETagIfMatchProfile>());
         string etag = (await fx.Client.GetAsync("/odata/IfMatchWidgets(1)")).Headers.ETag!.Tag;
         var request = new HttpRequestMessage(HttpMethod.Put, "/odata/IfMatchWidgets(1)");
         request.Headers.TryAddWithoutValidation("If-Match", $"W/{etag}");
         request.Content = JsonContent.Create(new { Id = 1, Name = "Updated" });
         HttpResponseMessage response = await fx.Client.SendAsync(request);
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(HttpStatusCode.PreconditionFailed, response.StatusCode);
     }
 
     // ── Batch 4: Prefer: maxpagesize=N ───────────────────────────────────────

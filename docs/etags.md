@@ -117,7 +117,30 @@ The `@odata.etag` annotation is also included in the response body for each enti
 
 ## Conditional write operations
 
-On `PUT`, `PATCH`, and `DELETE`, if the request includes an `If-Match` header:
+### Which routes honor `If-Match`
+
+Every state-changing route the framework owns **and can key** evaluates the precondition:
+
+| Route | |
+|---|---|
+| `PUT /{EntitySet}({key})` | replace the entity |
+| `PATCH /{EntitySet}({key})` | merge the entity |
+| `DELETE /{EntitySet}({key})` | delete the entity |
+| `PUT` / `PATCH` / `DELETE /{EntitySet}({key})/{Property}` | [structural-property writes](property-access.md) |
+| `POST /{EntitySet}({key})/{Nav}/$ref` | add a link to a collection navigation |
+| `PUT /{EntitySet}({key})/{Nav}/$ref` | set a single-valued navigation's link |
+| `DELETE /{EntitySet}({key})/{Nav}/$ref` | remove a link |
+| `POST /{EntitySet}({key})/{Nav}` | create a related entity |
+
+The four `$ref` / navigation-`POST` rows are new; before that, those routes silently **discarded**
+a received `If-Match` and performed the write with a `204`/`201`. That was a lost update on
+relationship state which the handler could not prevent - the `addRef`/`setRef`/`removeRef`/`post`
+delegates receive only the key and the payload, so there was nowhere to check the header.
+See [the exclusion below](#actions-do-not-honor-if-match) for the one family that still does not.
+
+### How the check works
+
+If the request includes an `If-Match` header:
 
 1. The framework fetches the current entity via `GetById`
 2. If no entity exists at that key, returns `412 Precondition Failed` immediately (RFC 7232 §3.1 /
@@ -130,12 +153,92 @@ On `PUT`, `PATCH`, and `DELETE`, if the request includes an `If-Match` header:
 `If-Match: *` matches any *existing* representation - it still fails with `412` (not `404`) when
 the resource does not exist.
 
-### `If-None-Match: *` as a create-guard on `PUT`
+When the precondition fails, it fails **before** the route's handler delegate runs and before the
+request body is deserialized, so a refused write never mutates anything and never reaches your code.
+
+### Weak validators are rejected by `If-Match`
+
+RFC 9110 §13.1.1 requires **strong** comparison for `If-Match`, and §8.8.3.2 says a weak validator
+can never participate in one. So `If-Match: W/"<current-etag>"` returns `412` even though the
+unwrapped value is the current ETag. A weak entry in a comma-separated list is dropped rather than
+poisoning the list - `If-Match: W/"x", "<current>"` still succeeds on the strong entry.
+
+`If-None-Match` uses **weak** comparison (§13.1.2), so `W/"<current>"` *does* match there. The two
+headers deliberately behave differently on the same input.
+
+OhData never emits a weak ETag, so this only affects a client that constructs one itself.
+
+> **Migrating from `Microsoft.AspNetCore.OData`?** This is a deliberate difference. MS emits weak
+> ETags unconditionally (`DefaultODataETagHandler` constructs every tag with `isWeak: true`) and
+> then compares them ignoring weakness, so `If-Match: W/"..."` is accepted there. A client that
+> was written against an MS OData server, or that echoes back a `W/`-prefixed tag it received from
+> one, will get `412` from OhData. Strip the `W/` prefix, or better, send back exactly the `ETag`
+> header value OhData gave you.
+
+### `If-None-Match` on a write
+
+`If-None-Match` is honored on the same routes as `If-Match` and means the inverse (RFC 9110
+§13.1.2): the request is refused with `412 Precondition Failed` when a listed validator matches
+the current ETag, or when `*` is given and the entity exists. It proceeds when nothing matches or
+the entity does not exist.
+
+When a request carries **both** headers, `If-Match` wins outright and `If-None-Match` is not
+evaluated at all - RFC 9110 §13.2.2 fixes that order. Two headers naming the current ETag is a
+success, not a contradiction.
+
+#### `If-None-Match: *` as a create-guard on `PUT`
 
 When `AllowUpsert` is enabled, `PUT` also honors `If-None-Match: *` as a create-guard (§11.4.4):
 if the entity already exists at the target key, the request fails with `412 Precondition Failed`
 instead of overwriting it; otherwise the `PUT` proceeds as an insert. This is a no-op when the
-header is absent, and is independent of the `If-Match` handling above.
+header is absent, and is independent of the `If-Match` handling above. Unlike the general
+`If-None-Match` handling, this guard does not require `UseETag` - it only asks whether a
+representation exists.
+
+### Actions do not honor `If-Match`
+
+Bound and unbound **actions** (`POST /{EntitySet}/{Action}`, `POST /{EntitySet}({key})/{Action}`,
+`POST /{Action}`) are deliberately outside the precondition gate. A conditional header sent to an
+action is ignored, and the action runs.
+
+The reason is the identity of the target resource. RFC 9110 §13.1.1 evaluates `If-Match` against
+the current representation of the *target resource*, and the target of `POST /Products(1)/Reorder`
+is the action-invocation resource (Protocol §11.5.4) - which has no representation and therefore
+no entity tag. `Products(1)` is the action's binding parameter, not the request target. A `$ref`
+write is different in kind: OData §11.4.6 defines it as a modification of the addressed entity's
+own relationship state, so there the entity really is the target. Collection-level and unbound
+actions have no key at all.
+
+If your action mutates its binding entity and you want it to be conditional, you have to implement
+that yourself. An action handler does not receive `HttpContext` - its parameters are bound from the
+request body and query string - so reaching the header means injecting `IHttpContextAccessor` into
+the profile (profiles are registered scoped, so this works once the app calls
+`AddHttpContextAccessor()`):
+
+```csharp
+public class ProductProfile : EntitySetProfile<int, Product>
+{
+    private readonly IHttpContextAccessor _http;
+
+    public ProductProfile(IHttpContextAccessor http) : base(x => x.Id)
+    {
+        _http = http;
+        BindEntityAction(Reorder);
+    }
+
+    private async Task Reorder(int key, int quantity, CancellationToken ct)
+    {
+        var ifMatch = _http.HttpContext?.Request.Headers.IfMatch;
+        // ... compare against the entity's current ETag yourself, and fail with your own 412.
+    }
+}
+```
+
+Note that this escape hatch is available to *any* handler, including the `$ref` and navigation-`POST`
+delegates. The framework enforces the precondition on those routes anyway, because requiring every
+adopter to wire up an accessor and hand-reimplement RFC 9110 comparison semantics per delegate is
+not a substitute for the server doing it once, correctly, on the routes where the addressed entity
+is unambiguously the target.
 
 ```http
 PUT /odata/Products(1)
@@ -223,6 +326,14 @@ await client.For<Product>().Key(42).DeleteAsync(ifMatch: "\"*\"");
 ## Concurrency note
 
 The ETag check is a best-effort conflict signal, not an atomic operation. The framework fetches the entity in one database call, then the caller performs the write in a separate operation - another request may modify the entity between those two steps. For true atomic optimistic concurrency, use a database-level mechanism (e.g. SQL `WHERE RowVersion = @expected`) inside the handler itself and return `null` / throw on conflict.
+
+This applies **unchanged** to the `$ref` and navigation-`POST` routes. Bringing them under the
+precondition gate closed the case where the header was ignored outright; it did not make them
+atomic, and the framework opens no transaction around them. A concurrent writer can still land
+between the `GetById` the check performs and the `addRef`/`setRef`/`removeRef`/`post` delegate's
+own write. What you get is the same guarantee the entity routes have always had: a *stale* ETag is
+reliably refused, and a refused request provably never reaches your delegate. What you do not get
+is serialization of the surviving window - that still has to come from the data store.
 
 ## Example: SQL row-version column
 

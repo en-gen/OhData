@@ -9,6 +9,67 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`If-Match` is now enforced on the `$ref` and navigation-`POST` write routes, and compared per
+  RFC (#478).** `CheckETagAsync` was called from five places — entity `PUT`/`PATCH`/`DELETE` and
+  the two structural-property write handlers. Every other state-changing route the framework owns
+  **discarded** a received `If-Match` and performed the write with a success status. Measured on a
+  `TestServer` against the real pipeline, replaying a stale ETag after an out-of-band change:
+
+  | Request with stale `If-Match` | before | after |
+  |---|---|---|
+  | `PUT /Parents(1)` *(control)* | 412 | 412 |
+  | `POST /Parents(1)/Children/$ref` | **204**, `addRef` ran | **412**, delegate not called |
+  | `DELETE /Parents(1)/Children/$ref` | **204**, `removeRef` ran | **412**, delegate not called |
+  | `PUT /Parents(1)/Friend/$ref` | **204**, `setRef` ran | **412**, delegate not called |
+  | `POST /Parents(1)/Children` | **201**, `post` ran | **412**, delegate not called |
+
+  RFC 9110 §13.1.1: an origin server **MUST NOT** perform the method when a received `If-Match`
+  evaluates false. Silently discarding the precondition is the exact failure mode conditional
+  requests exist to prevent — the client believes it performed a checked write. Concretely: a
+  client reads a parent's ETag, then conditionally unlinks and relinks a relationship; both calls
+  succeed against a parent that changed underneath. That is a lost update on relationship state.
+
+  The gate runs **before** the request body is read and before the handler delegate is invoked, so
+  a refused write provably mutates nothing. It is **not** atomic — no transaction is opened, and
+  the TOCTOU window between the check's `GetById` and the delegate's write is unchanged. See
+  [docs/etags.md](docs/etags.md#concurrency-note).
+
+  Two comparison bugs on the pre-existing routes are fixed with it:
+
+  - `If-Match: W/"<current-etag>"` returned **200**. RFC 9110 §13.1.1 requires **strong**
+    comparison and §8.8.3.2 says a weak validator can never participate in one, so it must be
+    `412`. Weak entries are now dropped rather than unwrapped; a weak entry alongside a matching
+    strong one still succeeds on the strong one.
+  - `If-None-Match: "<current-etag>"` on a write returned **200**. §13.1.2 makes the condition
+    false, so it is now `412`. `If-None-Match` keeps **weak** comparison (so `W/"<current>"` *does*
+    match there — the two headers deliberately differ), and when both headers are present
+    `If-Match` wins outright per §13.2.2.
+
+  > **⚠ BREAKING CHANGE.** A client that sends `If-Match`, `If-None-Match`, or a `W/`-prefixed
+  > validator to any of these routes and relies on it being **ignored** now gets `412`. Requests
+  > that send no conditional header are byte-identical, and a profile without `UseETag` is
+  > unaffected. OhData never emits weak ETags, so a `W/` validator can only have been client-built.
+
+  Rejecting weak validators is a **deliberate divergence from `Microsoft.AspNetCore.OData`**, not a
+  case of matching it. MS emits weak ETags unconditionally and compares them ignoring weakness, so
+  `If-Match: W/"..."` is accepted there; that pairing is jointly non-conformant with §13.1.1, and
+  the project's "work with MS conventions" policy does not extend to reproducing a non-conformance.
+  It is safe here specifically because OhData has no weak-ETag path at all. Two existing tests that
+  pinned the old unwrapping behaviour were inverted with this change.
+
+  MS ships **no** automatic `If-Match` enforcement on any route — it is always the controller
+  author's job, which works there because the author owns the route. OhData owns these routes and
+  hands the delegate only `(TKey, child, CancellationToken)`, so "follow MS" would have meant
+  nobody enforcing the header and nobody being able to. That asymmetry is what makes this a
+  framework defect rather than a documentation gap.
+
+  Bound and unbound **actions** are a deliberate, documented exclusion: the target resource of
+  `POST /Set(key)/Action` is the action-invocation resource (Protocol §11.5.4), which has no
+  representation and therefore no entity tag, whereas OData §11.4.6 defines a `$ref` write as a
+  modification of the addressed entity itself.
+
 ### Changed
 
 - **`MaxExpansionDepth` is now hard-capped at `6`; configuring more throws at startup (#328).**
