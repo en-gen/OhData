@@ -319,8 +319,8 @@ public class DeepInsertTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
         DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
 
-        var response = await fx.Client.PutAsync(
-            "/odata/DeepInsertDefaultOrders(1)", new StringContent(body, Encoding.UTF8, "application/json"));
+        using var content = new StringContent(body, Encoding.UTF8, "application/json");
+        var response = await fx.Client.PutAsync("/odata/DeepInsertDefaultOrders(1)", content);
 
         Assert.Equal(HttpStatusCode.NotImplemented, response.StatusCode);
         Assert.Null(DeepInsertDefaultProfile.LastReceivedByWriteHandler);
@@ -342,9 +342,9 @@ public class DeepInsertTests
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
 
         DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
-        var put = await fx.Client.PutAsync(
-            "/odata/DeepInsertDefaultOrders(1)",
-            new StringContent("{\"id\":1,\"customer\":\"Mallory\"}", Encoding.UTF8, "application/json"));
+        using var putContent =
+            new StringContent("{\"id\":1,\"customer\":\"Mallory\"}", Encoding.UTF8, "application/json");
+        var put = await fx.Client.PutAsync("/odata/DeepInsertDefaultOrders(1)", putContent);
         Assert.Equal(HttpStatusCode.OK, put.StatusCode);
         Assert.Equal("Mallory", DeepInsertDefaultProfile.LastReceivedByWriteHandler!.Customer);
 
@@ -358,18 +358,16 @@ public class DeepInsertTests
         Assert.Equal("Niaj", DeepInsertDefaultProfile.LastReceivedByWriteHandler!.Customer);
 
         // PUT's malformed-body message must still come from the deserializer.
-        var malformed = await fx.Client.PutAsync(
-            "/odata/DeepInsertDefaultOrders(1)",
-            new StringContent("{ not json", Encoding.UTF8, "application/json"));
+        using var malformedContent = new StringContent("{ not json", Encoding.UTF8, "application/json");
+        var malformed = await fx.Client.PutAsync("/odata/DeepInsertDefaultOrders(1)", malformedContent);
         Assert.Equal(HttpStatusCode.BadRequest, malformed.StatusCode);
         string malformedBody = await malformed.Content.ReadAsStringAsync();
         Assert.Contains("Path: $", malformedBody, StringComparison.Ordinal);
 
         // ...and the collection POST's must still come from JsonDocument, which words it without a
         // Path. The two readers differ, and that is the difference buffering could have erased.
-        var malformedPost = await fx.Client.PostAsync(
-            "/odata/DeepInsertDefaultOrders",
-            new StringContent("{ not json", Encoding.UTF8, "application/json"));
+        using var malformedPostContent = new StringContent("{ not json", Encoding.UTF8, "application/json");
+        var malformedPost = await fx.Client.PostAsync("/odata/DeepInsertDefaultOrders", malformedPostContent);
         Assert.Equal(HttpStatusCode.BadRequest, malformedPost.StatusCode);
         Assert.DoesNotContain("Path: $", await malformedPost.Content.ReadAsStringAsync(), StringComparison.Ordinal);
     }
@@ -393,11 +391,10 @@ public class DeepInsertTests
         string filler = new string('x', 200_000);
 
         DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
-        var withAnnotation = await fx.Client.PutAsync(
-            "/odata/DeepInsertDefaultOrders(1)",
-            new StringContent(
-                $"{{\"id\":1,\"customer\":\"{filler}\",\"category@odata.bind\":\"DeepInsertDefaultCategories(1)\"}}",
-                Encoding.UTF8, "application/json"));
+        using var annotatedContent = new StringContent(
+            $"{{\"id\":1,\"customer\":\"{filler}\",\"category@odata.bind\":\"DeepInsertDefaultCategories(1)\"}}",
+            Encoding.UTF8, "application/json");
+        var withAnnotation = await fx.Client.PutAsync("/odata/DeepInsertDefaultOrders(1)", annotatedContent);
 
         Assert.Equal(HttpStatusCode.NotImplemented, withAnnotation.StatusCode);
         Assert.Null(DeepInsertDefaultProfile.LastReceivedByWriteHandler);
@@ -406,9 +403,9 @@ public class DeepInsertTests
         // byte of it survives the round trip — so "large bodies 501" cannot pass vacuously and the
         // buffer is proven to hold the whole payload rather than a truncated prefix.
         DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
-        var clean = await fx.Client.PutAsync(
-            "/odata/DeepInsertDefaultOrders(1)",
-            new StringContent($"{{\"id\":1,\"customer\":\"{filler}\"}}", Encoding.UTF8, "application/json"));
+        using var cleanContent =
+            new StringContent($"{{\"id\":1,\"customer\":\"{filler}\"}}", Encoding.UTF8, "application/json");
+        var clean = await fx.Client.PutAsync("/odata/DeepInsertDefaultOrders(1)", cleanContent);
 
         Assert.Equal(HttpStatusCode.OK, clean.StatusCode);
         Assert.Equal(filler, DeepInsertDefaultProfile.LastReceivedByWriteHandler!.Customer);
