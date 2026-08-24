@@ -145,8 +145,12 @@ public sealed class DeltaMapping<TModel, TEntity> : IDeltaMappingSource
         return this;
     }
 
+    // The compiler is type-erased; TEntity is closed here, so this is where the Delta<TEntity>
+    // probe (#479) can be handed over without reflection.
     DeltaMappingPlan IDeltaMappingSource.Compile() =>
-        DeltaMappingCompiler.Compile(typeof(TModel), typeof(TEntity), _renames, _ignored, _converters);
+        DeltaMappingCompiler.Compile(
+            typeof(TModel), typeof(TEntity), _renames, _ignored, _converters,
+            static () => DeltaMappingCompiler.TrackedEntityProperties<TEntity>());
 }
 
 /// <summary>

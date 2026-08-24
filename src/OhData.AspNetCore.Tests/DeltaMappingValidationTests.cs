@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations.Schema;
 using System.Linq;
+using System.Runtime.Serialization;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.OData.Deltas;
 using Microsoft.Extensions.DependencyInjection;
@@ -161,6 +163,99 @@ public sealed class DmRenameIgnoreConflictProfile : DeltaProfile
         For<DmRiDto, DmRiEntity>()
             .Rename(d => d.Name, e => e.Label)
             .Ignore(d => d.Name);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// #479 / #480 — the existing DmDto/DmEntity family extended with the two defect
+// shapes. Derived entities carry the defect so every existing mapping, profile and
+// assertion above stays exactly as it was.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── #479 (a): Delta<T> drops [NotMapped] properties from its property surface ────
+public class DmAuditedEntity : DmEntity
+{
+    [NotMapped] public string Audit { get; set; } = "";
+}
+public class DmAuditedDto : DmDto { public string Audit { get; set; } = ""; }
+public sealed class DmNotMappedTargetProfile : DeltaProfile
+{
+    public DmNotMappedTargetProfile() => For<DmAuditedDto, DmAuditedEntity>().Ignore(d => d.Secret);
+}
+// Ignore()ing the model property is the documented remedy and must still compile clean.
+public sealed class DmNotMappedIgnoredProfile : DeltaProfile
+{
+    public DmNotMappedIgnoredProfile() =>
+        For<DmAuditedDto, DmAuditedEntity>().Ignore(d => d.Secret).Ignore(d => d.Audit);
+}
+
+// ── #479 (b): Delta<T> requires a PUBLIC getter as well as a public setter ───────
+public class DmPrivateGetterEntity : DmEntity
+{
+    public string Trace { private get; set; } = "";
+}
+public class DmTracedDto : DmDto { public string Trace { get; set; } = ""; }
+public sealed class DmPrivateGetterTargetProfile : DeltaProfile
+{
+    public DmPrivateGetterTargetProfile() => For<DmTracedDto, DmPrivateGetterEntity>().Ignore(d => d.Secret);
+}
+
+// ── #479 (c): [IgnoreDataMember] is excluded by the same Delta<T> rule ───────────
+public class DmIgnoreDataMemberEntity : DmEntity
+{
+    [IgnoreDataMember] public string Note { get; set; } = "";
+}
+public class DmNotedDto : DmDto { public string Note { get; set; } = ""; }
+public sealed class DmIgnoreDataMemberTargetProfile : DeltaProfile
+{
+    public DmIgnoreDataMemberTargetProfile() => For<DmNotedDto, DmIgnoreDataMemberEntity>().Ignore(d => d.Secret);
+}
+
+// ── #479 (d): [DataContract] is a WHOLE-TYPE switch — Delta<T> then tracks only
+//    [DataMember]-marked properties, so one class-level attribute discards every
+//    write to the entity. Broader than the per-property cases the issue lists. ────
+[DataContract]
+public class DmDataContractEntity : DmEntity { }
+public sealed class DmDataContractTargetProfile : DeltaProfile
+{
+    public DmDataContractTargetProfile() => For<DmDto, DmDataContractEntity>().Ignore(d => d.Secret);
+}
+
+// ── Incidental: a `new`-shadowed entity property of a DIFFERENT type. Delta<T>'s
+//    own _allProperties build (ToDictionary by name) throws on it, so constructing
+//    the validation probe surfaces it at startup. Filed separately as #488 item 2;
+//    this pins the incidental improvement so a refactor cannot silently drop it. ──
+public class DmShadowBaseEntity : DmEntity { public object Val { get; set; } = ""; }
+public class DmShadowEntity : DmShadowBaseEntity { public new string Val { get; set; } = ""; }
+public class DmShadowDto : DmDto { public string Val { get; set; } = ""; }
+public sealed class DmShadowProfile : DeltaProfile
+{
+    public DmShadowProfile() => For<DmShadowDto, DmShadowEntity>().Ignore(d => d.Secret);
+}
+
+// ── #480 (a): the standard EF Core shape — protected parameterless ctor beside a
+//    public parameterized one. Delta<T>.Reset uses Activator.CreateInstance. ──────
+public class DmProtectedCtorEntity : DmEntity
+{
+    protected DmProtectedCtorEntity() { }
+    public DmProtectedCtorEntity(int id) => Id = id;
+}
+public sealed class DmProtectedCtorProfile : DeltaProfile
+{
+    public DmProtectedCtorProfile() => For<DmDto, DmProtectedCtorEntity>().Ignore(d => d.Secret);
+}
+
+// ── #480 (b): an abstract entity type ────────────────────────────────────────────
+public abstract class DmAbstractEntity : DmEntity { }
+public sealed class DmAbstractEntityProfile : DeltaProfile
+{
+    public DmAbstractEntityProfile() => For<DmDto, DmAbstractEntity>().Ignore(d => d.Secret);
+}
+
+// ── #480 (c): a positional record — no parameterless constructor at all ──────────
+public record DmRecordEntity(int Id);
+public sealed class DmRecordEntityProfile : DeltaProfile
+{
+    public DmRecordEntityProfile() => For<DmScanModel, DmRecordEntity>();
 }
 
 public class DeltaMappingValidationTests
@@ -401,5 +496,162 @@ public class DeltaMappingValidationTests
     {
         var ex = Assert.Throws<InvalidOperationException>(() => BuildFactory(typeof(DmIgnoreConvertConflictProfile)));
         Assert.Contains("both Ignore() and Convert()", ex.Message);
+    }
+
+    // ═══ #479 — a target Delta<TEntity> does not track must fail at STARTUP ══════
+    // Pre-fix all three compiled clean and the write was discarded with no signal.
+
+    [Fact]
+    public void NotMappedEntityTarget_FailsFastAtStartup()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() => BuildFactory(typeof(DmNotMappedTargetProfile)));
+        Assert.Contains("Audit", ex.Message);
+        Assert.Contains("not tracked by Delta<DmAuditedEntity>", ex.Message);
+        Assert.Contains("[NotMapped]", ex.Message);
+        Assert.Contains("silently discarded", ex.Message);
+    }
+
+    [Fact]
+    public void PrivateGetterEntityTarget_FailsFastAtStartup()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() => BuildFactory(typeof(DmPrivateGetterTargetProfile)));
+        Assert.Contains("Trace", ex.Message);
+        Assert.Contains("not tracked by Delta<DmPrivateGetterEntity>", ex.Message);
+        Assert.Contains("public getter", ex.Message);
+    }
+
+    [Fact]
+    public void IgnoreDataMemberEntityTarget_FailsFastAtStartup()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() => BuildFactory(typeof(DmIgnoreDataMemberTargetProfile)));
+        Assert.Contains("Note", ex.Message);
+        Assert.Contains("[IgnoreDataMember]", ex.Message);
+    }
+
+    // The worst shape of #479: one class-level [DataContract] and Delta<T> tracks NOTHING,
+    // so every property of the mapping was discarded — not just the annotated one.
+    [Fact]
+    public void DataContractEntityWithoutDataMembers_FailsFastAtStartup()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() => BuildFactory(typeof(DmDataContractTargetProfile)));
+        Assert.Contains("[DataMember]", ex.Message);
+        Assert.Contains("not tracked by Delta<DmDataContractEntity>", ex.Message);
+        // Every mapped property, not merely one, is reported.
+        foreach (string name in new[] { "Id", "Name", "StatusCode", "Rank", "Price" })
+            Assert.Contains($"Entity property '{name}'", ex.Message);
+    }
+
+    // Incidental consequence of constructing the validation probe: #488 item 2 (a
+    // different-typed `new`-shadowed entity property) now fails at startup instead of
+    // throwing ArgumentException on the first Create. Pinned, not deliberately fixed.
+    [Fact]
+    public void DifferentTypedShadowedEntityProperty_FailsFastAtStartup()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() => BuildFactory(typeof(DmShadowProfile)));
+        Assert.Contains("could not be constructed for validation", ex.Message);
+        Assert.Contains("Val", ex.Message);
+    }
+
+    // The remedy the message names must actually work — and the untouched properties
+    // must still map, so the new rejection is not an over-broad reject-the-whole-type.
+    [Fact]
+    public void NotMappedEntityTarget_Ignored_CompilesCleanAndStillMapsTheRest()
+    {
+        IDeltaFactory factory = BuildFactory(typeof(DmNotMappedIgnoredProfile));
+        var delta = new Delta<DmAuditedDto>();
+        delta.TrySetPropertyValue(nameof(DmAuditedDto.Name), "ok");
+        delta.TrySetPropertyValue(nameof(DmAuditedDto.Audit), "should not travel");
+
+        Delta<DmAuditedEntity> entityDelta = factory.Create<DmAuditedDto, DmAuditedEntity>(delta);
+        var entity = new DmAuditedEntity();
+        entityDelta.Patch(entity);
+
+        Assert.Equal("ok", entity.Name);
+        Assert.Equal("", entity.Audit);
+        // The Ignore()d names never reach the entity-side allowlist (the #243 boundary claim).
+        Assert.DoesNotContain("Audit", entityDelta.UpdatableProperties);
+        Assert.DoesNotContain("Secret", entityDelta.UpdatableProperties);
+    }
+
+    // ═══ #479 second half — a runtime rejection is never discarded ═══════════════
+    // Startup validation now catches every known cause, so this is reached only by
+    // handing the factory a plan the compiler would have refused. That is the point:
+    // if TrySetPropertyValue ever answers false again, it must be loud.
+
+    private static DeltaFactory FactoryWithUnvalidatedPlan()
+    {
+        var rule = new CompiledPropertyRule(
+            nameof(DmAuditedDto.Audit),
+            nameof(DmAuditedEntity.Audit),
+            Converter: null,
+            ModelAccessor: m => ((DmAuditedDto)m).Audit);
+        var plan = new DeltaMappingPlan(
+            typeof(DmAuditedDto), typeof(DmAuditedEntity),
+            new[] { nameof(DmAuditedEntity.Audit) },
+            new[] { rule });
+        return new DeltaFactory(new Dictionary<(Type, Type), DeltaMappingPlan>
+        {
+            [(typeof(DmAuditedDto), typeof(DmAuditedEntity))] = plan,
+        });
+    }
+
+    [Fact]
+    public void RejectedWrite_FromDelta_Throws_RatherThanSilentlyDiscarding()
+    {
+        DeltaFactory factory = FactoryWithUnvalidatedPlan();
+        var delta = new Delta<DmAuditedDto>();
+        delta.TrySetPropertyValue(nameof(DmAuditedDto.Audit), "x");
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => factory.Create<DmAuditedDto, DmAuditedEntity>(delta));
+        Assert.Contains("Audit", ex.Message);
+        Assert.Contains("rejected", ex.Message);
+    }
+
+    [Fact]
+    public void RejectedWrite_FromModel_Throws_RatherThanSilentlyDiscarding()
+    {
+        DeltaFactory factory = FactoryWithUnvalidatedPlan();
+        var model = new DmAuditedDto { Audit = "x" };
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => factory.Create<DmAuditedDto, DmAuditedEntity>(model));
+        Assert.Contains("Audit", ex.Message);
+        Assert.Contains("rejected", ex.Message);
+    }
+
+    // ═══ #480 — an entity Delta<T> cannot instantiate must fail at STARTUP ═══════
+    // Pre-fix all three compiled clean and threw MissingMethodException per request.
+
+    [Fact]
+    public void ProtectedParameterlessCtorEntity_FailsFastAtStartup()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() => BuildFactory(typeof(DmProtectedCtorProfile)));
+        Assert.Contains("DmProtectedCtorEntity", ex.Message);
+        Assert.Contains("public parameterless constructor", ex.Message);
+    }
+
+    [Fact]
+    public void AbstractEntity_FailsFastAtStartup()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() => BuildFactory(typeof(DmAbstractEntityProfile)));
+        Assert.Contains("DmAbstractEntity", ex.Message);
+        Assert.Contains("abstract", ex.Message);
+    }
+
+    [Fact]
+    public void PositionalRecordEntity_FailsFastAtStartup()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() => BuildFactory(typeof(DmRecordEntityProfile)));
+        Assert.Contains("DmRecordEntity", ex.Message);
+        Assert.Contains("public parameterless constructor", ex.Message);
+    }
+
+    [Fact]
+    public async Task UnconstructableEntity_FailsFastAtMapOhData()
+    {
+        InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            TestHostBuilder.BuildAsync(o => o.AddDeltaProfile<DmProtectedCtorProfile>()));
+        Assert.Contains("public parameterless constructor", ex.Message);
     }
 }
