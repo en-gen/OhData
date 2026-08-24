@@ -72,6 +72,43 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Nested navigation values are now withheld from `PUT` and `PATCH` too, and the flag that
+  governs it is renamed `AllowDeepWrites` (#457).** Two breaking changes in one commit; they are
+  independent.
+
+  > **⚠ BREAKING CHANGE 1 — behaviour.** With `AllowDeepWrites` at its default of `false`, a
+  > nested navigation value in a `PUT` body is set to `null` before the `Put` handler runs, and one
+  > in a `PATCH` body never enters the `Delta<TModel>` at all. Previously both reached the handler
+  > regardless of the flag. A handler that *deliberately* relied on `PUT` carrying a graph now
+  > receives `null` navigations; set `AllowDeepWrites = true` on that profile to restore it. `POST`
+  > is unchanged.
+
+  > **⚠ BREAKING CHANGE 2 — API.** `EntitySetProfile.AllowDeepInsert` (protected) and
+  > `EntitySetDefaults.AllowDeepInsert` (public) are renamed `AllowDeepWrites`. Both old names
+  > remain as `[Obsolete]` forwarding properties over the same storage, so existing code compiles
+  > with a warning rather than an error and an assembly compiled against 1.5.0 keeps binding.
+  > Projects building with `TreatWarningsAsErrors` will need the new name.
+
+  **Why.** Deep insert (OData §11.4.2.2) is `POST`-only in the spec, so a `POST`-scoped flag was
+  correctly named for what it did. **Deep update** — nested graphs in `PUT`/`PATCH` — is a
+  *separate*, named 4.01 feature (§11.4.3.1) at Advanced conformance, and `docs/deep-insert.md` has
+  declared it out of scope since 1.0.0. It was never enforced: System.Text.Json bound the nested
+  values anyway, `PUT` forwarded them and `PATCH` bound them into the delta, so a handler doing
+  `db.Update(model); SaveChanges();` on an update it never expected to carry a graph could persist
+  part of one. This is enforcement of an already-documented scope decision, not an extension of the
+  flag past its name — and once one flag governs both features, a name saying only "insert"
+  describes one of the two.
+
+  `PATCH` withholds rather than nulls, deliberately: `Delta<T>` is a change *set*, so a nulled
+  navigation would still be named by `GetChangedPropertyNames()` and still written by
+  `delta.Patch(existing)` — turning a graph the client sent into an unrequested relationship
+  *clear*. It also keeps the delta consistent with the subsystem it feeds, since `Delta<TEntity>`
+  and `DeltaMappingCompiler` handle scalars and structural properties only.
+
+  All three routes share **one** strip set — the profile-declared navigations unioned with the
+  EDM's (#461) — so a convention-discovered navigation the profile never declared is withheld on
+  every verb, and the two halves cannot drift.
+
 - **`MaxExpansionDepth` is now hard-capped at `6`; configuring more throws at startup (#328).**
   `EntitySetDefaults.MaxExpansionDepthCeiling` is a new public constant, and both configuration
   entry points — `WithDefaults(d => d.MaxExpansionDepth = N)` and a profile's own

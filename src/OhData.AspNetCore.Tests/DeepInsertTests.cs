@@ -16,7 +16,7 @@ namespace OhData.AspNetCore.Tests;
 /// <summary>
 /// Tests for deep insert — nested related entities in <c>POST /{EntitySet}</c>
 /// (OData §11.4.2.2). Rides the existing <c>Post</c> handler; no new handler delegate. Gated by
-/// the new <c>AllowDeepInsert</c> profile flag (default <c>false</c>, entity-level granularity).
+/// the new <c>AllowDeepWrites</c> profile flag (default <c>false</c>, entity-level granularity).
 /// <para>
 /// Default (<c>false</c>): System.Text.Json already binds nested navigation values into the
 /// deserialized model during the existing POST pipeline; the framework strips them (sets them to
@@ -35,7 +35,7 @@ namespace OhData.AspNetCore.Tests;
 /// </summary>
 public class DeepInsertTests
 {
-    // ── Default (AllowDeepInsert = false): nested navigation values are stripped ────
+    // ── Default (AllowDeepWrites = false): nested navigation values are stripped ────
 
     [Fact]
     public async Task Post_Default_StripsNestedCollectionNav_BeforeHandlerSeesIt()
@@ -106,7 +106,7 @@ public class DeepInsertTests
         Assert.Equal(2, json.GetProperty("Tags").GetArrayLength());
     }
 
-    // ── Opt-in (AllowDeepInsert = true): full graph passed through, echoed in response ──
+    // ── Opt-in (AllowDeepWrites = true): full graph passed through, echoed in response ──
 
     [Fact]
     public async Task Post_OptIn_PassesFullGraphToHandler_AndEchoesChildrenInResponse()
@@ -168,6 +168,159 @@ public class DeepInsertTests
         Assert.Single(DeepInsertOptInProfile.LastReceivedByHandler!.Lines);
     }
 
+    // ── Deep update (#457): PUT/PATCH obey the same flag ─────────────────────────
+    //
+    // Deep update -- a nested graph in PUT/PATCH -- is OData 4.01 §11.4.3.1, a separate named
+    // feature from deep insert (§11.4.2.2, POST-only), and docs/deep-insert.md has declared it out
+    // of scope since 1.0.0. It was not ENFORCED: System.Text.Json bound the nested values and they
+    // reached the Put handler (and entered the Delta<TModel> on PATCH) regardless of the flag.
+    //
+    // Every assertion below is at the HANDLER, never on the wire: #240 omits every EDM navigation
+    // from the 200/201 echo whether it was stripped or not, so the response says nothing either
+    // way. That is also why this went unnoticed.
+
+    [Fact]
+    public async Task Put_Default_StripsNestedCollectionNav_BeforeHandlerSeesIt()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
+        DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
+
+        var response = await fx.Client.PutAsJsonAsync("/odata/DeepInsertDefaultOrders(1)", new
+        {
+            id = 1,
+            customer = "Alice",
+            lines = new[] { new { sku = "WIDGET-1", quantity = 2 } },
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.NotNull(DeepInsertDefaultProfile.LastReceivedByWriteHandler);
+        Assert.Null(DeepInsertDefaultProfile.LastReceivedByWriteHandler!.Lines);
+
+        // BOUNDING: the strip is the navigations, not the body. Scalars survive.
+        Assert.Equal("Alice", DeepInsertDefaultProfile.LastReceivedByWriteHandler.Customer);
+    }
+
+    [Fact]
+    public async Task Put_Default_StripsNestedSingleValuedNav_BeforeHandlerSeesIt()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
+        DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
+
+        var response = await fx.Client.PutAsJsonAsync("/odata/DeepInsertDefaultOrders(1)", new
+        {
+            id = 1,
+            customer = "Bob",
+            category = new { name = "Hardware" },
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.NotNull(DeepInsertDefaultProfile.LastReceivedByWriteHandler);
+        Assert.Null(DeepInsertDefaultProfile.LastReceivedByWriteHandler!.Category);
+    }
+
+    [Fact]
+    public async Task Put_Default_NonNavigationCollectionProperty_Survives()
+    {
+        // The same bound as on POST: only CLR properties the EDM (or the profile) calls a
+        // navigation are stripped. A plain collection property is untouched.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
+        DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
+
+        var response = await fx.Client.PutAsJsonAsync("/odata/DeepInsertDefaultOrders(1)", new
+        {
+            id = 1,
+            customer = "Carol",
+            tags = new[] { "rush", "gift-wrap" },
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.NotNull(DeepInsertDefaultProfile.LastReceivedByWriteHandler);
+        Assert.Equal(new[] { "rush", "gift-wrap" }, DeepInsertDefaultProfile.LastReceivedByWriteHandler!.Tags);
+    }
+
+    [Fact]
+    public async Task Patch_Default_NavigationNeverEntersTheDelta()
+    {
+        // The stronger half. Delta<TEntity> explicitly excludes navigation writes and the
+        // delta-mapping subsystem (DeltaMappingCompiler) is scalars/structural only, so a
+        // navigation in the Delta<TModel> on the way IN contradicts the subsystem it feeds.
+        // Nulling it after the fact is not equivalent: GetChangedPropertyNames() would still
+        // name it, and delta.Patch(existing) would still write it.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
+        DeepInsertDefaultProfile.LastPatchChangedProperties = null;
+        DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
+
+        var response = await fx.Client.PatchAsJsonAsync("/odata/DeepInsertDefaultOrders(1)", new
+        {
+            customer = "Dana",
+            lines = new[] { new { sku = "WIDGET-1", quantity = 2 } },
+            category = new { name = "Hardware" },
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.NotNull(DeepInsertDefaultProfile.LastPatchChangedProperties);
+        Assert.DoesNotContain("Lines", DeepInsertDefaultProfile.LastPatchChangedProperties!);
+        Assert.DoesNotContain("Category", DeepInsertDefaultProfile.LastPatchChangedProperties!);
+
+        // BOUNDING: the scalar the same body carried is still in the delta, and still applied.
+        Assert.Contains("Customer", DeepInsertDefaultProfile.LastPatchChangedProperties!);
+        Assert.NotNull(DeepInsertDefaultProfile.LastReceivedByWriteHandler);
+        Assert.Equal("Dana", DeepInsertDefaultProfile.LastReceivedByWriteHandler!.Customer);
+    }
+
+    [Fact]
+    public async Task Patch_Default_NonNavigationCollectionProperty_StillEntersTheDelta()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
+        DeepInsertDefaultProfile.LastPatchChangedProperties = null;
+
+        var response = await fx.Client.PatchAsJsonAsync("/odata/DeepInsertDefaultOrders(1)", new
+        {
+            tags = new[] { "rush" },
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.NotNull(DeepInsertDefaultProfile.LastPatchChangedProperties);
+        Assert.Contains("Tags", DeepInsertDefaultProfile.LastPatchChangedProperties!);
+    }
+
+    [Fact]
+    public async Task Put_OptIn_PassesFullGraphToHandler()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertOptInProfile>());
+        DeepInsertOptInProfile.LastReceivedByWriteHandler = null;
+
+        var response = await fx.Client.PutAsJsonAsync("/odata/DeepInsertOptInOrders(1)", new
+        {
+            id = 1,
+            customer = "Erin",
+            lines = new[] { new { sku = "WIDGET-1", quantity = 2 } },
+            category = new { name = "Electronics" },
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.NotNull(DeepInsertOptInProfile.LastReceivedByWriteHandler);
+        Assert.Single(DeepInsertOptInProfile.LastReceivedByWriteHandler!.Lines);
+        Assert.NotNull(DeepInsertOptInProfile.LastReceivedByWriteHandler!.Category);
+    }
+
+    [Fact]
+    public async Task Patch_OptIn_NavigationEntersTheDelta()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertOptInProfile>());
+        DeepInsertOptInProfile.LastPatchChangedProperties = null;
+
+        var response = await fx.Client.PatchAsJsonAsync("/odata/DeepInsertOptInOrders(1)", new
+        {
+            customer = "Frank",
+            lines = new[] { new { sku = "WIDGET-1", quantity = 2 } },
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.NotNull(DeepInsertOptInProfile.LastPatchChangedProperties);
+        Assert.Contains("Lines", DeepInsertOptInProfile.LastPatchChangedProperties!);
+    }
+
     // ── @odata.bind: documented non-support → 501 ────────────────────────────────
 
     [Fact]
@@ -193,7 +346,7 @@ public class DeepInsertTests
     [Fact]
     public async Task Post_ODataBindAnnotation_Returns501_EvenWhenDeepInsertDisabled()
     {
-        // @odata.bind is rejected regardless of AllowDeepInsert — it is not silently ignored in
+        // @odata.bind is rejected regardless of AllowDeepWrites — it is not silently ignored in
         // either mode.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
 
@@ -469,7 +622,7 @@ public class DeepInsertTests
         public List<string> Tags { get; set; } = new();
     }
 
-    /// <summary>AllowDeepInsert left at its default (false) — nested nav values are stripped.</summary>
+    /// <summary>AllowDeepWrites left at its default (false) — nested nav values are stripped.</summary>
     private class DeepInsertDefaultProfile : EntitySetProfile<int, DeepInsertOrder>
     {
         private static int _nextId = 1;
@@ -485,6 +638,13 @@ public class DeepInsertTests
         /// handler never ran" without a stale POST capture answering for it.
         /// </summary>
         public static DeepInsertOrder? LastReceivedByWriteHandler;
+
+        /// <summary>
+        /// #457: the names <c>Delta&lt;TModel&gt;.GetChangedPropertyNames()</c> reported at the
+        /// handler. A navigation must never be in it — <c>LastReceivedByWriteHandler</c> alone
+        /// cannot tell "never entered the delta" from "entered it and applied a null".
+        /// </summary>
+        public static string[]? LastPatchChangedProperties;
 
         public DeepInsertDefaultProfile() : base(x => x.Id)
         {
@@ -516,6 +676,7 @@ public class DeepInsertTests
 
             Patch = (id, delta, _) =>
             {
+                LastPatchChangedProperties = delta.GetChangedPropertyNames().ToArray();
                 var order = new DeepInsertOrder { Id = id };
                 delta.Patch(order);
                 LastReceivedByWriteHandler = order;
@@ -524,7 +685,7 @@ public class DeepInsertTests
         }
     }
 
-    /// <summary>AllowDeepInsert = true — full graph passed through; handler owns persistence.</summary>
+    /// <summary>AllowDeepWrites = true — full graph passed through; handler owns persistence.</summary>
     private class DeepInsertOptInProfile : EntitySetProfile<int, DeepInsertOrder>
     {
         private static int _nextId = 1;
@@ -532,15 +693,39 @@ public class DeepInsertTests
 
         public static DeepInsertOrder? LastReceivedByHandler;
 
+        /// <summary>#457: the opt-in twin of <c>DeepInsertDefaultProfile.LastReceivedByWriteHandler</c>.</summary>
+        public static DeepInsertOrder? LastReceivedByWriteHandler;
+
+        /// <summary>#457: the opt-in twin of <c>DeepInsertDefaultProfile.LastPatchChangedProperties</c>.</summary>
+        public static string[]? LastPatchChangedProperties;
+
         public DeepInsertOptInProfile() : base(x => x.Id)
         {
             EntitySetName = "DeepInsertOptInOrders";
-            AllowDeepInsert = true;
+            AllowDeepWrites = true;
 
             HasMany(x => x.Lines);
             HasOptional(x => x.Category!);
 
             GetAll = (_) => Task.FromResult<IEnumerable<DeepInsertOrder>>(_orders);
+
+            // #457: the opt-in side of deep UPDATE. Non-persisting for the same reason the default
+            // profile's are -- what a test needs is what the handler RECEIVED.
+            Put = (id, order, _) =>
+            {
+                LastReceivedByWriteHandler = order;
+                order.Id = id;
+                return Task.FromResult(order);
+            };
+
+            Patch = (id, delta, _) =>
+            {
+                LastPatchChangedProperties = delta.GetChangedPropertyNames().ToArray();
+                var order = new DeepInsertOrder { Id = id };
+                delta.Patch(order);
+                LastReceivedByWriteHandler = order;
+                return Task.FromResult<DeepInsertOrder?>(order);
+            };
 
             Post = (order, _) =>
             {
@@ -594,7 +779,7 @@ public class DeepInsertTests
         public DeepInsertWithNavHandlersProfile() : base(x => x.Id)
         {
             EntitySetName = "DeepInsertNavOrders";
-            AllowDeepInsert = true;
+            AllowDeepWrites = true;
 
             HasMany(x => x.Lines, batchGetAll: (orderIds, ct) =>
             {

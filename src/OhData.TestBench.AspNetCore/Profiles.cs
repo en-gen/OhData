@@ -54,7 +54,7 @@ public class RatingResult
 /// <summary>
 /// CRUD handler logic shared between <see cref="MovieProfile"/> (v1) and
 /// <see cref="MovieProfileV2"/> (v2). Kept as static factory methods rather than a common base
-/// class: the two profiles differ in <c>AllowDeepInsert</c> (an <c>init</c>-only property set
+/// class: the two profiles differ in <c>AllowDeepWrites</c> (an <c>init</c>-only property set
 /// once per concrete profile type) and in which navigation overloads they call for
 /// <c>Cast</c>/<c>Studio</c>, so they're independent <see cref="EntitySetProfile{TKey,TModel}"/>
 /// subclasses that both delegate here for the parts that really are identical.
@@ -67,9 +67,9 @@ internal static class MovieHandlers
     public static Func<int, CancellationToken, Task<Movie?>> GetById(AppDbContext db) =>
         (id, _) => Task.FromResult(db.Movies.Find(id));
 
-    /// <summary>v1's Post: AllowDeepInsert is false there, so any nested "cast" the client sent
+    /// <summary>v1's Post: AllowDeepWrites is false there, so any nested "cast" the client sent
     /// has already been stripped (nulled) by the framework before this runs -- see
-    /// EntitySetProfile.AllowDeepInsert's doc comment. Nothing special to do.</summary>
+    /// EntitySetProfile.AllowDeepWrites's doc comment. Nothing special to do.</summary>
     public static Func<Movie, CancellationToken, Task<Movie?>> PostSimple(AppDbContext db) => (movie, _) =>
     {
         db.Movies.Add(movie);
@@ -77,7 +77,7 @@ internal static class MovieHandlers
         return Task.FromResult<Movie?>(movie);
     };
 
-    /// <summary>v2's Post: AllowDeepInsert is true there, so a nested "cast" array in the
+    /// <summary>v2's Post: AllowDeepWrites is true there, so a nested "cast" array in the
     /// request body survives deserialization onto <c>movie.Cast</c> -- but only as stubs
     /// (whatever fields the client sent; typically just "id"). This framework doesn't
     /// implement <c>@odata.bind</c>, so there's no built-in way to say "link to an existing
@@ -85,7 +85,7 @@ internal static class MovieHandlers
     /// as a reference to an EXISTING <see cref="Actor"/> by id (unknown ids are silently
     /// skipped rather than creating placeholder actors). Persisted atomically: the movie row,
     /// then the cast links, in the same handler invocation -- the framework opens no
-    /// transaction on the handler's behalf (see AllowDeepInsert's doc comment), so a real
+    /// transaction on the handler's behalf (see AllowDeepWrites's doc comment), so a real
     /// production handler would likely wrap both SaveChanges calls in a DbContext transaction.</summary>
     public static Func<Movie, CancellationToken, Task<Movie?>> PostDeepInsert(AppDbContext db) => (movie, _) =>
     {
@@ -170,7 +170,7 @@ internal static class MovieHandlers
 /// <summary>
 /// v1's movie profile: full CRUD over EF Core InMemory via <c>GetQueryable</c> (SQL-pushdown
 /// $filter/$orderby/$skip/$top -- see CLAUDE.md "Two paths for GET collection"), ETags, and the
-/// TopRated/Rate bound operations. Deliberately simpler than v2 -- see the AllowDeepInsert and
+/// TopRated/Rate bound operations. Deliberately simpler than v2 -- see the AllowDeepWrites and
 /// Cast/Studio comments below for what v1 leaves out and why.
 /// </summary>
 public class MovieProfile : EntitySetProfile<int, Movie>
@@ -186,10 +186,10 @@ public class MovieProfile : EntitySetProfile<int, Movie>
         CountEnabled = true;
         MaxTop = 50;
 
-        // v1 leaves AllowDeepInsert at its default (false, see EntitySetDefaults): any nested
+        // v1 leaves AllowDeepWrites at its default (false, see EntitySetDefaults): any nested
         // "cast" array in a v1 POST body is stripped (nulled) before Post runs, so a v1 POST
         // never silently creates cast links from a partially-understood request. Compare with
-        // MovieProfileV2, which opts in (AllowDeepInsert = true) and documents what that adds.
+        // MovieProfileV2, which opts in (AllowDeepWrites = true) and documents what that adds.
         //
         // ExpandEnabled is also left off (default false): Cast/Studio are declared below for
         // EDM/$metadata completeness only, via the no-handler overloads -- "handler presence
@@ -249,7 +249,7 @@ public class MovieProfileV2 : EntitySetProfile<int, Movie>
         // Deep insert (OData §11.4.2.2): POST /v2/Movies with a nested "cast" array is passed
         // through to Post as-is instead of being stripped -- see MovieHandlers.PostDeepInsert
         // for how the handler treats each nested stub as a reference to an existing Actor by id.
-        AllowDeepInsert = true;
+        AllowDeepWrites = true;
 
         UseETag(x => x.Id, x => x.UpdatedAt);
 

@@ -129,19 +129,22 @@ internal interface IEntitySetEndpointSource
     IReadOnlyList<StructuralPropertyInfo> StructuralProperties { get; }
 
     /// <summary>
-    /// When <c>true</c>, <c>POST /{EntitySet}</c> passes the full deserialized request graph
-    /// (including nested navigation-property values) through to the <c>Post</c> handler, which
-    /// is contractually responsible for persisting it atomically (OData §11.4.2.2 — deep insert).
-    /// When <c>false</c> (the default), nested navigation-property values are stripped (set to
-    /// <c>null</c>) from the deserialized model before <c>Post</c> is invoked.
+    /// When <c>true</c>, the entity write routes pass the full deserialized request graph
+    /// (including nested navigation-property values) through to the handler, which is
+    /// contractually responsible for persisting it atomically: <c>POST /{EntitySet}</c>
+    /// (OData §11.4.2.2 — deep insert) and <c>PUT</c>/<c>PATCH /{EntitySet}({key})</c>
+    /// (OData 4.01 §11.4.3.1 — deep update). When <c>false</c> (the default), nested
+    /// navigation-property values are stripped (set to <c>null</c>) from the deserialized model
+    /// before <c>Post</c>/<c>Put</c> is invoked and are never written into the
+    /// <c>Delta&lt;TModel&gt;</c> handed to <c>Patch</c>.
     /// </summary>
-    bool AllowDeepInsert { get; }
+    bool AllowDeepWrites { get; }
 
     /// <summary>
     /// Names of every CLR property declared as a navigation property via
-    /// <c>HasOptional</c>/<c>HasRequired</c>/<c>HasMany</c> (any overload). Used by the POST
-    /// pipeline to strip nested navigation values when <see cref="AllowDeepInsert"/> is
-    /// <c>false</c>.
+    /// <c>HasOptional</c>/<c>HasRequired</c>/<c>HasMany</c> (any overload). Used by the write
+    /// pipeline (unioned with the EDM's own navigation names, #461) to withhold nested
+    /// navigation values when <see cref="AllowDeepWrites"/> is <c>false</c>.
     /// </summary>
     IReadOnlyCollection<string> NavigationPropertyNames { get; }
 

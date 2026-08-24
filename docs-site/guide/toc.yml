@@ -51,7 +51,7 @@
           href: ../../docs/query-options.md
     - name: Writing data
       items:
-        - name: Deep insert
+        - name: Deep insert & deep update
           href: ../../docs/deep-insert.md
         - name: Delta mapping
           href: ../../docs/delta-mapping.md
