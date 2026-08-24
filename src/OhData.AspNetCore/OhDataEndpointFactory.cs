@@ -388,19 +388,64 @@ internal static class OhDataEndpointFactory
     // GetBuffer() (not ToArray()) at the call sites, so the scan reads the copy already made rather
     // than making a second one; MemoryStream's public constructors leave the buffer publicly visible.
     //
-    // KNOWN COST, and its bound. PUT and nav-POST used to stream; they now hold the whole body in
-    // memory for the duration of the request. That is what the collection POST has always done
-    // (JsonDocument.ParseAsync buffers), so the two are now alike rather than the streaming pair
-    // being the outlier. The bound is unchanged: #203's group filter fast-rejects an oversized
-    // Content-Length BEFORE this runs, and for a chunked body it has already set Kestrel's
-    // per-request MaxRequestBodySize, so CopyToAsync reads through the same limited stream and its
-    // BadHttpRequestException still maps to the 413 envelope. With no OhData limit configured the
-    // ceiling is the host's Kestrel default (~30 MB), exactly as it is for POST today.
+    // WHY A MemoryStream AND NOT PipeReader/ReadOnlySequence<byte>. Considered, and it does not win:
+    //   - It would avoid a COPY, not the MATERIALISATION. Reading the request PipeReader to
+    //     completion holds every byte in the pipe's pooled segments, so the resident-bytes exposure
+    //     the clamp above is about is identical. The accumulate-everything shape is
+    //     ReadAsync + AdvanceTo(buffer.Start, buffer.End) in a loop — the documented UNBOUNDED
+    //     buffering pattern, with the writer-pause flow control to reason about on top. It improves
+    //     no bound.
+    //   - Feeding those bytes to the deserializer would cost the invariant that forced the buffer in
+    //     the first place. Utf8JsonReader takes a ReadOnlySequence<byte> happily, but
+    //     JsonSerializer.Deserialize<T>(ref Utf8JsonReader) is a DIFFERENT overload from the
+    //     DeserializeAsync(Stream) these routes used before, and "the deserializer words a malformed
+    //     body exactly as it did" (the 'Path: $' pin) is the thing that must not move. Keeping the
+    //     overload would mean hand-writing a Stream over a ReadOnlySequence — more code, same bytes
+    //     resident, for no gain.
+    // A pass-through Stream that scans as the deserializer pulls WOULD preserve streaming, and is
+    // rejected for a correctness reason rather than a cost one: it makes the answer depend on where
+    // in the body the annotation sits. '{"Id":"notanint","x@odata.bind":1}' would 400 on PUT while
+    // the collection POST — which scans the whole body before binding anything — answers 501 for the
+    // same bytes. Per-verb divergence on @odata.bind is precisely what #456 exists to remove.
+    //
+    // THE CAPACITY HINT IS CLAMPED, AND THAT IS THE WHOLE POINT OF THE LINE. Content-Length is a
+    // CLIENT CLAIM, not a measurement: it arrives in the request head, before a single body byte
+    // has. Pre-sizing the buffer from it hands any unauthenticated caller a remote allocation
+    // primitive — declare 30 MB, send one byte, never finish, repeat across N connections, and the
+    // server has committed N x 30 MB against N bytes of actual traffic. The streaming path this
+    // replaces allocated in proportion to bytes RECEIVED, so honouring the header here would have
+    // been a real regression rather than a wash.
+    //
+    // 81,920 is two facts at once: it is Stream.CopyTo's own default buffer size (so an honest small
+    // body still lands in a single right-sized allocation and the first copied chunk fits exactly),
+    // and it is under the 85,000-byte large-object-heap threshold (so a bogus hint costs a
+    // collectable gen0 array rather than LOH pressure that survives until a gen2 compaction). Beyond
+    // it the stream just doubles, which costs a few reallocations on genuinely large bodies — the
+    // right trade against removing the primitive.
+    //
+    // WHAT ACTUALLY BOUNDS THE COPY, stated plainly because the honest answer is weaker than the
+    // #203 commentary above it reads as. #203's filter does BOTH of its jobs — the Content-Length
+    // fast-reject AND setting Kestrel's per-request MaxRequestBodySize — only when
+    // OhDataBodyLimitMetadata is attached, and that metadata exists only when the profile or
+    // EntitySetDefaults set MaxRequestBodyBytes, which DEFAULTS TO NULL at both levels. So on a
+    // default configuration neither half runs, and the only thing bounding this copy is the HOST's
+    // Kestrel MaxRequestBodySize (~30 MB by default). If the host raised or disabled that — routine
+    // for an app that also accepts uploads — nothing in OhData bounds it. That is not a new
+    // exposure: the collection POST has materialised whole bodies through JsonDocument.ParseAsync
+    // under exactly the same (non-)guarantee since 1.0. It IS shared by two more routes now, and it
+    // is tracked as #474 rather than assumed away. Configure MaxRequestBodyBytes for a real ceiling.
+    //
+    // (Note the collection POST is NOT a precedent for the capacity hint, only for the
+    // materialisation: JsonDocument.ParseAsync grows incrementally from pooled buffers and never
+    // reads Content-Length. Hence the clamp — this must not be the one place that trusts it.)
+    private const int BufferedBodyCapacityHintCap = 81_920;
+
     private static async Task<MemoryStream> BufferRequestBodyAsync(HttpContext ctx, CancellationToken ct)
     {
-        MemoryStream buffer = ctx.Request.ContentLength is long declared && declared > 0 && declared <= int.MaxValue
-            ? new MemoryStream((int)declared)
-            : new MemoryStream();
+        int hint = ctx.Request.ContentLength is long declared && declared > 0
+            ? (int)Math.Min(declared, BufferedBodyCapacityHintCap)
+            : 0;
+        var buffer = new MemoryStream(hint);
         await ctx.Request.Body.CopyToAsync(buffer, ct);
         buffer.Position = 0;
         return buffer;

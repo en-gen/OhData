@@ -374,6 +374,46 @@ public class DeepInsertTests
         Assert.DoesNotContain("Path: $", await malformedPost.Content.ReadAsStringAsync(), StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The buffered scan must cover the WHOLE body, not the first chunk of it. The capacity hint
+    /// <c>BufferRequestBodyAsync</c> takes from <c>Content-Length</c> is clamped to 81,920 bytes —
+    /// deliberately, because <c>Content-Length</c> is a client claim that arrives before any body
+    /// byte does, and pre-sizing from it would hand an unauthenticated caller a remote allocation
+    /// primitive (declare 30 MB, send one byte, repeat). This body is comfortably past that cap, so
+    /// it exercises the growth path, and the annotation sits at the very END of it — after the point
+    /// where a scan that stopped at the hint, or a copy that honoured it as a length, would have
+    /// stopped looking.
+    /// </summary>
+    [Fact]
+    public async Task Put_BodyLargerThanTheCapacityHint_IsScannedAndBoundInFull()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
+
+        // ~200 KB of payload — several doublings past the 81,920-byte hint cap.
+        string filler = new string('x', 200_000);
+
+        DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
+        var withAnnotation = await fx.Client.PutAsync(
+            "/odata/DeepInsertDefaultOrders(1)",
+            new StringContent(
+                $"{{\"id\":1,\"customer\":\"{filler}\",\"category@odata.bind\":\"DeepInsertDefaultCategories(1)\"}}",
+                Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.NotImplemented, withAnnotation.StatusCode);
+        Assert.Null(DeepInsertDefaultProfile.LastReceivedByWriteHandler);
+
+        // BOUNDING ASSERTION: the same oversized body without the annotation still binds, and every
+        // byte of it survives the round trip — so "large bodies 501" cannot pass vacuously and the
+        // buffer is proven to hold the whole payload rather than a truncated prefix.
+        DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
+        var clean = await fx.Client.PutAsync(
+            "/odata/DeepInsertDefaultOrders(1)",
+            new StringContent($"{{\"id\":1,\"customer\":\"{filler}\"}}", Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.OK, clean.StatusCode);
+        Assert.Equal(filler, DeepInsertDefaultProfile.LastReceivedByWriteHandler!.Customer);
+    }
+
     // ── Coexists with a profile that also has PostChild / batch nav handlers ────────
 
     [Fact]
