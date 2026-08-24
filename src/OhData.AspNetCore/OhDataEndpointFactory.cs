@@ -654,6 +654,13 @@ internal static class OhDataEndpointFactory
         // ignores anything the owned options are threaded through unchanged.
         var ignoredByType = IgnoredPropertyJsonOptions.BuildIgnoredPropertyMap(registration.Profiles);
 
+        // #458: same hazard shape as the line above, for the model-bound allowlists. Two profiles
+        // over one CLR model type write the same per-TYPE ModelBoundQuerySettings, so divergent
+        // FilterProperties/OrderByProperties/SelectProperties/ExpandProperties declarations union
+        // and each entity set silently accepts what the other allows. Refused here rather than at
+        // request time -- see ModelBoundAllowlists for why per-entity-set settings do not exist.
+        ModelBoundAllowlists.Validate(registration.Profiles);
+
         // #398 stage 1: capture the withheld members' JSON names BEFORE the modifier below removes
         // them from their contracts. Afterwards the JSON name is not recoverable — which is exactly
         // why an open type's extension data can capture a withheld member and echo it back under the

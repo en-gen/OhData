@@ -661,6 +661,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private List<OperationAuthRule>? _operationAuthRules;
     private bool _isAdvancedConfigureOverridden;
 
+    // #458: recorded by VisitModelBuilder at the four model-bound call sites; ModelBoundAllowlists.None
+    // until then, and permanently so for an AdvancedConfigure override (which ejects before them and
+    // owns the EDM outright, so the framework has nothing it can honestly compare).
+    private ModelBoundAllowlists _modelBoundAllowlists = ModelBoundAllowlists.None;
+
     private readonly ICollection<Action<EntityTypeConfiguration<TModel>>> _configurators;
     private readonly ICollection<Delegate> _functions;
     private readonly ICollection<Delegate> _actions;
@@ -760,7 +765,24 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         // if AdvancedConfigure wasn't overridden, work your magic
         var entityType = entitySet.EntityType;
 
-        if (SelectEnabled ?? defaults.SelectEnabled) entityType.Select(ResolveStructuralAllowlistToEdmNames(_selectProperties));
+        // #458: `entityType` is the shared per-CLR-TYPE EntityTypeConfiguration<TModel>, not a
+        // per-entity-set one -- two profiles over one model type write the same ModelBoundQuerySettings
+        // and the result is their UNION. Each of the four calls below therefore records the literal
+        // array it passed, so ModelBoundAllowlists.Validate can refuse a divergent pair at
+        // MapOhData() instead of letting the widest declaration silently win. Recorded HERE, at the
+        // call sites, because these arrays -- post EDM-name resolution, post navigation merge -- are
+        // the shared state; anything re-derived from the raw allowlists would be a different value.
+        var selectDeclared = default(ModelBoundAllowlist);
+        var expandDeclared = default(ModelBoundAllowlist);
+        var filterDeclared = default(ModelBoundAllowlist);
+        var orderByDeclared = default(ModelBoundAllowlist);
+
+        if (SelectEnabled ?? defaults.SelectEnabled)
+        {
+            string[]? selectNames = ResolveStructuralAllowlistToEdmNames(_selectProperties);
+            selectDeclared = new ModelBoundAllowlist(applied: true, selectNames);
+            entityType.Select(selectNames);
+        }
         // Issue #183: pass an explicit max expansion depth so nested $expand
         // (e.g. $expand=A($expand=B($expand=C))) is not rejected by the model-bound default of 2.
         // The runtime recursion in OhDataEndpointFactory.ExpandLevelAsync bounds actual execution.
@@ -769,13 +791,27 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         // it to the model builder (an un-renamed nav resolves to its own CLR name unchanged).
         if (ExpandEnabled ?? defaults.ExpandEnabled)
         {
-            entityType.Expand(OhData.OhDataEndpointFactory.MaxNestedExpandDepth,
-                ResolveStructuralAllowlistToEdmNames(_expandProperties)!);
+            string[]? expandNames = ResolveStructuralAllowlistToEdmNames(_expandProperties);
+            expandDeclared = new ModelBoundAllowlist(applied: true, expandNames);
+            entityType.Expand(OhData.OhDataEndpointFactory.MaxNestedExpandDepth, expandNames!);
         }
         if (FilterEnabled ?? defaults.FilterEnabled)
-            entityType.Filter(MergeAllowlistWithNavigationProperties(ResolveStructuralAllowlistToEdmNames(_filterProperties)));
+        {
+            string[]? filterNames =
+                MergeAllowlistWithNavigationProperties(ResolveStructuralAllowlistToEdmNames(_filterProperties));
+            filterDeclared = new ModelBoundAllowlist(applied: true, filterNames);
+            entityType.Filter(filterNames);
+        }
         if (OrderByEnabled ?? defaults.OrderByEnabled)
-            entityType.OrderBy(MergeAllowlistWithNavigationProperties(ResolveStructuralAllowlistToEdmNames(_orderByProperties)));
+        {
+            string[]? orderByNames =
+                MergeAllowlistWithNavigationProperties(ResolveStructuralAllowlistToEdmNames(_orderByProperties));
+            orderByDeclared = new ModelBoundAllowlist(applied: true, orderByNames);
+            entityType.OrderBy(orderByNames);
+        }
+        _modelBoundAllowlists =
+            new ModelBoundAllowlists(selectDeclared, expandDeclared, filterDeclared, orderByDeclared);
+
         if (CountEnabled ?? defaults.CountEnabled) entityType.Count();
 
         entityType.HasKey(_getKey);
@@ -2025,6 +2061,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     // (which resolves each CLR property to its EDM name before testing membership).
     IReadOnlyCollection<string> IEntitySetEndpointSource.NavigationPropertyNames => NavigationEdmNames;
     IReadOnlyCollection<string> IEntitySetEndpointSource.IgnoredPropertyNames => _ignoredPropertyNames;
+    ModelBoundAllowlists IEntitySetEndpointSource.ModelBoundAllowlists => _modelBoundAllowlists;
     string IEntitySetEndpointSource.KeyPropertyName => GetNavigationPropertyName(_getKey.Body);
     bool IEntitySetEndpointSource.IsAdvancedConfigureOverridden => _isAdvancedConfigureOverridden;
 

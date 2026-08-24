@@ -212,6 +212,36 @@ navigated-to entity set's own profile (if it has one) governs its properties.
 > for the measured behaviour (which also varies by LINQ provider) and issue
 > [#401](https://github.com/en-gen/OhData/issues/401).
 
+<a name="allowlists-are-per-clr-type"></a>
+### Allowlists are scoped per CLR model type, not per entity set
+
+`FilterProperties`, `OrderByProperties`, `SelectProperties` and `ExpandProperties` are declared on
+a profile, but they are enforced through OData's **model-bound query settings**, which
+`Microsoft.AspNetCore.OData` resolves off the EDM *type* - never off the entity set. Two profiles
+over the same CLR model type in one registration therefore write the same settings, and the result
+would be their **union**: each entity set would accept properties the other allows, with responses
+indistinguishable from the correctly-gated case.
+
+Per-entity-set model-bound settings do not exist to scope this down. In
+`Microsoft.OData.ModelBuilder` the fluent `Filter`/`OrderBy`/`Select`/`Expand`/`Count`/`Page` API is
+declared only on `StructuralTypeConfiguration<T>` and `PropertyConfiguration`;
+`EntitySetConfiguration` has no such surface, and the capability-vocabulary annotations that *can*
+sit on an entity set are metadata-only - the query validators never read them.
+
+So OhData refuses the ambiguous configuration outright. `MapOhData()` throws
+`InvalidOperationException` when two profiles expose the same model type and declare **different**
+allowlists for the same query option, naming both entity sets and both declarations. Multi-set-
+per-type registrations remain fully supported - the check fires only on a genuine divergence:
+
+- Two profiles that both leave an allowlist unset agree (both permissive).
+- A profile whose capability flag (`FilterEnabled` etc.) is off contributes nothing to the shared
+  settings and agrees with anything; its own requests are already refused by the flag gate.
+- An `AdvancedConfigure` override owns the EDM outright and is not compared.
+- Separate registrations each build their own model and are never compared to one another.
+
+If two entity sets genuinely need different allowlists over the same data, give them distinct CLR
+model types. See issue [#458](https://github.com/en-gen/OhData/issues/458).
+
 ### `round()` midpoint rounding
 
 OData Part 2 §5.1.1.9 specifies that the `round()` canonical function rounds a midpoint value
