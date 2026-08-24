@@ -94,6 +94,38 @@ public sealed class W440Node
     public List<W440Node> Children { get; set; } = new(); // convention-discovered, NEVER declared
 }
 
+/// <summary>
+/// #466 (PR #477 review, F2): the CROSS-LEVEL NAME COLLISION shape. A root whose navigation
+/// <c>Children</c> is convention-discovered and never declared — so #440 must omit it — reached in
+/// the same request as a DIFFERENT level whose own <c>Children</c> IS declared and delegate-less.
+/// The two are the same NAME at two different LEVELS, which is the whole point: the raw
+/// <c>$levels</c> budget is a flat name set while "does any candidate have an opinion" is resolved
+/// per level, so a set built for the deep one must never be consulted for the shallow one.
+/// <para>
+/// <c>Other</c> is declared, so the walk descends through it; <c>Children</c> is not declared here,
+/// so the hub can never serve it.
+/// </para>
+/// </summary>
+public sealed class W440Hub
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public List<W440Branch> Children { get; set; } = new(); // convention-discovered, NEVER declared
+    public List<W440Branch> Other { get; set; } = new();    // declared, delegate-less
+}
+
+/// <summary>Self-referential and DECLARED delegate-less — so its own <c>Children</c> is ServeRaw
+/// with an opinion, which is what puts the name into the raw <c>$levels</c> budget.</summary>
+public sealed class W440Branch
+{
+    public int Id { get; set; }
+    public string Label { get; set; } = "";
+    public int? ChildHubId { get; set; }
+    public int? OtherHubId { get; set; }
+    public int? ParentId { get; set; }
+    public List<W440Branch> Children { get; set; } = new();
+}
+
 public sealed class W440DbContext : DbContext
 {
     public W440DbContext(DbContextOptions<W440DbContext> options) : base(options) { }
@@ -103,12 +135,48 @@ public sealed class W440DbContext : DbContext
     public DbSet<W440Invoice> Invoices => Set<W440Invoice>();
     public DbSet<W440Plain> Plains => Set<W440Plain>();
     public DbSet<W440Node> Nodes => Set<W440Node>();
+    public DbSet<W440Hub> Hubs => Set<W440Hub>();
+    public DbSet<W440Branch> Branches => Set<W440Branch>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<W440Order>().HasOne(o => o.Customer).WithMany().HasForeignKey(o => o.CustomerId);
         b.Entity<W440Invoice>().HasOne(i => i.Payer).WithMany().HasForeignKey(i => i.PayerId);
         b.Entity<W440Node>().HasOne(n => n.Parent).WithMany(n => n.Children).HasForeignKey(n => n.ParentId);
+        b.Entity<W440Hub>().HasMany(h => h.Children).WithOne().HasForeignKey(x => x.ChildHubId);
+        b.Entity<W440Hub>().HasMany(h => h.Other).WithOne().HasForeignKey(x => x.OtherHubId);
+        b.Entity<W440Branch>().HasMany(n => n.Children).WithOne().HasForeignKey(n => n.ParentId);
+    }
+}
+
+/// <summary>#466/F2: declares <c>Other</c> and deliberately NOT <c>Children</c>.</summary>
+public sealed class W440HubProfile : EntitySetProfile<int, W440Hub>
+{
+    public W440HubProfile(W440DbContext db) : base(x => x.Id)
+    {
+        EntitySetName = "W440Hubs";
+        ExpandEnabled = true;
+        SelectEnabled = true;
+        // GetAll, not GetQueryable: the raw substrate is where the #466 levels budget applies, and
+        // the eager load is what puts three levels of branches into the graph it reads.
+        GetAll = _ => Task.FromResult<IEnumerable<W440Hub>>(
+            db.Hubs.Include(h => h.Other).ThenInclude(x => x.Children).ThenInclude(x => x.Children).ToList());
+        HasMany(x => x.Other); // declared, delegate-less — the branch the walk descends through
+        // x.Children is deliberately NOT declared: it is the #440 no-opinion navigation whose name
+        // collides with the declared one a level down.
+    }
+}
+
+/// <summary>#466/F2: declares the self-referential <c>Children</c>, delegate-less.</summary>
+public sealed class W440BranchProfile : EntitySetProfile<int, W440Branch>
+{
+    public W440BranchProfile(W440DbContext db) : base(x => x.Id)
+    {
+        EntitySetName = "W440Branches";
+        ExpandEnabled = true;
+        SelectEnabled = true;
+        GetQueryable = _ => Task.FromResult(db.Branches.AsQueryable());
+        HasMany(x => x.Children);
     }
 }
 
@@ -235,6 +303,13 @@ internal static class W440Harness
         db.Plains.Add(new W440Plain { Id = 1, Label = "L1" });
         db.Nodes.Add(new W440Node { Id = 1, Name = "root" });
         db.Nodes.Add(new W440Node { Id = 2, Name = "child", ParentId = 1 });
+        // #466/F2: hub 1 -Other-> B1 -Children-> B2 -Children-> B3. Three branch levels, so a
+        // $levels=2 under Other has a second level to actually reach — without which the regression
+        // test's bounding half would pass vacuously.
+        db.Hubs.Add(new W440Hub { Id = 1, Name = "H1" });
+        db.Branches.Add(new W440Branch { Id = 1, Label = "B1", OtherHubId = 1 });
+        db.Branches.Add(new W440Branch { Id = 2, Label = "B2", ParentId = 1 });
+        db.Branches.Add(new W440Branch { Id = 3, Label = "B3", ParentId = 2 });
         db.SaveChanges();
         return fx;
     }
@@ -643,5 +718,116 @@ public sealed class Issue440UndeclaredConventionNavWarningTests
         HttpResponseMessage resp = await fx.Client.GetAsync("/odata/W440Orders");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         Assert.Contains("\"N1\"", await resp.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+    }
+}
+
+// #466 (PR #477 review, finding F2): the raw-$levels budget must never reach #440's omission arm.
+//
+// THE REGRESSION THIS PINS, as it stood on the pre-fix head of the #463/#464/#466 branch.
+// #466 gave the RAW substrate its own $levels budget by unioning the navigation names it applies to
+// onto CollectPushedLevelsNavNames' set. That union was then passed to all three pipeline stages,
+// including ExpandLevelAsync — where the set has exactly ONE use: #440's omission arm, which keeps a
+// navigation nothing declares or routes ONLY when it was pushed as a $levels expand (and is
+// therefore genuinely loaded).
+//
+// The union's membership is decided PER LEVEL; the set itself is FLAT, keyed by name. So a
+// navigation called Children that is ServeRaw-with-an-opinion at depth 2 — legitimately in the set —
+// also matched the UNDECLARED Children at the ROOT, bypassed the omission arm there, and emitted
+// "Children": [] on the root entity. That is the "expanded, and empty" claim about a relationship the
+// server never evaluated that #440 exists to prevent, under a 200, reachable on a DEFAULT
+// configuration: the union is built whenever the clause carries a $levels anywhere, with no
+// dependence on MaxExpandTop.
+//
+// The fix keeps the union for the two SERIALIZATION stages (where #466's budget is actually needed)
+// and passes the PUSHED set to ExpandLevelAsync, restoring base behaviour for the omission arm
+// exactly. The raw set never needed to reach it: a raw name enters only where some candidate has an
+// opinion at its own level, and a navigation with an opinion never reaches the no-opinion arm.
+//
+// Fixture: the #440 model above, extended with the collision shape (W440Hub/W440Branch) rather than a
+// green-field model — an undeclared Children on the root and a declared delegate-less Children one
+// level down, both reachable from one request.
+public sealed class Issue466NavOmissionRegressionTests
+{
+    private static void ConfigureCollision(OhDataBuilder b)
+    {
+        b.AddEntitySetProfile<W440HubProfile>();
+        b.AddEntitySetProfile<W440BranchProfile>();
+    }
+
+    private static async Task<JsonElement> RootAsync(TestFixture fx, string query, JsonDocument[] keep)
+    {
+        HttpResponseMessage resp = await fx.Client.GetAsync($"/odata/W440Hubs?{query}");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        JsonDocument doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        keep[0] = doc;
+        return doc.RootElement.GetProperty("value")[0];
+    }
+
+    /// <summary>
+    /// The control. With no <c>$levels</c> anywhere in the request the union is never even built
+    /// (ClauseHasLevels gates it), so this passed on the pre-fix head too — it is here to prove the
+    /// regression test below is about the collision and not about #440 being broken generally.
+    /// </summary>
+    [Fact]
+    public async Task Control_UndeclaredNavAlone_IsOmitted()
+    {
+        var capture = new WarningCapture();
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        await using TestFixture fx = await W440Harness.BuildAsync(connection, capture, ConfigureCollision);
+
+        var keep = new JsonDocument[1];
+        JsonElement root = await RootAsync(fx, "$expand=Children", keep);
+        Assert.False(root.TryGetProperty("Children", out _));
+        keep[0].Dispose();
+    }
+
+    /// <summary>
+    /// FAILS WITHOUT THE FIX: the root's undeclared <c>Children</c> comes back as <c>[]</c> because a
+    /// <c>$levels</c> two levels away put the same NAME into the flat budget set.
+    /// </summary>
+    [Fact]
+    public async Task DeepLevelsOnACollidingName_DoesNotResurrectTheUndeclaredRootNav()
+    {
+        var capture = new WarningCapture();
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        await using TestFixture fx = await W440Harness.BuildAsync(connection, capture, ConfigureCollision);
+
+        var keep = new JsonDocument[1];
+        JsonElement root = await RootAsync(fx, "$expand=Children,Other($expand=Children($levels=2))", keep);
+
+        Assert.False(
+            root.TryGetProperty("Children", out JsonElement leaked),
+            $"the undeclared root navigation must stay omitted; got {leaked}");
+        keep[0].Dispose();
+    }
+
+    /// <summary>
+    /// The bounding half, so the assertion above cannot be satisfied by disabling #466 altogether:
+    /// the SAME request must still serve both levels of the deep <c>$levels</c>, off the raw
+    /// substrate, through the union that no longer reaches the omission arm.
+    /// FAILS WITHOUT #466: the second level is stripped.
+    /// </summary>
+    [Fact]
+    public async Task DeepLevelsOnACollidingName_StillServesEveryLevel()
+    {
+        var capture = new WarningCapture();
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        await using TestFixture fx = await W440Harness.BuildAsync(connection, capture, ConfigureCollision);
+
+        var keep = new JsonDocument[1];
+        JsonElement root = await RootAsync(fx, "$expand=Children,Other($expand=Children($levels=2))", keep);
+
+        JsonElement b1 = root.GetProperty("Other")[0];
+        Assert.Equal("B1", b1.GetProperty("Label").GetString());
+        JsonElement b2 = b1.GetProperty("Children")[0];
+        Assert.Equal("B2", b2.GetProperty("Label").GetString());
+        JsonElement b3 = b2.GetProperty("Children")[0];
+        Assert.Equal("B3", b3.GetProperty("Label").GetString());
+        // The budget is a budget: level 3 terminates the recursion.
+        Assert.False(b3.TryGetProperty("Children", out _));
+        keep[0].Dispose();
     }
 }

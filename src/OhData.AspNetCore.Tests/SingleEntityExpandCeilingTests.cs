@@ -62,8 +62,14 @@ public sealed class BeAuthorByIdProfile : EntitySetProfile<int, BeAuthor>
         OrderByEnabled = true;
         CountEnabled = true;
         GetQueryable = _ => Task.FromResult(db.Authors.AsQueryable());
+        // #463: `.ThenInclude(b => b.Chapters)` is the one addition. #418's fixture eager-loaded ONE
+        // level, which is exactly why its ceiling could pass while being enforced at one level: with
+        // nothing materialized at depth 2 there was nothing for the missing check to have caught.
+        // Chapters is not $expand'd unless the request asks for it, so every pre-existing byte-
+        // identity assertion in this file is unaffected (SerializeBounded never walks an un-expanded
+        // navigation).
         GetById = (id, ct) => Task.FromResult(
-            db.Authors.Include(a => a.Books).FirstOrDefault(a => a.Id == id));
+            db.Authors.Include(a => a.Books).ThenInclude(b => b.Chapters).FirstOrDefault(a => a.Id == id));
         HasMany(x => x.Books);
     }
 }
@@ -99,7 +105,21 @@ public sealed class SingleEntityExpandCeilingTests
                 d.MaxExpandTop = cap;
                 d.ExpandPagingEnabled = paging;
             },
-            seedExtra: _ => { },
+            // #463: one author whose DEPTH-1 collection is inside every ceiling this file uses (one
+            // book) and whose DEPTH-2 collection is not (five chapters). Author 1 cannot serve that
+            // shape — its five books breach at depth 1, so the depth-2 hole is masked by the depth-1
+            // check that already worked. Additive: every assertion in this file targets author 1.
+            seedExtra: db =>
+            {
+                db.Authors.Add(new BeAuthor { Id = 2, Name = "Bea", PublisherId = 100 });
+                db.Books.Add(new BeBook { Id = 10, AuthorId = 2, Title = "Deep" });
+                db.Chapters.AddRange(
+                    new BeChapter { Id = 10, BookId = 10, Heading = "C1" },
+                    new BeChapter { Id = 11, BookId = 10, Heading = "C2" },
+                    new BeChapter { Id = 12, BookId = 10, Heading = "C3" },
+                    new BeChapter { Id = 13, BookId = 10, Heading = "C4" },
+                    new BeChapter { Id = 14, BookId = 10, Heading = "C5" });
+            },
             configureExtraProfiles: b =>
             {
                 if (withDelegateProfile) b.AddEntitySetProfile<BeAuthorDelegateByIdProfile>();
@@ -154,6 +174,121 @@ public sealed class SingleEntityExpandCeilingTests
         {
             HttpResponseMessage resp = await fx.Client.GetAsync($"/odata/BeAuthorsById(1)?{query}");
             Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        }
+        conn.Dispose();
+    }
+
+    // ── #463: the same ceiling, one level down ───────────────────────────────────────────────────
+    //
+    // #418 closed the OPTION axis on this route ("a ceiling that fired only for the bare shape would
+    // be bypassable by appending any nested option") and left the DEPTH axis open: the enforcement
+    // walked clause.SelectedItems without recursing into item.SelectAndExpand, and the nav set it
+    // consulted was resolved once at startup from the ROOT profile. So with cap = 2 the depth-1 check
+    // fired and the depth-2 collection went out whole.
+    //
+    // This is #454's pattern — a validation and its enforcement consulting different sets.
+    // ValidateNestedTopCeiling walks the whole tree, so `Chapters($top=1000)` at depth 2 is rejected
+    // (pinned below); the ceiling that bounds SERVED data checked depth 1. The option that would have
+    // bounded the fetch was refused, and the shape that fetched everything was served.
+
+    // FAILS WITHOUT THE FIX: 200 with all five chapters.
+    [Fact]
+    public async Task GetById_NestedExpand_AtDepthTwo_OverCeiling_Is400()
+    {
+        (TestFixture fx, SqliteConnection conn) = await BuildAsync(cap: 2, paging: true);
+        await using (fx)
+        {
+            HttpResponseMessage resp = await fx.Client.GetAsync(
+                "/odata/BeAuthorsById(2)?$expand=Books($expand=Chapters)");
+            Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+
+            using JsonDocument doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+            JsonElement error = doc.RootElement.GetProperty("error");
+            Assert.Equal("InvalidQueryOption", error.GetProperty("code").GetString());
+            string message = error.GetProperty("message").GetString()!;
+            // The breach is named at the level it happened, not at the root.
+            Assert.Contains("'Chapters'", message);
+            Assert.Contains("maximum of 2 entities", message);
+            // The remediation echoes the WHOLE path back, so the suggested collection-route request
+            // is the request the client actually made rather than a truncation of it.
+            Assert.Contains("$expand=Books($expand=Chapters)", message);
+        }
+        conn.Dispose();
+    }
+
+    // The depth-2 hole was not bare-shape-only either: exactly as at depth 1, no nested option is
+    // applied to a raw-served collection, so any of them would otherwise reopen the bypass.
+    // FAILS WITHOUT THE FIX: every one of these returns 200 with all five chapters.
+    [Theory]
+    [InlineData("$expand=Books($expand=Chapters($select=Heading))")]
+    [InlineData("$expand=Books($expand=Chapters($filter=Id lt 12))")]
+    [InlineData("$expand=Books($expand=Chapters($orderby=Id desc))")]
+    [InlineData("$expand=Books($expand=Chapters($skip=3))")]
+    [InlineData("$expand=Books($expand=Chapters($count=true))")]
+    [InlineData("$expand=Books($expand=Chapters($top=2))")]
+    public async Task GetById_DepthTwo_OverCeiling_IsNotBypassableByAddingANestedOption(string query)
+    {
+        (TestFixture fx, SqliteConnection conn) = await BuildAsync(cap: 2, paging: true);
+        await using (fx)
+        {
+            HttpResponseMessage resp = await fx.Client.GetAsync($"/odata/BeAuthorsById(2)?{query}");
+            Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        }
+        conn.Dispose();
+    }
+
+    // The asymmetry that made #463 worth filing: the VALIDATION already walked the whole tree, so a
+    // depth-2 $top above the ceiling was rejected while the shape that fetched everything passed.
+    // Green before and after — recorded here so the two halves stay visibly paired.
+    [Fact]
+    public async Task GetById_DepthTwo_ExplicitTopAboveCeiling_WasAlreadyRejected()
+    {
+        (TestFixture fx, SqliteConnection conn) = await BuildAsync(cap: 2, paging: true);
+        await using (fx)
+        {
+            HttpResponseMessage resp = await fx.Client.GetAsync(
+                "/odata/BeAuthorsById(2)?$expand=Books($expand=Chapters($top=1000))");
+            Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        }
+        conn.Dispose();
+    }
+
+    // Under the ceiling at BOTH levels the response is untouched — the recursion must not start
+    // rejecting a request that fits.
+    [Fact]
+    public async Task ByteIdentical_DepthTwo_UnderCeiling_IsUntouched()
+    {
+        (TestFixture fx, SqliteConnection conn) = await BuildAsync(cap: 10, paging: true);
+        await using (fx)
+        {
+            string body = await fx.Client.GetStringAsync(
+                "/odata/BeAuthorsById(2)?$expand=Books($expand=Chapters)");
+            Assert.Equal(
+                "{\"@odata.context\":\"http://localhost/odata/$metadata#BeAuthorsById/$entity\"," +
+                "\"@odata.id\":\"http://localhost/odata/BeAuthorsById(2)\",\"Id\":2,\"Name\":\"Bea\"," +
+                "\"PublisherId\":100,\"Books\":[" +
+                "{\"Id\":10,\"AuthorId\":2,\"Title\":\"Deep\",\"Chapters\":[" +
+                "{\"Id\":10,\"BookId\":10,\"Heading\":\"C1\"}," +
+                "{\"Id\":11,\"BookId\":10,\"Heading\":\"C2\"}," +
+                "{\"Id\":12,\"BookId\":10,\"Heading\":\"C3\"}," +
+                "{\"Id\":13,\"BookId\":10,\"Heading\":\"C4\"}," +
+                "{\"Id\":14,\"BookId\":10,\"Heading\":\"C5\"}]}]}",
+                body);
+        }
+        conn.Dispose();
+    }
+
+    // MaxExpandTop = null is the shipping default; the recursion must be inert there too, or #463's
+    // fix becomes a 200 -> 400 for every existing application with a two-level $expand.
+    [Fact]
+    public async Task ByteIdentical_DepthTwo_NoCeilingConfigured_IsUntouched()
+    {
+        (TestFixture fx, SqliteConnection conn) = await BuildAsync(cap: null, paging: false);
+        await using (fx)
+        {
+            string body = await fx.Client.GetStringAsync(
+                "/odata/BeAuthorsById(2)?$expand=Books($expand=Chapters)");
+            Assert.Contains("\"Heading\":\"C5\"", body);
         }
         conn.Dispose();
     }
