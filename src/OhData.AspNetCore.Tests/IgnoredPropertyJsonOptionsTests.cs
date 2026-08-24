@@ -28,18 +28,22 @@ public class IgnoredPropertyJsonOptionsTests
             [typeof(IgnOptModel)] = new HashSet<string>(names, StringComparer.Ordinal),
         };
 
+    // #462: Build no longer takes a raw dictionary — it takes the base-chain resolver, which is what
+    // stops a consumer keying it by the exact runtime type. Same data, wrapped.
+    private static InheritedNameSets Sets(params string[] names) =>
+        new(Map(names), StringComparer.Ordinal);
+
     [Fact]
     public void Build_EmptyMap_ReturnsBaseOptionsReference()
     {
-        var result = IgnoredPropertyJsonOptions.Build(
-            s_camel, new Dictionary<Type, IReadOnlySet<string>>());
+        var result = IgnoredPropertyJsonOptions.Build(s_camel, InheritedNameSets.Empty);
         Assert.Same(s_camel, result);
     }
 
     [Fact]
     public void Build_RemovesIgnoredMember_OnSerialize()
     {
-        var options = IgnoredPropertyJsonOptions.Build(s_camel, Map("CostBasis"));
+        var options = IgnoredPropertyJsonOptions.Build(s_camel, Sets("CostBasis"));
         string json = JsonSerializer.Serialize(
             new IgnOptModel { Id = 1, Name = "W", CostBasis = 9.5m }, options);
         Assert.Contains("\"name\"", json);
@@ -49,7 +53,7 @@ public class IgnoredPropertyJsonOptionsTests
     [Fact]
     public void Build_IgnoredMember_NotBound_OnDeserialize()
     {
-        var options = IgnoredPropertyJsonOptions.Build(s_camel, Map("CostBasis"));
+        var options = IgnoredPropertyJsonOptions.Build(s_camel, Sets("CostBasis"));
         var model = JsonSerializer.Deserialize<IgnOptModel>(
             "{\"id\":1,\"name\":\"W\",\"costBasis\":9.5}", options)!;
         Assert.Equal("W", model.Name);
@@ -60,12 +64,12 @@ public class IgnoredPropertyJsonOptionsTests
     public void Build_MapKeysAreClrNames_ImmuneToNamingPolicy()
     {
         // Map uses CLR name "CostBasis"; wire name is camelCase "costBasis" — still removed.
-        var options = IgnoredPropertyJsonOptions.Build(s_camel, Map("CostBasis"));
+        var options = IgnoredPropertyJsonOptions.Build(s_camel, Sets("CostBasis"));
         string json = JsonSerializer.Serialize(new IgnOptModel { CostBasis = 1m }, options);
         Assert.DoesNotContain("costBasis", json, StringComparison.OrdinalIgnoreCase);
 
         // And with no naming policy the PascalCase wire name is removed too.
-        var pascal = IgnoredPropertyJsonOptions.Build(new JsonSerializerOptions(), Map("CostBasis"));
+        var pascal = IgnoredPropertyJsonOptions.Build(new JsonSerializerOptions(), Sets("CostBasis"));
         string pjson = JsonSerializer.Serialize(new IgnOptModel { CostBasis = 1m }, pascal);
         Assert.DoesNotContain("CostBasis", pjson);
     }
@@ -73,7 +77,7 @@ public class IgnoredPropertyJsonOptionsTests
     [Fact]
     public void Build_UnmappedType_SerializesUnchanged()
     {
-        var options = IgnoredPropertyJsonOptions.Build(s_camel, Map("CostBasis"));
+        var options = IgnoredPropertyJsonOptions.Build(s_camel, Sets("CostBasis"));
         string json = JsonSerializer.Serialize(new { costLike = 1 }, options);
         Assert.Contains("costLike", json);
     }
@@ -142,7 +146,7 @@ public class IgnoredPropertyJsonOptionsTests
         // The JSON name, not the CLR name: the naming policy is camelCase here, and the set is read
         // off the real pre-ignore contract rather than re-derived.
         Assert.Contains(
-            spelling, map[typeof(IgnOptModel)]);
+            spelling, map.Resolve(typeof(IgnOptModel))!);
     }
 
     /// <summary>
@@ -157,15 +161,15 @@ public class IgnoredPropertyJsonOptionsTests
         var binder = new JsonSerializerOptions(s_camel) { PropertyNameCaseInsensitive = false };
         var map = IgnoredPropertyJsonOptions.BuildIgnoredJsonNameMap(Map("CostBasis"), binder);
 
-        Assert.Contains("costBasis", map[typeof(IgnOptModel)]);
-        Assert.DoesNotContain("CostBasis", map[typeof(IgnOptModel)]);
+        Assert.Contains("costBasis", map.Resolve(typeof(IgnOptModel))!);
+        Assert.DoesNotContain("CostBasis", map.Resolve(typeof(IgnOptModel))!);
     }
 
     [Fact]
     public void BuildIgnoredJsonNameMap_EmptyIn_EmptyOut()
     {
         Assert.Same(
-            IgnoredPropertyJsonOptions.EmptyNameMap,
+            InheritedNameSets.Empty,
             IgnoredPropertyJsonOptions.BuildIgnoredJsonNameMap(
                 new Dictionary<Type, IReadOnlySet<string>>(), s_camel));
     }

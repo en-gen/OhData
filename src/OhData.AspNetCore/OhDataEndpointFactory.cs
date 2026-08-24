@@ -663,9 +663,14 @@ internal static class OhDataEndpointFactory
         registration.IgnoredJsonNamesByType =
             IgnoredPropertyJsonOptions.BuildIgnoredJsonNameMap(ignoredByType, startupJsonOptions);
 
-        JsonSerializerOptions effectiveJsonOptions = ignoredByType.Count == 0
-            ? startupJsonOptions
-            : IgnoredPropertyJsonOptions.Build(startupJsonOptions, ignoredByType);
+        // #462: the CLR-name map crosses into Build as an InheritedNameSets too, for the same reason
+        // the JSON-name map does — the modifier it installs resolves the RUNTIME type's contract.
+        // Its sets are ordinal (CLR member names, matched against PropertyInfo.Name), which is the
+        // comparer a multi-level union must use; the withheld JSON-name map above carries the
+        // BINDER's comparer instead, and the two must never be merged (see WithheldNameComparer).
+        var ignoredClrNames = new InheritedNameSets(ignoredByType, StringComparer.Ordinal);
+        JsonSerializerOptions effectiveJsonOptions =
+            IgnoredPropertyJsonOptions.Build(startupJsonOptions, ignoredClrNames);
 
         // Resolved once here (rather than down at the per-profile loop) so the group-level
         // exception filter below can log through the same "OhData" category every other
@@ -1977,7 +1982,8 @@ internal static class OhDataEndpointFactory
         // Fold-in #5 (#325/#326 review — maxLevels asymmetry) still applies: pass the SAME
         // source.MaxExpansionDepth ceiling Stage 3.5's OmitUnexpandedNavigations call below already
         // uses, instead of silently defaulting to the file-wide MaxNestedExpandDepth (12).
-        JsonArray json = SerializeBoundedCollection(originalItems, rootEdmType, rootClauseForSerialize,
+        JsonArray json = SerializeBoundedCollection(originalItems, rootEdmType, registration.EdmModel,
+            rootClauseForSerialize,
             serializerOptions, maxLevels: source.MaxExpansionDepth, levelsNavNames: pushedLevelsNavNames);
 
         // Stage 2: Inject @odata.etag using the original (pre-expand) items for ETag computation.
@@ -2377,7 +2383,8 @@ internal static class OhDataEndpointFactory
                 // Fold-in #2: cardinality comes from the EDM (isCollectionNav, already resolved
                 // above), never sniffed from relatedByIndex[i]'s own CLR shape.
                 jsonItems[i][expandKey] = SerializeBounded(
-                    relatedByIndex[i], targetEdmType, nestedClause, serializerOptions, isCollectionValue: isCollectionNav);
+                    relatedByIndex[i], targetEdmType, registration.EdmModel, nestedClause, serializerOptions,
+                    isCollectionValue: isCollectionNav);
             }
 
             if (nestedClause is null) continue;
@@ -2964,6 +2971,16 @@ internal static class OhDataEndpointFactory
     // entity instance's own (possibly inherited) navigation properties are found and suppressed
     // correctly even when reached through a base-typed navigation property.
     //
+    // #343 CORRECTION TO THE PARAGRAPH ABOVE. Keying the CLR side off the runtime type was only
+    // ever HALF of it: the navigation NAMES were still enumerated from the DECLARED
+    // <paramref name="edmType"/>, so a navigation declared only on a DERIVED EDM type was never in
+    // the suppression set and went straight to System.Text.Json — emitting unrequested data, and
+    // 500ing outright when two derived instances referenced each other through one (measured on a
+    // plain GET with NO query string). <paramref name="model"/> is what closes that: it lets
+    // GetNavSuppressedOptions resolve the RUNTIME type's own EDM type and union in its navigations.
+    // It is threaded rather than looked up ambiently because Microsoft.OData.Edm gives an
+    // IEdmEntityType no back-reference to the model that owns it.
+    //
     // <paramref name="isCollectionValue"/> (fold-in #2, 200→500 regression guard): whether
     // <paramref name="value"/> represents a COLLECTION of entities of <paramref name="edmType"/>
     // rather than a single entity. This is decided by the CALLER from EDM cardinality
@@ -2977,6 +2994,7 @@ internal static class OhDataEndpointFactory
     private static JsonNode? SerializeBounded(
         object? value,
         IEdmEntityType? edmType,
+        IEdmModel? model,
         SelectExpandClause? clause,
         JsonSerializerOptions? serializerOptions,
         (string Nav, int Remaining)? activeLevels = null,
@@ -3024,12 +3042,12 @@ internal static class OhDataEndpointFactory
             // therefore makes SerializeBoundedCollection fall back to that exact per-element call for
             // the collections where the difference is observable — see its remarks.
             var elements = ((IEnumerable)value).Cast<object?>().ToList();
-            return SerializeBoundedCollection(elements, edmType, clause, opts, maxLevels, levelsNavNames,
+            return SerializeBoundedCollection(elements, edmType, model, clause, opts, maxLevels, levelsNavNames,
                 activeLevels, suppressPolymorphicMetadata: true);
         }
 
         Type clrType = value.GetType();
-        JsonSerializerOptions navSuppressed = GetNavSuppressedOptions(opts, edmType, clrType);
+        JsonSerializerOptions navSuppressed = GetNavSuppressedOptions(opts, model, edmType, clrType);
         JsonNode? node = JsonSerializer.SerializeToNode(value, clrType, navSuppressed);
 
         // Fold-in #2 (200→500 regression): a custom JsonConverter on the ENTITY type itself may
@@ -3045,7 +3063,7 @@ internal static class OhDataEndpointFactory
         (Dictionary<string, SelectExpandClause?>? expanded, Dictionary<string, int>? levelsRemaining) =
             BuildExpandLookup(clause, levelsNavNames, maxLevels);
 
-        SpliceKeptNavigations(obj, value, clrType, edmType, expanded, levelsRemaining, activeLevels, opts,
+        SpliceKeptNavigations(obj, value, clrType, edmType, model, expanded, levelsRemaining, activeLevels, opts,
             maxLevels, levelsNavNames);
 
         return obj;
@@ -3064,6 +3082,7 @@ internal static class OhDataEndpointFactory
         object value,
         Type clrType,
         IEdmEntityType edmType,
+        IEdmModel? model,
         Dictionary<string, SelectExpandClause?>? expanded,
         Dictionary<string, int>? levelsRemaining,
         (string Nav, int Remaining)? activeLevels,
@@ -3106,7 +3125,7 @@ internal static class OhDataEndpointFactory
             }
 
             obj[serializedKey] = SerializeBounded(
-                navValue, navProp.ToEntityType(), decision.NestedClause, opts, decision.ChildActive, maxLevels,
+                navValue, navProp.ToEntityType(), model, decision.NestedClause, opts, decision.ChildActive, maxLevels,
                 levelsNavNames, isCollectionValue: navProp.Type.IsCollection());
         }
     }
@@ -3159,6 +3178,7 @@ internal static class OhDataEndpointFactory
     private static JsonArray SerializeBoundedCollection(
         IReadOnlyList<object?> values,
         IEdmEntityType? edmType,
+        IEdmModel? model,
         SelectExpandClause? clause,
         JsonSerializerOptions? serializerOptions,
         int maxLevels = MaxNestedExpandDepth,
@@ -3214,7 +3234,7 @@ internal static class OhDataEndpointFactory
             Type t = value.GetType();
             if ((seenTypes ??= new HashSet<Type>()).Add(t))
             {
-                navSuppressed = GetNavSuppressedOptions(opts, edmType, t);
+                navSuppressed = GetNavSuppressedOptions(opts, model, edmType, t);
                 // Piggy-backed on the distinct-type pass that already exists, so the polymorphism
                 // test costs one cached lookup per DISTINCT runtime type per collection — never a
                 // per-element check on the hot path.
@@ -3271,7 +3291,7 @@ internal static class OhDataEndpointFactory
             foreach (object? value in values)
             {
                 perElement.Add(SerializeBounded(
-                    value, edmType, clause, opts, activeLevels, maxLevels, levelsNavNames));
+                    value, edmType, model, clause, opts, activeLevels, maxLevels, levelsNavNames));
             }
             return perElement;
         }
@@ -3288,7 +3308,7 @@ internal static class OhDataEndpointFactory
             // null entity) is likewise left as whatever the batched call already produced for it.
             if (values[i] is not { } value || batched[i] is not JsonObject obj) continue;
 
-            SpliceKeptNavigations(obj, value, value.GetType(), edmType, expanded, levelsRemaining,
+            SpliceKeptNavigations(obj, value, value.GetType(), edmType, model, expanded, levelsRemaining,
                 activeLevels, opts, maxLevels, levelsNavNames);
         }
 
@@ -3343,7 +3363,30 @@ internal static class OhDataEndpointFactory
         if (typeInfo is null) return false;
         foreach (JsonPropertyInfo p in typeInfo.Properties)
         {
-            if (p.AttributeProvider is not PropertyInfo pi || pi != clrNavProp) continue;
+            // #462/#343 FOLLOW-ON, A FIFTH INSTANCE OF THE SAME DEFECT CLASS — found by the shared
+            // fixture, not by the issues. `pi != clrNavProp` is PropertyInfo equality, which also
+            // compares ReflectedType, and for an INHERITED navigation on a DERIVED runtime instance
+            // the two sides come from reflection walks that disagree about it. MEASURED on .NET
+            // 10.0.11 for `RtDerived : RtBase` with `Items` declared on the base:
+            //     clrNavProp.ReflectedType = RtDerived   (FindClrPropertyByEdmName does
+            //                                             RtDerived.GetProperties())
+            //     pi.ReflectedType         = RtBase      (System.Text.Json's AttributeProvider)
+            //     pi == clrNavProp -> false ; pi.HasSameMetadataDefinitionAs(clrNavProp) -> true
+            // So the loop never matched, the trailing `return false` answered "not visible", and
+            // SpliceKeptNavigations SKIPPED the navigation — a declared navigation the client
+            // explicitly $expand'ed was silently DROPPED from every derived instance, while the base
+            // instances in the same page kept theirs. That is the exact mirror of #343 (which emits
+            // what nobody asked for); fixing only one of the two would leave a derived entity unable
+            // to serve any expanded navigation at all.
+            //
+            // HasSameMetadataDefinitionAs is the same comparison, for the same reason, that
+            // OpenTypeJsonOptions.Build already uses against its own AttributeProvider — see the long
+            // comment there. It is NOT whole-member identity (it matches across generic
+            // instantiations); what makes it safe here is the same thing that makes it safe there:
+            // both sides are members of `clrType` or of one of its base types, and a single type's
+            // member list cannot contain two instantiations of one generic definition. Non-derived
+            // instances are unaffected — their two PropertyInfos already compared equal.
+            if (p.AttributeProvider is not PropertyInfo pi || !pi.HasSameMetadataDefinitionAs(clrNavProp)) continue;
             return p.ShouldSerialize is null || p.ShouldSerialize(entityValue, navValue);
         }
         // Absent from the base contract entirely. NOT the [JsonIgnore] case — that member is still in
@@ -3410,21 +3453,71 @@ internal static class OhDataEndpointFactory
             new ConcurrentDictionary<Type, JsonTypeInfo?>(), new ConcurrentDictionary<Type, bool>());
     }
 
+    // #343: THE SUPPRESSION SET IS BUILT FROM THE RUNTIME TYPE, NOT THE DECLARED EDM TYPE ALONE.
+    //
+    // #325/#326 ("Option B", clause-bounded serialization) rest on one structural premise: NO
+    // navigation ever reaches System.Text.Json unless the $expand clause asked for it. That is what
+    // makes a reference cycle structurally unreachable rather than merely unlikely. Enumerating only
+    // `edmType.NavigationProperties()` broke the premise for a navigation declared on a DERIVED
+    // entity type: it was never in the set, so it was never removed from the runtime type's
+    // JsonTypeInfo, so STJ walked into it. Measured on the pre-fix tree, both consequences the issue
+    // reports, on a PLAIN GET with no query string at all: a derived-declared collection navigation
+    // emitted inline (`"Notes":[...]` with no $expand=Notes anywhere), and two derived instances
+    // referencing each other through a derived-declared single navigation 500ing on the collection
+    // route and on GetById alike.
+    //
+    // SUPPRESSED, NOT SERVED — and the alternative is not a close call. (a) OData JSON Format 4.01
+    // §4.5.1 / §11.2.4.2 require a non-expanded navigation to be OMITTED, never emitted inline; a
+    // derived-declared navigation is a navigation. (b) It cannot be asked for: the $expand clause is
+    // bound against the entity set's DECLARED type, and SpliceKeptNavigations likewise iterates the
+    // declared type's navigations, so a derived-declared nav has no route into `expanded` and no
+    // splice would ever put it back. "Serve it" would therefore mean serving it UNCONDITIONALLY,
+    // which is the defect. (c) It is consistent with #293's frozen Model B spec rather than in
+    // tension with it: Model B decides WHO is authoritative for a navigation the clause kept at a
+    // level whose EDM type is known (ResolveProfilesForEdmType matches the EXACT EDM type, never CLR
+    // assignability), and it never has an opinion about a navigation no clause can name. #440's
+    // ServeRaw split points the same way — a navigation no candidate declares or routes is OMITTED,
+    // not emitted as null.
+    //
+    // The runtime type's EDM type is resolved by model.FindDeclaredType(clrType.FullName), the same
+    // CLR->EDM convention ResolveProfilesForClrType already relies on. Union, not replace: the
+    // declared type's navigations stay in the set even if the lookup misses, so a model that does
+    // not declare the derived type at all is no worse off than before (that residue — a derived CLR
+    // type absent from the EDM — is #440's territory, not this one's).
+    //
+    // Cost: one FindDeclaredType per DISTINCT runtime type per registration, memoized in
+    // NavClrNamesByType alongside the walk it already did. Nothing per request, nothing per entity.
     private static JsonSerializerOptions GetNavSuppressedOptions(
-        JsonSerializerOptions baseOptions, IEdmEntityType edmType, Type clrType)
+        JsonSerializerOptions baseOptions, IEdmModel? model, IEdmEntityType edmType, Type clrType)
     {
         NavSuppressionState state = s_navSuppressedOptionsCache.GetValue(baseOptions, CreateNavSuppressionState);
         state.NavClrNamesByType.GetOrAdd(clrType, type =>
         {
             var navClrNames = new HashSet<string>(StringComparer.Ordinal);
-            foreach (IEdmNavigationProperty navProp in edmType.NavigationProperties())
+            AddNavClrNames(navClrNames, edmType, type);
+
+            IEdmEntityType? runtimeEdmType =
+                model?.FindDeclaredType(type.FullName ?? type.Name) as IEdmEntityType;
+            if (runtimeEdmType is not null && !ReferenceEquals(runtimeEdmType, edmType))
             {
-                PropertyInfo? clrProp = ODataPropertyNaming.FindClrPropertyByEdmName(type, navProp.Name);
-                if (clrProp is not null) navClrNames.Add(clrProp.Name);
+                AddNavClrNames(navClrNames, runtimeEdmType, type);
             }
             return navClrNames;
         });
         return state.Derived;
+    }
+
+    // The CLR property names on <paramref name="clrType"/> that back <paramref name="edmType"/>'s
+    // navigations (NavigationProperties() is inherited-inclusive, so a base type's navigations come
+    // along with a derived one's). Resolved through the same FindClrPropertyByEdmName the splice
+    // uses, so suppression and splice can never disagree about which member a navigation names.
+    private static void AddNavClrNames(HashSet<string> into, IEdmEntityType edmType, Type clrType)
+    {
+        foreach (IEdmNavigationProperty navProp in edmType.NavigationProperties())
+        {
+            PropertyInfo? clrProp = ODataPropertyNaming.FindClrPropertyByEdmName(clrType, navProp.Name);
+            if (clrProp is not null) into.Add(clrProp.Name);
+        }
     }
 
     // Fold-in #1 support: the BASE (un-suppressed) JsonTypeInfo for clrType under baseOptions,
@@ -5700,7 +5793,7 @@ internal static class OhDataEndpointFactory
     private static (Dictionary<string, object?>? Envelope, IResult? Error) BuildNavEnvelope(
         string baseUrl, string name, string key, string navPropertyName,
         long? navCount, object[] itemArray, HttpContext ctx, Type? navItemType,
-        JsonSerializerOptions? jsonOptions, IEdmEntityType? navElementEdmType)
+        JsonSerializerOptions? jsonOptions, IEdmEntityType? navElementEdmType, IEdmModel? edmModel)
     {
         var navSerializerOptions = jsonOptions ?? _pascalCaseSerializerOptions;
 
@@ -5715,7 +5808,7 @@ internal static class OhDataEndpointFactory
         var json = new JsonArray();
         foreach (object item in itemArray)
         {
-            json.Add(SerializeBounded(item, navElementEdmType, clause: null, navSerializerOptions));
+            json.Add(SerializeBounded(item, navElementEdmType, edmModel, clause: null, navSerializerOptions));
         }
         // #184: navItemType is the CLR element type, so [JsonPropertyName] renames on its
         // navigations are honored when computing which keys to omit. Defence-in-depth (#325/#326):
@@ -5780,7 +5873,7 @@ internal static class OhDataEndpointFactory
     // Build a new JsonObject with annotations first, then copy entity properties.
     private static JsonObject ODataEntityNode(
         HttpContext ctx, string prefix, string contextSegment, object entity,
-        JsonSerializerOptions? jsonOptions, string? odataId = null, string? etag = null,
+        JsonSerializerOptions? jsonOptions, IEdmModel? edmModel, string? odataId = null, string? etag = null,
         IEdmEntityType? omitNavsForType = null)
     {
         // #325/#326 (Option B): bounded by clause: null (no $expand is possible on this path — see
@@ -5788,7 +5881,7 @@ internal static class OhDataEndpointFactory
         // CRITICAL deep-insert opt-out (§11.4.2.2): SerializeBounded falls back to the exact
         // pre-#325 whole-graph JsonSerializer.SerializeToNode call in that case, so a deep-insert
         // POST response body keeps its inline nested-create graph exactly as before this fix.
-        var serialized = (JsonObject)SerializeBounded(entity, omitNavsForType, clause: null, jsonOptions)!;
+        var serialized = (JsonObject)SerializeBounded(entity, omitNavsForType, edmModel, clause: null, jsonOptions)!;
         string baseUrl = BuildBaseUrl(ctx, prefix);
 
         // #176: on single-entity read responses, omit navigation properties that were not
@@ -5822,7 +5915,7 @@ internal static class OhDataEndpointFactory
 
     private static IResult ODataEntityResult(
         HttpContext ctx, string prefix, string name, object entity,
-        JsonSerializerOptions? jsonOptions, string? odataId = null, string? etag = null,
+        JsonSerializerOptions? jsonOptions, IEdmModel? edmModel, string? odataId = null, string? etag = null,
         IReadOnlyList<string>? selectedProps = null,
         IEdmEntityType? omitNavsForType = null)
     {
@@ -5842,7 +5935,7 @@ internal static class OhDataEndpointFactory
         // returned — strictly more misleading than the current, standards-accurate context — and
         // would violate the §10.8 requirement that the context echo the select list verbatim.
         string contextSegment = $"{AppendSelectSuffix(name, selectedProps)}/$entity";
-        JsonObject node = ODataEntityNode(ctx, prefix, contextSegment, entity, jsonOptions, odataId: odataId, etag: etag, omitNavsForType: omitNavsForType);
+        JsonObject node = ODataEntityNode(ctx, prefix, contextSegment, entity, jsonOptions, edmModel, odataId: odataId, etag: etag, omitNavsForType: omitNavsForType);
         if (selectedProps is { Count: > 0 })
         {
             var toRemove = node.Select(p => p.Key)
@@ -7660,7 +7753,7 @@ internal static class OhDataEndpointFactory
                         return Results.Ok(node);
                     }
 
-                    return ODataEntityResult(ctx, prefix, name, result, jsonOptions, odataId: odataId, etag: etagValue, selectedProps: selectedProps, omitNavsForType: rootEdmType);
+                    return ODataEntityResult(ctx, prefix, name, result, jsonOptions, registration.EdmModel, odataId: odataId, etag: etagValue, selectedProps: selectedProps, omitNavsForType: rootEdmType);
                 }
                 catch (FormatException ex)
                 {
@@ -7821,7 +7914,7 @@ internal static class OhDataEndpointFactory
                         // profile doing a *non-deep* POST still echoes its (null/empty) navs. PUT/PATCH
                         // omit unconditionally — deep insert is POST-only, so there is no update
                         // equivalent to honour.
-                        var createdNode = ODataEntityNode(ctx, prefix, $"{name}/$entity", result, jsonOptions, odataId: odataId, etag: postEtag,
+                        var createdNode = ODataEntityNode(ctx, prefix, $"{name}/$entity", result, jsonOptions, registration.EdmModel, odataId: odataId, etag: postEtag,
                             omitNavsForType: source.AllowDeepInsert ? null : rootEdmType);
                         return Results.Created(odataId, createdNode);
                     }
@@ -7936,8 +8029,8 @@ internal static class OhDataEndpointFactory
                     // S4 fix: canonical, URL-safe key literal built from parsedKey (see GetById above).
                     string odataId = BuildEntityId(ctx, prefix, name, parsedKey!);
                     if (wasCreated)
-                        return Results.Created(odataId, ODataEntityNode(ctx, prefix, $"{name}/$entity", result, jsonOptions, odataId: odataId, etag: putEtag, omitNavsForType: rootEdmType));
-                    return ODataEntityResult(ctx, prefix, name, result, jsonOptions, odataId: odataId, etag: putEtag, omitNavsForType: rootEdmType);
+                        return Results.Created(odataId, ODataEntityNode(ctx, prefix, $"{name}/$entity", result, jsonOptions, registration.EdmModel, odataId: odataId, etag: putEtag, omitNavsForType: rootEdmType));
+                    return ODataEntityResult(ctx, prefix, name, result, jsonOptions, registration.EdmModel, odataId: odataId, etag: putEtag, omitNavsForType: rootEdmType);
                 }
                 catch (JsonException ex)
                 {
@@ -8051,7 +8144,7 @@ internal static class OhDataEndpointFactory
                     // Gap 2: include @odata.etag in body
                     // S4 fix: canonical, URL-safe key literal built from parsedKey (see GetById above).
                     string odataId = BuildEntityId(ctx, prefix, name, parsedKey!);
-                    return ODataEntityResult(ctx, prefix, name, result, jsonOptions, odataId: odataId, etag: patchEtag, omitNavsForType: rootEdmType);
+                    return ODataEntityResult(ctx, prefix, name, result, jsonOptions, registration.EdmModel, odataId: odataId, etag: patchEtag, omitNavsForType: rootEdmType);
                 }
                 catch (JsonException ex)
                 {
@@ -8336,7 +8429,7 @@ internal static class OhDataEndpointFactory
                         foreach (object contItem in contRows)
                         {
                             contJson.Add(SerializeBounded(
-                                contItem, contElementEdmType, clause: null,
+                                contItem, contElementEdmType, registration.EdmModel, clause: null,
                                 jsonOptions ?? _pascalCaseSerializerOptions));
                         }
 
@@ -8465,7 +8558,7 @@ internal static class OhDataEndpointFactory
 
                             object[] itemArray = items.ToArray();
                             // Batch 3: apply $select post-processing to navigation collection results
-                            var (navEnv, navEnvError) = BuildNavEnvelope(baseUrl, name, key, navPropertyName, navCount, itemArray, ctx, navItemType, jsonOptions, navTargetEdmType);
+                            var (navEnv, navEnvError) = BuildNavEnvelope(baseUrl, name, key, navPropertyName, navCount, itemArray, ctx, navItemType, jsonOptions, navTargetEdmType, registration.EdmModel);
                             if (navEnvError is not null) return navEnvError;
                             return Results.Ok(navEnv);
                         }
@@ -8474,7 +8567,7 @@ internal static class OhDataEndpointFactory
                         // #179: pass the nav target's EDM type so the related entity's own
                         // un-expanded navigations are omitted (§4.5.1 / §11.2.4.2), matching a
                         // top-level read of that type instead of leaking the full CLR graph.
-                        return Results.Ok(ODataEntityNode(ctx, prefix, $"{name}({key})/{navPropertyName}/$entity", result, jsonOptions, omitNavsForType: navTargetEdmType));
+                        return Results.Ok(ODataEntityNode(ctx, prefix, $"{name}({key})/{navPropertyName}/$entity", result, jsonOptions, registration.EdmModel, omitNavsForType: navTargetEdmType));
                     }
                     catch (FormatException ex)
                     {
@@ -8848,7 +8941,7 @@ internal static class OhDataEndpointFactory
                         string contextSegment = postNavCapture.ChildEntitySetName is not null
                             ? $"{postNavCapture.ChildEntitySetName}/$entity"
                             : $"{name}({key})/{postNavPropertyName}/$entity";
-                        var createdNode = ODataEntityNode(ctx, prefix, contextSegment, created, jsonOptions, odataId: childOdataId, omitNavsForType: navTargetEdmType);
+                        var createdNode = ODataEntityNode(ctx, prefix, contextSegment, created, jsonOptions, registration.EdmModel, odataId: childOdataId, omitNavsForType: navTargetEdmType);
                         return childOdataId is not null
                             ? Results.Created(childOdataId, createdNode)
                             : Results.Json(createdNode, statusCode: 201);
@@ -9264,7 +9357,7 @@ internal static class OhDataEndpointFactory
                 object? result = await requestFn.Invoke(args, ct);
                 if (result is null) return Results.NoContent();
                 // Gap 1: @odata.context on function results when return type matches TModel
-                return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, s);
+                return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s);
             }).WithTags(name).Produces(400);
             AddBoundOperationProduces<TModel>(rb, fnCapture);
             // Issue #181: document the function's query-string parameters.
@@ -9340,7 +9433,7 @@ internal static class OhDataEndpointFactory
                 object? result = await requestAction.Invoke(args, ct);
                 if (result is null) return Results.NoContent();
                 // Gap 1: @odata.context on action results when return type matches TModel
-                return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, s);
+                return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s);
             }).WithTags(name).Produces(400).Produces(415);
             AddBoundOperationProduces<TModel>(rb, actionCapture);
             // Leg 2 / #184: synthesize a POCO body schema from the action's parameters (see the
@@ -9404,7 +9497,7 @@ internal static class OhDataEndpointFactory
                         object? result = await requestFn.Invoke(args, ct);
                         if (result is null) return Results.NoContent();
                         // Gap 1: @odata.context on entity-level function results
-                        return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, s);
+                        return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s);
                     }
                     catch (FormatException ex)
                     {
@@ -9488,7 +9581,7 @@ internal static class OhDataEndpointFactory
                         object? result = await requestAction.Invoke(args, ct);
                         if (result is null) return Results.NoContent();
                         // Gap 1: @odata.context on entity-level action results
-                        return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, s);
+                        return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s);
                     }
                     catch (FormatException ex)
                     {
@@ -9522,7 +9615,8 @@ internal static class OhDataEndpointFactory
     // For primitives/other types: return Results.Ok directly (no wrapping needed).
     private static IResult WrapBoundOpResult(
         HttpContext ctx, string prefix, string entitySetName, object result, Type modelType,
-        JsonSerializerOptions? jsonOptions, IEdmEntityType? rootEdmType, IEntitySetEndpointSource source)
+        JsonSerializerOptions? jsonOptions, IEdmEntityType? rootEdmType, IEdmModel? edmModel,
+        IEntitySetEndpointSource source)
     {
         var resultType = result.GetType();
 
@@ -9560,7 +9654,7 @@ internal static class OhDataEndpointFactory
             var json = new JsonArray();
             foreach (object item in coll)
             {
-                json.Add(SerializeBounded(item, rootEdmType, clause: null, serializerOptions));
+                json.Add(SerializeBounded(item, rootEdmType, edmModel, clause: null, serializerOptions));
             }
             if (source.HasETag)
             {
@@ -9582,7 +9676,7 @@ internal static class OhDataEndpointFactory
             // so its shape matches a top-level read — un-expanded navigations stripped (§4.5.1 /
             // §11.2.4.2) and @odata.etag injected when UseETag is set.
             string? boundOpEtag = source.HasETag ? source.InvokeGetETag(result) : null;
-            return ODataEntityResult(ctx, prefix, entitySetName, result, jsonOptions,
+            return ODataEntityResult(ctx, prefix, entitySetName, result, jsonOptions, edmModel,
                 etag: boundOpEtag, omitNavsForType: rootEdmType);
         }
 
