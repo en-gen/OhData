@@ -533,14 +533,14 @@ public class ConcurrencyTests
 
     private sealed class EtagLinkProfile : EntitySetProfile<int, Parent>
     {
-        // The bound-action handler must be static (BindEntityAction binds a method group), so the
-        // per-host store is reached through this field. Every test builds its own host and its own
-        // store, and the suite's hosts are not built concurrently with each other.
-        private static EtagLinkStore _current = null!;
+        // Instance field, not static: BindEntityAction accepts an instance method group (as
+        // AuthorizationMatrixTests' Rename does), so the action handler reaches the per-host store
+        // through the profile instance. Nothing here is shared between hosts.
+        private readonly EtagLinkStore _store;
 
         public EtagLinkProfile(EtagLinkStore store) : base(x => x.Id)
         {
-            _current = store;
+            _store = store;
             EntitySetName = "EtagLinkParents";
             UseETag(x => x.Name);
 
@@ -582,9 +582,9 @@ public class ConcurrencyTests
 
         // Entity-level bound action. Deliberately NOT under the precondition gate — see the
         // exclusion comment in OhDataEndpointFactory at the entity-level bound action route.
-        private static Task Touch(int key)
+        private Task Touch(int key)
         {
-            _current.Ran.Add($"action:{key}");
+            _store.Ran.Add($"action:{key}");
             return Task.CompletedTask;
         }
     }
