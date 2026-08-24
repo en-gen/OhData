@@ -1081,9 +1081,13 @@ internal static class OpenTypeJsonOptions
     /// <i>unmatched</i> key on an <i>open</i> type reaches this method.
     /// </para>
     /// <para>
-    /// <b>Ordering against <c>@odata.bind</c>.</b> <c>ContainsODataBindAnnotation</c> runs on the POST
-    /// route before any of this and still answers <c>501</c>, so deep-insert-by-reference keeps its
-    /// explicit non-support answer rather than being silently swallowed as an annotation.
+    /// <b>Ordering against <c>@odata.bind</c>.</b> <c>ContainsODataBindAnnotation</c> runs before any
+    /// of this on every write route — above <c>PrepareWriteBody</c>'s open-type gate for the routes
+    /// that materialise the body, and as a raw-UTF-8 scan on the two that stream it (<c>PUT</c> and
+    /// the navigation-<c>POST</c> create route) — and still answers <c>501</c>, so
+    /// deep-insert-by-reference keeps its explicit non-support answer rather than being silently
+    /// swallowed as an annotation. It sat BELOW that gate until #456, which meant it never ran at all
+    /// on a registration with no open complex type.
     /// </para>
     /// </remarks>
     private static bool IsControlInformationName(string name) =>

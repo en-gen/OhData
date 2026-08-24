@@ -292,12 +292,15 @@ Three things this does **not** change:
 - A **declared** member whose JSON name contains `@` — via `[JsonPropertyName("weird@name")]` — still
   binds normally. Declared names are matched first.
 - **`@odata.bind` is still `501 Not Implemented`** — on the collection `POST`, and on every other
-  route that binds a body through the open-type write-body preparation (`PUT`, `PATCH`, the
-  navigation-`POST` create route, the structural-property writes, and each bound/unbound action
-  parameter). The check runs before any of this, so a request to link an existing entity keeps its
+  write route (`PUT`, `PATCH`, the navigation-`POST` create route, the structural-property writes,
+  and each bound/unbound action parameter), **whether or not the registration has an open complex
+  type**. The check runs before any of this, so a request to link an existing entity keeps its
   explicit non-support answer rather than being swallowed as an annotation. Deep insert by reference
   is unimplemented on every verb, not malformed on any of them, which is why it is `501` and not the
-  `400` the identifier grammar used to give it incidentally.
+  `400` the identifier grammar used to give it incidentally. (It used to sit *below* the open-type
+  gate, so on a registration with no open complex type it never ran at all and the annotation was
+  silently discarded under a `200`/`201` — see
+  [#456](https://github.com/en-gen/OhData/issues/456).)
 - An `@` key **one level below an accepted dynamic key** is still `400`. Down there the contract has
   run out: the whole subtree is opaque data that will be stored and echoed verbatim, so there is no
   declared-versus-annotation distinction to draw and an unaddressable key is a stored fault.

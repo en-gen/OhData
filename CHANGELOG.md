@@ -9,6 +9,67 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`If-Match` is now enforced on the `$ref` and navigation-`POST` write routes, and compared per
+  RFC (#478).** `CheckETagAsync` was called from five places — entity `PUT`/`PATCH`/`DELETE` and
+  the two structural-property write handlers. Every other state-changing route the framework owns
+  **discarded** a received `If-Match` and performed the write with a success status. Measured on a
+  `TestServer` against the real pipeline, replaying a stale ETag after an out-of-band change:
+
+  | Request with stale `If-Match` | before | after |
+  |---|---|---|
+  | `PUT /Parents(1)` *(control)* | 412 | 412 |
+  | `POST /Parents(1)/Children/$ref` | **204**, `addRef` ran | **412**, delegate not called |
+  | `DELETE /Parents(1)/Children/$ref` | **204**, `removeRef` ran | **412**, delegate not called |
+  | `PUT /Parents(1)/Friend/$ref` | **204**, `setRef` ran | **412**, delegate not called |
+  | `POST /Parents(1)/Children` | **201**, `post` ran | **412**, delegate not called |
+
+  RFC 9110 §13.1.1: an origin server **MUST NOT** perform the method when a received `If-Match`
+  evaluates false. Silently discarding the precondition is the exact failure mode conditional
+  requests exist to prevent — the client believes it performed a checked write. Concretely: a
+  client reads a parent's ETag, then conditionally unlinks and relinks a relationship; both calls
+  succeed against a parent that changed underneath. That is a lost update on relationship state.
+
+  The gate runs **before** the request body is read and before the handler delegate is invoked, so
+  a refused write provably mutates nothing. It is **not** atomic — no transaction is opened, and
+  the TOCTOU window between the check's `GetById` and the delegate's write is unchanged. See
+  [docs/etags.md](docs/etags.md#concurrency-note).
+
+  Two comparison bugs on the pre-existing routes are fixed with it:
+
+  - `If-Match: W/"<current-etag>"` returned **200**. RFC 9110 §13.1.1 requires **strong**
+    comparison and §8.8.3.2 says a weak validator can never participate in one, so it must be
+    `412`. Weak entries are now dropped rather than unwrapped; a weak entry alongside a matching
+    strong one still succeeds on the strong one.
+  - `If-None-Match: "<current-etag>"` on a write returned **200**. §13.1.2 makes the condition
+    false, so it is now `412`. `If-None-Match` keeps **weak** comparison (so `W/"<current>"` *does*
+    match there — the two headers deliberately differ), and when both headers are present
+    `If-Match` wins outright per §13.2.2.
+
+  > **⚠ BREAKING CHANGE.** A client that sends `If-Match`, `If-None-Match`, or a `W/`-prefixed
+  > validator to any of these routes and relies on it being **ignored** now gets `412`. Requests
+  > that send no conditional header are byte-identical, and a profile without `UseETag` is
+  > unaffected. OhData never emits weak ETags, so a `W/` validator can only have been client-built.
+
+  Rejecting weak validators is a **deliberate divergence from `Microsoft.AspNetCore.OData`**, not a
+  case of matching it. MS emits weak ETags unconditionally and compares them ignoring weakness, so
+  `If-Match: W/"..."` is accepted there; that pairing is jointly non-conformant with §13.1.1, and
+  the project's "work with MS conventions" policy does not extend to reproducing a non-conformance.
+  It is safe here specifically because OhData has no weak-ETag path at all. Two existing tests that
+  pinned the old unwrapping behaviour were inverted with this change.
+
+  MS ships **no** automatic `If-Match` enforcement on any route — it is always the controller
+  author's job, which works there because the author owns the route. OhData owns these routes and
+  hands the delegate only `(TKey, child, CancellationToken)`, so "follow MS" would have meant
+  nobody enforcing the header and nobody being able to. That asymmetry is what makes this a
+  framework defect rather than a documentation gap.
+
+  Bound and unbound **actions** are a deliberate, documented exclusion: the target resource of
+  `POST /Set(key)/Action` is the action-invocation resource (Protocol §11.5.4), which has no
+  representation and therefore no entity tag, whereas OData §11.4.6 defines a `$ref` write as a
+  modification of the addressed entity itself.
+
 ### Changed
 
 - **`MaxExpansionDepth` is now hard-capped at `6`; configuring more throws at startup (#328).**
@@ -703,6 +764,74 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   > which is the mistake `#313` stage 3 made and had to correct.
 
 ### Fixed
+
+- **A non-string `@odata.id` on a `$ref` write returned `500` instead of a `400` envelope (#455).**
+  `POST`/`PUT` to `/{Set}({key})/{nav}/$ref` called `JsonElement.GetString()`, which throws
+  `InvalidOperationException` for every `ValueKind` except `String` and `Null`. The handler catches
+  only `JsonException` and `FormatException`, so a body that is well-formed JSON and merely
+  semantically wrong escaped to the group filter as a generic `InternalServerError` — telling the
+  client the server broke when in fact the client sent something invalid. The framework
+  hand-deserializes write bodies precisely to guarantee the opposite; this route was the one
+  exception.
+
+  | body | before | after |
+  |---|---|---|
+  | `{"@odata.id": 123}` | `500 InternalServerError` | `400 BadRequest` |
+  | `{"@odata.id": true}` | `500` | `400` |
+  | `{"@odata.id": {"uri":"…"}}` / `["…"]` | `500` | `400` |
+  | `{"@odata.id": null}` | `204`, delegate called with `""` | `400`, delegate not called |
+  | `{"@odata.id": "…"}` | `204` | `204`, unchanged |
+
+  > **⚠ Behaviour change beyond the crash.** An explicit `"@odata.id": null` never threw — it
+  > returned `null`, the `?? ""` turned it into an **empty entity-id**, and that was handed to the
+  > profile's `addRef`/`setRef` delegate under a `204`. A link request reported success while naming
+  > no entity at all. OData §11.4.6.2 wants the entity-id of the entity to link; a null member names
+  > none, which is the same client error as omitting the member — already a `400`.
+
+- **`@odata.bind` was silently accepted on `PUT`/`PATCH`/nav-`POST`/property-writes for most
+  registrations (#456).** `@odata.bind` is documented non-support and answers `501 Not Implemented`
+  — but only the collection `POST` ran that check unconditionally. Every other write route deferred
+  it into `PrepareWriteBody`, which returns early unless the registration's EDM actually declares an
+  open complex type. On the majority of registrations the check therefore never ran, and the
+  annotation was accepted with `200`/`201` and **discarded**: the client asked to bind a
+  relationship, got a success, and nothing happened.
+
+  ```
+  PATCH /Orders(1)  {"Name":"x","Lines@odata.bind":["Lines(5)"]}    200  ->  501
+  PUT   /Orders(1)  {…,"Category@odata.bind":"Categories(5)"}       200  ->  501
+  POST  /Orders(1)/Notes  {…,"Order@odata.bind":"Orders(1)"}        201  ->  501
+  PUT   /Orders(1)/Name   {"value":{"x@odata.bind":"…"}}            200  ->  501
+  POST  /Orders           {…,"Category@odata.bind":"…"}             501  ->  501  (unchanged)
+  ```
+
+  The check moved *above* `PrepareWriteBody`'s open-type gate, which covers `PATCH`, the
+  structural-property writes and every bound/unbound action parameter. `PUT` and the navigation-`POST`
+  create route needed more: on the non-open path they never call `PrepareWriteBody` at all — they
+  stream the request body straight into the deserializer — so each now buffers the body once and
+  scans the raw UTF-8 with a `Utf8JsonReader` before handing the same buffer to the **same**
+  `DeserializeAsync(Stream)` overload as before. That last detail is deliberate: reading those two
+  bodies through `JsonDocument` instead would change how a malformed body is worded (`Path: $`
+  versus not), which is the byte-identity regression `OpenTypeDefaultOnIsByteIdenticalTests` exists
+  to catch. Malformed-body, wrong-type and depth-limit responses are unchanged on every route.
+
+- **Deep insert's strip set missed a navigation the profile never declared (#461).** The write-side
+  twin of #446. `deepInsertNavPropsToStrip` was built from the profile-**declared** navigation names,
+  so a navigation the OData convention builder discovered but the profile never declared with
+  `HasOptional`/`HasRequired`/`HasMany` was not in it — System.Text.Json bound the nested value and
+  handed it to `Post` intact, **with `AllowDeepInsert` at its default of `false`**. A handler doing
+  `db.Add(model); SaveChanges();` then persists rows nobody opted into.
+
+  ```
+  POST {"Id":1,"Note":"r","CustomerId":7,"Customer":{…}}
+    undeclared navigation  before: handler received Customer  ->  after: handler received null
+    declared navigation    before: handler received null      ->  after: handler received null
+  ```
+
+  The most ordinary shape there is — **a profile that declares no navigations at all** — was fully
+  exposed, and nothing on the wire showed it: the `201` echo omits every EDM navigation either way.
+  The fix is #446's rule applied to one more set: the EDM is the authority on what is a navigation.
+  `#440`'s startup warning, which said only that the entity set *"will never serve it"*, now also
+  states what the write path does with it.
 
 - **A sibling profile's delegate silently disabled `$expand` paging — and the unbounded-`$expand`
   warning — on the set that still served the navigation raw (#421).**
