@@ -501,4 +501,440 @@ public class ConcurrencyTests
             foreach (var fx in fixtures) await fx.DisposeAsync();
         }
     }
+
+    // ── 6. #478: If-Match coverage on the link-management / navigation-create routes ─────
+    //
+    // Every route below performs a write the framework owns. Before #478 the four of them
+    // silently DISCARDED a received If-Match and answered 204/201 — RFC 9110 §13.1.1 says the
+    // origin server MUST NOT perform the method when the precondition evaluates false. Each test
+    // asserts BOTH the status code and that the handler delegate never ran: a route that refuses
+    // must not first mutate anything, and a status-only assertion cannot tell those two apart.
+    //
+    // The fixture is the existing $ref/navigation-POST shape (the same Parent/Child models and
+    // the same HasMany(addRef/removeRef) / HasOptional(setRef) wiring NavQueryProfile uses) with
+    // UseETag added — an existing feature's fixture plus the new thing, not a model built around
+    // conditional writes.
+
+    /// <summary>Singleton-backed store for the #478 link-management fixture. <c>Ran</c> records
+    /// every handler delegate that executed, which is what proves a refused precondition
+    /// short-circuited BEFORE the write rather than after it.</summary>
+    private sealed class EtagLinkStore
+    {
+        public readonly Dictionary<int, Parent> Parents = new()
+        {
+            [1] = new Parent { Id = 1, Name = "Sprocket" },
+        };
+        public readonly List<Child> Children = new()
+        {
+            new Child { Id = 10, ParentId = 1, Name = "Child10" },
+        };
+        public readonly List<string> Ran = new();
+    }
+
+    private sealed class EtagLinkProfile : EntitySetProfile<int, Parent>
+    {
+        // The bound-action handler must be static (BindEntityAction binds a method group), so the
+        // per-host store is reached through this field. Every test builds its own host and its own
+        // store, and the suite's hosts are not built concurrently with each other.
+        private static EtagLinkStore _current = null!;
+
+        public EtagLinkProfile(EtagLinkStore store) : base(x => x.Id)
+        {
+            _current = store;
+            EntitySetName = "EtagLinkParents";
+            UseETag(x => x.Name);
+
+            GetById = (id, ct) => Task.FromResult(store.Parents.TryGetValue(id, out var p) ? p : null);
+
+            HasMany(
+                navigation: x => x.Children!,
+                getAll: (parentId, ct) =>
+                    Task.FromResult<IEnumerable<Child>>(store.Children.Where(c => c.ParentId == parentId)),
+                post: (parentId, child, ct) =>
+                {
+                    store.Ran.Add($"post:{parentId}:{child.Name}");
+                    child.ParentId = parentId;
+                    store.Children.Add(child);
+                    return Task.FromResult<Child?>(child);
+                },
+                addRef: (parentId, relatedId, ct) =>
+                {
+                    store.Ran.Add($"addRef:{parentId}:{relatedId}");
+                    return Task.CompletedTask;
+                },
+                removeRef: (parentId, relatedId, ct) =>
+                {
+                    store.Ran.Add($"removeRef:{parentId}:{relatedId}");
+                    return Task.CompletedTask;
+                });
+
+            HasOptional(
+                navigation: x => x.PrimaryChild!,
+                get: (parentId, ct) => Task.FromResult<Child?>(null),
+                setRef: (parentId, relatedId, ct) =>
+                {
+                    store.Ran.Add($"setRef:{parentId}:{relatedId}");
+                    return Task.CompletedTask;
+                });
+
+            BindEntityAction(Touch);
+        }
+
+        // Entity-level bound action. Deliberately NOT under the precondition gate — see the
+        // exclusion comment in OhDataEndpointFactory at the entity-level bound action route.
+        private static Task Touch(int key)
+        {
+            _current.Ran.Add($"action:{key}");
+            return Task.CompletedTask;
+        }
+    }
+
+    private static async Task<(TestFixture Fx, EtagLinkStore Store, string StaleETag)>
+        BuildLinkFixtureWithStaleETagAsync()
+    {
+        var store = new EtagLinkStore();
+        var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<EtagLinkProfile>(),
+            configureServices: s => s.AddSingleton(store));
+
+        using var getResp = await fx.Client.GetAsync("/odata/EtagLinkParents(1)");
+        Assert.Equal(HttpStatusCode.OK, getResp.StatusCode);
+        string etag = getResp.Headers.ETag!.Tag;
+
+        // A concurrent writer changes the entity out of band, which is what makes the captured
+        // ETag stale. (UseETag hashes Name, so touching Name is the whole mutation.)
+        store.Parents[1].Name = "ChangedByAnotherWriter";
+        return (fx, store, etag);
+    }
+
+    private static HttpRequestMessage Conditional(
+        HttpMethod method, string url, string? ifMatch = null, string? ifNoneMatch = null, object? body = null)
+    {
+        var req = new HttpRequestMessage(method, url);
+        if (ifMatch is not null) req.Headers.TryAddWithoutValidation("If-Match", ifMatch);
+        if (ifNoneMatch is not null) req.Headers.TryAddWithoutValidation("If-None-Match", ifNoneMatch);
+        if (body is not null) req.Content = JsonContent.Create(body);
+        return req;
+    }
+
+    private static Dictionary<string, string> RefBody(int childId) =>
+        new() { ["@odata.id"] = $"http://localhost/odata/Children({childId})" };
+
+    [Fact]
+    public async Task IfMatch_Stale_AddRefOnCollectionNav_Returns412_AndAddRefNeverRuns()
+    {
+        var (fx, store, stale) = await BuildLinkFixtureWithStaleETagAsync();
+        await using var _ = fx;
+
+        using var req = Conditional(HttpMethod.Post, "/odata/EtagLinkParents(1)/Children/$ref",
+            ifMatch: stale, body: RefBody(77));
+        using var resp = await fx.Client.SendAsync(req);
+
+        Assert.Equal(HttpStatusCode.PreconditionFailed, resp.StatusCode);
+        Assert.Empty(store.Ran);
+    }
+
+    [Fact]
+    public async Task IfMatch_Stale_RemoveRefOnCollectionNav_Returns412_AndRemoveRefNeverRuns()
+    {
+        var (fx, store, stale) = await BuildLinkFixtureWithStaleETagAsync();
+        await using var _ = fx;
+
+        using var req = Conditional(HttpMethod.Delete,
+            "/odata/EtagLinkParents(1)/Children/$ref?$id=http://localhost/odata/Children(10)",
+            ifMatch: stale);
+        using var resp = await fx.Client.SendAsync(req);
+
+        Assert.Equal(HttpStatusCode.PreconditionFailed, resp.StatusCode);
+        Assert.Empty(store.Ran);
+    }
+
+    [Fact]
+    public async Task IfMatch_Stale_SetRefOnSingleValuedNav_Returns412_AndSetRefNeverRuns()
+    {
+        var (fx, store, stale) = await BuildLinkFixtureWithStaleETagAsync();
+        await using var _ = fx;
+
+        using var req = Conditional(HttpMethod.Put, "/odata/EtagLinkParents(1)/PrimaryChild/$ref",
+            ifMatch: stale, body: RefBody(78));
+        using var resp = await fx.Client.SendAsync(req);
+
+        Assert.Equal(HttpStatusCode.PreconditionFailed, resp.StatusCode);
+        Assert.Empty(store.Ran);
+    }
+
+    [Fact]
+    public async Task IfMatch_Stale_NavigationPostCreate_Returns412_AndPostNeverRuns()
+    {
+        var (fx, store, stale) = await BuildLinkFixtureWithStaleETagAsync();
+        await using var _ = fx;
+
+        int childCountBefore = store.Children.Count;
+        using var req = Conditional(HttpMethod.Post, "/odata/EtagLinkParents(1)/Children",
+            ifMatch: stale, body: new Child { Id = 11, Name = "NewChild" });
+        using var resp = await fx.Client.SendAsync(req);
+
+        Assert.Equal(HttpStatusCode.PreconditionFailed, resp.StatusCode);
+        Assert.Empty(store.Ran);
+        Assert.Equal(childCountBefore, store.Children.Count);
+    }
+
+    [Fact]
+    public async Task IfMatch_Current_OnLinkRoutes_StillSucceedsAndDelegatesRun()
+    {
+        // The positive control for the four tests above: enforcement must be a precondition
+        // check, not a blanket refusal of conditional requests on these routes.
+        var store = new EtagLinkStore();
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<EtagLinkProfile>(),
+            configureServices: s => s.AddSingleton(store));
+
+        using var getResp = await fx.Client.GetAsync("/odata/EtagLinkParents(1)");
+        string current = getResp.Headers.ETag!.Tag;
+
+        using var addReq = Conditional(HttpMethod.Post, "/odata/EtagLinkParents(1)/Children/$ref",
+            ifMatch: current, body: RefBody(77));
+        using var addResp = await fx.Client.SendAsync(addReq);
+        Assert.Equal(HttpStatusCode.NoContent, addResp.StatusCode);
+
+        using var delReq = Conditional(HttpMethod.Delete,
+            "/odata/EtagLinkParents(1)/Children/$ref?$id=http://localhost/odata/Children(10)",
+            ifMatch: current);
+        using var delResp = await fx.Client.SendAsync(delReq);
+        Assert.Equal(HttpStatusCode.NoContent, delResp.StatusCode);
+
+        using var setReq = Conditional(HttpMethod.Put, "/odata/EtagLinkParents(1)/PrimaryChild/$ref",
+            ifMatch: current, body: RefBody(78));
+        using var setResp = await fx.Client.SendAsync(setReq);
+        Assert.Equal(HttpStatusCode.NoContent, setResp.StatusCode);
+
+        using var postReq = Conditional(HttpMethod.Post, "/odata/EtagLinkParents(1)/Children",
+            ifMatch: current, body: new Child { Id = 11, Name = "NewChild" });
+        using var postResp = await fx.Client.SendAsync(postReq);
+        Assert.Equal(HttpStatusCode.Created, postResp.StatusCode);
+
+        Assert.Equal(
+            new[]
+            {
+                "addRef:1:http://localhost/odata/Children(77)",
+                "removeRef:1:http://localhost/odata/Children(10)",
+                "setRef:1:http://localhost/odata/Children(78)",
+                "post:1:NewChild",
+            },
+            store.Ran);
+    }
+
+    [Fact]
+    public async Task NoConditionalHeader_OnLinkRoutes_IsUnaffected()
+    {
+        // Regression guard: the precondition gate is a no-op when neither header is present, so
+        // an unconditional $ref write keeps its pre-#478 behaviour exactly.
+        var store = new EtagLinkStore();
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<EtagLinkProfile>(),
+            configureServices: s => s.AddSingleton(store));
+
+        using var resp = await fx.Client.PostAsJsonAsync(
+            "/odata/EtagLinkParents(1)/Children/$ref", RefBody(77));
+
+        Assert.Equal(HttpStatusCode.NoContent, resp.StatusCode);
+        Assert.Equal(new[] { "addRef:1:http://localhost/odata/Children(77)" }, store.Ran);
+    }
+
+    [Fact]
+    public async Task IfMatch_Wildcard_OnLinkRoute_ExistingEntity_Succeeds()
+    {
+        // Consistency with the five pre-existing CheckETagAsync sites: "*" matches any EXISTING
+        // representation.
+        var store = new EtagLinkStore();
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<EtagLinkProfile>(),
+            configureServices: s => s.AddSingleton(store));
+
+        using var req = Conditional(HttpMethod.Post, "/odata/EtagLinkParents(1)/Children/$ref",
+            ifMatch: "*", body: RefBody(77));
+        using var resp = await fx.Client.SendAsync(req);
+
+        Assert.Equal(HttpStatusCode.NoContent, resp.StatusCode);
+        Assert.Single(store.Ran);
+    }
+
+    [Fact]
+    public async Task IfMatch_Wildcard_OnLinkRoute_MissingEntity_Returns412_AndDelegateNeverRuns()
+    {
+        // ...and, exactly as on PUT (IfMatch_Wildcard_MissingEntity_Returns412 above), "*" against
+        // a key with no current representation is 412, never the handler's own outcome.
+        var store = new EtagLinkStore();
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<EtagLinkProfile>(),
+            configureServices: s => s.AddSingleton(store));
+
+        using var req = Conditional(HttpMethod.Post, "/odata/EtagLinkParents(999)/Children/$ref",
+            ifMatch: "*", body: RefBody(77));
+        using var resp = await fx.Client.SendAsync(req);
+
+        Assert.Equal(HttpStatusCode.PreconditionFailed, resp.StatusCode);
+        Assert.Empty(store.Ran);
+    }
+
+    [Fact]
+    public async Task EntityBoundAction_IgnoresIfMatch_DocumentedExclusion()
+    {
+        // CHARACTERIZATION, not an endorsement. #478 deliberately left bound/unbound actions
+        // outside the precondition gate: the target resource of POST /Set(key)/Action is the
+        // action-invocation resource, which has no representation and therefore no entity tag.
+        // If this test ever starts failing with a 412, that exclusion was changed — which needs a
+        // decision, an entry in docs/etags.md and a breaking-change note, not just a green diff.
+        var (fx, store, stale) = await BuildLinkFixtureWithStaleETagAsync();
+        await using var _ = fx;
+
+        using var req = Conditional(HttpMethod.Post, "/odata/EtagLinkParents(1)/Touch",
+            ifMatch: stale, body: new Dictionary<string, string>());
+        using var resp = await fx.Client.SendAsync(req);
+
+        Assert.Equal(HttpStatusCode.NoContent, resp.StatusCode);
+        Assert.Equal(new[] { "action:1" }, store.Ran);
+    }
+
+    // ── 7. #478: strong comparison for If-Match, weak comparison for If-None-Match ────────
+
+    [Fact]
+    public async Task IfMatch_WeakValidatorOfCurrentETag_Returns412()
+    {
+        // RFC 9110 §13.1.1 requires STRONG comparison for If-Match, and §8.8.3.2 says a weak
+        // validator never participates in one. ParseETagList used to strip the W/ prefix for both
+        // headers, so `If-Match: W/"<current>"` matched and the write was performed with a 200.
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<EtagSequenceProfile>(),
+            configureServices: s => s.AddSingleton(new EtagSequenceStore()));
+
+        using var getResp = await fx.Client.GetAsync("/odata/EtagSequenceWidgets(1)");
+        string current = getResp.Headers.ETag!.Tag;
+
+        using var req = Conditional(HttpMethod.Put, "/odata/EtagSequenceWidgets(1)",
+            ifMatch: "W/" + current, body: new Widget { Id = 1, Name = "WeakWrite" });
+        using var resp = await fx.Client.SendAsync(req);
+
+        Assert.Equal(HttpStatusCode.PreconditionFailed, resp.StatusCode);
+
+        // And the refusal really was a refusal — the entity still carries its original value.
+        var after = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/EtagSequenceWidgets(1)");
+        Assert.Equal("Sprocket", after.GetProperty("Name").GetString());
+    }
+
+    [Fact]
+    public async Task IfMatch_WeakValidatorAlongsideStrongMatch_StillSucceeds()
+    {
+        // Dropping weak entries must not poison the rest of the list: a strong entry that matches
+        // still satisfies the precondition.
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<EtagSequenceProfile>(),
+            configureServices: s => s.AddSingleton(new EtagSequenceStore()));
+
+        using var getResp = await fx.Client.GetAsync("/odata/EtagSequenceWidgets(1)");
+        string current = getResp.Headers.ETag!.Tag;
+
+        using var req = Conditional(HttpMethod.Put, "/odata/EtagSequenceWidgets(1)",
+            ifMatch: "W/\"someothervalue\", " + current,
+            body: new Widget { Id = 1, Name = "Applied" });
+        using var resp = await fx.Client.SendAsync(req);
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task IfNoneMatch_MatchingCurrentETag_OnWrite_Returns412()
+    {
+        // RFC 9110 §13.1.2: on a state-changing method the condition is FALSE when a listed
+        // validator matches, so the method must not be performed. Only `If-None-Match: *` was
+        // honoured before #478 (as an upsert create-guard); a specific matching ETag was ignored
+        // and the write returned 200.
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<EtagSequenceProfile>(),
+            configureServices: s => s.AddSingleton(new EtagSequenceStore()));
+
+        using var getResp = await fx.Client.GetAsync("/odata/EtagSequenceWidgets(1)");
+        string current = getResp.Headers.ETag!.Tag;
+
+        using var req = Conditional(HttpMethod.Put, "/odata/EtagSequenceWidgets(1)",
+            ifNoneMatch: current, body: new Widget { Id = 1, Name = "ShouldNotApply" });
+        using var resp = await fx.Client.SendAsync(req);
+
+        Assert.Equal(HttpStatusCode.PreconditionFailed, resp.StatusCode);
+        var after = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/EtagSequenceWidgets(1)");
+        Assert.Equal("Sprocket", after.GetProperty("Name").GetString());
+    }
+
+    [Fact]
+    public async Task IfNoneMatch_WeakValidatorOfCurrentETag_OnWrite_Returns412()
+    {
+        // If-None-Match uses WEAK comparison (§13.1.2), so W/"<current>" DOES match here — the
+        // opposite of the If-Match case above. The two readers are not interchangeable.
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<EtagSequenceProfile>(),
+            configureServices: s => s.AddSingleton(new EtagSequenceStore()));
+
+        using var getResp = await fx.Client.GetAsync("/odata/EtagSequenceWidgets(1)");
+        string current = getResp.Headers.ETag!.Tag;
+
+        using var req = Conditional(HttpMethod.Put, "/odata/EtagSequenceWidgets(1)",
+            ifNoneMatch: "W/" + current, body: new Widget { Id = 1, Name = "ShouldNotApply" });
+        using var resp = await fx.Client.SendAsync(req);
+
+        Assert.Equal(HttpStatusCode.PreconditionFailed, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task IfNoneMatch_NonMatchingETag_OnWrite_Proceeds()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<EtagSequenceProfile>(),
+            configureServices: s => s.AddSingleton(new EtagSequenceStore()));
+
+        using var req = Conditional(HttpMethod.Put, "/odata/EtagSequenceWidgets(1)",
+            ifNoneMatch: "\"not-the-current-etag\"", body: new Widget { Id = 1, Name = "Applied" });
+        using var resp = await fx.Client.SendAsync(req);
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task IfNoneMatch_OnLinkRoute_MatchingCurrentETag_Returns412_AndDelegateNeverRuns()
+    {
+        // The If-None-Match arm rides the same gate, so it reaches the link routes too.
+        var store = new EtagLinkStore();
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<EtagLinkProfile>(),
+            configureServices: s => s.AddSingleton(store));
+
+        using var getResp = await fx.Client.GetAsync("/odata/EtagLinkParents(1)");
+        string current = getResp.Headers.ETag!.Tag;
+
+        using var req = Conditional(HttpMethod.Post, "/odata/EtagLinkParents(1)/Children/$ref",
+            ifNoneMatch: current, body: RefBody(77));
+        using var resp = await fx.Client.SendAsync(req);
+
+        Assert.Equal(HttpStatusCode.PreconditionFailed, resp.StatusCode);
+        Assert.Empty(store.Ran);
+    }
+
+    [Fact]
+    public async Task IfMatch_TakesPrecedenceOver_IfNoneMatch_WhenBothPresent()
+    {
+        // RFC 9110 §13.2.2 fixes the evaluation order: If-None-Match is evaluated only when
+        // If-Match is absent. Both headers naming the CURRENT ETag must therefore succeed —
+        // If-Match matches and wins — rather than being AND-ed into a 412.
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<EtagSequenceProfile>(),
+            configureServices: s => s.AddSingleton(new EtagSequenceStore()));
+
+        using var getResp = await fx.Client.GetAsync("/odata/EtagSequenceWidgets(1)");
+        string current = getResp.Headers.ETag!.Tag;
+
+        using var req = Conditional(HttpMethod.Put, "/odata/EtagSequenceWidgets(1)",
+            ifMatch: current, ifNoneMatch: current, body: new Widget { Id = 1, Name = "Applied" });
+        using var resp = await fx.Client.SendAsync(req);
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+    }
 }
