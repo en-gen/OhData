@@ -103,6 +103,36 @@ var client = new OhDataClient(httpClient, new OhDataClientOptions
 });
 ```
 
+### `FollowCrossOriginNextLinks`
+
+Whether the `@odata.nextLink` walker (`ToListAsync`, `ToAsyncEnumerable`, `ToAnnotatedAsyncEnumerable`) may follow a link whose **origin** — scheme, host and port — differs from the `HttpClient.BaseAddress`. Default `false`: a cross-origin link fails the read with `InvalidOperationException` and no request is made.
+
+A nextLink is a URL named in a response **body**, and the walker builds a fresh request for it — so the `HttpClient`'s `DefaultRequestHeaders`, `Authorization` among them, get attached to whatever host that body names. This is *not* a redirect, so `HttpClientHandler`'s cross-origin credential stripping never runs. A compromised server, a caching proxy or a MITM on a plaintext hop can therefore point the next hop at a host of its choosing and be handed your bearer token.
+
+The default refuses the hop rather than stripping `Authorization`, because the credential at risk is not only that header: a default-header API key (`X-Api-Key`, `Ocp-Apim-Subscription-Key`, …) leaks identically, and dropping one header by name leaves the rest. Turning this on is an explicit statement that the service's paging links are trusted to name other origins — **it does send your default headers to them**.
+
+A *relative* nextLink is unaffected: `HttpClient` resolves it against `BaseAddress`, which makes it same-origin by construction.
+
+```csharp
+var client = new OhDataClient(httpClient, new OhDataClientOptions
+{
+    FollowCrossOriginNextLinks = true   // only for a service you trust to page across origins
+});
+```
+
+### `MaxNextLinkHops`
+
+The maximum number of `@odata.nextLink` hops a single enumeration may follow before failing with `InvalidOperationException`. Default `10_000`.
+
+`while (nextLink != null)` is driven entirely by the server: one that returns the same link forever makes the loop unbounded, and `ToListAsync` accumulates every page until the process runs out of memory. This is a termination guarantee, not a paging policy — the default is set high enough that no legitimate run reaches it (a million entities at a page size of 100). Values below `1` are rejected at configuration time; use `int.MaxValue` for effectively unlimited.
+
+```csharp
+var client = new OhDataClient(httpClient, new OhDataClientOptions
+{
+    MaxNextLinkHops = 250_000
+});
+```
+
 ---
 
 Next: [Querying →](querying.md)

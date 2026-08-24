@@ -66,6 +66,14 @@ Expressions that reference a lambda range variable in a way that has no OData pa
 (e.g. a member access on a ternary) throw `NotSupportedException` at translation time rather
 than silently producing a wrong query.
 
+The same rule covers **captured values**. A variable, field or property closed over by the
+predicate is read at translation time and embedded as a literal — and if reading it *throws*
+(a property getter that fails, a null instance part-way down a chain), the translator throws
+`NotSupportedException` with the original exception attached. It does **not** fall back to
+`null`: a failed evaluation is not a null value, and emitting one would run a different query
+than you wrote against a null-valued column. A captured value that genuinely *is* `null` still
+translates to `eq null` as it always has.
+
 For unsupported patterns, pass a raw OData string:
 
 ```csharp
