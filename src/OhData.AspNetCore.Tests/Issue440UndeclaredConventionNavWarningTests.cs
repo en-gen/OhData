@@ -129,12 +129,26 @@ public sealed class W440NodeProfile : EntitySetProfile<int, W440Node>
 /// </summary>
 public sealed class W440OrderProfile : EntitySetProfile<int, W440Order>
 {
+    /// <summary>
+    /// #461: exactly what the <c>Post</c> handler was handed, so a test can assert the deep-insert
+    /// strip ran — the HTTP echo cannot answer that question, because #240 omits every EDM
+    /// navigation from it either way. Static: profiles are registered <c>AddScoped</c>.
+    /// </summary>
+    public static W440Order? LastPosted;
+
     public W440OrderProfile(W440DbContext db) : base(x => x.Id)
     {
         EntitySetName = "W440Orders";
         ExpandEnabled = true; SelectEnabled = true; FilterEnabled = true; OrderByEnabled = true;
         GetQueryable = _ => Task.FromResult(db.Orders.AsQueryable());
         GetById = (id, _) => Task.FromResult(db.Orders.FirstOrDefault(o => o.Id == id));
+        // #461: deliberately does NOT persist. The defect is what the handler RECEIVES; a handler
+        // that called SaveChanges() here is the adopter this protects, not the observation point.
+        Post = (order, _) =>
+        {
+            LastPosted = order;
+            return Task.FromResult<W440Order?>(order);
+        };
         Patch = (id, delta, _) =>
         {
             W440Order? existing = db.Orders.FirstOrDefault(o => o.Id == id);
@@ -181,12 +195,20 @@ public sealed class W440PlainProfile : EntitySetProfile<int, W440Plain>
 /// <summary>The remedy, applied: the same navigation, DECLARED. Must stay silent.</summary>
 public sealed class W440DeclaredOrderProfile : EntitySetProfile<int, W440Order>
 {
+    /// <summary>#461: the declared control's own capture — see <see cref="W440OrderProfile.LastPosted"/>.</summary>
+    public static W440Order? LastPosted;
+
     public W440DeclaredOrderProfile(W440DbContext db) : base(x => x.Id)
     {
         EntitySetName = "W440DeclaredOrders";
         ExpandEnabled = true; SelectEnabled = true;
         GetQueryable = _ => Task.FromResult(db.Orders.AsQueryable());
         GetById = (id, _) => Task.FromResult(db.Orders.FirstOrDefault(o => o.Id == id));
+        Post = (order, _) =>
+        {
+            LastPosted = order;
+            return Task.FromResult<W440Order?>(order);
+        };
         HasOptional<W440Customer>(x => x.Customer!);
     }
 }
@@ -439,6 +461,62 @@ public sealed class Issue440UndeclaredConventionNavWarningTests
         Assert.NotEqual(HttpStatusCode.NotFound, await Send(HttpMethod.Get, "/odata/W440Orders(1)/CustomerId"));
     }
 
+    // ------------------------------------------------------- #461: the write-side twin
+
+    /// <summary>
+    /// #461, the write-side twin of #446. <c>deepInsertNavPropsToStrip</c> was built from the
+    /// profile-DECLARED navigation names, so a navigation the convention builder discovered and the
+    /// profile never declared was not in the strip set — System.Text.Json bound it and it reached the
+    /// <c>Post</c> handler intact, with <c>AllowDeepInsert</c> at its default of <c>false</c>. A
+    /// handler doing <c>db.Add(model); SaveChanges();</c> persists those nested rows: the exact
+    /// silent-partial-graph hazard the strip exists to prevent, on the most ordinary shape there is —
+    /// <b>a profile that declares no navigations at all</b>, which is what <c>W440OrderProfile</c> is.
+    /// <para>
+    /// Asserted at the HANDLER, not on the response: #240 omits every EDM navigation from the POST
+    /// echo whether it was stripped or not, so the wire says nothing either way. That is also why
+    /// this went unnoticed.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Symptom3_DeepInsertStrip_AlsoStripsAnUndeclaredConventionNavigation()
+    {
+        var capture = new WarningCapture();
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        await using TestFixture fx = await W440Harness.BuildAsync(connection, capture, ConfigureAll);
+
+        W440OrderProfile.LastPosted = null;
+        W440DeclaredOrderProfile.LastPosted = null;
+
+        const string body = """
+            { "Id": 0, "Note": "posted", "CustomerId": 7, "Customer": { "Id": 9, "Name": "C9" } }
+            """;
+
+        HttpResponseMessage undeclared = await fx.Client.PostAsync(
+            "/odata/W440Orders", new StringContent(body, Encoding.UTF8, "application/json"));
+        _out.WriteLine($"undeclared: {(int)undeclared.StatusCode} {await undeclared.Content.ReadAsStringAsync()}");
+        Assert.Equal(HttpStatusCode.Created, undeclared.StatusCode);
+
+        Assert.NotNull(W440OrderProfile.LastPosted);
+        // Before the fix this was a populated W440Customer.
+        Assert.Null(W440OrderProfile.LastPosted!.Customer);
+
+        // BOUNDING ASSERTION: the strip is one member, not a wiped graph — the scalars, including
+        // the navigation's own foreign key, are untouched.
+        Assert.Equal("posted", W440OrderProfile.LastPosted.Note);
+        Assert.Equal(7, W440OrderProfile.LastPosted.CustomerId);
+
+        // THE DECLARED CONTROL, same CLR model and same body: already correct before the fix, and
+        // still correct. Declaration provenance no longer changes what the handler receives.
+        HttpResponseMessage declared = await fx.Client.PostAsync(
+            "/odata/W440DeclaredOrders", new StringContent(body, Encoding.UTF8, "application/json"));
+        _out.WriteLine($"declared:   {(int)declared.StatusCode} {await declared.Content.ReadAsStringAsync()}");
+        Assert.Equal(HttpStatusCode.Created, declared.StatusCode);
+        Assert.NotNull(W440DeclaredOrderProfile.LastPosted);
+        Assert.Null(W440DeclaredOrderProfile.LastPosted!.Customer);
+        Assert.Equal(7, W440DeclaredOrderProfile.LastPosted.CustomerId);
+    }
+
     // --------------------------------------------------------------- warning content
 
     /// <summary>
@@ -471,6 +549,15 @@ public sealed class Issue440UndeclaredConventionNavWarningTests
         Assert.Contains("'?$expand=Customer' is accepted and answers 200 with the navigation OMITTED",
             warning, StringComparison.Ordinal);
         Assert.Contains("no 'GET /W440Orders({key})/Customer' behind it", warning, StringComparison.Ordinal);
+
+        // #461: the WRITE half. "will never serve it" speaks only of reads, and the message was
+        // incomplete in both directions — before #461 the write path did not merely fail to serve
+        // the navigation, it quietly accepted a nested value for it and forwarded that to Post. The
+        // sentence naming the (now correct) write behaviour is added in the commit that made it true.
+        Assert.Contains("will never accept a value for it", warning, StringComparison.Ordinal);
+        Assert.Contains("nested value for it in a POST body is discarded before the Post handler runs",
+            warning, StringComparison.Ordinal);
+        Assert.Contains("AllowDeepInsert", warning, StringComparison.Ordinal);
 
         // BOTH remedies.
         Assert.Contains("Declare it with HasOptional/HasRequired/HasMany", warning, StringComparison.Ordinal);

@@ -211,6 +211,10 @@ This registers:
 
 The `addRef`/`setRef` handler receives the raw `@odata.id` string from the request body (e.g. `"Categories(3)"`). Parse the key from it as needed.
 
+`@odata.id` must be a JSON **string**. A missing member, or one whose value is a number, boolean,
+object, array or `null`, returns `400 Bad Request` with the OData error envelope and the handler is
+never invoked (#455) — a `null` used to reach the handler as an empty string under a `204`.
+
 > **HTTP method note:** OData 4.0 §11.4.6 requires `POST /$ref` for collection navigations (adding a link)
 > and `PUT /$ref` for single-value navigations (replacing the link). OhData enforces this automatically.
 

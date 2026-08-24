@@ -201,6 +201,14 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// <c>Post</c> handler that doesn't expect a graph never silently persists only part of it.
     /// </para>
     /// <para>
+    /// "Navigation value" means the EDM's navigations, not only the ones this profile declared
+    /// with <c>HasOptional</c>/<c>HasRequired</c>/<c>HasMany</c>: a navigation the OData convention
+    /// model builder discovered on the CLR type is stripped too. It used to be the declared set
+    /// alone, so an undeclared convention navigation reached <see cref="Post"/> intact even with
+    /// this <c>false</c>. A plain (non-navigation) collection or complex property is untouched in
+    /// either mode.
+    /// </para>
+    /// <para>
     /// <c>true</c>: the full deserialized graph (parent + nested navigation values) is passed
     /// to <see cref="Post"/> as-is. The handler is contractually responsible for persisting the
     /// whole graph atomically (e.g. one EF Core <c>SaveChanges</c>) — the framework does not

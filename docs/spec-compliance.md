@@ -92,7 +92,7 @@ matches the wire. See
 | Upsert via PUT | §11.4.4 | ✅ | `AllowUpsert = true` |
 | Key validation on PUT/PATCH | §11.4.3 | ✅ | URL key must match body key; 400 on mismatch |
 | Deep insert (nested related entities in POST) | §11.4.2.2 | ✅ | `AllowDeepInsert = true` (profile-level, entity-level granularity — no per-navigation opt-in). Rides the existing `Post` handler; no new route/delegate. Default (`false`): nested navigation-property values are stripped (set to `null`) before `Post` is invoked. Opt-in (`true`): the full deserialized graph is passed to `Post`, which owns atomic persistence (e.g. one EF Core `SaveChanges`); the `201` response echoes the handler's return value, including populated nested navigation values. See `docs/deep-insert.md` |
-| `@odata.bind` (link existing entity during insert) | JSON format §8.5 | ❌ | Not implemented — detected anywhere in a POST body (top level or nested) and rejected with `501 Not Implemented` rather than silently ignored. The other write routes (`PUT`, `PATCH`, navigation-`POST`, structural-property writes, action parameters) give the same `501`, on registrations whose EDM declares an open complex type — the only ones that buffer the body. Use `$ref` endpoints to link existing entities |
+| `@odata.bind` (link existing entity during insert) | JSON format §8.5 | ❌ | Not implemented — detected anywhere in a POST body (top level or nested) and rejected with `501 Not Implemented` rather than silently ignored. The other write routes (`PUT`, `PATCH`, navigation-`POST`, structural-property writes, action parameters) give the same `501`, on every registration (#456). Use `$ref` endpoints to link existing entities |
 
 ## Navigation and links
 

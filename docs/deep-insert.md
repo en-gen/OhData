@@ -59,10 +59,18 @@ d.AllowDeepInsert = true)`), not per property.
 
 ## Default behavior (`AllowDeepInsert = false`)
 
-When a `POST` body contains nested values for **declared navigation properties** (properties
-registered via `HasMany`/`HasOptional`/`HasRequired`, any overload), the framework strips them —
+When a `POST` body contains nested values for **navigation properties**, the framework strips them —
 sets them to `null` — on the deserialized model **before** invoking `Post`. This applies to both
 collection navigations (`Order.Lines`) and single-valued navigations (`Order.Category`).
+
+"Navigation property" here means what `$metadata` says it is: every navigation registered via
+`HasMany`/`HasOptional`/`HasRequired` (any overload), **plus** every navigation the OData convention
+model builder discovered on the CLR type on its own — the ordinary
+`public Customer? Customer { get; set; }` beside an `int? CustomerId`, which needs no attribute and
+no fluent call to become a navigation in the EDM. Before
+[#461](https://github.com/en-gen/OhData/issues/461) only the *declared* set was stripped, so a
+profile that declared no navigations at all handed its `Post` handler the full nested graph despite
+`AllowDeepInsert` being `false`.
 
 ```csharp
 // AllowDeepInsert left at its default (false):
@@ -76,9 +84,8 @@ Post = async (order, ct) =>
 };
 ```
 
-Nested values for properties that are **not** declared as navigations (a plain `List<string>
-Tags`, for example) are left untouched — only CLR properties registered via
-`HasMany`/`HasOptional`/`HasRequired` are stripped.
+Nested values for properties that are **not** navigations in the EDM (a plain `List<string> Tags`,
+or a complex-typed member) are left untouched.
 
 ## Opt-in behavior (`AllowDeepInsert = true`)
 
@@ -148,11 +155,11 @@ an existing entity to a parent instead.
 
 The other write routes answer `501` too — `PUT`, `PATCH`, the navigation-`POST` create route, the
 structural-property writes, and each bound/unbound action parameter — with a shorter message that
-does not mention `AllowDeepInsert`, since that flag governs nested *create* on `POST` only. Those
-routes carry the check only when the registration's EDM actually declares an open complex type,
-because that is the one condition under which they buffer the body at all; a model with no dictionary
-member streams straight into the deserializer on `PUT` and the annotation is an unmatched member the
-binder discards, exactly as it always has.
+does not mention `AllowDeepInsert`, since that flag governs nested *create* on `POST` only. That
+holds on **every** registration, not only one whose EDM declares an open complex type. Until
+[#456](https://github.com/en-gen/OhData/issues/456) the check sat behind the open-type gate, so on
+the majority of registrations it never ran and the annotation was accepted with `200`/`201` and
+discarded — a request to link a relationship reporting success while doing nothing.
 
 ## Response semantics
 
