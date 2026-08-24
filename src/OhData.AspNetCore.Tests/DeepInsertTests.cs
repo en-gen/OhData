@@ -219,6 +219,201 @@ public class DeepInsertTests
         Assert.Equal(HttpStatusCode.NotImplemented, response.StatusCode);
     }
 
+    // ── #456: @odata.bind answers 501 on EVERY write verb, not just the collection POST ──
+
+    /// <summary>
+    /// #456. The <c>501</c> exists to say <c>@odata.bind</c> is unimplemented; answering
+    /// <c>200</c>/<c>201</c> instead and discarding the annotation is the "looks successful but did
+    /// nothing" failure mode the rejection was added to prevent. Only the collection <c>POST</c>
+    /// ran the check unconditionally — every other write route deferred it into
+    /// <c>PrepareWriteBody</c>, which returns early unless the registration's EDM actually declares
+    /// an open complex type. On the majority of registrations (this fixture included: no dictionary
+    /// member anywhere) the check therefore never ran.
+    /// <para>
+    /// The handler assertion is load-bearing: before the fix these returned <c>200</c>, so a
+    /// status-only test would have to assert the exact wrong status to fail, and a reader could not
+    /// tell whether the annotation had been honoured or dropped.
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("PUT")]
+    [InlineData("PATCH")]
+    public async Task EntityWrite_ODataBindAnnotation_Returns501_OnARegistrationWithNoOpenType(string method)
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
+        DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
+
+        using var request = new HttpRequestMessage(new HttpMethod(method), "/odata/DeepInsertDefaultOrders(1)")
+        {
+            Content = new StringContent(
+                "{\"id\":1,\"customer\":\"Judy\",\"category@odata.bind\":\"DeepInsertDefaultCategories(1)\"}",
+                Encoding.UTF8, "application/json"),
+        };
+        var response = await fx.Client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.NotImplemented, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("NotImplemented", json.GetProperty("error").GetProperty("code").GetString());
+        Assert.Null(DeepInsertDefaultProfile.LastReceivedByWriteHandler);
+    }
+
+    /// <summary>
+    /// The nav-POST create route (§11.4.2.1) is the second of the two routes that stream the body
+    /// straight into the deserializer rather than materialising a <see cref="JsonElement"/>, so it
+    /// could not be fixed by hoisting the check inside <c>PrepareWriteBody</c> alone — it does not
+    /// call <c>PrepareWriteBody</c> at all on this path.
+    /// </summary>
+    [Fact]
+    public async Task NavPostCreate_ODataBindAnnotation_Returns501()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertWithNavHandlersProfile>());
+
+        var createResponse = await fx.Client.PostAsJsonAsync("/odata/DeepInsertNavOrders", new { customer = "Ken" });
+        Assert.Equal(HttpStatusCode.Created, createResponse.StatusCode);
+        int orderId = (await createResponse.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("Id").GetInt32();
+
+        using var content = new StringContent(
+            "{\"text\":\"note\",\"order@odata.bind\":\"DeepInsertNavOrders(1)\"}",
+            Encoding.UTF8, "application/json");
+        var response = await fx.Client.PostAsync($"/odata/DeepInsertNavOrders({orderId})/Notes", content);
+
+        Assert.Equal(HttpStatusCode.NotImplemented, response.StatusCode);
+
+        // Nothing was created: the annotation is rejected before the child is bound or handed over.
+        var notes = await fx.Client.GetFromJsonAsync<JsonElement>($"/odata/DeepInsertNavOrders({orderId})/Notes");
+        Assert.Equal(0, notes.GetProperty("value").GetArrayLength());
+    }
+
+    /// <summary>
+    /// The structural-property write route rides <c>Patch</c> and replaces one property's value, so
+    /// the annotation is looked for inside the <c>value</c> member. It is rejected before the value
+    /// is bound to the property's CLR type — which is why an object here, against a string property,
+    /// answers <c>501</c> and not the <c>400</c> a type mismatch would give.
+    /// </summary>
+    [Fact]
+    public async Task PropertyWrite_ODataBindAnnotation_Returns501()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
+        DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
+
+        using var content = new StringContent(
+            "{\"value\":{\"thing@odata.bind\":\"DeepInsertDefaultCategories(1)\"}}",
+            Encoding.UTF8, "application/json");
+        var response = await fx.Client.PutAsync("/odata/DeepInsertDefaultOrders(1)/Customer", content);
+
+        Assert.Equal(HttpStatusCode.NotImplemented, response.StatusCode);
+        Assert.Null(DeepInsertDefaultProfile.LastReceivedByWriteHandler);
+    }
+
+    /// <summary>
+    /// The annotation is found at ANY depth on the streaming routes too — the raw-UTF-8 scan the
+    /// two of them use must agree with the <see cref="JsonElement"/> walk every other route uses,
+    /// including inside an array. Escaped spellings are the same member name and must not be a
+    /// bypass.
+    /// </summary>
+    [Theory]
+    [InlineData("{\"id\":1,\"customer\":\"Leo\",\"lines\":[{\"sku\":\"X\",\"product@odata.bind\":\"Products(1)\"}]}")]
+    [InlineData("{\"id\":1,\"customer\":\"Leo\",\"category\\u0040odata.bind\":\"Cats(1)\"}")]
+    public async Task Put_ODataBindAnnotation_IsFoundNestedAndWhenEscaped(string body)
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
+        DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
+
+        var response = await fx.Client.PutAsync(
+            "/odata/DeepInsertDefaultOrders(1)", new StringContent(body, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.NotImplemented, response.StatusCode);
+        Assert.Null(DeepInsertDefaultProfile.LastReceivedByWriteHandler);
+    }
+
+    /// <summary>
+    /// BOUNDING ASSERTIONS for the theories above. A body with no annotation still binds and still
+    /// reaches the handler on every one of those routes — so "everything 501s" cannot pass
+    /// vacuously — and, specifically for <c>PUT</c>, a malformed body is still worded by
+    /// <c>JsonSerializer</c> (which appends <c>Path: $</c>) rather than by <c>JsonDocument</c>
+    /// (which does not). That last one is the pin for #456's implementation choice: the two
+    /// streaming routes buffer the body to scan it, and buffering must not swap which component
+    /// reports a malformed body — the difference is observable, and
+    /// <c>OpenTypeDefaultOnIsByteIdenticalTests</c> exists because of it.
+    /// </summary>
+    [Fact]
+    public async Task WritesWithoutTheAnnotation_StillSucceed_AndPutStillWordsAMalformedBodyItself()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
+
+        DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
+        var put = await fx.Client.PutAsync(
+            "/odata/DeepInsertDefaultOrders(1)",
+            new StringContent("{\"id\":1,\"customer\":\"Mallory\"}", Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
+        Assert.Equal("Mallory", DeepInsertDefaultProfile.LastReceivedByWriteHandler!.Customer);
+
+        DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
+        using var patchRequest = new HttpRequestMessage(new HttpMethod("PATCH"), "/odata/DeepInsertDefaultOrders(1)")
+        {
+            Content = new StringContent("{\"customer\":\"Niaj\"}", Encoding.UTF8, "application/json"),
+        };
+        var patch = await fx.Client.SendAsync(patchRequest);
+        Assert.Equal(HttpStatusCode.OK, patch.StatusCode);
+        Assert.Equal("Niaj", DeepInsertDefaultProfile.LastReceivedByWriteHandler!.Customer);
+
+        // PUT's malformed-body message must still come from the deserializer.
+        var malformed = await fx.Client.PutAsync(
+            "/odata/DeepInsertDefaultOrders(1)",
+            new StringContent("{ not json", Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.BadRequest, malformed.StatusCode);
+        string malformedBody = await malformed.Content.ReadAsStringAsync();
+        Assert.Contains("Path: $", malformedBody, StringComparison.Ordinal);
+
+        // ...and the collection POST's must still come from JsonDocument, which words it without a
+        // Path. The two readers differ, and that is the difference buffering could have erased.
+        var malformedPost = await fx.Client.PostAsync(
+            "/odata/DeepInsertDefaultOrders",
+            new StringContent("{ not json", Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.BadRequest, malformedPost.StatusCode);
+        Assert.DoesNotContain("Path: $", await malformedPost.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The buffered scan must cover the WHOLE body, not the first chunk of it. The capacity hint
+    /// <c>BufferRequestBodyAsync</c> takes from <c>Content-Length</c> is clamped to 81,920 bytes —
+    /// deliberately, because <c>Content-Length</c> is a client claim that arrives before any body
+    /// byte does, and pre-sizing from it would hand an unauthenticated caller a remote allocation
+    /// primitive (declare 30 MB, send one byte, repeat). This body is comfortably past that cap, so
+    /// it exercises the growth path, and the annotation sits at the very END of it — after the point
+    /// where a scan that stopped at the hint, or a copy that honoured it as a length, would have
+    /// stopped looking.
+    /// </summary>
+    [Fact]
+    public async Task Put_BodyLargerThanTheCapacityHint_IsScannedAndBoundInFull()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
+
+        // ~200 KB of payload — several doublings past the 81,920-byte hint cap.
+        string filler = new string('x', 200_000);
+
+        DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
+        var withAnnotation = await fx.Client.PutAsync(
+            "/odata/DeepInsertDefaultOrders(1)",
+            new StringContent(
+                $"{{\"id\":1,\"customer\":\"{filler}\",\"category@odata.bind\":\"DeepInsertDefaultCategories(1)\"}}",
+                Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.NotImplemented, withAnnotation.StatusCode);
+        Assert.Null(DeepInsertDefaultProfile.LastReceivedByWriteHandler);
+
+        // BOUNDING ASSERTION: the same oversized body without the annotation still binds, and every
+        // byte of it survives the round trip — so "large bodies 501" cannot pass vacuously and the
+        // buffer is proven to hold the whole payload rather than a truncated prefix.
+        DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
+        var clean = await fx.Client.PutAsync(
+            "/odata/DeepInsertDefaultOrders(1)",
+            new StringContent($"{{\"id\":1,\"customer\":\"{filler}\"}}", Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.OK, clean.StatusCode);
+        Assert.Equal(filler, DeepInsertDefaultProfile.LastReceivedByWriteHandler!.Customer);
+    }
+
     // ── Coexists with a profile that also has PostChild / batch nav handlers ────────
 
     [Fact]
@@ -287,6 +482,13 @@ public class DeepInsertTests
         // whatever the framework echoes back in the HTTP response.
         public static DeepInsertOrder? LastReceivedByHandler;
 
+        /// <summary>
+        /// #456: the same observation for the UPDATE verbs. A separate field from
+        /// <see cref="LastReceivedByHandler"/> so a <c>@odata.bind</c> test can assert "the update
+        /// handler never ran" without a stale POST capture answering for it.
+        /// </summary>
+        public static DeepInsertOrder? LastReceivedByWriteHandler;
+
         public DeepInsertDefaultProfile() : base(x => x.Id)
         {
             EntitySetName = "DeepInsertDefaultOrders";
@@ -302,6 +504,24 @@ public class DeepInsertTests
                 LastReceivedByHandler = order;
                 order.Id = _nextId++;
                 _orders.Add(order);
+                return Task.FromResult<DeepInsertOrder?>(order);
+            };
+
+            // #456: PUT/PATCH (and, riding PATCH, the structural-property writes) exist on this
+            // fixture so the @odata.bind asymmetry can be probed on the verbs that had it. They are
+            // deliberately non-persisting — what a test needs is what the handler RECEIVED.
+            Put = (id, order, _) =>
+            {
+                LastReceivedByWriteHandler = order;
+                order.Id = id;
+                return Task.FromResult(order);
+            };
+
+            Patch = (id, delta, _) =>
+            {
+                var order = new DeepInsertOrder { Id = id };
+                delta.Patch(order);
+                LastReceivedByWriteHandler = order;
                 return Task.FromResult<DeepInsertOrder?>(order);
             };
         }

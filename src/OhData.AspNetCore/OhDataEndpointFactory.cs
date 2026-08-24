@@ -322,6 +322,135 @@ internal static class OhDataEndpointFactory
         }
     }
 
+    private static ReadOnlySpan<byte> ODataBindSuffixUtf8 =>
+        new[]
+        {
+            (byte)'@', (byte)'o', (byte)'d', (byte)'a', (byte)'t', (byte)'a',
+            (byte)'.', (byte)'b', (byte)'i', (byte)'n', (byte)'d',
+        };
+
+    // #456: the same question as the JsonElement overload above, asked of RAW UTF-8 -- for the two
+    // write routes that do NOT otherwise materialise the body. PUT and the navigation-POST create
+    // route stream ctx.Request.Body straight into JsonSerializer.DeserializeAsync unless the
+    // registration has an open complex type, so there is no JsonElement to walk and no
+    // PrepareWriteBody call to piggy-back on. (Every other write route -- PATCH, the
+    // structural-property writes, and each bound/unbound action parameter -- already deserializes
+    // into a JsonElement unconditionally, so those get the fix for free from PrepareWriteBody.)
+    //
+    // A Utf8JsonReader rather than a second JsonDocument.Parse, for two reasons. It allocates only
+    // for an escaped property name, and -- the load-bearing one -- a malformed body must NOT be
+    // reported from here. JsonSerializer.DeserializeAsync words a malformed body differently from
+    // JsonDocument (it appends "Path: $"), and OpenTypeDefaultOnIsByteIdenticalTests exists because
+    // that difference is observable; so the reader's own JsonException is swallowed, the scan simply
+    // stops where the reader does, and the request proceeds to the deserializer, which stays the
+    // sole author of that message. Anything the reader could not reach is by definition inside a
+    // fragment the deserializer is about to reject anyway.
+    //
+    // Semantics match the JsonElement walk exactly: any property name, at any depth, in an object or
+    // inside an array, whose name ENDS WITH "@odata.bind". The unescaped comparison is a raw span
+    // suffix test; a name carrying JSON escapes ('category@odata.bind' is the same member name)
+    // falls back to the unescaped string, because JsonElement's own prop.Name is unescaped and the
+    // two overloads must not disagree about what a body contains.
+    private static bool ContainsODataBindAnnotation(ReadOnlySpan<byte> utf8Json)
+    {
+        var reader = new Utf8JsonReader(utf8Json);
+        try
+        {
+            while (reader.Read())
+            {
+                if (reader.TokenType != JsonTokenType.PropertyName) continue;
+                if (reader.ValueSpan.EndsWith(ODataBindSuffixUtf8)) return true;
+                if (reader.ValueIsEscaped &&
+                    reader.GetString()!.EndsWith("@odata.bind", StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // Deliberately swallowed -- see the note above. The deserializer re-reads the same bytes
+            // and produces the canonical 400.
+        }
+
+        return false;
+    }
+
+    // #456: a rewindable copy of the request body, so the '@odata.bind' scan and the deserializer can
+    // both read it. Only PUT and the navigation-POST create route need this, and only on the path
+    // where they were streaming.
+    //
+    // The deserializer is handed a Stream, through the SAME JsonSerializer.DeserializeAsync overload
+    // it used before, rather than a JsonElement or a ReadOnlySpan<byte>: that is what keeps every
+    // malformed-body, wrong-type and depth-limit message byte-identical to the streaming path. Going
+    // through JsonDocument here instead is exactly the regression #389 L1 measured.
+    //
+    // GetBuffer() (not ToArray()) at the call sites, so the scan reads the copy already made rather
+    // than making a second one; MemoryStream's public constructors leave the buffer publicly visible.
+    //
+    // WHY A MemoryStream AND NOT PipeReader/ReadOnlySequence<byte>. Considered, and it does not win:
+    //   - It would avoid a COPY, not the MATERIALISATION. Reading the request PipeReader to
+    //     completion holds every byte in the pipe's pooled segments, so the resident-bytes exposure
+    //     the clamp above is about is identical. The accumulate-everything shape is
+    //     ReadAsync + AdvanceTo(buffer.Start, buffer.End) in a loop — the documented UNBOUNDED
+    //     buffering pattern, with the writer-pause flow control to reason about on top. It improves
+    //     no bound.
+    //   - Feeding those bytes to the deserializer would cost the invariant that forced the buffer in
+    //     the first place. Utf8JsonReader takes a ReadOnlySequence<byte> happily, but
+    //     JsonSerializer.Deserialize<T>(ref Utf8JsonReader) is a DIFFERENT overload from the
+    //     DeserializeAsync(Stream) these routes used before, and "the deserializer words a malformed
+    //     body exactly as it did" (the 'Path: $' pin) is the thing that must not move. Keeping the
+    //     overload would mean hand-writing a Stream over a ReadOnlySequence — more code, same bytes
+    //     resident, for no gain.
+    // A pass-through Stream that scans as the deserializer pulls WOULD preserve streaming, and is
+    // rejected for a correctness reason rather than a cost one: it makes the answer depend on where
+    // in the body the annotation sits. '{"Id":"notanint","x@odata.bind":1}' would 400 on PUT while
+    // the collection POST — which scans the whole body before binding anything — answers 501 for the
+    // same bytes. Per-verb divergence on @odata.bind is precisely what #456 exists to remove.
+    //
+    // THE CAPACITY HINT IS CLAMPED, AND THAT IS THE WHOLE POINT OF THE LINE. Content-Length is a
+    // CLIENT CLAIM, not a measurement: it arrives in the request head, before a single body byte
+    // has. Pre-sizing the buffer from it hands any unauthenticated caller a remote allocation
+    // primitive — declare 30 MB, send one byte, never finish, repeat across N connections, and the
+    // server has committed N x 30 MB against N bytes of actual traffic. The streaming path this
+    // replaces allocated in proportion to bytes RECEIVED, so honouring the header here would have
+    // been a real regression rather than a wash.
+    //
+    // 81,920 is two facts at once: it is Stream.CopyTo's own default buffer size (so an honest small
+    // body still lands in a single right-sized allocation and the first copied chunk fits exactly),
+    // and it is under the 85,000-byte large-object-heap threshold (so a bogus hint costs a
+    // collectable gen0 array rather than LOH pressure that survives until a gen2 compaction). Beyond
+    // it the stream just doubles, which costs a few reallocations on genuinely large bodies — the
+    // right trade against removing the primitive.
+    //
+    // WHAT ACTUALLY BOUNDS THE COPY, stated plainly because the honest answer is weaker than the
+    // #203 commentary above it reads as. #203's filter does BOTH of its jobs — the Content-Length
+    // fast-reject AND setting Kestrel's per-request MaxRequestBodySize — only when
+    // OhDataBodyLimitMetadata is attached, and that metadata exists only when the profile or
+    // EntitySetDefaults set MaxRequestBodyBytes, which DEFAULTS TO NULL at both levels. So on a
+    // default configuration neither half runs, and the only thing bounding this copy is the HOST's
+    // Kestrel MaxRequestBodySize (~30 MB by default). If the host raised or disabled that — routine
+    // for an app that also accepts uploads — nothing in OhData bounds it. That is not a new
+    // exposure: the collection POST has materialised whole bodies through JsonDocument.ParseAsync
+    // under exactly the same (non-)guarantee since 1.0. It IS shared by two more routes now, and it
+    // is tracked as #474 rather than assumed away. Configure MaxRequestBodyBytes for a real ceiling.
+    //
+    // (Note the collection POST is NOT a precedent for the capacity hint, only for the
+    // materialisation: JsonDocument.ParseAsync grows incrementally from pooled buffers and never
+    // reads Content-Length. Hence the clamp — this must not be the one place that trusts it.)
+    private const int BufferedBodyCapacityHintCap = 81_920;
+
+    private static async Task<MemoryStream> BufferRequestBodyAsync(HttpContext ctx, CancellationToken ct)
+    {
+        int hint = ctx.Request.ContentLength is long declared && declared > 0
+            ? (int)Math.Min(declared, BufferedBodyCapacityHintCap)
+            : 0;
+        var buffer = new MemoryStream(hint);
+        await ctx.Request.Body.CopyToAsync(buffer, ct);
+        buffer.Position = 0;
+        return buffer;
+    }
+
     // The answer every route gives for '@odata.bind', so the four write routes wired in by #398
     // review MEDIUM-1 cannot drift from the collection POST's long-standing one. Deliberately does
     // NOT mention AllowDeepInsert: that flag governs nested CREATE on POST only, and offering it as
@@ -374,31 +503,40 @@ internal static class OhDataEndpointFactory
         OhDataRegistration registration, JsonElement body, Type declaredType,
         JsonSerializerOptions? jsonOptions)
     {
-        if (!registration.OpenTypesActive || jsonOptions is null)
-            return new PreparedWriteBody(null, body, null);
-
-        // #398 review MEDIUM-1, and it MUST come before the scan below. Stage 2 classifies any key
-        // containing '@' as control information and STRIPS it, and 'Thing@odata.bind' contains one --
-        // so without this line every write route except the collection POST (which runs its own check
-        // earlier, unconditionally) went from answering 400 to answering 200/201 with the bind
-        // annotation silently discarded. A client asking to link an existing entity got a success and
-        // nothing happened, which is the exact failure mode the '@' rule was never meant to create.
+        // #456: ABOVE the OpenTypesActive gate, and that placement is the whole fix. This check was
+        // added by #398 review MEDIUM-1 and put BELOW the gate, so on any registration without an
+        // open complex type -- the majority -- PrepareWriteBody returned before reaching it and
+        // 'prop@odata.bind' on PUT, PATCH, the nav-POST create route or a structural-property write
+        // was accepted with 200/201 and the annotation silently discarded. The client asked to bind
+        // a relationship, got a success, and nothing happened.
+        //
+        // It is safe above the gate because it needs nothing the gate protects: it is a pure
+        // JsonElement walk over a body the caller has ALREADY materialised, whereas everything below
+        // the gate needs `jsonOptions` and the open-type contract. The one thing the gate really was
+        // buying -- PUT and nav-POST streaming straight into the deserializer instead of buffering --
+        // is not obtained by skipping the check, because those two routes never call PrepareWriteBody
+        // at all on the non-open path; they now do their own buffered scan (see
+        // ContainsODataBindAnnotation(ReadOnlySpan<byte>) and its two call sites), which keeps
+        // JsonSerializer.DeserializeAsync as the component that words a malformed body.
+        //
+        // #398 stage 2's ordering constraint still holds and is why this cannot move DOWN either:
+        // stage 2 classifies any key containing '@' as control information and STRIPS it, and
+        // 'Thing@odata.bind' contains one, so a bind annotation reaching ScanWriteBody would be
+        // silently dropped rather than reported.
         //
         // 501, not 400, and the same 501 the collection POST gives: deep insert by reference is
-        // UNIMPLEMENTED, not malformed, and it is unimplemented on every verb. The old 400 on these
-        // routes was incidental anyway -- it came from '@' failing the odataIdentifier grammar, not
-        // from anything that knew what @odata.bind meant.
+        // UNIMPLEMENTED, not malformed, and it is unimplemented on every verb. The old 400 some of
+        // these routes gave was incidental anyway -- it came from '@' failing the odataIdentifier
+        // grammar, not from anything that knew what @odata.bind meant.
         //
-        // WHY IT LIVES HERE rather than at each route: this is the one chokepoint every body-binding
-        // write route already passes through (PUT, PATCH, the nav-POST create route, the
-        // property-route writes, and each bound/unbound ACTION parameter), so no route can be wired up
-        // later and forget it. The collection POST keeps its own earlier check because that one is
-        // UNCONDITIONAL, and this one is not: PrepareWriteBody returns above unless OpenTypesActive,
-        // because PUT and nav-POST only buffer the body into a JsonDocument for registrations whose
-        // EDM really has an open complex type -- buffering every PUT body would break the documented
-        // byte-identical no-op that OpenTypeDefaultOnIsByteIdenticalTests pins.
+        // The collection POST keeps its own earlier check: it has always been unconditional, and its
+        // message is richer (it names the entity set and mentions AllowDeepInsert, which is a
+        // meaningful remedy on POST and on no other verb).
         if (ContainsODataBindAnnotation(body))
             return new PreparedWriteBody(ODataBindNotImplementedError(), body, null);
+
+        if (!registration.OpenTypesActive || jsonOptions is null)
+            return new PreparedWriteBody(null, body, null);
 
         OpenTypeJsonOptions.WriteBodyScan scan = OpenTypeJsonOptions.ScanWriteBody(
             body, declaredType, jsonOptions, registration.IgnoredJsonNamesByType);
@@ -1117,6 +1255,16 @@ internal static class OhDataEndpointFactory
     // a true, actionable, startup-time statement about a configuration gap, and it is the only
     // channel that reaches the person who can close it.
     //
+    // #461 WIDENED IT TO THE WRITE PATH, and that is a correction, not an addition. The message said
+    // "will never serve it", which speaks only of reads — and it was incomplete in BOTH directions at
+    // once. Before #461 the write path did not merely fail to serve the navigation, it QUIETLY
+    // ACCEPTED it: the deep-insert strip set was built from the profile-declared navigation names, so
+    // a nested value for an undeclared one was bound and handed to the Post handler with
+    // AllowDeepInsert at its default of false. The strip set now subtracts the same EDM navigation
+    // set #446 established as the authority, so the write path agrees with the read path — and the
+    // sentence naming that is added here, in the commit that made it true, rather than left for a
+    // reader to infer from "serve".
+    //
     // WHAT IS NOT LISTED, deliberately, AND WHY THE LIST KEEPS SHRINKING. This message states only
     // what is still true at the moment it is emitted, and every time the framework closes one of the
     // consequences the sentence naming it comes out in the SAME commit. Already removed:
@@ -1174,11 +1322,14 @@ internal static class OhDataEndpointFactory
                     "OhData: '{EntitySet}' has a navigation '{Navigation}' that the OData convention " +
                     "builder discovered on '{Model}' but the profile never declared with HasOptional/" +
                     "HasRequired/HasMany. $metadata advertises it as a navigation, yet only a DECLARED " +
-                    "navigation is ever loaded or routed, so this entity set will never serve it: " +
-                    "'?$expand={Nav}' is accepted and answers 200 with the navigation OMITTED from " +
-                    "every entity, and there is no 'GET /{EntitySet2}({{key}})/{Nav2}' behind it " +
-                    "either. A client that reads $metadata will keep asking for related data it can " +
-                    "never receive. Declare it with HasOptional/HasRequired/HasMany (adding an expand " +
+                    "navigation is ever loaded, routed or written, so this entity set will never serve " +
+                    "it and will never accept a value for it: '?$expand={Nav}' is accepted and answers " +
+                    "200 with the navigation OMITTED from every entity, there is no " +
+                    "'GET /{EntitySet2}({{key}})/{Nav2}' behind it either, and a nested value for it " +
+                    "in a POST body is discarded before the Post handler runs — exactly as a declared " +
+                    "navigation's is, unless AllowDeepInsert is enabled. A client that reads $metadata " +
+                    "will keep asking to read and write related data it can " +
+                    "never exchange. Declare it with HasOptional/HasRequired/HasMany (adding an expand " +
                     "delegate if loading it needs real logic), or Ignore() it if it should not be " +
                     "exposed at all — Ignore() takes it out of $metadata as well, so $metadata and " +
                     "the served surface agree again. OhData does not choose for you: both are valid " +
@@ -7796,9 +7947,40 @@ internal static class OhDataEndpointFactory
             // #253 completion: NavigationPropertyNames is the EDM (JSON) navigation name set, so resolve
             // each CLR property to its EDM name before testing membership (a renamed nav's CLR name is
             // not in the set — its JSON name is).
+            //
+            // #461: UNION with edmNavigationNames — the write-side twin of #446, and the same
+            // subtraction argument pointed at a set the read side already fixed. NavigationPropertyNames
+            // is the profile-DECLARED set, so a navigation the ODataConventionModelBuilder discovered
+            // but the profile never declared with HasOptional/HasRequired/HasMany was not in the strip
+            // set at all — System.Text.Json bound it during deserialization and it reached the Post
+            // handler intact, WITH AllowDeepInsert at its default of false. A handler doing
+            // `db.Add(model); SaveChanges();` then persists nested rows nobody opted into, which is the
+            // silent-partial-graph hazard the strip exists to prevent. The shape that hits it is the
+            // most ordinary one there is: a profile that declares no navigations at all, over
+            // `public Customer? Customer { get; set; }`.
+            //
+            // The EDM is the authority on what is a navigation (#446), and a navigation is not
+            // deep-insert-exempt because the profile forgot to name it. As with #446 the subtraction is
+            // applied HERE, at the consumer, not in BuildStructuralProperties or
+            // NavigationPropertyNames: the former cannot see a built EDM (it runs from
+            // VisitModelBuilder), and the latter feeds Model B's DB/DL partitioning, whose "a candidate
+            // that neither routes nor declares the nav has no opinion" category empties under
+            // convention sourcing (Issue322ModelBClassificationTests pins it).
+            //
+            // Union, not replacement: NavigationPropertyNames stays in the test because a declared
+            // navigation is the case that already worked and must keep working byte-for-byte, and
+            // because the two sets are separately sourced (declaration versus convention discovery) and
+            // neither is a superset of the other by construction. edmNavigationNames is
+            // OrdinalIgnoreCase and holds EDM names, which is exactly what ResolveEdmName produces.
             PropertyInfo[] deepInsertNavPropsToStrip = typeof(TModel)
                 .GetProperties(BindingFlags.Public | BindingFlags.Instance)
-                .Where(p => source.NavigationPropertyNames.Contains(ODataPropertyNaming.ResolveEdmName(p)) && p.SetMethod is not null)
+                .Where(p => p.SetMethod is not null)
+                .Where(p =>
+                {
+                    string edmName = ODataPropertyNaming.ResolveEdmName(p);
+                    return source.NavigationPropertyNames.Contains(edmName)
+                        || edmNavigationNames.Contains(edmName);
+                })
                 .ToArray();
 
             // If-None-Match on POST is not supported: the framework cannot extract the key from
@@ -7967,7 +8149,22 @@ internal static class OhDataEndpointFactory
                     }
                     else
                     {
-                        model = await JsonSerializer.DeserializeAsync<TModel>(ctx.Request.Body, jsonOptions, ct);
+                        // #456: PUT is one of the two routes that never materialise the body here, so
+                        // the '@odata.bind' check hoisted into PrepareWriteBody above cannot reach it
+                        // -- PrepareWriteBody is not called on this branch at all. The body is copied
+                        // once, scanned, and then handed to the SAME DeserializeAsync(Stream)
+                        // overload as before, which is what keeps every malformed-body message
+                        // identical to the streaming path (#389 L1: JsonDocument words it
+                        // differently, and OpenTypeDefaultOnIsByteIdenticalTests pins the
+                        // difference).
+                        using MemoryStream putBuffered = await BufferRequestBodyAsync(ctx, ct);
+                        if (ContainsODataBindAnnotation(
+                                putBuffered.GetBuffer().AsSpan(0, (int)putBuffered.Length)))
+                        {
+                            return ODataBindNotImplementedError();
+                        }
+
+                        model = await JsonSerializer.DeserializeAsync<TModel>(putBuffered, jsonOptions, ct);
                     }
                     if (model is null)
                         return ODataError(400, "InvalidBody", "Request body is empty or could not be deserialized.");
@@ -8824,7 +9021,34 @@ internal static class OhDataEndpointFactory
 
                         if (!TryGetJsonProperty(body, "@odata.id", out var odataIdEl))
                             return ODataError(400, "BadRequest", "Request body must contain '@odata.id'.");
-                        string relatedId = odataIdEl.GetString() ?? "";
+
+                        // #455: JsonElement.GetString() throws InvalidOperationException for every
+                        // ValueKind except String and Null, and the only catch clauses around this
+                        // block are JsonException and FormatException -- so '{"@odata.id": 123}',
+                        // a body that is perfectly well-formed JSON and merely semantically wrong,
+                        // escaped to the group filter and became a generic 500. Every other
+                        // hand-deserialized write path answers 400 for that (see the POST/PUT/PATCH
+                        // design note in CLAUDE.md); this route was the one exception.
+                        //
+                        // JsonValueKind.Null is REJECTED here too, and that is a deliberate
+                        // behaviour change rather than a side effect of the guard. Null never threw
+                        // -- GetString() returns null and the '?? ""' turned it into an EMPTY
+                        // entity-id, which was then handed to the profile's addRef/setRef delegate
+                        // as a link target and answered 204. An explicit '"@odata.id": null' is not
+                        // a reference to anything: §11.4.6.2 wants the entity-id of the entity to
+                        // link, and "the member is present but names no entity" is the same client
+                        // error as omitting the member, which already answers 400 one line above.
+                        // Answering 204 while passing "" to a handler is precisely the
+                        // silent-success failure mode the rest of the write surface is built to
+                        // avoid.
+                        if (odataIdEl.ValueKind != JsonValueKind.String)
+                        {
+                            return ODataError(400, "BadRequest",
+                                "The '@odata.id' member must be a string containing the entity-id " +
+                                "of the entity to link.");
+                        }
+
+                        string relatedId = odataIdEl.GetString()!;
                         await requestNav.AddRef!(parsedKey!, (object)relatedId, ct);
                         return Results.NoContent();
                     }
@@ -8937,7 +9161,16 @@ internal static class OhDataEndpointFactory
                             }
                             else
                             {
-                                child = await JsonSerializer.DeserializeAsync(ctx.Request.Body, postNavItemType, jsonOptions, ct);
+                                // #456: the nav-POST create route is the second of the two streaming
+                                // write routes -- same reasoning and same shape as PUT above.
+                                using MemoryStream navBuffered = await BufferRequestBodyAsync(ctx, ct);
+                                if (ContainsODataBindAnnotation(
+                                        navBuffered.GetBuffer().AsSpan(0, (int)navBuffered.Length)))
+                                {
+                                    return ODataBindNotImplementedError();
+                                }
+
+                                child = await JsonSerializer.DeserializeAsync(navBuffered, postNavItemType, jsonOptions, ct);
                             }
                         }
                         catch (JsonException ex)
