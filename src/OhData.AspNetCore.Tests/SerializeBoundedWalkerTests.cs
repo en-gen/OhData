@@ -359,7 +359,8 @@ public sealed class SelfReferentialGeneralTests : IAsyncLifetime
         {
             object? result = serializeBounded.Invoke(null, new object?[]
             {
-                n, edmType, clause, null, null, OhDataEndpointFactory.MaxNestedExpandDepth, null, false
+                n, edmType, registration.EdmModel, clause, null, null,
+                OhDataEndpointFactory.MaxNestedExpandDepth, null, false
             });
             Assert.NotNull(result);
         }

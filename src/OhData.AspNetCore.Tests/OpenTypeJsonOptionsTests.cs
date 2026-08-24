@@ -92,8 +92,7 @@ public class OpenTypeJsonOptionsTests
     // fixture in THIS file is a bare EDM with no profile, so nothing is ever ignored here — the
     // withheld-name mechanism is exercised by OpenTypeIgnoreContainmentTests instead, which is where
     // an Ignore() set can actually exist.
-    private static readonly IReadOnlyDictionary<Type, IReadOnlySet<string>> NoIgnoredNames =
-        IgnoredPropertyJsonOptions.EmptyNameMap;
+    private static readonly InheritedNameSets NoIgnoredNames = InheritedNameSets.Empty;
 
     /// <summary>
     /// The options shape these unit fixtures default to, and it is <b>not</b> a bare
@@ -1269,13 +1268,15 @@ public class OpenTypeJsonOptionsTests
     /// test that opts into case-sensitivity gets a case-sensitive withheld set for free and cannot
     /// accidentally assert against a mismatched pair.
     /// </remarks>
-    private static IReadOnlyDictionary<Type, IReadOnlySet<string>> Withheld<T>(
+    private static InheritedNameSets Withheld<T>(
         JsonSerializerOptions binderOptions, params string[] jsonNames) =>
-        new Dictionary<Type, IReadOnlySet<string>>
-        {
-            [typeof(T)] = new HashSet<string>(
-                jsonNames, IgnoredPropertyJsonOptions.WithheldNameComparer(binderOptions)),
-        };
+        new(
+            new Dictionary<Type, IReadOnlySet<string>>
+            {
+                [typeof(T)] = new HashSet<string>(
+                    jsonNames, IgnoredPropertyJsonOptions.WithheldNameComparer(binderOptions)),
+            },
+            IgnoredPropertyJsonOptions.WithheldNameComparer(binderOptions));
 
     /// <summary>
     /// Reproduces what <c>IgnorePropertyJsonOptions.Build</c> does — REMOVE the member from the
@@ -1299,27 +1300,25 @@ public class OpenTypeJsonOptionsTests
 
     private static JsonSerializerOptions OptionsWithRegionRemoved(
         JsonSerializerOptions baseOptions,
-        IReadOnlyDictionary<Type, IReadOnlySet<string>> withheld) =>
+        InheritedNameSets withheld) =>
         OpenTypeJsonOptions.Build(baseOptions, Containers<OtjEntity>(), withheld);
 
     /// <summary>
     /// The paired options-and-map the withheld tests run against, built in the one order production
     /// builds them in: the binder's options first, the withheld set's comparer read off them second.
     /// </summary>
-    private static (JsonSerializerOptions Options, IReadOnlyDictionary<Type, IReadOnlySet<string>> Withheld)
+    private static (JsonSerializerOptions Options, InheritedNameSets Withheld)
         RegionWithheld(bool caseInsensitiveBinding = true)
     {
         JsonSerializerOptions baseOptions = RegionRemovedBase(caseInsensitiveBinding);
-        IReadOnlyDictionary<Type, IReadOnlySet<string>> withheld =
-            Withheld<OtjBag>(baseOptions, "Region");
+        InheritedNameSets withheld = Withheld<OtjBag>(baseOptions, "Region");
         return (OptionsWithRegionRemoved(baseOptions, withheld), withheld);
     }
 
     [Fact]
     public void ScanWriteBody_AWithheldNameIsDroppedNotBagged()
     {
-        (JsonSerializerOptions options, IReadOnlyDictionary<Type, IReadOnlySet<string>> withheld) =
-            RegionWithheld();
+        (JsonSerializerOptions options, InheritedNameSets withheld) = RegionWithheld();
         using JsonDocument doc =
             JsonDocument.Parse("""{"Id":1,"Bag":{"Region":"leak","tier":3}}""");
 
@@ -1426,8 +1425,7 @@ public class OpenTypeJsonOptionsTests
     [InlineData("rEgIoN")]
     public void ScanWriteBody_AWithheldNameIsDroppedInEveryCasingTheBinderWouldMatch(string spelling)
     {
-        (JsonSerializerOptions options, IReadOnlyDictionary<Type, IReadOnlySet<string>> withheld) =
-            RegionWithheld();
+        (JsonSerializerOptions options, InheritedNameSets withheld) = RegionWithheld();
         using JsonDocument doc = JsonDocument.Parse(
             "{\"Id\":1,\"Bag\":{\"" + spelling + "\":\"leak\",\"tier\":3}}");
 

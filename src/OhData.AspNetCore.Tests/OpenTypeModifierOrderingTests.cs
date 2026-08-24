@@ -88,7 +88,7 @@ public class OpenTypeModifierOrderingTests
     {
         var baseOptions = new JsonSerializerOptions { TypeInfoResolver = RemovingRegion() };
         JsonSerializerOptions options = OpenTypeJsonOptions.Build(
-            baseOptions, Containers(), IgnoredPropertyJsonOptions.EmptyNameMap);
+            baseOptions, Containers(), InheritedNameSets.Empty);
 
         // No throw: "Region" is gone from Properties, so the snapshot never saw it.
         string json = JsonSerializer.Serialize(
@@ -106,7 +106,7 @@ public class OpenTypeModifierOrderingTests
     public void RemovalAfterTheOpenTypeModifier_KeepsTheNameInTheCollisionSet()
     {
         JsonSerializerOptions options = OpenTypeJsonOptions.Build(
-            new JsonSerializerOptions(), Containers(), IgnoredPropertyJsonOptions.EmptyNameMap);
+            new JsonSerializerOptions(), Containers(), InheritedNameSets.Empty);
         var flipped = new JsonSerializerOptions(options)
         {
             TypeInfoResolver = options.TypeInfoResolver!.WithAddedModifier(t =>

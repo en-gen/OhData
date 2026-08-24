@@ -193,7 +193,7 @@ internal static class OpenTypeJsonOptions
     internal static JsonSerializerOptions Build(
         JsonSerializerOptions baseOptions,
         OpenComplexTypeContainers containers,
-        IReadOnlyDictionary<Type, IReadOnlySet<string>> ignoredJsonNamesByType)
+        InheritedNameSets ignoredJsonNamesByType)
     {
         if (containers.IsEmpty) return baseOptions;
 
@@ -235,7 +235,10 @@ internal static class OpenTypeJsonOptions
                 }
                 // Idempotent: a member already carrying [JsonExtensionData] is simply reaffirmed.
                 property.IsExtensionData = true;
-                ignoredJsonNamesByType.TryGetValue(typeInfo.Type, out IReadOnlySet<string>? ignoredNames);
+                // #462: the RUNTIME type's contract is what is resolved here, so this was an
+                // exact-type lookup that missed for every derived instance. Resolve() walks the CLR
+                // base chain — see InheritedNameSets.
+                IReadOnlySet<string>? ignoredNames = ignoredJsonNamesByType.Resolve(typeInfo.Type);
                 ThrowOnKeysThatCannotBeEmitted(typeInfo, property, ignoredNames);
                 break;
             }
@@ -762,12 +765,12 @@ internal static class OpenTypeJsonOptions
         Type type,
         [NotNullWhen(true)] out PropertyInfo? container)
     {
-        for (Type? t = type; t is not null && t != typeof(object); t = t.BaseType)
-        {
-            if (containers.TryGetValue(t, out container)) return true;
-        }
-        container = null;
-        return false;
+        // #462: the walk itself now lives in InheritedTypeConfig, which is where the other four
+        // type-keyed lookups were routed after this one's reasoning turned out to apply to all of
+        // them. Nearest-wins (not union) is the right policy HERE and only here — see the two
+        // methods' remarks: a `new`-shadowed container must flatten the derived member, whereas a
+        // withheld-name set must accumulate up the chain.
+        return InheritedTypeConfig.TryResolveNearest(containers, type, out container);
     }
 
     // ── Write-side validation ───────────────────────────────────────────────────────────────────
@@ -838,7 +841,7 @@ internal static class OpenTypeJsonOptions
         JsonElement element,
         Type declaredType,
         JsonSerializerOptions options,
-        IReadOnlyDictionary<Type, IReadOnlySet<string>> ignoredJsonNamesByType)
+        InheritedNameSets ignoredJsonNamesByType)
     {
         bool carriesUnbindableKeys = false;
         string? invalid = FindInvalidDynamicKey(
@@ -854,7 +857,7 @@ internal static class OpenTypeJsonOptions
         JsonElement element,
         Type declaredType,
         JsonSerializerOptions options,
-        IReadOnlyDictionary<Type, IReadOnlySet<string>> ignoredJsonNamesByType,
+        InheritedNameSets ignoredJsonNamesByType,
         ref bool carriesUnbindableKeys)
     {
         if (element.ValueKind == JsonValueKind.Array)
@@ -935,7 +938,10 @@ internal static class OpenTypeJsonOptions
         // the same reason: this branch is reached precisely BECAUSE the key missed `declared`, so a
         // withheld set that disagreed with it about casing would leave every case-differing spelling
         // of a withheld name classified as an ordinary dynamic key. That was #398 review HIGH-1.
-        ignoredJsonNamesByType.TryGetValue(typeInfo.Type, out IReadOnlySet<string>? ignoredJsonNames);
+        // #462: Resolve() walks typeInfo.Type's CLR base chain rather than matching it exactly, so a
+        // declared type that INHERITS a withheld member is contained too. Same walk, same sets, as
+        // the strip below.
+        IReadOnlySet<string>? ignoredJsonNames = ignoredJsonNamesByType.Resolve(typeInfo.Type);
 
         // Unlike the dictionary walk above, nothing here filters the sequence: every member of an
         // open type is visited, and which of the branches it takes — declared, so recurse with the
@@ -1122,7 +1128,7 @@ internal static class OpenTypeJsonOptions
         JsonElement element,
         Type declaredType,
         JsonSerializerOptions options,
-        IReadOnlyDictionary<Type, IReadOnlySet<string>> ignoredJsonNamesByType)
+        InheritedNameSets ignoredJsonNamesByType)
     {
         var buffer = new ArrayBufferWriter<byte>();
         using (var writer = new Utf8JsonWriter(buffer))
@@ -1137,7 +1143,7 @@ internal static class OpenTypeJsonOptions
         JsonElement element,
         Type declaredType,
         JsonSerializerOptions options,
-        IReadOnlyDictionary<Type, IReadOnlySet<string>> ignoredJsonNamesByType)
+        InheritedNameSets ignoredJsonNamesByType)
     {
         if (element.ValueKind == JsonValueKind.Array)
         {
@@ -1194,7 +1200,7 @@ internal static class OpenTypeJsonOptions
         // Same set, same comparer as the walk — see the corresponding lookup in FindInvalidDynamicKey.
         // The two must agree about which spellings are withheld or the scan would report a body as
         // needing a strip and the strip would then leave the key in place.
-        ignoredJsonNamesByType.TryGetValue(typeInfo.Type, out IReadOnlySet<string>? ignoredJsonNames);
+        IReadOnlySet<string>? ignoredJsonNames = ignoredJsonNamesByType.Resolve(typeInfo.Type);
 
         writer.WriteStartObject();
         foreach (JsonProperty member in element.EnumerateObject())

@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Frozen;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Text.Json;
@@ -104,11 +103,11 @@ internal static class IgnoredPropertyJsonOptions
     /// binder matches body keys case-insensitively in production.
     /// </para>
     /// </remarks>
-    internal static IReadOnlyDictionary<Type, IReadOnlySet<string>> BuildIgnoredJsonNameMap(
+    internal static InheritedNameSets BuildIgnoredJsonNameMap(
         IReadOnlyDictionary<Type, IReadOnlySet<string>> ignoredByType,
         JsonSerializerOptions preIgnoreOptions)
     {
-        if (ignoredByType.Count == 0) return EmptyNameMap;
+        if (ignoredByType.Count == 0) return InheritedNameSets.Empty;
 
         var probe = new JsonSerializerOptions(preIgnoreOptions);
         IJsonTypeInfoResolver resolver = probe.TypeInfoResolver ?? new DefaultJsonTypeInfoResolver();
@@ -165,7 +164,10 @@ internal static class IgnoredPropertyJsonOptions
             }
             if (jsonNames.Count > 0) result[entry.Key] = jsonNames;
         }
-        return result.Count == 0 ? EmptyNameMap : result;
+        // #462: handed out as an InheritedNameSets, never as a raw dictionary. That is what stops a
+        // future consumer from writing the exact-type lookup this map had at three sites — see
+        // InheritedNameSets' remarks. The union comparer is the BINDER's, matching every set inside.
+        return result.Count == 0 ? InheritedNameSets.Empty : new InheritedNameSets(result, comparer);
     }
 
     private static InvalidOperationException ContractResolutionFailed(
@@ -211,17 +213,6 @@ internal static class IgnoredPropertyJsonOptions
         options.PropertyNameCaseInsensitive ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
     /// <summary>
-    /// The shared "nothing is ignored" map. Handed to every consumer that takes an ignored-name map
-    /// so none of them needs a nullable parameter or a null check on a hot path.
-    /// </summary>
-    // Frozen rather than an empty Dictionary behind the interface: this instance is shared by every
-    // registration that ignores nothing, and IReadOnlyDictionary is not a guarantee — a caller can
-    // cast it back and mutate it. FrozenDictionary is available on net8.0, which this assembly also
-    // targets.
-    internal static readonly IReadOnlyDictionary<Type, IReadOnlySet<string>> EmptyNameMap =
-        FrozenDictionary<Type, IReadOnlySet<string>>.Empty;
-
-    /// <summary>
     /// Returns <paramref name="baseOptions"/> unchanged (reference-equal) when
     /// <paramref name="ignoredByType"/> is empty — zero delta when the feature is unused.
     /// Otherwise returns one derived options instance whose resolver modifier removes the mapped
@@ -231,16 +222,24 @@ internal static class IgnoredPropertyJsonOptions
     /// </summary>
     internal static JsonSerializerOptions Build(
         JsonSerializerOptions baseOptions,
-        IReadOnlyDictionary<Type, IReadOnlySet<string>> ignoredByType)
+        InheritedNameSets ignoredByType)
     {
-        if (ignoredByType.Count == 0) return baseOptions;
+        if (ignoredByType.IsEmpty) return baseOptions;
 
         var derived = new JsonSerializerOptions(baseOptions);
         IJsonTypeInfoResolver resolver = derived.TypeInfoResolver ?? new DefaultJsonTypeInfoResolver();
         derived.TypeInfoResolver = resolver.WithAddedModifier(typeInfo =>
         {
             if (typeInfo.Kind != JsonTypeInfoKind.Object) return;
-            if (!ignoredByType.TryGetValue(typeInfo.Type, out IReadOnlySet<string>? names)) return;
+            // #462 (DISCLOSURE). This was `ignoredByType.TryGetValue(typeInfo.Type, ...)` — an EXACT
+            // type match with an early return on a miss. `typeInfo.Type` is the RUNTIME type (the
+            // batched collection path dispatches on `object`; the single-entity path calls
+            // SerializeToNode(value, value.GetType(), ...)), so a handler returning a DERIVED
+            // instance of the model type — an ordinary EF Core TPH shape — missed the map entirely
+            // and the inherited withheld member was SERVED, on a plain GET, on both the collection
+            // and GetById routes. Resolve() walks the CLR base chain; see InheritedNameSets.
+            IReadOnlySet<string>? names = ignoredByType.Resolve(typeInfo.Type);
+            if (names is null) return;
             for (int i = typeInfo.Properties.Count - 1; i >= 0; i--)
             {
                 if (typeInfo.Properties[i].AttributeProvider is PropertyInfo prop && names.Contains(prop.Name))

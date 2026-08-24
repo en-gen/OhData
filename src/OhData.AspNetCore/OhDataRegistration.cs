@@ -104,8 +104,13 @@ public sealed class OhDataRegistration
     /// (#398) does not have to remember to turn this on.
     /// </para>
     /// </remarks>
-    internal IReadOnlyDictionary<Type, IReadOnlySet<string>> IgnoredJsonNamesByType { get; set; } =
-        IgnoredPropertyJsonOptions.EmptyNameMap;
+    /// <para>
+    /// <b>Typed as <see cref="InheritedNameSets"/>, not as a dictionary (#462).</b> The three
+    /// consumers in <c>OpenTypeJsonOptions</c> all looked this up by EXACT CLR type, which misses
+    /// every derived runtime instance. Handing them a type with no exact-type accessor is what makes
+    /// a fourth such site impossible to write rather than merely unlikely.
+    /// </para>
+    internal InheritedNameSets IgnoredJsonNamesByType { get; set; } = InheritedNameSets.Empty;
 
     /// <summary>The OData entity set names exposed by this registration.</summary>
     public IEnumerable<string> EntitySetNames => Profiles.Select(p => p.EntitySetName);
