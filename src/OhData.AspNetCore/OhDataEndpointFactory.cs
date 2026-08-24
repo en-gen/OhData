@@ -2003,16 +2003,34 @@ internal static class OhDataEndpointFactory
         // fix — the same walker/keep-rule the explicit spelling already rides.
         //
         // MEMBERSHIP IS `ServeRaw AND some candidate has an opinion`, resolved through the SAME
-        // ResolveNavTreatment every other site uses. Both halves are load-bearing:
-        //   - RunDelegate/Blank are excluded because the raw graph is NOT their answer; a
-        //     delegate-backed $levels takes ExpandLevelAsync's own path, which now rejects a
-        //     multi-level one outright rather than truncating it (see LevelsOnDelegateRejection).
-        //   - AnyCandidateHasOpinion is what keeps this union INERT for #440: the one other reader
-        //     of this set is ExpandLevelAsync's ServeRaw branch, whose omission arm fires only when
-        //     NO candidate has an opinion. Adding only opinionated names therefore cannot change
-        //     which navigations #440 omits, so one set can safely feed all three stages.
-        // Depth >= 2 uses the exact-EDM-type union and the walk descends only through ServeRaw
-        // parents — the raw substrate is exactly what a ServeRaw parent leaves behind (#293 Model B).
+        // ResolveNavTreatment every other site uses, PER LEVEL: RunDelegate/Blank are excluded
+        // because the raw graph is NOT their answer (a delegate-backed $levels takes
+        // ExpandLevelAsync's own path, which rejects a multi-level one outright rather than
+        // truncating it — see LevelsOnDelegateRejection), and a navigation no candidate has an
+        // opinion on is excluded because nothing ever loaded it. Depth >= 2 uses the exact-EDM-type
+        // union and the walk descends only through ServeRaw parents — the raw substrate is exactly
+        // what a ServeRaw parent leaves behind (#293 Model B).
+        //
+        // THE UNION FEEDS THE TWO SERIALIZATION STAGES ONLY, NEVER ExpandLevelAsync — and that
+        // restriction is load-bearing, not tidiness. An earlier revision of this branch passed the
+        // union to all three stages, reasoning that "AnyCandidateHasOpinion keeps it inert for #440,
+        // because #440's omission arm fires only when NO candidate has an opinion". That reasoning
+        // is correct PER NAME PER LEVEL and false for a FLAT set: membership is decided at the level
+        // the name was found, while the omission arm tests the same set against a name at a
+        // DIFFERENT level. A navigation called `Children` that is ServeRaw-with-opinion at depth 2
+        // (so it enters the set) and UNDECLARED at the root therefore bypassed the omission arm
+        // there, and `?$expand=Children,Other($expand=Children($levels=2))` emitted `"Children": []`
+        // on the root entity — the exact "expanded, and empty" statement about a relationship the
+        // server never evaluated that #440 exists to prevent, under a 200, on a DEFAULT
+        // configuration (this union is built whenever the clause carries a $levels anywhere,
+        // independently of MaxExpandTop). MEASURED on that revision; base e3a7bd3 omits the member.
+        //
+        // Stage 3 therefore keeps the PUSHED set, which is the set #440's exclusion was written
+        // against: BuildLevelsNavBinding does not consult NavigationPropertyNames, so an undeclared
+        // self-referential navigation genuinely can be pushed and loaded, and only that case needs
+        // the bypass. The raw set never needs it — a raw name enters only where some candidate has
+        // an opinion at its OWN level, and a navigation with an opinion never reaches the
+        // no-opinion arm at all. Issue466NavOmissionRegressionTests is the tripwire.
         HashSet<string>? levelsNavNames = pushedLevelsNavNames;
         if (rootClauseForSerialize is not null && ClauseHasLevels(rootClauseForSerialize) &&
             CollectRawServedLevelsNavNames(
@@ -2076,10 +2094,15 @@ internal static class OhDataEndpointFactory
             // navigation" — the same per-profile question WarnUndeclaredConventionNavigations asks,
             // and deliberately not a sibling-union question (a sibling entity set declaring the same
             // CLR member does not make THIS entity set able to serve it).
+            //
+            // #466: `pushedLevelsNavNames`, NOT the `levelsNavNames` union built above. The union is
+            // flat and its membership is decided per level, so feeding it to a per-level omission
+            // test lets a deep name suppress the omission of a same-named root navigation. See the
+            // union site for the measurement.
             await ExpandLevelAsync(
                 rootItems, rootObjects, rootClause, new[] { requestSource }, rootEdmType,
                 registration, requestServices, serializerOptions, depth: 1, ct,
-                source.MaxExpansionDepth, levelsNavNames);
+                source.MaxExpansionDepth, pushedLevelsNavNames);
         }
 
         // Stage 3.5: Omit navigation properties that were not $expand'd (issue #176).
@@ -2110,7 +2133,7 @@ internal static class OhDataEndpointFactory
         {
             EnforceRawExpandCeiling(
                 json.OfType<JsonObject>().ToList(), ceilingClause, new[] { requestSource },
-                source.ModelType, engagedExpandNavs, registration, requestServices, serializerOptions,
+                source.ModelType, engagedExpandNavs, serializerOptions,
                 expandCeiling, source.MaxExpansionDepth, source.EntitySetName, singleEntityRead,
                 pathPrefix: string.Empty, pathSuffix: string.Empty, depth: 1);
         }
@@ -5546,23 +5569,39 @@ internal static class OhDataEndpointFactory
     //   so they get one mechanism, resolved PER LEVEL, called from ApplyCollectionPipelineAsync where
     //   all five read routes already converge.
     //
-    // MODEL B GOVERNS WHAT IS BOUNDED, through the shared ResolveNavTreatment (#293, FROZEN):
-    //   - ServeRaw is bounded. A ServeRaw nav with NO opinion from any candidate is bounded too —
-    //     nothing can delegate it (no candidate routes it), and at depth >= 2 it really is served.
-    //   - RunDelegate is NOT bounded: those rows are the developer's own answer and #313 O6 settled
-    //     that the framework does not truncate them. A 400 would be the same weakening by another
-    //     route, so this pass does not fire for them either.
-    //   - Blank is served empty; there is nothing to bound.
-    //   The candidate set is the URL-named profile alone at depth 1 and the exact-EDM-type union
-    //   below it — the same split ApplyCollectionPipelineAsync/ExpandLevelAsync use, so this pass
-    //   cannot disagree with the descent it measures. Zero candidates (no profile exposes the child
-    //   type at all) resolves to ServeRaw, which is correct: nothing there can delegate, and the rows
-    //   are still in the payload.
+    // MODEL B GOVERNS WHICH ROOT BRANCHES ARE RAW — AT DEPTH 1, AND ONLY THERE. Through the shared
+    // ResolveNavTreatment (#293, FROZEN), over the URL-named profile alone, which is exactly what
+    // ApplyCollectionPipelineAsync passes ExpandLevelAsync as the root candidate set:
+    //   - ServeRaw is bounded, and descended into. A ServeRaw nav with NO opinion from any candidate
+    //     is bounded too — nothing can delegate it (no candidate routes it).
+    //   - RunDelegate is NOT bounded and NOT descended into: ExpandLevelAsync really did run the
+    //     delegate, so those rows are the developer's own answer and #313 O6 settled that the
+    //     framework does not truncate them. A 400 would be the same weakening by another route.
+    //   - Blank is NOT bounded — but it is also UNREACHABLE here, and that is structural rather than
+    //     incidental: the root candidate set is the single requesting profile, and over ONE candidate
+    //     ResolveNavTreatment can only answer ServeRaw or RunDelegate (a candidate either routes a
+    //     navigation or declares it, never both, so DB and DL can never both be non-empty and DB can
+    //     never hold two). The depth-1 gate is therefore "skip RunDelegate" in practice; it is
+    //     written as `!= ServeRaw` so that it stays correct if the root set ever widens, not because
+    //     a Blank root branch is a case the tests can reach.
     //
-    // THE DESCENT STOPS AT A NON-ServeRaw PARENT, and that is the collection route's own rule, not a
-    // new one: TryBuildEngagedExpand pushes a branch only when it is delegate-less end-to-end, so the
-    // pushed ceiling likewise never reaches a ServeRaw grandchild hanging off a delegate-backed
-    // parent. Keeping the two the same is what stops this pass from bounding a delegate's subtree.
+    // BELOW DEPTH 1 THERE IS NO CLASSIFICATION TEST AT ALL, and that is the correction #464-one-
+    // level-down needed. Everything this walk reaches below depth 1 sits under a ServeRaw parent by
+    // construction, and ExpandLevelAsync's ServeRaw branch DOES NOT RECURSE — so no delegate ran
+    // down there, nothing was blanked, and every value present is the root handler's own raw graph
+    // regardless of how the navigation naming it is classified. An earlier revision of this pass
+    // applied the depth-1 test at every level and cited #313 O6 for the exemption; MEASURED, cap = 2,
+    // GetAll, Author -Books(delegate-less)-> Book -Chapters(DELEGATE)->,
+    // `?$expand=Books($expand=Chapters)` served five chapters with the Chapters delegate invoked ZERO
+    // times. The exemption was citing a delegate that never ran, over rows the ceiling exists to
+    // bound. So below depth 1: check and descend, classification-blind.
+    //
+    // THE DESCENT STILL STOPS AT A NON-ServeRaw PARENT AT DEPTH 1, and that is the collection route's
+    // own rule, not a new one: TryBuildEngagedExpand pushes a branch only when it is delegate-less
+    // end-to-end, so the pushed ceiling likewise never reaches into a delegate-backed parent's
+    // subtree. Keeping the two the same is what stops this pass from bounding a delegate's answer —
+    // and it is a strictly narrower exemption than "any navigation a profile declares with a
+    // delegate", which is what made the earlier revision wrong.
     //
     // AN ENGAGED NAVIGATION IS SKIPPED WHOLESALE. ShapePushedExpandsInJson/ShapeLevelsInJson enforce
     // the ceiling for those (and, for the one shape #313 allows, trim-and-link instead of 400) AFTER
@@ -5602,11 +5641,9 @@ internal static class OhDataEndpointFactory
     private static void EnforceRawExpandCeiling(
         IReadOnlyList<JsonObject> levelObjects,
         SelectExpandClause? clause,
-        IReadOnlyList<IEntitySetEndpointSource> levelSources,
+        IReadOnlyList<IEntitySetEndpointSource> rootSources,
         Type? levelClrType,
         IReadOnlyList<EngagedExpand>? engaged,
-        OhDataRegistration registration,
-        IServiceProvider requestServices,
         JsonSerializerOptions serializerOptions,
         int cap,
         int maxExpansionDepth,
@@ -5627,9 +5664,28 @@ internal static class OhDataEndpointFactory
             // under an engaged one is engaged too, so that pass covers all of it.
             if (IsEngagedNav(engaged, edmName)) continue;
 
-            // Not ServeRaw: not the framework's collection to bound, and not the raw substrate below
-            // it either. The same condition stops the check and the descent.
-            if (ResolveNavTreatment(edmName, levelSources).Treatment != NavTreatment.ServeRaw) continue;
+            // THE MODEL B GATE IS A DEPTH-1 GATE, AND ONLY A DEPTH-1 GATE. At depth 1 a navigation's
+            // treatment decides whether anything other than the root handler produced its rows: a
+            // RunDelegate nav's rows came from the developer's own delegate (#313 O6 — not the
+            // framework's to bound), and a Blank one was overwritten with []/null by ExpandLevelAsync
+            // (nothing to bound). Both are skipped, and skipping them also stops the descent, so this
+            // walk never enters a delegate's subtree.
+            //
+            // BELOW depth 1 the same test would be wrong, and applying it there was the #464 defect
+            // reproduced one level down. Everything reached here is under a ServeRaw parent by
+            // construction, and ExpandLevelAsync's ServeRaw branch DOES NOT RECURSE — so at depth >= 2
+            // no delegate ran, nothing was blanked, and every value in the payload is the root
+            // handler's own raw graph whatever the EDM/profile classification of the navigation that
+            // names it. MEASURED, cap = 2, GetAll, Author -Books(delegate-less)-> Book
+            // -Chapters(DELEGATE)-> : `?$expand=Books($expand=Chapters)` served five chapters with the
+            // Chapters delegate invoked ZERO times. Classifying those rows as "the delegate's answer"
+            // and exempting them cited a delegate that never ran. The same holds for a Blank-
+            // classified navigation down here: nothing blanked it either, so its rows are served raw.
+            // So: check and descend regardless of classification.
+            if (depth == 1 && ResolveNavTreatment(edmName, rootSources).Treatment != NavTreatment.ServeRaw)
+            {
+                continue;
+            }
 
             PropertyInfo? navClr = levelClrType is null
                 ? null
@@ -5703,15 +5759,16 @@ internal static class OhDataEndpointFactory
 
             if (!descend || children is null) continue;
 
-            IEdmEntityType? childEdmType =
-                (item.PathToNavigationProperty.FirstSegment as NavigationPropertySegment)?
-                .NavigationProperty?.ToEntityType();
             EnforceRawExpandCeiling(
                 children, item.SelectAndExpand,
-                ResolveRequestSourcesForEdmType(childEdmType, registration, requestServices),
+                // Never read again: the Model B gate above is depth-1-only, so no deeper level
+                // resolves a candidate set at all. That is why ResolveRequestSourcesForEdmType is
+                // NOT called here — a per-level candidate resolution whose answer is discarded would
+                // be per-request cost buying a decision this walk deliberately does not make.
+                rootSources,
                 NavElementClrType(navClr),
                 engaged: null, // unreachable otherwise: this level was not engaged, so no child of it is
-                registration, requestServices, serializerOptions, cap, maxExpansionDepth,
+                serializerOptions, cap, maxExpansionDepth,
                 entitySetName, singleEntityRead,
                 pathPrefix + edmName + "($expand=", ")" + pathSuffix, depth + 1);
         }

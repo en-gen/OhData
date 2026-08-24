@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using OhData;
 using Xunit;
 
@@ -60,8 +61,11 @@ public sealed class BeAuthorGetAllProfile : EntitySetProfile<int, BeAuthor>
         EntitySetName = "BeAuthorsAll";
         ExpandEnabled = true;
         SelectEnabled = true;
+        // PR #477 review, F1: `.ThenInclude(b => b.Chapters)` puts a SECOND level into the graph the
+        // handler returns. Chapters is not $expand'd unless a request asks for it, so every other
+        // assertion in this file is unaffected (SerializeBounded never walks an un-expanded nav).
         GetAll = ct => Task.FromResult<IEnumerable<BeAuthor>>(
-            db.Authors.Include(a => a.Books).ToList());
+            db.Authors.Include(a => a.Books).ThenInclude(b => b.Chapters).ToList());
         HasMany(x => x.Books);
     }
 }
@@ -252,6 +256,118 @@ public sealed class RawExpandCeilingReachTests
         conn.Dispose();
     }
 
+    // ── PR #477 review, F1: classification does NOT exempt rows below a ServeRaw parent ───────────
+    //
+    // #313 O6 exempts a delegate-backed navigation because its rows are the developer's own answer.
+    // That justification is a statement about a delegate having RUN, and below a ServeRaw parent it
+    // has not: ExpandLevelAsync's ServeRaw branch does not recurse, so at depth >= 2 nothing invoked
+    // a delegate and nothing was blanked — every value present is the ROOT handler's raw graph,
+    // whatever the profile over the child type declares. The first revision of this branch applied
+    // the depth-1 Model B test at every level and cited O6 for the exemption; measured, cap = 2,
+    // GetAll, `?$expand=Books($expand=Chapters)` served five chapters with the Chapters delegate
+    // invoked ZERO times. The exemption was citing a delegate that never ran.
+    //
+    // Cap 5, not 2, deliberately: author 1's five books must sit INSIDE the ceiling so the depth-1
+    // check passes and the depth-2 breach is what the response turns on. Book 1 carries six chapters
+    // (the harness's two plus four seeded here).
+
+    private static async Task<(TestFixture Fixture, SqliteConnection Connection, BeChapterDelegateCounter Counter)>
+        BuildDepthTwoAsync(bool blankInsteadOfDelegate)
+    {
+        var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        var counter = new BeChapterDelegateCounter();
+        TestFixture fx = await BareExpandSqliteHarness.BuildAsync(
+            connection, sink: null,
+            defaults: d => { d.MaxExpandTop = 5; d.ExpandPagingEnabled = true; },
+            configureExtraServices: services => services.AddSingleton(counter),
+            seedExtra: db => db.Chapters.AddRange(
+                new BeChapter { Id = 20, BookId = 1, Heading = "C3" },
+                new BeChapter { Id = 21, BookId = 1, Heading = "C4" },
+                new BeChapter { Id = 22, BookId = 1, Heading = "C5" },
+                new BeChapter { Id = 23, BookId = 1, Heading = "C6" }),
+            configureExtraProfiles: b =>
+            {
+                b.AddEntitySetProfile<BeAuthorGetAllProfile>();
+                b.AddEntitySetProfile<BeBookDelegateProfile>();
+                // A second candidate over BeBook declaring Chapters delegate-LESS makes the two
+                // disagree, so Model B answers Blank at depth 2 instead of RunDelegate.
+                if (blankInsteadOfDelegate) b.AddEntitySetProfile<BeBookPlainProfile>();
+            });
+        return (fx, connection, counter);
+    }
+
+    // FAILS WITHOUT THE FIX: 200, six chapters served, ChapterDelegateCalls == 0.
+    [Theory]
+    [InlineData(false)] // Chapters resolves RunDelegate at depth 2
+    [InlineData(true)]  // Chapters resolves Blank at depth 2
+    public async Task DepthTwo_UnderAServeRawParent_IsBounded_WhateverTheClassification(bool blank)
+    {
+        (TestFixture fx, SqliteConnection conn, BeChapterDelegateCounter counter) =
+            await BuildDepthTwoAsync(blank);
+        await using (fx)
+        {
+            HttpResponseMessage resp = await fx.Client.GetAsync(
+                "/odata/BeAuthorsAll?$expand=Books($expand=Chapters)");
+            Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+
+            using JsonDocument doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+            string message = doc.RootElement.GetProperty("error").GetProperty("message").GetString()!;
+            Assert.Contains("'Chapters'", message);
+            Assert.Contains("maximum of 5 entities", message);
+
+            // The measurement that makes the O6 exemption inapplicable here: no delegate ran, so
+            // these were never "the developer's own answer" to begin with.
+            Assert.Equal(0, counter.Calls);
+        }
+        conn.Dispose();
+    }
+
+    // The O6-legitimate exemption, unchanged and still pinned: at DEPTH 1 the delegate really does
+    // run, and its six chapters are served whole under a ceiling of five.
+    [Fact]
+    public async Task DepthOne_DelegateBacked_StillRunsAndIsNotBounded()
+    {
+        (TestFixture fx, SqliteConnection conn, BeChapterDelegateCounter counter) =
+            await BuildDepthTwoAsync(blankInsteadOfDelegate: false);
+        await using (fx)
+        {
+            using JsonDocument doc = JsonDocument.Parse(
+                await fx.Client.GetStringAsync("/odata/BeBooksDlg?$filter=Id eq 1&$expand=Chapters"));
+            Assert.Equal(6, doc.RootElement.GetProperty("value")[0].GetProperty("Chapters").GetArrayLength());
+            Assert.True(counter.Calls > 0, "the depth-1 delegate must actually run");
+        }
+        conn.Dispose();
+    }
+
+    // Under the ceiling at both levels, the depth-2 walk must leave the response alone.
+    [Fact]
+    public async Task ByteIdentical_DepthTwo_UnderCeiling_IsUntouched()
+    {
+        var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        var counter = new BeChapterDelegateCounter();
+        TestFixture fx = await BareExpandSqliteHarness.BuildAsync(
+            connection, sink: null,
+            defaults: d => d.MaxExpandTop = 10,
+            configureExtraServices: services => services.AddSingleton(counter),
+            configureExtraProfiles: b =>
+            {
+                b.AddEntitySetProfile<BeAuthorGetAllProfile>();
+                b.AddEntitySetProfile<BeBookDelegateProfile>();
+            });
+        await using (fx)
+        {
+            using JsonDocument doc = JsonDocument.Parse(
+                await fx.Client.GetStringAsync("/odata/BeAuthorsAll?$expand=Books($expand=Chapters)"));
+            JsonElement books = doc.RootElement.GetProperty("value")[0].GetProperty("Books");
+            Assert.Equal(5, books.GetArrayLength());
+            Assert.Equal(2, books[0].GetProperty("Chapters").GetArrayLength());
+            Assert.Equal(0, counter.Calls);
+        }
+        connection.Dispose();
+    }
+
     // ── Delegate safety (#313 O6): the framework does not truncate — or reject — a delegate's answer
     //
     // The ceiling reaches the RAW substrate, which is exactly the substrate the framework is
@@ -290,5 +406,52 @@ public sealed class BeAuthorDelegateGetAllProfile : EntitySetProfile<int, BeAuth
         GetAll = ct => Task.FromResult<IEnumerable<BeAuthor>>(db.Authors.ToList());
         HasMany(x => x.Books,
             getAll: (id, ct) => Task.FromResult(db.Books.Where(b => b.AuthorId == id).AsEnumerable()));
+    }
+}
+
+/// <summary>Counts invocations of the depth-2 Chapters delegate (PR #477 review, F1).</summary>
+public sealed class BeChapterDelegateCounter
+{
+    private int _calls;
+    public int Calls => _calls;
+    public void Count() => System.Threading.Interlocked.Increment(ref _calls);
+}
+
+/// <summary>
+/// PR #477 review, F1: an entity set over <see cref="BeBook"/> that declares <c>Chapters</c> WITH a
+/// delegate. It makes <c>Chapters</c> resolve to <c>RunDelegate</c> at depth 2 — while the request
+/// reaches it through <c>BeAuthors*/Books</c>, a ServeRaw parent whose branch never recurses, so the
+/// delegate never runs and the chapters in the payload are the AUTHOR handler's own graph.
+/// </summary>
+public sealed class BeBookDelegateProfile : EntitySetProfile<int, BeBook>
+{
+    public BeBookDelegateProfile(BareExpandDbContext db, BeChapterDelegateCounter counter) : base(x => x.Id)
+    {
+        EntitySetName = "BeBooksDlg";
+        ExpandEnabled = true;
+        FilterEnabled = true; // so the depth-1 O6 control can isolate book 1 deterministically
+        GetQueryable = _ => Task.FromResult(db.Books.AsQueryable());
+        HasMany(x => x.Chapters, getAll: (id, ct) =>
+        {
+            counter.Count();
+            return Task.FromResult(db.Chapters.Where(c => c.BookId == id).AsEnumerable());
+        });
+    }
+}
+
+/// <summary>
+/// PR #477 review, F1: a SECOND entity set over <see cref="BeBook"/> declaring <c>Chapters</c>
+/// delegate-LESS. Registered alongside <see cref="BeBookDelegateProfile"/> it makes the two
+/// candidates disagree, so <c>Chapters</c> resolves to <c>Blank</c> at depth 2 — the other
+/// classification the reviewer flagged as reachable under a ServeRaw parent.
+/// </summary>
+public sealed class BeBookPlainProfile : EntitySetProfile<int, BeBook>
+{
+    public BeBookPlainProfile(BareExpandDbContext db) : base(x => x.Id)
+    {
+        EntitySetName = "BeBooksPlain";
+        ExpandEnabled = true;
+        GetQueryable = _ => Task.FromResult(db.Books.AsQueryable());
+        HasMany(x => x.Chapters);
     }
 }

@@ -98,9 +98,18 @@ public sealed class EntitySetDefaults
     /// never silently truncated.
     /// </para>
     /// <para>
-    /// <b>A delegate-backed navigation is never bounded by this value</b> (#313 O6): its rows are the
-    /// answer the profile's own <c>Handler</c>/<c>BatchHandler</c> returned, and the framework
-    /// neither truncates nor rejects those. Bound them in the delegate.
+    /// <b>A navigation whose delegate actually RAN is never bounded by this value</b> (#313 O6): its
+    /// rows are the answer the profile's own <c>Handler</c>/<c>BatchHandler</c> returned, and the
+    /// framework neither truncates nor rejects those. Bound them in the delegate.
+    /// </para>
+    /// <para>
+    /// That exemption turns on the delegate having been <i>invoked</i>, not on the navigation being
+    /// <i>declared</i> with one, and the two come apart below a raw-served parent: the expand
+    /// pipeline does not recurse into a delegate-less navigation's subtree, so a delegate-backed
+    /// navigation one level under it is never called and the rows present came from the parent's own
+    /// handler. Those are bounded like any other raw rows. The exempt case is therefore the one the
+    /// ceiling walk can actually reach — a delegate-backed navigation at the root of the expansion —
+    /// and it never descends into that navigation's subtree at all.
     /// </para>
     /// <para>
     /// <b>On a raw-served (non-pushed) expansion, the nested window is still not APPLIED.</b> A
