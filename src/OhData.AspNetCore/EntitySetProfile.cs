@@ -192,13 +192,18 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private RoundingMode _resolvedRoundingMode;
 
     /// <summary>
-    /// Controls whether <c>POST /{EntitySet}</c> passes nested navigation-property values
-    /// through to the <see cref="Post"/> handler (deep insert, OData §11.4.2.2). Inherits from
-    /// <see cref="EntitySetDefaults.AllowDeepInsert"/> (default <c>false</c>) when <c>null</c>.
+    /// Controls whether a write body's nested navigation-property values reach the handler:
+    /// deep insert on <c>POST /{EntitySet}</c> (OData §11.4.2.2) and deep update on
+    /// <c>PUT</c>/<c>PATCH /{EntitySet}({key})</c> (OData 4.01 §11.4.3.1). Inherits from
+    /// <see cref="EntitySetDefaults.AllowDeepWrites"/> (default <c>false</c>) when <c>null</c>.
     /// <para>
     /// <c>false</c> (default): nested navigation values (single-valued or collection) are set
-    /// to <c>null</c> on the deserialized model before <see cref="Post"/> is invoked — a
-    /// <c>Post</c> handler that doesn't expect a graph never silently persists only part of it.
+    /// to <c>null</c> on the deserialized model before <see cref="Post"/> or <see cref="Put"/>
+    /// is invoked, and are never written into the <c>Delta&lt;TModel&gt;</c> handed to
+    /// <see cref="Patch"/> — a handler that doesn't expect a graph never silently persists only
+    /// part of it. On <c>PATCH</c> the navigation is withheld from the delta rather than nulled
+    /// in it, so <c>delta.Patch(existing)</c> cannot turn a graph the client sent into an
+    /// unrequested relationship clear.
     /// </para>
     /// <para>
     /// "Navigation value" means the EDM's navigations, not only the ones this profile declared
@@ -210,7 +215,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// </para>
     /// <para>
     /// <c>true</c>: the full deserialized graph (parent + nested navigation values) is passed
-    /// to <see cref="Post"/> as-is. The handler is contractually responsible for persisting the
+    /// to <see cref="Post"/>/<see cref="Put"/> as-is, and navigation members bind into the
+    /// <see cref="Patch"/> delta. The handler is contractually responsible for persisting the
     /// whole graph atomically (e.g. one EF Core <c>SaveChanges</c>) — the framework does not
     /// open a transaction on the handler's behalf.
     /// </para>
@@ -221,8 +227,29 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// existing entities instead.
     /// </para>
     /// </summary>
-    protected bool? AllowDeepInsert { get; init; }
-    private bool _resolvedAllowDeepInsert;
+    protected bool? AllowDeepWrites { get; init; }
+    private bool _resolvedAllowDeepWrites;
+
+    /// <summary>
+    /// Renamed to <see cref="AllowDeepWrites"/> in 1.6.0. Kept as a forwarding property so an
+    /// assembly compiled against 1.5.0 keeps binding; it reads and writes
+    /// <see cref="AllowDeepWrites"/>, so the two can never disagree.
+    /// </summary>
+    // #457: the flag no longer governs the collection POST alone -- it governs nested-graph
+    // handling on every write verb, which is deep insert (§11.4.2.2) AND deep update
+    // (§11.4.3.1), two separately named spec features. A name saying only "insert" described one
+    // of them. Forwarding rather than duplicated state: there is one field, _resolvedAllowDeepWrites
+    // is resolved from AllowDeepWrites alone, and setting either property is setting the same
+    // storage. Removing it outright is the API break the PackageValidation gate against the 1.5.0
+    // baseline correctly rejects (CP0002), and this repo has no suppression file.
+    [Obsolete("Renamed to AllowDeepWrites: the flag governs nested-graph handling on every write " +
+              "verb -- deep insert (POST, OData §11.4.2.2) and deep update (PUT/PATCH, OData 4.01 " +
+              "§11.4.3.1) -- not deep insert alone. Forwards to AllowDeepWrites.")]
+    protected bool? AllowDeepInsert
+    {
+        get => AllowDeepWrites;
+        init => AllowDeepWrites = value;
+    }
 
     private string[]? _selectProperties;
     private string[]? _expandProperties;
@@ -742,7 +769,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _resolvedSelectPushdownEnabled = SelectPushdownEnabled ?? defaults.SelectPushdownEnabled;
         _resolvedExpandPushdownEnabled = ExpandPushdownEnabled ?? defaults.ExpandPushdownEnabled;
         _resolvedPropertyRouteDocsEnabled = PropertyRouteDocsEnabled ?? defaults.PropertyRouteDocsEnabled;
-        _resolvedAllowDeepInsert = AllowDeepInsert ?? defaults.AllowDeepInsert;
+        _resolvedAllowDeepWrites = AllowDeepWrites ?? defaults.AllowDeepWrites;
         _resolvedRoundingMode = RoundingMode ?? defaults.RoundingMode;
         _structuralProperties = BuildStructuralProperties();
 
@@ -2063,7 +2090,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     RoundingMode IEntitySetEndpointSource.RoundingMode => _resolvedRoundingMode;
     IReadOnlyList<StructuralPropertyInfo> IEntitySetEndpointSource.StructuralProperties =>
         _structuralProperties ??= BuildStructuralProperties();
-    bool IEntitySetEndpointSource.AllowDeepInsert => _resolvedAllowDeepInsert;
+    bool IEntitySetEndpointSource.AllowDeepWrites => _resolvedAllowDeepWrites;
     // #253 completion: navigations are addressed by their EDM (JSON) names on the OData surface. This
     // exposed view is consumed by the $expand pushdown provenance/keying and the deep-insert strip
     // (which resolves each CLR property to its EDM name before testing membership).

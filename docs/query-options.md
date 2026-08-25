@@ -258,7 +258,7 @@ GET /odata/Products?$filter=round(Price) eq 3
 
 Control this via the `RoundingMode` setting (`RoundingMode.SpecCompliant`, the default, or
 `RoundingMode.BankersRounding`), inheriting from `EntitySetDefaults.RoundingMode` the same way
-`PropertyAccessEnabled`/`AllowDeepInsert` do:
+`PropertyAccessEnabled`/`AllowDeepWrites` do:
 
 ```csharp
 // Per profile - opt back into .NET's pre-fix banker's rounding:

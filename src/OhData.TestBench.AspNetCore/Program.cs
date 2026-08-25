@@ -39,7 +39,7 @@ builder.Services.AddSwaggerGen(c =>
 // ── OhData versioned registrations ───────────────────────────────────────────
 //
 // v1: Movies + Genres           -- the simple surface: GetQueryable CRUD + ETags + bound
-//                                   operations on Movies, GetAll on Genres. AllowDeepInsert
+//                                   operations on Movies, GetAll on Genres. AllowDeepWrites
 //                                   stays at its default (false), and Movie.Cast/Studio have no
 //                                   navigation handlers -- see MovieProfile's comments.
 // v2: Movies + Genres + Actors + Studios -- adds deep insert, batch-loaded $expand, and $ref

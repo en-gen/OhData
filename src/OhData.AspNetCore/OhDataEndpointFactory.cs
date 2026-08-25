@@ -496,9 +496,12 @@ internal static class OhDataEndpointFactory
 
     // The answer every route gives for '@odata.bind', so the four write routes wired in by #398
     // review MEDIUM-1 cannot drift from the collection POST's long-standing one. Deliberately does
-    // NOT mention AllowDeepInsert: that flag governs nested CREATE on POST only, and offering it as
-    // the remedy on a PUT or a PATCH would be advice that does not apply. The collection POST keeps
-    // its own richer message, which does name the entity set and does mention the flag.
+    // NOT mention AllowDeepWrites: that flag decides whether a nested graph the client SENT reaches
+    // the handler, and '@odata.bind' sends no graph — it names an entity to link. Enabling the flag
+    // would not make this request work on any verb, so offering it here would be advice that does
+    // not apply. The collection POST keeps its own richer message, which names the entity set and
+    // mentions the flag for the adjacent case (the client meant to create the related entity
+    // inline). #457 widened the flag to PUT/PATCH; it did not make it a remedy for this error.
     private static IResult ODataBindNotImplementedError() =>
         ODataError(501, "NotImplemented",
             "'@odata.bind' is not supported. Use the $ref endpoints to link an existing entity " +
@@ -573,8 +576,9 @@ internal static class OhDataEndpointFactory
         // grammar, not from anything that knew what @odata.bind meant.
         //
         // The collection POST keeps its own earlier check: it has always been unconditional, and its
-        // message is richer (it names the entity set and mentions AllowDeepInsert, which is a
-        // meaningful remedy on POST and on no other verb).
+        // message is richer (it names the entity set, and it mentions AllowDeepWrites for the
+        // adjacent case — a client that meant to CREATE the related entity inline rather than link
+        // an existing one, which on POST is deep insert).
         if (ContainsODataBindAnnotation(body))
             return new PreparedWriteBody(ODataBindNotImplementedError(), body, null);
 
@@ -1369,10 +1373,15 @@ internal static class OhDataEndpointFactory
     // once. Before #461 the write path did not merely fail to serve the navigation, it QUIETLY
     // ACCEPTED it: the deep-insert strip set was built from the profile-declared navigation names, so
     // a nested value for an undeclared one was bound and handed to the Post handler with
-    // AllowDeepInsert at its default of false. The strip set now subtracts the same EDM navigation
+    // AllowDeepWrites at its default of false. The strip set now subtracts the same EDM navigation
     // set #446 established as the authority, so the write path agrees with the read path — and the
     // sentence naming that is added here, in the commit that made it true, rather than left for a
     // reader to infer from "serve".
+    //
+    // #457 WIDENED THE SAME SENTENCE FROM "a POST body" TO "a write body". Deep update (§11.4.3.1)
+    // was documented out of scope but not enforced, so PUT forwarded the nested value and PATCH
+    // bound it into the Delta<TModel>; naming POST alone would now understate the (correct)
+    // behaviour on exactly the two verbs that used to get it wrong.
     //
     // WHAT IS NOT LISTED, deliberately, AND WHY THE LIST KEEPS SHRINKING. This message states only
     // what is still true at the moment it is emitted, and every time the framework closes one of the
@@ -1435,8 +1444,9 @@ internal static class OhDataEndpointFactory
                     "it and will never accept a value for it: '?$expand={Nav}' is accepted and answers " +
                     "200 with the navigation OMITTED from every entity, there is no " +
                     "'GET /{EntitySet2}({{key}})/{Nav2}' behind it either, and a nested value for it " +
-                    "in a POST body is discarded before the Post handler runs — exactly as a declared " +
-                    "navigation's is, unless AllowDeepInsert is enabled. A client that reads $metadata " +
+                    "in a POST, PUT or PATCH body is discarded before the write handler runs — " +
+                    "exactly as a declared " +
+                    "navigation's is, unless AllowDeepWrites is enabled. A client that reads $metadata " +
                     "will keep asking to read and write related data it can " +
                     "never exchange. Declare it with HasOptional/HasRequired/HasMany (adding an expand " +
                     "delegate if loading it needs real logic), or Ignore() it if it should not be " +
@@ -8745,55 +8755,74 @@ internal static class OhDataEndpointFactory
             ApplyOperationAuth(rb, OhDataOperation.Read);
         }
 
+        // Nested-graph handling (§32/§11.4.2.2 deep insert, §11.4.3.1 deep update): precomputed
+        // once at startup (not per-request) — the set of TModel navigation properties that must
+        // not reach a write handler when AllowDeepWrites is disabled (the default). System.Text.Json
+        // already binds nested navigation values into these properties during deserialization;
+        // withholding them here is what keeps a handler that doesn't expect a graph from silently
+        // persisting only part of one.
+        // Properties without a public setter can't be deserialized into by STJ in the first
+        // place, so they're excluded — nothing to strip. That filter is right for PATCH too:
+        // Delta<T>.TrySetPropertyValue only tracks properties with a public getter AND setter, so a
+        // setter-less navigation could not enter a delta either.
+        // #253 completion: NavigationPropertyNames is the EDM (JSON) navigation name set, so resolve
+        // each CLR property to its EDM name before testing membership (a renamed nav's CLR name is
+        // not in the set — its JSON name is).
+        //
+        // #457 HOISTED THIS OUT OF `if (source.HasPost)`. It was declared inside that block and
+        // applied on the collection POST alone, so deep UPDATE — a nested graph in PUT or PATCH,
+        // OData 4.01 §11.4.3.1, a SEPARATE named feature from deep insert and one that
+        // docs/deep-insert.md has declared out of scope since 1.0.0 — was documented-out but never
+        // enforced: STJ bound the nested values and PUT forwarded them to the handler while PATCH
+        // bound them into the Delta<TModel>. One set, three routes, deliberately: re-deriving a
+        // second set at the PUT/PATCH sites is how the two would drift, and the #461 union below is
+        // exactly the kind of correction a second copy would miss.
+        //
+        // #461: UNION with edmNavigationNames — the write-side twin of #446, and the same
+        // subtraction argument pointed at a set the read side already fixed. NavigationPropertyNames
+        // is the profile-DECLARED set, so a navigation the ODataConventionModelBuilder discovered
+        // but the profile never declared with HasOptional/HasRequired/HasMany was not in the strip
+        // set at all — System.Text.Json bound it during deserialization and it reached the Post
+        // handler intact, WITH AllowDeepWrites at its default of false. A handler doing
+        // `db.Add(model); SaveChanges();` then persists nested rows nobody opted into, which is the
+        // silent-partial-graph hazard the strip exists to prevent. The shape that hits it is the
+        // most ordinary one there is: a profile that declares no navigations at all, over
+        // `public Customer? Customer { get; set; }`.
+        //
+        // The EDM is the authority on what is a navigation (#446), and a navigation is not
+        // deep-write-exempt because the profile forgot to name it. As with #446 the subtraction is
+        // applied HERE, at the consumer, not in BuildStructuralProperties or
+        // NavigationPropertyNames: the former cannot see a built EDM (it runs from
+        // VisitModelBuilder), and the latter feeds Model B's DB/DL partitioning, whose "a candidate
+        // that neither routes nor declares the nav has no opinion" category empties under
+        // convention sourcing (Issue322ModelBClassificationTests pins it).
+        //
+        // Union, not replacement: NavigationPropertyNames stays in the test because a declared
+        // navigation is the case that already worked and must keep working byte-for-byte, and
+        // because the two sets are separately sourced (declaration versus convention discovery) and
+        // neither is a superset of the other by construction. edmNavigationNames is
+        // OrdinalIgnoreCase and holds EDM names, which is exactly what ResolveEdmName produces.
+        PropertyInfo[] deepWriteNavPropsToStrip = typeof(TModel)
+            .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(p => p.SetMethod is not null)
+            .Where(p =>
+            {
+                string edmName = ODataPropertyNaming.ResolveEdmName(p);
+                return source.NavigationPropertyNames.Contains(edmName)
+                    || edmNavigationNames.Contains(edmName);
+            })
+            .ToArray();
+
+        // PATCH's projection of the SAME set, by CLR property name — the delta loop has already
+        // resolved each body key to a PropertyInfo, so it tests membership by name rather than
+        // re-running the EDM-name resolution. Derived from deepWriteNavPropsToStrip rather than
+        // recomputed, so there is only ever one answer to "is this a navigation" on the write path.
+        // Ordinal because both sides are CLR member names produced by the same reflection walk.
+        var deepWriteNavClrNames = new HashSet<string>(
+            deepWriteNavPropsToStrip.Select(p => p.Name), StringComparer.Ordinal);
+
         if (source.HasPost)
         {
-            // Deep insert (§32/§11.4.2.2): precomputed once at startup (not per-request) — the
-            // set of TModel navigation properties (declared via HasOptional/HasRequired/HasMany)
-            // that must be nulled out before invoking Post when AllowDeepInsert is disabled
-            // (the default). System.Text.Json already binds nested navigation values into these
-            // properties during deserialization; stripping them here is what keeps a Post
-            // handler that doesn't expect a graph from silently persisting only part of one.
-            // Properties without a public setter can't be deserialized into by STJ in the first
-            // place, so they're excluded — nothing to strip.
-            // #253 completion: NavigationPropertyNames is the EDM (JSON) navigation name set, so resolve
-            // each CLR property to its EDM name before testing membership (a renamed nav's CLR name is
-            // not in the set — its JSON name is).
-            //
-            // #461: UNION with edmNavigationNames — the write-side twin of #446, and the same
-            // subtraction argument pointed at a set the read side already fixed. NavigationPropertyNames
-            // is the profile-DECLARED set, so a navigation the ODataConventionModelBuilder discovered
-            // but the profile never declared with HasOptional/HasRequired/HasMany was not in the strip
-            // set at all — System.Text.Json bound it during deserialization and it reached the Post
-            // handler intact, WITH AllowDeepInsert at its default of false. A handler doing
-            // `db.Add(model); SaveChanges();` then persists nested rows nobody opted into, which is the
-            // silent-partial-graph hazard the strip exists to prevent. The shape that hits it is the
-            // most ordinary one there is: a profile that declares no navigations at all, over
-            // `public Customer? Customer { get; set; }`.
-            //
-            // The EDM is the authority on what is a navigation (#446), and a navigation is not
-            // deep-insert-exempt because the profile forgot to name it. As with #446 the subtraction is
-            // applied HERE, at the consumer, not in BuildStructuralProperties or
-            // NavigationPropertyNames: the former cannot see a built EDM (it runs from
-            // VisitModelBuilder), and the latter feeds Model B's DB/DL partitioning, whose "a candidate
-            // that neither routes nor declares the nav has no opinion" category empties under
-            // convention sourcing (Issue322ModelBClassificationTests pins it).
-            //
-            // Union, not replacement: NavigationPropertyNames stays in the test because a declared
-            // navigation is the case that already worked and must keep working byte-for-byte, and
-            // because the two sets are separately sourced (declaration versus convention discovery) and
-            // neither is a superset of the other by construction. edmNavigationNames is
-            // OrdinalIgnoreCase and holds EDM names, which is exactly what ResolveEdmName produces.
-            PropertyInfo[] deepInsertNavPropsToStrip = typeof(TModel)
-                .GetProperties(BindingFlags.Public | BindingFlags.Instance)
-                .Where(p => p.SetMethod is not null)
-                .Where(p =>
-                {
-                    string edmName = ODataPropertyNaming.ResolveEdmName(p);
-                    return source.NavigationPropertyNames.Contains(edmName)
-                        || edmNavigationNames.Contains(edmName);
-                })
-                .ToArray();
-
             // If-None-Match on POST is not supported: the framework cannot extract the key from
             // the body without knowing the key property. Developers should handle this themselves.
             var rb = entityGroup.MapPost("", async (HttpContext ctx, CancellationToken ct) =>
@@ -8820,7 +8849,7 @@ internal static class OhDataEndpointFactory
                     {
                         return ODataError(501, "NotImplemented",
                             "'@odata.bind' is not supported for POST " + $"/{name}. Use the $ref " +
-                            "endpoints to link an existing entity, or enable AllowDeepInsert to " +
+                            "endpoints to link an existing entity, or enable AllowDeepWrites to " +
                             "create nested related entities inline (OData §11.4.2.2).");
                     }
 
@@ -8846,12 +8875,12 @@ internal static class OhDataEndpointFactory
                         return ODataError(400, "InvalidBody", "Request body is empty or could not be deserialized.");
 
                     // Deep insert (§32): strip nested navigation values unless the profile opted
-                    // in via AllowDeepInsert. Nested values for non-navigation (plain) collection
-                    // properties are untouched — only CLR properties declared as navigations via
-                    // HasOptional/HasRequired/HasMany are stripped.
-                    if (!source.AllowDeepInsert)
+                    // in via AllowDeepWrites. Nested values for non-navigation (plain) collection
+                    // properties are untouched — only CLR properties the EDM or the profile calls
+                    // navigations are stripped.
+                    if (!source.AllowDeepWrites)
                     {
-                        foreach (var navProp in deepInsertNavPropsToStrip)
+                        foreach (var navProp in deepWriteNavPropsToStrip)
                         {
                             navProp.SetValue(model, null);
                         }
@@ -8901,21 +8930,26 @@ internal static class OhDataEndpointFactory
 
                         // Gap 5: include @odata.id in POST response body
                         // Gap 2: include @odata.etag in body
-                        // Deep insert (§32): when AllowDeepInsert is true, `result` (the handler's
+                        // Deep insert (§32): when AllowDeepWrites is true, `result` (the handler's
                         // return value) may carry nested navigation values populated by the
                         // handler — SerializeToNode below serializes them inline automatically,
                         // satisfying §11.4.2.2's "return the created entity with related entities."
                         // #240: omit un-expanded navigations from the POST echo so it matches a read
-                        // of the same type — EXCEPT when the profile opted into deep insert, where the
+                        // of the same type — EXCEPT when the profile opted into deep writes, where the
                         // 201 deliberately echoes the created graph inline (§11.4.2.2). The gate is
                         // entity-level because OmitUnexpandedNavigations strips ALL declared navs
                         // unconditionally (it never inspects whether a nav is populated); a per-request
-                        // choice would require a value-aware strip. Accepted residual: a deep-insert
-                        // profile doing a *non-deep* POST still echoes its (null/empty) navs. PUT/PATCH
-                        // omit unconditionally — deep insert is POST-only, so there is no update
-                        // equivalent to honour.
+                        // choice would require a value-aware strip. Accepted residual: a deep-write
+                        // profile doing a *non-deep* POST still echoes its (null/empty) navs.
+                        //
+                        // #457: PUT/PATCH still omit UNCONDITIONALLY, and that is deliberately left
+                        // alone. This issue is about what the HANDLER receives; §11.4.3.1 requires
+                        // nothing of the update response beyond what §11.4.2 already says, and
+                        // widening the echo is a separate wire-shape change with its own #240
+                        // consequences. The asymmetry is therefore: a deep-write profile's 201 echoes
+                        // the graph, its 200 on PUT/PATCH does not.
                         var createdNode = ODataEntityNode(ctx, prefix, $"{name}/$entity", result, jsonOptions, registration.EdmModel, odataId: odataId, etag: postEtag,
-                            omitNavsForType: source.AllowDeepInsert ? null : rootEdmType);
+                            omitNavsForType: source.AllowDeepWrites ? null : rootEdmType);
                         return Results.Created(odataId, createdNode);
                     }
                 }
@@ -8979,6 +9013,23 @@ internal static class OhDataEndpointFactory
                     }
                     if (model is null)
                         return ODataError(400, "InvalidBody", "Request body is empty or could not be deserialized.");
+
+                    // #457 — deep update (§11.4.3.1): the same strip the collection POST applies,
+                    // on the same set, for the same reason. Placed AFTER deserialization and
+                    // BEFORE anything reads the model, so InvokeGetKeyString, the resource-auth
+                    // gate, the Put handler and the AllowUpsert Post fallback all see one model.
+                    // Deliberately below the two body scans above and not merged into either: this
+                    // is a post-bind mutation of a CLR graph, while `@odata.bind` detection is a
+                    // pre-bind read of the raw bytes whose ordering #456 pins.
+                    // The key is never a navigation, so the key-mismatch check below is unaffected.
+                    if (!source.AllowDeepWrites)
+                    {
+                        foreach (var navProp in deepWriteNavPropsToStrip)
+                        {
+                            navProp.SetValue(model, null);
+                        }
+                    }
+
                     string bodyKeyStr = s.InvokeGetKeyString(model);
                     string parsedKeyStr = string.Format(CultureInfo.InvariantCulture, "{0}", parsedKey);
                     if (!string.Equals(parsedKeyStr, bodyKeyStr, StringComparison.Ordinal))
@@ -9167,6 +9218,21 @@ internal static class OhDataEndpointFactory
                         // consequence of the guard having seen every occurrence.
                         if (patchKeyClrProp is not null && clrProp is not null
                             && string.Equals(clrProp.Name, patchKeyClrProp.Name, StringComparison.Ordinal))
+                        {
+                            continue;
+                        }
+                        // #457 — deep update (§11.4.3.1): a navigation never ENTERS the delta when
+                        // AllowDeepWrites is off. Not "enters and is nulled afterwards": Delta<T>
+                        // is a change SET, so a nulled navigation would still be named by
+                        // GetChangedPropertyNames() and still written by delta.Patch(existing) —
+                        // turning a graph the client sent into an unrequested relationship CLEAR.
+                        // It is also the shape the delta-mapping subsystem contradicts: Delta<TEntity>
+                        // tracks structural properties only and DeltaMappingCompiler validates
+                        // scalars/structural only, so a navigation in the Delta<TModel> that feeds it
+                        // has nowhere to go. Same set as POST and PUT (deepWriteNavPropsToStrip),
+                        // projected to CLR names because this loop already holds a PropertyInfo.
+                        if (clrProp is not null && deepWriteNavClrNames.Contains(clrProp.Name)
+                            && !source.AllowDeepWrites)
                         {
                             continue;
                         }

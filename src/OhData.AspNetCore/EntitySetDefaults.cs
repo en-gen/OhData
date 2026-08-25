@@ -435,15 +435,33 @@ public sealed class EntitySetDefaults
     public bool PropertyRouteDocsEnabled { get; set; } = false;
 
     /// <summary>
-    /// Whether <c>POST /{EntitySet}</c> passes nested navigation-property values (a "deep
-    /// insert" graph, OData §11.4.2.2) through to the <c>Post</c> handler by default.
-    /// Defaults to <c>false</c>: nested navigation values are stripped before <c>Post</c> is
-    /// invoked, so a handler that doesn't expect a graph never silently persists only part of
-    /// it. Set to <c>true</c> to opt every entity set into deep insert, or override per profile
-    /// via <c>AllowDeepInsert</c>. When enabled, the handler owns atomic persistence of the
-    /// whole graph (e.g. a single EF Core <c>SaveChanges</c>).
+    /// Whether the entity write routes pass nested navigation-property values through to the
+    /// handler by default — a "deep insert" graph on <c>POST /{EntitySet}</c> (OData §11.4.2.2)
+    /// or a "deep update" graph on <c>PUT</c>/<c>PATCH /{EntitySet}({key})</c> (OData 4.01
+    /// §11.4.3.1). Defaults to <c>false</c>: nested navigation values are stripped before
+    /// <c>Post</c>/<c>Put</c> is invoked and never enter the <c>Delta&lt;TModel&gt;</c> handed
+    /// to <c>Patch</c>, so a handler that doesn't expect a graph never silently persists only
+    /// part of it. Set to <c>true</c> to opt every entity set in, or override per profile via
+    /// <c>AllowDeepWrites</c>. When enabled, the handler owns atomic persistence of the whole
+    /// graph (e.g. a single EF Core <c>SaveChanges</c>).
     /// </summary>
-    public bool AllowDeepInsert { get; set; }
+    public bool AllowDeepWrites { get; set; }
+
+    /// <summary>
+    /// Renamed to <see cref="AllowDeepWrites"/> in 1.6.0. Kept as a forwarding property so an
+    /// assembly compiled against 1.5.0 keeps binding; it reads and writes
+    /// <see cref="AllowDeepWrites"/>, so the two can never disagree.
+    /// </summary>
+    // #457: see EntitySetProfile.AllowDeepInsert for why the name changed and why this member
+    // stays. One storage location, two names -- never two fields.
+    [Obsolete("Renamed to AllowDeepWrites: the flag governs nested-graph handling on every write " +
+              "verb -- deep insert (POST, OData §11.4.2.2) and deep update (PUT/PATCH, OData 4.01 " +
+              "§11.4.3.1) -- not deep insert alone. Forwards to AllowDeepWrites.")]
+    public bool AllowDeepInsert
+    {
+        get => AllowDeepWrites;
+        set => AllowDeepWrites = value;
+    }
 
     /// <summary>
     /// Midpoint-rounding behavior for the <c>round()</c> canonical function (OData Part 2
