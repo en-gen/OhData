@@ -355,7 +355,7 @@ The full documentation — getting started, the EF Core + SQLite walkthrough, an
 | Query options (`$filter`, `$orderby`, `$select`, `$expand`, `$count`, `$search`) | [docs/query-options.md](docs/query-options.md) |
 | Navigation property routing, `$ref`, and POST-to-navigation | [docs/navigation-routing.md](docs/navigation-routing.md) |
 | Individual property access, reads/writes, and `/$value` | [docs/property-access.md](docs/property-access.md) |
-| Deep insert (nested related entities in POST) | [docs/deep-insert.md](docs/deep-insert.md) |
+| Deep insert (nested related entities in POST), and deep update's enforced non-support | [docs/deep-insert.md](docs/deep-insert.md) |
 | Delta mapping (DTO → entity write path, dependency-free) | [docs/delta-mapping.md](docs/delta-mapping.md) |
 | Open types (dynamic property bags on complex types) | [docs/open-types.md](docs/open-types.md) |
 | Bound functions and actions | [docs/bound-operations.md](docs/bound-operations.md) |

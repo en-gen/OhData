@@ -80,7 +80,7 @@ app.MapOhData()
                    (entity-bound ops follow the same pattern with key in the route)
 ```
 
-See [docs/navigation-routing.md](navigation-routing.md) for `$ref`/POST-to-navigation, [docs/property-access.md](property-access.md) for the structural property routes, and [docs/deep-insert.md](deep-insert.md) for `AllowDeepInsert`/`@odata.bind` behavior on the `POST` route.
+See [docs/navigation-routing.md](navigation-routing.md) for `$ref`/POST-to-navigation, [docs/property-access.md](property-access.md) for the structural property routes, and [docs/deep-insert.md](deep-insert.md) for `AllowDeepWrites`/`@odata.bind` behavior on the write routes.
 
 ## Registering profiles
 

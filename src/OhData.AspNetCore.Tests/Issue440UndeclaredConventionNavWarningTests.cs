@@ -204,6 +204,18 @@ public sealed class W440OrderProfile : EntitySetProfile<int, W440Order>
     /// </summary>
     public static W440Order? LastPosted;
 
+    /// <summary>
+    /// #457: the same observation for <c>PUT</c>, which reaches the SAME strip set now that deep
+    /// UPDATE (§11.4.3.1) is enforced rather than only documented out of scope.
+    /// </summary>
+    public static W440Order? LastPut;
+
+    /// <summary>
+    /// #457: the names the <c>PATCH</c> delta reported at the handler. An undeclared convention
+    /// navigation must not be among them.
+    /// </summary>
+    public static string[]? LastPatchChangedProperties;
+
     public W440OrderProfile(W440DbContext db) : base(x => x.Id)
     {
         EntitySetName = "W440Orders";
@@ -217,8 +229,19 @@ public sealed class W440OrderProfile : EntitySetProfile<int, W440Order>
             LastPosted = order;
             return Task.FromResult<W440Order?>(order);
         };
+        // #457: PUT, added for the deep-UPDATE half of the same defect class. Non-persisting for
+        // exactly the reason Post is.
+        Put = (id, order, _) =>
+        {
+            LastPut = order;
+            order.Id = id;
+            return Task.FromResult(order);
+        };
         Patch = (id, delta, _) =>
         {
+            // #457: captured BEFORE Patch(existing) — the question is what the delta contained,
+            // not what survived being applied to a tracked entity.
+            LastPatchChangedProperties = delta.GetChangedPropertyNames().ToArray();
             W440Order? existing = db.Orders.FirstOrDefault(o => o.Id == id);
             if (existing is null) return Task.FromResult<W440Order?>(null);
             delta.Patch(existing);
@@ -542,7 +565,7 @@ public sealed class Issue440UndeclaredConventionNavWarningTests
     /// #461, the write-side twin of #446. <c>deepInsertNavPropsToStrip</c> was built from the
     /// profile-DECLARED navigation names, so a navigation the convention builder discovered and the
     /// profile never declared was not in the strip set — System.Text.Json bound it and it reached the
-    /// <c>Post</c> handler intact, with <c>AllowDeepInsert</c> at its default of <c>false</c>. A
+    /// <c>Post</c> handler intact, with <c>AllowDeepWrites</c> at its default of <c>false</c>. A
     /// handler doing <c>db.Add(model); SaveChanges();</c> persists those nested rows: the exact
     /// silent-partial-graph hazard the strip exists to prevent, on the most ordinary shape there is —
     /// <b>a profile that declares no navigations at all</b>, which is what <c>W440OrderProfile</c> is.
@@ -594,6 +617,62 @@ public sealed class Issue440UndeclaredConventionNavWarningTests
         Assert.Equal(7, W440DeclaredOrderProfile.LastPosted.CustomerId);
     }
 
+    /// <summary>
+    /// #457, the deep-UPDATE half of the same thing. Deep update (§11.4.3.1) has been documented
+    /// out of scope since 1.0.0 (<c>docs/deep-insert.md</c>) but was never enforced, so <c>PUT</c>
+    /// forwarded the nested graph to the handler and <c>PATCH</c> bound it into the
+    /// <c>Delta&lt;TModel&gt;</c>. This asserts the enforcement reuses the SAME strip set — the
+    /// profile-declared navigations UNIONED with the EDM's (#461) — rather than a second one
+    /// derived from the declared names alone, which is the bug #461 fixed on POST.
+    /// <para>
+    /// At the handler, not on the wire: #240 omits every EDM navigation from the echo either way.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Symptom3_DeepUpdateStrip_AlsoStripsAnUndeclaredConventionNavigation_OnPutAndPatch()
+    {
+        var capture = new WarningCapture();
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        await using TestFixture fx = await W440Harness.BuildAsync(connection, capture, ConfigureAll);
+
+        W440OrderProfile.LastPut = null;
+        W440OrderProfile.LastPatchChangedProperties = null;
+
+        const string putBody = """
+            { "Id": 1, "Note": "put", "CustomerId": 7, "Customer": { "Id": 9, "Name": "C9" } }
+            """;
+
+        using var putContent = new StringContent(putBody, Encoding.UTF8, "application/json");
+        HttpResponseMessage put = await fx.Client.PutAsync("/odata/W440Orders(1)", putContent);
+        _out.WriteLine($"put:   {(int)put.StatusCode} {await put.Content.ReadAsStringAsync()}");
+        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
+
+        Assert.NotNull(W440OrderProfile.LastPut);
+        // Before the fix this was a populated W440Customer.
+        Assert.Null(W440OrderProfile.LastPut!.Customer);
+        // BOUNDING: one member, not a wiped graph — the scalars and the navigation's own foreign
+        // key are untouched.
+        Assert.Equal("put", W440OrderProfile.LastPut.Note);
+        Assert.Equal(7, W440OrderProfile.LastPut.CustomerId);
+
+        const string patchBody = """
+            { "Note": "patched", "CustomerId": 7, "Customer": { "Id": 9, "Name": "C9" } }
+            """;
+
+        using var patchContent = new StringContent(patchBody, Encoding.UTF8, "application/json");
+        HttpResponseMessage patch = await fx.Client.PatchAsync("/odata/W440Orders(1)", patchContent);
+        _out.WriteLine($"patch: {(int)patch.StatusCode} {await patch.Content.ReadAsStringAsync()}");
+        Assert.Equal(HttpStatusCode.OK, patch.StatusCode);
+
+        Assert.NotNull(W440OrderProfile.LastPatchChangedProperties);
+        // Before the fix 'Customer' was in this list, so delta.Patch(existing) wrote it.
+        Assert.DoesNotContain("Customer", W440OrderProfile.LastPatchChangedProperties!);
+        // BOUNDING: the scalars the same body carried are still in the delta, foreign key included.
+        Assert.Contains("Note", W440OrderProfile.LastPatchChangedProperties!);
+        Assert.Contains("CustomerId", W440OrderProfile.LastPatchChangedProperties!);
+    }
+
     // --------------------------------------------------------------- warning content
 
     /// <summary>
@@ -632,9 +711,13 @@ public sealed class Issue440UndeclaredConventionNavWarningTests
         // the navigation, it quietly accepted a nested value for it and forwarded that to Post. The
         // sentence naming the (now correct) write behaviour is added in the commit that made it true.
         Assert.Contains("will never accept a value for it", warning, StringComparison.Ordinal);
-        Assert.Contains("nested value for it in a POST body is discarded before the Post handler runs",
+        // #457: widened from "a POST body ... before the Post handler runs". Deep update
+        // (§11.4.3.1) is enforced now, so naming POST alone would understate the behaviour on
+        // exactly the two verbs that used to get it wrong.
+        Assert.Contains(
+            "nested value for it in a POST, PUT or PATCH body is discarded before the write handler runs",
             warning, StringComparison.Ordinal);
-        Assert.Contains("AllowDeepInsert", warning, StringComparison.Ordinal);
+        Assert.Contains("AllowDeepWrites", warning, StringComparison.Ordinal);
 
         // BOTH remedies.
         Assert.Contains("Declare it with HasOptional/HasRequired/HasMany", warning, StringComparison.Ordinal);
