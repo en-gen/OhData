@@ -1,5 +1,6 @@
 using System;
 using System.Data.Common;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Threading;
@@ -8,6 +9,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using OhData;
 using Xunit;
 
@@ -29,26 +31,50 @@ namespace OhData.AspNetCore.Tests;
 // past this catch to the group-level exception filter (OhDataEndpointFactory.MapAll) and comes back as
 // 500, never leaking the underlying exception's message/stack trace (S7).
 //
-// This suite proves BOTH branches of the narrowed filter using ONE harness/scenario pair reused from
+// #494 CORRECTS THE PARAGRAPH ABOVE. The narrowing it describes was right about DbException and
+// TimeoutException and wrong about the premise it rested on: that an InvalidOperationException at
+// this call site could only be EF's translation failure. It is not, and the counterexamples are the
+// ones that matter under load —
+//
+//   * SqlClient reports connection-pool exhaustion as a plain InvalidOperationException
+//     ("Timeout expired ... max pool size was reached") from SqlConnection.Open, raised AT
+//     ENUMERATION, inside these exact try blocks;
+//   * ObjectDisposedException DERIVES from InvalidOperationException, so a disposed DbContext
+//     matched the filter;
+//   * EF's own "a second operation was started on this context instance" is an
+//     InvalidOperationException.
+//
+// Every one of those answered 400 "simplify your query" — telling client retry logic NOT to retry —
+// while the SAME request without $expand correctly answered 500. The exception TYPE cannot separate
+// the two populations, so OhData no longer tries: OhDataEndpointFactory.TranslateThenMaterialize
+// splits the provider's TRANSLATION phase (the query factory and IQueryable.GetEnumerator, which is
+// where EF compiles and where it raises "could not be translated", verified on EF Core 10 against
+// SQLite) from its MATERIALIZATION phase (from the first MoveNext, which is where the connection is
+// opened and where every fault above arrives). Only the first is a 400. See that method's remarks.
+//
+// This suite proves all three classifications using ONE harness/scenario reused from
 // MultiLevelExpandPushdownSqliteTests.cs (Author → Books → Chapters, a delegate-less two-level chain):
-//   1. An InvalidOperationException during materialization still 400s (the filter still catches what
-//      it should) — the ONLY still-injectable EF Core failure of this kind, per the note below.
-//   2. A simulated transient provider fault during materialization of an OTHERWISE-translatable shape
-//      now 500s instead of being reclassified as a lying 400 (the bug this file fixes).
+//   1. A GENUINE EF translation failure — raised where EF really raises it — still 400s.
+//   2. An InvalidOperationException raised at MATERIALIZATION now 500s. That is the pool-exhaustion
+//      and disposed-context shape, and it is the case this file previously pinned the wrong way
+//      round (see the note on that test).
+//   3. A simulated transient provider fault during materialization of an OTHERWISE-translatable
+//      shape 500s rather than being reclassified as a lying 400 (the original bug this file fixed).
 // Reuses the MlAuthor/MlBook/MlChapter fixtures, MultiLevelDbContext, and MlAuthorProfile from
 // MultiLevelExpandPushdownSqliteTests.cs (that file itself stays untouched) — this file only adds its
-// own DbCommandInterceptor-based fault injection on top.
+// own DbCommandInterceptor-based fault injection, and one profile whose queryable carries a predicate
+// EF cannot translate, on top.
 //
-// #304 update: this suite's branch-1 coverage originally used a genuinely-untranslatable request shape
-// (Books($top=1;$expand=Chapters), the same SQLite APPLY/LATERAL reproducer as ExpandPushdownFailLoudTests)
-// to prove InvalidOperationException → 400. #304 deferred that shape's SQL composition to the JSON pass
-// (see OhDataEndpointFactory.ApplyNavShape/ShapePushedExpandsInJson), so it is now genuinely translatable
-// and no longer trips a real EF Core translation failure — there is no known-untranslatable expand shape
-// left reachable over HTTP on SQLite after #298/#300/#304. ThrowingReaderInterceptor was widened with an
-// InvalidOperationFault mode (alongside its pre-existing transient-DbException mode) so this suite keeps
-// proving the narrowed catch's InvalidOperationException branch without depending on a live untranslatable
-// shape — see GenuinelyUntranslatableShape's replacement,
-// InvalidOperationFault_DuringMaterialization_StillFailsLoud_400_NotMisclassifiedAs500, below.
+// #304 note, retained: this suite's translation-failure coverage originally used a genuinely-
+// untranslatable REQUEST shape (Books($top=1;$expand=Chapters), a SQLite APPLY/LATERAL reproducer).
+// #304 deferred that shape's SQL composition to the JSON pass (see
+// OhDataEndpointFactory.ApplyNavShape/ShapePushedExpandsInJson), so it is genuinely translatable now
+// and there is no known-untranslatable expand shape left reachable over HTTP on SQLite. The
+// replacement at the time was an interceptor-injected InvalidOperationException — which, being
+// injected at ReaderExecuting, was injected in the WRONG PHASE and is precisely what made this file
+// assert the defect as correct behaviour. #494 moves that coverage to a real EF translation failure
+// (MlAuthorUntranslatableProfile below) and repurposes the injected InvalidOperationException as
+// what it always actually was: a materialization-time infrastructure fault.
 
 /// <summary>
 /// A minimal, constructible <see cref="DbException"/> subclass standing in for a real transient
@@ -70,14 +96,46 @@ internal enum ThrowingReaderInterceptorMode
     /// fault (connection drop / command timeout / deadlock). Must classify as 500, never 400.</summary>
     TransientDbFault,
 
-    /// <summary>An <see cref="InvalidOperationException"/> carrying the same "...could not be
-    /// translated..." message family EF Core itself throws for a genuinely untranslatable LINQ shape
-    /// (empirically confirmed pre-#304 via the SQLite APPLY/LATERAL shape ExpandPushdownFailLoudTests
-    /// used to reproduce). #304 deferred that specific shape to the JSON pass, so it no longer trips a
-    /// real translation failure over HTTP — this mode proves the narrowed catch's OTHER branch
-    /// (InvalidOperationException → 400) still works without depending on a live untranslatable shape.
-    /// </summary>
+    /// <summary>#494: a plain <see cref="InvalidOperationException"/> raised where the command
+    /// executes. This is the shape SqlClient's connection-pool exhaustion takes (from
+    /// <c>SqlConnection.Open</c>) and the shape EF's "a second operation was started on this context
+    /// instance" takes. Must classify as 500, never 400 — a 400 tells client retry logic not to
+    /// retry a fault that is entirely retryable.</summary>
     InvalidOperationFault,
+
+    /// <summary>#494: an <see cref="ObjectDisposedException"/> — which DERIVES from
+    /// <see cref="InvalidOperationException"/>, the disposed-<c>DbContext</c> shape, and so matched
+    /// the old type-list filter. Must classify as 500, never 400.</summary>
+    ObjectDisposedFault,
+}
+
+/// <summary>
+/// #494: a profile whose queryable carries a predicate EF Core cannot translate, so a request
+/// against it trips a REAL translation failure in the phase EF really raises one — out of
+/// <c>IQueryable.GetEnumerator()</c>, before any command executes. Same MlAuthor/MlBook/MlChapter
+/// fixture and the same delegate-less <c>HasMany(x =&gt; x.Books)</c> pushdown as
+/// <c>MlAuthorProfile</c>; the only difference is the untranslatable <c>Where</c>.
+/// </summary>
+public sealed class MlAuthorUntranslatableProfile : EntitySetProfile<int, MlAuthor>
+{
+    internal const string Marker = "untranslatable-client-side-method";
+
+    // A client-side method inside a Where predicate. EF Core permits client evaluation in a final
+    // projection but never in a predicate, so this is the provider-independent way to make
+    // translation — and only translation — fail.
+    private static string ClientOnly(string s) => s + Marker;
+
+    public MlAuthorUntranslatableProfile(MultiLevelDbContext db) : base(x => x.Id)
+    {
+        EntitySetName = "UntranslatableAuthors";
+        ExpandEnabled = true;
+        SelectEnabled = true;
+        FilterEnabled = true;
+        OrderByEnabled = true;
+        CountEnabled = true;
+        GetQueryable = _ => Task.FromResult(db.Authors.Where(a => ClientOnly(a.Name) == Marker));
+        HasMany(x => x.Books);
+    }
 }
 
 /// <summary>
@@ -105,7 +163,11 @@ internal sealed class ThrowingReaderInterceptor : DbCommandInterceptor
             throw _mode switch
             {
                 ThrowingReaderInterceptorMode.InvalidOperationFault => new InvalidOperationException(
-                    "simulated: the LINQ expression could not be translated. Simplify the query or write an equivalent."),
+                    "simulated: Timeout expired. The timeout period elapsed prior to obtaining a "
+                    + "connection from the pool. This may have occurred because all pooled connections "
+                    + "were in use and max pool size was reached."),
+                ThrowingReaderInterceptorMode.ObjectDisposedFault => new ObjectDisposedException(
+                    "MultiLevelDbContext", "simulated: the DbContext has been disposed."),
                 _ => new SimulatedTransientDbException(
                     "simulated transient database fault (connection drop / timeout / deadlock)"),
             };
@@ -213,33 +275,100 @@ public sealed class ExpandPushdownExceptionClassificationTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
     }
 
+    /// <summary>
+    /// #494. This test previously asserted <c>400</c> and was named
+    /// <c>InvalidOperationFault_DuringMaterialization_StillFailsLoud_400_NotMisclassifiedAs500</c>.
+    /// Its expectation was wrong, and it is what kept the defect pinned as correct behaviour: the
+    /// interceptor injects at <c>ReaderExecuting</c>, i.e. while the command runs, which is exactly
+    /// where SqlClient raises pool exhaustion and where EF raises "a second operation was started on
+    /// this context instance" — and both of those are plain
+    /// <see cref="InvalidOperationException"/>s. Nothing about the request is wrong in that
+    /// situation, so 400 was actively harmful: it tells client retry logic not to retry a fault that
+    /// is entirely retryable, and it did so only for requests carrying <c>$expand</c> (the same
+    /// request without one correctly 500'd).
+    /// </summary>
     [Fact]
-    public async Task InvalidOperationFault_DuringMaterialization_StillFailsLoud_400_NotMisclassifiedAs500()
+    public async Task InvalidOperationFault_DuringMaterialization_Is500_NotMisclassifiedAs400()
     {
-        // Coverage for the OTHER branch of the narrowed filter. Before #304, Books($top=1;$expand=Chapters)
-        // itself tripped EF's own InvalidOperationException ("...could not be translated...") on the
-        // SQLite APPLY/LATERAL shape ExpandPushdownFailLoudTests used to reproduce — #304 deferred that
-        // shape's windowing to the JSON pass, so it is genuinely translatable now (see
-        // ExpandPushdownFailLoudTests.NestedTopWithChildren_NowWorks_200_WindowedParentWithItsChildren)
-        // and no longer trips a real translation failure. Rather than lose coverage of this catch branch,
-        // the SAME interceptor used above to simulate a transient DbException is armed in its
-        // InvalidOperationFault mode instead — proving InvalidOperationException is still classified 400
-        // (not swallowed into the group-level 500 handler) without depending on a live untranslatable
-        // shape. The request shape itself (Books($expand=Chapters), no nested $top/$skip/$count) is the
-        // same genuinely-translatable one used by the control/transient-fault tests above.
+        // The request shape (Books($expand=Chapters), no nested $top/$skip/$count) is the same
+        // genuinely-translatable one used by the control and transient-fault tests above, so the
+        // only thing wrong here is the injected infrastructure fault.
         _interceptor.Arm(ThrowingReaderInterceptorMode.InvalidOperationFault);
 
         HttpResponseMessage resp = await _fx.Client.GetAsync(
             "/odata/Authors?$orderby=id&$expand=Books($expand=Chapters)");
+
+        Assert.Equal(HttpStatusCode.InternalServerError, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("\"error\"", body);
+        Assert.Contains("InternalServerError", body);
+        Assert.DoesNotContain("InvalidQueryOption", body);
+
+        // S7: the raw injected exception's message must never leak to the client on the 500 path.
+        Assert.DoesNotContain("simulated:", body);
+        Assert.DoesNotContain("max pool size", body);
+    }
+
+    /// <summary>
+    /// #494: <see cref="ObjectDisposedException"/> derives from
+    /// <see cref="InvalidOperationException"/>, so a disposed <c>DbContext</c> matched the old
+    /// type-list filter and came back 400. It is a server fault in any phase.
+    /// </summary>
+    [Fact]
+    public async Task ObjectDisposedFault_DuringMaterialization_Is500_NotMisclassifiedAs400()
+    {
+        _interceptor.Arm(ThrowingReaderInterceptorMode.ObjectDisposedFault);
+
+        HttpResponseMessage resp = await _fx.Client.GetAsync(
+            "/odata/Authors?$orderby=id&$expand=Books($expand=Chapters)");
+
+        Assert.Equal(HttpStatusCode.InternalServerError, resp.StatusCode);
+
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("InternalServerError", body);
+        Assert.DoesNotContain("InvalidQueryOption", body);
+        Assert.DoesNotContain("simulated:", body);
+    }
+
+    /// <summary>
+    /// #494, the other side of the split: a request the provider genuinely cannot translate is still
+    /// a <c>400</c>, and now it is proved with a REAL EF Core translation failure raised where EF
+    /// raises one — out of <c>GetEnumerator()</c>, before any command executes — rather than with an
+    /// exception injected at command-execution time. Also pins the log level: the diagnostic used to
+    /// be written at <c>Debug</c>, invisible at production log levels, which is what left an operator
+    /// with a spike of 400s and no server-side signal at all.
+    /// </summary>
+    [Fact]
+    public async Task GenuineTranslationFailure_Is400_AndIsLoggedAtWarning()
+    {
+        var logs = new CapturingLoggerProvider();
+        await using TestFixture fx = await TestHostBuilder.BuildAsync(
+            b => b.AddEntitySetProfile<MlAuthorUntranslatableProfile>(),
+            configureServices: services =>
+            {
+                services.AddDbContext<MultiLevelDbContext>(o => o.UseSqlite(_connection));
+                services.AddLogging(b => b.AddProvider(logs));
+            });
+
+        HttpResponseMessage resp = await fx.Client.GetAsync(
+            "/odata/UntranslatableAuthors?$orderby=id&$expand=Books");
 
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
 
         string body = await resp.Content.ReadAsStringAsync();
         Assert.Contains("\"error\"", body);
         Assert.Contains("InvalidQueryOption", body);
+        Assert.Contains("could not be translated by the underlying data provider", body);
 
-        // S7: the raw injected exception's message must never leak to the client, on this 400 path
-        // exactly as it already doesn't for a real EF translation failure.
-        Assert.DoesNotContain("simulated:", body);
+        // S7: EF's own message (which names the LINQ expression, and with it the model's shape)
+        // must not reach the client.
+        Assert.DoesNotContain(MlAuthorUntranslatableProfile.Marker, body);
+
+        // The operator does get it, at a level that is on in production.
+        Assert.Contains(logs.Entries, e =>
+            e.Level == LogLevel.Warning &&
+            e.Message.Contains("$expand pushdown query failed to translate", StringComparison.Ordinal) &&
+            e.Exception is InvalidOperationException);
     }
 }
