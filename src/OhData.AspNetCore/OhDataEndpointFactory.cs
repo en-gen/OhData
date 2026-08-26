@@ -115,9 +115,10 @@ internal static class OhDataEndpointFactory
     }
 
     // #468: one entry of the OData service document (JSON Format section 5). The JSON names are
-    // pinned with [JsonPropertyName] rather than left to a naming policy: this route serializes
-    // through Results.Ok, i.e. the HOST's JsonOptions, whose casing OhData does not own, and the
-    // wire names are lower-case by spec either way.
+    // pinned with [JsonPropertyName] rather than left to a naming policy, because the wire names
+    // are lower-case by spec whatever any policy says. (#495: the route no longer serializes
+    // through Results.Ok / the host's JsonOptions -- it pre-renders with
+    // _frameworkEnvelopeSerializerOptions -- but the pinned names stay, for the same reason.)
     private sealed record ServiceDocumentEntry(
         [property: JsonPropertyName("name")] string Name,
         [property: JsonPropertyName("kind")] string Kind,
@@ -794,6 +795,86 @@ internal static class OhDataEndpointFactory
         }
     }
 
+    // #494: signals that the underlying LINQ provider could not TRANSLATE the query shape the
+    // request asked for -- thrown only by TranslateThenMaterialize below, and caught by the three
+    // $expand-pushdown execution sites, which rewrite it into their own 400 message. A dedicated
+    // type for the same reason FilterArithmeticFaultException is one: the surrounding code already
+    // catches ODataException for other reasons.
+    private sealed class QueryTranslationFailedException(Exception inner)
+        : Exception(inner.Message, inner);
+
+    /// <summary>
+    /// Enumerates <paramref name="build"/>'s query, separating the provider's TRANSLATION phase
+    /// from its MATERIALIZATION phase so the two can be classified differently.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// #494. The three $expand-pushdown execution sites used to wrap a whole
+    /// <c>query.ToArray()</c> in <c>catch (ex is InvalidOperationException or
+    /// NotSupportedException or ODataException)</c> and answer <c>400</c> "could not be translated
+    /// by the underlying data provider". The premise -- recorded in those comments and in
+    /// <c>ExpandPushdownExceptionClassificationTests</c> -- was that a real infrastructure fault
+    /// arrives as a <c>DbException</c> subclass or a <c>TimeoutException</c>, so an
+    /// <c>InvalidOperationException</c> could only be EF's translation failure. That premise is
+    /// false, and the counterexamples are the ones that matter under load: SqlClient reports
+    /// connection-pool exhaustion as a plain <c>InvalidOperationException</c> ("Timeout expired ...
+    /// max pool size was reached") from <c>SqlConnection.Open</c>; <c>ObjectDisposedException</c>
+    /// DERIVES from <c>InvalidOperationException</c>, so a disposed <c>DbContext</c> matched too;
+    /// and EF's own "a second operation was started on this context instance" is an
+    /// <c>InvalidOperationException</c>. Under any of those, an <c>$expand</c> request answered
+    /// <c>400</c> -- telling client retry logic NOT to retry -- while the same request without
+    /// <c>$expand</c> correctly answered <c>500</c>.
+    /// </para>
+    /// <para>
+    /// The populations are separated POSITIVELY rather than by widening or narrowing the type
+    /// list, because no type list can separate them: EF raises a translation failure BEFORE any
+    /// command executes. <c>IQueryable&lt;T&gt;.GetEnumerator()</c> is what compiles the query
+    /// (<c>EntityQueryProvider.Execute</c>), and the connection is not opened until the first
+    /// <c>MoveNext()</c>. Verified on EF Core 10 / .NET 10.0.11 against SQLite: an untranslatable
+    /// <c>Where</c> throws <c>InvalidOperationException</c> ("The LINQ expression ... could not be
+    /// translated") out of <c>GetEnumerator()</c>, with the enumerator never created. So the
+    /// <c>build</c> delegate and <c>GetEnumerator</c> are the translation window -- expression
+    /// construction included, which is why this takes a factory rather than a query (the Include
+    /// fallback builds its query by reflection and deliberately unwraps its own
+    /// <c>TargetInvocationException</c> so the real type reaches this filter) -- and everything
+    /// from the first <c>MoveNext</c> onward propagates untouched to the group-level exception
+    /// filter, i.e. a logged <c>500</c>.
+    /// </para>
+    /// <para>
+    /// <c>ObjectDisposedException</c> is excluded from the translation window as well: a disposed
+    /// context can fail at compile time too, and "the object is gone" is never a statement about
+    /// the client's query.
+    /// </para>
+    /// <para>
+    /// A provider that translated lazily -- inside <c>MoveNext</c> rather than
+    /// <c>GetEnumerator</c> -- would surface its translation failures as <c>500</c> here instead of
+    /// <c>400</c>. That is the safe direction (loud either way, and never a false "retry is
+    /// pointless"), and EF Core, the only provider this path is reachable with, does not do it.
+    /// </para>
+    /// </remarks>
+    private static T[] TranslateThenMaterialize<T>(Func<IQueryable<T>> build)
+    {
+        IEnumerator<T> enumerator;
+        try
+        {
+            enumerator = build().GetEnumerator();
+        }
+        catch (Exception ex) when (ex is not ObjectDisposedException
+                                   && ex is InvalidOperationException or NotSupportedException
+                                       or Microsoft.OData.ODataException)
+        {
+            throw new QueryTranslationFailedException(ex);
+        }
+
+        // Materialization window. Nothing is caught here on purpose -- see the remarks above.
+        using (enumerator)
+        {
+            var buffer = new List<T>();
+            while (enumerator.MoveNext()) buffer.Add(enumerator.Current);
+            return buffer.ToArray();
+        }
+    }
+
     // #241: reports whether the result order is already established by a top-level ordering operator,
     // so the stabilizing key order below never overrides a profile that pre-orders its own IQueryable.
     // Walks only the outer method-call spine (following the source argument) — an OrderBy buried inside
@@ -1037,10 +1118,20 @@ internal static class OhDataEndpointFactory
         // type names, file paths) to the client -- and log the real exception so operators can
         // actually diagnose the failure. Registered as the outermost group filter (added first)
         // so it also covers exceptions thrown by the OData-Version/$format/Accept and
-        // OData-MaxVersion filters below, not just route handlers. Deliberately does not catch
-        // OperationCanceledException: a client-aborted request has no response to write and
-        // should be left to ASP.NET Core's own cancellation handling rather than have this filter
-        // try to produce a 500 for it.
+        // OData-MaxVersion filters below, not just route handlers.
+        //
+        // #493: the one exception it declines to catch is a cancellation raised BECAUSE THE CLIENT
+        // WENT AWAY -- there is no response left to write, so it is left to ASP.NET Core's own
+        // cancellation handling. That is a statement about the REQUEST, not about the exception
+        // type, and the filter used to test the type alone (`ex is not OperationCanceledException`).
+        // The whole OCE family escaped, aborted or not -- and TaskCanceledException is what
+        // HttpClient throws on ITS OWN timeout, i.e. a server-side dependency fault wearing
+        // cancellation's clothes. Measured on the pre-fix tree with a handler that threw
+        // TaskCanceledException on a request that was never aborted: HTTP 500 with an EMPTY body,
+        // no envelope, and nothing logged by OhData at all -- precisely the failure mode this
+        // filter exists to eliminate, on what is arguably the most common outbound-dependency
+        // failure there is. The condition therefore now asks RequestAborted as well: an OCE on a
+        // live request is an ordinary unhandled exception and is logged and enveloped like one.
         group.AddEndpointFilter(async (ctx, next) =>
         {
             try
@@ -1055,7 +1146,8 @@ internal static class OhDataEndpointFactory
                 return ODataError(413, "RequestEntityTooLarge",
                     "The request body exceeds the maximum allowed size.");
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (ex is not OperationCanceledException
+                                       || !ctx.HttpContext.RequestAborted.IsCancellationRequested)
             {
                 groupLogger?.LogError(ex, "OhData: unhandled exception processing {Method} {Path}",
                     SanitizeLogValue(ctx.HttpContext.Request.Method),
@@ -1211,11 +1303,15 @@ internal static class OhDataEndpointFactory
         group.MapGet("", (HttpContext ctx) =>
         {
             string baseUrl = BuildBaseUrl(ctx, prefix);
-            return Results.Ok(new Dictionary<string, object>
+            // #495: rendered here with OhData's own options, not deferred to Results.Ok and the
+            // HOST's HttpJsonOptions. `@odata.context`/`value` are contractual dictionary keys and
+            // a host DictionaryKeyPolicy rewrote both; the entries themselves are framework-
+            // generated strings, so nothing here is payload a host converter should be shaping.
+            return PreRenderedJson(new Dictionary<string, object>
             {
                 ["@odata.context"] = $"{baseUrl}/$metadata",
                 ["value"] = serviceDocEntitySets
-            });
+            }, _frameworkEnvelopeSerializerOptions);
         }).ExcludeFromDescription();
 
         // $metadata -- CSDL XML describing the EDM model
@@ -1676,6 +1772,47 @@ internal static class OhDataEndpointFactory
         }
     }
 
+    // #495: the options for envelopes whose ENTIRE content is framework-generated -- every OData
+    // error envelope, and the service document. Deliberately a standalone, host-free instance
+    // rather than the registration's own `jsonOptions` (which derives from the host's and so
+    // carries its converters, encoder and key policy by design, #252).
+    //
+    // An error envelope's members are `error`/`code`/`message`/`target`, the service document's are
+    // `@odata.context`/`value`: contractual identifiers from the OData formats, not names any
+    // policy may rewrite. Their values are strings this framework generated -- no user model data
+    // anywhere -- so there is nothing here for a host converter or naming policy to have an opinion
+    // about, and two things for it to break:
+    //
+    //  * SHAPE. These envelopes are Dictionary<string, ...>, so a host DictionaryKeyPolicy applies
+    //    to the keys. Measured on the pre-fix tree with the host's HttpJsonOptions set to
+    //    SnakeCaseUpper: {"ERROR":{"CODE":"NotFound","MESSAGE":...}} -- every error response the
+    //    framework produces, on every route, loses the shape a client switches on.
+    //  * FAULT. A host converter that THROWS took the envelope with it: the dictionary was handed
+    //    to Results.BadRequest/NotFound/Json and serialized at IResult-execute time, i.e. after the
+    //    endpoint-filter chain unwound (the #396 hazard), so the group filter could neither catch
+    //    it nor log it. Measured: an empty 500 with no OhData log -- including for the group
+    //    filter's OWN 500 envelope, which is the one response that must never fail.
+    //
+    // Both are closed by rendering here, inside the pipeline, with options this framework owns.
+    //
+    // The Encoder is set EXPLICITLY and is not decoration. ASP.NET Core's own
+    // Microsoft.AspNetCore.Http.Json.JsonOptions overrides the Web default with
+    // UnsafeRelaxedJsonEscaping, on the stated grounds that its output goes straight to a response
+    // body rather than into an HTML page -- which is equally true here. A bare
+    // `new JsonSerializerOptions()` leaves Encoder null, i.e. JavaScriptEncoder.Default, and that
+    // is NOT the same bytes: measured on a default host, a 404 whose message quotes the requested
+    // key emitted each apostrophe as a six-character unicode escape rather than literally
+    // (78 -> 88 bytes), and every angle bracket, ampersand and non-ASCII character would go the
+    // same way. Everything else about
+    // ASP.NET Core's defaults that could reach these envelopes already matches -- DictionaryKeyPolicy
+    // and WriteIndented are unset there too, and PropertyNamingPolicy cannot apply (dictionary keys
+    // are not property names, and ServiceDocumentEntry pins its own with [JsonPropertyName]).
+    // ErrorEnvelopeFidelityTests pins the exact bytes rather than the reasoning.
+    private static readonly JsonSerializerOptions _frameworkEnvelopeSerializerOptions = new()
+    {
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
     internal static IResult ODataError(
         int status, string code, string message,
         string? target = null)
@@ -1684,12 +1821,7 @@ internal static class OhDataEndpointFactory
         if (target is not null) errorObj["target"] = target;
 
         var body = new Dictionary<string, object> { ["error"] = errorObj };
-        return status switch
-        {
-            400 => Results.BadRequest(body),
-            404 => Results.NotFound(body),
-            _ => Results.Json(body, statusCode: status)
-        };
+        return PreRenderedJson(body, _frameworkEnvelopeSerializerOptions, status);
     }
 
     // #396: serialize NOW, inside the endpoint-filter pipeline, and return the bytes.
@@ -1737,6 +1869,47 @@ internal static class OhDataEndpointFactory
     private static IResult PreRenderedJson<TValue>(
         TValue value, JsonSerializerOptions options, int statusCode = StatusCodes.Status200OK)
         => new Utf8JsonHttpResult(JsonSerializer.SerializeToUtf8Bytes(value, options), statusCode);
+
+    // #495: the owned options, with the OData envelope's contractual dictionary keys protected.
+    //
+    // Every OData success envelope this framework emits is a Dictionary<string, ...> whose keys --
+    // `@odata.context`, `value`, `@odata.count`, `@odata.nextLink` -- are identifiers the format
+    // defines, not names a policy may rewrite. System.Text.Json applies DictionaryKeyPolicy to
+    // them, so a host that set one reshaped every such response: measured with the host's
+    // HttpJsonOptions DictionaryKeyPolicy at SnakeCaseUpper, a plain collection GET came back as
+    // {"@ODATA.CONTEXT":...,"VALUE":[...]} -- parseable JSON that no OData client can read. (The
+    // entity routes were never affected: they emit a JsonObject, whose member names STJ writes
+    // verbatim.) The registration's own options inherit the policy from the host's by construction
+    // (#252 copies the host instance and overrides only PropertyNamingPolicy), so clearing it has
+    // to happen here.
+    //
+    // Everything else is left exactly as the host configured it -- converters, encoder,
+    // PropertyNamingPolicy -- because the values in these envelopes ARE payload, and #252's
+    // division is that OhData owns the names and the host owns value formatting.
+    //
+    // Costs nothing on a host that set no policy, which is every default configuration: the source
+    // instance is returned by reference, so no options are copied and no second JsonTypeInfo cache
+    // is created. Only a host that really set one pays for the derived instance, once per source
+    // instance (the sources here are per-registration, built at startup).
+    private static readonly ConditionalWeakTable<JsonSerializerOptions, JsonSerializerOptions>
+        _envelopeOptionsCache = new();
+
+    private static JsonSerializerOptions EnvelopeOptions(JsonSerializerOptions source)
+        => source.DictionaryKeyPolicy is null
+            ? source
+            : _envelopeOptionsCache.GetValue(
+                source, static s => new JsonSerializerOptions(s) { DictionaryKeyPolicy = null });
+
+    // #495: every framework envelope that carries payload goes out through here, so the contractual
+    // keys are governed by OhData's options rather than the host's. Deliberately still DEFERRED
+    // (Results.Json, not PreRenderedJson): the `value` member of these envelopes is a JsonArray the
+    // handler already materialized, so there is no user code left to fault, and buffering a whole
+    // collection page would be a real cost for no gain -- see PreRenderedJson's measured note. The
+    // envelopes whose content is entirely framework-generated (errors, the service document) DO
+    // pre-render, because there the payoff is the group filter being able to see a fault at all.
+    private static IResult ODataEnvelopeResult(
+        Dictionary<string, object?> envelope, JsonSerializerOptions? jsonOptions)
+        => Results.Json(envelope, EnvelopeOptions(jsonOptions ?? _pascalCaseSerializerOptions));
 
     // The pre-rendered counterpart to JsonHttpResult: holds bytes that are already final, so its
     // ExecuteAsync runs no serialization and therefore cannot fail after the status line commits.
@@ -2069,7 +2242,13 @@ internal static class OhDataEndpointFactory
             error = ODataError(400, "InvalidQueryOption", ex.Message);
             return false;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        // #493: same refinement as the group filter -- decline the OCE family only when the client
+        // really did abort. A cancellation raised by something INSIDE the construction while the
+        // request is still live is a fault, not a disconnect, and belongs in the same 400 as the
+        // rest of the measured throw set. The stakes are lower here than at the group filter (no
+        // handler runs inside this try), but the asymmetry would invite the same bug back.
+        catch (Exception ex) when (ex is not OperationCanceledException
+                                   || !ctx.RequestAborted.IsCancellationRequested)
         {
             options = null;
             logger?.LogWarning(ex,
@@ -4695,10 +4874,16 @@ internal static class OhDataEndpointFactory
                 // Narrowed (adversarial review, post-branch): this step is pure in-memory expression
                 // construction via Microsoft's FilterBinder/OrderByBinder (see BindNavShape) — no
                 // database I/O happens here, so there is no transient/provider fault class to worry
-                // about. The filter is narrowed anyway, for consistency with the execution-time catch
-                // below and so a genuine framework bug (e.g. a NullReferenceException from a binder
-                // defect) surfaces as a 500 for investigation rather than being mislabeled a 400
-                // "your query is bad" response.
+                // about. The filter is narrowed so a genuine framework bug (e.g. a
+                // NullReferenceException from a binder defect) surfaces as a 500 for investigation
+                // rather than being mislabeled a 400 "your query is bad" response.
+                //
+                // #494 deliberately left this one alone. The execution-time catches it used to be
+                // "consistent with" were classifying by exception TYPE around a call that really
+                // does touch the database, which is what made their type list wrong; this call
+                // touches nothing, so the same list is sound here. In TranslateThenMaterialize's
+                // terms, everything below is translation and there is no materialization phase to
+                // separate it from.
                 logger?.LogDebug(ex,
                     "OhData: $expand pushdown failed for {EntitySet}: a nested expand option could not be bound.",
                     source.EntitySetName);
@@ -7557,7 +7742,7 @@ internal static class OhDataEndpointFactory
                         envelope["@odata.nextLink"] = effectiveNextLink;
                     }
                     envelope["value"] = finalItems;
-                    return Results.Ok(envelope);
+                    return ODataEnvelopeResult(envelope, jsonOptions);
                 }
                 catch (Microsoft.OData.ODataException ex)
                 {
@@ -7950,8 +8135,11 @@ internal static class OhDataEndpointFactory
                         {
                             try
                             {
+                                // #494: only the TRANSLATION of this query is a client-error
+                                // candidate; a fault raised once rows start arriving is the
+                                // server's. See TranslateThenMaterialize.
                                 ExpandCountCarrier<TModel>[] carriers = EvaluateQueryWithArithmeticFaultGuard(
-                                    () => carrierQuery.ToArray(), options, logger, source.EntitySetName);
+                                    () => TranslateThenMaterialize(() => carrierQuery), options, logger, source.EntitySetName);
 
                                 // Unwrap IMMEDIATELY: `items` is a plain TModel[] from here on, so
                                 // nothing downstream of materialization — the whole JSON shaping
@@ -7967,13 +8155,12 @@ internal static class OhDataEndpointFactory
                                         carrierCounts[carrierCounted[ci].Binding.Property][i] = carriers[i].Slot(ci);
                                 }
                             }
-                            catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException
-                                or Microsoft.OData.ODataException)
+                            catch (QueryTranslationFailedException ex)
                             {
-                                // Same narrowed, fail-loud discipline (and the same message) as the
-                                // ordinary pushdown execution site below — see its comment for why
+                                // Same fail-loud discipline (and the same message) as the ordinary
+                                // pushdown execution site below — see its comment for why
                                 // provider/infrastructure faults must NOT be relabelled 400 here.
-                                logger?.LogDebug(ex,
+                                logger?.LogWarning(ex.InnerException,
                                     "OhData: $expand count-carrier pushdown query failed to translate for {EntitySet}.",
                                     source.EntitySetName);
                                 throw new Microsoft.OData.ODataException(
@@ -8060,24 +8247,32 @@ internal static class OhDataEndpointFactory
 
                             try
                             {
-                                IQueryable<TModel> included = ApplyIncludeFallback(
-                                    filtered, engagedExpandNavs, efInclude, registration.EdmModel,
-                                    source.MaxExpandTop);
+                                // #494: BUILDING the Include chain is part of the translation
+                                // window, not a separate step — ApplyIncludeFallback constructs its
+                                // query by reflection and deliberately unwraps its own
+                                // TargetInvocationException so the provider's real exception type
+                                // reaches the classifier. It therefore goes INSIDE the factory
+                                // TranslateThenMaterialize treats as translation.
                                 items = EvaluateQueryWithArithmeticFaultGuard(
-                                    () => ApplySelectPushdown(included).ToArray(), options, logger, source.EntitySetName);
+                                    () => TranslateThenMaterialize(() => ApplySelectPushdown(
+                                        ApplyIncludeFallback(
+                                            filtered, engagedExpandNavs, efInclude, registration.EdmModel,
+                                            source.MaxExpandTop))),
+                                    options, logger, source.EntitySetName);
                                 // engagedExpandNavs stays SET (not nulled): the existing
                                 // ShapePushedExpandsInJson pass below shapes nested
                                 // $count/$select/$top/$skip exactly as it does for the projection path.
                             }
-                            catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException
-                                or Microsoft.OData.ODataException)
+                            catch (QueryTranslationFailedException ex)
                             {
-                                // Same narrowed catch discipline as the translation-failure site below
-                                // (S7: never leak ex.Message/provider details to the client): Include
-                                // construction/execution failing — e.g. TModel is not an EF entity in
-                                // this model, or this is not a tracking query — is a genuine capability
-                                // gap, not something to paper over with missing data.
-                                logger?.LogDebug(ex,
+                                // Same discipline as the translation-failure site below (S7: never
+                                // leak ex.Message/provider details to the client): Include
+                                // construction or translation failing — e.g. TModel is not an EF
+                                // entity in this model, or this is not a tracking query — is a
+                                // genuine capability gap, not something to paper over with missing
+                                // data. A fault raised while the ROWS come back is not: it falls
+                                // through to the group filter's 500.
+                                logger?.LogWarning(ex.InnerException,
                                     "OhData: $expand Include fallback failed for {EntitySet}.",
                                     source.EntitySetName);
                                 throw new Microsoft.OData.ODataException(
@@ -8092,10 +8287,9 @@ internal static class OhDataEndpointFactory
                             try
                             {
                                 items = EvaluateQueryWithArithmeticFaultGuard(
-                                    () => pushedQuery.ToArray(), options, logger, source.EntitySetName);
+                                    () => TranslateThenMaterialize(() => pushedQuery), options, logger, source.EntitySetName);
                             }
-                            catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException
-                                or Microsoft.OData.ODataException)
+                            catch (QueryTranslationFailedException ex)
                             {
                                 // FAIL LOUD (owner directive, post-#298/#300 review): a folded $expand
                                 // projection that fails to translate at the provider must not silently
@@ -8105,29 +8299,32 @@ internal static class OhDataEndpointFactory
                                 // longer composes the untranslatable SQL shape for those two cases). Any
                                 // OTHER combination this provider still cannot translate is a genuine
                                 // capability gap, not something to paper over with missing data — 400,
-                                // not a silently-wrong 200. Logged at Debug (same diagnostic detail as
-                                // before); the client-facing message stays generic (never ex.Message/
-                                // stack trace, which could leak provider/schema details) per this file's
-                                // existing InternalServerError convention (S7).
+                                // not a silently-wrong 200. The client-facing message stays generic
+                                // (never ex.Message/stack trace, which could leak provider/schema
+                                // details) per this file's existing InternalServerError convention (S7).
                                 //
-                                // Narrowed (adversarial review MEDIUM, post-branch): this catch runs at
-                                // QUERY-EXECUTION time (pushedQuery.ToArray() above), unlike the build-time
-                                // catch in TryApplySelectProjection — so, unlike that one, this site CAN see
-                                // real provider/infrastructure faults (DB command timeouts, connection
-                                // drops, deadlocks: SqliteException/SqlException/other DbException,
-                                // TimeoutException). Those are transient server-side faults, not "the client
-                                // asked for something untranslatable" — they must propagate to the
-                                // group-level exception filter and come back as 500 (retryable), never be
-                                // relabeled 400 (which tells client retry logic NOT to retry). EF Core
-                                // raises an untranslatable-query failure as InvalidOperationException
-                                // (message "...could not be translated...", empirically confirmed via this
-                                // file's own ExpandPushdownFailLoudTests reproducer on SQLite); NotSupportedException
-                                // covers the same LINQ-translation-failure family for other providers/shapes.
-                                // ODataException is kept because Microsoft's own binder can also throw from
-                                // this call chain. OperationCanceledException was never caught here (dropped
-                                // from the filter along with everything else not in the allowlist above) and
-                                // still propagates to ASP.NET Core's own client-disconnect handling.
-                                logger?.LogDebug(ex,
+                                // #494: what reaches this catch is decided by WHEN the provider threw,
+                                // not by what it threw. An earlier revision allowlisted
+                                // InvalidOperationException / NotSupportedException / ODataException
+                                // around the whole materialization, on the premise that a real
+                                // infrastructure fault could only arrive as a DbException subclass or a
+                                // TimeoutException. It cannot: SqlClient reports pool exhaustion as a
+                                // plain InvalidOperationException from SqlConnection.Open, at
+                                // enumeration, inside this exact try; ObjectDisposedException derives
+                                // from InvalidOperationException; and EF's "a second operation was
+                                // started on this context instance" is one as well. Every one of those
+                                // came back as 400 "simplify your query", telling client retry logic not
+                                // to retry a fault that is entirely retryable — while the SAME request
+                                // without $expand correctly 500'd. TranslateThenMaterialize now splits
+                                // the two phases at GetEnumerator/MoveNext, so only a genuine
+                                // translation failure lands here and everything else propagates to the
+                                // group-level exception filter as a logged 500.
+                                //
+                                // Logged at Warning (was Debug, invisible at production log levels): a
+                                // request this server cannot translate is something the operator wants
+                                // to see, and it is the same level TryBuildQueryOptions and BadKeyError
+                                // already use for the 400s they raise.
+                                logger?.LogWarning(ex.InnerException,
                                     "OhData: $expand pushdown query failed to translate for {EntitySet}.",
                                     source.EntitySetName);
                                 throw new Microsoft.OData.ODataException(
@@ -8285,7 +8482,7 @@ internal static class OhDataEndpointFactory
                     if (odataCount.HasValue) envelope["@odata.count"] = odataCount;
                     if (nextLink is not null) envelope["@odata.nextLink"] = nextLink;
                     envelope["value"] = finalItems;
-                    return Results.Ok(envelope);
+                    return ODataEnvelopeResult(envelope, jsonOptions);
                 }
                 catch (Microsoft.OData.ODataException ex)
                 {
@@ -8460,7 +8657,7 @@ internal static class OhDataEndpointFactory
                         if (searchNextLink is not null)
                             searchEnvelope["@odata.nextLink"] = searchNextLink;
                         searchEnvelope["value"] = searchFinal;
-                        return Results.Ok(searchEnvelope);
+                        return ODataEnvelopeResult(searchEnvelope, jsonOptions);
                     }
 
                     object? result = await s.InvokeGetAllAsync(ct);
@@ -8481,7 +8678,7 @@ internal static class OhDataEndpointFactory
                     if (nextLink is not null)
                         envelope["@odata.nextLink"] = nextLink;
                     envelope["value"] = finalItems;
-                    return Results.Ok(envelope);
+                    return ODataEnvelopeResult(envelope, jsonOptions);
                 }
                 catch (Microsoft.OData.ODataException ex)
                 {
@@ -9579,7 +9776,7 @@ internal static class OhDataEndpointFactory
                                 $"{contBaseUrl}/{name}({ODataEntityKeyUrlFormatter.Format(parsedKey!)})" +
                                 $"/{contNavName}?$skip={(contSkip + contPageSize).ToString(CultureInfo.InvariantCulture)}";
                         }
-                        return Results.Ok(contEnvelope);
+                        return ODataEnvelopeResult(contEnvelope, jsonOptions);
                     }
                     catch (FormatException ex)
                     {
@@ -9687,7 +9884,7 @@ internal static class OhDataEndpointFactory
                             // Batch 3: apply $select post-processing to navigation collection results
                             var (navEnv, navEnvError) = BuildNavEnvelope(baseUrl, name, key, navPropertyName, navCount, itemArray, ctx, navItemType, jsonOptions, navTargetEdmType, registration.EdmModel);
                             if (navEnvError is not null) return navEnvError;
-                            return Results.Ok(navEnv);
+                            return ODataEnvelopeResult(navEnv!, jsonOptions);
                         }
                         // M1: single-valued navigation results must carry @odata.context too
                         // (JSON §4.5), mirroring what the collection branch above already does.
@@ -9802,21 +9999,21 @@ internal static class OhDataEndpointFactory
                                         }
                                     }
                                 }
-                                return Results.Ok(new Dictionary<string, object?>
+                                return ODataEnvelopeResult(new Dictionary<string, object?>
                                 {
                                     ["@odata.context"] = context,
                                     ["value"] = refs
-                                });
+                                }, jsonOptions);
                             }
 
                             // No ChildEntitySetName/ChildKeyPropertyName configured — return minimal
                             // envelope. Use HasMany(..., refTargetEntitySet: "...") to enable
                             // populated @odata.id references.
-                            return Results.Ok(new Dictionary<string, object?>
+                            return ODataEnvelopeResult(new Dictionary<string, object?>
                             {
                                 ["@odata.context"] = context,
                                 ["value"] = System.Array.Empty<object>()
-                            });
+                            }, jsonOptions);
                         }
                         else
                         {
@@ -9831,19 +10028,19 @@ internal static class OhDataEndpointFactory
                                     var accessor = GetOrCompileNavRefKeyAccessor(child.GetType(), refNavCapture.ChildKeyPropertyName);
                                     if (accessor(child) is { } k)
                                     {
-                                        return Results.Ok(new Dictionary<string, object?>
+                                        return ODataEnvelopeResult(new Dictionary<string, object?>
                                         {
                                             ["@odata.context"] = context,
                                             ["@odata.id"] = BuildEntityId(baseUrl, refNavCapture.ChildEntitySetName, k)
-                                        });
+                                        }, jsonOptions);
                                     }
                                 }
                             }
 
-                            return Results.Ok(new Dictionary<string, object?>
+                            return ODataEnvelopeResult(new Dictionary<string, object?>
                             {
                                 ["@odata.context"] = context
-                            });
+                            }, jsonOptions);
                         }
                     }
                     catch (FormatException ex)
@@ -10878,11 +11075,18 @@ internal static class OhDataEndpointFactory
             // Defence-in-depth (#325/#326): practical no-op now.
             OmitUnexpandedNavigations(json, rootEdmType, clause: null, modelType, serializerOptions);
 
-            return Results.Ok(new Dictionary<string, object?>
+            // #495: rendered here rather than deferred to Results.Ok. The JsonArray above is
+            // already materialized, but the envelope AROUND it was not: it is a
+            // Dictionary<string, object?>, so the host's DictionaryKeyPolicy rewrote
+            // `@odata.context`/`value` (measured: `@ODATA.CONTEXT`/`VALUE`), and the write happened
+            // after the filter chain unwound. Rendering with the registration's owned options keeps
+            // the envelope keys contractual while the payload inside the array still honours the
+            // host's converters/encoder exactly as it did (#252) -- those already ran, above.
+            return PreRenderedJson(new Dictionary<string, object?>
             {
                 ["@odata.context"] = $"{baseUrl}/$metadata#{entitySetName}",
                 ["value"] = json
-            });
+            }, EnvelopeOptions(serializerOptions));
         }
 
         if (resultType == modelType || modelType.IsAssignableFrom(resultType))
@@ -10903,11 +11107,19 @@ internal static class OhDataEndpointFactory
         if (s_edmPrimitiveTypeNames.TryGetValue(underlyingResultType, out string? edmTypeName))
         {
             string primitiveBaseUrl = BuildBaseUrl(ctx, prefix);
-            return Results.Ok(new Dictionary<string, object?>
+            // #495: this branch is the one #396 listed as a knowing residual ("only a host-
+            // registered converter for a primitive type could fault there"). It can: measured with
+            // a host JsonConverter<decimal> that throws, the client got an empty, envelope-less 500
+            // with nothing logged, because Results.Ok deferred the write past the filter chain.
+            // Pre-rendering moves that converter call inside the filter's scope, so a throwing one
+            // now produces the logged 500 envelope like any other handler fault -- and a merely
+            // reformatting one still reformats, because `value` here IS payload and the host owns
+            // value formatting (#252). Only the envelope's keys are OhData's.
+            return PreRenderedJson(new Dictionary<string, object?>
             {
                 ["@odata.context"] = $"{primitiveBaseUrl}/$metadata#{edmTypeName}",
                 ["value"] = result
-            });
+            }, EnvelopeOptions(jsonOptions ?? _pascalCaseSerializerOptions));
         }
 
         // Primitive/other (e.g. a non-TModel DTO) — no context wrapping. Serialize through the
