@@ -11,6 +11,203 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Three ways the error path was less trustworthy than the success path (#493, #494, #495).** All
+  three were measured on the pre-fix tree, and all three are things a consumer meets under load
+  rather than in a test.
+
+  **A handler's `TaskCanceledException` escaped the error envelope entirely (#493).** The group
+  filter declined the whole `OperationCanceledException` family, on the theory that a cancellation
+  means the client went away. That is a fact about the *request*, not about the exception type —
+  and `TaskCanceledException` is what `HttpClient` throws on its **own** timeout, so every handler
+  awaiting an outbound dependency was affected. Measured with a `GetAll` throwing one on a request
+  that was never aborted: `500` with an **empty body**, no envelope, and **no OhData log at all** —
+  which is exactly the failure mode that filter exists to eliminate, on arguably the most common
+  outbound-dependency failure there is. The filter now also asks whether the request really was
+  aborted, so a genuine client disconnect is still left to ASP.NET Core (unchanged, and still
+  pinned) while a dependency timeout gets the envelope and the log it always should have.
+
+  **An `$expand` infrastructure fault was reported to the client as `400` (#494).**
+
+  | Fault during an `$expand` request | before | after |
+  |---|---|---|
+  | Connection-pool exhaustion (`SqlConnection.Open`) | **400** `InvalidQueryOption`, logged at `Debug` | **500** + envelope, logged |
+  | Disposed `DbContext`, or "a second operation was started on this context" | **400** `InvalidQueryOption` | **500** + envelope, logged |
+  | A query the provider genuinely cannot translate | 400 `InvalidQueryOption` | 400, now logged at `Warning` |
+
+  The three `$expand`-pushdown sites caught `InvalidOperationException`/`NotSupportedException`/
+  `ODataException` around the whole materialization and answered *"could not be translated by the
+  underlying data provider"*. The premise — that a real infrastructure fault could only arrive as a
+  `DbException` or a `TimeoutException` — is false: SqlClient reports pool exhaustion as a plain
+  `InvalidOperationException`, and `ObjectDisposedException` **derives** from it. So under load an
+  `$expand` request told client retry logic *not to retry* while the same request without `$expand`
+  correctly `500`d, and at `Debug` the operator saw a spike of client errors and no server-side
+  signal at all.
+
+  Fixed by asking **when** rather than **what**, since the type cannot separate the two populations:
+  the provider's translation phase (`GetEnumerator()`) is separated from its materialization phase
+  (the first `MoveNext()`), and only the translation window yields the `400`. Everything from the
+  first row onward propagates to the envelope as a logged `500`.
+
+  > **⚠ BREAKING CHANGE.** If your client treats a `400` from an `$expand` request as *"this query is
+  > malformed, do not retry"*, the conditions in the first two rows above now produce `500`. That is
+  > the point — those conditions are transient and retrying is correct. Genuinely untranslatable
+  > queries keep their `400`, byte-identically.
+
+  **Every `Dictionary`-shaped OData envelope was serialized under the *host's* `HttpJsonOptions`
+  (#495), and the scope is wider than the issue named.** Two consequences, and the non-faulting one
+  is the worse of the pair:
+
+  - **Shape.** System.Text.Json applies `DictionaryKeyPolicy` to dictionary keys, and OhData's
+    envelope keys — `error`/`code`/`message`/`target`, `@odata.context`/`value`/`@odata.count`/
+    `@odata.nextLink` — are contractual identifiers, not names a policy may rewrite. Measured with a
+    host `DictionaryKeyPolicy` of `SnakeCaseUpper`: `{"ERROR":{"CODE":"NotFound",…}}` on **every**
+    error response the framework produces, and `{"@ODATA.CONTEXT":…,"VALUE":[…]}` on **every
+    collection GET**, the service document and both bound-operation envelopes. That ships a parseable
+    body no OData client can read, under a `200` or a `4xx`, with nothing anywhere reporting a
+    problem. (`JsonObject` responses — `GetById`, the nav-single route — were never affected; STJ
+    writes a node's member names verbatim.)
+  - **Fault.** A throwing host `JsonConverter<string>` took the group filter's **own** `500` envelope
+    with it: an empty, envelope-less `500` with no log. The last-resort error path was itself the
+    thing that failed.
+
+  The division is now **OhData owns the envelope's names; the host owns value formatting** — #252's
+  split, one level out. A default host is byte-identical, asserted for all seven envelope shapes
+  against strings captured from the pre-fix tree and pasted verbatim; a host that never set a
+  `DictionaryKeyPolicy` does not even allocate a second options instance.
+
+  > **⚠ BREAKING CHANGE, for hosts that set `JsonSerializerOptions.DictionaryKeyPolicy`.** Your error
+  > bodies, collection envelopes and service document change bytes: the envelope keys stop being
+  > rewritten by your policy. If you were parsing the rewritten form, parse the OData form instead.
+  > Every other host is unaffected.
+
+- **Delta mappings were validated against a model of `Delta<TEntity>` that is not the model
+  `Delta<TEntity>` implements (#479, #480).** One root cause, two shipped symptoms, and both target
+  the most ordinary EF Core entity shapes there are:
+
+  | Entity shape | before | after |
+  |---|---|---|
+  | A `[NotMapped]` (or `[IgnoreDataMember]`, or unmarked-under-`[DataContract]`) mapping target | startup OK, then **every write to it silently lost** — no exception, no log | **`MapOhData()` throws**, naming the property and why |
+  | Only a *protected* parameterless ctor beside a public parameterized one — the standard EF entity — plus positional records and abstract types | startup OK, then `MissingMethodException` **on every request** | **`MapOhData()` throws**, naming the type |
+
+  `DeltaMappingCompiler` checked only for a public setter. `Delta<T>` additionally requires a public
+  **getter** and applies its own ignore rules, and `Delta<T>.Reset` calls
+  `Activator.CreateInstance(entityType)` on every `Create`. A target outside `Delta<T>`'s tracked set
+  makes `TrySetPropertyValue` answer `false` — which both `Create` overloads **discarded**.
+
+  Closed structurally rather than case by case: the compiler now **asks a real `Delta<TEntity>`**
+  which properties it tracks, so there is no transcription of Microsoft's predicate left to drift
+  from. And both `Create` overloads now **throw** on a `false` instead of dropping it — after startup
+  validation a `false` means the validation is wrong, so it is an invariant assertion rather than an
+  error path, and a `500` in the OData envelope beats a `200` that silently persisted a partial write.
+
+  > **⚠ BREAKING CHANGE — at startup, which is where you want it.** An app whose delta profiles map
+  > onto any of the shapes above **fails to start** where it previously started and then misbehaved.
+  > The message names the property or type and what to do about it. The new rejection is one-way
+  > *narrowing*: OhData's own public-setter rule still runs ahead of the tracked-set check, so nothing
+  > that compiled before reaches `UpdatableEntityProperties` differently, and the documented "an
+  > ignored or unmapped property cannot be patched onto the entity even by a hostile request body"
+  > boundary is untouched.
+
+  A different-typed `new`-shadowed entity property now fails at startup too — incidentally, because
+  `Delta<T>`'s own bookkeeping rejects it. Pinned by a test rather than deliberately fixed.
+
+- **Three capabilities the server advertised and did not serve (#465, #467, #468).** Same shape each
+  time: a claim in generated documentation or in CSDL that no code path honours.
+
+  **`$search` on the Priority-1 route (#465).** The `GetODataQueryable` collection route appended
+  `", $search"` to its OpenAPI description whenever the profile had a `Search` handler, and never
+  invoked it — there is no `$search` leg in that route body at all. Invoking it is not coherent with
+  the Priority-1 contract either: on the `GetQueryable`/`GetAll` paths `Search` *replaces the source*
+  and the framework applies the remaining options on top, which it can because it owns the pipeline
+  there; Priority-1 hands the whole `ODataQueryOptions` to the profile, so honouring `$search` would
+  mean bypassing the profile — dropping `$filter`/`$orderby` on exactly the requests carrying
+  `$search`, and routing around any row-level scoping the handler applies.
+
+  > **⚠ BREAKING CHANGE.** `GetODataQueryable` **plus** a `Search` handler is now **refused at
+  > startup**, with a message pointing at `options.Search` inside `GetODataQueryable` — where
+  > `$search` on that path has always been the profile's own business. If you have that combination
+  > today, `$search` is not being applied to anything; move it into the handler.
+
+  **`OhDataQueryOptionsMetadata` fields meant two different things (#467).** The record is attached to
+  five route shapes — three collection GETs, `/$count` and `GetById` — and read by all three companion
+  packages, so one field with two meanings produced the same wrong document three times.
+  `$top`/`$skip` were documented on metadata *presence* alone, so `GetById` and `/$count` advertised
+  paging they both drop; `/$count` set `CountEnabled: true` to mean *"this route **is** a count"*
+  while its consumers read it as *"this route documents the `$count` option"*; and `/$count`'s
+  `FilterEnabled` mirrored the profile flag although its `GetAll` fallback answers `400` for any
+  `$filter`. Fixed once at the metadata attachment — one site, three consumers — so the packages stay
+  in agreement by construction.
+
+  > **⚠ BREAKING CHANGE — generated API documents change.** `Microsoft.AspNetCore.OpenApi`, NSwag and
+  > Swashbuckle output all change for the affected routes: `$top`/`$skip` disappear from `GetById` and
+  > `/$count`, `$count` disappears from `/$count`, and `$filter` disappears from a `/$count` whose
+  > source cannot apply it. Regenerate any client built off those documents.
+  > `OhDataQueryOptionsMetadata` also gains a required `TopSkipSupported` parameter on its primary
+  > constructor — deliberately required, because the correct value differs per route and any default
+  > would silently restore the defect for a construction site that omitted it. The 1.5.0
+  > seven-parameter constructor and its `Deconstruct` are **retained** (both forwarding
+  > `TopSkipSupported: true`, which is what that overload meant before #467) so an assembly compiled
+  > against 1.5.0 keeps binding. The record is constructed only by OhData; the companion packages only
+  > read it.
+
+  **`$metadata` claimed every unbound function import was in the service document (#468).** The
+  `IncludeInServiceDocument="true"` flag is `Microsoft.OData.ModelBuilder`'s default and OhData never
+  set it, while the service document was hand-built from the profile list and contained entity sets
+  only. For a **parameterized** import that claim is not merely false but invalid CSDL — §13.6
+  reserves the document for imports invocable by name alone. Parameterized imports now clear it;
+  parameterless ones keep it **and are really listed**; and the service document is now derived from
+  the same EDM container `$metadata` is written from, so the two generators cannot diverge again.
+  Action imports are never listed — not GET-addressable, and CSDL has no such attribute for them.
+
+  > **⚠ BREAKING CHANGE — two wire changes and two new startup failures.** The service document now
+  > lists parameterless unbound function imports alongside entity sets, and `$metadata` no longer
+  > carries `IncludeInServiceDocument` on parameterized ones. Separately, **`EdmValidator.Validate` is
+  > now called from `MapOhData()`** — it had never been called anywhere in the assembly, and neither
+  > `CsdlWriter.TryWriteCsdl` nor `CsdlReader.TryParse` enforces these rules, so invalid CSDL reached
+  > the wire and broke only the consumers that validate it (codegen tools). **An app whose EDM is
+  > invalid now fails to start**, with the offending construct named. Measured when it was first wired
+  > in, it catches this issue's own violation in four fixtures.
+  >
+  > It also caught a second long-shipping one: `AddFunction`/`AddAction` with an un-named lambda
+  > resolves to a compiler-generated name (`<Register>b__0_1`) that is not a legal OData identifier,
+  > which `CsdlReader` accepts and so had been shipping invalid `$metadata` silently. That is now
+  > rejected **earlier and better** — `AddFunction`/`AddAction` validate the resolved name themselves
+  > and throw `ArgumentException` naming the parameter and the remedy (*pass an explicit `name`*),
+  > because a generic CSDL failure quoting `<Register>b__0_1` at `MapOhData()` tells a developer
+  > neither the cause nor the fix. They call the shipped identifier validator rather than transcribing
+  > the grammar a third time.
+
+- **One serialized entity could poison the navigation-suppression cache for the process lifetime,
+  turning an entity set into a permanent `500` (#482).** `GetNavSuppressedOptions` populated its
+  per-type map only for the type it was *called with*, while the `System.Text.Json` resolver modifier
+  consulted that map at contract-**resolution** time and gave up when the type had no entry. STJ
+  caches a resolved contract forever, so any entity type STJ merely reached *transitively* froze
+  **un-suppressed** — permanently resurrecting #343 for that entity set.
+
+  Measured through the shipped code: serve one entity whose open-type dynamic bag holds a live
+  instance of another entity type, and the next read of *that* entity set throws
+  `JsonException: A possible object cycle was detected` on an ordinary parent/child fixup graph —
+  rendered as `500` on a **plain GET with no query string**, on every request, forever. Two further
+  edges were measured to produce the same `500`: an `object`-declared CLR member, and a **complex**
+  type carrying an entity-typed member (the convention builder models that as a navigation *on the
+  complex type*, which entity-scoped suppression never visited).
+
+  Fixed by removing the ordering dependency entirely: one walk of the schema at `MapOhData()` maps
+  every EDM entity type to its CLR type, and the modifier then computes each type's suppression set
+  itself, as a pure function of the type. Reaching is no longer how a type gets its set, so there are
+  no edges left to enumerate — and priming it before the first request also closes a
+  concurrent-first-request race.
+
+  Two things fall out of the fix. The CLR→EDM lookup is now keyed off the model builder's own
+  annotation rather than `FindDeclaredType(clrType.FullName)`: measured, with `mb.Namespace =
+  "Custom.Ns"` that lookup returns `null` for *every* type, so #343's runtime-type union was a silent
+  no-op on any renamed schema. And an **EDM-renamed** navigation (`HasMany(…).Name = "Kids"`) produced
+  a navigation the name lookup could not see at all, so it was suppressed on **no** route,
+  order-independently — now closed by reading the builder's own property annotation alongside the name
+  lookup. Cost is ~0.9 µs per EDM entity type at startup (0.44 ms for a 400-type model); the
+  per-request path is still two dictionary probes. Known and out of scope: `$expand` of an EDM-renamed
+  navigation is still spliced as an empty array.
+
 - **The deep-write strip no longer nulls navigations the request body never mentioned (#506).**
   `PUT` regressed on this in [#504](https://github.com/en-gen/OhData/pull/504) (merged, never
   released); the collection `POST` had done it since 1.0.0. Measured against a live host, with a
@@ -112,6 +309,334 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `POST /Set(key)/Action` is the action-invocation resource (Protocol §11.5.4), which has no
   representation and therefore no entity tag, whereas OData §11.4.6 defines a `$ref` write as a
   modification of the addressed entity itself.
+
+- **`MaxExpandTop` was enforced on one substrate at one depth, and `$levels` served one level off the
+  raw path (#463, #464, #466).** Three symptoms of one defect: a bound whose enforcement was sited
+  where the *implementation* happened to converge rather than where the *rule* applies. Measured with
+  a ceiling of `2`:
+
+  | Request | before | after |
+  |---|---|---|
+  | `GET /Authors(2)?$expand=Books($expand=Chapters)` | **200**, every chapter served (checked at depth 1 only) | **400** |
+  | `GET /Authors?$expand=Books` on `GetAll`, Priority-1, or a non-EF `IQueryable` (`$search` produces one) | **200**, every book, no bound at all | **400** |
+  | `?$expand=Children($levels=3)` on any raw-served path | **200**, **one** level, silently — while the explicit nested spelling served three | **200**, three levels, byte-identical to the explicit spelling |
+  | `?$expand=Children($levels=2)` on a **delegate-backed** navigation | **200**, one level, silently | **400** |
+
+  #463 and #464 are the reach halves. The single-entity ceiling never recursed into nested clause
+  items and resolved its navigation set once at startup from the root profile; the collection-route
+  ceiling and its #313 continuation link both lived behind the EF Core pushdown's JSON shaping pass,
+  so on any non-EF source the configured DoS bound *silently did not exist*. Both are now one
+  mechanism, running where all five read routes already converge and resolving the treatment **per
+  level** exactly as the descent it measures does. Always a `400`, never a trim-and-link, for #418's
+  reason unchanged: the framework composed neither side of the child order on a raw-served
+  collection, so a `$skip` continuation would silently skip and duplicate rows across the page
+  boundary.
+
+  #466 is the `$levels` half, and it needed nothing loaded to fix — the rows were already in the
+  graph the handler returned. It is **not** implemented on the delegate substrate and is rejected
+  there instead: serving level 2 means running a delegate at depth 2, and *which* delegate is not
+  settled on that substrate (the pushed path stays on the URL-named set all the way down, #318;
+  Model B resolves depth ≥ 2 from the exact-EDM-type union, #293 — both frozen). Picking one would be
+  an owner decision about gate resolution, so `$levels` resolving above 1 on a delegate-backed
+  navigation follows #294's precedent and returns `400`. `$levels=1` restates a bare `$expand` and is
+  unaffected.
+
+  > **⚠ BREAKING CHANGE — on opted-in registrations only.** `MaxExpandTop` is `null` by default, so an
+  > unconfigured registration is byte-identical. **With a ceiling set**, an over-ceiling raw-served
+  > collection goes `200 → 400` on `GetAll`, Priority-1, a non-EF `IQueryable`, and at depth ≥ 2
+  > anywhere. Independently of the ceiling, `$levels` resolving above 1 on a delegate-backed
+  > navigation goes `200` (one level) `→ 400`.
+
+  Corrected with it: `EntitySetDefaults.MaxExpandTop`'s XML doc claimed it bounds *"every collection
+  `$expand` level"* once set — false on four reachable paths — and `docs/query-options.md`'s reach
+  table is now split by **how the collection was loaded**, not by which route was called. The residue
+  is stated rather than implied: on a raw-served expansion the nested window is still not *applied*
+  (#352). One more claim was falsified during review and corrected in the same commit — a navigation
+  merely *declared* with a delegate but reached under a raw-served parent is **never invoked**, so its
+  rows are the parent handler's own and the ceiling does bound them; the #313 O6 exemption turns on
+  the delegate having **run**, not on how it was declared.
+
+- **A `PATCH` body could move the entity key, and two profiles over one CLR model type unioned their
+  allowlists (#454, #458).** Independent defects, one commit; both are cases of two mechanisms
+  disagreeing about the same thing.
+
+  **`PATCH` could rewrite the key (#454).** The key-mismatch guard and the delta-building loop
+  consulted different sets: the guard matched on the key's **CLR** name and stopped at the **first**
+  case-insensitive hit, while the loop resolved **every** body property case-insensitively *and*
+  `[JsonPropertyName]`-aware into a last-writer-wins `Delta<T>` with no key exclusion.
+
+  | `PATCH /Set(1)` body | before | after |
+  |---|---|---|
+  | `{"Id":1,"Id":999}` | **200**, key rewritten to `999` | **400** (target `key`) |
+  | `{"id":1,"Id":999}` | **200**, key rewritten to `999` | **400** (target `key`) |
+  | `{"code":"ZZ"}` with a `[JsonPropertyName("code")]`-renamed key | **200**, key rewritten — the guard could not see it at all | **400** (target `key`) |
+
+  Both halves now resolve through the same helper against the same CLR property: every occurrence is
+  validated, and the key is **never written into the delta**, so immutability is structural rather
+  than a consequence of the guard having happened to see every occurrence. `PUT` is structurally
+  immune — it deserializes to `TModel` first, so STJ has already collapsed duplicates to the value the
+  handler will receive — and two tests exist solely to fail if `PUT` is ever refactored toward
+  raw-`JsonElement` parsing.
+
+  **Divergent allowlists over one CLR type are now refused at startup (#458).** `FilterProperties`/
+  `OrderByProperties`/`SelectProperties`/`ExpandProperties` are applied to the shared per-CLR-**type**
+  `EntityTypeConfiguration<TModel>`, and `ModelBoundQuerySettings` is keyed by type while OhData's
+  configuration surface is keyed by entity set. Two profiles over the same model type therefore
+  **unioned** their allowlists, and each entity set silently accepted filtering, sorting, selecting
+  and expanding on properties its own profile deliberately withheld — **measured for all four
+  options, in both registration orders**, each withheld property going `400 → 200` the moment the
+  sibling was co-registered, with responses byte-identical to the correctly-gated case and therefore
+  invisible to an adopter.
+
+  This cannot be scoped down: per-entity-set model-bound settings do not exist. In
+  `Microsoft.OData.ModelBuilder` 2.x the fluent `Filter`/`OrderBy`/`Select`/`Expand`/`Count`/`Page`
+  API is declared only on `StructuralTypeConfiguration<T>` and `PropertyConfiguration`, every
+  `GetModelBoundQuerySettings` overload in `Microsoft.AspNetCore.OData` resolves off an
+  `IEdmStructuredType` rather than a navigation source, and the capability-vocabulary annotations that
+  *can* sit on an entity set are never read by the query validators.
+
+  > **⚠ BREAKING CHANGE.** `MapOhData()` now throws `InvalidOperationException` on a divergent pair,
+  > mirroring the check `Ignore()` already performs. Legitimate multi-set-per-type registrations are
+  > untouched: two unset (permissive) allowlists agree, a sibling whose capability flag is off makes
+  > no call at all, an `AdvancedConfigure` override owns the EDM and is not compared, and separate
+  > registrations build separate models. If you hit this, the two profiles were never both being
+  > honoured — pick one allowlist per model type, or split them into separate registrations.
+
+- **`OhData.Client`: `@odata.nextLink` was followed cross-origin with your credentials attached, and
+  a throwing captured value silently became `eq null` (#459, #460).**
+
+  **The `nextLink` walker leaked credentials and could not terminate (#460).** The walker builds a
+  fresh request for a URL named in a **response body**, and `HttpClient` attaches its
+  `DefaultRequestHeaders` — `Authorization` among them — to it. That is not a redirect, so
+  `HttpClientHandler`'s cross-origin credential stripping never runs: a response-body injection
+  (compromised server, caching proxy, MITM on a plaintext hop) hands your bearer token to a host of
+  its choosing. Separately, `while (NextLink is not null)` had no cap, so a server echoing the same
+  link forever drives the walk unboundedly until the process dies.
+
+  Two additive options on `OhDataClientOptions`:
+
+  - **`FollowCrossOriginNextLinks`, default `false`.** A link whose origin — scheme, host, port —
+    differs from `HttpClient.BaseAddress` fails the read with `InvalidOperationException` and **no
+    request is made**. A *relative* link is untouched (`HttpClient` resolves it against
+    `BaseAddress`, which makes it same-origin by construction), and an unparseable link is passed
+    through so the request layer keeps producing its own error. Refusing was chosen over stripping
+    `Authorization` and following anyway, because the class of the problem is *default headers*, not
+    that one name — an `X-Api-Key` in the same collection leaks identically.
+  - **`MaxNextLinkHops`, default `10_000`** (values below 1 rejected at configuration time). A
+    termination guarantee, not a paging policy: the default is set where no legitimate run reaches it
+    — a million entities at a server page size of 100 — and `int.MaxValue` is effectively unlimited.
+    The cross-origin opt-in does not disable it; trusting a service's origins says nothing about
+    whether its paging terminates.
+
+  > **⚠ BREAKING CHANGE.** A client walking a `nextLink` that points at a **different origin** than
+  > `BaseAddress` now throws instead of following it. Set `FollowCrossOriginNextLinks = true` to
+  > restore the old behaviour — and note that with the flag on, the credential *does* reach the
+  > foreign origin, which is pinned by a test deliberately so anyone redefining the flag has to look
+  > at it. A walk longer than `MaxNextLinkHops` now throws rather than running forever.
+
+  **A captured value whose getter throws became `eq null` (#459).** `FilterTranslator`'s evaluator
+  returned `null` for two different conditions — *"the value is null"* and *"evaluating it threw"* —
+  because every reflection and compile/invoke path ended in `catch { return null; }`. So
+  `Filter(x => x.Name == src.Bad)` with a throwing getter emitted `Name eq null`: **a query the
+  caller never wrote**, executed against the server, returning rows where `Name` is null, with no
+  exception anywhere. The three outcomes are now distinguishable — evaluated (the value may
+  legitimately be null, unchanged), threw (`NotSupportedException` with the cause attached, no
+  literal), and nothing attempted because the expression reads a lambda range variable (the existing
+  *"method is not supported"* diagnostics, unchanged).
+
+  > **⚠ BREAKING CHANGE.** A filter over a captured value whose getter throws now throws
+  > `NotSupportedException` instead of quietly issuing a different query. Two smaller changes ride
+  > along at the compile fallback: the interpreter/JIT retry now covers **compilation only**, so a
+  > user getter with side effects is no longer invoked twice, and `TargetInvocationException` is
+  > unwrapped so the message names the real cause.
+
+- **Per-type configuration was resolved by the *declared* type while both serializers resolve the
+  *runtime* type — so a derived row leaked `Ignore()`d members (#462, #343, #469).** One defect
+  class, three symptoms, all reproduced on a **plain GET with no query string** over an ordinary EF
+  Core TPH shape:
+
+  | Symptom | before | after |
+  |---|---|---|
+  | An inherited `Ignore()`d property on a derived row (#462) | **served** on the derived row while the base row in the same page withheld it — on the collection route *and* `GetById`. Disclosure. | withheld on both |
+  | A navigation declared only on the **derived** EDM type (#343) | emitted inline with **no `$expand` naming it**; two derived instances referencing each other through one returned **500** (`A possible object cycle was detected`) | suppressed, per JSON Format §4.5.1/§11.2.4.2 |
+  | An **inherited** navigation the client explicitly `$expand`ed (#469) | **silently dropped** from every derived row, while base rows in the same page kept theirs | served |
+
+  The batched collection path hands System.Text.Json an `object`-declared element and the
+  single-entity path calls `SerializeToNode(value, value.GetType(), …)`, so **any** per-type map keyed
+  by the exact CLR type misses a derived instance. #293 was the first instance of this class; these
+  are the rest. All four affected sites now route through one shared base-chain walk whose entire
+  callable surface is `Resolve` + `IsEmpty` — there is no dictionary left in scope for a fifth site to
+  key by exact type, and a reflection test asserts that. Two deliberately different policies: withheld
+  names **union** up the chain (a withheld-name set is a disclosure boundary, so a derived profile's
+  own `Ignore()` set must not shadow its base's), while a single-valued configuration such as a
+  `new`-shadowed dynamic-property container is nearest-wins.
+
+  #469 was found by the shared fixture and named in neither issue: `PropertyInfo`s were compared with
+  `!=`, which also compares `ReflectedType`, and for an inherited navigation on a derived instance the
+  two sides disagree — measured on .NET 10.0.11, the EDM-name lookup reports `ReflectedType =
+  RtDerived` while STJ's `AttributeProvider` reports `RtBase`. Shipping #343 without it would have
+  left a derived entity unable to serve any expanded navigation at all.
+
+  > **⚠ BREAKING CHANGE — the wire shape of derived rows changes, in three directions at once.** On a
+  > polymorphic entity set: an inherited `Ignore()`d member **disappears** from derived rows (that is
+  > the disclosure fix, and the reason this is not optional); a navigation declared only on a derived
+  > type **disappears** unless expanded — and it cannot be expanded, because the `$expand` clause
+  > binds against the declared type; and an inherited navigation you **did** `$expand` now appears
+  > where it used to be missing. Non-derived shapes are byte-identical, asserted against baselines
+  > captured from the pre-fix build and pasted verbatim.
+
+- **A nested `$top`/`$skip` on a delegate-backed navigation reached through a delegate-less parent
+  was accepted and never applied (#320).** #294 closed the silent-ignore hole one level up; this is
+  the same hole one level deeper. The rejection fired only when the expand walker reached the
+  navigation **itself** as delegate-backed, and the walker's raw-served branch does not recurse — so a
+  delegate-backed navigation reached only through a delegate-less parent's materialized graph was
+  never classified. Measured: `?$expand=Bs($expand=Cs($top=1))` returned `200` with all three `Cs`
+  rows and the `Cs` delegate **never invoked** — byte-identical to the same request with no `$top` at
+  all.
+
+  The rejection is now resolved from the navigation's Model B **treatment** rather than from where the
+  walker happened to reach, using the same resolution pair the real descent uses so the scan cannot
+  disagree with the descent it stands in for. It also moved above the blank branch, so a navigation
+  whose candidate sets disagree about whether it is delegate-backed now rejects — with its own message
+  naming the disagreement — instead of silently emptying *and* ignoring the window.
+
+  > **⚠ BREAKING CHANGE, in the fail-loud direction.** `?$expand=Parent($expand=DelegateNav($top=N))`
+  > goes `200` → `400`. It cannot turn a *honoured* request into a `400`: a nested window is honoured
+  > only on a branch the SQL pushdown windowed, and pushdown engages a branch only when every level is
+  > raw-served, so wherever the scan finds a delegate the branch was certainly never pushed. Two
+  > controls pin that direction. It costs nothing on the hot path — the scan is skipped entirely
+  > unless a pure clause walk finds a nested window in the subtree.
+
+  **Deliberately still open, and commented at the site:** a raw-served navigation on a branch that was
+  never pushed down at all (in-memory `GetAll`, non-EF `IQueryable`, or a branch deferred for a
+  structural reason) still ignores its nested `$top`/`$skip` silently. Rejecting it would make the
+  answer depend on whether pushdown happened to engage — an internal optimisation decision invisible
+  to the client — and would `400` requests that are honoured today. It needs its own decision
+  alongside #352's scheduled retirement of this whole rejection.
+
+- **`GET /{Set}({key})?$expand=Nav` served the whole related collection with `MaxExpandTop` set
+  (#418).** The bare-`$expand` ceiling lived behind the collection route's JSON shaping pass, and
+  `GetById` expands through a pipeline whose raw-served branch is deliberately a no-op. Measured with
+  a ceiling of `2` over five books:
+
+  | Request | before | after |
+  |---|---|---|
+  | `GET /Set?$filter=Id eq 1&$expand=Books` | 200, two books + `Books@odata.nextLink` | unchanged |
+  | `GET /Set(1)?$expand=Books` | **200, all five**, no link, no `400` | **400** `InvalidQueryOption` |
+
+  **A `400` rather than a trim-and-link, and the reason generalizes.** A continuation needs three
+  things and only two exist here: the parent key (in the URL) and a continuation route (already
+  registered when both knobs are set). The third is a *shared order* between page 1 and the
+  continuation. On the collection route the framework composes both sides — it appends the child-key
+  `ORDER BY` to page 1's SQL and the continuation composes the same one. On `GetById` it composes
+  neither: the child rows arrive already materialized inside the `TModel` your handler returned, in
+  that handler's order (measured: a plain `LEFT JOIN` with no `ORDER BY` over the child). Re-sorting
+  the serialized array does not reconcile them — a JSON compare is not the column's collation. A link
+  over a disagreeing order silently skips and duplicates rows across the page boundary, which is worse
+  than the `400` and invisible to the client. `ExpandPagingEnabled` therefore does nothing on this
+  route, and the message says so.
+
+  **Every nested shape is covered, not only the bare one.** Measured: `GetById` applies **no** nested
+  option to a delegate-less navigation — `$filter`, `$orderby`, `$select`, `$skip`, `$top` and
+  `$count` are each silently ignored there while the collection route honours all six. A ceiling that
+  fired only for the bare shape would be bypassable by appending any one of them. (That silent-ignore
+  is a separate, larger defect and is not fixed here.)
+
+  > **⚠ BREAKING CHANGE — on registrations that set `MaxExpandTop`.** `GET /{Set}({key})?$expand=Nav`
+  > over the ceiling goes `200` → `400`. Inert on the shipping default (`MaxExpandTop = null`) and for
+  > every under-ceiling response, pinned byte-identical against the pre-fix build.
+
+  **What this does not buy: a materialization bound.** The collection is loaded by your `GetById`
+  handler before the framework sees it, so this is a data ceiling only (the #299 trade). The
+  worst-case load for `GET /{Set}({key})?$expand=Nav` is unchanged and equals whatever that handler
+  eager-loads; a `GetById` that does not `Include` the navigation serves `[]` and never trips it.
+
+- **A shared `ODataQueryContext` returned intermittent `400`s to valid requests under concurrent load
+  (#426).** The factory cached one `ODataQueryContext` per entity set for the process lifetime, under
+  a comment reading *"Both are read-only after construction"*. That comment was false and the
+  consequence was production-reachable: **any** OhData server under concurrent load intermittently
+  answered `400 InvalidQueryOption` to a valid request — **including one with no query string at
+  all**.
+
+  `ODataQueryOptions`' constructor **writes** to the context it is handed, and `Initialize` reads
+  `context.Request` back off that shared field instead of the constructor's own `request` parameter.
+  Two requests in flight against one context race on it, and the loser dereferences a different
+  request's `HttpContext` — concurrently with its owner, or after it has been recycled — throwing
+  `NullReferenceException` out of `DefaultHttpContext.get_RequestServices`, which #402's deliberately
+  broad catch then relabels `400`. The constructor opens with
+  `Contract.Assert(context.RequestContainer == null)`: Microsoft stating outright that the type is
+  per-request.
+
+  | 16 threads × 2,000 iterations | failures per 32,000 |
+  |---|---|
+  | shared context (before) | 43 / 31 / 16 / 89 — every one an NRE from `get_RequestServices` |
+  | fresh context (after) | **0** |
+
+  `TryBuildQueryOptions` now takes the `IEdmModel` and builds the context itself, so none of the five
+  read-route call sites can pass a shared one. Cost, measured: **+263 to +362 ns and +448 B per
+  options build** — under 1% of the time and 2.7% of the allocation of the cheapest end-to-end read
+  route, and under 0.05% / 0.4% of a collection page. The `ODataQuerySettings` instances cached on the
+  same line **stay** cached; that was checked against the `Microsoft.AspNetCore.OData` source rather
+  than assumed.
+
+  The `ConcurrencyTests` flakiness recorded as #384 was this, not a test defect.
+
+- **Two more places the OData error envelope did not hold (#402, #396).** Same shape both times: a
+  failure occurring *outside* the scope the guard covers.
+
+  **`GET /Set?$skiptoken=` returned `500` (#402).** Microsoft rejects an empty `$skiptoken` from
+  `SkipTokenQueryOption`'s own constructor — while `ODataQueryOptions` is still being built — with an
+  `ArgumentException`, and the routes' only guard was `catch (ODataException)` over the whole handler
+  body. So it escaped to the group filter as a **client-reachable `500`**; it is now `400`
+  `InvalidQueryOption`.
+
+  The fix is not a longer catch list. `TryBuildQueryOptions` narrows its `try` to *exactly* the
+  construction and widens the catch to everything but a cancellation — broad is right **there and only
+  there**, because nothing inside that `try` but option parsing, so any failure is a statement about
+  the request URL. Narrowing first is what makes it safe: the surrounding whole-handler `try` also
+  contains the data fetch, where a broad catch would relabel a database outage as a client error. All
+  five construction sites are covered. `ODataException` keeps its message pass-through, so the eight
+  empty-value cases (`$filter`/`$orderby`/`$top`/`$skip`/`$count`/`$search`/`$apply`/`$compute`) are
+  byte-identical; anything else gets a generic message and the real exception is logged at `Warning`.
+
+  **Operation routes bypassed the envelope entirely (#396).** A minimal-API `IResult` executes
+  **after** the endpoint-filter chain unwinds, so a fault while the result serializes is outside the
+  group filter's `try` — and the status line and headers are already committed. Measured pre-fix on a
+  bound function whose result faults during serialization: `Request finished … - 200` plus a
+  **truncated body**, with nothing logged. That is worse than an envelope-less `500` — a success
+  status with a malformed body defeats client-side error handling completely — and it is generic to
+  any throwing converter, cyclic graph, or faulting getter.
+
+  Every route now materializes its response body **before returning**. Most already did; the four that
+  handed a raw CLR graph to `Results.Json` (both unbound operation results, the bound-operation DTO
+  branch, and the structural-property read envelope) now serialize to UTF-8 in the handler and return
+  a write-only result. Byte-identical by construction — same declared `TValue`, so the same
+  `JsonTypeInfo` resolves — with `Content-Length` now explicit. Measured cost: the common small-DTO
+  shape gets **faster** (0.74×, the async state machine dominates a tiny payload); 189 KB costs +18%,
+  9.4 MB +74%.
+
+- **Nested `$expand` serialization was never batched, and a hot-path attribute lookup was uncached
+  (#337, #338 — the rest of #333).** Two performance defects below the root page, shipping alongside
+  the #334 nested-`$top` fix below.
+
+  `SerializeBoundedCollection`'s batched fast path was gated on *"the clause keeps no navigation"*,
+  which no `$expand` request can satisfy by construction — so **~99% of an `$expand` payload's bytes
+  were still serialized one entity at a time** (1 batched call over ~1 KB versus 1,000 individual
+  calls over ~82 KB on the measured shape). Nested sibling sets now route through the batched path.
+  Separately, the navigation JSON-key resolver ran an uncached `GetCustomAttribute` on the hot path,
+  reached ~3,000 times per request on a 1,000-row three-navigation `$expand`; it is now memoized on
+  `(PropertyInfo, options)` — the computation's exact dependency set, since `PropertyInfo` alone would
+  collide across registrations with different naming policies.
+
+  **Output is byte-identical**, verified by capturing raw response bodies across a 34-URL matrix
+  (plain/nested/selected `$expand`, `$levels`, renamed and `[JsonIgnore]`d navigations, EF
+  self-referential and in-memory cyclic graphs, delegate-backed navigations, empty/single/
+  null-containing collections, polymorphic elements) before and after. Adversarial review of the first
+  cut found and fixed a real regression before merge: batching hands STJ an `object`-declared element,
+  which triggers polymorphic re-entry and leaked a `"$kind"` discriminator into every `$expand`ed
+  polymorphic collection — an arbitrary STJ key in an OData payload, which additionally vanished under
+  `$select`. The polymorphic assertion that now guards it was mutation-tested against declared-type
+  batching and fails there.
 
 ### Changed
 
@@ -225,12 +750,20 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
      (4) would be invisible to OhData's own consumers.
 
   One limit spans all five and is stated once here so it is not rediscovered per entry: the bare-shape
-  ceiling and its continuation link are computed in the expand pushdown's JSON shaping pass, which
+  ceiling and its **continuation link** are computed in the expand pushdown's JSON shaping pass, which
   runs on the **`GetQueryable` collection route only**. `GET /{Set}({key})?$expand=Nav` is therefore
-  still unbounded and unlinkable even with both knobs set — pre-existing (nothing bounded the bare
-  shape on any route before #313), and tracked in
-  [#418](https://github.com/en-gen/OhData/issues/418). The **explicit** nested-`$top` ceiling is
-  unaffected and does apply there (#301).
+  never *linkable* — pre-existing (nothing bounded the bare shape on any route before #313), and for
+  the reason #418 established: on that route the framework composed neither side of the child order,
+  so a `$skip` continuation would silently skip and duplicate rows across the page boundary. The
+  **explicit** nested-`$top` ceiling is unaffected and does apply there (#301).
+
+  > **Superseded within this same release, on the *ceiling* half.** As written above — and as this
+  > entry read until #418/#463/#464 landed — `GET /{Set}({key})?$expand=Nav` was also **unbounded**,
+  > serving the whole related collection with `MaxExpandTop` set. It is not any more: a raw-served
+  > collection navigation over the ceiling now returns `400` on **every** read path and at **every**
+  > depth (see the `### Fixed` entries for #418 and for #463/#464/#466). What survives from the
+  > original claim is only that the ceiling on that route is always a `400` and never a
+  > `Nav@odata.nextLink`, whatever `ExpandPagingEnabled` says.
 
   **Both of those behaviours are now opt-in, and that is the intended contract, not a regression to
   work around.** On a registration that does not set `MaxExpandTop`:
@@ -355,8 +888,17 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   >
   > **Detection recipe:** *do any of your complex types have an `IDictionary<string, object>`
   > member?* If none do, nothing changes — the registration's serializer options are not even derived,
-  > no write body is buffered or walked, nothing is logged, and every response (error responses
+  > no open-type write-body walk runs, nothing is logged, and every response (error responses
   > included) is byte-identical between the default and `WithOpenTypes(false)`.
+  >
+  > **One clause here was narrowed by #456, later in this release.** This read *"no write body is
+  > buffered or walked"*. The **walk** half is still exactly true — the open-type key scan runs only
+  > where the EDM really has an open complex type. The **buffering** half is not: `PUT` and the
+  > navigation-`POST` create route now buffer the request body on **every** registration, so they can
+  > scan it for `@odata.bind` (#456). That buffering is unconditional and unrelated to open types, it
+  > is capacity-hint-clamped at 81,920 bytes, and what actually bounds it is your host's Kestrel
+  > `MaxRequestBodySize` unless you set `MaxRequestBodyBytes` (#474). Responses stay byte-identical
+  > between the default and `WithOpenTypes(false)` either way.
 
   **A bag key equal to one of the complex type's own declared property names now fails the request**
   with `500` and the OData error envelope, naming the type and the key in the log (previously: the
@@ -395,11 +937,26 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   > walk only when a non-ASCII character is present, plus a bounded process-wide cache of validated
   > **non-ASCII** keys — ASCII keys are cheaper to revalidate than to look up, so they never consult
   > it. In isolation that is **4.6 ns/key** against **16.9 ns/key** for the naive rune walk and
-  > **5.4 ns/key** for the declared-name hash lookup already in the same loop. *In situ* it is far more
-  > expensive than that isolated figure suggests: serializing a 1,000-row page carrying 20 dynamic keys
-  > per row costs **+26%** (4.28 ms → 5.41 ms), i.e. ~56 ns/key of marginal cost, because the check
-  > reads every character of every key where `IsNullOrWhiteSpace` read one. A scalar-bitmask variant
-  > measured slower still, so the cost is inherent to the scan rather than to `SearchValues`.
+  > **5.4 ns/key** for the declared-name hash lookup already in the same loop. *In situ*, under
+  > BenchmarkDotNet (`OpenTypeKeyValidationBenchmarks`), serializing a 1,000-row page carrying 20
+  > dynamic keys per row costs this much more than the old whitespace-only check:
+  >
+  > | Key shape | Delta | Marginal |
+  > |---|---|---|
+  > | Repeating ASCII keys — the common case, 20 names reused on every row | **+4.0%** | 5.8 ns/key |
+  > | 20,000 distinct ASCII keys | +6.1% | 9.0 ns/key |
+  > | 20,000 distinct **non-ASCII** keys | +14.7% | 28.8 ns/key |
+  >
+  > Only the last row consults the validated-key cache at all, and it is the shape that saturates the
+  > 1,024-entry table; reaching it implies a handler synthesising per-row non-ASCII key names rather
+  > than a bounded, schema-like vocabulary. A model with **no** open complex type is unaffected —
+  > none of this code runs for it. A scalar-bitmask variant measured slower still, so what cost there
+  > is is inherent to the scan rather than to `SearchValues`.
+  >
+  > **Correction.** This entry previously quoted **+26% (4.28 ms → 5.41 ms), ~56 ns/key** here. That
+  > figure came from a stopwatch harness, is **refuted** by the BenchmarkDotNet run above, and should
+  > not be requoted — it overstates the common-case cost by roughly 6.5×. See
+  > [docs/open-types.md](docs/open-types.md), which carries the same table and the same refutation.
 
   **No model changes are required, and none are accepted as a substitute.** Support is driven from the
   EDM: `ODataConventionModelBuilder` already infers the container and records it as a
@@ -445,8 +1002,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     the ceiling is enforced per level after an *unbounded* materialization instead of as a SQL `LIMIT`:
     windowing a collection *and* projecting a further collection out of it in the same query requires
     SQL `APPLY`/`LATERAL`, which not every provider supports. The check is always correct either way —
-    never a truncated count — [#299](https://github.com/en-gen/OhData/issues/299) tracks tightening the
-    unbounded-materialize-then-`400` *cost* of the second case, which stays open.)
+    never a truncated count. This entry originally said
+    [#299](https://github.com/en-gen/OhData/issues/299) *"tracks tightening"* that
+    unbounded-materialize-then-`400` cost and *"stays open"*; #299 has since been closed by
+    **documenting** the caveat rather than by removing it, so the cost is unchanged and is now a
+    recorded limitation rather than a tracked one. The narrower nested-`$top`-with-`$count` case *was*
+    fixed, separately, by #334 — see its `### Fixed` entry.)
 
   Also (unreleased, so not itself a change from any published version, but worth calling out
   explicitly): nested paging (`$skip`/`$top`) with no nested `$orderby` now appends the child entity's
@@ -515,14 +1076,25 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is enforced only **after** an unbounded materialization ([#299](https://github.com/en-gen/OhData/issues/299)),
   so it is a data ceiling everywhere and a materialization ceiling only at a projection leaf.
 
-  **And one reach limit that is a gap rather than a decision.** This ceiling — the *bare* shape — is
-  computed in the pushdown's JSON shaping pass, so it applies on the **`GetQueryable` collection route
-  only**, as does #254's nested-`$count` ceiling. `GET /{Set}({key})?$expand=Nav` composes no SQL
-  bound (it expands through the delegate/batch-handler pipeline) and so returns the whole related
-  collection with `MaxExpandTop` set. Pre-existing rather than introduced here — nothing bounded the
-  bare shape on any route before this change — and tracked in
-  [#418](https://github.com/en-gen/OhData/issues/418). The **explicit** nested-`$top` ceiling is a
-  pre-handler validation and does reach that route (#301), as it does `GetAll` and Priority-1.
+  **And one reach limit that was a gap rather than a decision — closed later in this same release.**
+  This ceiling — the *bare* shape — is computed in the pushdown's JSON shaping pass, so **as shipped
+  in this entry** it applied on the **`GetQueryable` collection route only**, as does #254's
+  nested-`$count` ceiling. `GET /{Set}({key})?$expand=Nav` composes no SQL bound (it expands through
+  the delegate/batch-handler pipeline) and so returned the whole related collection with
+  `MaxExpandTop` set — pre-existing rather than introduced here, since nothing bounded the bare shape
+  on any route before this change. The **explicit** nested-`$top` ceiling is a pre-handler validation
+  and does reach that route (#301), as it does `GetAll` and Priority-1.
+
+  > **Superseded by #418, #463 and #464, all in this release.** A **second** mechanism now
+  > size-checks every raw-served collection navigation against the same ceiling — at every level of
+  > the `$expand` tree, on every read path (`GetAll`, Priority-1, a non-EF `IQueryable`,
+  > `GET /{Set}({key})`, a branch the pushdown declined, and every level below a raw-served parent) —
+  > and always as a `400`, never a link. So the reach limit described above no longer exists: what
+  > remains is the *split* between the two mechanisms, which is about how the collection was
+  > **loaded**, not which route was called. The pushdown's pass bounds the *fetch* and can page it;
+  > the raw check bounds the *data* after your handler already materialized it. See the `### Fixed`
+  > entries for #418 and for #463/#464/#466, and the reach table in
+  > [docs/query-options.md](docs/query-options.md), which is the authority.
 
 - **#298 / #300 fixes: two silent-degrade regressions in the #254 pushdown, both now fixed.** Post-merge
   adversarial review of #297 found that (a) `$count=true` on a pushed expand level that ALSO carried a
@@ -540,6 +1112,65 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   previously missing on `GET /{Set}({key})`) are also part of this fix.
 
 ### Added
+
+- **`Prefer: odata.maxpagesize` is now honoured on nested `$expand` collections and their
+  continuation (#412).** The preference governed the **root** collection only. Measured pre-fix with
+  `MaxExpandTop = 4`, `ExpandPagingEnabled = true` and `Prefer: odata.maxpagesize=2`:
+  `GET /Authors?$filter=Id eq 1&$expand=Books` served **four** books and linked at `?$skip=4`, and
+  `GET /Authors(1)/Books` ignored the header outright. Both now serve two and link at `?$skip=2`.
+
+  Protocol §8.2.8.5 settles it: the preference asks that *"each collection within the response"* stay
+  within the requested size, and its own example spells out next links *"for all returned orders
+  collections"*. It also refutes the blocker #412 itself recorded — the concern that a `$skip`-only
+  link carries no page size, so hop 2 could not reproduce hop 1. The spec expects the page size to
+  travel on the **request** (*"the client MAY specify a different value … with every request following
+  a next link"*), so the continuation route simply reads the same header and #313's deliberately
+  narrow `$skip`-only link surface does not widen by one character. Correctness does not depend on the
+  client resending anything: `$skip` is absolute and each hop advances it by the rows it actually
+  served. Both spellings — `maxpagesize` and `odata.maxpagesize` — are accepted and pinned.
+
+  **Clamped down, never up, and never over the ceiling.** The effective nested page is
+  `min(requested, MaxExpandTop)`, mirroring how the root clamps to `MaxTop`, so a client cannot lift
+  the server's DoS bound. It narrows the **page** and never the **ceiling** — lowering the ceiling from
+  a request header would let a header turn a `200` into a `400`. It is read on **one** arm, the bare
+  leaf that is emitting a `Nav@odata.nextLink`, so a non-pageable over-ceiling shape keeps its `400`
+  and ignores the header entirely: trimming without a link is silent truncation, and that stays
+  impossible. The SQL bound moves on the continuation — the one hop where the framework owns the query
+  — from `ceiling + 1` to `pageSize + 1`, still as a parameter so the plan cache is intact.
+
+  **`Preference-Applied` is deliberately untouched, and that non-change is pinned too.** §8.2.8.5
+  makes the echo a `MAY` and gives it **one** value for the whole response, so the "same header, two
+  collections" ambiguity #412 raised needs no second header — there is no per-collection echo to emit,
+  and the root's existing header already reports a page size actually applied. This also means the
+  echo's token spelling is untouched: it says `maxpagesize` where OData 4.0 spells it
+  `odata.maxpagesize`, which is #372's defect on milestone 1.9.0, and closing it accidentally here
+  would make that fix invisible.
+
+- **`$metadata` now advertises `ExpandRestrictions/Expandable = false` on entity sets that reject
+  `$expand` (#303).** Such a set previously advertised `MaxLevels = 3` and nothing else, which reads
+  as *"expand up to 3 levels"* for a set that `400`s **every** `$expand` — actively misleading, and
+  #367's headline evidence.
+
+  `Expandable` is **omitted** when `$expand` is enabled, because `true` is the vocabulary's own
+  default for that property. That is what makes this a strict addition: every entity set that already
+  advertised correctly is byte-identical, and the only CSDL delta anywhere is one `PropertyValue` line
+  on sets with `$expand` disabled.
+
+  **`MaxExpandTop`, `MaxExpandBreadth` and `MaxTop` stay unadvertised, and this establishes why rather
+  than approximating it.** #303 asked for `MaxExpandTop` as an `Org.OData.Capabilities.V1` annotation.
+  It cannot be: the vocabulary contains exactly **one** numeric slot — `MaxLevels` — and in every type
+  that carries it, it means a nesting or traversal **depth**, never a count of entities. There is no
+  term at any scope for a maximum result count, page size or `$top` ceiling, and advertising
+  `TopSupported = false` would be false, since a nested `$top` *is* supported up to the ceiling.
+  Verified two independent ways: the Capabilities CSDL bundled in the exact `Microsoft.OData.Edm`
+  version this repo resolves, and the upstream OASIS source. No custom `OhData.V1.*` term is minted —
+  a non-standard annotation is not discoverable by any client that does not already know OhData, so it
+  buys no interoperability while implying some. The vocabulary claim ships as a **live assertion**
+  rather than a comment, so an Edm bump that introduces a count term fails the suite and reopens #303.
+
+  For reference, `Microsoft.AspNetCore.OData` 9.5.0 advertises none of these — its model-bound
+  settings are CLR-side and never reach the CSDL — so matching its shape would mean emitting nothing
+  at all.
 
 - **`MaxExpandBreadth` — a breadth guard on `$expand`, defaulting to `50` (#429, shipping #202's
   never-shipped guard).** `$expand` cost was bounded on the **depth** axis (`MaxExpansionDepth`) and
@@ -618,9 +1249,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   there is deliberately no second page-size knob, and a `bool?` (unlike a second `int?`) lets a
   profile-level `false` genuinely opt **out** of a server-wide `true`.
 
-  **What the knob does is the entry below.** `Prefer: odata.maxpagesize` remains unhonoured on
-  nested collections (#412), an unmet spec `SHOULD` rather than a violation, since nothing claims it
-  was applied.
+  **What the knob does is the entry below.** As this entry originally shipped,
+  `Prefer: odata.maxpagesize` was unhonoured on nested collections (#412) — an unmet spec `SHOULD`
+  rather than a violation, since nothing claimed it was applied. **That is no longer true: #412 was
+  closed later in this same release**, so the preference now sizes the nested page and its
+  continuation as well as the root's. `MaxExpandTop` remains the default nested page size and the
+  hard ceiling; the preference clamps **down** from it and can never lift it. See the `### Added`
+  entry for #412.
 
 - **`ExpandPagingEnabled` pages a truly bare `$expand` instead of rejecting it, via
   `Nav@odata.nextLink` and a `$skip`-only continuation route (#313).** With **both** knobs set —
@@ -708,8 +1343,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
   What this does **not** change: a sibling profile's delegate does not blank a *root-level* `$expand`.
   The root resolves navigation treatment against the URL-named profile alone, so those rows are served
-  raw there today — pre-existing, unchanged here, and tracked in
-  [#415](https://github.com/en-gen/OhData/issues/415). The continuation route and the link emission
+  raw there — pre-existing and unchanged here. This entry originally called that *"tracked in #415"*;
+  [#415](https://github.com/en-gen/OhData/issues/415) has since been closed as **refuted** in this
+  same release — the frozen Model B spec settles root-level scoping as correct (*"Root (depth 1): KEEP
+  as-is"*), so it is a decision rather than an open gap. The continuation route and the link emission
   both use the full cross-profile candidate set, so this stage does not widen that exposure.
 
   Documented in full — the two-knob interaction, the exact pageable set, the continuation surface and
@@ -1257,9 +1894,19 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   each bound/unbound action parameter — answers `501 Not Implemented`, the same status the collection
   `POST` has always given. `501` rather than `400` because deep insert by reference is *unimplemented*,
   not malformed, on every verb; the previous `400` was incidental, produced by `@` failing the
-  `odataIdentifier` grammar rather than by anything that knew what `@odata.bind` meant. Those routes
-  carry the check on registrations whose EDM declares an open complex type, which is the only
-  condition under which they buffer the request body at all.
+  `odataIdentifier` grammar rather than by anything that knew what `@odata.bind` meant.
+
+  > **Superseded by #456, in this same release.** As shipped here the check sat *below* the write-body
+  > preparation step's open-types gate, so those routes carried it **only** on registrations whose EDM
+  > declares an open complex type — which this entry described as *"the only condition under which
+  > they buffer the request body at all"*. On the majority of registrations, which have no open
+  > complex type, `PUT`, `PATCH`, the navigation-`POST` create route and the structural-property
+  > writes therefore went on accepting `@odata.bind` with a `200`/`201` and silently discarding it.
+  > #456 hoists the check above that gate, and gives `PUT` and the navigation-`POST` route — which
+  > never reach that step on the non-open path, streaming the body straight into the deserializer — a
+  > buffered raw-UTF-8 scan of their own. So the premise no longer holds either: those two buffer the
+  > request body on **every** registration now. See the `### Fixed` entry for #455/#456/#461, and the
+  > body-limit note it carries (#474).
 
 - **Three server-driven-paging defects that break a client following `@odata.nextLink` (#360, #399).**
   None had test coverage: every pre-existing paging fixture was sized so the final page is partial,
