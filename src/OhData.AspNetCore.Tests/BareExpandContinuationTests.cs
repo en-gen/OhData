@@ -5,6 +5,7 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Data.Sqlite;
@@ -552,20 +553,60 @@ public sealed class BareExpandContinuationCoexistenceTests
 /// </summary>
 public sealed class BeDelegatedAuthorProfile : EntitySetProfile<int, BeAuthor>
 {
-    internal static int Invocations;
+    private readonly BeDelegateInvocationCounter _counter;
 
-    public BeDelegatedAuthorProfile(BareExpandDbContext db) : base(x => x.Id)
+    public BeDelegatedAuthorProfile(BareExpandDbContext db, BeDelegateInvocationCounter counter)
+        : base(x => x.Id)
     {
+        _counter = counter;
         EntitySetName = "BeDelegatedAuthors";
         ExpandEnabled = true;
         FilterEnabled = true;
         GetQueryable = _ => Task.FromResult(db.Authors.AsQueryable());
         HasMany(x => x.Books, (key, _) =>
         {
-            System.Threading.Interlocked.Increment(ref Invocations);
+            _counter.Record();
             return Task.FromResult<IEnumerable<BeBook>>(db.Books.Where(b => b.AuthorId == key).ToList());
         });
     }
+}
+
+/// <summary>
+/// #484: how many times <see cref="BeDelegatedAuthorProfile"/>'s <c>Books</c> delegate ran — on
+/// <b>this host</b>. Registered as a singleton by <c>BareExpandSqliteHarness</c>, so every
+/// <c>TestFixture</c> gets its own and no two tests can see each other's count.
+/// </summary>
+/// <remarks>
+/// <para>
+/// It used to be a process-wide <c>static int</c> that each test set to <c>0</c> and then asserted
+/// against. Two classes did that — <c>BareExpandContinuationDelegateSafetyTests</c> and
+/// <c>ExpandPagingStartupDiagnosticTests</c> — and neither carries a <c>[Collection]</c>, so xUnit
+/// put them in separate collections and ran them <b>in parallel</b>. <c>Interlocked.Increment</c>
+/// made each increment atomic and did nothing at all for the reset-then-assert window: class A's
+/// reset could land while class B sat between its own reset and its assertion. It failed three times
+/// in solution-wide runs (where seven projects compete for cores) and never in isolation.
+/// </para>
+/// <para>
+/// A per-fixture instance is preferred over serialising the two classes into one <c>[Collection]</c>
+/// because it removes the shared mutable state rather than scheduling around it, and costs no
+/// parallelism. There is no <c>Reset</c> deliberately: a counter that cannot be reset cannot be
+/// reset at the wrong moment, and each host starts at zero anyway. Assertions are therefore
+/// cumulative within a test, which is what they already were between their reset and their
+/// assertion.
+/// </para>
+/// <para>
+/// Why this is worth fixing rather than re-running: #384's intermittent <c>ConcurrencyTests</c>
+/// failure was written off as a flaky test and turned out to be #426, a live production race.
+/// </para>
+/// </remarks>
+public sealed class BeDelegateInvocationCounter
+{
+    private int _invocations;
+
+    /// <summary>Invocations recorded on this host so far.</summary>
+    internal int Invocations => Volatile.Read(ref _invocations);
+
+    internal void Record() => Interlocked.Increment(ref _invocations);
 }
 
 public sealed class BareExpandContinuationDelegateSafetyTests
@@ -612,11 +653,12 @@ public sealed class BareExpandContinuationDelegateSafetyTests
         // route — the sibling's declaration does not govern BeAuthors' navigation (#293 Model B).
         Assert.Contains(patterns, p => p.Contains("BeAuthors({key})/Books", StringComparison.Ordinal));
 
-        // The bound: the delegate really is what answers on the sibling's template.
-        BeDelegatedAuthorProfile.Invocations = 0;
+        // The bound: the delegate really is what answers on the sibling's template. #484: the count
+        // is this HOST's, so no reset is needed and none can race another class's.
+        BeDelegateInvocationCounter counter = fx.App.Services.GetRequiredService<BeDelegateInvocationCounter>();
         JsonElement viaDelegate = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/BeDelegatedAuthors(1)/Books");
         Assert.Equal(5, viaDelegate.GetProperty("value").GetArrayLength());
-        Assert.Equal(1, BeDelegatedAuthorProfile.Invocations);
+        Assert.Equal(1, counter.Invocations);
     }
 
     /// <summary>
@@ -652,7 +694,7 @@ public sealed class BareExpandContinuationDelegateSafetyTests
             connection, cap: 3, pagingEnabled: true,
             extraProfiles: b => b.AddEntitySetProfile<BeDelegatedAuthorProfile>());
 
-        BeDelegatedAuthorProfile.Invocations = 0;
+        BeDelegateInvocationCounter counter = fx.App.Services.GetRequiredService<BeDelegateInvocationCounter>();
         JsonElement page1 = await fx.Client.GetFromJsonAsync<JsonElement>(
             "/odata/BeAuthors?$filter=Id eq 1&$expand=Books");
 
@@ -666,12 +708,12 @@ public sealed class BareExpandContinuationDelegateSafetyTests
         Assert.False(rest.TryGetProperty("@odata.nextLink", out _));
 
         // Neither hop touched the sibling's delegate: BeAuthors is served entirely by its own profile.
-        Assert.Equal(0, BeDelegatedAuthorProfile.Invocations);
+        Assert.Equal(0, counter.Invocations);
 
         // And the sibling's own path is still the only thing serving the sibling's rows.
         JsonElement viaDelegate = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/BeDelegatedAuthors(1)/Books");
         Assert.Equal(5, viaDelegate.GetProperty("value").GetArrayLength());
-        Assert.Equal(1, BeDelegatedAuthorProfile.Invocations);
+        Assert.Equal(1, counter.Invocations);
     }
 
     /// <summary>
@@ -837,14 +879,14 @@ public sealed class BareExpandContinuationDelegateSafetyTests
             connection, cap: null, pagingEnabled: false,
             extraProfiles: b => b.AddEntitySetProfile<BeDelegatedAuthorProfile>());
 
-        BeDelegatedAuthorProfile.Invocations = 0;
+        BeDelegateInvocationCounter counter = fx.App.Services.GetRequiredService<BeDelegateInvocationCounter>();
         JsonElement root = await fx.Client.GetFromJsonAsync<JsonElement>(
             "/odata/BeAuthors?$filter=Id eq 1&$expand=Books");
 
         // BeAuthors declares Books delegate-less; its own declaration governs, so the five raw books
         // are served. Under #415's proposal this array would be empty.
         Assert.Equal(5, root.GetProperty("value")[0].GetProperty("Books").GetArrayLength());
-        Assert.Equal(0, BeDelegatedAuthorProfile.Invocations);
+        Assert.Equal(0, counter.Invocations);
     }
 
     /// <summary>
@@ -861,12 +903,12 @@ public sealed class BareExpandContinuationDelegateSafetyTests
             connection, cap: null, pagingEnabled: false,
             extraProfiles: b => b.AddEntitySetProfile<BeDelegatedAuthorProfile>());
 
-        BeDelegatedAuthorProfile.Invocations = 0;
+        BeDelegateInvocationCounter counter = fx.App.Services.GetRequiredService<BeDelegateInvocationCounter>();
         JsonElement root = await fx.Client.GetFromJsonAsync<JsonElement>(
             "/odata/BeDelegatedAuthors?$filter=Id eq 1&$expand=Books");
 
         Assert.Equal(5, root.GetProperty("value")[0].GetProperty("Books").GetArrayLength());
-        Assert.Equal(1, BeDelegatedAuthorProfile.Invocations);
+        Assert.Equal(1, counter.Invocations);
     }
 
     /// <summary>

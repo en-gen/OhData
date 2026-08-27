@@ -56,6 +56,11 @@ namespace OhData.AspNetCore.Tests;
 /// defect precisely because every fixture in it was green-field.
 /// </para>
 /// </remarks>
+// #484 sweep: this class and IgnorePropertyIntegrationTests both reset-then-assert
+// IgnProductProfile's static write captures, and this one clears two of them from InitializeAsync.
+// Without a shared collection xUnit runs the two in parallel and either can reset inside the other's
+// assertion window. See IgnProductCaptureCollection.
+[Collection(IgnProductCaptureCollection.Name)]
 public class OpenTypeIgnoreContainmentTests : IAsyncLifetime
 {
     private TestFixture _fx = null!;

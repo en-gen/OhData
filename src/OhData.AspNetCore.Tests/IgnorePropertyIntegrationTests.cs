@@ -91,6 +91,20 @@ internal static class IgnData
 public sealed class IgnProductProfile : EntitySetProfile<int, IgnProduct>
 {
     // Captures what the handlers actually received, for binding assertions.
+    //
+    // #484 SWEEP — PROCESS-WIDE STATE, RESET-THEN-ASSERTED BY TWO CLASSES. These three are set to
+    // null and then asserted against by IgnorePropertyIntegrationTests (this file) AND by
+    // OpenTypeIgnoreContainmentTests, which additionally clears two of them from its own
+    // InitializeAsync. That is #484's pattern exactly: a reset in one class can land inside the
+    // other's reset-to-assert window. Both classes are therefore pinned into one xUnit collection
+    // (IgnProductCaptureCollection) so xUnit serialises them.
+    //
+    // The COLLECTION rather than #484's preferred per-fixture instance, deliberately and only here:
+    // IgnProductProfile is registered from three files across six call sites, so injecting a capture
+    // object would mean threading a singleton registration through every one of them — a missed site
+    // being a request-time DI failure — for a fixture that is not the one #484 is about. The
+    // structural fix stays available; this is the cheap half of it. If a third class ever asserts on
+    // these fields, give it the collection attribute too, or do the injection properly.
     internal static IgnProduct? LastPosted;
     internal static IgnProduct? LastPut;
     internal static IReadOnlyList<string>? LastPatchChangedNames;
@@ -150,6 +164,18 @@ public sealed class IgnControlProfile : EntitySetProfile<int, IgnControl>
     }
 }
 
+/// <summary>
+/// #484 sweep: the xUnit collection that serialises every test class asserting on
+/// <see cref="IgnProductProfile"/>'s static write captures. Membership is the whole contract — a
+/// class outside it can reset those fields while a class inside it is between its own reset and its
+/// assertion, which is the race #484 documents.
+/// </summary>
+public static class IgnProductCaptureCollection
+{
+    internal const string Name = "IgnProductProfile write captures";
+}
+
+[Collection(IgnProductCaptureCollection.Name)]
 public class IgnorePropertyIntegrationTests : IAsyncLifetime
 {
     private TestFixture _fx = null!;

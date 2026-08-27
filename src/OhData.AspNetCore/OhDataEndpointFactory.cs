@@ -388,16 +388,111 @@ internal static class OhDataEndpointFactory
     // that difference is observable; so the reader's own JsonException is swallowed, the scan simply
     // stops where the reader does, and the request proceeds to the deserializer, which stays the
     // sole author of that message. Anything the reader could not reach is by definition inside a
-    // fragment the deserializer is about to reject anyway.
+    // fragment the deserializer is about to reject anyway -- WHICH IS TRUE ONLY BECAUSE THE TWO
+    // READERS ACCEPT THE SAME BODIES. #511: that premise was false for a UTF-8 BOM and for any
+    // host-relaxed JSON option, and each falsehood turned this scan into a silent "no annotation
+    // here" on a body the binder went on to bind. CreateBinderParityReader is what restores it; the
+    // swallow itself is unchanged and must stay.
     //
     // Semantics match the JsonElement walk exactly: any property name, at any depth, in an object or
     // inside an array, whose name ENDS WITH "@odata.bind". The unescaped comparison is a raw span
     // suffix test; a name carrying JSON escapes ('category@odata.bind' is the same member name)
     // falls back to the unescaped string, because JsonElement's own prop.Name is unescaped and the
     // two overloads must not disagree about what a body contains.
-    private static bool ContainsODataBindAnnotation(ReadOnlySpan<byte> utf8Json)
+    // #511: THE ONE PLACE EITHER SPAN SCANNER GETS A READER, and the reason it exists is that a
+    // scanner which reads the body differently from the binder is a FAIL-OPEN, not a mismatch.
+    //
+    // Both span scanners swallow their JsonException — deliberately and correctly, so that
+    // JsonSerializer.DeserializeAsync stays the sole author of the malformed-body message (#389 L1;
+    // see the notes on each scanner). The swallow's safety argument was "a body this reader cannot
+    // finish is a body the deserializer is about to reject", and that argument holds only while the
+    // two readers accept the SAME bodies. Where they diverge the scanner throws on a body the binder
+    // then binds perfectly well, the throw is swallowed, and the scan reports "nothing found":
+    // the deep-write strip does not fire and '@odata.bind' is discarded under a 200/201.
+    //
+    // Three divergences were measured on the pre-fix tree, one of them needing no configuration:
+    //
+    //   1. A LEADING UTF-8 BOM. Utf8JsonReader throws at its first byte; DeserializeAsync skips it
+    //      (as does JsonDocument.ParseAsync, which is why the collection POST was unaffected and PUT
+    //      answered 200 to bytes POST answered 501 to). Skipping it here CLOSES a divergence rather
+    //      than widening acceptance — every reader on the write path already accepted it except
+    //      these two. BOMs are routine in bodies sourced from Windows tooling and from files.
+    //
+    //   2. RELAXED HOST JSON OPTIONS. startupJsonOptions copies the host's Http.Json
+    //      SerializerOptions, so the binder honours ReadCommentHandling.Skip, AllowTrailingCommas and
+    //      a raised MaxDepth. A default reader throws at the first such token, and — because the
+    //      throw is swallowed — the scan STOPS THERE, so every navigation and every annotation named
+    //      after that point is invisible while the binder reads on.
+    //
+    // The three members below are exactly what JsonSerializerOptions.GetReaderOptions() derives
+    // internally for DeserializeAsync, which is what makes this parity rather than a second guess.
+    // MaxDepth needs no translation: 0 means "the 64 default" on both types.
+    //
+    // Deliberately NOT derived: .NET 10's AllowDuplicateProperties. This assembly multi-targets
+    // net8.0, where neither JsonSerializerOptions nor JsonReaderOptions has the member, and the
+    // divergence it would leave runs the SAFE way — a host that turns duplicate-rejection on makes
+    // the binder stricter than the scanner, so the scanner sees MORE and the request the binder
+    // would have rejected is rejected anyway.
+    // #511: the contract the WRITE path's binder resolves for a model type, which is where the
+    // deep-write gate's body-name table takes its keys from.
+    //
+    // A probe COPY of the registration's options, not the instance itself, mirroring
+    // OpenTypeJsonOptions.ValidateOrThrow: resolving a JsonTypeInfo calls MakeReadOnly() on the
+    // options, and startup must stay free to keep configuring the real instance (PrimeNavSuppression
+    // states as an invariant that it resolves no contract, and OpenTypeModifierOrderingTests exists
+    // because the modifier chain's ordering is load-bearing). A copy carries the TypeInfoResolver,
+    // every modifier on it and the PropertyNamingPolicy, so it answers the property-name question
+    // identically; it costs one options object and one contract resolution per entity set at startup.
+    //
+    // Null on failure rather than throwing, and the caller then falls back to the EDM/CLR aliases —
+    // i.e. degrades to exactly the pre-#511 table rather than to no table. A model whose contract
+    // cannot be built cannot be deserialized either, so the write routes are already dead in that
+    // case and a startup exception thrown from HERE would blame the wrong thing.
+    //
+    // ONE probe per options instance, not one per entity set: MapEntitySet runs per entity set and a
+    // fresh copy each time would resolve every model's contract into its own throwaway cache. Keyed
+    // weakly on the source instance so the probe dies with the registration, matching
+    // s_navSuppressedOptionsCache's shape. GetValue may run the factory more than once under a race
+    // and still returns one shared instance, which is all this needs.
+    private static readonly ConditionalWeakTable<JsonSerializerOptions, JsonSerializerOptions>
+        s_writeContractProbeCache = new();
+
+    private static JsonTypeInfo? TryResolveWriteContract(
+        Type modelType, JsonSerializerOptions? jsonOptions)
     {
-        var reader = new Utf8JsonReader(utf8Json);
+        JsonSerializerOptions source = jsonOptions ?? _pascalCaseSerializerOptions;
+        JsonSerializerOptions probe =
+            s_writeContractProbeCache.GetValue(source, static s => new JsonSerializerOptions(s));
+        try
+        {
+            return probe.GetTypeInfo(modelType);
+        }
+        catch (Exception ex) when (ex is NotSupportedException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    private static ReadOnlySpan<byte> Utf8Bom => new byte[] { 0xEF, 0xBB, 0xBF };
+
+    private static Utf8JsonReader CreateBinderParityReader(
+        ReadOnlySpan<byte> utf8Json, JsonSerializerOptions? jsonOptions)
+    {
+        if (utf8Json.StartsWith(Utf8Bom)) utf8Json = utf8Json.Slice(Utf8Bom.Length);
+
+        JsonSerializerOptions options = jsonOptions ?? _pascalCaseSerializerOptions;
+        return new Utf8JsonReader(utf8Json, new JsonReaderOptions
+        {
+            AllowTrailingCommas = options.AllowTrailingCommas,
+            CommentHandling = options.ReadCommentHandling,
+            MaxDepth = options.MaxDepth,
+        });
+    }
+
+    private static bool ContainsODataBindAnnotation(
+        ReadOnlySpan<byte> utf8Json, JsonSerializerOptions? jsonOptions)
+    {
+        Utf8JsonReader reader = CreateBinderParityReader(utf8Json, jsonOptions);
         try
         {
             while (reader.Read())
@@ -474,15 +569,20 @@ internal static class OhDataEndpointFactory
     // StartObject at depth 0 and its property names at depth 1, so a nested object's members (depth
     // 2+) and the members of objects inside a root-level ARRAY are skipped without a state machine.
     //
-    // GetString() rather than ValueTextEquals: matching is case-INSENSITIVE (the binder's
-    // PropertyNameCaseInsensitive is on unconditionally) and ValueTextEquals is ordinal, so the
+    // GetString() rather than ValueTextEquals: matching is case-INSENSITIVE whenever the binder's
+    // PropertyNameCaseInsensitive is set (always, in practice) and ValueTextEquals is ordinal, so the
     // no-allocation comparison cannot answer this question. The allocation is one string per
     // top-level member, which is what JsonDocument would have cost on the other branch anyway.
+    //
+    // #511: the reader comes from CreateBinderParityReader, so it accepts exactly what the binder
+    // accepts. Constructing a DEFAULT one here made every reader-configuration divergence a silent
+    // "this body names no navigation" — see that method for the three measured ones.
     private static HashSet<string> CollectPresentNavClrNames(
-        ReadOnlySpan<byte> utf8Json, Dictionary<string, PropertyInfo> navByBodyName)
+        ReadOnlySpan<byte> utf8Json, Dictionary<string, PropertyInfo> navByBodyName,
+        JsonSerializerOptions? jsonOptions)
     {
         var present = new HashSet<string>(StringComparer.Ordinal);
-        var reader = new Utf8JsonReader(utf8Json);
+        Utf8JsonReader reader = CreateBinderParityReader(utf8Json, jsonOptions);
         try
         {
             while (reader.Read())
@@ -9121,29 +9221,75 @@ internal static class OhDataEndpointFactory
         // navigations above, mapped to the property it names. Built once at startup from the same
         // array, so "is this body key a navigation" has exactly one answer on the write path.
         //
-        // Resolution is deliberately the SAME resolution the strip set itself used
-        // (ODataPropertyNaming.ResolveEdmName) under the SAME comparer the binder uses
-        // (OrdinalIgnoreCase — the framework's write options set PropertyNameCaseInsensitive = true
-        // unconditionally). A second, subtly different name comparison beside an existing one is how
-        // #454 happened: there the key-mismatch guard matched on the CLR name while the delta loop
-        // resolved through FindClrPropertyByEdmName, and three bodies moved an immutable key.
+        // #511 REPLACED THE PRIMARY KEY WITH THE BINDER'S OWN ANSWER, and the reason is the defect
+        // class rather than the one policy that exposed it. The table used to be keyed by
+        // ODataPropertyNaming.ResolveEdmName (= [JsonPropertyName] ?? CLR name — deliberately
+        // POLICY-FREE, because $metadata advertises the CLR identifier whatever casing payloads use,
+        // OData §4.4) plus the CLR name. The binder matches the [JsonPropertyName] ?? POLICY-CONVERTED
+        // name. camelCase differs from the CLR name only by case, so the OrdinalIgnoreCase comparer
+        // hid the divergence for the only policy anyone had configured; SnakeCaseLower and
+        // KebabCaseLower do not. Measured: with SnakeCaseLower and a `BackOrders` navigation, a body
+        // naming `back_orders` was BOUND by the deserializer and MISSED by this table, so the strip
+        // never fired — #504's hazard, reopened by a spelling.
         //
-        // Two keys per navigation, EDM name first and the CLR name only as a non-overwriting alias.
-        // The EDM name is what a client sends and what STJ binds; the CLR-name alias mirrors
-        // FindClrPropertyByEdmName's own fallback, which is what the PATCH loop resolves through, so
-        // a `[JsonPropertyName]`-renamed navigation named by its CLR name is treated the same way on
-        // all three verbs. TryAdd, not the indexer, for the alias: in the degenerate case where one
-        // navigation's CLR name collides with another's EDM name the EDM name wins, matching
-        // FindClrPropertyByEdmName's own preference order.
+        // Adding PropertyNamingPolicy?.ConvertName(...) as a third key would have closed that one
+        // policy. It would not have closed the CLASS, which is "two things that must agree, derived
+        // independently" — #454's exact shape, in this same release. So the primary key is now read
+        // OFF THE CONTRACT the binder resolves: JsonTypeInfo.Properties[].Name is, by construction,
+        // the string System.Text.Json matches a body key against, whatever produced it — a naming
+        // policy, a [JsonPropertyName], a custom TypeInfoResolver modifier, or a source-generated
+        // contract. There is no second derivation left to drift.
+        //
+        // HasSameMetadataDefinitionAs, never == / ReferenceEquals, to pair a JsonPropertyInfo back to
+        // its PropertyInfo. PropertyInfo equality also compares ReflectedType, and for an INHERITED
+        // member the two reflection walks disagree about it — typeof(TModel).GetProperties() reports
+        // TModel while STJ's AttributeProvider reports the declaring base. That exact comparison bug
+        // is #462's third defect (IsNavVisibleInBaseOptions), measured on .NET 10.0.11; it would show
+        // up here as an inherited navigation silently losing its contract key.
+        //
+        // The comparer follows the binder too, the way IgnoredPropertyJsonOptions.WithheldNameComparer
+        // does: OrdinalIgnoreCase whenever PropertyNameCaseInsensitive is set — which is always in
+        // practice (the fallback options set it explicitly and a host's come from
+        // JsonSerializerDefaults.Web), but it is READ rather than assumed, because a table wider than
+        // the binder strips a navigation the binder never bound, which is #506's destruction case.
+        //
+        // The EDM name and the CLR name STAY, demoted to non-overwriting aliases. They are what
+        // FindClrPropertyByEdmName resolves through, which is what the PATCH loop uses, so dropping
+        // them would make a [JsonPropertyName]-renamed navigation named by its CLR name behave
+        // differently on PATCH than on POST/PUT — a per-verb divergence to fix a per-host one. On a
+        // default host every alias collapses onto the contract key under the comparer, so nothing
+        // about the shipped behaviour moves.
         //
         // This is a lookup TABLE and not a call to FindClrPropertyByEdmName per body key on purpose.
         // That helper memoizes on (Type, string) in a process-wide ConcurrentDictionary keyed by the
         // exact string handed in, so calling it with client-supplied names would let a caller grow
         // that cache without bound. PATCH already does (pre-existing, and out of scope here); POST
         // and PUT must not join it.
-        var deepWriteNavByBodyName = new Dictionary<string, PropertyInfo>(StringComparer.OrdinalIgnoreCase);
+        var deepWriteNavByBodyName = new Dictionary<string, PropertyInfo>(
+            (jsonOptions ?? _pascalCaseSerializerOptions).PropertyNameCaseInsensitive
+                ? StringComparer.OrdinalIgnoreCase
+                : StringComparer.Ordinal);
+
+        if (deepWriteNavPropsToStrip.Length > 0)
+        {
+            JsonTypeInfo? writeContract = TryResolveWriteContract(typeof(TModel), jsonOptions);
+            if (writeContract is not null)
+            {
+                foreach (JsonPropertyInfo contractProp in writeContract.Properties)
+                {
+                    if (contractProp.AttributeProvider is not PropertyInfo clrMember) continue;
+                    foreach (PropertyInfo navProp in deepWriteNavPropsToStrip)
+                    {
+                        if (!clrMember.HasSameMetadataDefinitionAs(navProp)) continue;
+                        deepWriteNavByBodyName[contractProp.Name] = navProp;
+                        break;
+                    }
+                }
+            }
+        }
+
         foreach (PropertyInfo navProp in deepWriteNavPropsToStrip)
-            deepWriteNavByBodyName[ODataPropertyNaming.ResolveEdmName(navProp)] = navProp;
+            deepWriteNavByBodyName.TryAdd(ODataPropertyNaming.ResolveEdmName(navProp), navProp);
         foreach (PropertyInfo navProp in deepWriteNavPropsToStrip)
             deepWriteNavByBodyName.TryAdd(navProp.Name, navProp);
 
@@ -9367,7 +9513,7 @@ internal static class OhDataEndpointFactory
                         // difference).
                         using MemoryStream putBuffered = await BufferRequestBodyAsync(ctx, ct);
                         if (ContainsODataBindAnnotation(
-                                putBuffered.GetBuffer().AsSpan(0, (int)putBuffered.Length)))
+                                putBuffered.GetBuffer().AsSpan(0, (int)putBuffered.Length), jsonOptions))
                         {
                             return ODataBindNotImplementedError();
                         }
@@ -9381,7 +9527,8 @@ internal static class OhDataEndpointFactory
                         {
                             bodyNavClrNames = CollectPresentNavClrNames(
                                 putBuffered.GetBuffer().AsSpan(0, (int)putBuffered.Length),
-                                deepWriteNavByBodyName);
+                                deepWriteNavByBodyName,
+                                jsonOptions);
                         }
 
                         model = await JsonSerializer.DeserializeAsync<TModel>(putBuffered, jsonOptions, ct);
@@ -10457,7 +10604,7 @@ internal static class OhDataEndpointFactory
                                 // write routes -- same reasoning and same shape as PUT above.
                                 using MemoryStream navBuffered = await BufferRequestBodyAsync(ctx, ct);
                                 if (ContainsODataBindAnnotation(
-                                        navBuffered.GetBuffer().AsSpan(0, (int)navBuffered.Length)))
+                                        navBuffered.GetBuffer().AsSpan(0, (int)navBuffered.Length), jsonOptions))
                                 {
                                     return ODataBindNotImplementedError();
                                 }

@@ -130,6 +130,14 @@ internal static class BareExpandSqliteHarness
             configureServices: services =>
             {
                 configureExtraServices?.Invoke(services);
+
+                // #484: one counter per HOST, so the delegate-safety assertions never share mutable
+                // state across test classes that xUnit runs in parallel. Registered unconditionally
+                // rather than alongside `configureExtraProfiles`, because the profile that consumes
+                // it is added through that hook and a missing registration would be a DI failure at
+                // request time rather than a compile error. Costs one object per fixture.
+                services.AddSingleton<BeDelegateInvocationCounter>();
+
                 if (sink is not null) services.AddSingleton(sink);
                 services.AddDbContext<BareExpandDbContext>(o =>
                 {
