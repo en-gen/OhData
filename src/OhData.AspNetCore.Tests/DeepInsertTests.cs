@@ -956,6 +956,62 @@ public class DeepInsertTests
     }
 
     /// <summary>
+    /// #511 coverage gap: the gate's comparer follows <c>PropertyNameCaseInsensitive</c> rather than
+    /// hard-coding <c>OrdinalIgnoreCase</c>, and the <c>false</c> branch had no test.
+    /// <para>
+    /// Worth pinning because the failure it prevents runs the OPPOSITE way to the rest of #511.
+    /// Everywhere else a divergence made the gate see too little and fail OPEN; here a hard-coded
+    /// case-insensitive table would see too MUCH — stripping a navigation the binder never bound,
+    /// which is #506's state-destruction case arriving from the other direction.
+    /// </para>
+    /// <para>
+    /// Note the bodies below are PascalCase. OhData's default <c>PropertyNamingPolicy</c> is
+    /// <see langword="null"/> (PascalCase), so a camelCase body binds only BECAUSE
+    /// <c>PropertyNameCaseInsensitive</c> is on; with it off, <c>"id"</c> does not bind and the
+    /// request dies at the key-mismatch guard long before the strip gate is reached. That is
+    /// correct behaviour, and it is why this test has to speak the contract's own casing to reach
+    /// the branch under test at all.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Put_CaseSensitiveHost_StripsExactlyWhatTheBinderBound()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<DeepInsertDefaultProfile>(),
+            configureServices: services => services.ConfigureHttpJsonOptions(j =>
+            {
+                j.SerializerOptions.PropertyNameCaseInsensitive = false;
+            }));
+
+        // The binder does not bind "LINES" on a case-sensitive host, so the gate must not strip on
+        // it either — over-stripping here would null a collection the client never named.
+        DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
+        using var wrongCase = new StringContent(
+            "{\"Id\":1,\"Customer\":\"Cass\",\"LINES\":[{\"Sku\":\"W\",\"Quantity\":1}]}",
+            Encoding.UTF8, "application/json");
+        var mismatched = await fx.Client.PutAsync("/odata/DeepInsertDefaultOrders(1)", wrongCase);
+
+        Assert.Equal(HttpStatusCode.OK, mismatched.StatusCode);
+        var unbound = DeepInsertDefaultProfile.LastReceivedByWriteHandler;
+        Assert.NotNull(unbound);
+        Assert.NotNull(unbound!.Lines);
+        Assert.Empty(unbound.Lines);
+
+        // BOUNDING: the gate is not simply inert on a case-sensitive host. The spelling the binder
+        // DOES bind is still stripped, so this cannot pass by the gate having stopped working.
+        DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
+        using var exactCase = new StringContent(
+            "{\"Id\":1,\"Customer\":\"Cass\",\"Lines\":[{\"Sku\":\"W\",\"Quantity\":1}]}",
+            Encoding.UTF8, "application/json");
+        var matched = await fx.Client.PutAsync("/odata/DeepInsertDefaultOrders(1)", exactCase);
+
+        Assert.Equal(HttpStatusCode.OK, matched.StatusCode);
+        var bound = DeepInsertDefaultProfile.LastReceivedByWriteHandler;
+        Assert.NotNull(bound);
+        Assert.Null(bound!.Lines);
+    }
+
+    /// <summary>
     /// The <c>@odata.bind</c> check reads the same bytes with the same reader and had the same hole.
     /// A separate test from the strip gate's so both halves are pinned independently — asserted
     /// together, whichever fails first hides the other.
