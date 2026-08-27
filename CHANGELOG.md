@@ -11,6 +11,49 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The deep-write strip no longer nulls navigations the request body never mentioned (#506).**
+  `PUT` regressed on this in [#504](https://github.com/en-gen/OhData/pull/504) (merged, never
+  released); the collection `POST` had done it since 1.0.0. Measured against a live host, with a
+  model carrying `public List<Child> Kids { get; private set; } = new();` — the standard EF
+  encapsulation shape, which the convention model builder maps as a navigation:
+
+  | Request | before | after |
+  |---|---|---|
+  | `PUT /P476Parents(1)` — body `{"id":1,"title":"t"}` | 200, handler received `Kids == null` | 200, handler received the constructor's empty list |
+  | `PUT /P476Parents(1)` — body naming `kids` | 200, `Kids == null` | 200, `Kids == null` *(unchanged)* |
+
+  Two causes. `deepWriteNavPropsToStrip` filters on `p.SetMethod is not null`, and
+  `PropertyInfo.SetMethod` returns **non-public** accessors — so a private-setter navigation
+  `System.Text.Json` could never bind was in the strip set. And the strip itself was unconditional:
+  `navProp.SetValue(model, null)` for every navigation, whatever the body contained.
+
+  The filter is deliberately **left wide** — narrowing it to a public setter would exempt a
+  `[JsonInclude] { get; private set; }` navigation that STJ binds perfectly well, which opens a
+  deep-write hole rather than closing one. What changed is the *gating*: a navigation is stripped
+  only when the body named it. Matching uses the same resolution the binder used
+  (case-insensitive, `[JsonPropertyName]`-aware) and reads the **root** object's members only.
+  `PATCH` already behaved correctly — its skip fires while iterating the body's own properties —
+  and is unchanged.
+
+  The strip exists to stop a handler that does not expect a graph from silently persisting part of
+  one. If the body sent no graph there is nothing to prevent, and nulling anyway destroys state the
+  handler would otherwise have had: a handler diff-syncing `model.Kids` against the loaded entity
+  saw `null` instead of an empty list — a `NullReferenceException` in `.Count`, or a "null means
+  clear the relationship" misread.
+
+  Also corrects the comment above the filter, which claimed *"properties without a public setter
+  can't be deserialized into by STJ in the first place, so they're excluded — nothing to strip."*
+  The filter excludes no such thing; the strip was written trusting that it did.
+
+  > **⚠ BREAKING CHANGE — the collection `POST` only, and separate from the `PUT` regression
+  > above.** `POST /{EntitySet}` has nulled *every* navigation on the deserialized model since
+  > 1.0.0, regardless of the body. It now leaves untouched the ones the body did not name. A `Post`
+  > handler that relied on "the framework always hands me `null` navigations" now receives whatever
+  > the model's own constructor put there. Bodies that **do** carry a nested graph are unaffected on
+  > every verb. `POST` is fixed alongside `PUT` rather than after it because leaving one verb gated
+  > and the other unconditional would reintroduce exactly the per-verb write-path divergence this
+  > milestone spent ten PRs removing.
+
 - **`If-Match` is now enforced on the `$ref` and navigation-`POST` write routes, and compared per
   RFC (#478).** `CheckETagAsync` was called from five places — entity `PUT`/`PATCH`/`DELETE` and
   the two structural-property write handlers. Every other state-changing route the framework owns
