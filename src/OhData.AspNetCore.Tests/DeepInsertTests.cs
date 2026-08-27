@@ -7,6 +7,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using OhData;
 using Xunit;
@@ -321,6 +322,208 @@ public class DeepInsertTests
         Assert.Contains("Lines", DeepInsertOptInProfile.LastPatchChangedProperties!);
     }
 
+    // ── #506: the strip is gated on the body having NAMED the navigation ─────────
+    //
+    // The strip exists to stop a handler that does not expect a graph from silently persisting part
+    // of one. If the body sent no graph there is nothing to prevent — and nulling anyway DESTROYS
+    // state the handler would otherwise have had. Every assertion below is at the HANDLER: #240
+    // omits every EDM navigation from the 200/201 echo whether it was stripped or not, so the wire
+    // says nothing either way (the same blind spot that hid #457).
+
+    [Fact]
+    public async Task Put_Default_NavigationTheBodyNeverNamed_IsLeftAlone()
+    {
+        // THE REGRESSION #506 IS ABOUT. Before the fix this PUT — which mentions no navigation at
+        // all — nulled every navigation on the model, Kids included, and Kids has a PRIVATE setter
+        // that System.Text.Json never touched. The handler got null where the constructor had put
+        // an empty list.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
+        DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
+
+        var response = await fx.Client.PutAsJsonAsync("/odata/DeepInsertDefaultOrders(1)", new
+        {
+            id = 1,
+            customer = "Olivia",
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var received = DeepInsertDefaultProfile.LastReceivedByWriteHandler;
+        Assert.NotNull(received);
+
+        // The private-setter, constructor-initialized collection survives intact.
+        Assert.NotNull(received!.Kids);
+        Assert.Empty(received.Kids);
+
+        // So does a public-setter one the body did not name.
+        Assert.NotNull(received.Lines);
+        Assert.Empty(received.Lines);
+
+        // BOUNDING: a single-valued navigation the constructor leaves null is still null — the fix
+        // preserves what was there, it does not invent a value.
+        Assert.Null(received.Category);
+        Assert.Null(received.AuditStamp);
+
+        // BOUNDING: the scalars are untouched, as always.
+        Assert.Equal("Olivia", received.Customer);
+    }
+
+    [Fact]
+    public async Task Put_Default_StripsOnlyTheNavigationsTheBodyNamed()
+    {
+        // The pairing that makes the gate a gate rather than a removal: in ONE request, a named
+        // navigation is still stripped (#504's whole purpose) while an unnamed one is not.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
+        DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
+
+        var response = await fx.Client.PutAsJsonAsync("/odata/DeepInsertDefaultOrders(1)", new
+        {
+            id = 1,
+            customer = "Peggy",
+            lines = new[] { new { sku = "WIDGET-1", quantity = 2 } },
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var received = DeepInsertDefaultProfile.LastReceivedByWriteHandler;
+        Assert.NotNull(received);
+        Assert.Null(received!.Lines);
+        Assert.NotNull(received.Kids);
+        Assert.Empty(received.Kids);
+
+        // FAIL-CLOSED CHECK: the gate did not simply exempt the private-setter navigation. Name it
+        // and it is stripped like any other — the filter over `SetMethod is not null` is left wide
+        // on purpose (narrowing it to a PUBLIC setter would exempt a [JsonInclude] private-setter
+        // navigation that System.Text.Json binds perfectly well, which opens a deep-write hole).
+        DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
+        using var namedKidsContent = new StringContent(
+            "{\"id\":1,\"customer\":\"Peggy\",\"kids\":[{\"label\":\"k\"}]}",
+            Encoding.UTF8, "application/json");
+        var namedKids = await fx.Client.PutAsync("/odata/DeepInsertDefaultOrders(1)", namedKidsContent);
+        Assert.Equal(HttpStatusCode.OK, namedKids.StatusCode);
+        Assert.NotNull(DeepInsertDefaultProfile.LastReceivedByWriteHandler);
+        Assert.Null(DeepInsertDefaultProfile.LastReceivedByWriteHandler!.Kids);
+    }
+
+    [Fact]
+    public async Task Put_Default_MatchesANavigationNameTheWayTheBinderDid()
+    {
+        // Case-insensitively (the framework's write options set PropertyNameCaseInsensitive
+        // unconditionally) and [JsonPropertyName]-aware. If the gate matched more narrowly than the
+        // binder bound, a client could name a navigation, have it BOUND, and have it survive the
+        // strip — reopening #504 through a spelling.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
+
+        DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
+        using var shoutedContent = new StringContent(
+            "{\"id\":1,\"customer\":\"Quinn\",\"LINES\":[{\"sku\":\"W\",\"quantity\":1}]}",
+            Encoding.UTF8, "application/json");
+        var shouted = await fx.Client.PutAsync("/odata/DeepInsertDefaultOrders(1)", shoutedContent);
+        Assert.Equal(HttpStatusCode.OK, shouted.StatusCode);
+        Assert.NotNull(DeepInsertDefaultProfile.LastReceivedByWriteHandler);
+        Assert.Null(DeepInsertDefaultProfile.LastReceivedByWriteHandler!.Lines);
+
+        // The renamed navigation, named by its JSON name — the spelling the client and the binder
+        // both use.
+        DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
+        using var renamedContent = new StringContent(
+            "{\"id\":1,\"customer\":\"Rupert\",\"stamp\":{\"by\":\"audit\"}}",
+            Encoding.UTF8, "application/json");
+        var renamed = await fx.Client.PutAsync("/odata/DeepInsertDefaultOrders(1)", renamedContent);
+        Assert.Equal(HttpStatusCode.OK, renamed.StatusCode);
+        Assert.NotNull(DeepInsertDefaultProfile.LastReceivedByWriteHandler);
+        Assert.Null(DeepInsertDefaultProfile.LastReceivedByWriteHandler!.AuditStamp);
+
+        // BOUNDING: the gate reads the ROOT object's members. `kids` here is a member of the nested
+        // category value, not of the order, so it does not count as the order having named its own
+        // Kids navigation — while `category`, which the root really does name, is still stripped.
+        // deepWriteNavPropsToStrip holds properties of TModel; a same-named member of some other
+        // type is not one of them.
+        DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
+        using var nestedContent = new StringContent(
+            "{\"id\":1,\"customer\":\"Sybil\",\"category\":{\"name\":\"H\",\"kids\":[{\"label\":\"nope\"}]}}",
+            Encoding.UTF8, "application/json");
+        var nested = await fx.Client.PutAsync("/odata/DeepInsertDefaultOrders(1)", nestedContent);
+        Assert.Equal(HttpStatusCode.OK, nested.StatusCode);
+        Assert.NotNull(DeepInsertDefaultProfile.LastReceivedByWriteHandler);
+        Assert.Null(DeepInsertDefaultProfile.LastReceivedByWriteHandler!.Category);
+        Assert.NotNull(DeepInsertDefaultProfile.LastReceivedByWriteHandler.Kids);
+        Assert.Empty(DeepInsertDefaultProfile.LastReceivedByWriteHandler.Kids);
+    }
+
+    [Fact]
+    public async Task Post_Default_NavigationTheBodyNeverNamed_IsLeftAlone()
+    {
+        // POST's half of #506 — a SEPARATE, pre-existing breaking change rather than a regression:
+        // the collection POST has nulled unnamed navigations since 1.0.0. It is fixed alongside PUT
+        // because leaving one verb gated and the other unconditional would put back exactly the
+        // per-verb write-path divergence this milestone spent ten PRs removing.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
+        DeepInsertDefaultProfile.LastReceivedByHandler = null;
+
+        var response = await fx.Client.PostAsJsonAsync("/odata/DeepInsertDefaultOrders", new
+        {
+            customer = "Trent",
+        });
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var received = DeepInsertDefaultProfile.LastReceivedByHandler;
+        Assert.NotNull(received);
+        Assert.NotNull(received!.Kids);
+        Assert.Empty(received.Kids);
+        Assert.NotNull(received.Lines);
+        Assert.Empty(received.Lines);
+        Assert.Equal("Trent", received.Customer);
+    }
+
+    [Fact]
+    public async Task Post_Default_StripsOnlyTheNavigationsTheBodyNamed()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
+        DeepInsertDefaultProfile.LastReceivedByHandler = null;
+
+        var response = await fx.Client.PostAsJsonAsync("/odata/DeepInsertDefaultOrders", new
+        {
+            customer = "Ursula",
+            category = new { name = "Hardware" },
+        });
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var received = DeepInsertDefaultProfile.LastReceivedByHandler;
+        Assert.NotNull(received);
+        // Named -> still stripped. Deep insert is unchanged for a client that actually sent a graph.
+        Assert.Null(received!.Category);
+        // Unnamed -> untouched.
+        Assert.NotNull(received.Lines);
+        Assert.Empty(received.Lines);
+        Assert.NotNull(received.Kids);
+        Assert.Empty(received.Kids);
+    }
+
+    [Fact]
+    public async Task Patch_Default_WithholdsOnlyTheNavigationsTheBodyNamed_Unchanged()
+    {
+        // PATCH already had the right behaviour and is deliberately NOT touched by #506: its
+        // `continue` fires while iterating the BODY's properties, so it can only ever withhold what
+        // the body carried. This pins that, so a later "make the three verbs consistent" edit cannot
+        // quietly make PATCH unconditional to match what POST/PUT used to do.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
+        DeepInsertDefaultProfile.LastPatchChangedProperties = null;
+
+        var response = await fx.Client.PatchAsJsonAsync("/odata/DeepInsertDefaultOrders(1)", new
+        {
+            customer = "Victor",
+            lines = new[] { new { sku = "WIDGET-1", quantity = 2 } },
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.NotNull(DeepInsertDefaultProfile.LastPatchChangedProperties);
+        // The named navigation never entered the delta...
+        Assert.DoesNotContain("Lines", DeepInsertDefaultProfile.LastPatchChangedProperties!);
+        // ...and neither did the ones the body never named, so nothing clears them either.
+        Assert.DoesNotContain("Kids", DeepInsertDefaultProfile.LastPatchChangedProperties!);
+        Assert.DoesNotContain("AuditStamp", DeepInsertDefaultProfile.LastPatchChangedProperties!);
+        Assert.Contains("Customer", DeepInsertDefaultProfile.LastPatchChangedProperties!);
+    }
+
     // ── @odata.bind: documented non-support → 501 ────────────────────────────────
 
     [Fact]
@@ -610,6 +813,18 @@ public class DeepInsertTests
         public string Name { get; set; } = "";
     }
 
+    private class DeepInsertKid
+    {
+        public int Id { get; set; }
+        public string Label { get; set; } = "";
+    }
+
+    private class DeepInsertStamp
+    {
+        public int Id { get; set; }
+        public string By { get; set; } = "";
+    }
+
     private class DeepInsertOrder
     {
         public int Id { get; set; }
@@ -620,6 +835,23 @@ public class DeepInsertTests
         // Deliberately NOT declared via HasMany/HasOptional/HasRequired — a plain collection
         // property, not a navigation. Must survive stripping in every mode.
         public List<string> Tags { get; set; } = new();
+
+        // #506: the standard EF-encapsulation shape — a collection navigation with a PRIVATE
+        // setter, initialized by the constructor, and never declared to the profile (the convention
+        // model builder discovers it, so it reaches the strip set through #461's EDM union).
+        // System.Text.Json cannot bind into a private setter without [JsonInclude], so a request
+        // body can only ever leave this exactly as the constructor left it — which makes it the
+        // sharpest possible probe: anything other than an empty list at the handler came from the
+        // framework, not from the client. PropertyInfo.SetMethod returns the private accessor, so it
+        // IS in deepWriteNavPropsToStrip, and before #506 the unconditional strip nulled it.
+        public List<DeepInsertKid> Kids { get; private set; } = new();
+
+        // #506: a navigation whose JSON name is not its CLR name. The body-presence gate has to
+        // match it the way the BINDER matched it — through [JsonPropertyName] — or a renamed
+        // navigation would slip a strip an un-renamed one received. A second, subtly different name
+        // comparison beside an existing one is exactly how #454 happened.
+        [JsonPropertyName("stamp")]
+        public DeepInsertStamp? AuditStamp { get; set; }
     }
 
     /// <summary>AllowDeepWrites left at its default (false) — nested nav values are stripped.</summary>

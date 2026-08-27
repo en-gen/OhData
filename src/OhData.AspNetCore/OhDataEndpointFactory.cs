@@ -420,6 +420,87 @@ internal static class OhDataEndpointFactory
         return false;
     }
 
+    // #506: "which navigations did this body actually NAME?" — the question the deep-write strip
+    // has to answer before it nulls anything.
+    //
+    // WHY IT HAS TO BE ASKED AT ALL. The strip exists to stop a handler that does not expect a graph
+    // from silently persisting part of one. If the body sent no graph there is nothing to prevent,
+    // and nulling anyway DESTROYS state: a `List<Child> Kids { get; private set; } = new()` — plain
+    // EF encapsulation, and a navigation the convention model builder discovers — went to the
+    // handler as `null` rather than as the empty list the constructor put there, on a PUT whose body
+    // was `{"id":1,"title":"t"}`. A handler diff-syncing that collection against the loaded entity
+    // then sees null: an NRE in `.Count`, or a "null means clear the relationship" misread.
+    //
+    // TOP LEVEL ONLY, and that is not a shortcut. deepWriteNavPropsToStrip holds properties of
+    // TModel; a navigation named inside a nested object belongs to some other type and is stripped
+    // (or not) by whatever handles that type — here it is already inside a subtree that the root
+    // navigation's own presence accounts for.
+    //
+    // The returned set holds CLR property names (ordinal, like deepWriteNavClrNames) rather than the
+    // body's spelling, so the strip loop can test `navProp.Name` directly and two spellings of one
+    // navigation collapse to one entry.
+    private static HashSet<string> CollectPresentNavClrNames(
+        JsonElement body, Dictionary<string, PropertyInfo> navByBodyName)
+    {
+        var present = new HashSet<string>(StringComparer.Ordinal);
+
+        // A non-object body names nothing. It cannot reach the strip in practice — the deserializer
+        // rejects it first — but EnumerateObject() throws InvalidOperationException for any other
+        // ValueKind, and an unhandled one of those is a 500 (BUG 2 on the PATCH route, same shape).
+        if (body.ValueKind != JsonValueKind.Object) return present;
+
+        foreach (JsonProperty prop in body.EnumerateObject())
+        {
+            if (navByBodyName.TryGetValue(prop.Name, out PropertyInfo? navProp))
+                present.Add(navProp.Name);
+        }
+
+        return present;
+    }
+
+    // #506: the same question asked of RAW UTF-8, for PUT's non-open-type branch — the one write
+    // path that has neither a JsonDocument nor a JsonElement, only the buffer #456 already made for
+    // the '@odata.bind' scan.
+    //
+    // Same discipline as ContainsODataBindAnnotation(ReadOnlySpan<byte>) and for the same reason:
+    // the reader's own JsonException is SWALLOWED, because JsonSerializer.DeserializeAsync must stay
+    // the sole author of the malformed-body message (it appends "Path: $"; JsonDocument does not,
+    // and #389 L1 measured that difference as observable — DeepInsertTests
+    // .WritesWithoutTheAnnotation_StillSucceed_AndPutStillWordsAMalformedBodyItself and
+    // OpenTypeDefaultOnIsByteIdenticalTests pin both halves). A body this reader cannot finish is a
+    // body the deserializer is about to reject, so a partial answer here is never acted on.
+    //
+    // CurrentDepth == 1 is exactly "a member of the root object": Utf8JsonReader reports the root
+    // StartObject at depth 0 and its property names at depth 1, so a nested object's members (depth
+    // 2+) and the members of objects inside a root-level ARRAY are skipped without a state machine.
+    //
+    // GetString() rather than ValueTextEquals: matching is case-INSENSITIVE (the binder's
+    // PropertyNameCaseInsensitive is on unconditionally) and ValueTextEquals is ordinal, so the
+    // no-allocation comparison cannot answer this question. The allocation is one string per
+    // top-level member, which is what JsonDocument would have cost on the other branch anyway.
+    private static HashSet<string> CollectPresentNavClrNames(
+        ReadOnlySpan<byte> utf8Json, Dictionary<string, PropertyInfo> navByBodyName)
+    {
+        var present = new HashSet<string>(StringComparer.Ordinal);
+        var reader = new Utf8JsonReader(utf8Json);
+        try
+        {
+            while (reader.Read())
+            {
+                if (reader.TokenType != JsonTokenType.PropertyName || reader.CurrentDepth != 1)
+                    continue;
+                if (navByBodyName.TryGetValue(reader.GetString()!, out PropertyInfo? navProp))
+                    present.Add(navProp.Name);
+            }
+        }
+        catch (JsonException)
+        {
+            // Deliberately swallowed -- see the note above.
+        }
+
+        return present;
+    }
+
     // #456: a rewindable copy of the request body, so the '@odata.bind' scan and the deserializer can
     // both read it. Only PUT and the navigation-POST create route need this, and only on the path
     // where they were streaming.
@@ -8958,10 +9039,28 @@ internal static class OhDataEndpointFactory
         // already binds nested navigation values into these properties during deserialization;
         // withholding them here is what keeps a handler that doesn't expect a graph from silently
         // persisting only part of one.
-        // Properties without a public setter can't be deserialized into by STJ in the first
-        // place, so they're excluded — nothing to strip. That filter is right for PATCH too:
-        // Delta<T>.TrySetPropertyValue only tracks properties with a public getter AND setter, so a
-        // setter-less navigation could not enter a delta either.
+        //
+        // WHAT THE `SetMethod is not null` FILTER ACTUALLY DOES (#506). It excludes a property with
+        // NO setter of any kind. It does NOT exclude a non-public one — PropertyInfo.SetMethod
+        // returns a private/protected/init accessor happily — so `{ get; private set; }`, the
+        // standard EF-encapsulation shape, IS in this set even though System.Text.Json cannot bind
+        // into it. The comment that stood here claimed the opposite ("properties without a public
+        // setter can't be deserialized into by STJ in the first place, so they're excluded"), and
+        // the strip below was written trusting it: it ran unconditionally, so a PUT that mentioned
+        // no navigation at all still handed the handler `null` where the model's constructor had
+        // put an empty list.
+        //
+        // Keeping the filter wide is deliberate. Narrowing it to a PUBLIC setter would exempt a
+        // `[JsonInclude] { get; private set; }` navigation, which STJ binds perfectly well — that
+        // OPENS a deep-write hole rather than closing one. What changed instead is that the strip is
+        // GATED on the navigation being NAMED IN THE REQUEST BODY (deepWriteNavByBodyName and
+        // CollectPresentNavClrNames, below), which makes the filter's over-reach harmless: the gate
+        // never fires for a member the client did not send, whatever its accessors look like.
+        //
+        // The follow-on claim about PATCH is true on its own terms and is kept: Delta<T>'s
+        // InitializeProperties requires a public getter AND setter, so a setter-less navigation
+        // could not enter a delta either. It was simply stated as a consequence of a false premise.
+        //
         // #253 completion: NavigationPropertyNames is the EDM (JSON) navigation name set, so resolve
         // each CLR property to its EDM name before testing membership (a renamed nav's CLR name is
         // not in the set — its JSON name is).
@@ -9017,6 +9116,41 @@ internal static class OhDataEndpointFactory
         // Ordinal because both sides are CLR member names produced by the same reflection walk.
         var deepWriteNavClrNames = new HashSet<string>(
             deepWriteNavPropsToStrip.Select(p => p.Name), StringComparer.Ordinal);
+
+        // #506: the body-presence gate's lookup table — every JSON name that can NAME one of the
+        // navigations above, mapped to the property it names. Built once at startup from the same
+        // array, so "is this body key a navigation" has exactly one answer on the write path.
+        //
+        // Resolution is deliberately the SAME resolution the strip set itself used
+        // (ODataPropertyNaming.ResolveEdmName) under the SAME comparer the binder uses
+        // (OrdinalIgnoreCase — the framework's write options set PropertyNameCaseInsensitive = true
+        // unconditionally). A second, subtly different name comparison beside an existing one is how
+        // #454 happened: there the key-mismatch guard matched on the CLR name while the delta loop
+        // resolved through FindClrPropertyByEdmName, and three bodies moved an immutable key.
+        //
+        // Two keys per navigation, EDM name first and the CLR name only as a non-overwriting alias.
+        // The EDM name is what a client sends and what STJ binds; the CLR-name alias mirrors
+        // FindClrPropertyByEdmName's own fallback, which is what the PATCH loop resolves through, so
+        // a `[JsonPropertyName]`-renamed navigation named by its CLR name is treated the same way on
+        // all three verbs. TryAdd, not the indexer, for the alias: in the degenerate case where one
+        // navigation's CLR name collides with another's EDM name the EDM name wins, matching
+        // FindClrPropertyByEdmName's own preference order.
+        //
+        // This is a lookup TABLE and not a call to FindClrPropertyByEdmName per body key on purpose.
+        // That helper memoizes on (Type, string) in a process-wide ConcurrentDictionary keyed by the
+        // exact string handed in, so calling it with client-supplied names would let a caller grow
+        // that cache without bound. PATCH already does (pre-existing, and out of scope here); POST
+        // and PUT must not join it.
+        var deepWriteNavByBodyName = new Dictionary<string, PropertyInfo>(StringComparer.OrdinalIgnoreCase);
+        foreach (PropertyInfo navProp in deepWriteNavPropsToStrip)
+            deepWriteNavByBodyName[ODataPropertyNaming.ResolveEdmName(navProp)] = navProp;
+        foreach (PropertyInfo navProp in deepWriteNavPropsToStrip)
+            deepWriteNavByBodyName.TryAdd(navProp.Name, navProp);
+
+        // The gate only has work to do when there is something to strip AND the profile has not
+        // opted in. Hoisted so neither write route pays a scan it would discard — a model with no
+        // navigations at all (the common shape) never walks a body for this.
+        bool deepWriteNavGateApplies = !source.AllowDeepWrites && deepWriteNavPropsToStrip.Length > 0;
 
         if (source.HasPost)
         {
@@ -9075,11 +9209,28 @@ internal static class OhDataEndpointFactory
                     // in via AllowDeepWrites. Nested values for non-navigation (plain) collection
                     // properties are untouched — only CLR properties the EDM or the profile calls
                     // navigations are stripped.
-                    if (!source.AllowDeepWrites)
+                    //
+                    // #506 (BREAKING, and separate from the PUT regression the same issue fixes):
+                    // only navigations the BODY NAMED are stripped. This loop was unconditional from
+                    // 1.0.0, so a POST that mentioned no navigation still nulled every one of them —
+                    // including a `{ get; private set; }` collection STJ never touched, which the
+                    // model's constructor had initialized. That was always wrong for the same reason
+                    // it is wrong on PUT (a body that sent no graph gives the strip nothing to
+                    // prevent), and leaving POST unconditional while PUT is gated would put a
+                    // per-verb divergence back into the exact surface this milestone spent ten PRs
+                    // removing. Read against the strip's purpose it is a narrowing, not a widening:
+                    // a client-sent nested graph is stripped exactly as before.
+                    //
+                    // Read off postPrepared.Body, not document.RootElement: the prepared element is
+                    // what the deserializer below binds, and on the #398 control-information path
+                    // the two differ. The gate must see the body the binder saw.
+                    if (deepWriteNavGateApplies)
                     {
+                        HashSet<string> bodyNavClrNames =
+                            CollectPresentNavClrNames(postPrepared.Body, deepWriteNavByBodyName);
                         foreach (var navProp in deepWriteNavPropsToStrip)
                         {
-                            navProp.SetValue(model, null);
+                            if (bodyNavClrNames.Contains(navProp.Name)) navProp.SetValue(model, null);
                         }
                     }
 
@@ -9171,6 +9322,14 @@ internal static class OhDataEndpointFactory
                     var s = ResolveHandlers(ctx);
                     object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
                     TModel? model;
+
+                    // #506: which navigations the body NAMED, captured on whichever branch below
+                    // holds the bytes — the JsonElement one has a prepared body, the streaming one
+                    // has only #456's buffer, and both are scoped to their branch. Null when the
+                    // gate does not apply (opted in, or nothing to strip), which is also the shape
+                    // that keeps the branches from paying for a scan they would discard.
+                    HashSet<string>? bodyNavClrNames = null;
+
                     if (registration.OpenTypesActive)
                     {
                         // #389: dynamic-property names are policed BEFORE binding, and that check
@@ -9187,6 +9346,13 @@ internal static class OhDataEndpointFactory
                         using PreparedWriteBody putPrepared = PrepareWriteBody(
                             registration, putDocument.RootElement, typeof(TModel), jsonOptions);
                         if (putPrepared.Error is not null) return putPrepared.Error;
+                        // #506: the PREPARED element, for the same reason the collection POST reads
+                        // it — it is what Deserialize binds on the next line.
+                        if (deepWriteNavGateApplies)
+                        {
+                            bodyNavClrNames =
+                                CollectPresentNavClrNames(putPrepared.Body, deepWriteNavByBodyName);
+                        }
                         model = putPrepared.Body.Deserialize<TModel>(jsonOptions);
                     }
                     else
@@ -9206,6 +9372,18 @@ internal static class OhDataEndpointFactory
                             return ODataBindNotImplementedError();
                         }
 
+                        // #506: the second reader over the same buffer, and it must be as
+                        // non-authoritative about malformed input as the first one — see
+                        // CollectPresentNavClrNames(ReadOnlySpan<byte>). Reads GetBuffer() rather
+                        // than the stream, so putBuffered.Position stays at 0 for the deserializer
+                        // below and the DeserializeAsync(Stream) overload #389 L1 pins is untouched.
+                        if (deepWriteNavGateApplies)
+                        {
+                            bodyNavClrNames = CollectPresentNavClrNames(
+                                putBuffered.GetBuffer().AsSpan(0, (int)putBuffered.Length),
+                                deepWriteNavByBodyName);
+                        }
+
                         model = await JsonSerializer.DeserializeAsync<TModel>(putBuffered, jsonOptions, ct);
                     }
                     if (model is null)
@@ -9219,11 +9397,20 @@ internal static class OhDataEndpointFactory
                     // is a post-bind mutation of a CLR graph, while `@odata.bind` detection is a
                     // pre-bind read of the raw bytes whose ordering #456 pins.
                     // The key is never a navigation, so the key-mismatch check below is unaffected.
-                    if (!source.AllowDeepWrites)
+                    //
+                    // #506 — THE REGRESSION HALF. This loop shipped unconditional, so PUT nulled
+                    // navigations the body never mentioned, including ones System.Text.Json could
+                    // not have bound (`{ get; private set; }` — PropertyInfo.SetMethod does not
+                    // exclude a non-public accessor; see the strip set's own comment). Measured:
+                    // `PUT {"id":1,"title":"t"}` handed the handler `Kids == null` where the
+                    // constructor had put an empty list. #504 shipped to stop a CLIENT-SENT nested
+                    // graph reaching the handler, and that is untouched — what is gated away is the
+                    // case where the client sent no graph at all, which the strip was never for.
+                    if (deepWriteNavGateApplies && bodyNavClrNames is not null)
                     {
                         foreach (var navProp in deepWriteNavPropsToStrip)
                         {
-                            navProp.SetValue(model, null);
+                            if (bodyNavClrNames.Contains(navProp.Name)) navProp.SetValue(model, null);
                         }
                     }
 
