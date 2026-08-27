@@ -11,6 +11,40 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The write-path body scanners now read a request body the way the deserializer reads it
+  (#511).** `PUT` and the navigation-`POST` create route buffer the body and scan the raw UTF-8
+  twice — once for `@odata.bind` (#456) and once for "which navigations did this body name?" (#506)
+  — before handing the same bytes to `JsonSerializer.DeserializeAsync`. Both scans built a
+  **default** `Utf8JsonReader` while the deserializer reads with the registration's serializer
+  options, and both deliberately swallow their `JsonException` so the deserializer stays the sole
+  author of the malformed-body message. Every configuration the two readers disagreed about
+  therefore turned a scan into a silent *"nothing found"* — a fail-open. Measured against a live
+  host:
+
+  | Request | before | after |
+  |---|---|---|
+  | `PUT` — `EF BB BF` + body naming a navigation | 200, graph **unstripped** | 200, stripped |
+  | `PUT` / nav-`POST` — `EF BB BF` + `x@odata.bind` | 200 / 201, annotation discarded | 501 |
+  | `PUT` — naming policy `SnakeCaseLower`, nav `BackOrders`, body `back_orders` | 200, **unstripped** | 200, stripped |
+  | `PUT` — host `ReadCommentHandling.Skip`, navigation named after a comment | 200, **unstripped** | 200, stripped |
+
+  A UTF-8 BOM needs no configuration at all to hit: `Utf8JsonReader` throws at its first byte while
+  `JsonSerializer` and `JsonDocument` both skip it — which is also why the collection `POST`, which
+  parses through `JsonDocument`, answered `501` to bytes `PUT` answered `200` to. Both scanners now
+  take their reader from one helper that skips a leading BOM and derives comment handling, trailing
+  commas and max depth from the serializer options, exactly as `DeserializeAsync` does internally.
+
+  The navigation-name lookup table was keyed by the EDM name (`[JsonPropertyName]` ?? CLR name —
+  policy-free by design, OData §4.4) plus the CLR name; the deserializer matches the
+  *policy-converted* name. camelCase differs from the CLR name only by case, so a case-insensitive
+  table hid it; `SnakeCaseLower` and `KebabCaseLower` do not. Rather than adding the policy as a
+  third key, the table's primary key now comes from the **serializer contract itself**
+  (`JsonTypeInfo.Properties[].Name`), so it cannot drift from the binder again. The EDM and CLR
+  names remain as aliases, and on a default host the table is unchanged.
+
+  No behaviour changes on a default host, and the deserializer remains the only component that
+  reports a malformed body.
+
 - **The deep-write strip no longer nulls navigations the request body never mentioned (#506).**
   `PUT` regressed on this in [#504](https://github.com/en-gen/OhData/pull/504) (merged, never
   released); the collection `POST` had done it since 1.0.0. Measured against a live host, with a

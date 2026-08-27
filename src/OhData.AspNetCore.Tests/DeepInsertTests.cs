@@ -9,6 +9,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
+using Microsoft.Extensions.DependencyInjection;
 using OhData;
 using Xunit;
 
@@ -767,6 +768,277 @@ public class DeepInsertTests
         Assert.Equal(filler, DeepInsertDefaultProfile.LastReceivedByWriteHandler!.Customer);
     }
 
+    // ── #511: the span scanners must read the body the way the BINDER reads it ─────
+
+    /// <summary>
+    /// A body is handed to two readers on <c>PUT</c>: the raw-UTF-8 span scanners (the
+    /// <c>@odata.bind</c> check and #506's body-presence gate) and, right after them,
+    /// <c>JsonSerializer.DeserializeAsync</c>. The scanners' <c>JsonException</c> is swallowed —
+    /// deliberately, so the deserializer stays the sole author of the malformed-body message — which
+    /// means every configuration the two readers disagree about turns a scan into a silent
+    /// <b>"nothing found"</b>. That is a FAIL-OPEN: the strip does not fire and the annotation is
+    /// discarded under a <c>200</c>.
+    /// <para>
+    /// A leading UTF-8 BOM is the sharpest case because it needs no configuration at all.
+    /// <c>Utf8JsonReader</c> throws at its first byte; <c>DeserializeAsync</c> skips it and binds
+    /// normally; and <c>JsonDocument.ParseAsync</c> — the collection POST's reader — accepts it too,
+    /// so POST and PUT gave different answers to the same bytes.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Put_Default_LeadingUtf8Bom_StillStripsTheNavigationTheBodyNamed()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
+
+        DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
+        using var content = JsonContentWithBom(
+            "{\"id\":1,\"customer\":\"Wendy\",\"lines\":[{\"sku\":\"W\",\"quantity\":1}]}");
+        var response = await fx.Client.PutAsync("/odata/DeepInsertDefaultOrders(1)", content);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var received = DeepInsertDefaultProfile.LastReceivedByWriteHandler;
+        Assert.NotNull(received);
+        // FAIL-CLOSED PIN. The client sent a graph and the binder bound it — the BOM changes nothing
+        // about that — so the strip must still fire. Before the fix this was a one-element list.
+        Assert.Null(received!.Lines);
+        // BOUNDING: a BOM must not turn the gate into the unconditional strip #506 removed. The body
+        // named no other navigation, so the constructor's empty list has to survive.
+        Assert.NotNull(received.Kids);
+        Assert.Empty(received.Kids);
+        Assert.NotNull(received.BackOrders);
+        Assert.Empty(received.BackOrders);
+    }
+
+    /// <summary>
+    /// The same divergence, aimed at the <c>@odata.bind</c> check. The documented contract is
+    /// <c>501</c> on <b>every</b> write verb (#456); a BOM turned <c>PUT</c> and the navigation-POST
+    /// create route back into <c>200</c>/<c>201</c> with the annotation silently discarded, while
+    /// the collection POST — reading through <c>JsonDocument</c>, which accepts a BOM — still said
+    /// <c>501</c>. Exactly the per-verb divergence #456 exists to remove.
+    /// </summary>
+    [Fact]
+    public async Task Writes_ODataBindAnnotation_BehindALeadingUtf8Bom_Return501OnEveryVerb()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
+
+        DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
+        using var putContent = JsonContentWithBom(
+            "{\"id\":1,\"customer\":\"Xavier\",\"category@odata.bind\":\"DeepInsertDefaultCategories(1)\"}");
+        var put = await fx.Client.PutAsync("/odata/DeepInsertDefaultOrders(1)", putContent);
+        Assert.Equal(HttpStatusCode.NotImplemented, put.StatusCode);
+        Assert.Null(DeepInsertDefaultProfile.LastReceivedByWriteHandler);
+
+        // The verb that was already right, on the same bytes — this is the parity the test is about.
+        DeepInsertDefaultProfile.LastReceivedByHandler = null;
+        using var postContent = JsonContentWithBom(
+            "{\"customer\":\"Xavier\",\"category@odata.bind\":\"DeepInsertDefaultCategories(1)\"}");
+        var post = await fx.Client.PostAsync("/odata/DeepInsertDefaultOrders", postContent);
+        Assert.Equal(HttpStatusCode.NotImplemented, post.StatusCode);
+        Assert.Null(DeepInsertDefaultProfile.LastReceivedByHandler);
+    }
+
+    /// <summary>
+    /// The navigation-POST create route is the second buffered-scan site and shares the hole.
+    /// </summary>
+    [Fact]
+    public async Task NavPost_ODataBindAnnotation_BehindALeadingUtf8Bom_Returns501()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertWithNavHandlersProfile>());
+
+        var createResponse = await fx.Client.PostAsJsonAsync("/odata/DeepInsertNavOrders", new { customer = "Yolanda" });
+        Assert.Equal(HttpStatusCode.Created, createResponse.StatusCode);
+        int orderId = (await createResponse.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("Id").GetInt32();
+
+        using var content = JsonContentWithBom("{\"text\":\"hi\",\"order@odata.bind\":\"DeepInsertNavOrders(1)\"}");
+        var response = await fx.Client.PostAsync($"/odata/DeepInsertNavOrders({orderId})/Notes", content);
+
+        Assert.Equal(HttpStatusCode.NotImplemented, response.StatusCode);
+
+        // BOUNDING: the same route, same BOM, no annotation — still creates. "Everything 501s"
+        // cannot pass vacuously, and the BOM skip must not break an ordinary body.
+        using var cleanContent = JsonContentWithBom("{\"text\":\"hi\"}");
+        var clean = await fx.Client.PostAsync($"/odata/DeepInsertNavOrders({orderId})/Notes", cleanContent);
+        Assert.Equal(HttpStatusCode.Created, clean.StatusCode);
+    }
+
+    /// <summary>
+    /// The second divergence: the gate's lookup table was keyed by the <b>EDM</b> name
+    /// (<c>[JsonPropertyName]</c> ?? CLR name — deliberately policy-free, OData §4.4) plus the CLR
+    /// name, under <c>OrdinalIgnoreCase</c>. The binder matches the <b>policy-converted</b> name.
+    /// camelCase differs from the CLR name only by case, so the comparer hid the divergence for the
+    /// only policy anyone had tried; <c>SnakeCaseLower</c> and <c>KebabCaseLower</c> do not, and a
+    /// navigation the client named and the binder bound sailed past the strip.
+    /// <para>
+    /// Fixed structurally rather than by adding a third key: the table now takes its names from the
+    /// serializer contract the binder itself resolves, so there is no second derivation left to
+    /// drift. This exercises both overloads of the gate — <c>PUT</c>'s raw-span scan and the
+    /// collection <c>POST</c>'s <see cref="JsonElement"/> walk read the same table.
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("back_orders")]
+    [InlineData("back-orders")]
+    public async Task Writes_Default_NonCasePreservingNamingPolicy_StillStripTheNavigationTheBodyNamed(
+        string bodyName)
+    {
+        JsonNamingPolicy policy = bodyName == "back_orders"
+            ? JsonNamingPolicy.SnakeCaseLower
+            : JsonNamingPolicy.KebabCaseLower;
+
+        await using var fx = await TestHostBuilder.BuildAsync(o => o
+            .WithJsonPropertyNamingPolicy(policy)
+            .AddEntitySetProfile<DeepInsertDefaultProfile>());
+
+        DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
+        using var putContent = new StringContent(
+            $"{{\"id\":1,\"customer\":\"Zach\",\"{bodyName}\":[{{\"sku\":\"W\",\"quantity\":1}}]}}",
+            Encoding.UTF8, "application/json");
+        var put = await fx.Client.PutAsync("/odata/DeepInsertDefaultOrders(1)", putContent);
+
+        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
+        var putReceived = DeepInsertDefaultProfile.LastReceivedByWriteHandler;
+        Assert.NotNull(putReceived);
+        // FAIL-CLOSED PIN. Before the fix this was a one-element list.
+        Assert.Null(putReceived!.BackOrders);
+        // BOUNDING: the navigations the body did NOT name are still left alone.
+        Assert.NotNull(putReceived.Kids);
+        Assert.Empty(putReceived.Kids);
+        Assert.NotNull(putReceived.Lines);
+        Assert.Empty(putReceived.Lines);
+
+        DeepInsertDefaultProfile.LastReceivedByHandler = null;
+        using var postContent = new StringContent(
+            $"{{\"customer\":\"Zach\",\"{bodyName}\":[{{\"sku\":\"W\",\"quantity\":1}}]}}",
+            Encoding.UTF8, "application/json");
+        var post = await fx.Client.PostAsync("/odata/DeepInsertDefaultOrders", postContent);
+
+        Assert.Equal(HttpStatusCode.Created, post.StatusCode);
+        var postReceived = DeepInsertDefaultProfile.LastReceivedByHandler;
+        Assert.NotNull(postReceived);
+        Assert.Null(postReceived!.BackOrders);
+        Assert.NotNull(postReceived.Lines);
+        Assert.Empty(postReceived.Lines);
+    }
+
+    /// <summary>
+    /// The third divergence: <c>startupJsonOptions</c> copies the host's <c>Http.Json</c> serializer
+    /// options, so the binder honours <c>ReadCommentHandling.Skip</c>, <c>AllowTrailingCommas</c> and
+    /// a raised <c>MaxDepth</c>. A default <c>Utf8JsonReader</c> throws at the first such token, and
+    /// because the throw is swallowed the scan simply <i>stops there</i> — so everything named
+    /// AFTER the comment is invisible to both the strip gate and the <c>@odata.bind</c> check, while
+    /// the binder happily reads on.
+    /// </summary>
+    [Fact]
+    public async Task Put_Default_HostRelaxedJsonOptions_StillScansPastTheRelaxedToken()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<DeepInsertDefaultProfile>(),
+            configureServices: services => services.ConfigureHttpJsonOptions(j =>
+            {
+                j.SerializerOptions.ReadCommentHandling = JsonCommentHandling.Skip;
+                j.SerializerOptions.AllowTrailingCommas = true;
+            }));
+
+        DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
+        using var commentContent = new StringContent(
+            "{\"id\":1,\"customer\":\"Aaron\",/*hello*/\"lines\":[{\"sku\":\"W\",\"quantity\":1},]}",
+            Encoding.UTF8, "application/json");
+        var put = await fx.Client.PutAsync("/odata/DeepInsertDefaultOrders(1)", commentContent);
+
+        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
+        var received = DeepInsertDefaultProfile.LastReceivedByWriteHandler;
+        Assert.NotNull(received);
+        // FAIL-CLOSED PIN. Before the fix the reader died on the comment and `lines`, which sits
+        // after it, was never seen — so the graph reached the handler intact.
+        Assert.Null(received!.Lines);
+        Assert.NotNull(received.Kids);
+        Assert.Empty(received.Kids);
+    }
+
+    /// <summary>
+    /// The <c>@odata.bind</c> check reads the same bytes with the same reader and had the same hole.
+    /// A separate test from the strip gate's so both halves are pinned independently — asserted
+    /// together, whichever fails first hides the other.
+    /// </summary>
+    [Fact]
+    public async Task Put_ODataBindAnnotation_AfterARelaxedToken_Returns501()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<DeepInsertDefaultProfile>(),
+            configureServices: services => services.ConfigureHttpJsonOptions(j =>
+            {
+                j.SerializerOptions.ReadCommentHandling = JsonCommentHandling.Skip;
+                j.SerializerOptions.AllowTrailingCommas = true;
+            }));
+
+        DeepInsertDefaultProfile.LastReceivedByWriteHandler = null;
+        using var bindContent = new StringContent(
+            "{\"id\":1,\"customer\":\"Aaron\",/*hello*/\"category@odata.bind\":\"DeepInsertDefaultCategories(1)\"}",
+            Encoding.UTF8, "application/json");
+        var bind = await fx.Client.PutAsync("/odata/DeepInsertDefaultOrders(1)", bindContent);
+
+        Assert.Equal(HttpStatusCode.NotImplemented, bind.StatusCode);
+        Assert.Null(DeepInsertDefaultProfile.LastReceivedByWriteHandler);
+    }
+
+    /// <summary>
+    /// The scanners take their reader configuration from the serializer options, but they must not
+    /// become a second authority on what a malformed body is: the deserializer still words it. This
+    /// is #389 L1's invariant under the new configuration — a body the relaxed reader can finish and
+    /// the relaxed binder rejects, and a body neither can finish, both answered by
+    /// <c>JsonSerializer</c> (which appends <c>Path: $</c>).
+    /// </summary>
+    [Fact]
+    public async Task Put_HostRelaxedJsonOptions_StillWordsAMalformedBodyItself()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<DeepInsertDefaultProfile>(),
+            configureServices: services => services.ConfigureHttpJsonOptions(j =>
+            {
+                j.SerializerOptions.ReadCommentHandling = JsonCommentHandling.Skip;
+                j.SerializerOptions.AllowTrailingCommas = true;
+            }));
+
+        using var malformed = new StringContent("{ /*c*/ not json", Encoding.UTF8, "application/json");
+        var response = await fx.Client.PutAsync("/odata/DeepInsertDefaultOrders(1)", malformed);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("Path: $", await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A UTF-8 BOM must be SKIPPED by the scanners, never treated as content — and skipping it must
+    /// not change who reports a malformed body. <c>DeserializeAsync</c> skips a BOM itself, so a
+    /// BOM-prefixed malformed body is still worded by the deserializer.
+    /// </summary>
+    [Fact]
+    public async Task Put_LeadingUtf8Bom_StillWordsAMalformedBodyItself()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<DeepInsertDefaultProfile>());
+
+        using var malformed = JsonContentWithBom("{ not json");
+        var response = await fx.Client.PutAsync("/odata/DeepInsertDefaultOrders(1)", malformed);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("Path: $", await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <c>application/json</c> content whose payload carries a leading UTF-8 BOM — the shape Windows
+    /// tooling and file-sourced bodies produce routinely, and the one no configuration is needed to
+    /// hit.
+    /// </summary>
+    private static ByteArrayContent JsonContentWithBom(string json)
+    {
+        byte[] payload = Encoding.UTF8.GetBytes(json);
+        byte[] bytes = new byte[3 + payload.Length];
+        bytes[0] = 0xEF;
+        bytes[1] = 0xBB;
+        bytes[2] = 0xBF;
+        Array.Copy(payload, 0, bytes, 3, payload.Length);
+        var content = new ByteArrayContent(bytes);
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+        return content;
+    }
+
     // ── Coexists with a profile that also has PostChild / batch nav handlers ────────
 
     [Fact]
@@ -852,6 +1124,15 @@ public class DeepInsertTests
         // comparison beside an existing one is exactly how #454 happened.
         [JsonPropertyName("stamp")]
         public DeepInsertStamp? AuditStamp { get; set; }
+
+        // #511: a MULTI-WORD navigation name with no [JsonPropertyName], which is what makes it a
+        // probe for the naming policy. Under camelCase (`backOrders`) the JSON name differs from the
+        // EDM name only by case, so an OrdinalIgnoreCase table hides the divergence; under
+        // SnakeCaseLower (`back_orders`) or KebabCaseLower (`back-orders`) it does not, and the
+        // table's EDM-name/CLR-name keys stop naming what the binder binds. Undeclared on purpose,
+        // like Kids — the convention model builder discovers it and #461's EDM union puts it in the
+        // strip set, so no profile has to change.
+        public List<DeepInsertLine> BackOrders { get; set; } = new();
     }
 
     /// <summary>AllowDeepWrites left at its default (false) — nested nav values are stripped.</summary>
