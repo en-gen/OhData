@@ -410,11 +410,14 @@ public class ExpandPagingStartupDiagnosticTests
         // THE MEASUREMENT: the exposure the warning describes is live on BeAuthors. All five books
         // come back from the delegate-less set with no ceiling, which is the whole content of the
         // warning — and the sibling's delegate is not what served them.
-        BeDelegatedAuthorProfile.Invocations = 0;
+        // #484: the count belongs to THIS host, so there is nothing to reset and nothing another
+        // test class running in parallel can reset underneath this assertion.
+        BeDelegateInvocationCounter counter =
+            fx.App.Services.GetRequiredService<BeDelegateInvocationCounter>();
         System.Text.Json.JsonElement root = await fx.Client
             .GetFromJsonAsync<System.Text.Json.JsonElement>("/odata/BeAuthors?$filter=Id eq 1&$expand=Books");
         Assert.Equal(5, root.GetProperty("value")[0].GetProperty("Books").GetArrayLength());
-        Assert.Equal(0, BeDelegatedAuthorProfile.Invocations);
+        Assert.Equal(0, counter.Invocations);
 
         // Therefore the warning fires, exactly once, naming the set that serves raw.
         string warning = Assert.Single(BareExpandWarnings(capture));
