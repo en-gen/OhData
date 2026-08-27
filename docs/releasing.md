@@ -85,6 +85,26 @@ GitVersion ([`GitVersion.yml`](https://github.com/en-gen/OhData/blob/develop/Git
 A direct `develop -> main` merge computes the wrong version and the workflow's tag-validation step will
 reject the release.
 
+> **`tag-prefix` in `GitVersion.yml` is a regex, and it must stay optional (`[vV]?`) — #518.** GitVersion
+> uses that same pattern for two different jobs: matching the `vX.Y.Z` release tags, *and* parsing the
+> version out of a `release/X.Y.Z` branch name. Pinning it to a required `v` keeps the tags working while
+> silently breaking the branch names — `release/1.6.0` computed `1.5.0-rc.1`, the **previous** release,
+> and `release/9.9.9` computed the same, because the name failed to parse and GitVersion fell back to the
+> last tag. No error, no warning. Measured on GitVersion 6.8.2:
+>
+> | branch | `tag-prefix: v` | `tag-prefix: '[vV]?'` |
+> |---|---|---|
+> | `release/1.6.0` | `1.5.0-rc.1` ❌ | `1.6.0-rc.1` ✅ |
+> | `release/1.5.1` | `1.5.0-rc.1` ❌ | `1.5.1-rc.1` ✅ |
+> | `main` @ tag `v1.5.0` | `1.5.0` | `1.5.0` — tags unaffected |
+>
+> `increment: None` on the `release:` branch is also load-bearing: it keeps the branch-name version
+> authoritative. **Do not "fix" it to `Minor`** — that silently turns `release/1.5.1` into `1.6.0-rc.1`.
+>
+> To check a release branch before opening the PR: `dotnet-gitversion . /nocache` — from PowerShell,
+> **not Git Bash**, where MSYS path conversion rewrites `/nocache` into a filesystem path and the flag is
+> silently dropped, so every run returns the same misleading answer.
+
 > **The `v` in `release/vX.Y.Z` is load-bearing — do not drop it (#518).** `GitVersion.yml` sets
 > `tag-prefix: v`, and GitVersion applies that same prefix when it parses the version out of a release
 > branch's name. Without it the name fails to parse, `VersionInBranchNameVersionStrategy` contributes
