@@ -95,7 +95,7 @@ and `net10.0` builds of the package produce the same ETag for the same data and 
 version bump does not rotate anything. Renaming or moving a type that appears in an ETag selector
 *does* change that entity set's ETags - treat it like any other representation change.
 
-> **Upgrading:** these rules changed in the release noted in the [CHANGELOG](../CHANGELOG.md), and
+> **Upgrading:** these rules changed in the release noted in the [CHANGELOG](https://github.com/en-gen/OhData/blob/develop/CHANGELOG.md), and
 > every previously-issued ETag value changes with them. Clients holding an older ETag get a `412`
 > on a conditional write (or a full `200` instead of `304` on a conditional read) and re-fetch -
 > the safe direction. No configuration is involved and no ETag is comparable across the upgrade.
