@@ -83,6 +83,25 @@ single-valued navigations (`Order.Category`), and on all three entity write rout
 | `PUT /{EntitySet}({key})` | The navigation is set to `null` on the deserialized model **before** `Put` is invoked. |
 | `PATCH /{EntitySet}({key})` | The navigation **never enters** the `Delta<TModel>` at all. |
 
+**Only navigations the request body actually named are affected.** A navigation the body does not
+mention is left exactly as deserialization left it — including a
+`public List<Child> Kids { get; private set; } = new();` that `System.Text.Json` never touched, which
+reaches the handler as the empty list the constructor created. The strip exists to stop a handler
+that does not expect a graph from silently persisting part of one; if the body sent no graph there is
+nothing to prevent, and nulling anyway destroys state the handler would otherwise have had. Matching
+a body key to a navigation uses the same resolution the binder used — case-insensitive and
+`[JsonPropertyName]`-aware — and reads the **root** object's members only, so a same-named member of
+a nested value does not count. See [#506](https://github.com/en-gen/OhData/issues/506).
+
+> **Changed in 1.6.0 (breaking).** Through 1.5.0 the collection `POST` nulled **every** navigation on
+> the model regardless of what the body contained, and `PUT` did the same for the life of
+> [#504](https://github.com/en-gen/OhData/pull/504) (merged, never released). A handler that
+> diff-synced a collection navigation against the loaded entity therefore saw `null` where the
+> model's constructor had put an empty list — an `NullReferenceException` in `.Count`, or a "null
+> means clear the relationship" misread. If a `Post` handler relied on "the framework always hands me
+> `null` navigations", it now receives whatever the model's own constructor put there for navigations
+> the client did not send. Behaviour for a body that **does** carry a nested graph is unchanged.
+
 `PATCH` is deliberately *not* "bound and then nulled". `Delta<T>` is a change **set**: a navigation
 nulled inside it would still be named by `GetChangedPropertyNames()` and still written by
 `delta.Patch(existing)`, turning a graph the client sent into an unrequested relationship *clear*.
