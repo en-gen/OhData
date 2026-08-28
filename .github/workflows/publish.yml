@@ -13,7 +13,7 @@ name: Publish to NuGet
 # (NuGet/login), so the login step runs immediately before the push.
 #
 # Release procedure: see docs/releasing.md. Note that GitVersion computes the
-# version from the release branch name (release/vX.Y.Z -> X.Y.Z on main) — a
+# version from the release branch name (release/X.Y.Z -> X.Y.Z on main) — a
 # direct develop->main merge computes the wrong version and the tag-validation
 # step below will reject the release.
 #
