@@ -29,6 +29,11 @@ public sealed class OhDataBuilder
     // null = PascalCase (the CLR names $metadata declares, OData §4.4). This is the source of
     // truth for every OhData response path; the host's PropertyNamingPolicy is not inherited.
     private JsonNamingPolicy? _jsonPropertyNamingPolicy;
+    // #389: OData open complex types. ON by default -- a complex type with a dictionary member IS an
+    // open type, the CSDL this same builder emits has always said OpenType="true" for it, and the
+    // developer should not have to know the spec to get the conformant wire shape. WithOpenTypes(false)
+    // is the escape hatch back to the pre-#389 nested shape. See WithOpenTypes.
+    private bool _openTypesEnabled = true;
 
     // Tracks profile types registered across all OhData registrations on this IServiceCollection.
     // Stored as a singleton marker so it is shared between all OhDataBuilder instances.
@@ -119,6 +124,69 @@ public sealed class OhDataBuilder
     public OhDataBuilder WithJsonPropertyNamingPolicy(JsonNamingPolicy? policy)
     {
         _jsonPropertyNamingPolicy = policy;
+        return this;
+    }
+
+    /// <summary>
+    /// Controls OData <b>open complex types</b> (#389) for this registration: a complex type with an
+    /// <c>IDictionary&lt;string, object?&gt;</c> member serializes and binds its entries <b>flat</b>
+    /// — dynamic keys as siblings of the declared properties, never nested under the member's own
+    /// name. <b>On by default</b>; call <c>WithOpenTypes(false)</c> to restore the pre-#389 nested
+    /// shape.
+    /// </summary>
+    /// <remarks>
+    /// <b>Why on by default.</b> A complex type with a dictionary member <i>is</i> an open type, and
+    /// the CSDL this same builder emits has always said so — <c>ODataConventionModelBuilder</c> marks
+    /// the type <c>OpenType="true"</c> and omits the member from the declared properties whether or
+    /// not this is enabled. Leaving the wire shape nested made <c>$metadata</c> and the payload
+    /// disagree, and made the conformant behaviour something the developer had to know the spec to
+    /// ask for. It also put OhData at odds with <c>Microsoft.AspNetCore.OData</c>, whose
+    /// <c>ODataResourceSerializer</c> reads the very same <c>DynamicPropertyDictionaryAnnotation</c>
+    /// and appends dynamic properties flat with no opt-in flag anywhere in that path. OhData now
+    /// auto-maps per the spec; the developer writes a declarative profile.
+    /// <para>
+    /// <b><c>WithOpenTypes(false)</c> is an escape hatch, and the hazard it exists for is real.</b>
+    /// Once the container is <c>System.Text.Json</c> extension data it is no longer a <i>declared</i>
+    /// property, so an existing adopter's body <c>{"Meta":{"Bag":{"a":1}}}</c> stops binding
+    /// <c>{"a":1}</c> to the <c>Bag</c> property and starts binding a dynamic key literally named
+    /// <c>Bag</c> — the handler persists <c>Bag = { "Bag": {"a":1} }</c>. The response echo of that
+    /// mis-bound value is <b>byte-identical</b> to the correct one, so an adopter cannot detect the
+    /// difference by diffing responses in staging. <c>MapOhData()</c> therefore logs one warning per
+    /// affected complex type at startup, naming the CLR type and the container member.
+    /// </para>
+    /// <para>
+    /// <b>Does this affect you at all?</b> Ask one question: <i>do any of your complex types have an
+    /// <c>IDictionary&lt;string, object&gt;</c> member?</i> If none do, this setting is inert in
+    /// either position — the registration's serializer options are not even derived, no write-side
+    /// walk runs, nothing is logged, and every response (error responses included) is byte-identical
+    /// to a pre-#389 build.
+    /// </para>
+    /// <para>
+    /// When active this also validates incoming dynamic-property names: a key that is not an OData
+    /// simple identifier (CSDL §4.1 <c>odataIdentifier</c> — so the empty string, or anything
+    /// containing <c>@</c>, <c>.</c>, whitespace or <c>-</c>) is rejected with <c>400</c>. This runs
+    /// on every route that binds a body which can reach a dynamic bag: <c>POST</c>, <c>PUT</c> and
+    /// <c>PATCH</c> on the entity, the structural-property write routes, the navigation-<c>POST</c>
+    /// create route, and each parameter of a bound or unbound <b>action</b>. It is applied at every
+    /// depth — the value of an accepted dynamic key is itself walked, including through arrays and
+    /// through dictionary-valued declared members, because everything below a bag key is stored
+    /// verbatim and echoed on every later read. (A dictionary member's own map keys are keys of a
+    /// <i>declared</i> property, not dynamic property names, so they are not validated — only its
+    /// values are walked.)
+    /// See <c>docs/open-types.md</c> for the full contract, including <c>PATCH</c>'s whole-value
+    /// replace semantics.
+    /// </para>
+    /// </remarks>
+    /// <param name="enabled">
+    /// <c>true</c> (the default) for the flat, spec-conformant shape; <c>false</c> to restore the
+    /// pre-#389 shape in which the container is an ordinary nested declared property. The name keeps
+    /// the <c>With…</c> form the rest of this builder uses (<c>WithPrefix</c>, <c>WithDefaults</c>,
+    /// <c>WithJsonPropertyNamingPolicy</c>) rather than gaining a <c>WithoutOpenTypes()</c> sibling,
+    /// so there stays exactly one way to set it.
+    /// </param>
+    public OhDataBuilder WithOpenTypes(bool enabled = true)
+    {
+        _openTypesEnabled = enabled;
         return this;
     }
 
@@ -254,12 +322,24 @@ public sealed class OhDataBuilder
     /// is detected and injected automatically if present.
     /// </summary>
     /// <param name="handler">The function delegate. The method name is used as the route segment unless <paramref name="name"/> is specified.</param>
-    /// <param name="name">Optional explicit route name. Use when passing lambdas to override the compiler-generated name.</param>
+    /// <param name="name">
+    /// Optional explicit route name, also the operation's name in <c>$metadata</c>. Required when
+    /// the handler is an anonymous lambda or a local function: the compiler-generated method name
+    /// is not a valid OData identifier, and passing one is now enforced rather than silently
+    /// producing invalid CSDL (#468).
+    /// </param>
+    /// <exception cref="ArgumentException">
+    /// The resolved name is not a valid OData identifier (CSDL 4.0 section 4.1,
+    /// <c>odataIdentifier</c>).
+    /// </exception>
     public OhDataBuilder AddFunction(Delegate handler, string? name = null)
     {
         if (handler is null) throw new ArgumentNullException(nameof(handler));
         var op = UnboundOperationDefinition.From(handler, isAction: false);
         if (name is not null) op = op with { Name = name };
+        ValidateUnboundOperationName(
+            op.Name, isAction: false, explicitName: name is not null,
+            paramName: name is not null ? nameof(name) : nameof(handler));
         _unboundOps.Add(op);
         return this;
     }
@@ -270,14 +350,74 @@ public sealed class OhDataBuilder
     /// is detected and injected automatically if present.
     /// </summary>
     /// <param name="handler">The action delegate. The method name is used as the route segment unless <paramref name="name"/> is specified.</param>
-    /// <param name="name">Optional explicit route name. Use when passing lambdas to override the compiler-generated name.</param>
+    /// <param name="name">
+    /// Optional explicit route name, also the operation's name in <c>$metadata</c>. Required when
+    /// the handler is an anonymous lambda or a local function: the compiler-generated method name
+    /// is not a valid OData identifier, and passing one is now enforced rather than silently
+    /// producing invalid CSDL (#468).
+    /// </param>
+    /// <exception cref="ArgumentException">
+    /// The resolved name is not a valid OData identifier (CSDL 4.0 section 4.1,
+    /// <c>odataIdentifier</c>).
+    /// </exception>
     public OhDataBuilder AddAction(Delegate handler, string? name = null)
     {
         if (handler is null) throw new ArgumentNullException(nameof(handler));
         var op = UnboundOperationDefinition.From(handler, isAction: true);
         if (name is not null) op = op with { Name = name };
+        ValidateUnboundOperationName(
+            op.Name, isAction: true, explicitName: name is not null,
+            paramName: name is not null ? nameof(name) : nameof(handler));
         _unboundOps.Add(op);
         return this;
+    }
+
+    // #468: an unbound operation's name is written into $metadata as the FunctionImport/
+    // ActionImport name AND used verbatim as the route segment, so it must be an OData simple
+    // identifier. Nothing checked it. The reachable failure is an anonymous lambda or local
+    // function: UnboundOperationDefinition.From falls back to method.Name, and the compiler emits
+    // an unspeakable name ("<Caller>b__2_1") that is not a valid identifier -- which shipped as
+    // invalid CSDL, because CsdlWriter does not police names and CsdlReader.TryParse accepts them,
+    // so only a consumer that VALIDATES the document ever noticed.
+    //
+    // Checked here, at registration, rather than only at MapOhData(): this fires at the call site
+    // that caused it with the developer's own code on the stack, and it can name the remedy --
+    // which is sitting in the signature as the optional 'name' parameter. EdmValidator.Validate in
+    // MapAll stays as the backstop for constructs this cannot see.
+    //
+    // The grammar comes from OpenTypeJsonOptions.IsValidDynamicPropertyName -- the SHIPPED
+    // validator, deliberately not a second transcription of the ABNF. It dispatches the ASCII fast
+    // path or the rune walk that is its normative oracle (see the remarks there and CLAUDE.md);
+    // the *Cached variant beside it is not used, since its 1024-entry cache exists to memoise
+    // per-request dynamic keys on the serialize path and a handful of startup-time operation names
+    // would only evict them.
+    private static void ValidateUnboundOperationName(
+        string operationName, bool isAction, bool explicitName, string paramName)
+    {
+        if (OpenTypeJsonOptions.IsValidDynamicPropertyName(operationName)) return;
+
+        string method = isAction ? "AddAction" : "AddFunction";
+        string kind = isAction ? "action" : "function";
+
+        if (explicitName)
+        {
+            throw new ArgumentException(
+                $"OhData: '{operationName}' is not a valid OData identifier, so it cannot name an " +
+                $"unbound {kind}. The name is written into $metadata as the " +
+                $"{(isAction ? "ActionImport" : "FunctionImport")} name and used as the route " +
+                $"segment {(isAction ? "POST" : "GET")} /{{prefix}}/{operationName}. An identifier " +
+                "is 1 to 128 characters: it starts with a Unicode letter or '_', and continues " +
+                "with letters, digits, combining marks, connector punctuation or format characters " +
+                "(CSDL 4.0 section 4.1, odataIdentifier).",
+                paramName);
+        }
+
+        throw new ArgumentException(
+            $"OhData: {method} derived the name '{operationName}' from the handler's method, and it " +
+            $"is not a valid OData identifier, so it cannot name an unbound {kind}. This is what an " +
+            "anonymous lambda or a local function produces -- the compiler generates an unspeakable " +
+            $"name. Pass an explicit one: {method}(handler, \"My{(isAction ? "Action" : "Function")}\").",
+            paramName);
     }
 
     internal void Register()
@@ -288,6 +428,7 @@ public sealed class OhDataBuilder
         string capturedName = _name;
         var capturedDefaults = _defaults;
         var capturedNamingPolicy = _jsonPropertyNamingPolicy;
+        bool capturedOpenTypes = _openTypesEnabled;
 
         _services.AddKeyedSingleton<OhDataRegistration>(capturedName, (sp, _) =>
         {
@@ -397,6 +538,18 @@ public sealed class OhDataBuilder
                         var p = fn.Parameter(param.ParameterType, param.Name!);
                         if (param.IsOptional) p.Optional();
                     }
+                    // #468: FunctionConfiguration defaults IncludeInServiceDocument to true, and
+                    // OhData never touched it -- so $metadata asserted an advertisement the
+                    // hand-built service document never made, and for a PARAMETERIZED import the
+                    // claim is not even legal CSDL: EdmValidator flags
+                    // FunctionImportWithParameterShouldNotBeIncludedInServiceDocument, because
+                    // CSDL 4.0 section 13.6 reserves the service document for imports that can be
+                    // invoked with nothing but their name. A parameterless import CAN be, and
+                    // Microsoft.AspNetCore.OData's own service-document serializer honours the
+                    // flag, so those keep it and MapAll now derives the service document from the
+                    // EDM container -- flag and document come from one source, and the two can no
+                    // longer disagree.
+                    fn.IncludeInServiceDocument = op.Parameters.Length == 0;
                 }
                 else
                 {
@@ -445,13 +598,12 @@ public sealed class OhDataBuilder
 
             var edmModel = modelBuilder.GetEdmModel();
 
-            // #206: advertise the resolved MaxExpansionDepth per entity set as the
-            // Org.OData.Capabilities.V1.ExpandRestrictions/MaxLevels annotation, so a client can
-            // discover the server's $expand/$levels ceiling from $metadata before it 400s a too-deep
-            // request. Best-effort: the convention builder returns a concrete EdmModel (the only type
-            // that accepts vocabulary annotations); if that ever changes, the annotation is skipped
-            // rather than failing startup — the limit is still enforced at request time.
-            AnnotateExpandRestrictions(edmModel, profiles, logger);
+            // #206/#303: advertise the runtime $expand gates per entity set as
+            // Org.OData.Capabilities.V1 annotations, so a client can discover them from $metadata
+            // before it 400s. Best-effort: the convention builder returns a concrete EdmModel (the
+            // only type that accepts vocabulary annotations); if that ever changes, the annotations
+            // are skipped rather than failing startup — every limit is still enforced at request time.
+            AnnotateCapabilities(edmModel, profiles, logger);
 
             logger?.LogInformation(
                 "OhData: initialized {Count} entity set(s) [{Names}] at prefix '{Prefix}'",
@@ -460,7 +612,7 @@ public sealed class OhDataBuilder
                 capturedPrefix);
 
             var reg = new OhDataRegistration(
-                capturedPrefix, edmModel, profiles, capturedUnbound, capturedNamingPolicy);
+                capturedPrefix, edmModel, profiles, capturedUnbound, capturedNamingPolicy, capturedOpenTypes);
             // Also register in the collection for named access
             sp.GetRequiredService<OhDataRegistrationCollection>().Add(capturedName, reg);
             return reg;
@@ -474,35 +626,109 @@ public sealed class OhDataBuilder
         }
     }
 
-    // #206: attach an Org.OData.Capabilities.V1.ExpandRestrictions vocabulary annotation carrying
-    // MaxLevels = the profile's resolved MaxExpansionDepth to each entity set, so the ceiling is
-    // discoverable from $metadata. Emitted inline (inside the EntitySet element) so a CSDL reader
-    // finds it without an out-of-line lookup. Best-effort and non-fatal: any missing model/term/set
-    // is skipped (the depth limit is still enforced by the request-time validator regardless).
-    private static void AnnotateExpandRestrictions(
+    // #206/#303/#367: the single place OhData translates its runtime query-capability gates into
+    // Org.OData.Capabilities.V1 vocabulary annotations on the EDM. One pass, one term per method, so
+    // #367's wider set (FilterRestrictions / SortRestrictions / CountRestrictions / SelectSupport)
+    // is a new call here rather than a second mechanism.
+    //
+    // ---------------------------------------------------------------------------------------------
+    // WHAT IS AND IS NOT EXPRESSIBLE (#303). Read this before adding a numeric limit here.
+    //
+    // Org.OData.Capabilities.V1 contains exactly ONE numeric slot: `MaxLevels` (Edm.Int32), which
+    // appears in ExpandRestrictionsType, FilterRestrictionsType, and the Insert/Update/Delete
+    // restriction types. In every one of those it means a NESTING / TRAVERSAL DEPTH, never a count
+    // of entities. There is NO term, at entity-set scope or navigation-property scope, that
+    // expresses a maximum result count, page size, or $top ceiling.
+    //
+    // Verified two independent ways, both on 2026-08-23:
+    //   (1) the Capabilities CSDL bundled in Microsoft.OData.Edm 8.4.0 — the exact package this
+    //       repo resolves — dumped via CsdlWriter over CapabilitiesVocabularyModel.Instance;
+    //   (2) the upstream OASIS source of truth,
+    //       oasis-tcs/odata-vocabularies @ main, vocabularies/Org.OData.Capabilities.V1.xml.
+    // Both agree: grep for a numeric-typed property returns MaxLevels and nothing else.
+    //
+    // Therefore:
+    //   MaxExpansionDepth  -> EXPRESSIBLE as ExpandRestrictions/MaxLevels. Emitted below (#206).
+    //   ExpandEnabled      -> EXPRESSIBLE as ExpandRestrictions/Expandable. Emitted below (#303).
+    //   MaxExpandTop       -> NOT EXPRESSIBLE. It is a count of related entities per expanded
+    //                         navigation, not a depth. TopSupported/SkipSupported are Core.Tag
+    //                         booleans with no numeric slot, and advertising TopSupported=false
+    //                         would be a lie (a nested $top IS supported, up to the ceiling).
+    //                         Deliberately left unadvertised — see the note on inventing terms below.
+    //   MaxExpandBreadth   -> NOT EXPRESSIBLE. A count of expansions across the tree; same reason.
+    //   MaxTop (#367)      -> NOT EXPRESSIBLE, same reason as MaxExpandTop.
+    //
+    // We do NOT mint a custom `OhData.V1.*` term for the three inexpressible limits. A non-standard
+    // annotation is not discoverable by any client that does not already know OhData, so it buys no
+    // interoperability while implying some; and approximating with MaxLevels or TopSupported would
+    // publish a statement that is simply false. They stay enforced at request time (400) and
+    // documented, which is the honest outcome. Do not "fix" this by inventing a term.
+    //
+    // For reference, Microsoft.AspNetCore.OData 9.5.0 advertises NONE of these: a model built with
+    // ODataConventionModelBuilder over a type carrying [Page(MaxTop=25, PageSize=10)],
+    // [Expand(MaxDepth=2)], [Count], [Filter] and [OrderBy] emits zero vocabulary annotations — its
+    // model-bound query settings are CLR-side annotations that never reach the CSDL. OhData is
+    // already ahead of them here; matching their shape would mean emitting nothing at all.
+    // ---------------------------------------------------------------------------------------------
+    private static void AnnotateCapabilities(
         IEdmModel edmModel, IReadOnlyList<IEntitySetEndpointSource> profiles, ILogger? logger)
     {
         if (edmModel is not EdmModel model) return;
+        IEdmEntityContainer? container = model.EntityContainer;
+        if (container is null) return;
+
+        (IEntitySetEndpointSource Profile, IEdmEntitySet EntitySet)[] targets = profiles
+            .Select(profile => (Profile: profile, EntitySet: container.FindEntitySet(profile.EntitySetName)))
+            .Where(pair => pair.EntitySet is not null)
+            .Select(pair => (pair.Profile, pair.EntitySet!))
+            .ToArray();
+        if (targets.Length == 0) return;
+
+        AnnotateExpandRestrictions(model, targets, logger);
+    }
+
+    // #206/#303: attach an Org.OData.Capabilities.V1.ExpandRestrictions vocabulary annotation to each
+    // entity set, carrying the profile's RESOLVED (profile override falling back to
+    // EntitySetDefaults) $expand gates:
+    //
+    //   Expandable = false  — only when $expand is disabled outright. `true` is the vocabulary's own
+    //                         default, so emitting it would add bytes and assert nothing; omitting it
+    //                         keeps every set that already advertised correctly byte-identical.
+    //                         Without this an entity set with ExpandEnabled=false advertised
+    //                         `MaxLevels=3` and nothing else — actively misleading, since it read as
+    //                         "expand up to 3 levels" for a set that 400s every $expand (#367's
+    //                         headline evidence).
+    //   MaxLevels           — the resolved MaxExpansionDepth (#206). Emitted unconditionally,
+    //                         including when Expandable=false: it is not false there, merely moot,
+    //                         and keeping it unconditional is what makes this change a strict
+    //                         addition rather than a rewrite of existing metadata.
+    //
+    // Property order follows the vocabulary's own declaration order (Expandable before MaxLevels).
+    // Emitted inline (inside the EntitySet element) so a CSDL reader finds it without an
+    // out-of-line lookup. Best-effort and non-fatal: a missing term is skipped (the gates are still
+    // enforced by the request-time validator regardless).
+    private static void AnnotateExpandRestrictions(
+        EdmModel model,
+        IReadOnlyList<(IEntitySetEndpointSource Profile, IEdmEntitySet EntitySet)> targets,
+        ILogger? logger)
+    {
         IEdmTerm? term = CapabilitiesVocabularyModel.Instance
             .FindDeclaredTerm("Org.OData.Capabilities.V1.ExpandRestrictions");
         if (term is null) return;
 
-        IEdmEntityContainer? container = model.EntityContainer;
-        if (container is null) return;
-
-        foreach ((IEntitySetEndpointSource profile, IEdmEntitySet entitySet) in profiles
-            .Select(profile => (profile, entitySet: container.FindEntitySet(profile.EntitySetName)))
-            .Where(pair => pair.entitySet is not null)
-            .Select(pair => (pair.profile, pair.entitySet!)))
+        foreach ((IEntitySetEndpointSource profile, IEdmEntitySet entitySet) in targets)
         {
-            var record = new EdmRecordExpression(
-                new EdmPropertyConstructor("MaxLevels", new EdmIntegerConstant(profile.MaxExpansionDepth)));
-            var annotation = new EdmVocabularyAnnotation(entitySet, term, record);
+            var properties = new List<EdmPropertyConstructor>(2);
+            if (!profile.ExpandEnabled)
+                properties.Add(new EdmPropertyConstructor("Expandable", new EdmBooleanConstant(false)));
+            properties.Add(new EdmPropertyConstructor("MaxLevels", new EdmIntegerConstant(profile.MaxExpansionDepth)));
+
+            var annotation = new EdmVocabularyAnnotation(entitySet, term, new EdmRecordExpression(properties));
             annotation.SetSerializationLocation(model, EdmVocabularyAnnotationSerializationLocation.Inline);
             model.AddVocabularyAnnotation(annotation);
         }
 
-        logger?.LogDebug("OhData: advertised ExpandRestrictions/MaxLevels for {Count} entity set(s).", profiles.Count);
+        logger?.LogDebug("OhData: advertised ExpandRestrictions for {Count} entity set(s).", targets.Count);
     }
 
     // Marks every structural type the builder discovered that is NOT one of the root profiles'
@@ -515,27 +741,70 @@ public sealed class OhDataBuilder
     // every discovered type (see ODataModelBuilder.AddEntityType/AddComplexType) -- that base
     // type has no Filter()/OrderBy()/etc. overloads at all, only the QueryConfiguration property
     // those generic wrapper methods delegate to, so we call it directly instead.
+    //
+    // #296: a type can be BOTH a root profile's own entity type AND some navigation's target type
+    // (the self-referential case -- e.g. LvNode.Children : List<LvNode> -- but also the more general
+    // "shared type" case where entity A's navigation targets entity B's own root type). The original
+    // `!rootModelTypes.Contains(...)` filter excluded every such type from this method entirely, on
+    // the theory that root types must keep whatever Filter/OrderBy/Select/Count/Expand allowlist their
+    // own profile configured above (true) -- but that filter ALSO skipped the `SetMaxTop(null)` call,
+    // which is the ONLY setting here that has nothing to do with the root type's own request-level
+    // MaxTop. Microsoft's SelectExpandQueryValidator.ValidateNestedTop reads the model-bound MaxTop of
+    // the NAVIGATION'S TARGET TYPE (not the root type reached via GET /Set) to police a nested $top
+    // inside $expand=Nav($top=N). For a root+nav-target type that model-bound MaxTop was left at its
+    // implicit default of 0 (created as a side effect of the root profile's own Filter()/Select()/etc.
+    // calls), so every nested $top against such a type 400'd before OhData's own MaxExpandTop ceiling
+    // (ValidateNestedTopCeiling, enforced separately in OhDataEndpointFactory) ever ran.
+    //
+    // Fix: compute the set of types that are SOMEONE's navigation target (self or cross-referenced),
+    // and clear model-bound MaxTop on every one of them -- root or not. Root types that are ALSO nav
+    // targets get ONLY the MaxTop clear; their Filter/OrderBy/Select/Count/Expand configuration (set by
+    // EntitySetProfile.VisitModelBuilder above, possibly a restrictive allowlist) is left completely
+    // untouched, so the root entity set's OWN request-level MaxTop/query-capability behavior (governed
+    // at runtime by IEntitySetEndpointSource.MaxTop, not by this model-bound setting) is unaffected.
+    // Pure nav-target-only types keep the existing "fully permissive" treatment unchanged.
     private static void MarkNavigationTargetTypesFullyQueryable(
         ODataModelBuilder builder, HashSet<Type> rootModelTypes)
     {
-        foreach (var query in builder.StructuralTypes
-            .Where(stc => !rootModelTypes.Contains(stc.ClrType))
-            .Select(stc => stc.QueryConfiguration))
+        var structuralTypes = builder.StructuralTypes.ToList();
+
+        var navigationTargetTypes = new HashSet<Type>(
+            structuralTypes
+                .SelectMany(stc => stc.NavigationProperties)
+                .Select(np => np.RelatedClrType)
+                .Where(t => t is not null)!);
+
+        foreach (var stc in structuralTypes)
         {
-            query.SetFilter(properties: null, enableFilter: true);
-            query.SetOrderBy(properties: null, enableOrderBy: true);
-            query.SetSelect(properties: null, selectType: SelectExpandType.Allowed);
-            query.SetCount(enableCount: true);
-            // A generous (not unbounded) max expand depth, consistent with the other
-            // effectively-unlimited-but-not-infinite settings this framework uses elsewhere
-            // (e.g. MaxAnyAllExpressionDepth = 1000 in OhDataEndpointFactory).
-            query.SetExpand(properties: null, maxDepth: 1000, expandType: SelectExpandType.Allowed);
-            // #206 phase 2 (optioned expand): once ANY model-bound setting exists on a type,
-            // Microsoft's SelectExpand validator defaults its MaxTop to 0, which rejects a nested
-            // $top inside a $expand of THIS type ($expand=Children($top=N)) with "limit of 0 for
-            // Top". Nav-target types are the collection element types a nested $top pages, so clear
-            // that spurious ceiling (null = unlimited). OhData governs $top itself: the root path
-            // clamps to source.MaxTop, and the expand-pushdown path applies the nested $top directly.
+            bool isRoot = rootModelTypes.Contains(stc.ClrType);
+            bool isNavTarget = navigationTargetTypes.Contains(stc.ClrType);
+            if (isRoot && !isNavTarget) continue; // pure root type: leave entirely untouched
+
+            var query = stc.QueryConfiguration;
+
+            if (!isRoot)
+            {
+                // Pure nav-target-only type (never its own entity set): no allowlist surface of its
+                // own, so "fully permissive" is the only coherent semantics -- unchanged from before.
+                query.SetFilter(properties: null, enableFilter: true);
+                query.SetOrderBy(properties: null, enableOrderBy: true);
+                query.SetSelect(properties: null, selectType: SelectExpandType.Allowed);
+                query.SetCount(enableCount: true);
+                // A generous (not unbounded) max expand depth, consistent with the other
+                // effectively-unlimited-but-not-infinite settings this framework uses elsewhere
+                // (e.g. MaxAnyAllExpressionDepth = 1000 in OhDataEndpointFactory).
+                query.SetExpand(properties: null, maxDepth: 1000, expandType: SelectExpandType.Allowed);
+            }
+
+            // #206 phase 2 (optioned expand) / #296 (root+nav-target types): once ANY model-bound
+            // setting exists on a type, Microsoft's SelectExpand validator defaults its MaxTop to 0,
+            // which rejects a nested $top inside a $expand of THIS type ($expand=Children($top=N))
+            // with "limit of 0 for Top". Nav-target types (root or not) are the collection element
+            // types a nested $top pages, so clear that spurious ceiling (null = unlimited) on all of
+            // them. OhData governs $top itself: the root path clamps to source.MaxTop, and the
+            // expand-pushdown path applies the nested $top directly, bounded by source.MaxExpandTop
+            // (ValidateNestedTopCeiling) -- so clearing this model-bound MaxTop does not make nested
+            // $top unbounded, it just stops Microsoft's validator from pre-empting OhData's own check.
             query.SetMaxTop(null);
         }
     }

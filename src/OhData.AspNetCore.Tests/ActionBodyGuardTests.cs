@@ -224,6 +224,95 @@ public class ActionBodyGuardTests
         await AssertErrorEnvelope(response, HttpStatusCode.UnsupportedMediaType);
     }
 
+    // ── #455: a well-formed body whose '@odata.id' is not a string ────────────────
+
+    /// <summary>
+    /// #455. The body is valid JSON, is a JSON object, and HAS the <c>@odata.id</c> member — so it
+    /// walked past every B2 guard above — but the member is a number, a boolean, an object or an
+    /// array. <c>JsonElement.GetString()</c> throws <see cref="InvalidOperationException"/> for
+    /// every <see cref="JsonValueKind"/> except <c>String</c> and <c>Null</c>, and the handler
+    /// catches only <c>JsonException</c> and <c>FormatException</c>, so it escaped to the group
+    /// filter as a generic 500.
+    /// <para>
+    /// That is the one thing this route family is not allowed to do: the framework deserializes
+    /// write bodies by hand specifically so a semantically wrong but well-formed body answers 400
+    /// with the OData envelope rather than telling the client the server broke.
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("{\"@odata.id\": 123}")]
+    [InlineData("{\"@odata.id\": true}")]
+    [InlineData("{\"@odata.id\": {\"uri\":\"Children(1)\"}}")]
+    [InlineData("{\"@odata.id\": [\"Children(1)\"]}")]
+    public async Task RefPost_NonStringODataId_Returns400WithEnvelope_NotA500(string body)
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavQueryProfile>());
+
+        var response = await fx.Client.PostAsync("/odata/NavQueryParents(1)/Children/$ref", JsonBody(body));
+
+        await AssertErrorEnvelope(response, HttpStatusCode.BadRequest);
+    }
+
+    [Theory]
+    [InlineData("{\"@odata.id\": 123}")]
+    [InlineData("{\"@odata.id\": true}")]
+    [InlineData("{\"@odata.id\": {\"uri\":\"Children(1)\"}}")]
+    [InlineData("{\"@odata.id\": [\"Children(1)\"]}")]
+    public async Task RefPut_NonStringODataId_Returns400WithEnvelope_NotA500(string body)
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<RefPutGuardProfile>());
+        RefPutGuardProfile.LastRelatedId = null;
+
+        var response = await fx.Client.PutAsync("/odata/RefPutGuardParents(1)/PrimaryChild/$ref", JsonBody(body));
+
+        await AssertErrorEnvelope(response, HttpStatusCode.BadRequest);
+        Assert.Null(RefPutGuardProfile.LastRelatedId);
+    }
+
+    /// <summary>
+    /// #455, the case that never threw and is a DELIBERATE behaviour change: an explicit
+    /// <c>"@odata.id": null</c>. <c>GetString()</c> returned null, the <c>?? ""</c> turned it into
+    /// an EMPTY entity-id, and that empty string was passed to the profile's <c>setRef</c>/
+    /// <c>addRef</c> delegate under a <c>204</c> — a link request that reported success while naming
+    /// no entity at all. §11.4.6.2 wants the entity-id of the entity to link; a null member names
+    /// none, which is the same client error as omitting the member (already a 400 one line earlier).
+    /// <para>
+    /// The delegate assertion is the point of the test: a status-only assertion would have passed
+    /// before the fix too, since <c>204</c> is not <c>500</c>.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task RefPut_NullODataId_Returns400_AndNeverReachesTheHandler()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<RefPutGuardProfile>());
+        RefPutGuardProfile.LastRelatedId = null;
+
+        var response = await fx.Client.PutAsync(
+            "/odata/RefPutGuardParents(1)/PrimaryChild/$ref", JsonBody("{\"@odata.id\": null}"));
+
+        await AssertErrorEnvelope(response, HttpStatusCode.BadRequest);
+        Assert.Null(RefPutGuardProfile.LastRelatedId);
+    }
+
+    /// <summary>
+    /// BOUNDING ASSERTION for the two theories above: a string <c>@odata.id</c> still links, and the
+    /// value still arrives at the delegate unchanged. Without this, "every non-string 400s" could
+    /// pass vacuously if the guard had been written to reject everything.
+    /// </summary>
+    [Fact]
+    public async Task RefPut_StringODataId_StillReachesTheHandlerUnchanged()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<RefPutGuardProfile>());
+        RefPutGuardProfile.LastRelatedId = null;
+
+        var response = await fx.Client.PutAsync(
+            "/odata/RefPutGuardParents(1)/PrimaryChild/$ref",
+            JsonBody("{\"@odata.id\":\"http://localhost/odata/Children(1)\"}"));
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Equal("http://localhost/odata/Children(1)", RefPutGuardProfile.LastRelatedId);
+    }
+
     [Fact]
     public async Task RefPost_ValidBody_StillReturns204()
     {
@@ -322,6 +411,13 @@ public class ActionBodyGuardTests
     /// <summary>Minimal single-valued nav profile exposing PUT $ref (setRef) for body-guard coverage.</summary>
     private class RefPutGuardProfile : EntitySetProfile<int, RefPutGuardParent>
     {
+        /// <summary>
+        /// #455: what the <c>setRef</c> delegate actually received, so a test can assert the handler
+        /// was never reached. Static because profiles are registered <c>AddScoped</c> — the instance
+        /// serving the request is not the one the test holds. Reset by each test that reads it.
+        /// </summary>
+        public static string? LastRelatedId;
+
         public RefPutGuardProfile() : base(x => x.Id)
         {
             EntitySetName = "RefPutGuardParents";
@@ -330,7 +426,11 @@ public class ActionBodyGuardTests
             HasOptional(
                 navigation: x => x.PrimaryChild!,
                 get: (parentId, ct) => Task.FromResult<RefPutGuardChild?>(null),
-                setRef: (parentId, relatedId, ct) => Task.CompletedTask);
+                setRef: (parentId, relatedId, ct) =>
+                {
+                    LastRelatedId = relatedId;
+                    return Task.CompletedTask;
+                });
         }
     }
 

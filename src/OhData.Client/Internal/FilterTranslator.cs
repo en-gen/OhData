@@ -258,7 +258,12 @@ internal sealed class FilterTranslator : ExpressionVisitor
             // TryEvaluateAsObject resolves the common closure field/property-access case via
             // direct reflection (no Expression.Compile() at all); it only falls back to
             // compiling an interpreted lambda for expressions reflection can't walk.
-            object? value = TryEvaluateAsObject(node);
+            //
+            // #459: a failed evaluation is NOT a null value. Emitting FormatLiteral(null) here for
+            // a getter that threw produced `Name eq null` — a silently different query — which is
+            // the same class of bug the ContainsParameterReference branch above already refuses.
+            if (!TryEvaluateAsObject(node, out object? value, out Exception? failure))
+                throw CapturedValueEvaluationFailed(node, failure);
             _sb.Append(FormatLiteral(value));
         }
         return node;
@@ -467,7 +472,15 @@ internal sealed class FilterTranslator : ExpressionVisitor
             // Try Arguments[0] as collection, Arguments[1] as property path
             if (TryGetPropertyPath(node.Arguments[1], out string? _))
             {
-                object? colVal = TryEvaluateAsObject(node.Arguments[0]);
+                // #459: only a *thrown* evaluation is an error here. "Not evaluatable" (a range
+                // variable) still falls through, so the pre-existing "method not supported"
+                // diagnostic for shapes like Contains(x.Tags, x.Name) is unchanged.
+                if (!TryEvaluateAsObject(node.Arguments[0], out object? colVal, out Exception? colFailure)
+                    && colFailure is not null)
+                {
+                    throw CapturedValueEvaluationFailed(node.Arguments[0], colFailure);
+                }
+
                 IEnumerable? col = colVal as IEnumerable;
                 if (col != null)
                 {
@@ -493,7 +506,12 @@ internal sealed class FilterTranslator : ExpressionVisitor
             // Try Arguments[1] as collection, Arguments[0] as property path (reversed order)
             if (TryGetPropertyPath(node.Arguments[0], out string? _))
             {
-                object? colVal = TryEvaluateAsObject(node.Arguments[1]);
+                if (!TryEvaluateAsObject(node.Arguments[1], out object? colVal, out Exception? colFailure)
+                    && colFailure is not null)
+                {
+                    throw CapturedValueEvaluationFailed(node.Arguments[1], colFailure);
+                }
+
                 IEnumerable? col = colVal as IEnumerable;
                 if (col != null)
                 {
@@ -595,13 +613,35 @@ internal sealed class FilterTranslator : ExpressionVisitor
     // ── Collection evaluation ───────────────────────────────────────────────────
 
     /// <summary>
-    /// Attempts to evaluate <paramref name="expr"/> as a captured value.
-    /// Handles closure field accesses (the common case for captured variables) via reflection,
-    /// stripping any <c>Convert</c> wrappers first. Returns <see langword="null"/> if the
-    /// expression cannot be evaluated without executing a span-based conversion.
+    /// Attempts to evaluate <paramref name="expr"/> as a captured value, keeping "the value is
+    /// null" and "evaluating it threw" apart (#459).
     /// </summary>
-    private static object? TryEvaluateAsObject(Expression expr)
+    /// <param name="expr">The expression to evaluate as a closed-over (non-range-variable) value.</param>
+    /// <param name="value">
+    /// The evaluated value when this returns <see langword="true"/>. May legitimately be
+    /// <see langword="null"/> — that is a successful evaluation of a null value, and the only
+    /// condition under which a caller may emit the <c>null</c> literal.
+    /// </param>
+    /// <param name="failure">
+    /// Set when this returns <see langword="false"/> <em>and</em> evaluation was actually attempted
+    /// and threw. Left <see langword="null"/> when no evaluation was attempted at all because the
+    /// expression is not a captured value (it reads a lambda range variable, which has no value at
+    /// translation time). Callers must not emit a literal for either outcome — the two are
+    /// distinguished so a probe can fall through on the second while still failing on the first.
+    /// </param>
+    /// <remarks>
+    /// Collapsing both conditions to a bare <c>null</c> return is what let a captured value whose
+    /// getter throws translate silently to <c>eq null</c> — a different query than the caller wrote,
+    /// executed with no exception anywhere. This is the same failure the
+    /// <see cref="ContainsParameterReference"/> guard in <see cref="VisitMember"/> already closes
+    /// for the range-variable case; the diagnostic lives in
+    /// <see cref="CapturedValueEvaluationFailed"/>.
+    /// </remarks>
+    private static bool TryEvaluateAsObject(Expression expr, out object? value, out Exception? failure)
     {
+        value = null;
+        failure = null;
+
         // Strip conversion wrappers (e.g. array-to-ReadOnlySpan implicit conversions).
         // These may appear as UnaryExpression (Convert) or MethodCallExpression (op_Implicit).
         // We only care about the underlying value (typically a captured collection).
@@ -629,52 +669,126 @@ internal sealed class FilterTranslator : ExpressionVisitor
 
         // Constant expression (inline literal or boxed value)
         if (expr is ConstantExpression constExpr)
-            return constExpr.Value;
+        {
+            value = constExpr.Value;
+            return true;
+        }
+
+        // An expression that reads a lambda range variable is not a captured value: it has no
+        // value at translation time, and compiling it throws ("variable ... referenced from scope,
+        // but it is not defined"). That is NOT an evaluation failure of a captured value, so report
+        // it as "nothing was attempted" and leave `failure` null — the probe call sites in
+        // VisitMethodCall then fall through to their own diagnostics exactly as they did when every
+        // outcome collapsed to a null return.
+        if (ContainsParameterReference(expr)) return false;
 
         // Direct field/property access on a closure (most common captured-variable pattern)
         if (expr is MemberExpression memberExpr)
         {
-            try
+            object? target = null;
+            bool haveTarget = false;
+
+            if (memberExpr.Expression is null)
             {
-                if (memberExpr.Expression is ConstantExpression ce)
+                // Static field/property — no instance to resolve.
+                haveTarget = true;
+            }
+            else if (memberExpr.Expression is ConstantExpression ce)
+            {
+                target = ce.Value;
+                haveTarget = true;
+            }
+            else if (TryEvaluateAsObject(memberExpr.Expression, out object? outerObj, out failure))
+            {
+                target = outerObj;
+                // A null instance makes the reflection call below throw TargetException rather than
+                // read anything; leave it to the compile path, which surfaces the same
+                // NullReferenceException the caller's own code would have produced.
+                haveTarget = outerObj is not null;
+            }
+            else if (failure is not null)
+            {
+                // Evaluating the instance threw — the whole member access failed. Propagate.
+                return false;
+            }
+
+            if (haveTarget && memberExpr.Member is System.Reflection.FieldInfo or System.Reflection.PropertyInfo)
+            {
+                try
                 {
-                    return memberExpr.Member switch
-                    {
-                        System.Reflection.FieldInfo fi => fi.GetValue(ce.Value),
-                        System.Reflection.PropertyInfo pi => pi.GetValue(ce.Value),
-                        _ => null
-                    };
+                    value = memberExpr.Member is System.Reflection.FieldInfo fi
+                        ? fi.GetValue(target)
+                        : ((System.Reflection.PropertyInfo)memberExpr.Member).GetValue(target);
+                    return true;
                 }
-                // Nested closure: recurse
-                object? outerObj = TryEvaluateAsObject(memberExpr.Expression!);
-                if (outerObj is not null)
+                catch (Exception ex)
                 {
-                    return memberExpr.Member switch
-                    {
-                        System.Reflection.FieldInfo fi => fi.GetValue(outerObj),
-                        System.Reflection.PropertyInfo pi => pi.GetValue(outerObj),
-                        _ => null
-                    };
+                    failure = Unwrap(ex);
+                    return false;
                 }
             }
-            catch { /* fall through */ }
         }
 
-        // Last resort: compile and invoke with preferInterpretation, fall back to JIT
+        // Last resort: compile and invoke. Compilation and invocation are deliberately kept apart:
+        // the JIT retry exists for expressions the interpreter cannot COMPILE, and re-running an
+        // invocation that already threw would call a user getter — with whatever side effects it
+        // has — a second time only to fail identically.
+        Func<object?> compiled;
         try
         {
-            return Expression.Lambda<Func<object?>>(
-                Expression.Convert(expr, typeof(object))).Compile(preferInterpretation: true)();
-        }
-        catch
-        {
+            var lambda = Expression.Lambda<Func<object?>>(Expression.Convert(expr, typeof(object)));
             try
             {
-                return Expression.Lambda<Func<object?>>(
-                    Expression.Convert(expr, typeof(object))).Compile()();
+                compiled = lambda.Compile(preferInterpretation: true);
             }
-            catch { return null; }
+            catch
+            {
+                compiled = lambda.Compile();
+            }
         }
+        catch (Exception ex)
+        {
+            failure = Unwrap(ex);
+            return false;
+        }
+
+        try
+        {
+            value = compiled();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            failure = Unwrap(ex);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Discards the <see cref="System.Reflection.TargetInvocationException"/> that reflection wraps
+    /// a getter's own exception in, so the diagnostic names what actually went wrong. Only the
+    /// wrapper is discarded, never the cause.
+    /// </summary>
+    private static Exception Unwrap(Exception ex) =>
+        ex is System.Reflection.TargetInvocationException { InnerException: { } inner } ? inner : ex;
+
+    /// <summary>
+    /// The single diagnostic for "this captured value could not be read at translation time".
+    /// Matches the failure philosophy of the translator's other <see cref="NotSupportedException"/>
+    /// sites: name the expression, name the cause, name what to do instead.
+    /// </summary>
+    private static NotSupportedException CapturedValueEvaluationFailed(Expression expr, Exception? failure)
+    {
+        string cause = failure is null
+            ? "it could not be evaluated at translation time"
+            : $"evaluating it threw {failure.GetType().Name}: {failure.Message}";
+
+        return new NotSupportedException(
+            $"The captured value '{expr}' cannot be embedded in an OData $filter because {cause}. " +
+            "A failed evaluation is not a null value and must not be translated to 'null'. " +
+            "Read the value into a local variable before building the query, so the failure " +
+            "surfaces at your own call site, or supply a raw string $filter.",
+            failure);
     }
 
     // ── Path extraction ─────────────────────────────────────────────────────────

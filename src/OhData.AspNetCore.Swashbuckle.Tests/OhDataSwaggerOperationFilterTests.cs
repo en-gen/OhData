@@ -48,6 +48,64 @@ public sealed class OhDataSwaggerOperationFilterTests
         Assert.Contains("25", description);
     }
 
+    // ── #467: options are documented only where the route honours them ─────────
+    //
+    // OhDataQueryOptionsMetadata is attached to five route shapes, not just the paged collection
+    // GETs. The filter used to add $top/$skip on metadata *presence* alone, so a single-entity
+    // read and a /$count both advertised paging they ignore. These three tests mirror
+    // OhData.AspNetCore.OpenApi.Tests and OhData.AspNetCore.NSwag.Tests case for case -- the
+    // whole point of #467 is that the three packages agree, and they agree because the decision
+    // lives upstream in OhDataEndpointFactory's metadata rather than in each transformer.
+
+    [Fact]
+    public async Task GetByIdRoute_GetsSelectExpandOnly_NoTopSkip()
+    {
+        await using TestFixture fx = await SwashbuckleTestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllFlagsProfile>());
+        using JsonDocument doc = await fx.GetDocumentAsync();
+
+        string[] names = ParameterNamesOrEmpty(doc, "/odata/AllFlagsWidgets({key})");
+        Assert.Equal(new HashSet<string> { "$select", "$expand" }, names.ToHashSet());
+    }
+
+    [Fact]
+    public async Task CountRoute_GetsFilterOnly_NoTopSkipNoCount()
+    {
+        await using TestFixture fx = await SwashbuckleTestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllFlagsProfile>());
+        using JsonDocument doc = await fx.GetDocumentAsync();
+
+        string[] names = ParameterNamesOrEmpty(doc, "/odata/AllFlagsWidgets/$count");
+        Assert.Equal(new HashSet<string> { "$filter" }, names.ToHashSet());
+    }
+
+    [Fact]
+    public async Task CountRoute_GetAllOnlySource_DoesNotAdvertiseFilter()
+    {
+        await using TestFixture fx = await SwashbuckleTestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<GetAllFilterEnabledProfile>());
+        using JsonDocument doc = await fx.GetDocumentAsync();
+
+        string[] names = ParameterNamesOrEmpty(doc, "/odata/GetAllFilterWidgets/$count");
+        Assert.Empty(names);
+    }
+
+    /// <summary>
+    /// #467: like <see cref="ParameterNames"/> but tolerates an operation with no parameters at
+    /// all -- once a route stops advertising options it does not honour, some operations end up
+    /// with an empty (and therefore omitted) "parameters" member.
+    /// </summary>
+    private static string[] ParameterNamesOrEmpty(JsonDocument doc, string path, string method = "get")
+    {
+        JsonElement operation = doc.RootElement.GetProperty("paths").GetProperty(path).GetProperty(method);
+        if (!operation.TryGetProperty("parameters", out JsonElement parameters))
+        {
+            return System.Array.Empty<string>();
+        }
+
+        return parameters.EnumerateArray()
+            .Where(p => p.GetProperty("in").GetString() == "query")
+            .Select(p => p.GetProperty("name").GetString()!)
+            .ToArray();
+    }
+
     private static string[] ParameterNames(JsonDocument doc, string path, string method = "get") =>
         doc.RootElement.GetProperty("paths").GetProperty(path).GetProperty(method)
             .GetProperty("parameters").EnumerateArray()
@@ -82,6 +140,9 @@ public sealed class OhDataSwaggerOperationFilterTests
             ExpandEnabled = true;
             CountEnabled = true;
             GetQueryable = (ct) => Task.FromResult(Store.AsQueryable());
+            // #467: GetById added so this fixture also covers the single-entity route, which
+            // carries OhDataQueryOptionsMetadata and used to be documented with $top/$skip.
+            GetById = (id, ct) => Task.FromResult(Store.FirstOrDefault(w => w.Id == id));
             Search = (term, ct) => Task.FromResult<IEnumerable<Widget>>(Store);
         }
     }
@@ -91,6 +152,19 @@ public sealed class OhDataSwaggerOperationFilterTests
         public NoFlagsProfile() : base(x => x.Id)
         {
             EntitySetName = "NoFlagsWidgets";
+            GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(Store);
+        }
+    }
+
+    // #467 (F3): the same Widget model over the simple GetAll read path, with FilterEnabled on.
+    // The flag is honoured on none of this profile's routes -- neither the collection GET nor
+    // /$count has an IQueryable to apply a filter to -- so neither may advertise $filter.
+    private class GetAllFilterEnabledProfile : EntitySetProfile<int, Widget>
+    {
+        public GetAllFilterEnabledProfile() : base(x => x.Id)
+        {
+            EntitySetName = "GetAllFilterWidgets";
+            FilterEnabled = true;
             GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(Store);
         }
     }

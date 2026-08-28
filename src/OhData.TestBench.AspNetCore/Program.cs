@@ -10,10 +10,16 @@ using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// ── EF Core InMemory (singleton for demo; profiles are also singletons) ──────
+// ── EF Core InMemory (scoped — the EF Core default and what OhData profiles expect) ──
+// DbContext is not thread-safe and its change tracker must not be shared across
+// requests: a singleton registration means one failed SaveChanges() leaves a poisoned
+// entity in the tracker forever, bricking every subsequent write for the process
+// lifetime (#356). Profiles are registered AddScoped specifically so they can inject
+// a scoped DbContext (see CLAUDE.md), so this must be scoped too — the InMemory
+// provider keeps all scopes pointed at the same named database ("TestBench"), so data
+// still persists across requests exactly as before.
 builder.Services.AddDbContext<AppDbContext>(
-    o => o.UseInMemoryDatabase("TestBench"),
-    ServiceLifetime.Singleton);
+    o => o.UseInMemoryDatabase("TestBench"));
 
 // ── OpenAPI / Swagger ─────────────────────────────────────────────────────────
 builder.Services.AddEndpointsApiExplorer();
@@ -24,16 +30,16 @@ builder.Services.AddSwaggerGen(c =>
     // Route each endpoint to the doc matching its group name
     c.DocInclusionPredicate((docName, apiDesc) =>
         apiDesc.GroupName is null || apiDesc.GroupName == docName);
-    c.OperationFilter<OhDataSwaggerOperationFilter>();
-    // #228: keeps generated schemas honest for profiles that use Ignore(...) — a no-op while no
-    // TestBench profile ignores anything, but registered here to demonstrate the recommended setup.
-    c.SchemaFilter<OhDataSwaggerSchemaFilter>();
+    // One-line canonical registration: wires both the OData query-parameter operation filter and
+    // the schema-fidelity filter (#228 — a no-op while no TestBench profile ignores anything, but
+    // registered here to demonstrate the recommended setup).
+    c.AddOhData();
 });
 
 // ── OhData versioned registrations ───────────────────────────────────────────
 //
 // v1: Movies + Genres           -- the simple surface: GetQueryable CRUD + ETags + bound
-//                                   operations on Movies, GetAll on Genres. AllowDeepInsert
+//                                   operations on Movies, GetAll on Genres. AllowDeepWrites
 //                                   stays at its default (false), and Movie.Cast/Studio have no
 //                                   navigation handlers -- see MovieProfile's comments.
 // v2: Movies + Genres + Actors + Studios -- adds deep insert, batch-loaded $expand, and $ref
@@ -53,8 +59,13 @@ builder.Services.AddOhDataVersion("v2", "/v2", o =>
 // ── App pipeline ──────────────────────────────────────────────────────────────
 var app = builder.Build();
 
-// Seed the in-memory database
-DbSeeder.Seed(app.Services.GetRequiredService<AppDbContext>());
+// Seed the in-memory database. AppDbContext is now scoped (#356), so it must be resolved
+// from an explicit scope rather than the root service provider -- resolving a scoped
+// service directly from app.Services would throw once scope validation is enabled.
+using (var seedScope = app.Services.CreateScope())
+{
+    DbSeeder.Seed(seedScope.ServiceProvider.GetRequiredService<AppDbContext>());
+}
 
 // Support reverse proxies (Render, Azure, etc.) forwarding scheme/host headers
 app.UseForwardedHeaders(new ForwardedHeadersOptions
@@ -86,3 +97,9 @@ app.MapGet("/", () => Results.Redirect("/scalar/v2")).ExcludeFromDescription();
 app.MapGet("/health", () => Results.Ok()).ExcludeFromDescription();
 
 app.Run();
+
+// Testability marker (#356): makes the implicit top-level Program class public so
+// WebApplicationFactory<Program> can boot this exact app -- unchanged, unreconfigured -- from
+// OhData.TestBench.AspNetCore.Tests to assert AppDbContext's registered lifetime and exercise
+// the real POST/PATCH/DELETE pipeline end-to-end. No behavioral effect on the running app.
+public partial class Program { }

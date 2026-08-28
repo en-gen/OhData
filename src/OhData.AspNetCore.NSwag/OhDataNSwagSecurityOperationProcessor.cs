@@ -21,7 +21,12 @@ namespace OhData.AspNetCore.NSwag;
 /// This is off by default: nothing happens until the app adds it to the document's operation
 /// processors, and it only references a scheme the app names here. OhData never defines the security
 /// <em>scheme</em> (Bearer/JWT, OAuth flows) — that stays the app's identity setup. This processor
-/// reflects only the <em>requirement</em> against a scheme the app already declared. Register via:
+/// reflects only the <em>requirement</em> against a scheme the app already declared. The recommended
+/// way to opt in is the <c>securitySchemeId</c> parameter of <c>s.AddOhData(sp, ...)</c>:
+/// <code>
+/// builder.Services.AddOpenApiDocument((s, sp) =&gt; s.AddOhData(sp, securitySchemeId: "Bearer"));
+/// </code>
+/// To register this processor à la carte instead, add the instance directly:
 /// <code>
 /// builder.Services.AddOpenApiDocument(s =&gt;
 ///     s.OperationProcessors.Add(new OhDataNSwagSecurityOperationProcessor("Bearer")));

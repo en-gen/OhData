@@ -35,9 +35,12 @@ public class Priority1MaxTopTests
         // 25 items in the store, MaxTop = 10 → first page is exactly 10, with a continuation link.
         Assert.Equal(10, json.GetProperty("value").GetArrayLength());
         Assert.True(json.TryGetProperty("@odata.nextLink", out var nextLink));
-        // Priority-1 continuation uses $skip (which the profile's ApplyTo honors), not $skiptoken.
-        // The link is URL-encoded, so $ appears as %24.
-        Assert.Contains("skip=", nextLink.GetString());
+        // #360: the Priority-1 continuation carries a framework-private CUSTOM query option that the
+        // framework applies itself, not $skip (which it emitted but never applied — see
+        // ServerDrivenPagingTests) and not $skiptoken (which ODataQueryOptions.ApplyTo
+        // throws on). The name is opaque to clients by spec; this pins it only so the mechanism
+        // in play is unambiguous when the test fails.
+        Assert.Contains("ohdata-skiptoken=", nextLink.GetString());
     }
 
     [Fact]

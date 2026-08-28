@@ -1,0 +1,136 @@
+{
+  "metadata": [
+    {
+      "src": [
+        {
+          "src": "../src",
+          "files": [
+            "OhData.AspNetCore/OhData.AspNetCore.csproj",
+            "OhData.Client/OhData.Client.csproj"
+          ]
+        }
+      ],
+      "dest": "api",
+      "properties": {
+        "TargetFramework": "net10.0"
+      },
+      "outputFormat": "mref",
+      "memberLayout": "separatePages",
+      "enumSortOrder": "declaringOrder"
+    }
+  ],
+  "build": {
+    "content": [
+      {
+        "//": [
+          "ROOT of the site: only the (empty) root toc.yml. In the DocFX modern template the",
+          "ROOT toc renders as the horizontal TOP NAVBAR (via docfx:navrel), NOT the left",
+          "sidebar. It is kept EMPTY so the navbar carries just the logo/appName, search,",
+          "theme toggle, and the auto-detected GitHub link - no section tabs. The whole",
+          "section tree lives in the single unified nested toc under guide/ (see below).",
+          "",
+          "LEFT SIDEBAR MECHANISM (verified against generated HTML): the modern template",
+          "renders a page's owning toc (docfx:tocrel) in the LEFT SIDEBAR only when it",
+          "differs from the root/navbar toc (docfx:navrel). We create that difference for",
+          "EVERY page - the home included - by OUTPUTTING all content under guide/ (via",
+          "`dest`), beside guide/toc.yml. So each page's nearest toc is the unified guide",
+          "toc, which the template puts on the left. A root-level page cannot get a sidebar",
+          "(its nearest toc IS the navbar toc), which is why the home is output under guide/",
+          "and the output root instead serves a small redirect (see the resource below).",
+          "Source files are NOT moved; only output is relocated, so relative links and the",
+          "../docs single-sourcing are auto-rewritten by DocFX and keep resolving."
+        ],
+        "files": [ "toc.yml" ],
+        "exclude": [ "_site/**", "api/**", "guide/**" ]
+      },
+      {
+        "//": [
+          "The single UNIFIED nested toc (the LEFT SIDEBAR tree: Home + Server/Client/",
+          "Companions groups). Lives at docs-site/guide/ and is mapped WITHOUT `dest` so it",
+          "outputs to guide/toc.html - the nested toc that owns every content page below.",
+          "(Adding dest here would double the path to guide/guide/toc.html.)"
+        ],
+        "files": [ "guide/toc.yml" ]
+      },
+      {
+        "//": [
+          "HOME (hero) - output into guide/ so it is owned by guide/toc.html and inherits the",
+          "left sidebar. The `_layout: landing` was dropped so it renders in the standard doc",
+          "layout with the sidebar present; the hero content is unchanged."
+        ],
+        "files": [ "index.md" ],
+        "dest": "guide"
+      },
+      {
+        "//": "SERVER group - the two local draft pages, output into guide/server/.",
+        "files": [ "getting-started.md", "ef-core-sqlite.md" ],
+        "dest": "guide/server"
+      },
+      {
+        "//": [
+          "SERVER group - single-sourced OhData.AspNetCore guides from ../docs, output into",
+          "guide/server/. Everything except the Client pages (client/**), the Companions",
+          "pages (openapi/nswag/swashbuckle.md), the contributor-only releasing.md, and",
+          "deployment.md - the docsite documents how to implement the framework, not how to",
+          "deploy it, so the Dockerfile/render.yaml guide stays in the repo (docs/deployment.md)",
+          "but is intentionally omitted from the public docsite nav."
+        ],
+        "src": "../docs",
+        "files": [ "**/*.md" ],
+        "exclude": [
+          "design/**", "superpowers/**",
+          "client/**", "openapi.md", "nswag.md", "swashbuckle.md", "releasing.md",
+          "deployment.md"
+        ],
+        "dest": "guide/server"
+      },
+      {
+        "//": [
+          "CLIENT group - the single-sourced client guide, split across ../docs/client/*.md,",
+          "output into guide/client/ (dest 'guide' preserves the client/ path segment)."
+        ],
+        "src": "../docs",
+        "files": [ "client/**/*.md" ],
+        "dest": "guide"
+      },
+      {
+        "//": "COMPANIONS group - OpenAPI/NSwag/Swashbuckle guides, output into guide/companions/.",
+        "src": "../docs",
+        "files": [ "openapi.md", "nswag.md", "swashbuckle.md" ],
+        "dest": "guide/companions"
+      },
+      {
+        "files": [ "api/**.yml", "api/index.md" ]
+      }
+    ],
+    "resource": [
+      {
+        "src": "../assets",
+        "files": [ "icon.svg", "icon-64.png", "icon-512.png", "social-card.png" ]
+      },
+      {
+        "//": [
+          "Site-root redirect. The home (with hero + sidebar) is output at guide/index.html;",
+          "this bare meta-refresh page is copied to _site/index.html so the site root bounces",
+          "into it. Copied verbatim (resource, not run through the template)."
+        ],
+        "src": "_redirect",
+        "files": [ "index.html" ]
+      }
+    ],
+    "output": "_site",
+    "template": [ "default", "modern" ],
+    "globalMetadata": {
+      "_appName": "OhData",
+      "_appTitle": "OhData",
+      "_appLogoPath": "icon.svg",
+      "_appFaviconPath": "icon-64.png",
+      "_enableSearch": true,
+      "_disableContribution": true,
+      "pdf": false
+    },
+    "postProcessors": [ "ExtractSearchIndex" ],
+    "keepFileLink": false,
+    "disableGitFeatures": false
+  }
+}

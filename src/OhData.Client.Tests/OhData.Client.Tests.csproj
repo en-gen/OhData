@@ -13,11 +13,21 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.*" />
-    <PackageReference Include="coverlet.collector" Version="6.0.4">
+    <!--
+      #313: the stage-4/stage-5 seam tests need an EF-backed IQueryable. The nested-$expand pushdown
+      that emits Nav@odata.nextLink only engages over a real provider — measured: the same profile over
+      List<T>.AsQueryable() returns the whole child collection with no ceiling and no link. These two
+      packages are what let the seam be tested here, against a real server, instead of adding a
+      ProjectReference to OhData.Client from the server suite and inverting the dependency direction.
+    -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.*" />
+    <!-- Transitive pin: clears GHSA-2m69-gcr7-jv3q (SQLitePCLRaw < 2.1.12) under TreatWarningsAsErrors. -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
+    <PackageReference Include="coverlet.collector" Version="10.0.1">
     	<IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
     	<PrivateAssets>all</PrivateAssets>
     </PackageReference>
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
     <PackageReference Include="xunit" Version="2.*" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.*">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>

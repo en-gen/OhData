@@ -1,0 +1,11 @@
+# ROOT toc for the OhData documentation site (issue #208) — the TOP NAVBAR.
+#
+# Deliberately EMPTY. In the DocFX modern template the root toc renders as the horizontal top
+# navbar; keeping it empty leaves the navbar with just the logo/appName, search box, theme toggle,
+# and the auto-detected GitHub link — and NO horizontal section tabs. The entire section tree
+# (Server / Client / Companions, plus Home) lives in the single unified nested toc at guide/toc.yml,
+# which the modern template renders in the LEFT SIDEBAR on every content page. Every page — the home
+# included — is output under guide/ (docfx.json `dest`) so guide/toc.html is its owning toc and the
+# sidebar shows (a page whose owning toc equals this root/navbar toc gets no sidebar, which is why
+# the home is not left at the output root). The site root serves a small redirect into guide/.
+[]

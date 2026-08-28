@@ -69,7 +69,7 @@ schema-level hook to register alongside its operation-level one:
 - **NSwag:** `s.SchemaSettings.SchemaProcessors.Add(new OhDataNSwagSchemaProcessor(sp))` — see
   [nswag.md](nswag.md#ignored-properties-omitted-from-schemas)
 - **Swashbuckle:** `c.SchemaFilter<OhDataSwaggerSchemaFilter>()` — see
-  [versioning.md](versioning.md)
+  [swashbuckle.md](swashbuckle.md#ignored-properties-and-schema-casing)
 
 One caveat: an OpenAPI document holds a single component schema per CLR type, so if separate
 registrations expose the same model type with *different* ignore sets (legal — see Rules above),

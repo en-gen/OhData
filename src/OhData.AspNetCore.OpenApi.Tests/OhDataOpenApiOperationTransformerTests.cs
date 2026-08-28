@@ -108,16 +108,15 @@ public sealed class OhDataOpenApiOperationTransformerTests
     }
 
     // ── 6. GetById (single-entity) route ────────────────────────────────────────
-    // OhDataQueryOptionsMetadata IS attached to the GetById route too (FilterEnabled/
-    // OrderByEnabled/CountEnabled/SearchEnabled hardcoded false, SelectEnabled/ExpandEnabled
-    // mirroring the profile's flags, MaxTop null) — see OhDataEndpointFactory.cs around the
-    // GetById route registration. Because the transformer's "$top/$skip always added" rule is
-    // keyed only on metadata *presence*, not on which route it's attached to, GetById also
-    // picks up $top/$skip (and $select/$expand if those flags are on) even though the route
-    // itself does not honor paging. This test documents that actual behavior rather than the
-    // "no $top/$skip at all" assumption one might make from route semantics alone.
+    // #467: OhDataQueryOptionsMetadata IS attached to the GetById route too (it gates
+    // $select/$expand there), but a single-entity read applies neither $top nor $skip -- the
+    // request is answered with the whole entity and both options are dropped. This test used to
+    // assert the opposite and called it "actual behavior": the transformer added $top/$skip on
+    // metadata *presence* alone, so the generated document promised paging on a route that
+    // ignores it. The metadata now says TopSkipSupported: false for this route and the
+    // transformer honours it.
     [Fact]
-    public async Task GetByIdRoute_GetsTopSkipAndSelectExpandButNotFilterOrderByCountSearch()
+    public async Task GetByIdRoute_GetsSelectExpandOnly_NoTopSkip()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllFlagsProfile>());
         using JsonDocument doc = await FetchDocumentAsync(fx.Client);
@@ -125,11 +124,49 @@ public sealed class OhDataOpenApiOperationTransformerTests
         JsonElement op = GetOperation(doc, "/odata/AllFlagsWidgets({key})", "get");
         HashSet<string> names = ParamNames(op);
 
-        Assert.Equal(new HashSet<string> { "$top", "$skip", "$select", "$expand" }, names);
+        Assert.Equal(new HashSet<string> { "$select", "$expand" }, names);
+        Assert.DoesNotContain("$top", names);
+        Assert.DoesNotContain("$skip", names);
         Assert.DoesNotContain("$filter", names);
         Assert.DoesNotContain("$orderby", names);
         Assert.DoesNotContain("$count", names);
         Assert.DoesNotContain("$search", names);
+    }
+
+    // ── 6b. /$count route ───────────────────────────────────────────────────────
+    // #467 (F2): /$count returns a bare text/plain number. It applies $filter (on a queryable
+    // source) and nothing else -- no $top, no $skip, and no $count, which has no envelope to
+    // live in here. The $count parameter used to appear because the route's metadata set
+    // CountEnabled: true to mean "this route IS a count" while the transformer read the same
+    // field as "this route documents the $count option". One field, two meanings.
+    [Fact]
+    public async Task CountRoute_GetsFilterOnly_NoTopSkipNoCount()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<AllFlagsProfile>());
+        using JsonDocument doc = await FetchDocumentAsync(fx.Client);
+
+        JsonElement op = GetOperation(doc, "/odata/AllFlagsWidgets/$count", "get");
+        HashSet<string> names = ParamNames(op);
+
+        Assert.Equal(new HashSet<string> { "$filter" }, names);
+    }
+
+    // ── 6c. /$count on a GetAll-only profile ───────────────────────────────────
+    // #467 (F3): the GetAll fallback branch of the /$count handler returns 400
+    // UnsupportedQueryOption for any $filter regardless of FilterEnabled -- there is no
+    // IQueryable to apply one to. The sibling collection route already hardcoded
+    // FilterEnabled: false for this reason ("B1 fix"); /$count was missed, so all three
+    // documents advertised a $filter the server rejects.
+    [Fact]
+    public async Task CountRoute_GetAllOnlySource_DoesNotAdvertiseFilter()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<GetAllFilterEnabledProfile>());
+        using JsonDocument doc = await FetchDocumentAsync(fx.Client);
+
+        JsonElement op = GetOperation(doc, "/odata/GetAllFilterWidgets/$count", "get");
+        HashSet<string> names = ParamNames(op);
+
+        Assert.Empty(names);
     }
 
     // ── 7. No duplicate parameters when $top is already present ────────────────
@@ -235,6 +272,19 @@ public sealed class OhDataOpenApiOperationTransformerTests
         {
             EntitySetName = "NoFlagsWidgets";
             GetQueryable = (ct) => Task.FromResult(Store.AsQueryable());
+        }
+    }
+
+    // #467 (F3): the same Widget model over the simple GetAll read path, with FilterEnabled on.
+    // The flag is honoured nowhere on this profile's routes -- neither the collection GET nor
+    // /$count has an IQueryable to apply a filter to -- so neither may advertise it.
+    private class GetAllFilterEnabledProfile : EntitySetProfile<int, Widget>
+    {
+        public GetAllFilterEnabledProfile() : base(x => x.Id)
+        {
+            EntitySetName = "GetAllFilterWidgets";
+            FilterEnabled = true;
+            GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(Store);
         }
     }
 

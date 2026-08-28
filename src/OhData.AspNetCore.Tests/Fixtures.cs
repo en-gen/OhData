@@ -10,6 +10,32 @@ using OhData;
 
 namespace OhData.AspNetCore.Tests;
 
+/// <summary>
+/// Runs a delegate under a specific <see cref="System.Globalization.CultureInfo"/> and restores
+/// the ambient culture afterwards. Used by the #351 ETag tests to prove that identical entity
+/// state hashes identically regardless of server locale.
+/// </summary>
+internal static class CultureScope
+{
+    public static T Run<T>(string culture, Func<T> action)
+    {
+        System.Globalization.CultureInfo previousCulture = System.Globalization.CultureInfo.CurrentCulture;
+        System.Globalization.CultureInfo previousUiCulture = System.Globalization.CultureInfo.CurrentUICulture;
+        try
+        {
+            var target = new System.Globalization.CultureInfo(culture);
+            System.Globalization.CultureInfo.CurrentCulture = target;
+            System.Globalization.CultureInfo.CurrentUICulture = target;
+            return action();
+        }
+        finally
+        {
+            System.Globalization.CultureInfo.CurrentCulture = previousCulture;
+            System.Globalization.CultureInfo.CurrentUICulture = previousUiCulture;
+        }
+    }
+}
+
 // â”€â”€ Shared test entities and profiles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 internal class Widget

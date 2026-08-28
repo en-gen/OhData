@@ -20,6 +20,28 @@ public class OhDataNSwagOperationProcessorTests
             .ToArray();
     }
 
+    /// <summary>
+    /// #467: like <see cref="ParameterNames"/> but tolerates an operation with no parameters at
+    /// all -- once a route stops advertising options it does not honour, some operations end up
+    /// with an empty (and therefore omitted) "parameters" member.
+    /// </summary>
+    private static string[] ParameterNamesOrEmpty(JsonDocument doc, string path, string method = "get")
+    {
+        JsonElement operation = doc.RootElement
+            .GetProperty("paths")
+            .GetProperty(path)
+            .GetProperty(method);
+
+        if (!operation.TryGetProperty("parameters", out JsonElement paramsElement))
+        {
+            return System.Array.Empty<string>();
+        }
+
+        return paramsElement.EnumerateArray()
+            .Select(p => p.GetProperty("name").GetString()!)
+            .ToArray();
+    }
+
     private static string ParameterDescription(JsonDocument doc, string path, string name, string method = "get")
     {
         var paramsElement = doc.RootElement
@@ -212,14 +234,13 @@ public class OhDataNSwagOperationProcessorTests
 
     // ── 6. GetById-only route: metadata is present but not "paged" ────────────
     //
-    // OhDataQueryOptionsMetadata is attached to GET /{Set}({key}) too (it gates $select/
-    // $expand on GetById), not only to collection GET routes. Since OhDataNSwagOperationProcessor
-    // (matching OhDataSwaggerOperationFilter's own behavior) always adds $top/$skip whenever
-    // metadata is present and $top isn't already there, GetById still gets $top/$skip even
-    // though paging is meaningless for a single-entity fetch. This test documents that actual
-    // behavior rather than the (incorrect) assumption that GetById carries no metadata at all.
+    // #467: OhDataQueryOptionsMetadata is attached to GET /{Set}({key}) too (it gates $select/
+    // $expand on GetById), not only to collection GET routes. This test used to assert that
+    // GetById therefore got $top/$skip, because all three processors added them on metadata
+    // *presence* alone -- documenting paging on a route that answers with a single entity and
+    // drops both options. The metadata now carries TopSkipSupported per route.
     [Fact]
-    public async System.Threading.Tasks.Task GetByIdOnlyRoute_GetsTopAndSkipButNoOtherODataParams()
+    public async System.Threading.Tasks.Task GetByIdOnlyRoute_GetsNoODataParams()
     {
         await using var fixture = await NSwagTestHostBuilder.BuildAsync(
             o => o.AddEntitySetProfile<GetByIdOnlyWidgetProfile>());
@@ -229,16 +250,53 @@ public class OhDataNSwagOperationProcessorTests
         // No collection GET route was registered at all (GetById was the only handler).
         Assert.False(doc.RootElement.GetProperty("paths").TryGetProperty("/odata/GetByIdOnlyWidgets", out _));
 
-        string[] names = ParameterNames(doc, "/odata/GetByIdOnlyWidgets({key})");
+        string[] names = ParameterNamesOrEmpty(doc, "/odata/GetByIdOnlyWidgets({key})");
 
-        Assert.Contains("$top", names);
-        Assert.Contains("$skip", names);
+        Assert.DoesNotContain("$top", names);
+        Assert.DoesNotContain("$skip", names);
         Assert.DoesNotContain("$filter", names);
         Assert.DoesNotContain("$orderby", names);
         Assert.DoesNotContain("$select", names);
         Assert.DoesNotContain("$expand", names);
         Assert.DoesNotContain("$count", names);
         Assert.DoesNotContain("$search", names);
+    }
+
+    // ── 6b. /$count route ─────────────────────────────────────────────────────
+    //
+    // #467 (F2): /$count returns a bare text/plain number. It applies $filter (on a queryable
+    // source) and nothing else -- no $top, no $skip, and no $count, which has no response
+    // envelope to live in here. The $count parameter used to appear because the route's
+    // metadata set CountEnabled: true meaning "this route IS a count" while the processor read
+    // the same field as "this route documents the $count option".
+    [Fact]
+    public async System.Threading.Tasks.Task CountRoute_GetsFilterOnly_NoTopSkipNoCount()
+    {
+        await using var fixture = await NSwagTestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<AllFlagsWidgetProfile>());
+
+        using var doc = await fixture.GetDocumentAsync();
+        string[] names = ParameterNamesOrEmpty(doc, "/odata/AllFlagsWidgets/$count");
+
+        Assert.Equal(new[] { "$filter" }, names);
+    }
+
+    // ── 6c. /$count on a GetAll-only profile ──────────────────────────────────
+    //
+    // #467 (F3): the GetAll fallback branch of the /$count handler returns 400
+    // UnsupportedQueryOption for any $filter regardless of FilterEnabled -- there is no
+    // IQueryable to apply one to. The sibling collection route already hardcoded
+    // FilterEnabled: false for exactly this reason; /$count was missed.
+    [Fact]
+    public async System.Threading.Tasks.Task CountRoute_GetAllOnlySource_DoesNotAdvertiseFilter()
+    {
+        await using var fixture = await NSwagTestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<GetAllFilterEnabledWidgetProfile>());
+
+        using var doc = await fixture.GetDocumentAsync();
+        string[] names = ParameterNamesOrEmpty(doc, "/odata/GetAllFilterWidgets/$count");
+
+        Assert.Empty(names);
     }
 
     // ── 7. Duplicate-parameter guard ───────────────────────────────────────────

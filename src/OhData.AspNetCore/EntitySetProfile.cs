@@ -7,7 +7,6 @@ using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Security.Cryptography;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.OData.Deltas;
@@ -193,17 +192,31 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private RoundingMode _resolvedRoundingMode;
 
     /// <summary>
-    /// Controls whether <c>POST /{EntitySet}</c> passes nested navigation-property values
-    /// through to the <see cref="Post"/> handler (deep insert, OData §11.4.2.2). Inherits from
-    /// <see cref="EntitySetDefaults.AllowDeepInsert"/> (default <c>false</c>) when <c>null</c>.
+    /// Controls whether a write body's nested navigation-property values reach the handler:
+    /// deep insert on <c>POST /{EntitySet}</c> (OData §11.4.2.2) and deep update on
+    /// <c>PUT</c>/<c>PATCH /{EntitySet}({key})</c> (OData 4.01 §11.4.3.1). Inherits from
+    /// <see cref="EntitySetDefaults.AllowDeepWrites"/> (default <c>false</c>) when <c>null</c>.
     /// <para>
     /// <c>false</c> (default): nested navigation values (single-valued or collection) are set
-    /// to <c>null</c> on the deserialized model before <see cref="Post"/> is invoked — a
-    /// <c>Post</c> handler that doesn't expect a graph never silently persists only part of it.
+    /// to <c>null</c> on the deserialized model before <see cref="Post"/> or <see cref="Put"/>
+    /// is invoked, and are never written into the <c>Delta&lt;TModel&gt;</c> handed to
+    /// <see cref="Patch"/> — a handler that doesn't expect a graph never silently persists only
+    /// part of it. On <c>PATCH</c> the navigation is withheld from the delta rather than nulled
+    /// in it, so <c>delta.Patch(existing)</c> cannot turn a graph the client sent into an
+    /// unrequested relationship clear.
+    /// </para>
+    /// <para>
+    /// "Navigation value" means the EDM's navigations, not only the ones this profile declared
+    /// with <c>HasOptional</c>/<c>HasRequired</c>/<c>HasMany</c>: a navigation the OData convention
+    /// model builder discovered on the CLR type is stripped too. It used to be the declared set
+    /// alone, so an undeclared convention navigation reached <see cref="Post"/> intact even with
+    /// this <c>false</c>. A plain (non-navigation) collection or complex property is untouched in
+    /// either mode.
     /// </para>
     /// <para>
     /// <c>true</c>: the full deserialized graph (parent + nested navigation values) is passed
-    /// to <see cref="Post"/> as-is. The handler is contractually responsible for persisting the
+    /// to <see cref="Post"/>/<see cref="Put"/> as-is, and navigation members bind into the
+    /// <see cref="Patch"/> delta. The handler is contractually responsible for persisting the
     /// whole graph atomically (e.g. one EF Core <c>SaveChanges</c>) — the framework does not
     /// open a transaction on the handler's behalf.
     /// </para>
@@ -214,8 +227,29 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// existing entities instead.
     /// </para>
     /// </summary>
-    protected bool? AllowDeepInsert { get; init; }
-    private bool _resolvedAllowDeepInsert;
+    protected bool? AllowDeepWrites { get; init; }
+    private bool _resolvedAllowDeepWrites;
+
+    /// <summary>
+    /// Renamed to <see cref="AllowDeepWrites"/> in 1.6.0. Kept as a forwarding property so an
+    /// assembly compiled against 1.5.0 keeps binding; it reads and writes
+    /// <see cref="AllowDeepWrites"/>, so the two can never disagree.
+    /// </summary>
+    // #457: the flag no longer governs the collection POST alone -- it governs nested-graph
+    // handling on every write verb, which is deep insert (§11.4.2.2) AND deep update
+    // (§11.4.3.1), two separately named spec features. A name saying only "insert" described one
+    // of them. Forwarding rather than duplicated state: there is one field, _resolvedAllowDeepWrites
+    // is resolved from AllowDeepWrites alone, and setting either property is setting the same
+    // storage. Removing it outright is the API break the PackageValidation gate against the 1.5.0
+    // baseline correctly rejects (CP0002), and this repo has no suppression file.
+    [Obsolete("Renamed to AllowDeepWrites: the flag governs nested-graph handling on every write " +
+              "verb -- deep insert (POST, OData §11.4.2.2) and deep update (PUT/PATCH, OData 4.01 " +
+              "§11.4.3.1) -- not deep insert alone. Forwards to AllowDeepWrites.")]
+    protected bool? AllowDeepInsert
+    {
+        get => AllowDeepWrites;
+        init => AllowDeepWrites = value;
+    }
 
     private string[]? _selectProperties;
     private string[]? _expandProperties;
@@ -328,6 +362,57 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     }
     private int? _resolvedMaxTop;
 
+    private int? _maxExpandTop;
+
+    /// <summary>
+    /// #254: per-navigation ceiling on a <b>nested</b> <c>$top</c> inside a <c>$expand</c>
+    /// (<c>?$expand=Children($top=N)</c>), and the bound on how many related entities a nested
+    /// <c>$count</c> may materialize. A nested <c>$top</c> greater than this is rejected with
+    /// <c>400 Bad Request</c> before any handler runs; a nested <c>$count</c> whose related
+    /// collection exceeds it is likewise rejected with <c>400</c> rather than silently truncated
+    /// (OData §11.2.4.2 requires <c>Nav@odata.count</c> to report the full filtered collection).
+    /// #313 widened what the value covers once it is set: it now bounds <b>every</b> collection
+    /// <c>$expand</c> level — a bare <c>?$expand=Children</c> included, and every level of a
+    /// <c>$levels=N</c> recursion — not just the two #254 shapes, and composes the child-key
+    /// <c>ORDER BY</c> tiebreaker on them.
+    /// Inherits from <see cref="EntitySetDefaults.MaxExpandTop"/> (default <c>null</c> — no
+    /// ceiling) when <c>null</c>; a profile-level <c>null</c> therefore means <b>inherit</b>, not
+    /// "uncapped". The <b>root</b> entity set's resolved value governs at every nesting depth, the
+    /// same rule <see cref="MaxExpansionDepth"/> follows. Must be a positive integer or <c>null</c>
+    /// (no ceiling).
+    /// </summary>
+    protected int? MaxExpandTop
+    {
+        get => _maxExpandTop;
+        init
+        {
+            if (value is <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxExpandTop), value, "MaxExpandTop must be a positive integer or null.");
+            _maxExpandTop = value;
+        }
+    }
+    private int? _resolvedMaxExpandTop;
+
+    /// <summary>
+    /// #313: whether a <b>bare</b> collection <c>$expand</c> on this entity set whose child collection
+    /// exceeds the resolved <see cref="MaxExpandTop"/> is served as its first <c>MaxExpandTop</c>
+    /// children plus a <c>Nav@odata.nextLink</c> continuation, rather than rejected with <c>400</c>.
+    /// Inherits from <see cref="EntitySetDefaults.ExpandPagingEnabled"/> (default <c>false</c>) when
+    /// <c>null</c>.
+    /// <para>
+    /// Three states, and the third is the point: <c>null</c> means inherit, so a profile can set
+    /// <c>false</c> to opt <b>out</b> of a server-wide <c>ExpandPagingEnabled = true</c>. That is why
+    /// the second knob is a boolean and not a second page size — <c>int?</c> has no way to express
+    /// "uncapped" distinctly from "inherit" (see <see cref="MaxExpandTop"/>, where a profile-level
+    /// <c>null</c> means inherit and there is consequently no per-profile opt-out).
+    /// </para>
+    /// <para>
+    /// Inert unless <see cref="MaxExpandTop"/> also resolves non-null; <c>MaxExpandTop</c> is the page
+    /// size for the first page and every continuation alike.
+    /// </para>
+    /// </summary>
+    protected bool? ExpandPagingEnabled { get; init; }
+
     private long? _maxRequestBodyBytes;
 
     /// <summary>
@@ -351,13 +436,16 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private long? _resolvedMaxRequestBodyBytes;
 
     private int? _maxExpansionDepth;
+    private int? _maxExpandBreadth;
     private int? _maxFilterNodeCount;
     private int? _maxOrderByNodeCount;
     private int? _maxAnyAllExpressionDepth;
 
     /// <summary>#202/#206: maximum nested <c>$expand</c> depth for this set, and the ceiling
     /// <c>$levels</c> is resolved/capped to (400 beyond it). Inherits
-    /// <see cref="EntitySetDefaults.MaxExpansionDepth"/> (default 3) when null. Must be positive.</summary>
+    /// <see cref="EntitySetDefaults.MaxExpansionDepth"/> (default 3) when null. Must be positive and
+    /// no greater than <see cref="EntitySetDefaults.MaxExpansionDepthCeiling"/> (#328) — see that
+    /// constant for the measured cost curve the ceiling exists to bound.</summary>
     protected int? MaxExpansionDepth
     {
         get => _maxExpansionDepth;
@@ -365,7 +453,29 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         {
             if (value is <= 0)
                 throw new ArgumentOutOfRangeException(nameof(MaxExpansionDepth), value, "MaxExpansionDepth must be a positive integer.");
+            // #328: validated HERE as well as on EntitySetDefaults. The two are independent entry
+            // points — a profile-level value never passes through the defaults setter — so a check
+            // on one alone leaves the other wide open.
+            if (value is int depth && depth > EntitySetDefaults.MaxExpansionDepthCeiling)
+                throw new ArgumentOutOfRangeException(nameof(MaxExpansionDepth), value, EntitySetDefaults.ExpansionDepthCeilingMessage(depth));
             _maxExpansionDepth = value;
+        }
+    }
+
+    /// <summary>#429: maximum number of navigation expansions this set's <c>$expand</c> may contain,
+    /// counted across every level of the tree (a <c>$levels=N</c> item counts as <c>N</c>). Over the
+    /// limit is <c>400</c> before any handler runs. Inherits
+    /// <see cref="EntitySetDefaults.MaxExpandBreadth"/> (default 50) when null. Must be positive.
+    /// See that property for the measured cost curve and why the count spans the whole tree rather
+    /// than one level.</summary>
+    protected int? MaxExpandBreadth
+    {
+        get => _maxExpandBreadth;
+        init
+        {
+            if (value is <= 0)
+                throw new ArgumentOutOfRangeException(nameof(MaxExpandBreadth), value, "MaxExpandBreadth must be a positive integer.");
+            _maxExpandBreadth = value;
         }
     }
 
@@ -409,6 +519,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         }
     }
     private int _resolvedMaxExpansionDepth;
+    private int _resolvedMaxExpandBreadth;
     private int _resolvedMaxFilterNodeCount;
     private int _resolvedMaxOrderByNodeCount;
     private int _resolvedMaxAnyAllExpressionDepth;
@@ -416,6 +527,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private bool _resolvedOrderByEnabled;
     private bool _resolvedSelectEnabled;
     private bool _resolvedExpandEnabled;
+    private bool _resolvedExpandPagingEnabled;
     private bool _resolvedCountEnabled;
     private bool _resolvedPropertyAccessEnabled;
     private bool _resolvedSelectPushdownEnabled;
@@ -452,8 +564,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// properties using SHA-256 and encodes the result as Base64, returning it in the
     /// <c>ETag</c> response header (OData §8.2.6) and the <c>@odata.etag</c> annotation.
     /// <para>
-    /// Supports <c>byte[]</c> values (e.g. row-version columns) directly;
-    /// all other values are hashed as their UTF-8 string representations.
+    /// Supports <c>byte[]</c> values (e.g. row-version columns) directly; all other values are
+    /// hashed as their UTF-8 string representations, formatted round-trippably and under
+    /// <see cref="CultureInfo.InvariantCulture"/> by <see cref="ETagValueFormatter"/> — so a
+    /// <c>DateTimeOffset</c> keeps its full sub-second precision and a <c>decimal</c> hashes
+    /// identically on a <c>de-DE</c> and an <c>en-US</c> server.
     /// </para>
     /// </summary>
     /// <remarks>
@@ -476,6 +591,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         // access makes the names unknowable → null → pushdown ineligible while ETags are on.
         _etagPropertyNames = TryExtractDirectMemberNames(propertySelectors);
 
+        // #351: capture each selector's DECLARED result type so MapOhData() can reject a selector
+        // the hash cannot faithfully represent (see ETagValueFormatter.IsSupportedSelectorType).
+        // Like the names above, this must run before the compiled-delegate cache early return.
+        _etagSelectors = ExtractSelectorInfo(propertySelectors);
+
         // Reuse the cached compiled delegate if available (avoids recompiling on every scoped construction).
         if (s_etagCache.TryGetValue(GetType(), out var cached))
         {
@@ -487,24 +607,18 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         if (propertySelectors.Length == 0)
             throw new ArgumentException("At least one property selector is required.", nameof(propertySelectors));
         var getters = propertySelectors.Select(e => e.Compile()).ToArray();
-        byte[] sep = new byte[] { 0x00 };
         _getETag = model =>
         {
             // Collect all bytes into a buffer, then hash once without allocating a hasher object per call.
             using var ms = new MemoryStream();
             for (int i = 0; i < getters.Length; i++)
             {
-                if (i > 0) ms.Write(sep, 0, sep.Length);
-                object? value = getters[i](model);
-                if (value is byte[] bytes)
-                {
-                    ms.Write(bytes, 0, bytes.Length);
-                }
-                else if (value is not null)
-                {
-                    byte[] strBytes = Encoding.UTF8.GetBytes(value.ToString()!);
-                    ms.Write(strBytes, 0, strBytes.Length);
-                }
+                // #351: ETagValueFormatter owns BOTH the value formatting (round-trippable +
+                // culture-invariant, so same-second writes and cross-locale servers can't collide)
+                // and the framing (length-prefixed, type-tagged, null-distinguishing, so adjacent
+                // values can't be reinterpreted across the boundary). Do not inline a bare
+                // ToString() here — that was the lost-update bug.
+                ETagValueFormatter.Append(ms, getters[i](model));
             }
             // Use static SHA256.HashData to avoid per-call object allocation.
             if (!ms.TryGetBuffer(out ArraySegment<byte> buffer))
@@ -520,6 +634,37 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     }
 
     private IReadOnlyCollection<string>? _etagPropertyNames;
+    private IReadOnlyList<ETagSelectorInfo>? _etagSelectors;
+
+    /// <summary>
+    /// Describes each <c>UseETag</c> selector for the startup type check: a human-readable
+    /// description for the error message, and the selector's DECLARED result type.
+    /// </summary>
+    /// <remarks>
+    /// The declared type is taken after stripping the compiler-inserted <c>Convert</c> to
+    /// <c>object</c> that boxing a value type produces, so <c>x =&gt; x.UpdatedAt</c> reports
+    /// <c>DateTime</c> rather than <c>object</c>. A selector genuinely declared as <c>object</c>
+    /// reports <c>object</c> and is rejected — its runtime type is unknowable at startup.
+    /// </remarks>
+    private static IReadOnlyList<ETagSelectorInfo> ExtractSelectorInfo(
+        Expression<Func<TModel, object?>>[] selectors)
+    {
+        return selectors.Select(Describe).ToList();
+
+        static ETagSelectorInfo Describe(Expression<Func<TModel, object?>> selector)
+        {
+            Expression body = selector.Body is UnaryExpression unary &&
+                (unary.NodeType == ExpressionType.Convert || unary.NodeType == ExpressionType.ConvertChecked)
+                ? unary.Operand
+                : selector.Body;
+
+            string description = body is MemberExpression member && member.Expression is ParameterExpression
+                ? member.Member.Name
+                : body.ToString();
+
+            return new ETagSelectorInfo(description, body.Type);
+        }
+    }
 
     /// <summary>
     /// Extracts CLR property names when EVERY selector is a direct member access on the lambda
@@ -550,6 +695,11 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private IReadOnlyList<string>? _authRoles;
     private List<OperationAuthRule>? _operationAuthRules;
     private bool _isAdvancedConfigureOverridden;
+
+    // #458: recorded by VisitModelBuilder at the four model-bound call sites; ModelBoundAllowlists.None
+    // until then, and permanently so for an AdvancedConfigure override (which ejects before them and
+    // owns the EDM outright, so the framework has nothing it can honestly compare).
+    private ModelBoundAllowlists _modelBoundAllowlists = ModelBoundAllowlists.None;
 
     private readonly ICollection<Action<EntityTypeConfiguration<TModel>>> _configurators;
     private readonly ICollection<Delegate> _functions;
@@ -600,8 +750,10 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         var entitySet = builder.EntitySet<TModel>(EntitySetName);
 
         _resolvedMaxTop = MaxTop ?? defaults.MaxTop;
+        _resolvedMaxExpandTop = MaxExpandTop ?? defaults.MaxExpandTop;
         _resolvedMaxRequestBodyBytes = MaxRequestBodyBytes ?? defaults.MaxRequestBodyBytes;
         _resolvedMaxExpansionDepth = MaxExpansionDepth ?? defaults.MaxExpansionDepth;
+        _resolvedMaxExpandBreadth = MaxExpandBreadth ?? defaults.MaxExpandBreadth;
         _resolvedMaxFilterNodeCount = MaxFilterNodeCount ?? defaults.MaxFilterNodeCount;
         _resolvedMaxOrderByNodeCount = MaxOrderByNodeCount ?? defaults.MaxOrderByNodeCount;
         _resolvedMaxAnyAllExpressionDepth = MaxAnyAllExpressionDepth ?? defaults.MaxAnyAllExpressionDepth;
@@ -611,12 +763,13 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _resolvedOrderByEnabled = OrderByEnabled ?? defaults.OrderByEnabled;
         _resolvedSelectEnabled = SelectEnabled ?? defaults.SelectEnabled;
         _resolvedExpandEnabled = ExpandEnabled ?? defaults.ExpandEnabled;
+        _resolvedExpandPagingEnabled = ExpandPagingEnabled ?? defaults.ExpandPagingEnabled;
         _resolvedCountEnabled = CountEnabled ?? defaults.CountEnabled;
         _resolvedPropertyAccessEnabled = PropertyAccessEnabled ?? defaults.PropertyAccessEnabled;
         _resolvedSelectPushdownEnabled = SelectPushdownEnabled ?? defaults.SelectPushdownEnabled;
         _resolvedExpandPushdownEnabled = ExpandPushdownEnabled ?? defaults.ExpandPushdownEnabled;
         _resolvedPropertyRouteDocsEnabled = PropertyRouteDocsEnabled ?? defaults.PropertyRouteDocsEnabled;
-        _resolvedAllowDeepInsert = AllowDeepInsert ?? defaults.AllowDeepInsert;
+        _resolvedAllowDeepWrites = AllowDeepWrites ?? defaults.AllowDeepWrites;
         _resolvedRoundingMode = RoundingMode ?? defaults.RoundingMode;
         _structuralProperties = BuildStructuralProperties();
 
@@ -647,7 +800,24 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         // if AdvancedConfigure wasn't overridden, work your magic
         var entityType = entitySet.EntityType;
 
-        if (SelectEnabled ?? defaults.SelectEnabled) entityType.Select(ResolveStructuralAllowlistToEdmNames(_selectProperties));
+        // #458: `entityType` is the shared per-CLR-TYPE EntityTypeConfiguration<TModel>, not a
+        // per-entity-set one -- two profiles over one model type write the same ModelBoundQuerySettings
+        // and the result is their UNION. Each of the four calls below therefore records the literal
+        // array it passed, so ModelBoundAllowlists.Validate can refuse a divergent pair at
+        // MapOhData() instead of letting the widest declaration silently win. Recorded HERE, at the
+        // call sites, because these arrays -- post EDM-name resolution, post navigation merge -- are
+        // the shared state; anything re-derived from the raw allowlists would be a different value.
+        var selectDeclared = default(ModelBoundAllowlist);
+        var expandDeclared = default(ModelBoundAllowlist);
+        var filterDeclared = default(ModelBoundAllowlist);
+        var orderByDeclared = default(ModelBoundAllowlist);
+
+        if (SelectEnabled ?? defaults.SelectEnabled)
+        {
+            string[]? selectNames = ResolveStructuralAllowlistToEdmNames(_selectProperties);
+            selectDeclared = new ModelBoundAllowlist(applied: true, selectNames);
+            entityType.Select(selectNames);
+        }
         // Issue #183: pass an explicit max expansion depth so nested $expand
         // (e.g. $expand=A($expand=B($expand=C))) is not rejected by the model-bound default of 2.
         // The runtime recursion in OhDataEndpointFactory.ExpandLevelAsync bounds actual execution.
@@ -656,13 +826,27 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         // it to the model builder (an un-renamed nav resolves to its own CLR name unchanged).
         if (ExpandEnabled ?? defaults.ExpandEnabled)
         {
-            entityType.Expand(OhData.OhDataEndpointFactory.MaxNestedExpandDepth,
-                ResolveStructuralAllowlistToEdmNames(_expandProperties)!);
+            string[]? expandNames = ResolveStructuralAllowlistToEdmNames(_expandProperties);
+            expandDeclared = new ModelBoundAllowlist(applied: true, expandNames);
+            entityType.Expand(OhData.OhDataEndpointFactory.MaxNestedExpandDepth, expandNames!);
         }
         if (FilterEnabled ?? defaults.FilterEnabled)
-            entityType.Filter(MergeAllowlistWithNavigationProperties(ResolveStructuralAllowlistToEdmNames(_filterProperties)));
+        {
+            string[]? filterNames =
+                MergeAllowlistWithNavigationProperties(ResolveStructuralAllowlistToEdmNames(_filterProperties));
+            filterDeclared = new ModelBoundAllowlist(applied: true, filterNames);
+            entityType.Filter(filterNames);
+        }
         if (OrderByEnabled ?? defaults.OrderByEnabled)
-            entityType.OrderBy(MergeAllowlistWithNavigationProperties(ResolveStructuralAllowlistToEdmNames(_orderByProperties)));
+        {
+            string[]? orderByNames =
+                MergeAllowlistWithNavigationProperties(ResolveStructuralAllowlistToEdmNames(_orderByProperties));
+            orderByDeclared = new ModelBoundAllowlist(applied: true, orderByNames);
+            entityType.OrderBy(orderByNames);
+        }
+        _modelBoundAllowlists =
+            new ModelBoundAllowlists(selectDeclared, expandDeclared, filterDeclared, orderByDeclared);
+
         if (CountEnabled ?? defaults.CountEnabled) entityType.Count();
 
         entityType.HasKey(_getKey);
@@ -831,6 +1015,14 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Set using either this overload or the string overload, not both.
     /// Pass no arguments (or call with <c>null</c>) to allow all properties.
     /// </summary>
+    /// <remarks>
+    /// <b>Does not restrict dynamic (open-type) properties.</b> The allowlist is enforced through
+    /// the EDM's model-bound <c>NotFilterable</c> annotation, and a dynamic property is not in the
+    /// EDM - so there is nothing to annotate and nothing to enforce. On a model with an open
+    /// complex type, <c>$filter</c> over a dynamic key is not gated by this allowlist at all
+    /// (<c>Microsoft.AspNetCore.OData</c> behaves the same way). If a value must not be filterable,
+    /// do not put it in a dynamic bag. See <c>docs/open-types.md</c> and issue #401.
+    /// </remarks>
     protected void FilterProperties(params Expression<Func<TModel, object?>>[] properties)
     {
         _filterProperties = ExtractNames(properties);
@@ -841,6 +1033,14 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Set using either this overload or the expression overload, not both.
     /// Pass no arguments (or call with <c>null</c>) to allow all properties.
     /// </summary>
+    /// <remarks>
+    /// <b>Does not restrict dynamic (open-type) properties.</b> The allowlist is enforced through
+    /// the EDM's model-bound <c>NotFilterable</c> annotation, and a dynamic property is not in the
+    /// EDM - so there is nothing to annotate and nothing to enforce. On a model with an open
+    /// complex type, <c>$filter</c> over a dynamic key is not gated by this allowlist at all
+    /// (<c>Microsoft.AspNetCore.OData</c> behaves the same way). If a value must not be filterable,
+    /// do not put it in a dynamic bag. See <c>docs/open-types.md</c> and issue #401.
+    /// </remarks>
     protected void FilterProperties(params string[]? properties)
     {
         _filterProperties = properties;
@@ -851,6 +1051,14 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Set using either this overload or the string overload, not both.
     /// Pass no arguments (or call with <c>null</c>) to allow all properties.
     /// </summary>
+    /// <remarks>
+    /// <b>Does not restrict dynamic (open-type) properties.</b> The allowlist is enforced through
+    /// the EDM's model-bound <c>NotSortable</c> annotation, and a dynamic property is not in the
+    /// EDM - so there is nothing to annotate and nothing to enforce. On a model with an open
+    /// complex type, <c>$orderby</c> over a dynamic key is not gated by this allowlist at all
+    /// (<c>Microsoft.AspNetCore.OData</c> behaves the same way). See <c>docs/open-types.md</c> and
+    /// issue #401.
+    /// </remarks>
     protected void OrderByProperties(params Expression<Func<TModel, object?>>[] properties)
     {
         _orderByProperties = ExtractNames(properties);
@@ -861,6 +1069,14 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Set using either this overload or the expression overload, not both.
     /// Pass no arguments (or call with <c>null</c>) to allow all properties.
     /// </summary>
+    /// <remarks>
+    /// <b>Does not restrict dynamic (open-type) properties.</b> The allowlist is enforced through
+    /// the EDM's model-bound <c>NotSortable</c> annotation, and a dynamic property is not in the
+    /// EDM - so there is nothing to annotate and nothing to enforce. On a model with an open
+    /// complex type, <c>$orderby</c> over a dynamic key is not gated by this allowlist at all
+    /// (<c>Microsoft.AspNetCore.OData</c> behaves the same way). See <c>docs/open-types.md</c> and
+    /// issue #401.
+    /// </remarks>
     protected void OrderByProperties(params string[]? properties)
     {
         _orderByProperties = properties;
@@ -871,6 +1087,15 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Set using either this overload or the string overload, not both.
     /// Pass no arguments (or call with <c>null</c>) to allow all properties.
     /// </summary>
+    /// <remarks>
+    /// <b>Does not restrict dynamic (open-type) properties - and on an open type it can be
+    /// circumvented for declared ones too.</b> The allowlist is enforced through the EDM's
+    /// model-bound <c>NotSelectable</c> annotation, which a dynamic property has no place to carry.
+    /// Worse: <c>$select</c> over a dynamic key silently degrades to selecting the whole containing
+    /// complex value, so <c>$select=Meta/anyUndeclaredName</c> returns the entire <c>Meta</c> value
+    /// including declared sub-properties this allowlist denies. See <c>docs/open-types.md</c> and
+    /// issue #401.
+    /// </remarks>
     protected void SelectProperties(params Expression<Func<TModel, object?>>[] properties)
     {
         _selectProperties = ExtractNames(properties);
@@ -881,6 +1106,15 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Set using either this overload or the expression overload, not both.
     /// Pass no arguments (or call with <c>null</c>) to allow all properties.
     /// </summary>
+    /// <remarks>
+    /// <b>Does not restrict dynamic (open-type) properties - and on an open type it can be
+    /// circumvented for declared ones too.</b> The allowlist is enforced through the EDM's
+    /// model-bound <c>NotSelectable</c> annotation, which a dynamic property has no place to carry.
+    /// Worse: <c>$select</c> over a dynamic key silently degrades to selecting the whole containing
+    /// complex value, so <c>$select=Meta/anyUndeclaredName</c> returns the entire <c>Meta</c> value
+    /// including declared sub-properties this allowlist denies. See <c>docs/open-types.md</c> and
+    /// issue #401.
+    /// </remarks>
     protected void SelectProperties(params string[]? properties)
     {
         _selectProperties = properties;
@@ -1831,8 +2065,10 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         => LazyInitializer.EnsureInitialized(ref _keyToUrl, CompileKeyToUrl)((TModel)model);
 
     int? IEntitySetEndpointSource.MaxTop => _resolvedMaxTop;
+    int? IEntitySetEndpointSource.MaxExpandTop => _resolvedMaxExpandTop;
     long? IEntitySetEndpointSource.MaxRequestBodyBytes => _resolvedMaxRequestBodyBytes;
     int IEntitySetEndpointSource.MaxExpansionDepth => _resolvedMaxExpansionDepth;
+    int IEntitySetEndpointSource.MaxExpandBreadth => _resolvedMaxExpandBreadth;
     int IEntitySetEndpointSource.MaxFilterNodeCount => _resolvedMaxFilterNodeCount;
     int IEntitySetEndpointSource.MaxOrderByNodeCount => _resolvedMaxOrderByNodeCount;
     int IEntitySetEndpointSource.MaxAnyAllExpressionDepth => _resolvedMaxAnyAllExpressionDepth;
@@ -1843,21 +2079,24 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     bool IEntitySetEndpointSource.OrderByEnabled => _resolvedOrderByEnabled;
     bool IEntitySetEndpointSource.SelectEnabled => _resolvedSelectEnabled;
     bool IEntitySetEndpointSource.ExpandEnabled => _resolvedExpandEnabled;
+    bool IEntitySetEndpointSource.ExpandPagingEnabled => _resolvedExpandPagingEnabled;
     bool IEntitySetEndpointSource.CountEnabled => _resolvedCountEnabled;
     bool IEntitySetEndpointSource.PropertyAccessEnabled => _resolvedPropertyAccessEnabled;
     bool IEntitySetEndpointSource.PropertyRouteDocsEnabled => _resolvedPropertyRouteDocsEnabled;
     bool IEntitySetEndpointSource.SelectPushdownEnabled => _resolvedSelectPushdownEnabled;
     bool IEntitySetEndpointSource.ExpandPushdownEnabled => _resolvedExpandPushdownEnabled;
     IReadOnlyCollection<string>? IEntitySetEndpointSource.ETagPropertyNames => _etagPropertyNames;
+    IReadOnlyList<ETagSelectorInfo>? IEntitySetEndpointSource.ETagSelectors => _etagSelectors;
     RoundingMode IEntitySetEndpointSource.RoundingMode => _resolvedRoundingMode;
     IReadOnlyList<StructuralPropertyInfo> IEntitySetEndpointSource.StructuralProperties =>
         _structuralProperties ??= BuildStructuralProperties();
-    bool IEntitySetEndpointSource.AllowDeepInsert => _resolvedAllowDeepInsert;
+    bool IEntitySetEndpointSource.AllowDeepWrites => _resolvedAllowDeepWrites;
     // #253 completion: navigations are addressed by their EDM (JSON) names on the OData surface. This
     // exposed view is consumed by the $expand pushdown provenance/keying and the deep-insert strip
     // (which resolves each CLR property to its EDM name before testing membership).
     IReadOnlyCollection<string> IEntitySetEndpointSource.NavigationPropertyNames => NavigationEdmNames;
     IReadOnlyCollection<string> IEntitySetEndpointSource.IgnoredPropertyNames => _ignoredPropertyNames;
+    ModelBoundAllowlists IEntitySetEndpointSource.ModelBoundAllowlists => _modelBoundAllowlists;
     string IEntitySetEndpointSource.KeyPropertyName => GetNavigationPropertyName(_getKey.Body);
     bool IEntitySetEndpointSource.IsAdvancedConfigureOverridden => _isAdvancedConfigureOverridden;
 

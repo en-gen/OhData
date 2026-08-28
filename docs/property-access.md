@@ -138,14 +138,14 @@ public class ProductProfile : EntitySetProfile<int, Product>
 {
     public ProductProfile(AppDbContext db) : base(x => x.Id)
     {
-        GetById = (id, ct) => db.Products.FindAsync(id, ct).AsTask();
-        Patch   = (id, delta, ct) =>
+        GetById = (id, ct) => db.Products.FindAsync([id], ct).AsTask();
+        Patch   = async (id, delta, ct) =>
         {
-            var e = db.Products.Find(id);
-            if (e is null) return Task.FromResult<Product?>(null);
+            var e = await db.Products.FindAsync([id], ct);
+            if (e is null) return null;
             delta.Patch(e);
-            db.SaveChanges();
-            return Task.FromResult<Product?>(e);
+            await db.SaveChangesAsync(ct);
+            return e;
         };
         // Patch enables both PATCH /Products({key}) *and* the property-write routes below.
     }

@@ -4,8 +4,11 @@
 [![codecov](https://codecov.io/gh/en-gen/OhData/graph/badge.svg)](https://codecov.io/gh/en-gen/OhData)
 [![License: MIT](https://img.shields.io/github/license/en-gen/OhData)](LICENSE)
 [![NuGet](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore?label=nuget)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore)
+[![Docs](https://img.shields.io/badge/docs-en--gen.github.io%2FOhData-2b6cb0)](https://en-gen.github.io/OhData/)
 
 Convention-based OData 4.0 server and typed client for ASP.NET Core. Define a profile class, assign handler delegates, and get a spec-faithful OData API - no controllers required (see [docs/spec-compliance.md](docs/spec-compliance.md) for exactly what's covered). Consume it from .NET with a fluent, LINQ-native client.
+
+📖 **Documentation site: [en-gen.github.io/OhData](https://en-gen.github.io/OhData/)** — getting started, the EF Core walkthrough, and every feature guide.
 
 Try it live — fire real `$filter`/`$orderby`/`$expand` queries (writes too) at a deployed OhData demo service from an interactive API reference, or hit the raw [v2 service document](https://ohdata.onrender.com/v2) directly:
 
@@ -61,13 +64,29 @@ public class ProductProfile : EntitySetProfile<int, Product>
         CountEnabled   = true;
         SelectEnabled  = true;
 
-        // IQueryable path: EF Core translates $filter/$orderby/$skip/$top into the SQL query
-        GetQueryable = (_) => Task.FromResult(db.Products.AsQueryable());
-        GetById      = (id, ct) => db.Products.FindAsync(id, ct).AsTask();
-        Post         = (p, ct) => { db.Products.Add(p); return db.SaveChangesAsync(ct).ContinueWith(_ => (Product?)p, ct); };
-        Put          = (id, p, ct) => { db.Products.Update(p); return db.SaveChangesAsync(ct).ContinueWith(_ => p, ct); };
-        Patch        = (id, delta, ct) => { var e = db.Products.Find(id); return Task.FromResult(e is null ? null : delta.Patch(e)); };
-        Delete       = (id, ct) => { /* remove by id */ return Task.FromResult(true); };
+        // IQueryable path: returning the un-materialized queryable is synchronous, so this one
+        // handler stays Task.FromResult; EF Core translates $filter/$orderby/$skip/$top and
+        // materializes the result asynchronously when the framework enumerates it.
+        GetQueryable = _ => Task.FromResult<IQueryable<Product>>(db.Products);
+        GetById      = async (id, ct) => await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
+        Post         = async (p, ct) => { db.Products.Add(p); await db.SaveChangesAsync(ct); return p; };
+        Put          = async (id, p, ct) => { db.Products.Update(p); await db.SaveChangesAsync(ct); return p; };
+        Patch        = async (id, delta, ct) =>
+        {
+            var e = await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
+            if (e is null) return null;
+            delta.Patch(e);
+            await db.SaveChangesAsync(ct);
+            return e;
+        };
+        Delete       = async (id, ct) =>
+        {
+            var e = await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
+            if (e is null) return false;
+            db.Products.Remove(e);
+            await db.SaveChangesAsync(ct);
+            return true;
+        };
     }
 }
 
@@ -108,16 +127,22 @@ Only routes with a handler assigned are registered. Unassigned handlers produce 
 Each OpenAPI stack has an optional companion package that documents the OData query parameters
 (`$filter`, `$orderby`, `$top`, `$skip`, `$select`, `$expand`, `$count`, `$search`) on OhData
 endpoints, driven by each entity set's capability flags. Install the one matching your stack and
-register one line — the core package has no dependency on any OpenAPI stack:
+call its one-line `AddOhData()` — the canonical wiring recipe that registers both the operation and
+schema components; the core package has no dependency on any OpenAPI stack:
 
 | Package | Registration |
 |---|---|
-| `EnGen.OhData.AspNetCore.OpenApi` | `builder.Services.AddOpenApi(o => o.AddOperationTransformer<OhDataOpenApiOperationTransformer>());` |
-| `EnGen.OhData.AspNetCore.Swashbuckle` | `builder.Services.AddSwaggerGen(c => c.OperationFilter<OhDataSwaggerOperationFilter>());` |
-| `EnGen.OhData.AspNetCore.NSwag` | `builder.Services.AddOpenApiDocument(s => s.OperationProcessors.Add(new OhDataNSwagOperationProcessor()));` |
+| `EnGen.OhData.AspNetCore.OpenApi` | `builder.Services.AddOpenApi(o => o.AddOhData());` |
+| `EnGen.OhData.AspNetCore.Swashbuckle` | `builder.Services.AddSwaggerGen(c => c.AddOhData());` |
+| `EnGen.OhData.AspNetCore.NSwag` | `builder.Services.AddOpenApiDocument((s, sp) => s.AddOhData(sp));` |
 
-See [docs/openapi.md](docs/openapi.md), [docs/nswag.md](docs/nswag.md), and
-[docs/versioning.md](docs/versioning.md) (Swashbuckle multi-doc setup) for details.
+On the OpenApi and NSwag variants, `AddOhData` takes optional `authRequirements` / `securitySchemeId`
+parameters to also reflect OhData's per-operation authorization (security requirement + `401`/`403`)
+into the document.
+
+See [docs/openapi.md](docs/openapi.md), [docs/swashbuckle.md](docs/swashbuckle.md),
+[docs/nswag.md](docs/nswag.md), and [docs/versioning.md](docs/versioning.md) (multi-doc / versioned
+setup) for details.
 
 ### Beyond the basics
 
@@ -128,13 +153,13 @@ public class OrdersProfile : EntitySetProfile<int, Order>
 {
     public OrdersProfile(AppDbContext db) : base(x => x.Id)
     {
-        GetQueryable = _ => Task.FromResult(db.Orders.AsQueryable());
+        GetQueryable = _ => Task.FromResult<IQueryable<Order>>(db.Orders);
 
         // Collection navigation. getAll gives the read routes; every parameter after it is
         // OPTIONAL - supply only the ones whose route you want:
         HasMany(
             navigation: x => x.Lines,
-            getAll:    (orderId, ct) => Task.FromResult(db.Lines.Where(l => l.OrderId == orderId).AsEnumerable()),
+            getAll:    async (orderId, ct) => await db.Lines.Where(l => l.OrderId == orderId).ToListAsync(ct),
                                           // GET /Orders({key})/Lines  (+ /Lines/$count)
             post:      (orderId, line, ct) => /* … */,   // optional → POST /Orders({key})/Lines  (create a related entity)
             addRef:    (orderId, lineId, ct) => /* … */, // optional → POST/PUT /Orders({key})/Lines/$ref  (link existing)
@@ -144,7 +169,8 @@ public class OrdersProfile : EntitySetProfile<int, Order>
         // Single-valued navigation → GET /Orders({key})/Customer.
         HasOptional(
             navigation: x => x.Customer,
-            get: (orderId, ct) => Task.FromResult(db.Orders.Find(orderId)?.Customer));
+            get: async (orderId, ct) =>
+                await db.Orders.Where(o => o.Id == orderId).Select(o => o.Customer).FirstOrDefaultAsync(ct));
 
         // ETag response header + If-Match concurrency on GET/PUT/PATCH/DELETE.
         UseETag(x => x.RowVersion);
@@ -322,20 +348,24 @@ and the full support policy.
 
 ## Documentation
 
+The full documentation — getting started, the EF Core + SQLite walkthrough, and every guide below — is published at **[en-gen.github.io/OhData](https://en-gen.github.io/OhData/)**. The same guides live in [`docs/`](docs/):
+
 | Topic | Guide |
 |-------|-------|
 | Query options (`$filter`, `$orderby`, `$select`, `$expand`, `$count`, `$search`) | [docs/query-options.md](docs/query-options.md) |
 | Navigation property routing, `$ref`, and POST-to-navigation | [docs/navigation-routing.md](docs/navigation-routing.md) |
 | Individual property access, reads/writes, and `/$value` | [docs/property-access.md](docs/property-access.md) |
-| Deep insert (nested related entities in POST) | [docs/deep-insert.md](docs/deep-insert.md) |
+| Deep insert (nested related entities in POST), and deep update's enforced non-support | [docs/deep-insert.md](docs/deep-insert.md) |
 | Delta mapping (DTO → entity write path, dependency-free) | [docs/delta-mapping.md](docs/delta-mapping.md) |
+| Open types (dynamic property bags on complex types) | [docs/open-types.md](docs/open-types.md) |
 | Bound functions and actions | [docs/bound-operations.md](docs/bound-operations.md) |
 | ETags and optimistic concurrency | [docs/etags.md](docs/etags.md) |
 | Authorization | [docs/authorization.md](docs/authorization.md) |
 | API versioning | [docs/versioning.md](docs/versioning.md) |
 | OpenAPI (built-in `AddOpenApi`) integration | [docs/openapi.md](docs/openapi.md) |
+| Swashbuckle integration | [docs/swashbuckle.md](docs/swashbuckle.md) |
 | NSwag integration | [docs/nswag.md](docs/nswag.md) |
-| Client guide | [docs/client.md](docs/client.md) |
+| Client guide | [docs/client/index.md](docs/client/index.md) |
 | OData 4.0 spec compliance | [docs/spec-compliance.md](docs/spec-compliance.md) |
 | Framework architecture | [docs/architecture.md](docs/architecture.md) |
 | Migrating from Microsoft.AspNetCore.OData | [docs/migrating-from-microsoft-odata.md](docs/migrating-from-microsoft-odata.md) |
