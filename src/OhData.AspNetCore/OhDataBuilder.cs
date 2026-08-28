@@ -309,8 +309,10 @@ public sealed class OhDataBuilder
     private void AddProfileType(Type type)
     {
         if (_profileTypes.Contains(type)) return;
-        // If another OhData registration already registered this profile type as a singleton,
-        // skip re-registering it in DI but still track it for this builder's route mapping.
+        // If another OhData registration already registered this profile type, skip re-registering
+        // it in DI but still track it for this builder's route mapping. (#492: this comment used to
+        // say "as a singleton". Profiles are AddScoped -- one line below -- and their scoped-ness is
+        // load-bearing for the whole DbContext-injection story.)
         if (!_services.Any(s => s.ServiceType == type))
             _services.AddScoped(type);
         _profileTypes.Add(type);
@@ -340,6 +342,11 @@ public sealed class OhDataBuilder
         ValidateUnboundOperationName(
             op.Name, isAction: false, explicitName: name is not null,
             paramName: name is not null ? nameof(name) : nameof(handler));
+        // #498: same three signature rules as the profile's Bind* methods, through the same
+        // validator. Checked here, at registration, for the reason #468's name check gives above:
+        // it fires at the call site that caused it, with the developer's own code on the stack.
+        OperationSignatureValidation.Validate(
+            handler.Method, op.Name, isAction: false, $"AddFunction('{op.Name}')", nameof(AddAction));
         _unboundOps.Add(op);
         return this;
     }
@@ -368,6 +375,10 @@ public sealed class OhDataBuilder
         ValidateUnboundOperationName(
             op.Name, isAction: true, explicitName: name is not null,
             paramName: name is not null ? nameof(name) : nameof(handler));
+        // #498: see AddFunction. A void return is legal here — an action with no return value
+        // produces 204 No Content — so only the IResult and CancellationToken rules can fire.
+        OperationSignatureValidation.Validate(
+            handler.Method, op.Name, isAction: true, $"AddAction('{op.Name}')", nameof(AddAction));
         _unboundOps.Add(op);
         return this;
     }
@@ -510,9 +521,16 @@ public sealed class OhDataBuilder
 
             foreach (var op in capturedUnbound)
             {
+                // #492 §1: HasCollectionGet, not `HasGetAll || HasGetQueryable`. The old test
+                // enumerated two of the THREE collection-read paths, so a Priority-1 profile
+                // (ODataEntitySetProfile with only GetODataQueryable) reported both false while
+                // MapEntitySet registered its collection GET anyway -- and the colliding unbound
+                // function sailed through startup to become an AmbiguousMatchException on every
+                // collection read of that set. Asking the single "does a collection GET get
+                // registered" question is what stops a fourth read path repeating it.
                 var collidingProfile = profiles.FirstOrDefault(p =>
                     string.Equals(p.EntitySetName, op.Name, StringComparison.OrdinalIgnoreCase)
-                    && (op.IsAction ? p.HasPost : (p.HasGetAll || p.HasGetQueryable)));
+                    && (op.IsAction ? p.HasPost : p.HasCollectionGet));
                 if (collidingProfile is not null)
                 {
                     string opKind = op.IsAction ? "action" : "function";

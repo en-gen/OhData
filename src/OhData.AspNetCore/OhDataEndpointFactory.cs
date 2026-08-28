@@ -1743,6 +1743,11 @@ internal static class OhDataEndpointFactory
     // Task&lt;T&gt;/ValueTask&lt;T&gt; and, for a collection return, down to its element type, at
     // registration time). A void/Task-returning operation has no 200 response at all — every
     // call to it produces 204 — so ReturnType is null there and only 204 is registered.
+    //
+    // #498: that null case is reachable for unbound ACTIONS only. CSDL requires a function to
+    // declare a return type, so AddFunction now refuses a void/Task/ValueTask handler at
+    // registration (OperationSignatureValidation), where it previously killed GetEdmModel() with a
+    // raw ArgumentNullException naming nothing. The sentence above used to imply both kinds.
     private static void AddUnboundOperationProduces(RouteHandlerBuilder rb, UnboundOperationDefinition op)
     {
         if (op.ReturnType is not null)
@@ -7722,16 +7727,62 @@ internal static class OhDataEndpointFactory
             });
         }
 
-        // #199 Layer B: resource checks on Read/Update/Delete load the entity by key, so a Resource
-        // requirement on any of those categories requires a GetById handler. Fail fast at startup.
-        if (operationAuthRules is not null && !source.HasGetById
-            && (CategoryHasResource(OhDataOperation.Read, null)
-                || CategoryHasResource(OhDataOperation.Update, null)
-                || CategoryHasResource(OhDataOperation.Delete, null)))
+        // #199 Layer B: resource checks on a KEY-BASED route load the entity by key, so a Resource
+        // requirement on such a route requires a GetById handler. Fail fast at startup.
+        //
+        // #486: this used to name Read/Update/Delete only -- three of the five categories that can
+        // reach AttachResourceFilter. The filter also attaches on Create (the key-based
+        // navigation-POST route) and on Invoke (entity-bound functions and actions), and it calls
+        // InvokeGetByIdAsync, i.e. `GetById!.Invoke(...)`. So `.Create(c => c.RequireResource())`
+        // beside a nav-POST handler, or `.Invoke(i => i.RequireResource())` beside an entity-bound
+        // operation, passed startup and then NullReferenced on 100% of requests -- the generic 500
+        // envelope. It fails closed (nothing is exposed), but it is exactly the configuration this
+        // guard exists to make unreachable.
+        //
+        // The condition below asks the question the filter asks: does this profile register a
+        // key-based route in a category whose rule carries a Resource requirement? The
+        // COLLECTION-level members of those two categories are deliberately excluded and are not an
+        // oversight -- the collection POST evaluates its Create requirement inline against the
+        // deserialized model (never through GetById), and a collection-bound operation's route has
+        // no {key} segment for the filter to read, so both are legal without GetById.
+        if (operationAuthRules is not null && !source.HasGetById)
         {
-            throw new InvalidOperationException(
-                $"Entity set '{name}': resource-based authorization (.RequireResource()) on Read/Update/Delete " +
-                "requires a GetById handler to load the entity for the check.");
+            if (CategoryHasResource(OhDataOperation.Read, null)
+                || CategoryHasResource(OhDataOperation.Update, null)
+                || CategoryHasResource(OhDataOperation.Delete, null))
+            {
+                throw new InvalidOperationException(
+                    $"Entity set '{name}': resource-based authorization (.RequireResource()) on Read/Update/Delete " +
+                    "requires a GetById handler to load the entity for the check.");
+            }
+
+            if (CategoryHasResource(OhDataOperation.Create, null)
+                && source.NavigationRoutes.FirstOrDefault(n => n.PostChild is not null) is { } resourceNavPost)
+            {
+                throw new InvalidOperationException(
+                    $"Entity set '{name}': resource-based authorization (.RequireResource()) on Create " +
+                    $"requires a GetById handler. The POST route of navigation property " +
+                    $"'{resourceNavPost.PropertyName}' (POST /{name}({{key}})/{resourceNavPost.PropertyName}) " +
+                    "is key-based, so the check loads the parent entity by key before running. Add a " +
+                    "GetById handler, drop the navigation's post handler, or scope the requirement to " +
+                    "the categories that do not need one.");
+            }
+
+            // Invoke rules can be scoped to a single operation name (Invoke("Name", ...)), so the
+            // question is asked per entity-level operation rather than once for the category.
+            BoundOperationDefinition? resourceEntityOp = source.BoundFunctions.Concat(source.BoundActions)
+                .FirstOrDefault(o => o.IsEntityLevel && CategoryHasResource(OhDataOperation.Invoke, o.Name));
+            if (resourceEntityOp is not null)
+            {
+                string opKind = resourceEntityOp.IsAction ? "action" : "function";
+                string opMethod = resourceEntityOp.IsAction ? "POST" : "GET";
+                throw new InvalidOperationException(
+                    $"Entity set '{name}': resource-based authorization (.RequireResource()) on Invoke " +
+                    $"requires a GetById handler. Entity-bound {opKind} '{resourceEntityOp.Name}' " +
+                    $"({opMethod} /{name}({{key}})/{resourceEntityOp.Name}) is key-based, so the check " +
+                    "loads the entity by key before the operation runs. Add a GetById handler, or scope " +
+                    "the requirement to collection-bound operations only.");
+            }
         }
 
         // #465: a Search handler on a Priority-1 profile is DEAD CODE, and used to be advertised
@@ -9852,6 +9903,12 @@ internal static class OhDataEndpointFactory
             ApplyOperationAuth(rb, OhDataOperation.Delete);
         }
 
+        // NOTE (#492 §4): duplicate bound-operation names within one profile are refused at BIND
+        // time, in EntitySetProfile.Bind*/ValidateBoundOperationNameIsUnique -- not here. They have
+        // to be: Microsoft.OData.ModelBuilder rejects a repeated ACTION name itself, from inside
+        // VisitModelBuilder, with "Found more than one action with name 'X'" and no mention of the
+        // profile or the entity set, so a check placed here would never run for half the cases.
+
         // Startup route-collision validation: POST /{name}({key})/{segment}.
         // A navigation property registered with a `post` handler (PostChild) claims
         // POST /{name}({key})/{nav.PropertyName} (creating a related entity, §11.4.2.1). An
@@ -9860,15 +9917,57 @@ internal static class OhDataEndpointFactory
         // GET), these are both POST, so a shared name is a genuine route collision that ASP.NET
         // Core would only surface as an ambiguous-match failure at request time. Catch it at
         // startup instead, matching the existing idiom.
+        //
+        // #492 §2: OrdinalIgnoreCase, not Ordinal. ASP.NET Core literal-segment matching is
+        // case-insensitive -- which OhDataBuilder.Register()'s own sibling checks already knew and
+        // said so in a comment. This one and the two beside it did not, so a bound action named
+        // `kids` beside a navigation `Kids` passed startup and made BOTH spellings of the URL an
+        // AmbiguousMatchException.
         foreach (var navWithPost in source.NavigationRoutes.Where(n => n.PostChild is not null))
         {
             foreach (var collidingAction in source.BoundActions.Where(a =>
-                a.IsEntityLevel && string.Equals(navWithPost.PropertyName, a.Name, StringComparison.Ordinal)))
+                a.IsEntityLevel && string.Equals(navWithPost.PropertyName, a.Name, StringComparison.OrdinalIgnoreCase)))
             {
                 throw new InvalidOperationException(
                     $"Entity set '{name}': bound action '{collidingAction.Name}' conflicts with the " +
                     $"POST handler of navigation property '{navWithPost.PropertyName}' on " +
-                    $"POST /{name}({{key}})/{collidingAction.Name}. Rename the bound action or the navigation property.");
+                    $"POST /{name}({{key}})/{collidingAction.Name} (route templates are case-insensitive). " +
+                    "Rename the bound action or the navigation property.");
+            }
+        }
+
+        // ── #416 / #492 §3: entity-level bound function vs a navigation ROUTE ────────────────
+        //
+        // Every entry in NavigationRoutes gets `GET /{name}({key})/{nav.PropertyName}` mapped for
+        // it below -- including one declared with only `post`/`addRef`/`removeRef`, whose GET is
+        // registered with a null-returning handler that 404s. An entity-level bound function claims
+        // `GET /{name}({key})/{fn.Name}`. Same template, same method, and NO check existed: the
+        // three pre-existing ones cover structural properties (a set from which
+        // BuildStructuralProperties SUBTRACTS every declared navigation, which is exactly why this
+        // pair fell through), the nav-POST-vs-action pair above, and the #313 continuation route.
+        //
+        // #416 raised warn-vs-throw on the grounds that an app might be "relying on whichever route
+        // wins registration order". Measured, none does: ASP.NET Core raises AmbiguousMatchException
+        // and NEITHER endpoint runs, so there is no working configuration to break -- only a raw 500
+        // on every request to that URL, moved to a named startup failure.
+        //
+        // The check keys off NavigationRoutes rather than off which particular delegate was
+        // supplied, because the GET is mapped for the whole list. A navigation declared with NO
+        // handler is absent from that list, registers no route, and stays legal (the shape #313
+        // stage 5 deliberately left alone, and which its own check governs once the continuation
+        // route exists).
+        foreach (var navRoute in source.NavigationRoutes)
+        {
+            foreach (var collidingFn in source.BoundFunctions.Where(f =>
+                f.IsEntityLevel && string.Equals(navRoute.PropertyName, f.Name, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidOperationException(
+                    $"Entity set '{name}': bound function '{collidingFn.Name}' conflicts with " +
+                    $"navigation property '{navRoute.PropertyName}' on " +
+                    $"GET /{name}({{key}})/{collidingFn.Name} (route templates are case-insensitive). " +
+                    "That navigation registers a GET route because it was declared with a handler " +
+                    "(getAll/get, post, addRef, removeRef or refTargetEntitySet). Rename the bound " +
+                    "function or the navigation property.");
             }
         }
 
@@ -9897,14 +9996,17 @@ internal static class OhDataEndpointFactory
             // would surface that as an ambiguous-match failure at REQUEST time, on a route that only
             // exists because someone opted in. Fail at MapOhData() instead, matching the idiom of the
             // two collision checks already in this file.
+            // #492 §2: OrdinalIgnoreCase, not Ordinal -- ASP.NET Core literal-segment matching is
+            // case-insensitive, so `books` and `Books` claim the same template.
             BoundOperationDefinition? collidingFn = source.BoundFunctions.FirstOrDefault(f =>
-                f.IsEntityLevel && string.Equals(f.Name, pagingNav.EdmName, StringComparison.Ordinal));
+                f.IsEntityLevel && string.Equals(f.Name, pagingNav.EdmName, StringComparison.OrdinalIgnoreCase));
             if (collidingFn is not null)
             {
                 throw new InvalidOperationException(
                     $"Entity set '{name}': bound function '{collidingFn.Name}' conflicts with the " +
                     $"$expand continuation route of navigation property '{pagingNav.EdmName}' on " +
-                    $"GET /{name}({{key}})/{pagingNav.EdmName}. That route is registered because " +
+                    $"GET /{name}({{key}})/{pagingNav.EdmName} (route templates are case-insensitive). " +
+                    "That route is registered because " +
                     "ExpandPagingEnabled is on for this entity set; rename the bound function or the " +
                     "navigation property, or turn ExpandPagingEnabled off.");
             }
@@ -10711,16 +10813,19 @@ internal static class OhDataEndpointFactory
             // /{name}({key})/{segment}) sharing a name with a structural property. $ref/$count/
             // $value carry a reserved '$' sigil and can never collide with a bare property name.
             // Entity-level bound actions are POST, so method disjointness rules them out here.
+            // #492 §2: OrdinalIgnoreCase, not Ordinal. Measured: structural property `Price` plus a
+            // BindEntityFunction handler named `price` passed startup, and then BOTH
+            // GET /{Set}(1)/price and GET /{Set}(1)/Price were AmbiguousMatchException.
             foreach (var collidingFn in source.BoundFunctions.Where(f => f.IsEntityLevel))
             {
-                bool propertyNameCollision = structuralRouteProperties
-                    .Any(p => string.Equals(p.Name, collidingFn.Name, StringComparison.Ordinal));
-                if (propertyNameCollision)
+                StructuralPropertyInfo? collidingProperty = structuralRouteProperties
+                    .FirstOrDefault(p => string.Equals(p.Name, collidingFn.Name, StringComparison.OrdinalIgnoreCase));
+                if (collidingProperty is not null)
                 {
                     throw new InvalidOperationException(
                         $"Entity set '{name}': bound function '{collidingFn.Name}' conflicts with " +
-                        $"structural property '{collidingFn.Name}' on GET /{name}({{key}})/{collidingFn.Name}. " +
-                        "Rename the bound function or the property.");
+                        $"structural property '{collidingProperty.Name}' on GET /{name}({{key}})/{collidingFn.Name} " +
+                        "(route templates are case-insensitive). Rename the bound function or the property.");
                 }
             }
 

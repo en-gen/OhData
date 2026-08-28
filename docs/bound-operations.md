@@ -121,7 +121,7 @@ Optional parameters and their defaults are reflected in `$metadata`.
 
 ## Return types
 
-Any return type is supported - the result is serialized as JSON. Wrap in `Task<T>` for async operations, or return `void`/`Task` for no-content responses. `ValueTask` and `ValueTask<T>` are also supported alongside `Task`/`Task<T>` - the framework detects the return type via reflection at startup and dispatches accordingly:
+Any return type is supported - the result is serialized as JSON. Wrap in `Task<T>` for async operations. `ValueTask` and `ValueTask<T>` are also supported alongside `Task`/`Task<T>` - the framework detects the return type via reflection at startup and dispatches accordingly:
 
 ```csharp
 // Returns a single entity
@@ -133,6 +133,27 @@ private Task<IEnumerable<Product>> GetAllOnSale(CancellationToken ct) => ...;
 // No return value (action with side effect only)
 private Task Archive(Guid orderId, CancellationToken ct) => ...;
 ```
+
+### Actions may return nothing; functions may not
+
+`void`/`Task`/`ValueTask` is a no-content response (`204 No Content`) and is valid for an **action**
+only. CSDL requires a **function** to declare a return type, so a void-returning function cannot be
+written into `$metadata` at all; `BindFunction`/`BindEntityFunction`/`AddFunction` reject one at bind
+time with an `InvalidOperationException` naming the operation and pointing at the matching
+`Bind*Action`/`AddAction`. (Before #498 this was not checked, and `GetEdmModel()` died instead with a
+raw `ArgumentNullException: 'returnType'` that named neither the profile nor the operation.)
+
+### Signatures the framework rejects at bind time
+
+| Shape | Why |
+|---|---|
+| A `void`/`Task`/`ValueTask`-returning **function** | CSDL has no representation for it. Use an action. |
+| A `CancellationToken` that is not the **last** parameter | The framework strips and supplies only a trailing token, while the EDM omits one at any position — so the route would demand a query parameter `$metadata` never declared, and which no value can satisfy. |
+| A `CancellationToken?` anywhere | Not recognised as the framework's token, so it would be exposed as an OData parameter of a type that is not an EDM type. |
+| A return type implementing `IResult` | OhData owns the HTTP envelope. An `IResult` would be serialized as a DTO (its `Value`/`StatusCode` properties as the response body) and its type written into `$metadata`. Return the value itself. |
+
+A `byte[]` return is declared as `Edm.Binary` (not `Collection(Edm.Byte)`), matching what the route
+actually serves.
 
 ## EDM and `$metadata`
 
@@ -205,8 +226,14 @@ Several distinct constructs can end up claiming the same `(route template, HTTP 
 | Collision | Route shape | Guard |
 |---|---|---|
 | Unbound function vs. another unbound function/action of the same kind | `GET`/`POST /{prefix}/{Name}` | Duplicate unbound operation name (case-insensitive) within a registration. |
-| Unbound function/action vs. an entity set | `GET`/`POST /{prefix}/{Name}` vs. `GET`/`POST /{prefix}/{EntitySet}` | An unbound function's name matches an entity set with a registered collection `GET` (`GetAll`/`GetQueryable`); an unbound action's name matches an entity set with a registered `Post` (case-insensitive). |
+| Unbound function/action vs. an entity set | `GET`/`POST /{prefix}/{Name}` vs. `GET`/`POST /{prefix}/{EntitySet}` | An unbound function's name matches an entity set that registers a collection `GET` by **any** of the three read paths (`GetAll`, `GetQueryable`, or the Priority-1 `GetODataQueryable`); an unbound action's name matches an entity set with a registered `Post`. |
+| Two bound operations of the same kind at the same binding level | `GET`/`POST /{EntitySet}/{Name}` or `.../{EntitySet}({key})/{Name}` | Duplicate bound-operation name within one profile. Refused at **bind time**, in the `Bind*` call — note that C# overloads share one method name, so two overloads cannot both be bound. |
 | Entity-level bound function vs. a structural property | `GET /{EntitySet}({key})/{Name}` | A bound function's name matches a structural (non-navigation) property name. |
+| Entity-level bound function vs. a navigation **route** | `GET /{EntitySet}({key})/{Name}` | A bound function's name matches a navigation property declared with **any** handler (`getAll`/`get`, `post`, `addRef`, `removeRef`, or `refTargetEntitySet`) — every such navigation registers a `GET` route, including one whose only handler is a `post`. |
 | Navigation property `post` handler vs. an entity-level bound action | `POST /{EntitySet}({key})/{Name}` | A navigation property configured with a `post` handler shares a name with an entity-level bound action. |
 
-Navigation vs. structural-property routes never collide by construction (structural properties are computed as "every public readable CLR property minus every declared navigation property name"), so there is no guard for that pairing.
+Every comparison above is **case-insensitive** (`OrdinalIgnoreCase`), because ASP.NET Core's literal
+route-segment matching is: `price` and `Price` claim one template, so a case-differing pair is a
+genuine collision, not a near miss.
+
+Navigation vs. structural-property routes never collide by construction (structural properties are computed as "every public readable CLR property minus every declared navigation property name"), so there is no guard for that pairing. A navigation declared with **no** handler registers no route at all, so a bound function may share its name — unless `ExpandPagingEnabled` and `MaxExpandTop` bring the `$expand` continuation route into existence for it, which has its own guard.
