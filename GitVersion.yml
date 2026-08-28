@@ -1,7 +1,14 @@
 workflow: GitFlow/v1
 mode: ContinuousDelivery
 assembly-versioning-scheme: MajorMinorPatch
-tag-prefix: v
+# GitVersion's default. This is a REGEX, not a literal, and the optional `v` is
+# load-bearing in two places: it matches the `vX.Y.Z` release tags, AND it is the
+# pattern GitVersion uses to parse the version out of a `release/X.Y.Z` branch name.
+# Narrowing it to a required `v` silently broke the second use — `release/1.6.0`
+# computed 1.5.0-rc.1 (the PREVIOUS release) and `release/9.9.9` did too, because
+# the name failed to parse and GitVersion fell back to the last tag. No error, no
+# warning, just a wrong number. See #518.
+tag-prefix: '[vV]?'
 
 branches:
   main:
