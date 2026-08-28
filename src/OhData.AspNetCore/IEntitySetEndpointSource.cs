@@ -13,6 +13,14 @@ namespace OhData;
 public sealed record AuthorizationConfig(bool Required, string? Policy, IReadOnlyList<string>? Roles);
 
 /// <summary>
+/// One <c>UseETag</c> selector, as seen at startup: <paramref name="Description"/> is the CLR
+/// property name for a direct member access (otherwise the expression text), and
+/// <paramref name="Type"/> is the selector's declared result type with any boxing conversion
+/// stripped.
+/// </summary>
+internal sealed record ETagSelectorInfo(string Description, Type Type);
+
+/// <summary>
 /// Internal contract used by OhData.AspNetCore to interrogate a profile and invoke its handlers
 /// without knowing the generic TKey/TModel types at compile time.
 /// </summary>
@@ -46,8 +54,24 @@ internal interface IEntitySetEndpointSource
     IReadOnlyList<BoundOperationDefinition> BoundActions { get; }
 
     int? MaxTop { get; }
+
+    /// <summary>
+    /// #254: ceiling on a <b>nested</b> <c>$top</c> inside a <c>$expand</c>, and the bound on how
+    /// many related entities a nested <c>$count</c> may materialize. Resolved from the profile flag /
+    /// <c>EntitySetDefaults</c> (default <c>null</c>); <c>null</c> means no ceiling. The <b>root</b>
+    /// entity set's value governs at every nesting depth (as <see cref="MaxExpansionDepth"/> does).
+    /// </summary>
+    int? MaxExpandTop { get; }
     long? MaxRequestBodyBytes { get; }
     int MaxExpansionDepth { get; }
+
+    /// <summary>
+    /// #429: maximum number of navigation expansions a request's <c>$expand</c> may contain, counted
+    /// across every level of the tree. Resolved from the profile flag / <c>EntitySetDefaults</c>
+    /// (default <c>50</c>). The <b>root</b> entity set's value governs the whole request, as
+    /// <see cref="MaxExpansionDepth"/> does.
+    /// </summary>
+    int MaxExpandBreadth { get; }
     int MaxFilterNodeCount { get; }
     int MaxOrderByNodeCount { get; }
     int MaxAnyAllExpressionDepth { get; }
@@ -58,6 +82,14 @@ internal interface IEntitySetEndpointSource
     bool OrderByEnabled { get; }
     bool SelectEnabled { get; }
     bool ExpandEnabled { get; }
+
+    /// <summary>
+    /// #313: whether a bare collection <c>$expand</c> over the resolved <see cref="MaxExpandTop"/>
+    /// pages with a <c>Nav@odata.nextLink</c> continuation instead of being rejected with <c>400</c>.
+    /// Resolved from the profile flag / <c>EntitySetDefaults</c> (default <c>false</c>). Inert unless
+    /// <see cref="MaxExpandTop"/> also resolves non-null.
+    /// </summary>
+    bool ExpandPagingEnabled { get; }
     bool CountEnabled { get; }
     bool PropertyAccessEnabled { get; }
     bool PropertyRouteDocsEnabled { get; }
@@ -85,23 +117,34 @@ internal interface IEntitySetEndpointSource
     /// computed (names unknowable — #206 pushdown is then ineligible while <see cref="HasETag"/>).
     /// </summary>
     IReadOnlyCollection<string>? ETagPropertyNames { get; }
+
+    /// <summary>
+    /// One entry per <c>UseETag</c> selector — its description and DECLARED result type — for the
+    /// startup check that rejects a selector the ETag hash cannot faithfully represent (#351).
+    /// <c>null</c> when ETags are unconfigured.
+    /// </summary>
+    IReadOnlyList<ETagSelectorInfo>? ETagSelectors { get; }
+
     RoundingMode RoundingMode { get; }
     IReadOnlyList<StructuralPropertyInfo> StructuralProperties { get; }
 
     /// <summary>
-    /// When <c>true</c>, <c>POST /{EntitySet}</c> passes the full deserialized request graph
-    /// (including nested navigation-property values) through to the <c>Post</c> handler, which
-    /// is contractually responsible for persisting it atomically (OData §11.4.2.2 — deep insert).
-    /// When <c>false</c> (the default), nested navigation-property values are stripped (set to
-    /// <c>null</c>) from the deserialized model before <c>Post</c> is invoked.
+    /// When <c>true</c>, the entity write routes pass the full deserialized request graph
+    /// (including nested navigation-property values) through to the handler, which is
+    /// contractually responsible for persisting it atomically: <c>POST /{EntitySet}</c>
+    /// (OData §11.4.2.2 — deep insert) and <c>PUT</c>/<c>PATCH /{EntitySet}({key})</c>
+    /// (OData 4.01 §11.4.3.1 — deep update). When <c>false</c> (the default), nested
+    /// navigation-property values are stripped (set to <c>null</c>) from the deserialized model
+    /// before <c>Post</c>/<c>Put</c> is invoked and are never written into the
+    /// <c>Delta&lt;TModel&gt;</c> handed to <c>Patch</c>.
     /// </summary>
-    bool AllowDeepInsert { get; }
+    bool AllowDeepWrites { get; }
 
     /// <summary>
     /// Names of every CLR property declared as a navigation property via
-    /// <c>HasOptional</c>/<c>HasRequired</c>/<c>HasMany</c> (any overload). Used by the POST
-    /// pipeline to strip nested navigation values when <see cref="AllowDeepInsert"/> is
-    /// <c>false</c>.
+    /// <c>HasOptional</c>/<c>HasRequired</c>/<c>HasMany</c> (any overload). Used by the write
+    /// pipeline (unioned with the EDM's own navigation names, #461) to withhold nested
+    /// navigation values when <see cref="AllowDeepWrites"/> is <c>false</c>.
     /// </summary>
     IReadOnlyCollection<string> NavigationPropertyNames { get; }
 
@@ -112,6 +155,16 @@ internal interface IEntitySetEndpointSource
     /// and the PATCH delta-builder filter.
     /// </summary>
     IReadOnlyCollection<string> IgnoredPropertyNames { get; }
+
+    /// <summary>
+    /// #458: the model-bound allowlist declarations this profile contributed to the
+    /// <b>shared, per-CLR-type</b> <c>EntityTypeConfiguration&lt;TModel&gt;</c> — the literal
+    /// arrays handed to <c>Filter</c>/<c>OrderBy</c>/<c>Select</c>/<c>Expand</c>, recorded at those
+    /// call sites. Consumed only by <see cref="ModelBoundAllowlists.Validate"/>, which refuses two
+    /// profiles over one model type declaring divergent ones (they would silently union). See
+    /// <see cref="ModelBoundAllowlists"/> for why per-entity-set settings are not an option.
+    /// </summary>
+    ModelBoundAllowlists ModelBoundAllowlists { get; }
 
     string KeyPropertyName { get; }
     string InvokeGetKeyString(object model);

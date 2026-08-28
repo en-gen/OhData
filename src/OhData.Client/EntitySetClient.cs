@@ -256,11 +256,89 @@ public sealed class EntitySetClient<T> where T : class
         foreach (T item in page.Items)
             yield return item;
 
+        int hops = 0;
         while (page.NextLink is not null)
         {
+            ThrowIfHopCapExceeded(++hops);
             page = await _http.GetPageByAbsoluteUrlAsync<T>(page.NextLink, ct);
             foreach (T item in page.Items)
                 yield return item;
+        }
+    }
+
+    /// <summary>
+    /// #460: the walker's termination guarantee. <c>while (NextLink is not null)</c> is driven
+    /// entirely by the server — a service that echoes the same link forever makes the loop
+    /// unbounded, and <see cref="ToListAsync"/> accumulates every page until the process dies.
+    /// Nothing about a legitimate paging run distinguishes it from that one except how long it
+    /// goes on, so a hop count is the only thing that can tell them apart.
+    /// </summary>
+    private void ThrowIfHopCapExceeded(int hops)
+    {
+        if (hops <= _options.MaxNextLinkHops) return;
+
+        throw new InvalidOperationException(
+            $"Stopped following '@odata.nextLink' for '{_entitySetName}' after " +
+            $"{_options.MaxNextLinkHops} hops. A server that keeps returning a nextLink makes this " +
+            "enumeration unbounded. Raise " +
+            $"{nameof(OhDataClientOptions)}.{nameof(OhDataClientOptions.MaxNextLinkHops)} if the " +
+            "collection genuinely has this many pages.");
+    }
+
+    /// <summary>
+    /// Executes GET and returns one page in which every entity keeps the OData control information
+    /// the server attached to it — most importantly <c>{Nav}@odata.nextLink</c> and
+    /// <c>{Nav}@odata.count</c> on an expanded collection, both of which the ordinary read path
+    /// silently discards because System.Text.Json cannot bind an <c>@</c>-bearing member.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Reach for this when a query carries <see cref="Expand(string[])"/>. A server that pages an
+    /// expanded collection hands back a <em>prefix</em> of it and says so with a nested
+    /// <c>nextLink</c>; without that annotation the truncated collection is indistinguishable from a
+    /// complete one.
+    /// </para>
+    /// <para>
+    /// Unlike <see cref="ToPageAsync"/>, this does <strong>not</strong> force <c>$count=true</c> — it
+    /// honours the builder, so call <see cref="IncludeCount"/> to populate
+    /// <see cref="ODataAnnotatedPage{T}.TotalCount"/>. That keeps the request answerable by a server
+    /// whose <c>CountEnabled</c> is off, which an unconditional <c>$count=true</c> is not.
+    /// </para>
+    /// <para>
+    /// Preserving annotations costs a buffered body and a second read of it, which is why it is a
+    /// distinct method rather than a client-wide option: nothing that does not call it pays for it.
+    /// </para>
+    /// </remarks>
+    public Task<ODataAnnotatedPage<T>> ToAnnotatedPageAsync(CancellationToken ct = default)
+        => _http.GetAnnotatedPageAsync<T>(BuildCollectionUrl(), ct);
+
+    /// <summary>
+    /// Annotation-preserving counterpart of <see cref="ToAsyncEnumerable"/>: lazily fetches all
+    /// pages by following the collection's own <c>@odata.nextLink</c>, yielding each entity together
+    /// with the control information the server attached to it.
+    /// </summary>
+    /// <remarks>
+    /// Only the collection's <em>own</em> nextLink is followed. A nested
+    /// <c>{Nav}@odata.nextLink</c> is exposed on each entry and never followed: it addresses a
+    /// different resource with a different element type, so resuming it is the caller's decision to
+    /// make with the <see cref="Uri"/> handed back.
+    /// </remarks>
+    public async IAsyncEnumerable<ODataAnnotatedEntity<T>> ToAnnotatedAsyncEnumerable(
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ODataAnnotatedPage<T> page = await _http.GetAnnotatedPageAsync<T>(BuildCollectionUrl(), ct);
+        foreach (ODataAnnotatedEntity<T> entry in page.Entries)
+            yield return entry;
+
+        int hops = 0;
+        while (page.NextLink is not null)
+        {
+            ThrowIfHopCapExceeded(++hops);
+            // OriginalString, not ToString(): a server-issued link is followed verbatim as an opaque
+            // URL, and ToString() can decode percent-escapes that were deliberately encoded.
+            page = await _http.GetAnnotatedPageByAbsoluteUrlAsync<T>(page.NextLink.OriginalString, ct);
+            foreach (ODataAnnotatedEntity<T> entry in page.Entries)
+                yield return entry;
         }
     }
 
@@ -448,22 +526,6 @@ public sealed class EntitySetClient<T> where T : class
     /// (e.g. <c>x => x.Category.Name</c>) rather than a direct access
     /// (e.g. <c>x => x.Id</c>).
     /// </summary>
-    private string ExtractDirectMember(Expression<Func<T, object?>> expr, string errorMessage)
-    {
-        Expression body = expr.Body;
-        while (body is UnaryExpression u
-            && u.NodeType is ExpressionType.Convert or ExpressionType.ConvertChecked)
-        {
-            body = u.Operand;
-        }
-
-        if (body is MemberExpression member
-            && member.Expression is ParameterExpression p
-            && p == expr.Parameters[0])
-        {
-            return ResolveMemberName(member.Member);
-        }
-
-        throw new ArgumentException(errorMessage);
-    }
+    private string ExtractDirectMember(Expression<Func<T, object?>> expr, string errorMessage) =>
+        ODataMemberName.ResolveDirectMember(expr, _options.JsonOptions.PropertyNamingPolicy, errorMessage);
 }

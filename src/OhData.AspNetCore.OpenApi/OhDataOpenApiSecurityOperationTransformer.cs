@@ -21,7 +21,12 @@ namespace OhData.AspNetCore.OpenApi;
 /// This is off by default: nothing happens until the app registers it, and it only references a
 /// scheme the app names here. OhData never defines the security <em>scheme</em> (Bearer/JWT, OAuth
 /// flows, <c>securitySchemes</c>) — that stays the app's identity setup. This transformer reflects
-/// only the <em>requirement</em> against a scheme the app already declared. Register via:
+/// only the <em>requirement</em> against a scheme the app already declared. The recommended way to
+/// opt in is the <c>securitySchemeId</c> parameter of <c>o.AddOhData(...)</c>:
+/// <code>
+/// builder.Services.AddOpenApi(o =&gt; o.AddOhData(securitySchemeId: "Bearer"));
+/// </code>
+/// To register this transformer à la carte instead, add the instance directly:
 /// <code>
 /// builder.Services.AddOpenApi(o =&gt;
 ///     o.AddOperationTransformer(new OhDataOpenApiSecurityOperationTransformer("Bearer")));

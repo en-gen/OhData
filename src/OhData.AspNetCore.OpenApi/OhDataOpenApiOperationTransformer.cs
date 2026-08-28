@@ -66,8 +66,12 @@ public sealed class OhDataOpenApiOperationTransformer : IOpenApiOperationTransfo
 
         operation.Parameters ??= new List<IOpenApiParameter>();
 
-        // Always add $top and $skip for paged collection endpoints
-        if (operation.Parameters.All(p => p.Name != "$top"))
+        // #467: $top/$skip only where the route actually applies them. This metadata is attached
+        // to five route shapes, not just the paged collection GETs -- GetById and /$count carry it
+        // too and ignore both options -- so the "always add" this replaced documented parameters
+        // the server silently drops. The decision belongs upstream, in OhDataEndpointFactory's
+        // metadata attachment, so all three companion packages stay in agreement by construction.
+        if (metadata.TopSkipSupported && operation.Parameters.All(p => p.Name != "$top"))
         {
             string topDesc = "Maximum number of items to return" +
                 (metadata.MaxTop.HasValue ? $" (server cap: {metadata.MaxTop})" : "");

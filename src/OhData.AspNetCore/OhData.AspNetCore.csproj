@@ -15,7 +15,7 @@
 		  baseline below; bump the baseline as part of each release.
 		-->
 		<EnablePackageValidation>true</EnablePackageValidation>
-		<PackageValidationBaselineVersion>1.4.0</PackageValidationBaselineVersion>
+		<PackageValidationBaselineVersion>1.5.0</PackageValidationBaselineVersion>
 	</PropertyGroup>
 
 	<ItemGroup>
@@ -37,6 +37,17 @@
 		<InternalsVisibleTo Include="OhData.AspNetCore.OpenApi" />
 		<InternalsVisibleTo Include="OhData.AspNetCore.NSwag" />
 		<InternalsVisibleTo Include="OhData.AspNetCore.Swashbuckle" />
+		<!--
+		  #389: OpenTypeKeyValidationBenchmarks measures the open-type serialize path, which is
+		  reachable only through internals — OpenTypeJsonOptions, its Build/BuildOpenComplexTypeContainerMap
+		  entry points and IsValidDynamicPropertyNameCached are all internal. The public alternative is
+		  an end-to-end HTTP request, which measures the whole pipeline and cannot isolate a per-key
+		  cost. This grant exists so the benchmark measures the SHIPPED validator rather than a copy of
+		  it — a copy is exactly the mistake that produced a 12x-wrong number for this code path once
+		  already. It widens no public API and changes no behaviour; it does add one row to the shipped
+		  assembly's metadata, so if the measurement is finished with, it can be reverted.
+		-->
+		<InternalsVisibleTo Include="OhData.Server.Benchmarks" />
 	</ItemGroup>
 
 </Project>

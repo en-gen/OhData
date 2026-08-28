@@ -1,6 +1,14 @@
 # API Versioning
 
-OhData supports multiple simultaneous registrations with independent prefixes, EDM models, and profile sets. Each registration is completely isolated - no shared state.
+OhData supports multiple simultaneous registrations, each with its own prefix, EDM model, profile
+set, and [`EntitySetDefaults`](query-options.md). What one registration exposes has no bearing on
+what another exposes — including entity set names, which may repeat freely across registrations.
+
+One thing is **not** per-registration: **a profile type belongs to exactly one registration.**
+Registrations share the host's DI container and a process-wide record of which profile types have
+been registered, so passing the same profile type to two registrations throws at call time. See
+[Sharing behaviour between versions](#sharing-behaviour-between-versions) for how to express "the
+same entity set in v1 and v2".
 
 ## Named registrations
 
@@ -11,7 +19,7 @@ builder.Services.AddOhData("v1", o => o
 
 builder.Services.AddOhData("v2", o => o
     .WithPrefix("/v2")
-    .AddEntitySetProfile<ProductProfileV1>()
+    .AddEntitySetProfile<ProductProfileV2>()      // a distinct type, also named "Products"
     .AddEntitySetProfile<CustomerProfileV2>());   // new entity set in v2
 
 app.MapOhData("v1");
@@ -26,6 +34,10 @@ GET /v2/Products       ← v2 registration
 GET /v2/Customers      ← v2 only
 ```
 
+`ProductProfileV1` and `ProductProfileV2` are different types that both set
+`EntitySetName = "Products"`. That is what puts `Products` under both prefixes: the entity set
+**name** repeats, the profile **type** does not.
+
 ## Versioning convenience helpers
 
 `AddOhDataVersion` and `MapOhDataVersion` are included in `EnGen.OhData.AspNetCore` and combine name and prefix into a single call:
@@ -35,11 +47,60 @@ GET /v2/Customers      ← v2 only
 // Microsoft.AspNetCore.Builder, so no OhData-specific using is required.
 builder.Services.AddOhDataVersion("v1", "/v1", o => o.AddEntitySetProfile<ProductProfileV1>());
 builder.Services.AddOhDataVersion("v2", "/v2", o => o
-    .AddEntitySetProfile<ProductProfileV1>()
+    .AddEntitySetProfile<ProductProfileV2>()
     .AddEntitySetProfile<CustomerProfileV2>());
 
 app.MapOhDataVersion("v1");
 app.MapOhDataVersion("v2");
+```
+
+## Sharing behaviour between versions
+
+Because a profile type can only belong to one registration, "v2's Products behaves exactly like
+v1's" is expressed by **subclassing**, not by registering the same type twice. A subclass is a
+distinct type, so it satisfies the rule while the behaviour stays declared in one place:
+
+```csharp
+public class GenreProfile : EntitySetProfile<string, Genre>
+{
+    public GenreProfile() : base(x => x.Code)
+    {
+        EntitySetName = "Genres";
+        GetAll = _ => Task.FromResult<IEnumerable<Genre>>(DbSeeder.Genres);
+    }
+}
+
+// v2 exposes the same surface — override members here as v2 diverges.
+public class GenreProfileV2 : GenreProfile { }
+```
+
+That is the shipped test bench verbatim (`OhData.TestBench.AspNetCore/Profiles.cs`), alongside a
+fully independent `MovieProfileV2` for the entity set whose v2 surface genuinely differs.
+
+**If the base profile injects services, the subclass must forward the constructor** — C# does not
+inherit constructors, so an empty `{ }` body will not compile against a base that has no
+parameterless constructor:
+
+```csharp
+public class ProductProfile : EntitySetProfile<int, Product>
+{
+    public ProductProfile(AppDbContext db) : base(x => x.Id)
+    {
+        EntitySetName = "Products";
+        GetQueryable = _ => Task.FromResult(db.Products.AsQueryable());
+    }
+}
+
+// Forwards the DbContext; profiles are resolved from DI per request (scoped).
+public class ProductProfileV2(AppDbContext db) : ProductProfile(db);
+```
+
+Registering one profile type in two registrations throws immediately, at the
+`AddEntitySetProfile` call rather than at `MapOhData()`:
+
+```
+InvalidOperationException: Profile type 'ProductProfileV1' has already been registered in a
+different OhData registration. A profile type cannot be shared across registrations.
 ```
 
 ## OpenAPI / Swagger partitioning
@@ -51,7 +112,13 @@ app.MapOhData("v1").WithOpenApi().WithGroupName("v1");
 app.MapOhData("v2").WithOpenApi().WithGroupName("v2");
 ```
 
-With Swashbuckle, add a `DocInclusionPredicate` so each endpoint appears in the correct doc:
+With Swashbuckle, add a `DocInclusionPredicate` so each endpoint appears in the correct doc. To
+have Swagger UI also show the OData query parameters on each collection GET endpoint (driven by the
+per-entity-set capability flags and `MaxTop`), call the one-line `c.AddOhData()` from the
+[`EnGen.OhData.AspNetCore.Swashbuckle`](swashbuckle.md) companion package inside the same
+`AddSwaggerGen` call — it registers both the operation filter and the schema-fidelity filter. Both
+read the same endpoint metadata regardless of which document an operation is partitioned into, so
+they apply per document without extra configuration:
 
 ```csharp
 builder.Services.AddSwaggerGen(c =>
@@ -60,36 +127,13 @@ builder.Services.AddSwaggerGen(c =>
     c.SwaggerDoc("v2", new OpenApiInfo { Title = "My API", Version = "v2" });
     c.DocInclusionPredicate((docName, apiDesc) =>
         apiDesc.GroupName is null || apiDesc.GroupName == docName);
+
+    c.AddOhData();
 });
 ```
 
-Register `OhDataSwaggerOperationFilter` (from the [`EnGen.OhData.AspNetCore.Swashbuckle`](https://www.nuget.org/packages/EnGen.OhData.AspNetCore.Swashbuckle) companion package — the core server package carries no Swashbuckle dependency) to have Swagger UI show `$filter`/`$orderby`/`$top`/`$skip`/`$select`/`$expand`/`$count`/`$search` as documented query parameters on each collection GET endpoint, driven by the per-entity-set capability flags (`FilterEnabled`, `OrderByEnabled`, etc.) and `MaxTop`:
-
-```
-dotnet add package EnGen.OhData.AspNetCore.Swashbuckle
-```
-
-```csharp
-builder.Services.AddSwaggerGen(c =>
-{
-    c.OperationFilter<OhDataSwaggerOperationFilter>();
-    c.SchemaFilter<OhDataSwaggerSchemaFilter>();
-});
-```
-
-`OhDataSwaggerSchemaFilter` (same package) omits properties excluded via
-`EntitySetProfile.Ignore(...)` from generated schemas, and renames the surviving property keys to
-OhData's response casing (PascalCase by default), so documents match the real wire shape — see
-[ignoring-properties.md](ignoring-properties.md#openapi--swagger-documents) and
-[query-options.md → JSON property casing](query-options.md#json-property-casing). Each filter is
-independent; register only the one you need, or both.
-
-Write routes get a real request-body schema and collection GET routes get a typed
-`ODataCollectionResponse<T>` response automatically, via `OhDataApiDescriptionProvider` in the
-core package - no Swashbuckle-specific setup needed beyond `AddSwaggerGen` itself. See
-[openapi.md](openapi.md#request-bodies-on-write-routes) for details (applies identically to
-Swashbuckle). `WithSummary()`/`WithDescription()` on collection GET routes are applied by
-`OhDataSwaggerOperationFilter` explicitly - see [openapi.md](openapi.md#read-path-summaries).
+See [swashbuckle.md](swashbuckle.md) for the full filter setup, what gets documented, and the
+schema-casing/`Ignore(...)` behavior.
 
 ## Default (unnamed) registration
 
@@ -105,4 +149,27 @@ app.MapOhData("v2");   // maps v2
 
 ## Startup validation
 
-Each registration independently validates for duplicate entity set names. Two profiles with the same `EntitySetName` within a single registration throw `InvalidOperationException` at startup. Duplicate names across different registrations are allowed.
+Two checks, on two different keys, at two different moments:
+
+| Check | Scope | When it fires |
+|---|---|---|
+| Duplicate `EntitySetName` | Within one registration | `MapOhData()` |
+| Duplicate profile **type** | Across **all** registrations | `AddEntitySetProfile<T>()` |
+
+Two profiles with the same `EntitySetName` in a single registration throw
+`InvalidOperationException`. The same name in *different* registrations is fine — that is how
+`/v1/Products` and `/v2/Products` coexist.
+
+The profile-type check is the cross-cutting one: the same type in two registrations throws, as does
+the same type twice in one registration. Both throw from `AddEntitySetProfile<T>()` itself, so the
+failure surfaces while services are being configured rather than at map time.
+
+> The type check is enforced by `AddEntitySetProfile<T>()`. The assembly-scanning overloads
+> (`AddProfilesFrom`, `AddProfilesFromAssemblyOf<T>`, `AddProfilesFromAssembly`) do not currently
+> apply it, so scanning the same assembly into two registrations does not throw. Do not rely on
+> that: it is an inconsistency between the two registration paths, not a supported way to share a
+> profile type.
+
+Every example on this page is executed as a test — `VersioningDocExampleTests` in
+`OhData.AspNetCore.Tests` boots each one and asserts the documented routes respond. If you change a
+snippet here, change the matching test.

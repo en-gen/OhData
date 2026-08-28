@@ -153,6 +153,24 @@ internal class GetByIdOnlyWidgetProfile : EntitySetProfile<int, Widget>
     }
 }
 
+/// <summary>
+/// #467 (F3): the same Widget model over the simple GetAll read path, with FilterEnabled on.
+/// The flag is honoured on none of this profile's routes -- neither the collection GET nor
+/// /$count has an IQueryable to apply a filter to, and both answer 400 -- so neither may
+/// advertise $filter.
+/// </summary>
+internal class GetAllFilterEnabledWidgetProfile : EntitySetProfile<int, Widget>
+{
+    private readonly List<Widget> _store = new() { new() { Id = 1, Name = "Sprocket" } };
+
+    public GetAllFilterEnabledWidgetProfile() : base(x => x.Id)
+    {
+        EntitySetName = "GetAllFilterWidgets";
+        FilterEnabled = true;
+        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store);
+    }
+}
+
 /// <summary>Plain GetQueryable collection profile used by the duplicate-parameter-guard test.</summary>
 internal class DupTopWidgetProfile : EntitySetProfile<int, Widget>
 {

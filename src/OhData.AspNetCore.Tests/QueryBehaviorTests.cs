@@ -219,13 +219,24 @@ public class QueryBehaviorTests
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
-    [Fact]
-    public async Task SkipToken_ValidBase64ButWrongLength_Returns400()
+    [Theory]
+    [InlineData("YQ%3D%3D")] // "YQ==" → 1 byte
+    [InlineData("AAA%3D")]   // "AAA=" → 2 bytes
+    [InlineData("%20")]      // a space → 0 bytes, which is ArgumentOutOfRangeException (a subclass)
+    public async Task SkipToken_ValidBase64ButWrongLength_Returns400(string token)
     {
-        // "YQ==" is valid base64 for 1 byte — BitConverter.ToInt32 needs 4 bytes
+        // All of these decode cleanly and then fail in BitConverter.ToInt32, which needs 4 bytes —
+        // an ArgumentException, NOT the FormatException that SkipToken_Corrupted_Returns400 above
+        // exercises. This is the case the reader's narrowed catch has to keep covering.
+        // (A token that is empty rather than blank never reaches the reader at all: MS's
+        // SkipTokenQueryOption ctor rejects it while ODataQueryOptions is still being built, with an
+        // ArgumentException the surrounding ODataException guard does not catch → 500. That is a
+        // pre-existing defect on a different code path and deliberately not pinned here.)
         await using TestFixture fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<LargeStoreProfile>());
-        HttpResponseMessage response = await fx.Client.GetAsync("/odata/LargeStoreWidgets?$skiptoken=YQ%3D%3D");
+        HttpResponseMessage response = await fx.Client.GetAsync("/odata/LargeStoreWidgets?$skiptoken=" + token);
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("InvalidSkipToken", json.GetProperty("error").GetProperty("code").GetString());
     }
 
     // ── M-7: $search combined with $filter ───────────────────────────────────────

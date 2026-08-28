@@ -23,7 +23,7 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
         HasMany(x => x.Lines);
         HasOptional(x => x.Customer);
 
-        GetQueryable = (_) => Task.FromResult(db.Orders.AsQueryable());
+        GetQueryable = _ => Task.FromResult<IQueryable<Order>>(db.Orders);
     }
 }
 ```
@@ -41,9 +41,8 @@ Pass a handler delegate to register a `GET /Parents({key})/Children` route:
 
 ```csharp
 HasMany(x => x.Lines,
-    getAll: (orderId, ct) =>
-        Task.FromResult<IEnumerable<OrderLine>>(
-            db.OrderLines.Where(l => l.OrderId == orderId).ToList()));
+    getAll: async (orderId, ct) =>
+        await db.OrderLines.Where(l => l.OrderId == orderId).ToListAsync(ct));
 ```
 
 This registers: `GET /odata/Orders({key})/Lines`
@@ -52,8 +51,11 @@ For single-entity navigations (`HasOptional`, `HasRequired`):
 
 ```csharp
 HasOptional(x => x.Customer,
-    get: (orderId, ct) =>
-        Task.FromResult(db.Customers.Find(order.CustomerId)));
+    get: async (orderId, ct) =>
+    {
+        var order = await db.Orders.FindAsync([orderId], ct);
+        return order is null ? null : await db.Customers.FindAsync([order.CustomerId], ct);
+    });
 ```
 
 This registers: `GET /odata/Orders({key})/Customer`
@@ -124,8 +126,16 @@ was declared with a delegate** (#206):
 > SQL-JOIN expansion for free. See
 > [`$expand` pushdown](query-options.md#expand-pushdown-delegate-less-navigations-join-automatically-206)
 > for eligibility (including multi-level nested `$expand` and `$levels`) and the silent-fallback rules
-> (non-EF source, a delegate-backed/cyclic level, `$search`/`$compute`/`$apply` → the navigation stays
-> EDM-only for that request, never a `500`).
+> (non-EF source, a delegate-backed level, a level that is BOTH cyclic AND not member-init-projectable
+> (#323 — a plain bidirectional relationship pushes down fine), `$search`/`$compute`/`$apply` → the
+> navigation stays EDM-only for that request — the framework doesn't load it itself, but doesn't
+> guarantee it empty either: whatever the handler's own query already put there (a non-EF
+> `GetQueryable`'s eager load, a `GetAll` handler that populated it by hand) still serializes; never a
+> `500`). That "never a `500`" now holds even for a tracked, EF-relationship-fixed-up graph that is
+> genuinely cyclic (self-referential or bidirectional): as of #325/#326, response serialization
+> itself is bounded by the `$expand` clause (a `SerializeBounded` walker), never by the object graph,
+> so a reference cycle among EDM-declared navigations is structurally unreachable — including on a
+> plain `GET` with no `$expand` at all.
 
 For a **delegate-backed** navigation, what differs is **how many times the handler is called**, and
 it depends on which overload you registered:
@@ -159,18 +169,18 @@ For many-to-many or reference relationships, OhData supports `$ref` link managem
 
 ```csharp
 HasMany(x => x.Tags,
-    getAll: (productId, ct) => Task.FromResult<IEnumerable<Tag>>(
-        db.ProductTags.Where(pt => pt.ProductId == productId).Select(pt => pt.Tag).ToList()),
-    addRef: (productId, tagId, ct) =>
+    getAll: async (productId, ct) => await db.ProductTags
+        .Where(pt => pt.ProductId == productId).Select(pt => pt.Tag).ToListAsync(ct),
+    addRef: async (productId, tagId, ct) =>
     {
         db.ProductTags.Add(new ProductTag { ProductId = productId, TagId = int.Parse(tagId) });
-        return db.SaveChangesAsync(ct);
+        await db.SaveChangesAsync(ct);
     },
-    removeRef: (productId, tagId, ct) =>
+    removeRef: async (productId, tagId, ct) =>
     {
-        var link = db.ProductTags.Find(productId, int.Parse(tagId));
+        var link = await db.ProductTags.FindAsync([productId, int.Parse(tagId)], ct);
         if (link is not null) db.ProductTags.Remove(link);
-        return db.SaveChangesAsync(ct);
+        await db.SaveChangesAsync(ct);
     });
 ```
 
@@ -201,6 +211,10 @@ This registers:
 
 The `addRef`/`setRef` handler receives the raw `@odata.id` string from the request body (e.g. `"Categories(3)"`). Parse the key from it as needed.
 
+`@odata.id` must be a JSON **string**. A missing member, or one whose value is a number, boolean,
+object, array or `null`, returns `400 Bad Request` with the OData error envelope and the handler is
+never invoked (#455) — a `null` used to reach the handler as an empty string under a `204`.
+
 > **HTTP method note:** OData 4.0 §11.4.6 requires `POST /$ref` for collection navigations (adding a link)
 > and `PUT /$ref` for single-value navigations (replacing the link). OhData enforces this automatically.
 
@@ -212,8 +226,8 @@ to one that already exists (`$ref` above is for the latter; OData §11.4.2.1):
 
 ```csharp
 HasMany(x => x.Lines,
-    getAll: (orderId, ct) =>
-        Task.FromResult<IEnumerable<OrderLine>>(db.OrderLines.Where(l => l.OrderId == orderId).ToList()),
+    getAll: async (orderId, ct) =>
+        await db.OrderLines.Where(l => l.OrderId == orderId).ToListAsync(ct),
     post: async (orderId, line, ct) =>
     {
         if (!await db.Orders.AnyAsync(o => o.Id == orderId, ct)) return null; // parent not found → 404

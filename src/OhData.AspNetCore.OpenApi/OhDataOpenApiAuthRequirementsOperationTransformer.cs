@@ -18,7 +18,12 @@ namespace OhData.AspNetCore.OpenApi;
 /// Off by default and layered on top of the baseline security reflection
 /// (<see cref="OhDataOpenApiSecurityOperationTransformer"/>): it does nothing until registered.
 /// It only describes what OhData itself configured — it never defines the security scheme or
-/// identity. Register via:
+/// identity. The recommended way to opt in is the <c>authRequirements</c> parameter of
+/// <c>o.AddOhData(...)</c>:
+/// <code>
+/// builder.Services.AddOpenApi(o =&gt; o.AddOhData(authRequirements: AuthRequirementDisclosure.Kinds));
+/// </code>
+/// To register this transformer à la carte instead, add the instance directly:
 /// <code>
 /// builder.Services.AddOpenApi(o =&gt;
 ///     o.AddOperationTransformer(

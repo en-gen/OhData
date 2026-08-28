@@ -11,24 +11,52 @@ dotnet add package EnGen.OhData.AspNetCore.OpenApi
 
 ## Registration
 
+The recommended one-liner is `o.AddOhData()`. It is the canonical wiring recipe — you do not need
+to know the transformer class names:
+
 ```csharp
 using OhData.AspNetCore.OpenApi;
 
-builder.Services.AddOpenApi(o =>
-{
-    o.AddOperationTransformer<OhDataOpenApiOperationTransformer>();
-    o.AddSchemaTransformer<OhDataOpenApiSchemaTransformer>();
-});
+builder.Services.AddOpenApi(o => o.AddOhData());
 
 // ...
 
 app.MapOpenApi();
 ```
 
-The operation transformer documents the OData query parameters; the schema transformer keeps
-generated schemas honest for profiles that use `Ignore(...)` (see
-[below](#ignored-properties-omitted-from-schemas)). Each is independent — register only the one
-you need, or both.
+This registers **both** the operation transformer (documents the OData query parameters) and the
+schema transformer (keeps generated schemas honest for profiles that use `Ignore(...)` — see
+[below](#ignored-properties-omitted-from-schemas)).
+
+To also surface OhData's per-operation authorization in the document (#219/#220), pass the opt-in
+parameters — `securitySchemeId` emits an operation-level `security` requirement plus `401`/`403`
+responses referencing a scheme your app already defines, and `authRequirements` appends a
+human-readable requirements section to each secured operation's description:
+
+```csharp
+builder.Services.AddOpenApi(o => o.AddOhData(
+    authRequirements: AuthRequirementDisclosure.Kinds,
+    securitySchemeId: "Bearer"));
+```
+
+Both default to off (`null`). See [authorization.md](authorization.md) for the auth-reflection
+boundary — OhData references the scheme by id but never defines it.
+
+### À la carte
+
+Each transformer is independent. To register only one, call it directly instead of `AddOhData()`:
+
+```csharp
+builder.Services.AddOpenApi(o =>
+{
+    o.AddOperationTransformer<OhDataOpenApiOperationTransformer>();
+    o.AddSchemaTransformer<OhDataOpenApiSchemaTransformer>();
+});
+```
+
+The opt-in auth transformers have à la carte equivalents too —
+`o.AddOperationTransformer(new OhDataOpenApiSecurityOperationTransformer("Bearer"))` and
+`o.AddOperationTransformer(new OhDataOpenApiAuthRequirementsOperationTransformer(AuthRequirementDisclosure.Kinds))`.
 
 ## What gets documented
 
@@ -38,13 +66,27 @@ query parameters to the generated OpenAPI document driven by the entity set's ca
 
 | Parameter | Added when |
 |---|---|
-| `$top` / `$skip` | Always, once per operation (paged collection endpoints) |
+| `$top` / `$skip` | `TopSkipSupported` - the three collection GET routes, once per operation |
 | `$filter` | `FilterEnabled` |
 | `$orderby` | `OrderByEnabled` |
 | `$select` | `SelectEnabled` |
 | `$expand` | `ExpandEnabled` |
-| `$count` | `CountEnabled` |
-| `$search` | a `Search` handler is configured |
+| `$count` | `CountEnabled` - the `$count` **option** (`$count=true`), not the `/$count` route |
+| `$search` | a `Search` handler is configured (`GetQueryable`/`GetAll` collection routes only) |
+
+Every field means *"this route honours this option"*. That is not a nicety: the metadata is
+attached to five route shapes, not only the paged collection GETs, so a field read as "this route
+is of kind X" produces a document that promises what the server drops. Both halves of #467 were
+that mistake. `$top`/`$skip` used to be added on metadata *presence* alone, which documented paging
+on `GET /{EntitySet}({key})` (answers with the whole entity, drops both) and on
+`GET /{EntitySet}/$count` (counts the whole set, drops both); and `/$count` set `CountEnabled` to
+mean "this route **is** a count" while the transformers read it as "this route documents the
+`$count` option", so a `$count` parameter appeared on a route that ignores it. `/$count` likewise
+advertises `$filter` only when the profile has a queryable source - on a `GetAll`-only profile that
+route answers `400` for any `$filter` regardless of the flag.
+
+The decision lives upstream in `OhDataEndpointFactory`'s metadata attachment, not in the
+transformers, which is why all three companion packages agree by construction.
 
 The `$top` parameter's description includes the entity set's `MaxTop` value when one is
 configured, so consumers of the generated document see the server-enforced page-size cap.
@@ -139,7 +181,7 @@ their respective docs) since neither doc stack surfaces it automatically.
 ## Same convention as the Swashbuckle companion
 
 This package is the `Microsoft.AspNetCore.OpenApi` counterpart to
-[`EnGen.OhData.AspNetCore.Swashbuckle`](versioning.md#openapi--swagger-partitioning) (see
-[versioning.md](versioning.md) for the Swashbuckle `IOperationFilter` equivalent). Both packages
-read the same `OhDataQueryOptionsMetadata` endpoint metadata and apply the same gating rules, so
-switching between the two OpenAPI generation pipelines does not change what gets documented.
+[`EnGen.OhData.AspNetCore.Swashbuckle`](swashbuckle.md) (see [swashbuckle.md](swashbuckle.md) for
+the Swashbuckle `IOperationFilter`/`ISchemaFilter` equivalents). Both packages read the same
+`OhDataQueryOptionsMetadata` endpoint metadata and apply the same gating rules, so switching
+between the two OpenAPI generation pipelines does not change what gets documented.

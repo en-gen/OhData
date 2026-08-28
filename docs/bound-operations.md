@@ -16,21 +16,26 @@ Register with `BindFunction` / `BindAction` inside the profile constructor. The 
 ```csharp
 public class ProductProfile : EntitySetProfile<int, Product>
 {
-    public ProductProfile() : base(x => x.Id)
+    private readonly AppDbContext _db;
+
+    public ProductProfile(AppDbContext db) : base(x => x.Id)
     {
+        _db = db;   // named-method handlers below capture it via the field
+
         BindFunction(GetCheapest);      // GET /Products/GetCheapest?maxPrice=10.00
         BindAction(ApplyDiscount);      // POST /Products/ApplyDiscount  { "percent": 10 }
 
-        GetAll = (ct) => Task.FromResult<IEnumerable<Product>>(store);
+        GetAll = async (ct) => await _db.Products.ToListAsync(ct);
     }
 
-    private Task<IEnumerable<Product>> GetCheapest(decimal maxPrice, CancellationToken ct) =>
-        Task.FromResult(store.Where(p => p.Price <= maxPrice));
+    private async Task<IEnumerable<Product>> GetCheapest(decimal maxPrice, CancellationToken ct) =>
+        await _db.Products.Where(p => p.Price <= maxPrice).ToListAsync(ct);
 
-    private Task ApplyDiscount(decimal percent, CancellationToken ct)
+    private async Task ApplyDiscount(decimal percent, CancellationToken ct)
     {
-        foreach (var p in store) p.Price *= (1 - percent / 100);
-        return Task.CompletedTask;
+        var products = await _db.Products.ToListAsync(ct);
+        foreach (var p in products) p.Price *= (1 - percent / 100);
+        await _db.SaveChangesAsync(ct);
     }
 }
 ```
@@ -49,23 +54,30 @@ Register with `BindEntityFunction` / `BindEntityAction`. The handler's first par
 ```csharp
 public class OrderProfile : EntitySetProfile<Guid, Order>
 {
-    public OrderProfile() : base(x => x.Id)
+    private readonly AppDbContext _db;
+
+    public OrderProfile(AppDbContext db) : base(x => x.Id)
     {
+        _db = db;   // named-method handlers below capture it via the field
+
         BindEntityFunction(GetLineCount);  // GET /Orders(id)/GetLineCount
         BindEntityAction(Cancel);          // POST /Orders(id)/Cancel
 
-        GetById = (id, ct) => Task.FromResult(store.Find(id));
+        GetById = (id, ct) => _db.Orders.FirstOrDefaultAsync(o => o.Id == id, ct);
     }
 
     // First param is the key - the framework extracts it from the URL
-    private Task<int> GetLineCount(Guid orderId, CancellationToken ct) =>
-        Task.FromResult(store.Find(orderId)?.Lines.Count ?? 0);
+    private async Task<int> GetLineCount(Guid orderId, CancellationToken ct) =>
+        await _db.Orders.Where(o => o.Id == orderId).Select(o => o.Lines.Count).FirstOrDefaultAsync(ct);
 
-    private Task Cancel(Guid orderId, CancellationToken ct)
+    private async Task Cancel(Guid orderId, CancellationToken ct)
     {
-        var order = store.Find(orderId);
-        if (order is not null) order.Status = "Cancelled";
-        return Task.CompletedTask;
+        var order = await _db.Orders.FirstOrDefaultAsync(o => o.Id == orderId, ct);
+        if (order is not null)
+        {
+            order.Status = "Cancelled";
+            await _db.SaveChangesAsync(ct);
+        }
     }
 }
 ```
@@ -101,8 +113,8 @@ If the handler method includes a `CancellationToken` as its last parameter, the 
 Mark a parameter as optional with a default value:
 
 ```csharp
-private Task<IEnumerable<Product>> GetCheapest(decimal maxPrice = 100m, CancellationToken ct = default) =>
-    Task.FromResult(store.Where(p => p.Price <= maxPrice));
+private async Task<IEnumerable<Product>> GetCheapest(decimal maxPrice = 100m, CancellationToken ct = default) =>
+    await _db.Products.Where(p => p.Price <= maxPrice).ToListAsync(ct);
 ```
 
 Optional parameters and their defaults are reflected in `$metadata`.
@@ -170,7 +182,19 @@ do **not** get any of this: the handler's result is returned as a bare JSON body
 null ? Results.Ok(result) : Results.NoContent()`). This asymmetry is a known post-1.0 cleanup
 candidate, not a bug fix planned for this release — treat unbound-operation responses as
 unenveloped JSON when writing a client against them. Unbound operations are registered in the EDM
-as `FunctionImport`/`ActionImport` and appear in `GET /$metadata` and the service document.
+as `FunctionImport`/`ActionImport` and appear in `GET /$metadata`.
+
+The **service document** lists only what can be invoked with nothing but its name (#468), and it is
+generated from the same EDM container `$metadata` is written from, so the two cannot disagree:
+
+- a **parameterless** function import carries `IncludeInServiceDocument="true"` in the CSDL and is
+  listed with `"kind": "FunctionImport"`;
+- a **parameterized** function import clears the flag and is omitted. Claiming otherwise is not
+  merely inaccurate, it is invalid CSDL — `EdmValidator` flags
+  `FunctionImportWithParameterShouldNotBeIncludedInServiceDocument` per CSDL 4.0 §13.6, and OhData
+  now runs that validator at `MapOhData()`;
+- an **action import** is never listed. It is not GET-addressable, and CSDL gives it no
+  `IncludeInServiceDocument` attribute at all.
 
 Assembly-scanning registration (`AddProfilesFrom`/`AddProfilesFromAssemblyOf`/`AddProfilesFromAssembly`) is documented in [docs/architecture.md](architecture.md#registering-profiles).
 

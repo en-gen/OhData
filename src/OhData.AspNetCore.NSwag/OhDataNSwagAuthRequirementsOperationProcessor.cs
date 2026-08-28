@@ -16,7 +16,13 @@ namespace OhData.AspNetCore.NSwag;
 /// Off by default and layered on top of the baseline security reflection
 /// (<see cref="OhDataNSwagSecurityOperationProcessor"/>): it does nothing until added to the
 /// document's operation processors. It only describes what OhData itself configured — it never
-/// defines the security scheme or identity. Register via:
+/// defines the security scheme or identity. The recommended way to opt in is the
+/// <c>authRequirements</c> parameter of <c>s.AddOhData(sp, ...)</c>:
+/// <code>
+/// builder.Services.AddOpenApiDocument((s, sp) =&gt;
+///     s.AddOhData(sp, authRequirements: AuthRequirementDisclosure.Kinds));
+/// </code>
+/// To register this processor à la carte instead, add the instance directly:
 /// <code>
 /// builder.Services.AddOpenApiDocument(s =&gt;
 ///     s.OperationProcessors.Add(

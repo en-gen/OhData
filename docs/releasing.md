@@ -1,6 +1,6 @@
 # Releasing OhData to NuGet
 
-The publish pipeline is [`.github/workflows/publish.yml`](../.github/workflows/publish.yml): it fires when a
+The publish pipeline is [`.github/workflows/publish.yml`](https://github.com/en-gen/OhData/blob/develop/.github/workflows/publish.yml): it fires when a
 GitHub Release is **published**, validates the release tag against the GitVersion-computed version, builds,
 runs all test suites, packs every published package (`EnGen.OhData.AspNetCore`, `EnGen.OhData.Client`, and
 the `Swashbuckle`/`OpenApi`/`NSwag` companions, each with `.snupkg` symbols), runs a package-quality gate,
@@ -33,6 +33,30 @@ published release — so every pack is diffed against that shipped API surface a
 changes fail the build. **Bump the baseline on all packable csproj files as part of each release** (the
 release-prep PR), and add one to newly published packages after their first release.
 
+**Re-evaluate `CompatibilitySuppressions.xml` in the same PR as the baseline bump.** A suppression
+exists to bridge *one* release — it records a diff against the old baseline. Once the baseline moves
+past the release that shipped that diff, the entry is dead: the new baseline already contains the new
+surface, so the diagnostic can no longer fire and the suppression only hides *future* breaks to the
+same target. Leaving them behind is how #376 happened (68 entries for a namespace removal
+survived a release that had already legitimised it). The mechanical check is to delete the
+suppression files, pack, and re-add only what still errors:
+
+```bash
+# ApiCompat is incremental — it will silently skip if the semaphore is current.
+find src -name "Microsoft.NET.ApiCompat.ValidatePackage.semaphore" -delete
+dotnet pack src/OhData.sln -c Release
+```
+
+That `find` is not optional. `RunPackageValidation` is gated on
+`obj/<Config>/Microsoft.NET.ApiCompat.ValidatePackage.semaphore`, and on a second pack MSBuild logs
+`Skipping target "RunPackageValidation" because all output files are up-to-date` — a clean pack that
+validated nothing looks exactly like a clean pack that passed. CI is unaffected (it always builds
+from a cold `obj/`); this only bites local verification.
+
+Note what package validation does **not** cover: it compares API *shape* only. A changed default
+value, a changed status code, or any other behavioural break passes it silently. ApiCompat green is
+not evidence that a release is non-breaking — the CHANGELOG and the test suite are.
+
 ## One-time setup
 
 Publishing uses **nuget.org Trusted Publishing** (OIDC) — no API key, no repository secret to store
@@ -56,20 +80,47 @@ The workflow side is already wired: `permissions: id-token: write` on the publis
 
 ## Release procedure (GitFlow + GitVersion)
 
-GitVersion ([`GitVersion.yml`](../GitVersion.yml), `GitFlow/v1`) computes versions from branch topology.
+GitVersion ([`GitVersion.yml`](https://github.com/en-gen/OhData/blob/develop/GitVersion.yml), `GitFlow/v1`) computes versions from branch topology.
 `develop` computes `X.Y.Z-alpha.N`; the **release version is carried by a `release/X.Y.Z` branch name**.
 A direct `develop -> main` merge computes the wrong version and the workflow's tag-validation step will
 reject the release.
 
+> **`tag-prefix` in `GitVersion.yml` is a regex, and it must stay optional (`[vV]?`) — #518.** GitVersion
+> uses that same pattern for two different jobs: matching the `vX.Y.Z` release tags, *and* parsing the
+> version out of a `release/X.Y.Z` branch name. Pinning it to a required `v` keeps the tags working while
+> silently breaking the branch names — `release/1.6.0` computed `1.5.0-rc.1`, the **previous** release,
+> and `release/9.9.9` computed the same, because the name failed to parse and GitVersion fell back to the
+> last tag. No error, no warning. Measured on GitVersion 6.8.2:
+>
+> | branch | `tag-prefix: v` | `tag-prefix: '[vV]?'` |
+> |---|---|---|
+> | `release/1.6.0` | `1.5.0-rc.1` ❌ | `1.6.0-rc.1` ✅ |
+> | `release/1.5.1` | `1.5.0-rc.1` ❌ | `1.5.1-rc.1` ✅ |
+> | `main` @ tag `v1.5.0` | `1.5.0` | `1.5.0` — tags unaffected |
+>
+> `increment: None` on the `release:` branch is also load-bearing: it keeps the branch-name version
+> authoritative. **Do not "fix" it to `Minor`** — that silently turns `release/1.5.1` into `1.6.0-rc.1`.
+>
+> To check a release branch before opening the PR: `dotnet-gitversion . /nocache` — from PowerShell,
+> **not Git Bash**, where MSYS path conversion rewrites `/nocache` into a filesystem path and the flag is
+> silently dropped, so every run returns the same misleading answer.
+
 1. Update `CHANGELOG.md`: retitle the pending section to `## [X.Y.Z] - <today>` and leave a fresh empty
    `## [Unreleased]` above it. Merge via PR to `develop` as usual.
-2. Create the release branch: `git checkout -b release/X.Y.Z origin/develop && git push -u origin release/X.Y.Z`.
-3. Open a PR from `release/X.Y.Z` to **`main`** and merge it once green.
-4. Create a GitHub Release targeting `main` with tag `vX.Y.Z` (Releases > Draft a new release > publish).
+2. Docs-site gate: confirm this release's `docs-site/` and `docs/` reflect the API and features shipping
+   in `X.Y.Z` (renamed/removed symbols, new options), `docfx docs-site/docfx.json` builds with **zero
+   warnings**, and the stale-API scan passes. The scan and docfx build run automatically on the release
+   PR via [`.github/workflows/docs.yml`](https://github.com/en-gen/OhData/blob/develop/.github/workflows/docs.yml)
+   (`pull_request` trigger) — if it flags a removed/renamed token, update the docs or extend the denylist
+   in that workflow. Publishing the Release then rebuilds and deploys the site from the release commit, so
+   the live site always matches the latest release.
+3. Create the release branch: `git checkout -b release/X.Y.Z origin/develop && git push -u origin release/X.Y.Z`.
+4. Open a PR from `release/X.Y.Z` to **`main`** and merge it once green.
+5. Create a GitHub Release targeting `main` with tag `vX.Y.Z` (Releases > Draft a new release > publish).
    Paste the CHANGELOG section as the release notes.
-5. The `Publish to NuGet` workflow runs automatically. If the tag-validation step fails, the tag does not
+6. The `Publish to NuGet` workflow runs automatically. If the tag-validation step fails, the tag does not
    match what GitVersion computed on `main` — do not force it; fix the branch topology.
-6. Verify: package pages render (README, license, version) at
+7. Verify: package pages render (README, license, version) at
    `https://www.nuget.org/packages/EnGen.OhData.AspNetCore`, `.../EnGen.OhData.Client`,
    `.../EnGen.OhData.AspNetCore.Swashbuckle`, `.../EnGen.OhData.AspNetCore.OpenApi`, and
    `.../EnGen.OhData.AspNetCore.NSwag`;
@@ -77,8 +128,8 @@ reject the release.
    the NuGet symbol server; the GitHub Release page shows 10 attached assets (a `.nupkg` and a
    `.snupkg` per package, uploaded automatically by the workflow); and confirm build provenance with
    `gh attestation verify` (see below).
-7. Close the release branch out into `develop`. The release branch is merge-committed into **both**
-   `main` (step 3's PR) and `develop` — after the Release is published:
+8. Close the release branch out into `develop`. The release branch is merge-committed into **both**
+   `main` (step 4's PR) and `develop` — after the Release is published:
    - (a) Sync main back into the release branch: `git checkout release/X.Y.Z && git pull --ff-only &&
      git merge origin/main -m "chore: sync main into release/X.Y.Z" && git push`. This picks up
      main's merge commit (which the `vX.Y.Z` tag points at) and any hotfix that landed on main since

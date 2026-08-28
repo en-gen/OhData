@@ -12,18 +12,38 @@ using Xunit;
 namespace OhData.AspNetCore.Tests;
 
 // Parent entity: ignores a primitive (CostBasis) and a complex property (Audit).
+//
+// #398: THIS FIXTURE CARRIES AN OPEN COMPLEX TYPE ON PURPOSE (IgnSpec, below), and that is the
+// point of it. #395's open-type suite was green while shipping a CRITICAL defect because every
+// fixture in it was green-field — a fresh model built around a bag, asserting the bag worked. None
+// asserted that an EXISTING feature still worked in the PRESENCE of a bag. So the rule is now: an
+// open-type fixture is an existing feature's fixture with a container added, and the original
+// assertions stay. Every Ignore() assertion in this file therefore runs against a registration
+// where OpenTypesActive is TRUE, which is what makes them meaningful as containment tests: the
+// mechanism Ignore() is built on (removing a member in a TypeInfoResolver modifier) is exactly the
+// mechanism extension data uses to CAPTURE a removed member.
 public sealed class IgnProduct
 {
     public int Id { get; set; }
     public string Name { get; set; } = "";
     public decimal CostBasis { get; set; }
     public IgnAudit? Audit { get; set; }
+    public IgnSpec? Spec { get; set; }
     public List<IgnTag>? Tags { get; set; }
 }
 
 public sealed class IgnAudit
 {
     public string CreatedBy { get; set; } = "";
+}
+
+// The container. ODataConventionModelBuilder infers a dynamic-property dictionary from the
+// IDictionary<string, object?> member, marks IgnSpec OpenType="true" and omits Extras from the
+// declared properties — so this type is an OData open complex type with no attribute anywhere.
+public sealed class IgnSpec
+{
+    public string Material { get; set; } = "";
+    public IDictionary<string, object?>? Extras { get; set; }
 }
 
 // Navigation child with its own profile ignoring InternalCode — proves $expand-nested hiding.
@@ -52,6 +72,11 @@ internal static class IgnData
             Name = "Widget",
             CostBasis = 8.5m,
             Audit = new IgnAudit { CreatedBy = "internal-user" },
+            Spec = new IgnSpec
+            {
+                Material = "steel",
+                Extras = new Dictionary<string, object?> { ["finish"] = "matte" },
+            },
         },
         new IgnProduct { Id = 2, Name = "Gadget", CostBasis = 12.0m },
     };
@@ -66,6 +91,20 @@ internal static class IgnData
 public sealed class IgnProductProfile : EntitySetProfile<int, IgnProduct>
 {
     // Captures what the handlers actually received, for binding assertions.
+    //
+    // #484 SWEEP — PROCESS-WIDE STATE, RESET-THEN-ASSERTED BY TWO CLASSES. These three are set to
+    // null and then asserted against by IgnorePropertyIntegrationTests (this file) AND by
+    // OpenTypeIgnoreContainmentTests, which additionally clears two of them from its own
+    // InitializeAsync. That is #484's pattern exactly: a reset in one class can land inside the
+    // other's reset-to-assert window. Both classes are therefore pinned into one xUnit collection
+    // (IgnProductCaptureCollection) so xUnit serialises them.
+    //
+    // The COLLECTION rather than #484's preferred per-fixture instance, deliberately and only here:
+    // IgnProductProfile is registered from three files across six call sites, so injecting a capture
+    // object would mean threading a singleton registration through every one of them — a missed site
+    // being a request-time DI failure — for a fixture that is not the one #484 is about. The
+    // structural fix stays available; this is the cheap half of it. If a third class ever asserts on
+    // these fields, give it the collection attribute too, or do the injection properly.
     internal static IgnProduct? LastPosted;
     internal static IgnProduct? LastPut;
     internal static IReadOnlyList<string>? LastPatchChangedNames;
@@ -125,6 +164,18 @@ public sealed class IgnControlProfile : EntitySetProfile<int, IgnControl>
     }
 }
 
+/// <summary>
+/// #484 sweep: the xUnit collection that serialises every test class asserting on
+/// <see cref="IgnProductProfile"/>'s static write captures. Membership is the whole contract — a
+/// class outside it can reset those fields while a class inside it is between its own reset and its
+/// assertion, which is the race #484 documents.
+/// </summary>
+public static class IgnProductCaptureCollection
+{
+    internal const string Name = "IgnProductProfile write captures";
+}
+
+[Collection(IgnProductCaptureCollection.Name)]
 public class IgnorePropertyIntegrationTests : IAsyncLifetime
 {
     private TestFixture _fx = null!;

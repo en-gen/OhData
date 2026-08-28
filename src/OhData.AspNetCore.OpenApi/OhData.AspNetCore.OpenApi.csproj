@@ -15,7 +15,7 @@
 		-->
 		<RootNamespace>OhData.AspNetCore.OpenApi</RootNamespace>
 		<EnablePackageValidation>true</EnablePackageValidation>
-		<PackageValidationBaselineVersion>1.4.0</PackageValidationBaselineVersion>
+		<PackageValidationBaselineVersion>1.5.0</PackageValidationBaselineVersion>
 	</PropertyGroup>
 
 	<ItemGroup>
@@ -37,7 +37,7 @@
 		  vulnerable resolution. Remove when Microsoft.AspNetCore.OpenApi raises
 		  its own floor past 2.7.4.
 		-->
-		<PackageReference Include="Microsoft.OpenApi" Version="[2.7.5, 3)" />
+		<PackageReference Include="Microsoft.OpenApi" Version="[2.12.0, 3.0.0)" />
 	</ItemGroup>
 
 </Project>

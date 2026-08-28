@@ -9,7 +9,8 @@ using Xunit;
 namespace OhData.AspNetCore.Tests;
 
 /// <summary>
-/// #202: tunable query-complexity guards. <c>MaxExpansionDepth</c> (default 12) is now enforced —
+/// #202: tunable query-complexity guards. <c>MaxExpansionDepth</c> (default 3, and since #328
+/// hard-capped at <c>EntitySetDefaults.MaxExpansionDepthCeiling</c>) is enforced —
 /// a <c>$expand</c> nesting deeper than the limit is rejected with 400 rather than silently
 /// truncated — and the <c>$filter</c>/<c>$orderby</c> node-count ceilings are configurable per
 /// profile (or globally via <c>WithDefaults</c>).
