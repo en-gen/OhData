@@ -81,9 +81,51 @@ The workflow side is already wired: `permissions: id-token: write` on the publis
 ## Release procedure (GitFlow + GitVersion)
 
 GitVersion ([`GitVersion.yml`](https://github.com/en-gen/OhData/blob/develop/GitVersion.yml), `GitFlow/v1`) computes versions from branch topology.
-`develop` computes `X.Y.Z-alpha.N`; the **release version is carried by a `release/X.Y.Z` branch name**.
+`develop` computes `X.Y.Z-alpha.N`; the **release version is carried by a `release/vX.Y.Z` branch name**.
 A direct `develop -> main` merge computes the wrong version and the workflow's tag-validation step will
 reject the release.
+
+> **`tag-prefix` in `GitVersion.yml` is a regex, and it must stay optional (`[vV]?`) — #518.** GitVersion
+> uses that same pattern for two different jobs: matching the `vX.Y.Z` release tags, *and* parsing the
+> version out of a `release/X.Y.Z` branch name. Pinning it to a required `v` keeps the tags working while
+> silently breaking the branch names — `release/1.6.0` computed `1.5.0-rc.1`, the **previous** release,
+> and `release/9.9.9` computed the same, because the name failed to parse and GitVersion fell back to the
+> last tag. No error, no warning. Measured on GitVersion 6.8.2:
+>
+> | branch | `tag-prefix: v` | `tag-prefix: '[vV]?'` |
+> |---|---|---|
+> | `release/1.6.0` | `1.5.0-rc.1` ❌ | `1.6.0-rc.1` ✅ |
+> | `release/1.5.1` | `1.5.0-rc.1` ❌ | `1.5.1-rc.1` ✅ |
+> | `main` @ tag `v1.5.0` | `1.5.0` | `1.5.0` — tags unaffected |
+>
+> `increment: None` on the `release:` branch is also load-bearing: it keeps the branch-name version
+> authoritative. **Do not "fix" it to `Minor`** — that silently turns `release/1.5.1` into `1.6.0-rc.1`.
+>
+> To check a release branch before opening the PR: `dotnet-gitversion . /nocache` — from PowerShell,
+> **not Git Bash**, where MSYS path conversion rewrites `/nocache` into a filesystem path and the flag is
+> silently dropped, so every run returns the same misleading answer.
+
+> **The `v` in `release/vX.Y.Z` is load-bearing — do not drop it (#518).** `GitVersion.yml` sets
+> `tag-prefix: v`, and GitVersion applies that same prefix when it parses the version out of a release
+> branch's name. Without it the name fails to parse, `VersionInBranchNameVersionStrategy` contributes
+> nothing, and GitVersion silently falls back to the last tag plus the branch's increment — no error,
+> no warning, just a wrong number. Measured on GitVersion 6.8.2, cutting from this repo's `develop`:
+>
+> | branch | computed |
+> |---|---|
+> | `release/1.6.0` | `1.5.0-rc.1` — the **previous** release |
+> | `release/9.9.9` | `1.5.0-rc.1` — the name is ignored entirely |
+> | `release/v1.6.0` | `1.6.0-rc.1` ✅ |
+> | `release/v1.5.1` | `1.5.1-rc.1` ✅ (a patch release is *not* bumped to a minor) |
+> | `release/v2.0.0` | `2.0.0-rc.1` ✅ |
+>
+> `increment: None` on the `release:` branch config is what keeps the branch-name version authoritative
+> for patch and major releases alike. **Do not "fix" it to `Minor`** — that was tried and it silently
+> turns `release/v1.5.1` into `1.6.0-rc.1`.
+>
+> To check a release branch before opening the PR: `dotnet-gitversion . /nocache` — from PowerShell,
+> **not Git Bash**, where MSYS path conversion rewrites `/nocache` and `/config` into filesystem paths
+> and the flags are silently dropped.
 
 1. Update `CHANGELOG.md`: retitle the pending section to `## [X.Y.Z] - <today>` and leave a fresh empty
    `## [Unreleased]` above it. Merge via PR to `develop` as usual.
@@ -94,8 +136,8 @@ reject the release.
    (`pull_request` trigger) — if it flags a removed/renamed token, update the docs or extend the denylist
    in that workflow. Publishing the Release then rebuilds and deploys the site from the release commit, so
    the live site always matches the latest release.
-3. Create the release branch: `git checkout -b release/X.Y.Z origin/develop && git push -u origin release/X.Y.Z`.
-4. Open a PR from `release/X.Y.Z` to **`main`** and merge it once green.
+3. Create the release branch: `git checkout -b release/vX.Y.Z origin/develop && git push -u origin release/vX.Y.Z`.
+4. Open a PR from `release/vX.Y.Z` to **`main`** and merge it once green.
 5. Create a GitHub Release targeting `main` with tag `vX.Y.Z` (Releases > Draft a new release > publish).
    Paste the CHANGELOG section as the release notes.
 6. The `Publish to NuGet` workflow runs automatically. If the tag-validation step fails, the tag does not
@@ -110,19 +152,19 @@ reject the release.
    `gh attestation verify` (see below).
 8. Close the release branch out into `develop`. The release branch is merge-committed into **both**
    `main` (step 4's PR) and `develop` — after the Release is published:
-   - (a) Sync main back into the release branch: `git checkout release/X.Y.Z && git pull --ff-only &&
-     git merge origin/main -m "chore: sync main into release/X.Y.Z" && git push`. This picks up
+   - (a) Sync main back into the release branch: `git checkout release/vX.Y.Z && git pull --ff-only &&
+     git merge origin/main -m "chore: sync main into release/vX.Y.Z" && git push`. This picks up
      main's merge commit (which the `vX.Y.Z` tag points at) and any hotfix that landed on main since
      the branch was cut — usually a no-op/fast-forward, but it makes main a full ancestor of develop
      and the tag reachable from develop.
-   - (b) Open a PR from `release/X.Y.Z` to `develop` and merge it with **"Create a merge commit" —
+   - (b) Open a PR from `release/vX.Y.Z` to `develop` and merge it with **"Create a merge commit" —
      NEVER "Squash and merge"** (develop's ruleset requires changes via PR, so this is a PR by
      necessity). Squashing a back-merge severs the shared history between `main` and `develop` — the
      next release PR then reports phantom conflicts on every file both branches touched (this
      happened on both the 1.1.0 and 1.2.0 release PRs) and GitVersion loses the merge lineage it uses
      to compute versions.
    - (c) Delete the release branch (local and remote).
-   Release PRs (`release/X.Y.Z` → `main`) must likewise be merged with a merge commit, never
+   Release PRs (`release/vX.Y.Z` → `main`) must likewise be merged with a merge commit, never
    squashed. Squash remains the right choice for ordinary feature PRs only.
 
 ## Rehearsal mode (no push, no key required)
