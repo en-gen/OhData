@@ -2305,24 +2305,28 @@ internal static class OhDataEndpointFactory
             .Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IEnumerable<>)
                       && modelType.IsAssignableFrom(i.GetGenericArguments()[0]));
 
-    // #357/#467: a bound FUNCTION whose declared return type is a collection of the entity set's
-    // own type now honours $top and $skip and caps at MaxTop, so — and only so — its route
-    // documents them. Every other field is false: a bound operation applies no $filter/$orderby/
-    // $select/$expand/$count/$search, and #467's rule is that each field means "this route honours
-    // this option", never "this route is of kind X".
+    // #357/#467: a bound operation whose declared return type is a collection of the entity set's
+    // own type honours $top and $skip and caps at MaxTop, so — and only so — its route documents
+    // them. Every other field is false: a bound operation applies no $filter/$orderby/$select/
+    // $expand/$count/$search, and #467's rule is that each field means "this route honours this
+    // option", never "this route is of kind X".
     //
     // Attached at the ONE metadata site, in this factory, exactly as #467 requires: all three
     // OpenAPI companion packages read this record, and a rule transcribed into them separately is
     // how the same wrong document appeared in all three before.
     //
-    // Actions get nothing, and that is not an oversight: a @odata.nextLink is a URL the client GETs
-    // (§11.2.5.7), while an action-invocation resource has no representation to continue
-    // (§11.5.4) — the same reason #478 excludes actions from the ETag precondition gate. Capping an
-    // action's result without a usable continuation would be silent data loss. It is moot in
-    // practice besides: Microsoft.OData.ModelBuilder's ActionConfiguration.Returns /
-    // .ReturnsCollection both REFUSE an already-declared entity type, so a BindAction over TModel
-    // or IEnumerable<TModel> cannot be registered at all today.
-    private static void AddBoundFunctionPagingMetadata<TModel>(
+    // #543: bound ACTIONS are attached too, and the rename off "…FunctionPaging…" is the point.
+    // They were excluded on the reasoning that a @odata.nextLink is a URL the client GETs
+    // (§11.2.5.7) while an action-invocation resource has no representation to continue (§11.5.4) —
+    // the same identity argument #478 uses for the ETag gate — which is sound about the
+    // CONTINUATION and was wrongly taken to be about the CEILING as well. An action now honours
+    // $top/$skip and validates them against MaxTop exactly as a function does; the only thing it
+    // does not do is emit a nextLink (see TryApplyOperationCollectionPaging, which refuses instead).
+    // So "this route honours $top/$skip" is now true of both kinds, and #467's rule says document
+    // it on both. The dangling "see AddBoundFunctionPagingMetadata for why actions are excluded"
+    // cross-reference in WrapBoundOpResult, which pointed at a rationale this method never
+    // contained, is gone with the exclusion it described.
+    private static void AddBoundOperationPagingMetadata<TModel>(
         RouteHandlerBuilder rb, BoundOperationDefinition op, IEntitySetEndpointSource source)
         where TModel : class
     {
@@ -12271,10 +12275,10 @@ internal static class OhDataEndpointFactory
                 object? result = await requestFn.Invoke(args, ct);
                 if (result is null) return Results.NoContent();
                 // Gap 1: @odata.context on function results when return type matches TModel
-                return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s, pagingSource: source);
+                return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s, startupSource: source, fnCapture.Name, continuable: true);
             }).WithTags(name).Produces(400);
             AddBoundOperationProduces<TModel>(rb, fnCapture);
-            AddBoundFunctionPagingMetadata<TModel>(rb, fnCapture, source);
+            AddBoundOperationPagingMetadata<TModel>(rb, fnCapture, source);
             // Issue #181: document the function's query-string parameters.
             var boundFnQueryParams = BuildFunctionQueryParametersMetadata(fnCapture.Parameters, skipKey: false);
             if (boundFnQueryParams is not null) rb.WithMetadata(boundFnQueryParams);
@@ -12348,9 +12352,10 @@ internal static class OhDataEndpointFactory
                 object? result = await requestAction.Invoke(args, ct);
                 if (result is null) return Results.NoContent();
                 // Gap 1: @odata.context on action results when return type matches TModel
-                return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s, pagingSource: null);
+                return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s, startupSource: source, actionCapture.Name, continuable: false);
             }).WithTags(name).Produces(400).Produces(415);
             AddBoundOperationProduces<TModel>(rb, actionCapture);
+            AddBoundOperationPagingMetadata<TModel>(rb, actionCapture, source);
             // Leg 2 / #184: synthesize a POCO body schema from the action's parameters (see the
             // matching comment on the unbound-action branch of MapUnboundOperations).
             if (actionCapture.Parameters.Length > 0)
@@ -12416,7 +12421,7 @@ internal static class OhDataEndpointFactory
                         object? result = await requestFn.Invoke(args, ct);
                         if (result is null) return Results.NoContent();
                         // Gap 1: @odata.context on entity-level function results
-                        return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s, pagingSource: source);
+                        return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s, startupSource: source, fnCapture.Name, continuable: true);
                     }
                     catch (ODataKeyFormatException ex)
                     {
@@ -12425,7 +12430,7 @@ internal static class OhDataEndpointFactory
                 })
                 .WithTags(name).Produces(400);
             AddBoundOperationProduces<TModel>(rb, fnCapture);
-            AddBoundFunctionPagingMetadata<TModel>(rb, fnCapture, source);
+            AddBoundOperationPagingMetadata<TModel>(rb, fnCapture, source);
             // Issue #181: document the function's query-string parameters (skip the leading key,
             // which is a route parameter already documented via BindingSource.Path).
             var entityFnQueryParams = BuildFunctionQueryParametersMetadata(fnCapture.Parameters, skipKey: true);
@@ -12523,7 +12528,7 @@ internal static class OhDataEndpointFactory
                         object? result = await requestAction.Invoke(args, ct);
                         if (result is null) return Results.NoContent();
                         // Gap 1: @odata.context on entity-level action results
-                        return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s, pagingSource: null);
+                        return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s, startupSource: source, actionCapture.Name, continuable: false);
                     }
                     catch (ODataKeyFormatException ex)
                     {
@@ -12532,6 +12537,7 @@ internal static class OhDataEndpointFactory
                 })
                 .WithTags(name).Produces(400).Produces(415);
             AddBoundOperationProduces<TModel>(rb, actionCapture);
+            AddBoundOperationPagingMetadata<TModel>(rb, actionCapture, source);
             // Leg 2 / #184: entity-level Parameters[0] is the route key (see BoundOperationDefinition's
             // XML doc), so only Parameters[1..] are body parameters — synthesize the POCO body schema
             // from those, excluding the leading key.
@@ -12580,10 +12586,27 @@ internal static class OhDataEndpointFactory
     // verbatim: the same condition must not produce two different envelopes depending on which
     // route the client reached the same entity set through.
     //
+    // #543: `continuable` is the function/action split, and it changes exactly one branch -- what
+    // happens when NO $top was sent and the result is larger than the ceiling.
+    //
+    //   continuable: true  (bound FUNCTION) -- cap to MaxTop (or a smaller Prefer: maxpagesize) and
+    //                                          emit a $skip @odata.nextLink for the remainder.
+    //   continuable: false (bound ACTION)   -- THROW. See the block below for why refusing is the
+    //                                          only shape left once truncation and continuation are
+    //                                          both off the table.
+    //
+    // Everything else is shared verbatim and deliberately so: an explicit $top is applied and
+    // validated against MaxTop with the same message, $skip is applied, a malformed value is the
+    // same 400. The same condition must not produce two different envelopes depending on which
+    // route the client reached the same entity set through, and #543 was in part exactly that --
+    // `$top=999` was a 400 on the collection GET and on the bound function, and a silent 200 with
+    // the full result on the bound action.
+    //
     // Returns false with `error` set when the request cannot be served; true otherwise, with `page`
-    // and `nextLink` set.
+    // and `nextLink` set. Throws when an action's result cannot be served within the ceiling.
     private static bool TryApplyOperationCollectionPaging(
-        HttpContext ctx, IEntitySetEndpointSource startupSource, object[] items,
+        HttpContext ctx, IEntitySetEndpointSource startupSource, bool continuable, object[] items,
+        string entitySetName, string operationName,
         out object[] page, out string? nextLink, out IResult? error)
     {
         page = items;
@@ -12629,9 +12652,14 @@ internal static class OhDataEndpointFactory
         int? appliedPageSize = null;
         if (top is int t)
         {
+            // An explicit $top bounds the response at the CLIENT's request, so there is nothing
+            // silent about the truncation and nothing to continue -- true on the collection GET and
+            // the bound function too, both of which also omit the nextLink in this branch. This is
+            // therefore the one branch an action needs no special treatment in, and it is also the
+            // remedy a client has for the refusal below.
             seq = seq.Take(t);
         }
-        else
+        else if (continuable)
         {
             int? preferredPageSize = ParseMaxPageSize(ctx);
             appliedPageSize = preferredPageSize.HasValue
@@ -12642,6 +12670,53 @@ internal static class OhDataEndpointFactory
             if (appliedPageSize.HasValue) seq = seq.Take(appliedPageSize.Value);
             if (preferredPageSize.HasValue)
                 ctx.Response.Headers["Preference-Applied"] = $"maxpagesize={appliedPageSize!.Value}";
+        }
+        else if (startupSource.MaxTop is int cap && preTotal - skip > cap)
+        {
+            // ── #543: a bound ACTION whose result does not fit under the ceiling ──────────────
+            //
+            // Measured on the pre-fix tree, MaxTop = 10 over a 25-row store: the bound FUNCTION
+            // answered `len=10` with `nextLink=…/DumpFn?%24skip=10` and 400'd `$top=999`, while the
+            // bound ACTION answered `200 len=25 nextLink=<none>` for every one of `$top=999`,
+            // `$top=5`, `$skip=20` and `$top=abc`. #357 closed that hole for functions and left
+            // actions with `pagingSource: null`; the CHANGELOG defended the exclusion as "moot in
+            // practice" because a BindAction could not declare the type -- refuted twice over, by
+            // `Task<object>` (which registered and served all 25 rows) and now by #539, which makes
+            // `Task<IEnumerable<TModel>>` the ordinary spelling.
+            //
+            // Three shapes were available and two are unavailable HERE, which is what leaves this
+            // one:
+            //   * Cap and emit @odata.nextLink -- what a function does, and INVALID for an action.
+            //     A nextLink is a URL the client GETs (§11.2.5.7); the target of
+            //     POST /Set/Action is the action-invocation resource, which has no representation
+            //     to continue (§11.5.4) -- the same identity argument #478 uses to keep actions out
+            //     of the ETag precondition gate. The link would answer 405, and re-POSTing a
+            //     side-effecting action to collect page 2 is not a continuation in any case.
+            //   * Cap silently -- forbidden by the framework's own M1 rule: no configuration leaves
+            //     a bound in place without either a continuation link or a 400, never silent
+            //     truncation.
+            //   * Refuse. What is left, and what this does.
+            //
+            // It is a 500, not a 400, and #496 settled that distinction in this same release: a
+            // `Post` handler returning null went from "400 blaming the client" to a logged 500
+            // because the condition is decided entirely by server-side state. So is this one -- the
+            // profile declared the ceiling and the handler returned more than fits under it, for
+            // every client and every request identically, and the only party who can fix it is the
+            // operator reading the log. Throwing routes it through the group-level filter: the real
+            // message below is logged, the client gets the generic 500 + OData error envelope.
+            //
+            // Remedies, in the message because it is the operator who reads it. Note that a client
+            // CAN still get a served response by sending an explicit `$top` (<= MaxTop), which is
+            // why the branch above is not also refused.
+            throw new InvalidOperationException(
+                $"Entity set '{entitySetName}': bound action '{operationName}' returned " +
+                $"{preTotal - skip} entities, which exceeds this entity set's MaxTop of {cap}. A " +
+                "bound action's result cannot carry an @odata.nextLink -- an action-invocation " +
+                "resource has no representation to continue (OData Protocol 11.5.4) -- so the " +
+                "framework will not silently truncate it either. Return no more than MaxTop " +
+                "entities from the handler, set MaxTop = null on the profile or in " +
+                "EntitySetDefaults to opt this entity set out of the ceiling, or expose the " +
+                "operation as a bound FUNCTION (BindFunction), which is pageable.");
         }
 
         page = ReferenceEquals(seq, items) ? items : seq.ToArray();
@@ -12658,7 +12733,8 @@ internal static class OhDataEndpointFactory
     private static IResult WrapBoundOpResult(
         HttpContext ctx, string prefix, string entitySetName, object result, Type modelType,
         JsonSerializerOptions? jsonOptions, IEdmEntityType? rootEdmType, IEdmModel? edmModel,
-        IEntitySetEndpointSource source, IEntitySetEndpointSource? pagingSource)
+        IEntitySetEndpointSource source, IEntitySetEndpointSource startupSource,
+        string operationName, bool continuable)
     {
         var resultType = result.GetType();
 
@@ -12730,24 +12806,33 @@ internal static class OhDataEndpointFactory
             // the only possible divergence is serving a bound the document did not promise -- the
             // safe direction of #467's advertise-vs-serve rule.
             //
-            // `pagingSource` is BOTH the "is this route pageable" flag (non-null only for bound
-            // FUNCTIONS -- see AddBoundFunctionPagingMetadata for why actions are excluded) and the
-            // STARTUP endpoint source. The distinction is load-bearing and not cosmetic:
-            // `source` here is the REQUEST-scoped instance, whose MaxTop is null -- profiles are
-            // registered AddScoped and _resolvedMaxTop is assigned in VisitModelBuilder, which only
-            // ever runs on the startup instance. Reading the ceiling off the request instance
-            // silently disables the whole bound (measured: 25 rows returned and $top=1000 accepted,
-            // on a profile with MaxTop = 10). This is the two-sources rule CLAUDE.md states for
-            // every route closure -- startup source for structural queries, request source for
-            // Invoke* -- and MaxTop is named in it.
+            // #543: that "parsed HERE, not in the route" claim was correct and #357's *conclusion*
+            // from it was not -- the route-level exclusion of ACTIONS put the bypass back on the
+            // one operation kind that never reached this parse at all. Measured: `Task<object>`
+            // returning a List<TModel> from a BindAction served all 25 rows against MaxTop = 10 and
+            // ignored `$top` entirely, which is the exact wire shape this comment says #357 closed.
+            // Actions reach the parse now; the only thing they cannot do is emit a nextLink.
+            //
+            // `startupSource` is the STARTUP endpoint source, and the distinction from `source` is
+            // load-bearing, not cosmetic: `source` here is the REQUEST-scoped instance, whose MaxTop
+            // is null -- profiles are registered AddScoped and _resolvedMaxTop is assigned in
+            // VisitModelBuilder, which only ever runs on the startup instance. Reading the ceiling
+            // off the request instance silently disables the whole bound (measured: 25 rows returned
+            // and $top=1000 accepted, on a profile with MaxTop = 10). This is the two-sources rule
+            // CLAUDE.md states for every route closure -- startup source for structural queries,
+            // request source for Invoke* -- and MaxTop is named in it.
+            //
+            // #543: it used to be nullable and to double as the "is this route pageable" flag, null
+            // for every bound ACTION, so an action skipped the bound entirely. The flag is now
+            // `continuable`, a separate parameter, and every caller passes the startup source: an
+            // action IS bounded, it just cannot be CONTINUED. Conflating "no continuation available"
+            // with "no ceiling applies" is precisely how the ceiling became bypassable.
             string? opNextLink = null;
-            if (pagingSource is not null)
+            if (!TryApplyOperationCollectionPaging(
+                    ctx, startupSource, continuable, coll, entitySetName, operationName,
+                    out coll, out opNextLink, out IResult? pagingError))
             {
-                if (!TryApplyOperationCollectionPaging(
-                        ctx, pagingSource, coll, out coll, out opNextLink, out IResult? pagingError))
-                {
-                    return pagingError!;
-                }
+                return pagingError!;
             }
 
             // #179: route the collection through the same serialize → ETag → omit-navs stages the

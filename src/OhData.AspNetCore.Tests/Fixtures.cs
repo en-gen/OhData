@@ -1581,11 +1581,13 @@ internal class NavLeakFilm
 /// bound-operation results. <c>UseETag</c> is set so the bound-op paths are also asserted to inject
 /// <c>@odata.etag</c>, matching the normal collection/GetById paths.
 ///
-/// Both bound operations that return the set's own entity type are FUNCTIONS: Microsoft.OData's
-/// <c>ActionConfiguration.Returns&lt;T&gt;</c> rejects an entity return type ("Use ReturnsFromEntitySet"),
-/// so a bound action can't declare one in the EDM. The single- and collection-of-TModel branches of
+/// Both bound operations that return the set's own entity type are FUNCTIONS. That used to be a
+/// necessity — Microsoft.OData's <c>ActionConfiguration.Returns&lt;T&gt;</c> rejected an entity return
+/// type ("Use ReturnsFromEntitySet"), so a bound action could not declare one in the EDM — and since
+/// #539 it is merely this fixture's choice. The single- and collection-of-TModel branches of
 /// <c>WrapBoundOpResult</c> are the same code regardless of function-vs-action caller, so the function
-/// coverage exercises them fully.
+/// coverage exercises them fully; the action side is covered by
+/// <c>BoundActionEntityReturnTests</c>.
 /// </summary>
 internal class NavLeakFilmProfile : EntitySetProfile<int, NavLeakFilm>
 {
