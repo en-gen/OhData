@@ -1741,6 +1741,11 @@ internal static class OhDataEndpointFactory
         // #489: same placement rationale again — after every route has mapped.
         WarnIgnoredPropertiesStillInEdm(registration, groupLogger);
 
+        // #481/#368: same placement rationale again. It runs AFTER
+        // WarnUndeclaredConventionNavigations because the two partition the EDM's navigations
+        // between them — declared here, undeclared there — and reading them in that order is how
+        // a log tells you which half a navigation fell into.
+        WarnNavigationTargetAuthorization(registration, groupLogger);
         return group;
     }
 
@@ -2036,6 +2041,191 @@ internal static class OhDataEndpointFactory
             }
         }
     }
+
+    // #481/#368: authorization is PER PROFILE and does not compose across a navigation. Every
+    // navigation-family route, and every $expand call site, runs under the DECLARING entity set's
+    // rule; the target set's own rule is never consulted — the only two authorization-state reads
+    // in this file are `source.Authorization` and `source.OperationAuthorization`, both on the
+    // profile currently being mapped. Measured across 19 route shapes on #481: with an admin-gated
+    // child set and an anonymous parent declaring a navigation into it, the nav GET, its /$count,
+    // all four $ref shapes, the nav-POST create route and $expand (delegate, batch and pushdown)
+    // all succeeded anonymously — and $ref POST/PUT/DELETE and nav-POST *executed the write*.
+    //
+    // A WARNING, and NOTHING ELSE. The owner's ruling on #481 rejected consulting the target
+    // profile at request time, for three reasons worth keeping here because they are the reasons a
+    // future reader would otherwise "fix" this into an enforcement pass:
+    //   - It is what Microsoft.AspNetCore.OData does. Verified against its source: the library
+    //     contains no authorization code at all (0 files each for IAuthorizationService,
+    //     AuthorizationPolicy, RequireAuthorization, IAllowAnonymous, AuthorizeAttribute,
+    //     ClaimsPrincipal, Microsoft.AspNetCore.Authorization), and its navigation action lives on
+    //     the PARENT controller, so [Authorize] on the child's controller is never consulted
+    //     either. Enforcing would be a divergence from OData norms, not a correction toward them.
+    //   - It would break the most idiomatic OData shape there is — a scoped `Orders` navigation off
+    //     `Customers` beside a separately-registered, admin-gated `Orders` set — turning correct
+    //     code into 403s, with no opt-out flag to point at.
+    //   - It is not well-defined where sibling sets share one EDM type (#458), and it collides head
+    //     on with #293's frozen Model B rule that "a delegate on a sibling/derived set never
+    //     retroactively poisons a nav that ANOTHER set legitimately serves raw" — fail-closed is
+    //     exactly that poisoning, one concern over.
+    // So the navigation declaration IS the opt-in, and this makes that configuration decision loud
+    // at the moment it is introduced. docs/authorization.md carries the same statement for readers
+    // who never see a startup log.
+    //
+    // THREE TARGETING RULES, each measured rather than reasoned (#481's probe):
+    //
+    //   1. The target is resolved through the EDM navigation property's OWN target type, then
+    //      through ResolveProfilesForEdmType — the same union the two $expand call sites resolve
+    //      candidates with. NOT through NavigationRouteDefinition.ChildEntitySetName (never set by
+    //      the HasMany(nav, batchGetAll) overload — probe case 7 leaked through exactly that) and
+    //      NOT through NavItemType (never set by HasOptional/HasRequired).
+    //
+    //   2. It fires on the DECLARED navigation, not the routed one. Probe B-1: a bare
+    //      HasMany(x => x.Children) with no handler and no route still serves the protected rows
+    //      through $expand, so gating on route presence would miss the case with the weakest
+    //      opt-in argument. The converse — an UNDECLARED, convention-discovered navigation (probe
+    //      B-2) — is deliberately silent: #440/#446 already made it served by nothing at all, and
+    //      WarnUndeclaredConventionNavigations above already names it, saying something different.
+    //
+    //   3. The union, never the EDM's navigation-source binding. Per the decision recorded at
+    //      ResolveProfilesForEdmType: (A) exactly one entity set exposes the target type → a REAL
+    //      IEdmEntitySet binding exists, and the union is that one set, so the two agree; (B) two
+    //      or more → NavigationPropertyBindings is EMPTY and FindNavigationTarget returns an
+    //      EdmUnknownEntitySet placeholder; (C) none → the same placeholder. A binding-only check
+    //      therefore stops working the moment someone registers an unrelated second entity set
+    //      over the child type, silently. Warning if ANY candidate is stricter is the fail-loud
+    //      direction, and case (C)'s empty union warns about nothing, correctly.
+    //
+    // WHY THE COMPARISON IS PER CATEGORY rather than one union of everything the target requires.
+    // A warning that fires on a correct configuration gets ignored, which costs more than the
+    // warning is worth. `ConfigureAuthorization(auth => auth.Read(r => r.AllowAnonymous())
+    // .Writes(w => w.RequireRole("admin")))` on the target is an ordinary shape, and a read-only
+    // navigation into it loses NOTHING — so the categories are compared separately, and each is
+    // considered only where this navigation really exposes it:
+    //   Read   — always, because $expand needs no route (rule 2), and because a NavigationRoute-
+    //            Definition always registers a nav GET (the loop over source.NavigationRoutes maps
+    //            one for every entry, even a post/addRef-only navigation whose GET 404s).
+    //   Create — only with a `post` handler (the nav-POST create route).
+    //   Update — only with addRef/setRef/removeRef (the three $ref write routes).
+    // Delete and Invoke are excluded because no navigation route is ever mapped in either category
+    // — see the ApplyOperationAuth call sites on the nav routes.
+    //
+    // Emitted once per (declaring set, navigation, stricter target set) at startup, never per
+    // request. Placed after every route has mapped, for the same reason WarnUnboundedBareExpand and
+    // WarnUndeclaredConventionNavigations are: a registration whose startup validation is about to
+    // throw should not first emit advice about a surface it will never serve.
+    private static void WarnNavigationTargetAuthorization(OhDataRegistration registration, ILogger? logger)
+    {
+        if (logger is null) return;
+
+        foreach (IEntitySetEndpointSource profile in registration.Profiles)
+        {
+            IEdmEntityType? entityType = registration.EdmModel.EntityContainer?
+                .FindEntitySet(profile.EntitySetName)?.EntityType;
+            if (entityType is null) continue;
+
+            foreach (IEdmNavigationProperty nav in entityType.NavigationProperties())
+            {
+                // Rule 2. OrdinalIgnoreCase, and against NavigationPropertyNames rather than a
+                // separately derived EDM-name set, so this and WarnUndeclaredConventionNavigations
+                // partition the navigations between them and can never both fire (or both stay
+                // silent) for one declaration.
+                if (!profile.NavigationPropertyNames.Any(
+                        n => string.Equals(n, nav.Name, StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue;
+                }
+
+                NavigationRouteDefinition? route = profile.NavigationRoutes.FirstOrDefault(
+                    r => string.Equals(r.PropertyName, nav.Name, StringComparison.OrdinalIgnoreCase));
+
+                List<OhDataOperation> categories = new(3) { OhDataOperation.Read };
+                if (route?.PostChild is not null) categories.Add(OhDataOperation.Create);
+                if (route is not null && (route.AddRef is not null || route.RemoveRef is not null))
+                    categories.Add(OhDataOperation.Update);
+
+                foreach (IEntitySetEndpointSource target in
+                         ResolveProfilesForEdmType(nav.ToEntityType(), registration))
+                {
+                    // A self-referential navigation, or one into this profile's own entity set,
+                    // resolves to this profile: it is governed by its own rule by definition.
+                    if (ReferenceEquals(target, profile)) continue;
+
+                    string? unapplied = DescribeUnappliedRequirements(profile, target, categories);
+                    if (unapplied is null) continue;
+
+                    // Each placeholder appears EXACTLY once — Microsoft.Extensions.Logging binds a
+                    // template positionally, so a repeated one would consume an argument that is
+                    // not there. Repeated VALUES are passed again under a distinct name.
+                    logger.LogWarning(
+                        "OhData: '{EntitySet}' declares the navigation '{Navigation}', whose target " +
+                        "entity type is also exposed as the entity set '{TargetEntitySet}' — and that " +
+                        "set's own profile requires {Unapplied}, which is NOT applied here, because " +
+                        "authorization is not applied across a navigation. Every route OhData maps " +
+                        "for '{EntitySet2}' runs under '{EntitySet3}'s own rule and never " +
+                        "'{TargetEntitySet2}'s: 'GET /{EntitySet4}({{key}})/{Nav}', its '/$count' and " +
+                        "'/$ref' routes, the '$ref' and navigation-POST writes, and every " +
+                        "'$expand={Nav2}' — the last of which needs no route at all, so the " +
+                        "navigation declaration is the opt-in, by itself. Microsoft.AspNetCore.OData behaves the " +
+                        "same way (its navigation action lives on the parent's controller, and it " +
+                        "has no per-set authorization concept at all), so this is the OData norm " +
+                        "rather than a gap OhData will close: it will NOT start consulting " +
+                        "'{TargetEntitySet3}'s rule at request time. If the data reached through " +
+                        "this navigation needs that protection, configure the same requirement on " +
+                        "'{EntitySet5}' with RequireAuthorization/RequireRoles/ConfigureAuthorization, " +
+                        "or split the surface so the protected rows are not reachable from an " +
+                        "unprotected parent. If reaching them from here is intended — a scoped " +
+                        "navigation off a parent the caller is already allowed to read — this is a " +
+                        "valid design and nothing needs to change. See docs/authorization.md.",
+                        profile.EntitySetName, nav.Name, target.EntitySetName, unapplied,
+                        profile.EntitySetName, profile.EntitySetName, target.EntitySetName,
+                        profile.EntitySetName, nav.Name, nav.Name,
+                        target.EntitySetName, profile.EntitySetName);
+                }
+            }
+        }
+    }
+
+    // Renders "one of the roles (admin) on reads and updates" for the categories in which
+    // <paramref name="target"/> requires something <paramref name="declaring"/> does not; null when
+    // nothing goes unapplied. Categories sharing an identical unapplied set are grouped so the
+    // profile-wide authorization model — where every category carries the same requirements —
+    // produces one clause rather than three copies of it.
+    private static string? DescribeUnappliedRequirements(
+        IEntitySetEndpointSource declaring,
+        IEntitySetEndpointSource target,
+        IReadOnlyList<OhDataOperation> categories)
+    {
+        List<(OhDataOperation Category, string Requirements)> unapplied = new(categories.Count);
+        foreach (OhDataOperation category in categories)
+        {
+            IReadOnlyList<string> missing =
+                NavigationTargetAuthorization.RequirementsNotApplied(declaring, target, category);
+            if (missing.Count > 0) unapplied.Add((category, string.Join(", ", missing)));
+        }
+        if (unapplied.Count == 0) return null;
+
+        List<string> clauses = new();
+        foreach (var group in unapplied.GroupBy(u => u.Requirements, StringComparer.Ordinal))
+        {
+            string subjects = JoinWithAnd(group.Select(u => CategoryNoun(u.Category)).ToList());
+            clauses.Add($"{group.Key} on {subjects}");
+        }
+        return string.Join("; ", clauses);
+    }
+
+    private static string CategoryNoun(OhDataOperation category) => category switch
+    {
+        OhDataOperation.Create => "creates",
+        OhDataOperation.Update => "updates",
+        _ => "reads",
+    };
+
+    private static string JoinWithAnd(IReadOnlyList<string> parts) => parts.Count switch
+    {
+        1 => parts[0],
+        2 => $"{parts[0]} and {parts[1]}",
+        _ => $"{string.Join(", ", parts.Take(parts.Count - 1))} and {parts[parts.Count - 1]}",
+    };
 
     // Leg 3 (docs-fidelity): an unbound function/action's success response is the bare
     // Invoke() result (no @odata.context envelope — see MapUnboundOperations below), so the

@@ -156,9 +156,15 @@ the entity as the resource.
 Key points:
 
 - **The resource is the `{key}` entity.** For property/navigation/`$ref` routes the resource is the
-  parent entity in the path, so those routes are covered uniformly - there's no bypass. **Create** is
-  the exception: `POST` to a collection is checked against the *incoming* (pre-persist) entity from the
-  body (there's no stored row yet); `POST` to a navigation is checked against the parent.
+  parent entity in the path, so every one of *this profile's* routes is covered by *this profile's*
+  rule - none of them escapes it. **Create** is the exception: `POST` to a collection is checked
+  against the *incoming* (pre-persist) entity from the body (there's no stored row yet); `POST` to a
+  navigation is checked against the parent.
+  <br>Read that literally: it says the parent entity is checked, not the *related* entity. A
+  navigation route is authorized as an operation on the parent, so if the navigation's target type is
+  *also* exposed as its own, more strictly protected entity set, **that set's rule is not applied
+  here** - see [Authorization is per-profile and does not compose across a
+  navigation](#authorization-is-per-profile-and-does-not-compose-across-a-navigation) below.
 - **Collection reads are not resource-checked** (there's no single instance) - filter those in the
   query itself. `$metadata`/service-document/unbound operations are never resource-checked.
 - **It composes with the coarse requirements (AND)** - both must pass. `.RequireResource()` alone is
@@ -207,6 +213,79 @@ two sections) - they are mapped on the exact same top-level `RouteGroupBuilder` 
 returns, so a group-level `.RequireAuthorization()`/`.RequireRoles(...)` call protects them too,
 same as every entity-set route. Group-level auth is the mechanism to reach for if your service's
 schema itself needs to be behind auth (see below).
+
+## Authorization is per-profile and does not compose across a navigation
+
+**A navigation is authorized by the profile that *declares* it, never by the profile that owns its
+target entity set.** If `Customer` has a navigation to `Ticket`, and `Tickets` is separately
+registered as its own entity set with `RequireRoles("support")`, then a caller who may read
+`Customers` can read those same ticket rows through the navigation - the `support` requirement is
+never evaluated on that path.
+
+This governs the whole navigation family, and `$expand` with it:
+
+| route | authorized by |
+|---|---|
+| `GET /Customers({key})/Tickets` and its `/$count` | the `Customers` profile |
+| `GET/POST/PUT/DELETE /Customers({key})/Tickets/$ref` | the `Customers` profile |
+| `POST /Customers({key})/Tickets` (create a related entity) | the `Customers` profile |
+| `GET /Customers?$expand=Tickets`, `GET /Customers({key})?$expand=Tickets` | the `Customers` profile |
+| `GET /Tickets`, `GET /Tickets({key})`, … | the `Tickets` profile |
+
+Note that the writes are on that list too. A `$ref` `POST`/`PUT`/`DELETE` and a navigation `POST`
+run under the declaring profile's rule exactly as the reads do, so they can create and re-link rows
+in an entity set whose own profile would have refused the same caller.
+
+### The declaration is the opt-in
+
+There is no per-navigation authorization switch, and none is planned: **writing the
+`HasMany`/`HasOptional`/`HasRequired` declaration is itself the decision to expose that data through
+this entity set.** A bare `HasMany(x => x.Tickets)` with no handler and no route is enough - it
+registers nothing, but it puts the navigation in the EDM, and `$expand` serves it. (An *undeclared*
+navigation that the OData convention builder discovered on its own is different: OhData never loads,
+routes or writes one, so it is not reachable at all. `MapOhData()` warns about those separately.)
+
+### This matches `Microsoft.AspNetCore.OData`
+
+It is not an OhData-specific gap. `Microsoft.AspNetCore.OData` contains no authorization code at
+all, and structurally it cannot behave otherwise: its navigation action (`GetOrders`) is routed onto
+the **parent's** controller, so an `[Authorize]` attribute on `OrdersController` is never consulted
+for `/Customers({key})/Orders`, and `$expand` is a pure projection with no second dispatch to
+authorize. Per-endpoint authorization under `$expand` is the norm across OData servers, not a
+divergence.
+
+### The startup warning
+
+`MapOhData()` emits one `Warning` per declared navigation whose target entity set's profile requires
+something the declaring profile does not - naming the declaring set, the navigation, the target set,
+and the exact requirements that will not be applied. It compares per operation category, so a target
+guarded only on writes does not warn about a navigation that exposes only reads, and it stays silent
+when the two profiles are equally strict, when the target is *less* strict, and when no target
+profile is registered at all.
+
+It is a warning and never a failure. Enforcing the target's rule would break the ordinary scoped
+-navigation pattern (a customer-scoped `Orders` navigation beside a separately registered,
+admin-gated `Orders` set is correct code, not a bug), and it is not even well-defined when two
+entity sets share one EDM type.
+
+### The remedy
+
+Two options, and which one is right depends on whether reaching that data from the parent is
+intended:
+
+1. **Configure the requirement on the declaring profile.** If the related data is sensitive wherever
+   it is reached from, put the same `RequireAuthorization`/`RequireRoles`/`ConfigureAuthorization`
+   call on the profile that declares the navigation. Per-operation rules let you match the target's
+   shape rather than over-protecting the parent - e.g. leave the parent's own reads open and require
+   the role on `Writes` if the target only guards writes.
+2. **Split the surface.** Remove the navigation declaration (or `Ignore()` it) so the protected rows
+   are not reachable from the unprotected parent at all, and let clients read them through the
+   protected entity set. If only *some* related rows should be reachable, give the navigation an
+   explicit handler and scope the query inside it - a delegate-backed navigation is your own code,
+   so it can apply whatever row-level rule the parent context implies.
+
+If reaching the data from the parent *is* intended - the scoped-navigation case - nothing needs to
+change; the warning is telling you a decision was made, not that it was made wrongly.
 
 ## `$metadata` and the service document are anonymous by default - unless group-level auth is used
 
