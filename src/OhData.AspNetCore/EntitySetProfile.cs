@@ -1744,10 +1744,17 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// A delegate whose method name is the function name. Parameters (excluding
     /// <see cref="CancellationToken"/>) are exposed as OData function parameters.
     /// </param>
+    /// <exception cref="InvalidOperationException">
+    /// #498: the handler returns <c>void</c>/<c>Task</c>/<c>ValueTask</c> (use <see cref="BindAction"/>),
+    /// returns an <c>IResult</c>, or declares a non-trailing or nullable <see cref="CancellationToken"/>.
+    /// </exception>
     protected void BindFunction(Delegate handler)
     {
         ThrowIfSealed();
-        _functions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
+        if (handler is null) throw new ArgumentNullException(nameof(handler));
+        ValidateBoundOperationSignature(handler, nameof(BindFunction), isAction: false, nameof(BindAction));
+        ValidateBoundOperationNameIsUnique(handler, _functions, nameof(BindFunction), isAction: false, isEntityLevel: false);
+        _functions.Add(handler);
     }
 
     /// <summary>
@@ -1759,10 +1766,18 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// A delegate whose method name is the action name. Parameters (excluding
     /// <see cref="CancellationToken"/>) are read from the JSON body as named properties.
     /// </param>
+    /// <exception cref="InvalidOperationException">
+    /// #498: the handler returns an <c>IResult</c>, or declares a non-trailing or nullable
+    /// <see cref="CancellationToken"/>. (A <c>void</c>/<c>Task</c>/<c>ValueTask</c> return is legal
+    /// here — an action with no return value produces <c>204 No Content</c>.)
+    /// </exception>
     protected void BindAction(Delegate handler)
     {
         ThrowIfSealed();
-        _actions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
+        if (handler is null) throw new ArgumentNullException(nameof(handler));
+        ValidateBoundOperationSignature(handler, nameof(BindAction), isAction: true, nameof(BindAction));
+        ValidateBoundOperationNameIsUnique(handler, _actions, nameof(BindAction), isAction: true, isEntityLevel: false);
+        _actions.Add(handler);
     }
 
     /// <summary>
@@ -1781,6 +1796,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         ThrowIfSealed();
         if (handler is null) throw new ArgumentNullException(nameof(handler));
         ValidateEntityBoundOperationSignature(handler, nameof(BindEntityFunction));
+        ValidateBoundOperationSignature(handler, nameof(BindEntityFunction), isAction: false, nameof(BindEntityAction));
+        ValidateBoundOperationNameIsUnique(handler, _entityFunctions, nameof(BindEntityFunction), isAction: false, isEntityLevel: true);
         _entityFunctions.Add(handler);
     }
 
@@ -1800,8 +1817,66 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         ThrowIfSealed();
         if (handler is null) throw new ArgumentNullException(nameof(handler));
         ValidateEntityBoundOperationSignature(handler, nameof(BindEntityAction));
+        ValidateBoundOperationSignature(handler, nameof(BindEntityAction), isAction: true, nameof(BindEntityAction));
+        ValidateBoundOperationNameIsUnique(handler, _entityActions, nameof(BindEntityAction), isAction: true, isEntityLevel: true);
         _entityActions.Add(handler);
     }
+
+    // #492 §4: two bound operations of one kind at one binding level claim a single
+    // (template, method) pair -- GET/POST /{Set}/{Name} for a collection-bound operation,
+    // GET/POST /{Set}({key})/{Name} for an entity-bound one -- and nothing validated it. The route
+    // pair surfaced only as an AmbiguousMatchException at REQUEST time, thrown by routing before
+    // OhData's group filter, so with no OData error envelope.
+    //
+    // It is a second-order defect too: request-time dispatch is
+    // `BoundFunctions.First(f => f.Name == … && f.IsEntityLevel)`, which would silently pick the
+    // first even if routing did not collide. So the duplicate is ambiguous in the dispatch layer as
+    // well as unrouteable, and neither half is fixable by choosing a winner.
+    //
+    // Checked at BIND time rather than in MapEntitySet beside its sibling collision checks, because
+    // Microsoft.OData.ModelBuilder rejects a repeated ACTION name itself, earlier, from inside
+    // VisitModelBuilder -- "Found more than one action with name 'X'", naming neither the profile
+    // nor the entity set nor the remedy. A check downstream of that would never run for actions.
+    //
+    // Scoped per (kind, binding level): a function is GET and an action POST, and the two levels
+    // claim different templates -- which is why the four lists are checked separately rather than
+    // merged. Compared OrdinalIgnoreCase, since ASP.NET Core's literal segment matching is.
+    private void ValidateBoundOperationNameIsUnique(
+        Delegate handler, IEnumerable<Delegate> alreadyBound, string bindMethodName, bool isAction, bool isEntityLevel)
+    {
+        string operationName = handler.Method.Name;
+        Delegate? existing = alreadyBound.FirstOrDefault(
+            d => string.Equals(d.Method.Name, operationName, StringComparison.OrdinalIgnoreCase));
+        if (existing is null) return;
+
+        string kind = isAction ? "action" : "function";
+        string httpMethod = isAction ? "POST" : "GET";
+        string template = isEntityLevel
+            ? $"{EntitySetName}({{key}})/{operationName}"
+            : $"{EntitySetName}/{operationName}";
+
+        throw new InvalidOperationException(
+            $"{bindMethodName}('{operationName}') on entity set '{EntitySetName}': a bound {kind} " +
+            $"named '{existing.Method.Name}' is already registered at this binding level. Both would " +
+            $"register {httpMethod} /{template} (route templates are case-insensitive), and " +
+            $"request-time dispatch resolves a bound {kind} by name, so it could not tell them apart " +
+            $"either. Give each bound {kind} on this entity set a distinct name -- C# overloads share " +
+            "one method name, so two overloads cannot both be bound.");
+    }
+
+    // #498: the three signature rules that apply to EVERY bound operation, delegated to the shared
+    // validator so the four Bind* methods here and OhDataBuilder's AddFunction/AddAction cannot
+    // drift apart. Called from the Bind* method rather than from BoundOperationDefinition.From so
+    // the throw surfaces from the profile's own constructor -- From runs inside VisitModelBuilder,
+    // whose exceptions are wrapped in a generic "failed to build EDM for profile" message.
+    private void ValidateBoundOperationSignature(
+        Delegate handler, string bindMethodName, bool isAction, string actionAlternative) =>
+        OperationSignatureValidation.Validate(
+            handler.Method,
+            handler.Method.Name,
+            isAction,
+            $"{bindMethodName}('{handler.Method.Name}') on entity set '{EntitySetName}'",
+            actionAlternative);
 
     // S6: entity-bound operations are invoked at request time by placing the parsed route key
     // directly into args[0] (see OhDataEndpointFactory) -- the delegate's Parameters array
@@ -1875,7 +1950,21 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
             if (param.IsOptional) opParam.Optional();
             if (param.HasDefaultValue)
             {
-                string defaultStr = param.DefaultValue is bool b ? (b ? "true" : "false") : $"{param.DefaultValue}";
+                // #498 §5: InvariantCulture, not the ambient one. `$"{param.DefaultValue}"` formats
+                // under CurrentCulture, so `decimal maxPrice = 1.5m` rendered as DefaultValue="1,5"
+                // in the CSDL on a de-DE server -- the $metadata document's contents are a wire
+                // format, not localised text. Same class as the /$count culture inconsistency in
+                // #496. bool keeps its explicit lowercase mapping (bool.ToString() is not
+                // culture-sensitive but returns "True"/"False", which CSDL does not accept).
+                string defaultStr = param.DefaultValue switch
+                {
+                    bool b => b ? "true" : "false",
+                    IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+                    // `$"{null}"` produced the empty string; preserved rather than "improved", since
+                    // what CSDL should say for a null default is a separate question from culture.
+                    null => "",
+                    var other => other.ToString() ?? "",
+                };
                 opParam.HasDefaultValue(defaultStr);
             }
         }
@@ -1893,9 +1982,15 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
             .Invoke(operation, null);
     }
 
+    // Kept in lockstep with UnboundOperationDefinition.GetCollectionElementType -- the same question
+    // for the unbound half of the same operations surface. Any change to one belongs in both.
     private static Type? GetCollectionElementType(Type type)
     {
         if (type == typeof(string)) return null; // string is IEnumerable<char> but not a "collection" here
+        // #498 §4: byte[] is an ARRAY but not a collection here. Treating it as one declared
+        // <ReturnType Type="Collection(Edm.Byte)"/> in $metadata while WrapBoundOpResult's primitive
+        // map hits byte[] -> Edm.Binary first and serves {"@odata.context":"...#Edm.Binary",...}.
+        if (type == typeof(byte[])) return null;
         if (type.IsArray) return type.GetElementType();
         foreach (var iface in new[] { type }.Concat(type.GetInterfaces()))
         {
@@ -2014,6 +2109,19 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
     bool IEntitySetEndpointSource.HasGetAll => GetAll is not null;
     bool IEntitySetEndpointSource.HasGetQueryable => GetQueryable is not null;
+
+    // #492 §1: the ONE answer to "does MapEntitySet register a collection GET for this profile",
+    // mirroring the three-branch `if/else if/else if` chain there. It is implemented on the base
+    // class rather than re-implemented per subclass deliberately: `ODataEntitySetProfile` adds a
+    // read path by adding an INTERFACE (IODataEntitySetEndpointSource), so asking that interface
+    // here keeps every present and future subclass answering correctly from a single site. The
+    // caller that motivated it (the unbound-operation collision pass) had enumerated the paths by
+    // hand and missed one.
+    bool IEntitySetEndpointSource.HasCollectionGet =>
+        GetAll is not null
+        || GetQueryable is not null
+        || (this is IODataEntitySetEndpointSource p1 && p1.HasGetODataQueryable);
+
     bool IEntitySetEndpointSource.HasGetById => GetById is not null;
     bool IEntitySetEndpointSource.HasPost => Post is not null;
     bool IEntitySetEndpointSource.HasPut => Put is not null;

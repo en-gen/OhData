@@ -32,6 +32,24 @@ internal interface IEntitySetEndpointSource
 
     bool HasGetAll { get; }
     bool HasGetQueryable { get; }
+
+    /// <summary>
+    /// #492: <c>true</c> when this profile causes <c>MapEntitySet</c> to register a collection GET
+    /// (<c>GET /{prefix}/{EntitySet}</c>) by ANY of the three read paths — Priority-1
+    /// (<c>GetODataQueryable</c>), <c>GetQueryable</c>, or <c>GetAll</c>.
+    /// <para>
+    /// This exists because the unbound-operation collision check used to ask
+    /// <c>HasGetAll || HasGetQueryable</c>, enumerating two of the three paths: a Priority-1 profile
+    /// reports both <c>false</c> (its flag lives on <see cref="IODataEntitySetEndpointSource"/>) yet
+    /// still registers the route, so an unbound function sharing its entity set's name registered a
+    /// second <c>GET /{prefix}/{Name}</c> and every collection read of that set became an
+    /// <c>AmbiguousMatchException</c> — a raw 500 thrown by ROUTING, before OhData's group filter,
+    /// so with no OData error envelope. Asking "does a collection GET get registered" in ONE place
+    /// is what stops a fourth read path repeating it.
+    /// </para>
+    /// </summary>
+    bool HasCollectionGet { get; }
+
     bool HasGetById { get; }
     bool HasPost { get; }
     bool HasPut { get; }
