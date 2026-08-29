@@ -48,7 +48,7 @@ public class IgnoredPropertyDocsMapTests
     }
 
     private static OhDataRegistration Registration(params IEntitySetEndpointSource[] profiles) =>
-        new("/odata", new EdmModel(), profiles);
+        new("__test__", "/odata", new EdmModel(), profiles);
 
     private static OhDataRegistrationCollection Collection(params OhDataRegistration[] registrations)
     {

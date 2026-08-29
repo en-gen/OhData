@@ -196,10 +196,28 @@ public sealed class OhDataBuilder
     /// </summary>
     public OhDataBuilder AddEntitySetProfile<TProfile>() where TProfile : class, IEntitySetProfile
     {
-        if (_profileTypes.Contains(typeof(TProfile)))
+        RegisterProfileType(typeof(TProfile), explicitCall: true);
+        return this;
+    }
+
+    // #424: the single guard behind both AddEntitySetProfile<T>() (explicitCall: true) and the
+    // AddProfilesFrom* scanner path (explicitCall: false, via AddProfileType below). Before this
+    // fix only the explicit path consulted GlobalProfileRegistry, so scanning the same assembly
+    // into two named registrations silently allowed exactly what AddEntitySetProfile<T>() rejects
+    // -- a profile type belongs to exactly one registration (it is resolved per-registration and
+    // its EDM contribution is registration-scoped), and bypassing the guard didn't make sharing
+    // work, it just made the failure silent and deferred. One method, not a second parallel check
+    // that could drift from this one.
+    private void RegisterProfileType(Type type, bool explicitCall)
+    {
+        if (_profileTypes.Contains(type))
         {
-            throw new InvalidOperationException(
-                $"OhData: profile type '{typeof(TProfile).Name}' is already registered. Remove the duplicate AddEntitySetProfile call.");
+            if (explicitCall)
+            {
+                throw new InvalidOperationException(
+                    $"OhData: profile type '{type.Name}' is already registered. Remove the duplicate AddEntitySetProfile call.");
+            }
+            return; // scanner re-discovery within THIS registration -- already tracked, no-op
         }
 
         // Detect the same profile type being registered in a different OhData registration.
@@ -207,17 +225,16 @@ public sealed class OhDataBuilder
         var registryDescriptor = _services.FirstOrDefault(s => s.ServiceType == typeof(GlobalProfileRegistry));
         if (registryDescriptor?.ImplementationInstance is GlobalProfileRegistry registry)
         {
-            if (!registry.RegisteredTypes.Add(typeof(TProfile)))
+            if (!registry.RegisteredTypes.Add(type))
             {
                 throw new InvalidOperationException(
-                    $"Profile type '{typeof(TProfile).Name}' has already been registered in a different " +
+                    $"Profile type '{type.Name}' has already been registered in a different " +
                     "OhData registration. A profile type cannot be shared across registrations.");
             }
         }
 
-        _services.AddScoped<TProfile>();
-        _profileTypes.Add(typeof(TProfile));
-        return this;
+        _services.AddScoped(type);
+        _profileTypes.Add(type);
     }
 
     /// <summary>
@@ -306,15 +323,10 @@ public sealed class OhDataBuilder
     public OhDataBuilder AddProfilesFromAssembly(params Assembly[] assemblies) =>
         AddProfilesFrom(s => s.In(assemblies));
 
-    private void AddProfileType(Type type)
-    {
-        if (_profileTypes.Contains(type)) return;
-        // If another OhData registration already registered this profile type as a singleton,
-        // skip re-registering it in DI but still track it for this builder's route mapping.
-        if (!_services.Any(s => s.ServiceType == type))
-            _services.AddScoped(type);
-        _profileTypes.Add(type);
-    }
+    // #424: routes through the SAME guard AddEntitySetProfile<T>() uses (explicitCall: false, so a
+    // type this registration already tracks is a silent no-op -- ordinary scan re-discovery -- but
+    // a type another registration already claimed still throws).
+    private void AddProfileType(Type type) => RegisterProfileType(type, explicitCall: false);
 
     /// <summary>
     /// Registers an unbound function at the service root: <c>GET /prefix/{name}</c>.
@@ -612,7 +624,7 @@ public sealed class OhDataBuilder
                 capturedPrefix);
 
             var reg = new OhDataRegistration(
-                capturedPrefix, edmModel, profiles, capturedUnbound, capturedNamingPolicy, capturedOpenTypes);
+                capturedName, capturedPrefix, edmModel, profiles, capturedUnbound, capturedNamingPolicy, capturedOpenTypes);
             // Also register in the collection for named access
             sp.GetRequiredService<OhDataRegistrationCollection>().Add(capturedName, reg);
             return reg;

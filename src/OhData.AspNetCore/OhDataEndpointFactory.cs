@@ -1943,8 +1943,13 @@ internal static class OhDataEndpointFactory
                 {
                     rb.WithMetadata(new OhDataRequestBodyMetadata
                     {
+                        // #499: the key must carry registration identity -- "Unbound.{Name}" alone
+                        // is scoped to nothing but the operation name, so two registrations
+                        // declaring an unbound operation of the same name collided even when
+                        // nothing else about them overlapped (the worst of the three sites, per
+                        // #499/#425, since it doesn't even carry an entity set name).
                         BodyType = ActionBodySchemaTypeFactory.GetOrCreate(
-                            $"Unbound.{opCapture.Name}", opCapture.Parameters),
+                            $"{registration.Name}.Unbound.{opCapture.Name}", opCapture.Parameters),
                         Description = "JSON object with the action's parameters: " +
                             string.Join(", ", opCapture.Parameters.Select(p => $"{p.Name} ({p.ParameterType.Name})")) + "."
                     });
@@ -11166,8 +11171,12 @@ internal static class OhDataEndpointFactory
             {
                 rb.WithMetadata(new OhDataRequestBodyMetadata
                 {
+                    // #499: prefix with the registration name so two registrations declaring the
+                    // same entity set + action name (e.g. v1/v2 of the same versioned action) get
+                    // distinct memoized schema types instead of silently sharing whichever one
+                    // mapped first.
                     BodyType = ActionBodySchemaTypeFactory.GetOrCreate(
-                        $"{name}.{actionCapture.Name}", actionCapture.Parameters),
+                        $"{registration.Name}.{name}.{actionCapture.Name}", actionCapture.Parameters),
                     Description = "JSON object with the action's parameters: " +
                         string.Join(", ", actionCapture.Parameters.Select(p => $"{p.Name} ({p.ParameterType.Name})")) + "."
                 });
@@ -11344,8 +11353,10 @@ internal static class OhDataEndpointFactory
                 ParameterInfo[] bodyParams = actionCapture.Parameters.Skip(1).ToArray();
                 rb.WithMetadata(new OhDataRequestBodyMetadata
                 {
+                    // #499: same registration-identity prefix as the collection-level bound action
+                    // above.
                     BodyType = ActionBodySchemaTypeFactory.GetOrCreate(
-                        $"{name}.{actionCapture.Name}.Entity", bodyParams),
+                        $"{registration.Name}.{name}.{actionCapture.Name}.Entity", bodyParams),
                     Description = "JSON object with the action's parameters: " +
                         string.Join(", ", bodyParams.Select(p => $"{p.Name} ({p.ParameterType.Name})")) + "."
                 });
