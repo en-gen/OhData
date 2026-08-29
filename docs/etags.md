@@ -49,6 +49,19 @@ scalar projection - `x => x.Related.Id`, `x => x.Related.RowVersion`.
 The check sees only the *declared* type. A selector declared as `IFormattable` (or any base type)
 is accepted, and it is then the type's responsibility to render culture-independently.
 
+### Selectors that close over profile state
+
+A selector that reads only its lambda parameter (`x => x.RowVersion`) is compiled **once per
+process** and shared by every request-scoped instance of the profile.
+
+A selector that closes over anything else — a field of the profile, an injected dependency, a
+captured local — is compiled **per profile instance** instead. That costs one
+`Expression.Compile()` per request for that entity set, and it is what makes the selector correct:
+sharing it would freeze whatever the *startup-scope* instance captured (a `DbContext` resolved in a
+scope disposed immediately after registration) into every later request. Nothing is rejected and no
+configuration changes; only the caching does. The same rule applies to the key selector passed to
+the profile's base constructor.
+
 ### How values are formatted
 
 Non-binary values are formatted **round-trippably and under `InvariantCulture`** before hashing,

@@ -63,6 +63,14 @@ public sealed class ProfileScanner
             .Where(t =>
                 t.IsClass &&
                 !t.IsAbstract &&
+                // #488 item 5(a): an open generic is a template, not a profile. It was discovered,
+                // registered in DI, and then killed MapOhData() with a raw
+                // "MemberAccessException: Cannot create an instance of ..." naming no remedy --
+                // and no way existed to exclude it from the scan. Skipping is what every DI
+                // scanner does, and a CLOSED generic profile is still discovered normally. One
+                // predicate serves both profile kinds, so the entity-set path (which the issue
+                // notes shares the gap) is covered by the same line.
+                !t.ContainsGenericParameters &&
                 IsProfile(t) &&
                 !_alreadyRegistered.Contains(t));
 
