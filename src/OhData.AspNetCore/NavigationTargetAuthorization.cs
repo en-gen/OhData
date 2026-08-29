@@ -56,11 +56,8 @@ internal static class NavigationTargetAuthorization
         // the LAST generic rule matching the category wins, and a rule naming a bound operation is
         // never generic. Navigation routes never carry a bound-operation name, so that half of the
         // resolution cannot apply here.
-        OperationAuthRule? resolved = null;
-        foreach (OperationAuthRule rule in rules)
-        {
-            if ((rule.Operations & category) != 0 && rule.BoundOperationName is null) resolved = rule;
-        }
+        OperationAuthRule? resolved = rules.LastOrDefault(
+            rule => (rule.Operations & category) != 0 && rule.BoundOperationName is null);
 
         // No rule for the category → ApplyOperationAuth returns without applying anything, and the
         // profile-wide model is mutually exclusive with this one, so the category is anonymous.
