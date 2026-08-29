@@ -10299,24 +10299,86 @@ internal static class OhDataEndpointFactory
         // request. Nothing else changes — capping the shared cache or refusing to cache misses would
         // both have made a hot READ-path helper slower to close a WRITE-path hole.
         //
-        // BEHAVIOURALLY IDENTICAL TO THE CALL IT REPLACES, deliberately and to the letter. The table
-        // is built from the same reflection walk (public instance, non-indexer), keyed EDM name first
-        // and CLR name second as non-overwriting aliases — which is exactly FindClrPropertyByEdmName's
-        // two-stage FirstOrDefault, since insertion follows GetProperties() order and TryAdd keeps
-        // the first writer. The comparer is OrdinalIgnoreCase UNCONDITIONALLY, matching that helper
-        // rather than the binder: it has always matched case-insensitively regardless of
-        // PropertyNameCaseInsensitive, and following the binder here would CHANGE what PATCH binds.
+        // #510 built the table from the same reflection walk (public instance, non-indexer), keyed
+        // EDM name first and CLR name second as non-overwriting aliases — which is exactly
+        // FindClrPropertyByEdmName's two-stage FirstOrDefault, since insertion follows
+        // GetProperties() order and TryAdd keeps the first writer. That was deliberately behaviour-
+        // preserving, and it preserved a defect along with the behaviour.
         //
-        // Note this is deliberately NOT keyed off the binder's contract the way #511 keyed
-        // deepWriteNavByBodyName. Adding JsonTypeInfo.Properties[].Name would make PATCH start
-        // binding names it does not bind today (a snake_case body key against a PascalCase CLR
-        // property, say) — a real per-host divergence, but a separate behaviour change from #510 and
-        // one that belongs to its own issue rather than riding along inside a memory fix.
+        // #536 GAVE IT THE BINDER'S OWN ANSWER AS ITS PRIMARY KEY. ⚠ BREAKING: PATCH now binds body
+        // keys it silently dropped before. This is #511 manifestation (2) surviving on one route.
+        // The EDM name is deliberately POLICY-FREE ($metadata advertises the CLR identifier whatever
+        // casing payloads use, OData §4.4), while the VALUE this loop binds is deserialized with the
+        // registration's serializer options — so under a non-case-preserving PropertyNamingPolicy
+        // the two disagreed and PATCH answered 200 having changed nothing. camelCase differs from
+        // the CLR name only by case, so the OrdinalIgnoreCase comparer hid it for the one policy
+        // anyone had configured; SnakeCaseLower and KebabCaseLower did not. Measured: with
+        // SnakeCaseLower, PATCH {"first_name":"x"} against a `FirstName` property was a 200 no-op.
+        //
+        // Direction: fail-CLOSED on the write (the change is dropped, not applied), so it is data
+        // loss under a 200 rather than an unauthorized mutation — the mirror of #511's direction,
+        // and still a silent wrong answer.
+        //
+        // Fixed the way #511 fixed the deep-write table, and for the same reason: adding
+        // PropertyNamingPolicy?.ConvertName(...) as a third key closes one policy, not the CLASS,
+        // which is "two things that must agree, derived independently" (#454's shape). The primary
+        // key is read OFF THE CONTRACT the binder resolves. JsonTypeInfo.Properties[].Name is, by
+        // construction, the string System.Text.Json matches a body key against, whatever produced it
+        // — a naming policy, a [JsonPropertyName], a custom TypeInfoResolver modifier, or a
+        // source-generated contract — so there is no second derivation left to drift.
+        //
+        // HasSameMetadataDefinitionAs, never == / ReferenceEquals, to pair a JsonPropertyInfo back
+        // to its PropertyInfo. PropertyInfo equality also compares ReflectedType, and for an
+        // INHERITED member the two reflection walks disagree about it — typeof(TModel).GetProperties()
+        // reports TModel while STJ's AttributeProvider reports the declaring base. That is #462's
+        // third defect, measured on .NET 10.0.11; here it would show up as an inherited property
+        // silently losing its contract key, i.e. this very defect surviving on one member.
+        //
+        // The EDM name and the CLR name STAY, demoted to non-overwriting aliases, exactly as in
+        // deepWriteNavByBodyName. FindClrPropertyByEdmName is what the rest of the framework resolves
+        // through, so dropping them would trade a per-host divergence for a per-verb one. On a
+        // default host every alias collapses onto the contract key under the comparer, so nothing
+        // shipped moves.
+        //
+        // The comparer stays OrdinalIgnoreCase UNCONDITIONALLY and does NOT follow
+        // PropertyNameCaseInsensitive the way deepWriteNavByBodyName's does. The two tables answer
+        // different questions. That one shadows a separate reader (the deserializer), so a table
+        // wider than the binder strips a navigation the binder never bound — #506's destruction
+        // case. This table has no reader to shadow: PATCH enumerates the body's own members and
+        // deserializes each VALUE individually, so the table IS the matcher for the root object.
+        // Narrowing it to Ordinal on a host that cleared the flag would change what PATCH binds in a
+        // direction #536 does not ask for, and would break the FindClrPropertyByEdmName parity the
+        // aliases exist to preserve.
+        //
+        // A property the contract does not carry gets no contract key — an Ignore()d one, which
+        // IgnoredPropertyJsonOptions REMOVES from typeInfo.Properties. It keeps its EDM/CLR aliases
+        // and the loop below still skips it via IgnoredPropertyNames, so the widening cannot make a
+        // withheld property newly bindable under a policy spelling.
+        //
+        // This is a lookup TABLE and not a call to FindClrPropertyByEdmName per body key on purpose;
+        // that is #510's reason and it is unchanged. The helper memoizes on (Type, string) in a
+        // process-wide ConcurrentDictionary keyed by the exact string handed in, and the PATCH delta
+        // loop called it once per BODY PROPERTY NAME — so a caller could grow that dictionary
+        // without bound by sending bodies full of distinct unmatched keys, each a permanent entry
+        // for the life of the process. The names PATCH can encounter are bounded by the MODEL.
         var patchPropByBodyName = new Dictionary<string, PropertyInfo>(StringComparer.OrdinalIgnoreCase);
         PropertyInfo[] patchCandidateProps = typeof(TModel)
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
             .Where(p => p.GetIndexParameters().Length == 0)
             .ToArray();
+
+        JsonTypeInfo? patchWriteContract = TryResolveWriteContract(typeof(TModel), jsonOptions);
+        if (patchWriteContract is not null)
+        {
+            foreach (JsonPropertyInfo contractProp in patchWriteContract.Properties)
+            {
+                if (contractProp.AttributeProvider is not PropertyInfo clrMember) continue;
+                PropertyInfo? match = patchCandidateProps.FirstOrDefault(
+                    candidate => clrMember.HasSameMetadataDefinitionAs(candidate));
+                if (match is not null) patchPropByBodyName[contractProp.Name] = match;
+            }
+        }
+
         foreach (PropertyInfo p in patchCandidateProps)
             patchPropByBodyName.TryAdd(ODataPropertyNaming.ResolveEdmName(p), p);
         foreach (PropertyInfo p in patchCandidateProps)
