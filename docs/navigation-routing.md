@@ -93,7 +93,7 @@ as "no children" (`[]`) for `HasMany`, or "no related entity" (`null`) for
 ## Navigation route behaviour
 
 - Returning `null` from the handler produces `404 Not Found`
-- Authorization from the parent profile is applied to navigation routes automatically — both the all-operations `RequireAuthorization()`/`RequireRoles()` and per-operation `ConfigureAuthorization(...)` (a nav read is `Read`, a nav `POST`/`$ref` write is `Create`/`Update`; `.RequireResource()` checks against the parent entity)
+- Authorization from the parent profile is applied to navigation routes automatically — both the all-operations `RequireAuthorization()`/`RequireRoles()` and per-operation `ConfigureAuthorization(...)` (a nav read is `Read`, a nav `POST`/`$ref` write is `Create`/`Update`; `.RequireResource()` checks against the parent entity). **The parent profile's rule is the only one applied**: if the navigation's target type is also registered as its own, more strictly protected entity set, that set's rule is *not* consulted here, and `$expand` follows the same rule. `MapOhData()` warns when it spots the mismatch — see [Authorization is per-profile and does not compose across a navigation](authorization.md#authorization-is-per-profile-and-does-not-compose-across-a-navigation)
 - Navigation routes are tagged with the parent entity set name in OpenAPI/Swagger
 - For collection navigations, `$orderby`, `$top`, `$skip`, `$count`, and `$select` are honored on the returned collection via ad-hoc in-memory `IEnumerable`/`IEnumerable<T>.OrderBy` operations (not pushed down to the handler or to SQL). Options are applied in standard OData order: `$orderby`, then `$skip`, then `$top` (`$count` is captured after `$skip` but before `$top`, per spec - the count reflects the collection after skipping but before the page limit is applied). `$orderby` supports multiple sort keys (`Prop1 asc,Prop2 desc`) and is case-insensitive on the property name. An unknown property name in `$orderby` returns `400 Bad Request` (`InvalidQueryOption`), matching `$select`'s validation behavior.
 - Any other system query option (`$filter`, `$expand`, `$search`, `$apply`, `$compute`, `$skiptoken`, `$deltatoken`) is **not implemented on navigation routes** and returns `400 Bad Request` (`UnsupportedQueryOption`) rather than being silently ignored (OData 4.0 Minimal conformance item 7: parse the option or reject it). To filter related data, expose the child entity set with its own profile and query it directly.
@@ -115,7 +115,11 @@ was declared with a delegate** (#206):
   pushdown.** On the EF Core-backed `GetQueryable` path the navigation is folded into the collection
   query's projection, so one JOIN'd query loads the page and its related rows. No delegate to write,
   no N+1. (Previously such a navigation was `$metadata`-only and silently skipped under `$expand` —
-  that is no longer the case.)
+  that is no longer the case.) There is no delegate on this path, so there is **no per-navigation
+  hook to scope or authorize the related rows** — the parent profile's own rule, the
+  `ExpandProperties` allowlist and `Ignore()` are the controls available. Declaring the navigation
+  is the decision to expose it; see
+  [authorization.md](authorization.md#authorization-is-per-profile-and-does-not-compose-across-a-navigation).
 - **Delegate-backed navigation** (`getAll`/`get`/`batchGetAll`/`batchGet`) → **delegate expansion,
   never pushed down.** It's a post-processing step over the already-serialized parent page, driven
   by the handler delegate. The delegate may filter/order/authorize, so it is always honored;

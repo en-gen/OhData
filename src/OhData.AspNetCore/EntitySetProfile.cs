@@ -632,11 +632,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         // hold the STARTUP scope's captured state for the process lifetime. Decided per instance
         // rather than per type: a profile is free to call UseETag with different selectors on
         // different constructions, and the cache must not be poisoned by whichever ran first.
-        bool cacheable = true;
-        foreach (Expression<Func<TModel, object?>> selector in propertySelectors)
-        {
-            if (CapturedState.IsCapturedByExpression(selector)) { cacheable = false; break; }
-        }
+        bool cacheable = !propertySelectors.Any(CapturedState.IsCapturedByExpression);
 
         // Reuse the cached compiled delegate if available (avoids recompiling on every scoped construction).
         if (cacheable && s_etagCache.TryGetValue(GetType(), out var cached))
