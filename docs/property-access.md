@@ -1,4 +1,4 @@
-﻿# Individual Property Access
+# Individual Property Access
 
 OhData supports reading a single structural property of an entity directly, without fetching the
 whole entity (OData §11.2.6, JSON format Part 2 §4.6-4.7):

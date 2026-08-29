@@ -1,4 +1,4 @@
-﻿# OData 4.0 Spec Compliance
+# OData 4.0 Spec Compliance
 
 OhData targets the [OData 4.0 specification](https://docs.oasis-open.org/odata/odata/v4.0/odata-v4.0-part1-protocol.html). This page documents which sections are implemented and any known limitations.
 
