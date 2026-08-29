@@ -218,18 +218,83 @@ public class ExpandPagingStartupDiagnosticTests
         Action<OhDataBuilder> configure)
     {
         var capture = new WarningCapture();
+
+        // #451: ONE name per fixture, evaluated HERE. The AddDbContext options lambda below runs on
+        // every DbContext instantiation, so a Guid.NewGuid() inside it handed each scope a different
+        // database name — and therefore a fresh EMPTY database. See
+        // ServesTheRowsItSeeded_SoTheFixtureIsNotAFreshEmptyDatabasePerScope.
+        string dbName = Guid.NewGuid().ToString();
+
         TestFixture fx = await TestHostBuilder.BuildAsync(
             configure,
             configureServices: s =>
             {
                 s.AddSingleton<ILoggerProvider>(capture);
-                s.AddDbContext<EpdDbContext>(o => o.UseInMemoryDatabase(Guid.NewGuid().ToString()));
+                s.AddDbContext<EpdDbContext>(o => o.UseInMemoryDatabase(dbName));
             });
+
+        SeedOnce(fx);
         return (fx, capture);
+    }
+
+    /// <summary>
+    /// Two parents, one owner and two children, written through the host's own scope — the same
+    /// seed-here / serve-there shape <c>BareExpandSqliteHarness</c> uses, and the shape that makes
+    /// the database NAME a fixture-wide value rather than a per-scope one.
+    /// </summary>
+    private static void SeedOnce(TestFixture fx)
+    {
+        using IServiceScope scope = fx.App.Services.CreateScope();
+        EpdDbContext db = scope.ServiceProvider.GetRequiredService<EpdDbContext>();
+
+        db.Owners.Add(new EpdOwner { Id = 100, Name = "Own1" });
+        db.Parents.AddRange(
+            new EpdParent { Id = 1, Name = "P1", OwnerId = 100 },
+            new EpdParent { Id = 2, Name = "P2" });
+        db.Children.AddRange(
+            new EpdChild { Id = 1, ParentId = 1, Label = "C1" },
+            new EpdChild { Id = 2, ParentId = 1, Label = "C2" });
+        db.SaveChanges();
     }
 
     private static IReadOnlyList<string> BareExpandWarnings(WarningCapture logs) =>
         logs.Warnings.Where(w => w.Contains("MaxExpandTop resolves to null", StringComparison.Ordinal)).ToList();
+
+    /// <summary>
+    /// #451: THE FIXTURE ITSELF, ASSERTED. <c>BuildAsync</c> configured EF InMemory as
+    /// <c>UseInMemoryDatabase(Guid.NewGuid().ToString())</c> <b>inside</b> the <c>AddDbContext</c>
+    /// options lambda. That lambda runs once per <c>DbContext</c> <i>instantiation</i>, not once at
+    /// registration, so the seeding scope and every request scope each got their own database name
+    /// and therefore their own empty database.
+    /// <para>
+    /// It was latent only because every other test in this class asserts on startup LOG OUTPUT, which
+    /// an empty database cannot disturb. This test is the one that cannot pass vacuously: it seeds
+    /// two parents and then reads them back over HTTP. Measured against the unfixed fixture it fails
+    /// with <c>Assert.Equal() Failure: Values differ / Expected: 2 / Actual: 0</c> — every row gone,
+    /// under a <c>200</c>.
+    /// </para>
+    /// <para>
+    /// It exists so nobody has to notice the bug again: a fixture named for a paging knob will
+    /// eventually get a row-serving test, and this is it.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task ServesTheRowsItSeeded_SoTheFixtureIsNotAFreshEmptyDatabasePerScope()
+    {
+        (TestFixture fx, WarningCapture _) = await BuildAsync(o => o.AddEntitySetProfile<EpdExposedProfile>());
+        await using TestFixture owned = fx;
+
+        System.Text.Json.JsonElement root = await fx.Client
+            .GetFromJsonAsync<System.Text.Json.JsonElement>("/odata/EpdParents");
+        System.Text.Json.JsonElement value = root.GetProperty("value");
+
+        Assert.Equal(2, value.GetArrayLength());
+        List<string?> names = value.EnumerateArray()
+            .Select(e => e.GetProperty("Name").GetString())
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToList();
+        Assert.Equal(new List<string?> { "P1", "P2" }, names);
+    }
 
     [Fact]
     public async Task Fires_OncePerCollectionNavigation_NamingTheSetTheNavAndMaxExpandTop()
@@ -436,12 +501,19 @@ public class ExpandPagingStartupDiagnosticTests
     public async Task Fires_OnAPreExistingFixtureItDidNotAuthor()
     {
         var capture = new WarningCapture();
+
+        // #451: same hoist as BuildAsync above — one name for the whole fixture, not one per
+        // DbContext instantiation. This host is never seeded (the assertion is on the startup
+        // diagnostic, which runs before any request), but a per-scope database is wrong here for the
+        // same reason and is exactly the trap the next person to add a row assertion would hit.
+        string dbName = Guid.NewGuid().ToString();
+
         await using TestFixture fx = await TestHostBuilder.BuildAsync(
             o => o.AddEntitySetProfile<BeAuthorProfile>(),
             configureServices: s =>
             {
                 s.AddSingleton<ILoggerProvider>(capture);
-                s.AddDbContext<BareExpandDbContext>(o => o.UseInMemoryDatabase(Guid.NewGuid().ToString()));
+                s.AddDbContext<BareExpandDbContext>(o => o.UseInMemoryDatabase(dbName));
             });
 
         string warning = Assert.Single(BareExpandWarnings(capture));

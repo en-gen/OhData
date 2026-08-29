@@ -839,6 +839,39 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   member-init dropping a TPH-derived row's own structural properties when `$expand` is added) is a
   projection-shape problem and is **not** fixed here.
 
+- **Two test fixtures whose shared or regenerating state made tests silently vacuous or racy (#451,
+  #515).** Test-only; no shipped code changed and no wire behaviour moves.
+
+  **#451.** `ExpandPagingEnabledTests`' EF InMemory fixture called
+  `UseInMemoryDatabase(Guid.NewGuid().ToString())` **inside** the `AddDbContext` options lambda. That
+  lambda runs once per `DbContext` *instantiation*, not once at registration, so every scope got a
+  different database name and therefore a **fresh empty database** — the seeding scope and the
+  request scope could never see each other. It was latent only because every test on the fixture
+  asserts on startup log output, which an empty database cannot disturb. The name is hoisted to one
+  value per fixture at both sites in the file, the fixture now seeds two parents through the host's
+  own scope, and a new row-serving test reads them back over HTTP. **Verified to fail** against the
+  unfixed fixture with `Assert.Equal() Failure: Values differ / Expected: 2 / Actual: 0` — every row
+  gone, under a `200`. A repo-wide sweep found no other instance: the four remaining
+  `UseInMemoryDatabase` call sites are all correct (three use a fixed literal name and seed
+  if-empty; one is a per-test factory method that deliberately wants a fresh database and seeds it on
+  the spot).
+
+  **#515.** `IgnProductProfile.LastPosted`/`LastPut`/`LastPatchChangedNames` were process-wide
+  `static` fields reset-then-asserted by `IgnorePropertyIntegrationTests` **and**
+  `OpenTypeIgnoreContainmentTests`, the latter clearing two of them from `InitializeAsync` so its
+  *setup* could land inside the other's assertion window — #484's race exactly. It had been papered
+  over with a shared `[Collection]`, which schedules around the shared state rather than removing it
+  and costs parallelism between two classes with no reason to be serialised. Following #484's shape:
+  the captures are now an `IgnProductWriteCaptures` singleton registered per host, the statics and
+  every reset site are **deleted** (a capture that cannot be reset cannot be reset at the wrong
+  moment), and the `[Collection]` attribute is gone. The issue's stated reason for not doing this the
+  first time — `IgnProductProfile` is registered from three files across six call sites, and a missed
+  one is a request-time DI failure rather than a compile error — is closed structurally: the capture
+  is a **required constructor parameter**, all six sites route through one `IgnProductHost` helper,
+  and `IgnProductCaptureRegistrationTests` pins that a host skipping the registration throws
+  `InvalidOperationException` naming `IgnProductWriteCaptures` out of `MapOhData()`, i.e. at host
+  build, before any request.
+
 ---
 
 ## [1.6.0] - 2026-08-27

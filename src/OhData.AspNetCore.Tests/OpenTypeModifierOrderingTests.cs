@@ -172,10 +172,7 @@ public class OpenTypeModifierOrderingTests
     [Fact]
     public async Task TheWholeChainSurvivesIntoTheNavSuppressedSerializationPath()
     {
-        await using TestFixture fx = await TestHostBuilder.BuildAsync(b => b
-            .AddEntitySetProfile<IgnProductProfile>()
-            .AddEntitySetProfile<IgnTagProfile>()
-            .AddEntitySetProfile<IgnControlProfile>());
+        await using TestFixture fx = await IgnProductHost.BuildAsync();
 
         string body = await fx.Client.GetStringAsync("/odata/IgnProducts");
         using JsonDocument doc = JsonDocument.Parse(body);
@@ -203,10 +200,7 @@ public class OpenTypeModifierOrderingTests
     [Fact]
     public async Task TheWholeChainSurvivesOnTheSingleEntityRoute()
     {
-        await using TestFixture fx = await TestHostBuilder.BuildAsync(b => b
-            .AddEntitySetProfile<IgnProductProfile>()
-            .AddEntitySetProfile<IgnTagProfile>()
-            .AddEntitySetProfile<IgnControlProfile>());
+        await using TestFixture fx = await IgnProductHost.BuildAsync();
 
         string body = await fx.Client.GetStringAsync("/odata/IgnProducts(1)");
         using JsonDocument doc = JsonDocument.Parse(body);
@@ -227,10 +221,7 @@ public class OpenTypeModifierOrderingTests
     [Fact]
     public async Task TheWholeChainSurvivesUnderExpand()
     {
-        await using TestFixture fx = await TestHostBuilder.BuildAsync(b => b
-            .AddEntitySetProfile<IgnProductProfile>()
-            .AddEntitySetProfile<IgnTagProfile>()
-            .AddEntitySetProfile<IgnControlProfile>());
+        await using TestFixture fx = await IgnProductHost.BuildAsync();
 
         string body = await fx.Client.GetStringAsync("/odata/IgnProducts?$expand=Tags");
         using JsonDocument doc = JsonDocument.Parse(body);
