@@ -48,7 +48,7 @@ public class IgnoredPropertyDocsMapTests
     }
 
     private static OhDataRegistration Registration(params IEntitySetEndpointSource[] profiles) =>
-        new("/odata", new EdmModel(), profiles);
+        new("__test__", "/odata", new EdmModel(), profiles);
 
     private static OhDataRegistrationCollection Collection(params OhDataRegistration[] registrations)
     {
@@ -80,7 +80,7 @@ public class IgnoredPropertyDocsMapTests
     {
         var map = IgnoredPropertyDocsMap.Build(
             Collection(Registration(new IgnoringProfile(), new PlainProfile())));
-        var names = Assert.Contains(typeof(DocsMapModel), (IReadOnlyDictionary<Type, IReadOnlySet<string>>)map);
+        bool names = Assert.Contains(typeof(DocsMapModel), (IReadOnlyDictionary<Type, IReadOnlySet<string>>)map);
         Assert.Contains("CostBasis", names);
         Assert.DoesNotContain("InternalNotes", names);
     }
@@ -93,7 +93,7 @@ public class IgnoredPropertyDocsMapTests
         var map = IgnoredPropertyDocsMap.Build(Collection(
             Registration(new IgnoringProfile()),
             Registration(new OtherIgnoringProfile())));
-        var names = Assert.Contains(typeof(DocsMapModel), (IReadOnlyDictionary<Type, IReadOnlySet<string>>)map);
+        bool names = Assert.Contains(typeof(DocsMapModel), (IReadOnlyDictionary<Type, IReadOnlySet<string>>)map);
         Assert.Contains("CostBasis", names);
         Assert.Contains("InternalNotes", names);
     }

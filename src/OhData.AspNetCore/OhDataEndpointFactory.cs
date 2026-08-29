@@ -1778,11 +1778,15 @@ internal static class OhDataEndpointFactory
             {
                 rb.Produces<TModel>(200);
             }
+            // #497: the SAME element predicate WrapBoundOpResult applies — assignability, not
+            // equality — so a delegate declared `Task<List<TDerived>>` is documented as the
+            // collection envelope it will actually be served in, rather than as a bare
+            // List<TDerived>. One predicate, two sites; they must move together.
             else if (returnType != typeof(string) &&
                      typeof(System.Collections.IEnumerable).IsAssignableFrom(returnType) &&
                      returnType.GetInterfaces().Concat(new[] { returnType })
                          .Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IEnumerable<>)
-                                   && i.GetGenericArguments()[0] == typeof(TModel)))
+                                   && typeof(TModel).IsAssignableFrom(i.GetGenericArguments()[0])))
             {
                 rb.Produces<ODataCollectionResponse<TModel>>(200);
             }
@@ -1948,8 +1952,13 @@ internal static class OhDataEndpointFactory
                 {
                     rb.WithMetadata(new OhDataRequestBodyMetadata
                     {
+                        // #499: the key must carry registration identity -- "Unbound.{Name}" alone
+                        // is scoped to nothing but the operation name, so two registrations
+                        // declaring an unbound operation of the same name collided even when
+                        // nothing else about them overlapped (the worst of the three sites, per
+                        // #499/#425, since it doesn't even carry an entity set name).
                         BodyType = ActionBodySchemaTypeFactory.GetOrCreate(
-                            $"Unbound.{opCapture.Name}", opCapture.Parameters),
+                            $"{registration.Name}.Unbound.{opCapture.Name}", opCapture.Parameters),
                         Description = "JSON object with the action's parameters: " +
                             string.Join(", ", opCapture.Parameters.Select(p => $"{p.Name} ({p.ParameterType.Name})")) + "."
                     });
@@ -2501,7 +2510,7 @@ internal static class OhDataEndpointFactory
     private static IResult? ValidateExpandBreadth(SelectExpandClause? clause, int cap, int maxExpansionDepth)
     {
         if (clause is null) return null;
-        int count = CountExpandNodes(clause, maxExpansionDepth, cap);
+        int count = CountExpandNodes((SelectExpandClause)clause, maxExpansionDepth, cap);
         if (count <= cap) return null;
 
         // The message states the LIMIT, not the request's actual count: CountExpandNodes stops as
@@ -2710,9 +2719,9 @@ internal static class OhDataEndpointFactory
         // an opinion at its OWN level, and a navigation with an opinion never reaches the
         // no-opinion arm at all. Issue466NavOmissionRegressionTests is the tripwire.
         HashSet<string>? levelsNavNames = pushedLevelsNavNames;
-        if (rootClauseForSerialize is not null && ClauseHasLevels(rootClauseForSerialize) &&
+        if (rootClauseForSerialize is not null && ClauseHasLevels((SelectExpandClause)rootClauseForSerialize) &&
             CollectRawServedLevelsNavNames(
-                rootClauseForSerialize, new[] { requestSource }, registration, requestServices,
+                (SelectExpandClause)rootClauseForSerialize, new[] { requestSource }, registration, requestServices,
                 null, depth: 1) is { } rawLevelsNavNames)
         {
             if (levelsNavNames is null)
@@ -3566,15 +3575,21 @@ internal static class OhDataEndpointFactory
 
     // Gate-side convenience over ResolveProfilesForEdmType: resolves a CLR element type (as seen at
     // query-plan time, e.g. binding.ElementType) to its declared EDM entity type via the same
-    // model.FindDeclaredType(...) convention IsMemberInitProjectable already relies on, then defers to
+    // EdmClrTypeMap lookup IsMemberInitProjectable already relies on, then defers to
     // ResolveProfilesForEdmType so the gate's candidate set is computed by the exact same EDM-type
     // match the delegate path uses — never CLR-type equality/assignability on its own, which is what
     // made #293's original fix over-broad (matching a base/derived CLR type rather than the exact EDM
     // entity type the level is actually reached through).
+    //
+    // #508: the lookup used to be model.FindDeclaredType(clrType.FullName), which matches on the EDM
+    // type's FULL NAME and so returns null for EVERY type on a renamed schema. The candidate set was
+    // then empty, ResolveNavTreatment saw no candidates, and the gate deferred — silently, model-wide.
+    // See EdmClrTypeMap for why the annotation route has no such failure mode, and why the lookup
+    // stays EXACT here.
     private static IReadOnlyList<IEntitySetEndpointSource> ResolveProfilesForClrType(
         Type clrType, IEdmModel model, OhDataRegistration registration)
     {
-        IEdmEntityType? edmType = model.FindDeclaredType(clrType.FullName ?? clrType.Name) as IEdmEntityType;
+        IEdmEntityType? edmType = EdmClrTypeMap.FindEntityType(model, clrType);
         return ResolveProfilesForEdmType(edmType, registration);
     }
 
@@ -3949,7 +3964,7 @@ internal static class OhDataEndpointFactory
         }
 
         Type clrType = value.GetType();
-        JsonSerializerOptions navSuppressed = GetNavSuppressedOptions(opts, model, edmType, clrType);
+        JsonSerializerOptions navSuppressed = GetNavSuppressedOptions(opts, model, (IEdmEntityType)edmType, clrType);
         JsonNode? node = JsonSerializer.SerializeToNode(value, clrType, navSuppressed);
 
         // Fold-in #2 (200→500 regression): a custom JsonConverter on the ENTITY type itself may
@@ -3965,7 +3980,7 @@ internal static class OhDataEndpointFactory
         (Dictionary<string, SelectExpandClause?>? expanded, Dictionary<string, int>? levelsRemaining) =
             BuildExpandLookup(clause, levelsNavNames, maxLevels);
 
-        SpliceKeptNavigations(obj, value, clrType, edmType, model, expanded, levelsRemaining, activeLevels, opts,
+        SpliceKeptNavigations(obj, value, clrType, (IEdmEntityType)edmType, model, expanded, levelsRemaining, activeLevels, opts,
             maxLevels, levelsNavNames);
 
         return obj;
@@ -4140,7 +4155,7 @@ internal static class OhDataEndpointFactory
             Type t = value.GetType();
             if ((seenTypes ??= new HashSet<Type>()).Add(t))
             {
-                navSuppressed = GetNavSuppressedOptions(opts, model, edmType, t);
+                navSuppressed = GetNavSuppressedOptions(opts, model, (IEdmEntityType)edmType, t);
                 // Piggy-backed on the distinct-type pass that already exists, so the polymorphism
                 // test costs one cached lookup per DISTINCT runtime type per collection — never a
                 // per-element check on the hot path.
@@ -4214,7 +4229,7 @@ internal static class OhDataEndpointFactory
             // null entity) is likewise left as whatever the batched call already produced for it.
             if (values[i] is not { } value || batched[i] is not JsonObject obj) continue;
 
-            SpliceKeptNavigations(obj, value, value.GetType(), edmType, model, expanded, levelsRemaining,
+            SpliceKeptNavigations(obj, value, value.GetType(), (IEdmEntityType)edmType, model, expanded, levelsRemaining,
                 activeLevels, opts, maxLevels, levelsNavNames);
         }
 
@@ -4326,7 +4341,7 @@ internal static class OhDataEndpointFactory
     // THE ORDER DEPENDENCE IS NOW GONE BY CONSTRUCTION, not patched edge by edge. The modifier below
     // computes the suppression set ITSELF, as a pure function of (typeInfo.Type, the EDM), at the
     // moment STJ resolves the contract — so it cannot matter which route reached the type, or
-    // whether any route reached it at all. `EdmEntityTypeByClrType` is what makes that function
+    // whether any route reached it at all. `EdmTypeByClrType` is what makes that function
     // total: one walk of the schema (SeedNavSuppressionModel) maps EVERY EDM-declared entity type to
     // its CLR type up front, before any contract can be resolved on Derived. Nothing about the
     // caller, the call order, or the reachability path is consulted.
@@ -4344,6 +4359,34 @@ internal static class OhDataEndpointFactory
     // proxy or any other CLR subclass the EDM does not declare (the base-chain walk in
     // BuildNavClrNames resolves it to its nearest EDM-known ancestor), and any future edge nobody
     // has thought of — because none of them is an edge any more.
+    //
+    // #507 — THE "COMPLEX TYPE CARRYING AN ENTITY-TYPED MEMBER" CLAIM ABOVE WAS FALSE WHEN #491
+    // MADE IT, AND IS TRUE ONLY NOW. The seed walked model.SchemaElements.OfType<IEdmEntityType>()
+    // alone, and AddNavClrNames read navigations off entity types alone. But
+    // ODataConventionModelBuilder models an entity-typed member of a COMPLEX type as a navigation
+    // ON THE COMPLEX TYPE (measured: `class PxMeta { string Note; PxEntity Owner; }` yields
+    // `<ComplexType Name="PxMeta"><NavigationProperty Name="Owner" .../>`), so BuildNavClrNames'
+    // base-chain lookup into an entity-only map computed an EMPTY set for every complex CLR type and
+    // the modifier removed nothing. What #491's own measurement covered was the entity reached
+    // THROUGH the member — `Owner.Children` really was suppressed — which is exactly why the gap
+    // looked closed. Measured on the pre-fix tree, both consequences on a PLAIN GET with no query
+    // string: `"Meta":{"Note":"y","Owner":{...}}` — navigation data inline with no $expand naming it
+    // (§4.5.1) — and `E.Meta.Owner = E` throwing `JsonException: A possible object cycle was
+    // detected`, i.e. the group filter's 500, on every request. Neither is order-dependent and
+    // neither needs open types, unlike #482's poisoning step.
+    //
+    // The map is therefore keyed by IEdmStructuredType now, and the invariant test that could not
+    // see this (RuntimeTypeConfigResolutionTests.EveryEdmEntityType_ResolvesSuppressed_*, a universal
+    // statement that quantified over ENTITY types only) has a complex-type twin.
+    //
+    // SUPPRESSED, NOT SERVED, for the same reason a derived-declared navigation is (see
+    // GetNavSuppressedOptions' remarks): §4.5.1/§11.2.4.2 require a non-expanded navigation to be
+    // omitted, and SpliceKeptNavigations iterates the ENTITY type's navigations, so a complex type's
+    // navigation has no route into `expanded` and no splice would ever put it back. "Serve it" would
+    // mean serving it unconditionally, which is the defect. `$expand=Meta/Owner` — a complex-type
+    // path segment the OData parser does accept — is consequently omitted rather than expanded; that
+    // is a pre-existing feature gap (the splice never handled it), not a regression, and it now fails
+    // the same way an unexpanded navigation does instead of leaking the whole graph.
     //
     // The review's third reasoned edge — a navigation FindClrPropertyByEdmName cannot resolve — is
     // REAL and is closed at AddNavClrNames instead, by reading the model builder's own
@@ -4369,13 +4412,14 @@ internal static class OhDataEndpointFactory
     // the process, which matters for test suites (e.g. WebApplicationFactory) that construct a fresh
     // host — and therefore fresh options — per test class.
     //
-    // EdmEntityTypeByClrType (#482): every EDM-declared entity type of every model seeded onto this
-    // options instance, keyed by its CLR type. Filled by SeedNavSuppressionModel BEFORE any contract
-    // can be resolved on Derived; read — never written — by the resolver modifier. Together with the
-    // type it is handed, it is the WHOLE of the modifier's input.
+    // EdmTypeByClrType (#482, widened to complex types by #507): every EDM-declared STRUCTURED type
+    // — entity AND complex — of every model seeded onto this options instance, keyed by its CLR type.
+    // Filled by SeedNavSuppressionModel BEFORE any contract can be resolved on Derived; read — never
+    // written — by the resolver modifier. Together with the type it is handed, it is the WHOLE of the
+    // modifier's input.
     //
     // SeededModels/SeedGate (#482): which IEdmModel instances have already been walked into
-    // EdmEntityTypeByClrType, and the gate that publishes that flag LAST so a second thread which
+    // EdmTypeByClrType, and the gate that publishes that flag LAST so a second thread which
     // observes "seeded" also observes a COMPLETE map. See SeedNavSuppressionModel for why a bare
     // ConcurrentDictionary flag would not be enough.
     private sealed record NavSuppressionState(
@@ -4384,7 +4428,7 @@ internal static class OhDataEndpointFactory
         ConcurrentDictionary<Type, HashSet<string>> NavClrNamesByType,
         ConcurrentDictionary<Type, JsonTypeInfo?> BaseTypeInfoByType,
         ConcurrentDictionary<Type, bool> PolymorphicByType,
-        ConcurrentDictionary<Type, NavSourceBinding> EdmEntityTypeByClrType,
+        ConcurrentDictionary<Type, NavSourceBinding> EdmTypeByClrType,
         ConcurrentDictionary<IEdmModel, bool> SeededModels,
         object SeedGate);
 
@@ -4392,7 +4436,9 @@ internal static class OhDataEndpointFactory
     // navigation -> CLR member mapping the builder recorded lives as an annotation ON THE MODEL, and
     // Microsoft.OData.Edm gives an IEdmNavigationProperty no back-reference to the model that owns
     // it - the same reason IEdmModel is threaded through the SerializeBounded family (#343).
-    private readonly record struct NavSourceBinding(IEdmModel? Model, IEdmEntityType EdmType);
+    // #507: IEdmStructuredType, not IEdmEntityType — a complex type carrying an entity-typed member
+    // declares navigations too, and they were never in the map (see CreateNavSuppressionState).
+    private readonly record struct NavSourceBinding(IEdmModel? Model, IEdmStructuredType EdmType);
 
     private static readonly ConditionalWeakTable<JsonSerializerOptions, NavSuppressionState>
         s_navSuppressedOptionsCache = new();
@@ -4400,7 +4446,7 @@ internal static class OhDataEndpointFactory
     private static NavSuppressionState CreateNavSuppressionState(JsonSerializerOptions baseOptions)
     {
         var navClrNamesByType = new ConcurrentDictionary<Type, HashSet<string>>();
-        var edmEntityTypeByClrType = new ConcurrentDictionary<Type, NavSourceBinding>();
+        var edmTypeByClrType = new ConcurrentDictionary<Type, NavSourceBinding>();
         IJsonTypeInfoResolver baseResolver = baseOptions.TypeInfoResolver ?? new DefaultJsonTypeInfoResolver();
         var derived = new JsonSerializerOptions(baseOptions);
         derived.TypeInfoResolver = baseResolver.WithAddedModifier(typeInfo =>
@@ -4411,7 +4457,7 @@ internal static class OhDataEndpointFactory
             // un-suppressed forever. GetOrAdd means the answer for a type is decided HERE, once, from
             // the EDM, no matter who reached it or in what order.
             HashSet<string> navClrNames =
-                navClrNamesByType.GetOrAdd(typeInfo.Type, t => BuildNavClrNames(t, edmEntityTypeByClrType));
+                navClrNamesByType.GetOrAdd(typeInfo.Type, t => BuildNavClrNames(t, edmTypeByClrType));
             if (navClrNames.Count == 0) return;
             for (int i = typeInfo.Properties.Count - 1; i >= 0; i--)
             {
@@ -4422,7 +4468,7 @@ internal static class OhDataEndpointFactory
         return new NavSuppressionState(
             derived, baseResolver, navClrNamesByType,
             new ConcurrentDictionary<Type, JsonTypeInfo?>(), new ConcurrentDictionary<Type, bool>(),
-            edmEntityTypeByClrType, new ConcurrentDictionary<IEdmModel, bool>(), new object());
+            edmTypeByClrType, new ConcurrentDictionary<IEdmModel, bool>(), new object());
     }
 
     // #482: the modifier's pure function. The CLR property names on <paramref name="clrType"/> that
@@ -4447,12 +4493,12 @@ internal static class OhDataEndpointFactory
     // entity. The schema walk that feeds it is measured at ~0.9 us per EDM entity type (0.44 ms for a
     // 400-entity-type model), paid once at MapOhData().
     private static HashSet<string> BuildNavClrNames(
-        Type clrType, ConcurrentDictionary<Type, NavSourceBinding> edmEntityTypeByClrType)
+        Type clrType, ConcurrentDictionary<Type, NavSourceBinding> edmTypeByClrType)
     {
         var navClrNames = new HashSet<string>(StringComparer.Ordinal);
         for (Type? cur = clrType; cur is not null && cur != typeof(object); cur = cur.BaseType)
         {
-            if (edmEntityTypeByClrType.TryGetValue(cur, out NavSourceBinding binding))
+            if (edmTypeByClrType.TryGetValue(cur, out NavSourceBinding binding))
                 AddNavClrNames(navClrNames, binding.Model, binding.EdmType, clrType);
         }
         return navClrNames;
@@ -4483,23 +4529,23 @@ internal static class OhDataEndpointFactory
     // already refuses within a registration.
     private static void SeedNavSuppressionModel(NavSuppressionState state, IEdmModel? model)
     {
-        if (model is null || state.SeededModels.ContainsKey(model)) return;
+        if (model is null || state.SeededModels.ContainsKey((IEdmModel)model)) return;
         lock (state.SeedGate)
         {
-            if (state.SeededModels.ContainsKey(model)) return;
-            foreach (IEdmEntityType edmType in model.SchemaElements.OfType<IEdmEntityType>())
+            if (state.SeededModels.ContainsKey((IEdmModel)model)) return;
+            // EdmClrTypeMap reads ODataConventionModelBuilder's own ClrTypeAnnotation for every
+            // STRUCTURED type the schema declares — the same "read the builder's own annotation"
+            // route OpenTypeJsonOptions takes for a complex type's dynamic-property container, and
+            // for the same reason: it involves no name convention, so a renamed schema namespace
+            // cannot make it miss. Absent only for a hand-built IEdmModel, which OhData never
+            // produces; GetNavSuppressedOptions' caller pairing below covers that residue for
+            // directly served types.
+            //
+            // #507: entity AND complex. The walk used to be OfType<IEdmEntityType>(), which is why a
+            // complex type's own entity-typed navigation was never in any suppression set.
+            foreach (KeyValuePair<Type, IEdmStructuredType> pair in EdmClrTypeMap.ForModel((IEdmModel)model))
             {
-                // ODataConventionModelBuilder records the backing CLR type as a ClrTypeAnnotation on
-                // every type it builds — the same "read the builder's own annotation" route
-                // OpenTypeJsonOptions takes for a complex type's dynamic-property container, and for
-                // the same reason: it involves no name convention, so a renamed schema namespace
-                // cannot make it miss. Absent only for a hand-built IEdmModel, which OhData never
-                // produces; GetNavSuppressedOptions' caller pairing below covers that residue for
-                // directly served types.
-                Type? clrType = model
-                    .GetAnnotationValue<Microsoft.OData.ModelBuilder.ClrTypeAnnotation>(edmType)?.ClrType;
-                if (clrType is not null)
-                    state.EdmEntityTypeByClrType.TryAdd(clrType, new NavSourceBinding(model, edmType));
+                state.EdmTypeByClrType.TryAdd(pair.Key, new NavSourceBinding(model, pair.Value));
             }
             state.SeededModels[model] = true;
         }
@@ -4559,19 +4605,25 @@ internal static class OhDataEndpointFactory
     // runtime type's OWN declared EDM type first, the caller's DECLARED base type second, and both
     // lose to whatever the seed already put there — TryAdd never overwrites.
     //
-    // Guarded by ContainsKey because this method runs ONCE PER ENTITY on the single-entity path,
-    // and FindDeclaredType is a schema lookup, not a field read. In steady state the whole method is
-    // two dictionary probes — the same order of cost as the single GetOrAdd it replaced.
+    // Guarded by ContainsKey because this method runs ONCE PER ENTITY on the single-entity path. In
+    // steady state the whole method is two dictionary probes — the same order of cost as the single
+    // GetOrAdd it replaced.
+    //
+    // #508: the residue guard's first TryAdd used model.FindDeclaredType(clrType.FullName), the last
+    // read-path survivor of that convention. It is EdmClrTypeMap now — which, on a model built by
+    // ODataConventionModelBuilder, is exactly what the seed above already put in the map, so this
+    // branch is reached only for a hand-built IEdmModel with no ClrTypeAnnotation at all. There the
+    // second TryAdd (the CALLER's declared EDM type) is the whole of the residue guard, unchanged.
     private static JsonSerializerOptions GetNavSuppressedOptions(
         JsonSerializerOptions baseOptions, IEdmModel? model, IEdmEntityType edmType, Type clrType)
     {
         NavSuppressionState state = s_navSuppressedOptionsCache.GetValue(baseOptions, CreateNavSuppressionState);
         SeedNavSuppressionModel(state, model);
-        if (!state.EdmEntityTypeByClrType.ContainsKey(clrType))
+        if (!state.EdmTypeByClrType.ContainsKey(clrType))
         {
-            if (model?.FindDeclaredType(clrType.FullName ?? clrType.Name) is IEdmEntityType runtimeEdmType)
-                state.EdmEntityTypeByClrType.TryAdd(clrType, new NavSourceBinding(model, runtimeEdmType));
-            state.EdmEntityTypeByClrType.TryAdd(clrType, new NavSourceBinding(model, edmType));
+            if (EdmClrTypeMap.FindStructuredType(model, clrType) is { } runtimeEdmType)
+                state.EdmTypeByClrType.TryAdd(clrType, new NavSourceBinding(model, runtimeEdmType));
+            state.EdmTypeByClrType.TryAdd(clrType, new NavSourceBinding(model, edmType));
         }
         return state.Derived;
     }
@@ -4579,6 +4631,10 @@ internal static class OhDataEndpointFactory
     // The CLR property names on <paramref name="clrType"/> that back <paramref name="edmType"/>'s
     // navigations (NavigationProperties() is inherited-inclusive, so a base type's navigations come
     // along with a derived one's).
+    //
+    // #507: edmType is an IEdmStructuredType, not an IEdmEntityType. NavigationProperties() is
+    // declared on IEdmStructuredType precisely because a COMPLEX type can carry them, and
+    // ODataConventionModelBuilder puts one there for every entity-typed member of a complex type.
     //
     // TWO routes, UNIONED, because either one alone has a blind spot (#482, the third edge the review
     // reasoned about).
@@ -4607,7 +4663,7 @@ internal static class OhDataEndpointFactory
     // change the same request ALSO emitted the whole un-suppressed CLR graph under the wrong key, so
     // suppression strictly improves it.
     private static void AddNavClrNames(
-        HashSet<string> into, IEdmModel? model, IEdmEntityType edmType, Type clrType)
+        HashSet<string> into, IEdmModel? model, IEdmStructuredType edmType, Type clrType)
     {
         foreach (IEdmNavigationProperty navProp in edmType.NavigationProperties())
         {
@@ -5468,7 +5524,11 @@ internal static class OhDataEndpointFactory
         {
             (Type elementType, IEdmModel model) = key;
             if (elementType.GetConstructor(Type.EmptyTypes) is null) return false;
-            if (model.FindDeclaredType(elementType.FullName ?? elementType.Name) is not IEdmEntityType edmType)
+            // #508: EdmClrTypeMap, not model.FindDeclaredType(elementType.FullName) — the latter
+            // matches on the EDM type's full name, so on a renamed schema it answered null for every
+            // element type, this method answered false for every element type, and TryBuildEngagedExpand
+            // deferred EVERY $expand branch off pushdown. See EdmClrTypeMap.
+            if (EdmClrTypeMap.FindEntityType(model, elementType) is not { } edmType)
             {
                 return false;
             }
@@ -5490,7 +5550,10 @@ internal static class OhDataEndpointFactory
     // returned property is guaranteed settable and present.
     private static IEnumerable<PropertyInfo> ScalarStructuralClrProps(Type elementType, IEdmModel model)
     {
-        if (model.FindDeclaredType(elementType.FullName ?? elementType.Name) is not IEdmEntityType edmType)
+        // #508: EdmClrTypeMap, not model.FindDeclaredType(elementType.FullName). Callers gate on
+        // IsMemberInitProjectable, which resolves through the same lookup — so the two must never be
+        // able to disagree about which EDM type backs the element type.
+        if (EdmClrTypeMap.FindEntityType(model, elementType) is not { } edmType)
             yield break;
         foreach (IEdmStructuralProperty sp in edmType.StructuralProperties()
             .Where(sp => sp.Type.Definition is not IEdmComplexType))
@@ -5915,7 +5978,10 @@ internal static class OhDataEndpointFactory
     // keyless type, or a CLR name that does not resolve — the caller then simply skips stabilization.
     private static PropertyInfo? TryGetKeyClrProperty(IEdmModel model, Type elem)
     {
-        if (model.FindDeclaredType(elem.FullName ?? elem.Name) is not IEdmEntityType entityType) return null;
+        // #508: EdmClrTypeMap, not model.FindDeclaredType(elem.FullName). On a renamed schema this
+        // answered null for every element type, which made every navigation non-pageable (#313) and
+        // dropped the nested-paging tiebreaker.
+        if (EdmClrTypeMap.FindEntityType(model, elem) is not { } entityType) return null;
         var keys = entityType.Key().ToList();
         if (keys.Count != 1) return null; // composite / keyless → leave order to the provider
         // #253: the EDM key name may be a [JsonPropertyName] rename — resolve back to the CLR property.
@@ -11271,8 +11337,12 @@ internal static class OhDataEndpointFactory
             {
                 rb.WithMetadata(new OhDataRequestBodyMetadata
                 {
+                    // #499: prefix with the registration name so two registrations declaring the
+                    // same entity set + action name (e.g. v1/v2 of the same versioned action) get
+                    // distinct memoized schema types instead of silently sharing whichever one
+                    // mapped first.
                     BodyType = ActionBodySchemaTypeFactory.GetOrCreate(
-                        $"{name}.{actionCapture.Name}", actionCapture.Parameters),
+                        $"{registration.Name}.{name}.{actionCapture.Name}", actionCapture.Parameters),
                     Description = "JSON object with the action's parameters: " +
                         string.Join(", ", actionCapture.Parameters.Select(p => $"{p.Name} ({p.ParameterType.Name})")) + "."
                 });
@@ -11449,8 +11519,10 @@ internal static class OhDataEndpointFactory
                 ParameterInfo[] bodyParams = actionCapture.Parameters.Skip(1).ToArray();
                 rb.WithMetadata(new OhDataRequestBodyMetadata
                 {
+                    // #499: same registration-identity prefix as the collection-level bound action
+                    // above.
                     BodyType = ActionBodySchemaTypeFactory.GetOrCreate(
-                        $"{name}.{actionCapture.Name}.Entity", bodyParams),
+                        $"{registration.Name}.{name}.{actionCapture.Name}.Entity", bodyParams),
                     Description = "JSON object with the action's parameters: " +
                         string.Join(", ", bodyParams.Select(p => $"{p.Name} ({p.ParameterType.Name})")) + "."
                 });
@@ -11471,6 +11543,30 @@ internal static class OhDataEndpointFactory
     {
         var resultType = result.GetType();
 
+        // #497 (the #462 defect class, fourth site — it predates InheritedTypeConfig's consolidation
+        // and was not swept in): the element test used to be `== modelType`, i.e. EXACT CLR-type
+        // equality, while the SINGLE-entity branch below already accepted a derived instance via
+        // IsAssignableFrom. A handler declared `Task<IEnumerable<TModel>>` that returns a
+        // `List<TDerived>` — the ordinary EF Core TPH shape — lists only IEnumerable<TDerived> in
+        // GetInterfaces(), so it missed this branch, missed the single-entity branch (IsAssignableFrom
+        // fails on a List), missed the Edm-primitive map, and fell into the final raw-graph
+        // PreRenderedJson. MEASURED on the pre-fix tree:
+        //     [{"Special":"x","Id":1,"Name":"derived","Parts":[{"Id":9,"Label":"PART-LEAK"}]}]
+        // — no @odata.context, no `value` envelope, the declared navigation `Parts` served INLINE
+        // (§4.5.1 / §11.2.4.2 and #179 both bypassed), and no @odata.etag injected — while the
+        // identical handler returning List<TModel> got the full envelope with navigations stripped. A
+        // cyclic derived graph turned the same request into a 500, since nothing suppressed the
+        // navigations before serialization.
+        //
+        // Assignability, not equality. It cannot over-match: modelType is the entity set's own TModel
+        // (never `object`), and every arm this could steal from — the single-entity branch and the Edm
+        // primitive map — is tested for an element type assignable to TModel, which no primitive and
+        // no non-TModel DTO is. The string guard stays because string is IEnumerable<char>.
+        //
+        // AddBoundOperationProduces' collection arm carries the SAME predicate over the DECLARED
+        // return type, so the OpenAPI document and the wire cannot disagree about which shape a bound
+        // operation produces; changing one without the other is what #497 calls the advertise-vs-serve
+        // half of the defect.
         bool isCollectionOfModel = false;
         if (resultType != typeof(string))
         {
@@ -11478,7 +11574,7 @@ internal static class OhDataEndpointFactory
             {
                 if (iface.IsGenericType
                     && iface.GetGenericTypeDefinition() == typeof(IEnumerable<>)
-                    && iface.GetGenericArguments()[0] == modelType)
+                    && modelType.IsAssignableFrom(iface.GetGenericArguments()[0]))
                 {
                     isCollectionOfModel = true;
                     break;

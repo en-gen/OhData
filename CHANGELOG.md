@@ -9,6 +9,73 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A complex type's own entity-typed navigation is now suppressed like any other (#507).**
+  `ODataConventionModelBuilder` models an entity-typed member of a **complex** type as a navigation
+  *on that complex type*, but the nav-suppression seed walked
+  `model.SchemaElements.OfType<IEdmEntityType>()` and read navigations off entity types only — so the
+  suppression set computed for every complex CLR type was **empty**. Measured on 1.6.0, both
+  consequences on a plain `GET` with no query string: `"Meta":{"Note":"y","Owner":{…}}` — navigation
+  data served inline with no `$expand` naming it, which JSON Format §4.5.1 / §11.2.4.2 forbid — and an
+  entity referencing itself through its complex member throwing
+  `JsonException: A possible object cycle was detected`, i.e. a **500 on every request**. Neither is
+  order-dependent and neither needs open types.
+
+  **#491's claim to have covered this case was false**, and is now verified false rather than argued
+  about: its measurement covered the entity reached *through* the member (`Owner.Children` really was
+  suppressed), which is exactly why the gap looked closed. The universal invariant test could not see
+  it either — it quantifies over EDM **entity** types; a complex-type twin now exists and fails pre-fix
+  with `["PxMeta.Owner"]`.
+
+  Suppressed, **not served**, for the same reason a derived-declared navigation is: the splice
+  iterates the *entity* type's navigations, so such a navigation has no route into an `$expand` clause
+  and serving it would mean serving it unconditionally. Deliberate residual: `$expand=Meta/Owner` — a
+  complex-type path the OData parser accepts — is now omitted rather than expanded. That is a
+  pre-existing feature gap which previously *looked* like it worked because the whole un-suppressed
+  graph leaked.
+
+- **`$expand` pushdown no longer disengages model-wide on a renamed schema (#508).**
+  `model.FindDeclaredType(clrType.FullName)` matches on the EDM type's **full name**, which is a
+  convention rather than a fact: a schema whose EDM names do not equal the CLR `FullName` — reachable
+  through `ODataConventionModelBuilder.Namespace` or `EntityTypeConfiguration.Namespace` under
+  `AdvancedConfigure` — makes it return `null` for every type, and every caller takes its "not in the
+  EDM" branch. #491 established this and re-keyed the nav-suppression map off `ClrTypeAnnotation`; the
+  same call survived at four read-path sites (`ResolveProfilesForClrType`, `IsMemberInitProjectable`,
+  `ScalarStructuralClrProps`, `TryGetKeyClrProperty`) plus one residue fallback.
+
+  **Measured** end-to-end with a single renamed type, `GET /NmParents?$expand=Children($expand=Tags)`:
+  HTTP `200` with `"Children":[]` on every row and a SQL log whose only statement is
+  `SELECT "n"."Id", "n"."Name" FROM "NmParents"` — the child table never touched, nothing logged above
+  `Debug`. All five sites now resolve through a shared per-model `CLR type -> IEdmStructuredType` map
+  read off the model builder's own `ClrTypeAnnotation`, which involves no name convention and so
+  cannot miss. The lookup stays **exact** (no base-chain walk) deliberately: answering with a base
+  type's declaration would make the pushdown projection drop a derived type's structural properties
+  and would re-broaden the Model B candidate gate that #293 narrowed.
+
+- **A bound operation returning `List<TDerived>` for a declared `IEnumerable<TModel>` now gets the
+  OData collection envelope (#497).** The ordinary EF Core TPH shape fell out of every branch of the
+  bound-op result dispatch, because the collection branch tested the element type with `==` while the
+  single-entity branch beside it already accepted a derived instance via `IsAssignableFrom`. Measured:
+  `[{"Special":"s","Id":1,"Name":"derived","Parts":[{"Id":9,"Label":"PART-LEAK"}]}]` — a bare array
+  with no `@odata.context`, no `value` envelope, the declared navigation `Parts` served **inline**, and
+  no `@odata.etag`; a cyclic derived graph made the same request a `500`. The identical handler
+  returning `List<TModel>` was correct. The element test is assignability now, and the OpenAPI
+  documentation carries the **same** predicate over the declared return type, so the advertised shape
+  and the served shape cannot disagree.
+
+### Tests
+
+- **Regression coverage for #344 (silent data loss on an inherited navigation under `$expand`).** The
+  defect itself was closed by #462's `HasSameMetadataDefinitionAs` fix — a follow-on neither issue
+  named — but no fixture covered #344's own shape: an entity set rooted at the **derived** type with
+  its navigations declared on the base EDM type. Every existing suite roots its set at the base type,
+  where the two reflection walks agree. The new fixture is **verified to fail** — all four cases,
+  collection and `GetById`, collection- and single-valued navigation — by restoring the single `!=`,
+  with the base-rooted byte-identity control staying green. #344's *second* face (the EF pushdown
+  member-init dropping a TPH-derived row's own structural properties when `$expand` is added) is a
+  projection-shape problem and is **not** fixed here.
+
 ---
 
 ## [1.6.0] - 2026-08-27
