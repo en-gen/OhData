@@ -90,6 +90,8 @@ public class OrderProfile : EntitySetProfile<int, Order>
 
 Selectors: `.Read(...)`, `.Create(...)`, `.Update(...)`, `.Delete(...)`, `.Writes(...)` (= create+update+delete), `.All(...)` (every category), `.Invoke(...)` (all bound ops), and `.Invoke("Name", ...)` (one named bound operation, which takes precedence over a generic `.Invoke(...)`). Later category rules win on overlap.
 
+**`Invoke("Name", ...)` matches the operation name case-insensitively, and an unmatched name is refused at startup.** Both halves are [#525](https://github.com/en-gen/OhData/issues/525). The name is matched the way the route that serves the operation is matched, so `.Invoke("stamp", ...)` governs a `Stamp` function; before the fix that comparison was ordinal, so a miscased rule silently matched nothing and the operation fell back to the generic `.Invoke(...)` rule — or, with no generic rule, to **no requirement at all**. Because a *misspelled* name evaporates the same way and no comparer can rescue it, `app.MapOhData()` now throws `InvalidOperationException` when a named `Invoke` rule does not resolve to a bound operation the profile declares, naming the rule and listing the declared operations. There is no valid configuration in which a rule targets an operation that does not exist.
+
 **Per-category requirements** mirror `AuthorizationPolicyBuilder` and combine with **AND**:
 
 | Method | Meaning |
