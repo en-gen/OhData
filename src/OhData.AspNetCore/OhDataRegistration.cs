@@ -13,6 +13,7 @@ namespace OhData;
 public sealed class OhDataRegistration
 {
     internal OhDataRegistration(
+        string name,
         string prefix,
         IEdmModel edmModel,
         IReadOnlyList<IEntitySetEndpointSource> profiles,
@@ -20,6 +21,7 @@ public sealed class OhDataRegistration
         JsonNamingPolicy? jsonPropertyNamingPolicy = null,
         bool openTypesEnabled = true)
     {
+        Name = name;
         Prefix = prefix;
         EdmModel = edmModel;
         Profiles = profiles;
@@ -27,6 +29,15 @@ public sealed class OhDataRegistration
         JsonPropertyNamingPolicy = jsonPropertyNamingPolicy;
         OpenTypesEnabled = openTypesEnabled;
     }
+
+    /// <summary>
+    /// #499: the keyed-DI registration name this instance was built for (<c>AddOhData(name, ...)</c>
+    /// / <c>MapOhData(name)</c>; <see cref="OhDataDefaults.DefaultRegistrationName"/> for the
+    /// unnamed overload). Used to scope process-wide static caches keyed by a route identifier
+    /// (e.g. <c>ActionBodySchemaTypeFactory</c>) that would otherwise collide between two
+    /// registrations declaring the same entity set / operation name.
+    /// </summary>
+    internal string Name { get; }
 
     /// <summary>The URL prefix under which all entity set routes are mounted, e.g. <c>"/odata"</c>.</summary>
     public string Prefix { get; }
