@@ -473,6 +473,132 @@ internal static class OhDataEndpointFactory
         }
     }
 
+    // #355: one structural property the EDM declares Nullable="false", paired with the CLR member a
+    // bound instance carries it on.
+    private sealed record EdmRequiredProperty(string EdmName, PropertyInfo Clr);
+
+    // #355: "which properties does the framework's OWN $metadata say cannot be null?" — asked of the
+    // EDM, once per type at startup.
+    //
+    // WHY THE EDM AND NOTHING ELSE. The framework publishes the nullability of every structural
+    // property in the CSDL it generates, and before #355 nothing enforced it: a null for a property
+    // declared Nullable="false" reached the handler, and the persistence layer's rejection surfaced
+    // as a generic 500 (measured on the shipped TestBench: POST /Movies {"Title":null} ->
+    // 500 InternalServerError, from EF's "Required properties '{'Title'}' are missing"). A violation
+    // the framework could see at its own boundary, reported as a server fault.
+    //
+    // The alternative — deriving "required" from the CLR type, from [Required], or from nullable
+    // reference-type annotations — is the second-independently-derived-model hazard this codebase
+    // records over and over (#454, #458, #511). It is not hypothetical here: the structural-property
+    // write route already had a nullability check built on IsNullableClrType, for which EVERY
+    // reference type is nullable, so a Nullable="false" string sailed straight through it. That
+    // route now asks the same question of the same authority (see propIsNullable), so there is one
+    // answer rather than two.
+    //
+    // FOUR DELIBERATE EXCLUSIONS, each of which would otherwise reject a legal request:
+    //   - the KEY. Every EDM key is Nullable="false", and a server-generated key is routinely
+    //     omitted on create (§11.4.2 permits it). Taken from edmType.Key() rather than from the
+    //     profile's selector so entity and navigation-child types are answered the same way.
+    //   - a non-nullable VALUE type. `int Year` cannot hold null, so a JSON null for it is already
+    //     a JsonException -> 400 from the binder, worded by the deserializer. Checking it would cost
+    //     a boxing read per request to answer a question with one possible answer.
+    //   - a member the EDM declares but no readable CLR property backs. Nothing to read.
+    //   - anything the EDM does not declare at all. Ignore()d properties are removed from the EDM,
+    //     and a property withheld from the published contract cannot be required by it.
+    //
+    // TOP LEVEL ONLY, and stated rather than assumed: a null inside a nested complex value is not
+    // checked. Widening to the complex graph is a separate decision with its own recursion and
+    // cycle questions; #355 is about the root body the handler is handed.
+    private static EdmRequiredProperty[] BuildEdmRequiredProperties(
+        IEdmStructuredType? edmType, Type clrType)
+    {
+        if (edmType is null) return Array.Empty<EdmRequiredProperty>();
+
+        var keyNames = new HashSet<string>(StringComparer.Ordinal);
+        if (edmType is IEdmEntityType entityType && entityType.Key() is { } keys)
+        {
+            foreach (IEdmStructuralProperty k in keys) keyNames.Add(k.Name);
+        }
+
+        var required = new List<EdmRequiredProperty>();
+        foreach (IEdmStructuralProperty edmProp in edmType.StructuralProperties())
+        {
+            if (edmProp.Type.IsNullable) continue;
+            if (keyNames.Contains(edmProp.Name)) continue;
+
+            // The EDM name IS the [JsonPropertyName]-or-CLR name (#253), which is exactly what
+            // FindClrPropertyByEdmName resolves. The string comes from the model, never from a
+            // request, so this is a bounded startup-time use of the memoizing helper (#510).
+            PropertyInfo? clr = ODataPropertyNaming.FindClrPropertyByEdmName(clrType, edmProp.Name);
+            if (clr is null || !clr.CanRead) continue;
+            if (clr.PropertyType.IsValueType && Nullable.GetUnderlyingType(clr.PropertyType) is null)
+                continue;
+
+            required.Add(new EdmRequiredProperty(edmProp.Name, clr));
+        }
+
+        return required.Count == 0 ? Array.Empty<EdmRequiredProperty>() : required.ToArray();
+    }
+
+    /// <summary>
+    /// #355: the whole-instance check, for the routes that produce a complete entity — the
+    /// collection <c>POST</c>, <c>PUT</c>, and the navigation-<c>POST</c> create route. An OMITTED
+    /// property is a violation there as well as an explicit <c>null</c>: both leave the handler with
+    /// an entity that is not a valid instance of the declared type (§11.4.2), which is the state
+    /// that produced the 500.
+    /// </summary>
+    /// <remarks>
+    /// <b>It reads the BOUND INSTANCE, not the raw body, and that bounds what "omitted" can mean
+    /// here.</b> A required property whose CLR declaration carries a non-null initializer
+    /// (<c>public string Name { get; set; } = "";</c>) is not null after binding whether or not the
+    /// body named it, so an omission is invisible — correctly, because nothing invalid reaches the
+    /// handler and nothing downstream would have rejected it. One declared <c>= null!</c>, the other
+    /// ordinary EF shape, is null and is reported. Reading the raw body instead would mean a fourth
+    /// scanner shadowing the binder on the two routes that stream (<c>PUT</c>, nav-<c>POST</c>), and
+    /// #511 is the record of what that class of thing costs.
+    /// </remarks>
+    private static IResult? ValidateEdmRequiredProperties(
+        EdmRequiredProperty[] required, object instance)
+    {
+        foreach (EdmRequiredProperty p in required)
+        {
+            if (p.Clr.GetValue(instance) is null)
+            {
+                return ODataError(400, "InvalidBody",
+                    $"Property '{p.EdmName}' is declared non-nullable by the service metadata and " +
+                    "cannot be null or omitted.", target: p.EdmName);
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// #355: the partial-update twin, for <c>PATCH</c> and the structural-property writes. Only a
+    /// property the body actually NAMED is checked — a <c>Delta&lt;T&gt;</c> is a change set, so an
+    /// absent property is "leave it alone", not "set it to nothing", and rejecting it would break
+    /// every ordinary partial update.
+    /// </summary>
+    private static IResult? ValidateEdmRequiredDelta<TDelta>(
+        EdmRequiredProperty[] required,
+        Microsoft.AspNetCore.OData.Deltas.Delta<TDelta> delta)
+        where TDelta : class
+    {
+        if (required.Length == 0) return null;
+
+        var changed = new HashSet<string>(delta.GetChangedPropertyNames(), StringComparer.Ordinal);
+        foreach (EdmRequiredProperty p in required)
+        {
+            if (!changed.Contains(p.Clr.Name)) continue;
+            if (delta.TryGetPropertyValue(p.Clr.Name, out object? value) && value is null)
+            {
+                return ODataError(400, "InvalidBody",
+                    $"Property '{p.EdmName}' is declared non-nullable by the service metadata and " +
+                    "cannot be set to null.", target: p.EdmName);
+            }
+        }
+        return null;
+    }
+
     private static ReadOnlySpan<byte> Utf8Bom => new byte[] { 0xEF, 0xBB, 0xBF };
 
     private static Utf8JsonReader CreateBinderParityReader(
@@ -487,6 +613,36 @@ internal static class OhDataEndpointFactory
             CommentHandling = options.ReadCommentHandling,
             MaxDepth = options.MaxDepth,
         });
+    }
+
+    // #514: the JsonDocument half of #511's rule. Every place the write path materialises a body
+    // with JsonDocument shadows the same binder, and a default JsonDocumentOptions makes it a
+    // SECOND authority on what well-formed JSON is: startupJsonOptions copies the host's Http.Json
+    // options, so DeserializeAsync honours ReadCommentHandling.Skip, AllowTrailingCommas and a
+    // raised MaxDepth, and JsonDocument.ParseAsync with the defaults does not.
+    //
+    // Measured on the pre-fix tree with a host setting Skip + AllowTrailingCommas: the same bytes
+    // answered 200 on PUT (which streams into the binder) and 400 on the collection POST — the
+    // per-verb divergence this milestone spent ten PRs removing, one option over from #456's.
+    //
+    // It fails CLOSED, which is the whole reason it is a lower-severity issue than #511 and not a
+    // safety one: the stricter reader rejects a request rather than silently disabling a guard. The
+    // three members are the same three CreateBinderParityReader derives and for the same reason —
+    // they are what JsonSerializerOptions.GetReaderOptions() derives internally for
+    // DeserializeAsync, so this is parity rather than a second guess. MaxDepth needs no translation:
+    // 0 means "the 64 default" on both types. .NET 10's AllowDuplicateProperties is deliberately not
+    // derived, exactly as in CreateBinderParityReader — net8.0 has neither member, and the residual
+    // runs the safe way.
+    private static JsonDocumentOptions CreateBinderParityDocumentOptions(
+        JsonSerializerOptions? jsonOptions)
+    {
+        JsonSerializerOptions options = jsonOptions ?? _pascalCaseSerializerOptions;
+        return new JsonDocumentOptions
+        {
+            AllowTrailingCommas = options.AllowTrailingCommas,
+            CommentHandling = options.ReadCommentHandling,
+            MaxDepth = options.MaxDepth,
+        };
     }
 
     private static bool ContainsODataBindAnnotation(
@@ -648,17 +804,18 @@ internal static class OhDataEndpointFactory
     // it the stream just doubles, which costs a few reallocations on genuinely large bodies — the
     // right trade against removing the primitive.
     //
-    // WHAT ACTUALLY BOUNDS THE COPY, stated plainly because the honest answer is weaker than the
-    // #203 commentary above it reads as. #203's filter does BOTH of its jobs — the Content-Length
-    // fast-reject AND setting Kestrel's per-request MaxRequestBodySize — only when
-    // OhDataBodyLimitMetadata is attached, and that metadata exists only when the profile or
-    // EntitySetDefaults set MaxRequestBodyBytes, which DEFAULTS TO NULL at both levels. So on a
-    // default configuration neither half runs, and the only thing bounding this copy is the HOST's
-    // Kestrel MaxRequestBodySize (~30 MB by default). If the host raised or disabled that — routine
-    // for an app that also accepts uploads — nothing in OhData bounds it. That is not a new
-    // exposure: the collection POST has materialised whole bodies through JsonDocument.ParseAsync
-    // under exactly the same (non-)guarantee since 1.0. It IS shared by two more routes now, and it
-    // is tracked as #474 rather than assumed away. Configure MaxRequestBodyBytes for a real ceiling.
+    // WHAT ACTUALLY BOUNDS THE COPY — and since #474 the answer is finally "OhData does". It used
+    // not to be, and the #203 commentary above read as more protective than the code was: #203's
+    // filter does BOTH of its jobs — the Content-Length fast-reject AND setting Kestrel's
+    // per-request MaxRequestBodySize — only when OhDataBodyLimitMetadata is attached, and that
+    // metadata existed only when the profile or EntitySetDefaults set MaxRequestBodyBytes, which
+    // DEFAULTED TO NULL at both levels. So on a default configuration neither half ran and the only
+    // ceiling was the HOST's Kestrel MaxRequestBodySize — which an app that also accepts uploads
+    // routinely raises or disables, leaving nothing at all. EntitySetDefaults.MaxRequestBodyBytes
+    // now defaults to EntitySetDefaults.DefaultMaxRequestBodyBytes (30,000,000 — Kestrel's own
+    // number, chosen so a DEFAULT host sees no behaviour change), and the group filter falls back to
+    // the registration's copy of it for the routes that belong to no entity set. Setting it to null
+    // server-wide restores the old "the host's limit is the only limit" behaviour.
     //
     // (Note the collection POST is NOT a precedent for the capacity hint, only for the
     // materialisation: JsonDocument.ParseAsync grows incrementally from pooled buffers and never
@@ -1344,22 +1501,46 @@ internal static class OhDataEndpointFactory
         // (a resulting BadHttpRequestException is mapped to 413 by the filter above) — and
         // fast-rejects an oversized Content-Length before the handler reads the body. Sits inside the
         // exception filter above so its 413 mapping covers the streamed-body case.
+        // #474: the fallback for a route that carries no per-entity-set metadata — i.e. an UNBOUND
+        // action, which belongs to no profile and so had no limit to resolve. Every entity-set route
+        // still carries its own metadata and that still wins; this only fills the gap.
+        long? registrationBodyLimit = registration.DefaultMaxRequestBodyBytes;
         group.AddEndpointFilter(async (ctx, next) =>
         {
             var http = ctx.HttpContext;
-            if (IsBodyBearingWriteMethod(http.Request.Method) &&
-                http.GetEndpoint()?.Metadata.GetMetadata<OhDataBodyLimitMetadata>() is { } limit)
+            if (IsBodyBearingWriteMethod(http.Request.Method)
+                && (http.GetEndpoint()?.Metadata.GetMetadata<OhDataBodyLimitMetadata>()?.MaxBytes
+                    ?? registrationBodyLimit) is long limit)
             {
                 IHttpMaxRequestBodySizeFeature? sizeFeature = http.Features.Get<IHttpMaxRequestBodySizeFeature>();
                 if (sizeFeature is { IsReadOnly: false })
                 {
-                    sizeFeature.MaxRequestBodySize = limit.MaxBytes;
+                    // #474: a limit the FRAMEWORK chose may only lower the host's own ceiling, never
+                    // raise it. #203 assigns this unconditionally, which was right while the limit
+                    // could only come from the adopter — "this set accepts up to 4 MB" is a
+                    // deliberate per-route override and still behaves that way. But now that
+                    // EntitySetDefaults.MaxRequestBodyBytes defaults to 30,000,000, an unconditional
+                    // assignment would RAISE the ceiling on a host that had deliberately lowered
+                    // Kestrel's below it — a security fix loosening a hardening step, on a
+                    // registration that configured nothing.
+                    //
+                    // "The framework chose it" is read as "the resolved value IS the framework's
+                    // constant" rather than tracked through a separate configured/not-configured
+                    // flag. The only case that misreads is an adopter who explicitly sets exactly
+                    // 30,000,000 on a host with a lower limit and wants it raised, and clamping is
+                    // the safe direction there. A null host limit (the host disabled it) is where
+                    // #474 has the most to do, and the assignment still happens.
+                    sizeFeature.MaxRequestBodySize =
+                        limit == EntitySetDefaults.DefaultMaxRequestBodyBytes
+                        && sizeFeature.MaxRequestBodySize is long hostLimit
+                            ? Math.Min(hostLimit, limit)
+                            : limit;
                 }
 
-                if (http.Request.ContentLength is long len && len > limit.MaxBytes)
+                if (http.Request.ContentLength is long len && len > limit)
                 {
                     return ODataError(413, "RequestEntityTooLarge",
-                        $"The request body ({len} bytes) exceeds the maximum allowed size ({limit.MaxBytes} bytes).");
+                        $"The request body ({len} bytes) exceeds the maximum allowed size ({limit} bytes).");
                 }
             }
             return await next(ctx);
@@ -9563,6 +9744,77 @@ internal static class OhDataEndpointFactory
         // navigations at all (the common shape) never walks a body for this.
         bool deepWriteNavGateApplies = !source.AllowDeepWrites && deepWriteNavPropsToStrip.Length > 0;
 
+        // #514: derived once per entity set at startup, because JsonDocumentOptions is an immutable
+        // struct of three values and nothing about it varies per request.
+        JsonDocumentOptions binderParityDocumentOptions =
+            CreateBinderParityDocumentOptions(jsonOptions);
+
+        // #510: PATCH's own body-name lookup table — the same move #506 made for the deep-write gate
+        // on POST/PUT, now applied to the one route that was left calling the memoizing helper with
+        // client-supplied strings.
+        //
+        // ODataPropertyNaming.FindClrPropertyByEdmName memoizes on (Type, string) in a PROCESS-WIDE
+        // ConcurrentDictionary keyed by the caller's exact string, and the PATCH delta loop called it
+        // once per BODY PROPERTY NAME. The lookup is what caches, not the result, so a caller could
+        // grow that dictionary without bound by sending bodies full of distinct unmatched keys —
+        // each one a permanent entry for the life of the process. No single request costs anything
+        // worth measuring; the growth is cumulative and never reclaimed. That is out of line with the
+        // posture the rest of the framework takes (OpenTypeJsonOptions' ValidatedKeys cache is capped
+        // at 1024 entries and memoises non-ASCII keys only, with the reasoning written out).
+        //
+        // Option 3 of the three the issue lists, and the one the write path was already heading
+        // toward: the names PATCH can encounter are now bounded by the MODEL rather than by the
+        // request. Nothing else changes — capping the shared cache or refusing to cache misses would
+        // both have made a hot READ-path helper slower to close a WRITE-path hole.
+        //
+        // BEHAVIOURALLY IDENTICAL TO THE CALL IT REPLACES, deliberately and to the letter. The table
+        // is built from the same reflection walk (public instance, non-indexer), keyed EDM name first
+        // and CLR name second as non-overwriting aliases — which is exactly FindClrPropertyByEdmName's
+        // two-stage FirstOrDefault, since insertion follows GetProperties() order and TryAdd keeps
+        // the first writer. The comparer is OrdinalIgnoreCase UNCONDITIONALLY, matching that helper
+        // rather than the binder: it has always matched case-insensitively regardless of
+        // PropertyNameCaseInsensitive, and following the binder here would CHANGE what PATCH binds.
+        //
+        // Note this is deliberately NOT keyed off the binder's contract the way #511 keyed
+        // deepWriteNavByBodyName. Adding JsonTypeInfo.Properties[].Name would make PATCH start
+        // binding names it does not bind today (a snake_case body key against a PascalCase CLR
+        // property, say) — a real per-host divergence, but a separate behaviour change from #510 and
+        // one that belongs to its own issue rather than riding along inside a memory fix.
+        var patchPropByBodyName = new Dictionary<string, PropertyInfo>(StringComparer.OrdinalIgnoreCase);
+        PropertyInfo[] patchCandidateProps = typeof(TModel)
+            .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(p => p.GetIndexParameters().Length == 0)
+            .ToArray();
+        foreach (PropertyInfo p in patchCandidateProps)
+            patchPropByBodyName.TryAdd(ODataPropertyNaming.ResolveEdmName(p), p);
+        foreach (PropertyInfo p in patchCandidateProps)
+            patchPropByBodyName.TryAdd(p.Name, p);
+
+        // Local: the table's own accessor, so every PATCH-side resolution goes through one line.
+        PropertyInfo? ResolvePatchBodyProperty(string bodyName) =>
+            patchPropByBodyName.TryGetValue(bodyName, out PropertyInfo? found) ? found : null;
+
+        // #355: the EDM's own Nullable="false" structural properties for this entity set, resolved
+        // once at startup. Empty (so every check below is a length-0 loop) when the profile opts
+        // out, which is the shape that keeps an opted-out registration paying nothing.
+        EdmRequiredProperty[] edmRequiredProps = source.ValidateRequestBodyNullability
+            ? BuildEdmRequiredProperties(rootEdmType, typeof(TModel))
+            : Array.Empty<EdmRequiredProperty>();
+
+        // #355: the same answer as a name set, for the structural-property write/delete routes,
+        // which ask about ONE named property rather than validating a whole instance. Includes the
+        // key (which edmRequiredProps deliberately excludes) because those routes do not reach the
+        // key — it has its own KeyImmutableError stubs — and leaving it out here would be a claim
+        // about the key that this set is not making.
+        var edmNonNullablePropertyNames = new HashSet<string>(StringComparer.Ordinal);
+        if (source.ValidateRequestBodyNullability && rootEdmType is not null)
+        {
+            foreach (IEdmStructuralProperty edmProp in rootEdmType.StructuralProperties())
+            {
+                if (!edmProp.Type.IsNullable) edmNonNullablePropertyNames.Add(edmProp.Name);
+            }
+        }
+
         if (source.HasPost)
         {
             // If-None-Match on POST is not supported: the framework cannot extract the key from
@@ -9574,7 +9826,10 @@ internal static class OhDataEndpointFactory
                 JsonDocument document;
                 try
                 {
-                    document = await JsonDocument.ParseAsync(ctx.Request.Body, cancellationToken: ct);
+                    // #514: read the body the way the binder reads it — see
+                    // CreateBinderParityDocumentOptions.
+                    document = await JsonDocument.ParseAsync(
+                        ctx.Request.Body, binderParityDocumentOptions, ct);
                 }
                 catch (JsonException ex)
                 {
@@ -9644,6 +9899,15 @@ internal static class OhDataEndpointFactory
                             if (bodyNavClrNames.Contains(navProp.Name)) navProp.SetValue(model, null);
                         }
                     }
+
+                    // #355: the body must be a valid instance of the type the framework's own
+                    // $metadata publishes. Below the strip and above everything that reads the
+                    // model, so the check sees exactly what the handler would have received — and
+                    // above CheckResourceAuthAsync deliberately: a malformed body is a client error
+                    // regardless of who sent it, and evaluating a resource policy against an
+                    // instance the service already knows is invalid tells the policy nothing.
+                    IResult? postNullabilityFail = ValidateEdmRequiredProperties(edmRequiredProps, model);
+                    if (postNullabilityFail is not null) return postNullabilityFail;
 
                     // #199 Layer B: resource-based Create auth runs against the incoming (pre-persist)
                     // entity — there is no stored row yet, so the collection POST cannot use the
@@ -9752,8 +10016,10 @@ internal static class OhDataEndpointFactory
                         // types stopped being byte-identical to an opted-out one (#389 L1): the two
                         // reads report a malformed body differently, JsonDocument.ParseAsync
                         // omitting the "Path: $" that JsonSerializer.DeserializeAsync includes.
-                        using JsonDocument putDocument =
-                            await JsonDocument.ParseAsync(ctx.Request.Body, cancellationToken: ct);
+                        // #514: read the body the way the binder reads it — see
+                        // CreateBinderParityDocumentOptions.
+                        using JsonDocument putDocument = await JsonDocument.ParseAsync(
+                            ctx.Request.Body, binderParityDocumentOptions, ct);
                         using PreparedWriteBody putPrepared = PrepareWriteBody(
                             registration, putDocument.RootElement, typeof(TModel), jsonOptions);
                         if (putPrepared.Error is not null) return putPrepared.Error;
@@ -9825,6 +10091,14 @@ internal static class OhDataEndpointFactory
                             if (bodyNavClrNames.Contains(navProp.Name)) navProp.SetValue(model, null);
                         }
                     }
+
+                    // #355: PUT REPLACES the entity, so an omitted non-nullable property is exactly
+                    // as invalid as an explicit null — the resulting entity would not be a valid
+                    // instance of the declared type. Grouped with the key-mismatch check below
+                    // rather than after the precondition gate, following this route's existing
+                    // ordering (body shape first, then If-Match).
+                    IResult? putNullabilityFail = ValidateEdmRequiredProperties(edmRequiredProps, model);
+                    if (putNullabilityFail is not null) return putNullabilityFail;
 
                     string bodyKeyStr = s.InvokeGetKeyString(model);
                     string parsedKeyStr = string.Format(CultureInfo.InvariantCulture, "{0}", parsedKey);
@@ -9967,8 +10241,13 @@ internal static class OhDataEndpointFactory
                     //
                     // A body that omits the key is still valid -- PATCH is a partial update and the
                     // URL key is authoritative.
-                    PropertyInfo? patchKeyClrProp =
-                        ODataPropertyNaming.FindClrPropertyByEdmName(typeof(TModel), source.KeyPropertyName);
+                    //
+                    // #510: both halves resolve through the startup table now instead of through
+                    // FindClrPropertyByEdmName, so a client-supplied name never reaches that
+                    // helper's process-wide cache. The table answers identically (see its
+                    // construction), so #454's "both halves consult the same set" property is
+                    // preserved by construction rather than restated.
+                    PropertyInfo? patchKeyClrProp = ResolvePatchBodyProperty(source.KeyPropertyName);
                     string patchParsedKeyStr = string.Format(CultureInfo.InvariantCulture, "{0}", parsedKey);
                     foreach (var prop in patchBody.EnumerateObject())
                     {
@@ -9978,16 +10257,15 @@ internal static class OhDataEndpointFactory
                     }
 
                     // Local: does this body property name resolve to the entity's key property?
-                    // Resolution goes through the same helper the delta loop uses, so the two cannot
+                    // Resolution goes through the same table the delta loop uses, so the two cannot
                     // disagree. The name-only fallback covers the (unexpected) case where the key
                     // property does not resolve to a CLR property at all -- it preserves the old
                     // behaviour rather than silently validating nothing.
-                    static bool IsPatchKeyOccurrence(string jsonName, PropertyInfo? keyClrProp, string keyPropertyName)
+                    bool IsPatchKeyOccurrence(string jsonName, PropertyInfo? keyClrProp, string keyPropertyName)
                     {
                         if (keyClrProp is null)
                             return string.Equals(jsonName, keyPropertyName, StringComparison.OrdinalIgnoreCase);
-                        PropertyInfo? resolved =
-                            ODataPropertyNaming.FindClrPropertyByEdmName(typeof(TModel), jsonName);
+                        PropertyInfo? resolved = ResolvePatchBodyProperty(jsonName);
                         return resolved is not null
                             && string.Equals(resolved.Name, keyClrProp.Name, StringComparison.Ordinal);
                     }
@@ -10005,7 +10283,9 @@ internal static class OhDataEndpointFactory
                         // #253: request body keys are JSON names — a [JsonPropertyName]-renamed property
                         // arrives under its JSON name, so resolve by EDM name (which honors the rename)
                         // rather than a plain CLR-name lookup that would silently drop the renamed member.
-                        var clrProp = ODataPropertyNaming.FindClrPropertyByEdmName(typeof(TModel), prop.Name);
+                        // #510: through the startup table, so prop.Name (client-supplied) never keys a
+                        // process-wide cache.
+                        PropertyInfo? clrProp = ResolvePatchBodyProperty(prop.Name);
                         // #454: the key never enters the delta. Every occurrence was validated
                         // against the URL key above (and a mismatch already returned 400), so what
                         // reaches here can only be a restatement of the key the URL already carries
@@ -10041,6 +10321,13 @@ internal static class OhDataEndpointFactory
                             patchDelta.TrySetPropertyValue(clrProp.Name, value);
                         }
                     }
+
+                    // #355: only the properties this body NAMED are in the delta, so this is exactly
+                    // the "client explicitly sent null for a Nullable='false' property" case — a
+                    // partial update that omits the property is untouched.
+                    IResult? patchNullabilityFail =
+                        ValidateEdmRequiredDelta(edmRequiredProps, patchDelta);
+                    if (patchNullabilityFail is not null) return patchNullabilityFail;
 
                     object? result = await s.InvokePatchAsync(parsedKey!, patchDelta, ct);
 
@@ -10868,6 +11155,19 @@ internal static class OhDataEndpointFactory
                 string postNavPropertyName = navPropertyName;
                 Type postNavItemType = navItemType ?? typeof(object);
                 var postNavCapture = nav;
+
+                // #355: the child type's own required properties. This is a documented CREATE route
+                // (#389 H2 wired the dynamic-key policing into it for exactly that reason), so a
+                // body that violates the published contract answers the same way here as it does on
+                // the collection POST — leaving it out would be a per-route divergence in the one
+                // place the framework creates an entity of another type. The EDM type is resolved
+                // through EdmClrTypeMap rather than by name convention (#508); a child type the EDM
+                // does not declare yields an empty set and the route behaves exactly as before.
+                EdmRequiredProperty[] navPostRequiredProps = source.ValidateRequestBodyNullability
+                    ? BuildEdmRequiredProperties(
+                        EdmClrTypeMap.FindStructuredType(registration.EdmModel, postNavItemType),
+                        postNavItemType)
+                    : Array.Empty<EdmRequiredProperty>();
                 var navPostRb = entityAuthGroup.MapPost($"/{name}({{key}})/{postNavPropertyName}",
                     async (string key, HttpContext ctx, CancellationToken ct) =>
                     {
@@ -10907,8 +11207,10 @@ internal static class OhDataEndpointFactory
                             // straight into the deserializer.
                             if (registration.OpenTypesActive)
                             {
-                                using JsonDocument navDocument =
-                                    await JsonDocument.ParseAsync(ctx.Request.Body, cancellationToken: ct);
+                                // #514: read the body the way the binder reads it — see
+                                // CreateBinderParityDocumentOptions.
+                                using JsonDocument navDocument = await JsonDocument.ParseAsync(
+                                    ctx.Request.Body, binderParityDocumentOptions, ct);
                                 using PreparedWriteBody navPrepared = PrepareWriteBody(
                                     registration, navDocument.RootElement, postNavItemType, jsonOptions);
                                 if (navPrepared.Error is not null) return navPrepared.Error;
@@ -10935,6 +11237,11 @@ internal static class OhDataEndpointFactory
 
                         if (child is null)
                             return ODataError(400, "InvalidBody", "Request body is empty or could not be deserialized.");
+
+                        // #355: same check, same message, same authority as the collection POST.
+                        IResult? navPostNullabilityFail =
+                            ValidateEdmRequiredProperties(navPostRequiredProps, child);
+                        if (navPostNullabilityFail is not null) return navPostNullabilityFail;
 
                         var requestNav = s.NavigationRoutes.First(n => n.PropertyName == postNavPropertyName);
                         logger?.LogDebug("POST {Prefix}/{Name}({Key})/{Nav}", prefix, name, SanitizeLogValue(key), postNavPropertyName);
@@ -11173,7 +11480,17 @@ internal static class OhDataEndpointFactory
                 // #253: propName is the OData/EDM name (route segment, error targets); the underlying
                 // Delta<TModel> keys by the CLR property name, which differs under [JsonPropertyName].
                 string clrPropName = propCapture.Property.Name;
-                bool propIsNullable = propCapture.IsNullable;
+                // #355: ASK THE EDM, not the CLR type. StructuralPropertyInfo.IsNullable answers
+                // "can this CLR type hold null", for which EVERY reference type qualifies — so a
+                // property the framework's own $metadata declares Nullable="false" (an ordinary
+                // non-nullable `string`) passed this gate, the null reached the handler through a
+                // one-property Delta, and the persistence layer's rejection came back as a 500.
+                // That is #355's defect on the property routes, and it is the same defect the entity
+                // write routes have: two independently derived answers to one question. The CLR
+                // answer is kept only as the fallback for a property the EDM does not declare (an
+                // AdvancedConfigure model may omit one) and for a profile that opted out.
+                bool propIsNullable =
+                    !edmNonNullablePropertyNames.Contains(propCapture.Name) && propCapture.IsNullable;
                 bool propIsComplex = propCapture.IsComplex;
                 Type propClrType = propCapture.ClrType;
 
