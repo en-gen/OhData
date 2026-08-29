@@ -67,6 +67,224 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   malformed for a request whose key had parsed one line earlier. Both are `500` + the OData error
   envelope now, with the real exception logged. Framework-raised 400s are unchanged, byte for byte.
 
+- **A `null` or omitted property the EDM declares `Nullable="false"` is now `400` before the handler
+  runs (#355).** The framework publishes the nullability of every structural property in the CSDL it
+  generates, and until now enforced none of it: a `null` for a property declared `Nullable="false"`
+  reached the handler, and the persistence layer's rejection surfaced as a generic `500` — measured on
+  the shipped test bench, `POST /Movies {"Title":null}` → `500 InternalServerError` from EF's
+  *"Required properties '{'Title'}' are missing"*. A violation the framework could see at its own
+  boundary, reported as a server fault. `BuildEdmRequiredProperties` now asks the EDM once per type at
+  startup, and `POST`/`PUT`/`PATCH`, the navigation-`POST` create route and the structural-property
+  writes answer `400 InvalidBody` — *"Property 'X' is declared non-nullable by the service metadata and
+  cannot be null or omitted."* — before any handler delegate runs.
+
+  The property-write route is the proof that *"ask the EDM"* is not stylistic. It already had a
+  nullability check, built on `IsNullableClrType` — for which **every reference type is nullable** — so
+  `PUT /{Set}({key})/Name {"value":null}` on a `Nullable="false"` string was a `204`. There is one
+  authority now. `PATCH` and the property writes go through the partial-update twin, which checks only
+  a property the body actually **named**: a `Delta<T>` is a change set, so an absent property means
+  *"leave it alone"*, not *"set it to nothing"*, and rejecting it would break every ordinary partial
+  update.
+
+  Four deliberate exclusions, each of which would otherwise reject a legal request: the entity **key**
+  (every EDM key is `Nullable="false"` and a server-generated key is routinely omitted on create,
+  §11.4.2); a non-nullable **value type** (`int Year` cannot hold `null`, so a JSON `null` for it is
+  already a `JsonException` → `400` from the binder); a member the EDM declares that no readable CLR
+  property backs; and anything the EDM does not declare at all — which exempts `Ignore()`d properties
+  for free. Top level only: a `null` inside a nested complex value is not checked.
+
+  > **⚠ BREAKING CHANGE — and it fires on the ordinary EF shape.** `ODataConventionModelBuilder`
+  > honours nullable reference-type annotations, so a server-populated property written the ordinary
+  > way — `public string CreatedBy { get; set; } = null!;`, with no `[Required]` anywhere — emits
+  > `Nullable="false"` and is now **required in every `POST`/`PUT` body**. Audit stamps, tenant ids and
+  > computed keys are exactly that shape, and most projects enable nullable reference types by default,
+  > so upgrading can turn every create against such an entity set into a `400` before the handler runs.
+  > Measured: `POST /odata/ZZAudits {"Name":"x"}` → `400`, handler reached `False`; likewise for an
+  > omitted non-nullable **complex** member. Opt out per entity set, or in `EntitySetDefaults`, with
+  > `ValidateRequestBodyNullability = false`, which restores the previous behaviour.
+  >
+  > Two known incoherences ship alongside it, both open. **#544** asks whether this should be opt-in
+  > rather than opt-out at all; what is described here is what 1.7.0 ships. **#545** records that the
+  > rule is not derivable from the published contract in the other direction: a `= ""` initializer binds
+  > to `""` and a non-nullable value type binds to `0`, so three properties `$metadata` describes
+  > identically (`Nullable="false"`) answer `201`, `400` and `201` depending on whether the developer
+  > wrote `= ""` or `= null!` and on CLR value-versus-reference — neither of which appears in
+  > `$metadata`. The shipped `EntitySetProfile.ValidateRequestBodyNullability` XML doc names the key as
+  > the *only* exemption when there are four; that text is wrong, and is tracked in #545.
+
+- **`EntitySetDefaults.MaxRequestBodyBytes` now defaults to 30,000,000 bytes (#474).** The #203
+  body-limit filter does both of its jobs — the `Content-Length` fast-reject and the per-request Kestrel
+  `MaxRequestBodySize` assignment — only when `OhDataBodyLimitMetadata` is attached, and that metadata
+  existed only when a profile or `EntitySetDefaults` set `MaxRequestBodyBytes`, **which defaulted to
+  `null` at both levels**. On a default configuration neither half ran, so the only ceiling was the
+  host's own Kestrel limit, and a host that raised or disabled it had nothing at all bounding the
+  buffered materialisation the write path performs. The new default is `30_000_000` —
+  `EntitySetDefaults.DefaultMaxRequestBodyBytes`, which is **Kestrel's own default** — so a default host
+  sees the same byte count, reported one layer up. An unbound action, which belongs to no profile and so
+  had no per-route metadata to resolve, now falls back to the registration's default rather than to
+  nothing.
+
+  **A defect this fix would itself have introduced, found and closed in the same change:** #203 assigns
+  `MaxRequestBodySize` **unconditionally**, which was right while the limit could only come from the
+  adopter, but a non-`null` framework default would then have *raised* a deliberately-lowered host
+  ceiling — measured, `1,000,000 → 30,000,000` on every OData write, a hardening step loosened by a
+  security fix, on a registration that configured nothing. The assignment is clamped with `Math.Min`
+  when the resolved limit **is** the framework's own constant; an explicitly configured
+  `MaxRequestBodyBytes` still overrides in both directions, because *"this set accepts up to 4 MB"* is a
+  deliberate per-route decision and still behaves like one.
+
+  > **⚠ BREAKING CHANGE — inert on a default host.** A host that raised or disabled Kestrel's own limit
+  > now gets `413 RequestEntityTooLarge` at 30,000,000 bytes on every OData write, unbound actions
+  > included. Raise `EntitySetDefaults.MaxRequestBodyBytes` to whatever that host really accepts, or set
+  > it to `null` to restore the previous behaviour of no OhData-level ceiling.
+
+- **Nine misconfigurations that booted and then failed on every request are refused at startup or at
+  bind time (#492, #498, #486, #416).** One shape throughout: a configuration passes `MapOhData()` and
+  the failure lands on the request path — as an `AmbiguousMatchException` from ASP.NET Core's routing,
+  where *neither* endpoint runs, or as a guaranteed `500`. Every new throw names the offending profile
+  or operation and the remedy.
+
+  - **Priority-1 entity sets were invisible to the unbound-operation collision check (#492 §1).** The
+    check asked `HasGetAll || HasGetQueryable`, so an unbound operation colliding with a
+    `GetODataQueryable` set's collection route slipped past it. There is one answer now,
+    `IEntitySetEndpointSource.HasCollectionGet`, implemented once on `EntitySetProfile` rather than
+    re-implemented on `ODataEntitySetProfile` — a new read path arrives as a new *interface*, so one
+    site keeps answering correctly.
+  - **Three collision checks compared names with `Ordinal` while route matching is case-insensitive
+    (#492 §2)**: structural-property-versus-bound-function, navigation-`post`-versus-bound-action, and
+    the #313 continuation route. All three are `OrdinalIgnoreCase` now.
+  - **New check: an entity-level bound function versus a navigation *route* (#416 / #492 §3).** Keyed
+    off `NavigationRoutes` rather than off which delegate was supplied, because `MapEntitySet` maps a
+    `GET` for every entry — including a `post`/`addRef`-only navigation whose `GET` 404s. A declared
+    navigation with no route at all stays legal.
+  - **Duplicate bound-operation names within one profile (#492 §4)**, refused at **bind time**, per
+    `(kind, binding level)`. Deliberately not from `MapEntitySet`: `Microsoft.OData.ModelBuilder`
+    rejects a repeated *action* name itself, earlier, from inside `VisitModelBuilder`, with a message
+    naming no profile, entity set or remedy — so a downstream check would never run for half the cases.
+  - **`.RequireResource()` on `Create` or `Invoke` with no `GetById` handler (#486).** The #199 Layer B
+    resource filter also attaches on the key-based navigation-`POST` route and on entity-bound functions
+    and actions, and it calls `GetById!.Invoke(...)`; both configurations passed startup and then
+    `NullReferenceException`ed on 100% of requests. The collection-level members of those two categories
+    are deliberately excluded and pinned by controls — the collection `POST` evaluates its `Create`
+    requirement inline against the deserialized model, and a collection-bound operation's route has no
+    `{key}` segment for the filter to read.
+  - **A void-returning bound function (#498 §1).** Previously a hard startup crash out of `EdmFunction`'s
+    own constructor — `ArgumentNullException (Parameter returnType)` — naming nothing.
+  - **A `CancellationToken` in a non-trailing position (#498 §2).** `SplitCancellationToken` strips only
+    a trailing one, so the app **booted** and that operation alone was unreachable, `400`ing
+    unsatisfiably on every call.
+  - **An `IResult` return type (#498 §3).** The app booted and the route answered `200` with
+    `{"Value":…,"StatusCode":200}` while polluting the EDM.
+
+  The three signature checks live in one new `OperationSignatureValidation` with six call sites — the
+  four `Bind*` methods plus `AddFunction`/`AddAction` — called from `Bind*` rather than from
+  `BoundOperationDefinition.From` so the throw is not wrapped in *"failed to build EDM for profile"*.
+  For **unbound** operations they fire at `AddOhData(...)` rather than `MapOhData()`, following #468's
+  precedent.
+
+  > **⚠ BREAKING CHANGE — configurations that previously started no longer do.** The collision checks
+  > and #486 break only configurations that were already 100% broken: every collision shape raises
+  > `AmbiguousMatchException` at request time, so nothing could have relied on whichever route won
+  > registration order (measured — neither endpoint runs), and both #486 shapes `500`ed on every
+  > request. The two to actually weigh are **#498 §2 and §3**, where the host *booted* and only the one
+  > operation was broken — §3 in particular can stop a running, if wrong, deployment. A `Warning` was
+  > considered for #416 and #498 §3 and rejected: warning about a route that can never be served just
+  > delays the same failure past deployment.
+
+  > **⚠ BREAKING CHANGE — two `$metadata` changes (#498 §4, §5).** A `byte[]` return type is now
+  > declared `Edm.Binary` instead of `Collection(Edm.Byte)` — excluded from collection inference in
+  > **both** copies of `GetCollectionElementType`, each now carrying a lockstep note pointing at the
+  > other — and an optional parameter's `DefaultValue` is formatted with `InvariantCulture`, so on a
+  > non-invariant server culture it goes e.g. `1,5` → `1.5`. Clients regenerated from `$metadata` will
+  > differ. A `Dictionary<K,V>` return is deliberately **not** changed and is still
+  > `Collection(KeyValuePair<K,V>)` while the wire serves a JSON object: there is no CSDL shape for a
+  > map short of an open complex type, so it is a design decision rather than a special case, and needs
+  > its own issue.
+
+- **A named `Invoke(...)` authorization rule is matched case-insensitively, and an unresolvable one is
+  refused at startup (#525).** `ResolveOperationRule` compared `OperationAuthRule.BoundOperationName`
+  with `StringComparison.Ordinal` while every route template and operation segment it governs is matched
+  **case-insensitively**. So `ConfigureAuthorization(a => a.Invoke("stamp", …))` against an operation
+  declared `Stamp` matched nothing: the rule was discarded in silence and the route fell back to the
+  generic `Invoke` rule — or, where there was none, to **no requirement at all**. Measured pre-fix,
+  anonymous invocation of a `RequireRole("Admin")`-guarded action answered `200`; with a generic rule
+  present, a Reader-only caller was admitted and an Admin-only caller refused — **both directions
+  wrong**.
+
+  Both halves are implemented, because the comparer alone closes miscasing while a *misspelled* rule
+  still evaporates. `MapEntitySet` now throws for any `Invoke(name, …)` that does not resolve to a
+  declared bound operation, naming the rule and listing what the profile does declare. The startup check
+  uses **the same comparer as the resolution it guards** — a stricter check there would reject exactly
+  the miscased rules the comparer fix just made work, which is this very bug one layer up wearing an
+  exception — and it is placed **before** #486's `GetById` guard, which also resolves rules by name, so
+  a typo reports as a typo rather than as a missing handler.
+
+  > **⚠ BREAKING CHANGE, in both directions.** A miscased named rule now really attaches its
+  > requirement, so a route that previously admitted a caller may now answer `401`/`403`. That is the
+  > intended direction — it was silently unprotected — but it is a live behaviour change on the request
+  > path. And a profile whose `ConfigureAuthorization` names a bound operation it does not declare
+  > **no longer starts**, where the rule was previously discarded in silence: a misspelling that used to
+  > cost nothing visible now stops the host booting. Consequently a miscased `.RequireResource()` rule
+  > on a profile with no `GetById` now trips #486's startup guard, which it previously slipped past by
+  > not matching at all.
+  >
+  > Pre-existing and unchanged: named rules cannot distinguish binding level, so a collection-level
+  > `Stamp` and an entity-level `stamp` can coexist, and one `Invoke("stamp", …)` rule now governs both.
+
+- **A capturing `Convert()` converter is refused where it is declared (#488).** `DeltaMapping.Convert`'s
+  converter is hoisted **verbatim** into the compiled plan, which is a process-lifetime singleton, from
+  a profile `DeltaFactory.Build` resolves in a scope it disposes on the next line — and delta profiles
+  are `AddScoped`, the same lifetime whose scoped injection entity profiles advertise, so `_db` in a
+  converter body is a natural thing to write. Measured: a converter calling an injected scoped
+  `IDisposable` passed startup and threw `ObjectDisposedException` on **every** `Create`; a
+  non-disposable dependency was worse, silently reusing the startup instance with no signal at all.
+  Unlike #483's caches there is **no seam** — the converter is an opaque delegate, the plan is a
+  singleton, and `Create` has no scope — so refusing the shape is the only guarantee available.
+
+  Also closed here: a **get-only collection** model property was silently dropped instead of mapped
+  (measured — `int[] [1,2,3]` in, `List<int> []` out), and a get-only collection *entity* target was
+  rejected as *"not writable"* although `Delta<T>` can write one. The obvious fix — adopt `Delta<T>`'s
+  tracked set as the writable set — was **measured wrong** on .NET 10.0.11: `Delta<T>` tracks a
+  setter-less `byte[]` and then throws `SerializationException: … does not have a Clear method` when the
+  write is applied, so *tracked ⇒ writable* would have converted a startup rejection into a guaranteed
+  per-request `500`, which is #479/#480's defect class one layer down. `CanApplySetterlessWrite`
+  therefore **performs** the write on a throwaway delta seeded from a fresh instance's own value; a null
+  seed or any throw is fail-closed, and the setter-less-array case stays rejected at startup.
+
+  > **⚠ BREAKING CHANGE — a converter that compiled and ran before now throws at its `Convert()` call
+  > site**, i.e. when the delta profile is constructed, which `MapOhData()` forces at startup. The check
+  > is deliberately **sound rather than minimal**: it asks *"does this delegate carry a receiver, or a
+  > display class holding something?"*, so two shapes developers will not expect are refused. An
+  > **instance method group** — `_dep.Convert` — binds the receiver itself as the delegate's target even
+  > when that receiver declares no fields at all, which is why the compiler-generated distinction is
+  > consulted rather than a field count (measured: a field-less scoped service used as a method group
+  > reports zero fields). And a **captured local** is a capture whether or not the value is immutable.
+  > The remedy is one keyword: declare it `static v => …`, or point it at a static method. A
+  > non-capturing lambda passes with or without `static`, and a static method group has a null target
+  > and passes too; delta mapping is dependency-free by design.
+  >
+  > **⚠ Two smaller breaks in the same surface.** A second `Rename()` or `Convert()` for one source
+  > property now throws at the call site instead of silently replacing the first. And a get-only
+  > collection model property is now **in scope**: it must be mapped, renamed, converted or `Ignore()`d,
+  > and where it maps it now actually persists.
+
+- **`AddProfilesFrom*` enforces the cross-registration profile guard (#424).**
+  `AddEntitySetProfile<T>()` consulted the `GlobalProfileRegistry` guard; `AddProfileType` — which every
+  `AddProfilesFrom*` overload routes through — did not. Scanning one assembly into two named
+  registrations therefore silently allowed exactly what the explicit call rejects. There is **one**
+  `RegisterProfileType(Type, bool explicitCall)` behind both paths now; `explicitCall` controls only
+  whether a same-registration duplicate throws (explicit call) or is a no-op (scanner re-discovery), and
+  the cross-registration check itself is identical on both. Deliberately one implementation rather than
+  a second parallel check that could drift — this repo has repeatedly been bitten by two things derived
+  independently.
+
+  > **⚠ BREAKING CHANGE.** Scanning the same profile type into two registrations now throws
+  > `InvalidOperationException` — *"Profile type 'X' has already been registered in a different OhData
+  > registration. A profile type cannot be shared across registrations."* — at `AddProfilesFrom*`,
+  > instead of silently producing a shared-then-broken registration. An app doing this was already
+  > broken; it now refuses to start. `docs/versioning.md` documented the divergence as a *"do not rely
+  > on this"* inconsistency, and that note is removed because the inconsistency is gone.
+
 - **`PATCH` now resolves body keys through the binder's own contract, so a body key it silently
   dropped under a naming policy is bound (#536).** This is #511 manifestation (2) surviving on one
   route. `PATCH`'s body-name table was keyed by the **EDM** name — `[JsonPropertyName]` ?? CLR name,
@@ -147,6 +365,34 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   *"covered uniformly - there's no bypass"* is narrowed — true of the declaring profile's own rule,
   and exactly the assurance #481 disproves about the target's.
 
+- **Startup warning when `Ignore()` loses its EDM half under an `AdvancedConfigure` override (#489).**
+  `VisitModelBuilder` returns before the `_configurators` pipeline runs when `AdvancedConfigure` is
+  overridden, so `Ignore()`'s EDM removal never executes while its runtime suppression still does. The
+  property is omitted from every response body, has no property routes and is never bound from a write
+  body — but `$metadata` advertises its name and type, and it stays addressable in
+  `$filter`/`$orderby`/`$select` wherever the override re-enabled those capabilities. That makes a
+  withheld property a **value oracle**: the value is never served, yet `?$filter=Secret eq …` answers
+  truthfully, so it can be probed one predicate at a time. `WarnIgnoredPropertiesStillInEdm` now logs
+  one `Warning` per affected property at `MapOhData()`, naming the entity set, the property, the
+  consequences and the remedy — re-apply `configuration.EntityType.Ignore(x => x.Secret)` inside the
+  override, or drop the override.
+
+  **Documented and warned rather than fixed, deliberately.** Re-imposing `Ignore()` on top of the
+  override would defeat the eject hatch outright, and `HasOptional`/`HasRequired`/`HasMany` ride the
+  **same** pipeline and stay ejected — singling out `Ignore()` would make pipeline membership depend on
+  consequence severity rather than on a rule, which is a worse contract than the one it replaces. The
+  warning is gated on **the EDM as built**, not on the presence of an override, so re-applying the
+  removal by hand — what the docs prescribe — silences it; and the capability half is deliberately
+  *outside* that gate, so a capability added later cannot silently un-warn a profile.
+
+  **A correction to #489's own claim**, recorded because it should not be re-raised: the issue's repro,
+  `$filter=Secret eq abc` → `200`, does **not** reproduce on a bare override. Taking the hatch also
+  drops OhData's automatic `Filter()`/`OrderBy()`/`Select()` calls, so `$filter` over *any* property
+  answers `400`. The value oracle is live only once the override **re-enables** capabilities — which is
+  precisely what `docs/architecture.md`'s own example (`config.EntityType.Select().OrderBy().Filter()`)
+  tells the developer to write. What holds unconditionally is the `$metadata` disclosure of the
+  property's name and type. No request-path behaviour changed.
+
 ### Fixed
 
 - **The `413` from the `MaxRequestBodyBytes` fast-reject carries `OData-Version` (#496).** The
@@ -209,6 +455,112 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   returning `List<TModel>` was correct. The element test is assignability now, and the OpenAPI
   documentation carries the **same** predicate over the declared return type, so the advertised shape
   and the served shape cannot disagree.
+
+- **Two named registrations declaring the same action name no longer share one generated request-body
+  schema (#499).** `ActionBodySchemaTypeFactory` memoizes generated OpenAPI body-schema types in a
+  process-wide static keyed only by route shape — `"{EntitySet}.{Action}"`,
+  `"{EntitySet}.{Action}.Entity"` and `"Unbound.{Name}"` — with no registration identity anywhere. Two
+  named registrations declaring the same entity set and action name is **the documented v1/v2
+  versioning pattern**, whose flagship example in `docs/versioning.md` has both versions exposing
+  `EntitySetName = "Products"`: whichever mapped first won, and the other version documented the wrong
+  request body. Measured pre-fix on all three key shapes — entity-bound, collection-bound and unbound —
+  one parameter of two survived each time, e.g. expected `["escalate","reason"]`, actual `["reason"]`.
+  `OhDataRegistration` gains an internal `Name`, threaded from the registration name
+  `OhDataBuilder.Register()` already captured, and prefixed onto all **three** key sites. The unbound
+  key was the worst of them, being scoped to nothing but the operation name.
+
+  **Explicitly not changed: the cache lifetime.** The process-wide static is deliberate — it exists so
+  the type-emit work runs once per type rather than per request. The defect was the key; making the
+  cache per-request would have "fixed" the symptom by regressing the reason the cache exists.
+
+- **The compiled-delegate caches no longer freeze the startup scope's profile instance into every
+  request (#483).** `s_etagCache`, `s_keyToStringCache` and `s_keyToUrlCache` are keyed by `GetType()`
+  and store a delegate compiled from the **first-constructed** instance's expressions — which is the
+  startup-scope instance, whose scope `OhDataBuilder` disposes as soon as the registration is built.
+  `UseETag`'s comment declared the delegate safe to share because it *"accesses model properties only
+  (no DI dependencies)"*; nothing checked that, and profiles are registered `AddScoped` **precisely** so
+  they can inject scoped services. Measured — a live `ObjectDisposedException` on a request:
+  `System.ObjectDisposedException : Cannot access a disposed object. Object name: ScopedStamp.` For a
+  *non-disposable* dependency it was worse: another scope's instance reused silently, with no signal at
+  all.
+
+  The caches now serve and populate **only** for a selector that reads nothing but its lambda parameter
+  (`CapturedState.IsCapturedByExpression`); a capturing one is compiled per instance instead.
+  **Nothing is rejected** — a capturing selector simply becomes correct. Constants are the whole hazard
+  and statics are not: C# compiles a capture into a `ConstantExpression` holding the display class (or
+  the declaring instance itself, when only `this` is captured), frozen when the lambda is compiled,
+  whereas a static field or property is read at *invocation* time and is per-process by construction.
+  Value-typed and `string` constants — a literal, an enum such as `StringComparison.Ordinal` — are
+  immutable and belong to no instance, so they do not count. The key selector gets the same gate on both
+  its caches, so *"no cache in this type stores instance-derived state"* is a property rather than a
+  case analysis.
+
+  > **⚠ Upgrade note — an existing capturing selector became correct *and* materially slower (#548).**
+  > `UseETag` runs in the profile constructor and profiles are `AddScoped`, so "compiled per instance"
+  > means **per request**: losing the cache pays an `Expression.Compile()` on every request that reaches
+  > the route. **Measured** end-to-end on `develop` @ `7211a6f` (TestServer, 200 requests each after
+  > warm-up, two runs) on `GET /Set(key)`: **0.63–0.69 ms/req** capturing against **0.20–0.26 ms/req**
+  > non-capturing — roughly **2.5–3.5×**, about **+0.4 ms per request**.
+  > `UseETag(m => m.Title + _salt.Value)` — the injected-dependency shape the framework invites, and the
+  > exact shape #483 exists to make correct — is what pays it.
+  >
+  > The remedy is to hoist the captured value out of the selector so it reads nothing but its lambda
+  > parameter: fold the value into a model property and write `m => m.Title + m.Salt`. Note that
+  > assigning it to a local first does **not** help — a captured local is still compiled into a display
+  > class and is still a capture. Promoting it to a `static` field or property does restore caching,
+  > because a static is read at invocation time rather than frozen at compile time — but only do that
+  > for a value that genuinely is per-process; parking a scoped service in a static is undetectable here
+  > and is the failure #483 exists to prevent. A non-null reference-typed constant in a selector (a
+  > `typeof(X)`, say) also counts as a capture and costs the same, deliberately: the judgment errs
+  > toward *"captured"*.
+
+- **The three `JsonDocument` write-path sites now read the body the way the binder does (#514).** #511
+  gave the two raw-UTF-8 span scanners binder parity through `CreateBinderParityReader`, but the sites
+  that materialise a buffered body with `JsonDocument.ParseAsync` still used a **default**
+  `JsonDocumentOptions` while the binder reads with the registration's `JsonSerializerOptions`. On a
+  host that relaxed its `Http.Json` options the collection `POST` therefore answered `400` for the exact
+  bytes `PUT` accepted — measured, `Post_HostRelaxedJsonOptions_AcceptsTheSameBytesPutAccepts`, expected
+  `Created`, actual `BadRequest` — which is the per-verb divergence this milestone spent ten PRs
+  removing, one option over from #456's. `CreateBinderParityDocumentOptions` derives
+  `AllowTrailingCommas`, `CommentHandling` and `MaxDepth` from the registration's options: the same
+  three members `CreateBinderParityReader` derives, and what `JsonSerializerOptions.GetReaderOptions()`
+  derives internally for `DeserializeAsync`, so this is parity rather than a second guess. .NET 10's
+  `AllowDuplicateProperties` is deliberately not derived — `OhData.AspNetCore` multi-targets `net8.0`,
+  where the member does not exist — and that residual runs the safe way. Unlike #511's scanners this
+  direction failed **closed**: the stricter reader rejected a request rather than silently disabling a
+  guard.
+
+  It also moved `OpenTypeJsonOptions.RewriteWithoutUnbindableKeys`' re-parse, which is a **third** reader
+  over the same body. Once `ParseAsync` honours a raised `MaxDepth`, a body it accepts would have been
+  rejected there — a divergence this fix would have *created* rather than merely exposed.
+
+- **`PATCH` no longer feeds client-supplied strings to a process-wide memoizing cache (#510).**
+  `ODataPropertyNaming.FindClrPropertyByEdmName` memoizes on `(Type, string)` in a process-wide
+  `ConcurrentDictionary` keyed by the caller's **exact** string, and the `PATCH` delta loop — plus
+  #454's key-mismatch guard — called it once per **body property name**. The lookup is what caches, not
+  the result, so an unmatched key grew the dictionary by one entry per distinct spelling, unbounded,
+  straight from the request body. A startup `patchPropByBodyName` table — built from the model's own
+  properties under `OrdinalIgnoreCase`, with the EDM name and the CLR name as non-overwriting keys —
+  answers both call sites now, identically to the call it replaces by construction.
+
+  Deliberately **not** keyed off the binder's contract the way #511 keyed the deep-write table: that
+  changes what `PATCH` *binds*, which does not belong in a memory fix. Filed as **#536**, together with
+  its measured manifestation — under `SnakeCaseLower`, `PATCH {"first_name":"x"}` is a `200` no-op.
+  `FindClrPropertyByEdmName`'s cache remains uncapped, now with no client-reachable feeder; that is
+  tracked as **#537**.
+
+- **The profile scanner skips open generic profile types, and a scan followed by an explicit
+  registration is a no-op (#488 item 5).** An open generic is a template, not a profile: it was
+  discovered, registered in DI, and then killed `MapOhData()` with a raw
+  `MemberAccessException: Cannot create an instance of …` naming no remedy, with no way to exclude it
+  from the scan. Skipping is what every DI scanner does, and a *closed* generic profile is still
+  discovered normally; one predicate serves both profile kinds, so the entity-set path is covered by the
+  same line. Separately, `AddDeltaProfile<T>()` after a scan that had already discovered the same type
+  threw *"already registered. Remove the duplicate `AddDeltaProfile` call."* — while the reverse order
+  was already a silent no-op, so the outcome depended on declaration order and the message blamed the
+  developer's single explicit call. Explicit registrations are tracked per builder now, and the throw
+  fires only when a duplicate explicit call is what actually happened. The identical ordering defect on
+  the **entity**-profile path is filed as **#534** and is not fixed here.
 
 ### Added
 
