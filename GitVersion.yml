@@ -19,12 +19,25 @@ branches:
     regex: ^develop$
     label: alpha
     increment: Minor
+  # The `(?<BranchName>.+)` capture groups below are LOAD-BEARING, not decoration:
+  # `label: '{BranchName}'` interpolates from a capture group of that name, and with no
+  # such group GitVersion emits the placeholder LITERALLY. Braces are not legal in a
+  # semver pre-release identifier, so the result is a malformed version, not merely an
+  # ugly one, and `dotnet pack` fails outright on it:
+  #   error MSB4018: PackageVersion string specified '1.7.0-{BranchName}.1+14' is invalid.
+  # Measured on GitVersion 6.8.2 -- `feature/x` and `story/x` gave `1.7.0-{BranchName}.1`,
+  # `bug/x` gave `1.6.1-{BranchName}.14`. It went unnoticed because this repo's working
+  # branches are `fix/`, `chore/`, `docs/` and `claude/`, which match none of these and so
+  # fall through to the FALLBACK config -- whose preset regex carries the capture group and
+  # interpolates correctly. The configured prefixes were broken; the ones in daily use were
+  # fine by accident. `hotfix` has a literal label and needs no group today; it carries one
+  # so the trap cannot reopen if that label is ever made dynamic. See #520.
   feature:
-    regex: ^(story|feature)[/-]
+    regex: ^(story|feature)[/-](?<BranchName>.+)
     label: '{BranchName}'
     increment: Inherit
   bugfix:
-    regex: ^bug[/-]
+    regex: ^bug[/-](?<BranchName>.+)
     label: '{BranchName}'
     increment: Patch
   release:
@@ -33,7 +46,7 @@ branches:
     increment: None
     is-release-branch: true
   hotfix:
-    regex: ^hotfix[/-]
+    regex: ^hotfix[/-](?<BranchName>.+)
     label: hotfix
     increment: Patch
   pull-request:
