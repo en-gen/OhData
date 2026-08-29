@@ -10373,12 +10373,9 @@ internal static class OhDataEndpointFactory
             foreach (JsonPropertyInfo contractProp in patchWriteContract.Properties)
             {
                 if (contractProp.AttributeProvider is not PropertyInfo clrMember) continue;
-                foreach (PropertyInfo candidate in patchCandidateProps)
-                {
-                    if (!clrMember.HasSameMetadataDefinitionAs(candidate)) continue;
-                    patchPropByBodyName[contractProp.Name] = candidate;
-                    break;
-                }
+                PropertyInfo? match = patchCandidateProps.FirstOrDefault(
+                    candidate => clrMember.HasSameMetadataDefinitionAs(candidate));
+                if (match is not null) patchPropByBodyName[contractProp.Name] = match;
             }
         }
 
