@@ -392,6 +392,15 @@ Gating: the **inline** form (`$count=true`) is gated by `CountEnabled`. The **st
 resource, not a query option) - on that route only `$filter` is gated, by `FilterEnabled`
 (and the `FilterProperties` allowlist).
 
+> **`$search` is not implemented on the `/$count` segment, and is refused rather than ignored
+> (#353).** `GET /odata/Products/$count?$search=alpha` returns `400` (`UnsupportedQueryOption`).
+> Until 1.7.0 it returned the **unfiltered** total under a `200`, which §11.2.9 forbids and which no
+> client could detect. Ask for the searched count inline instead - `GET /odata/Products?$search=alpha&$count=true`
+> and read `@odata.count`, which does honour it. `$top` and `$skip` remain **accepted no-ops** on the
+> segment: it reports the size of the collection the request addresses, so a window over it is not
+> applicable. Every other `$`-prefixed option is refused - see
+> [Unsupported system query options are rejected](#unsupported-system-query-options-are-rejected-359-380-353).
+
 Behaviour depends on the handler path:
 
 | Handler | `$count=true` behaviour |
@@ -756,7 +765,9 @@ Four properties of that route worth knowing:
   *delegate-backed* [navigation route](navigation-routing.md) on the same URL shape does accept.
   There is nothing to carry: the link is only ever emitted for an expand that had no nested options at all. Rejection is
   by the `$` sigil rather than a name allowlist, so a future OData system option this build has never
-  heard of is refused rather than silently ignored.
+  heard of is refused rather than silently ignored. This route's sigil check was the precedent
+  [#359 generalised to every read route](#unsupported-system-query-options-are-rejected-359-380-353),
+  and it now shares that matcher rather than carrying its own copy.
 - **`$format` is the one exemption, and it is not a data option.** §11.2.12 content negotiation is
   implemented once, on the group filter that wraps the whole OData surface, so `$format` never
   reaches this handler and cannot change a single row. Refusing it would make this the only route in
@@ -1083,3 +1094,70 @@ allowlist produces `InvalidQueryOption`:
 ```json
 { "error": { "code": "InvalidQueryOption", "message": "The property 'Id' cannot be used in the $filter query option." } }
 ```
+
+---
+
+## Unsupported system query options are rejected (#359, #380, #353)
+
+OData Part 1 §11.2.5: *"If a data service does not support a system query option, it MUST fail any
+request that contains the unsupported option."* Every read route enforces that, and enforces it by
+the **`$` sigil** rather than by a list of names it happens to know about.
+
+Concretely, a request is refused with `400` (`UnsupportedQueryOption`) when it carries a query key
+that begins with `$` and is not in the route's own implemented set:
+
+```
+GET /odata/Products?$unknown=1        -> 400  "The query option '$unknown' is not supported."
+GET /odata/Products?$slect=Name       -> 400
+GET /odata/Products?$levels=2         -> 400   ($levels is a real option, but only inside $expand)
+GET /odata/Products(1)?$filter=…      -> 400   (a single entity has nothing to filter)
+GET /odata/Products/$count?$search=x  -> 400
+```
+
+Until 1.7.0 each of these returned `200` with the option parsed and thrown away - and on the
+collection routes the discarded option was echoed back into the `@odata.nextLink` the server
+generated. A `200` from `?$filter=…` reasonably tells a client that the filter was applied.
+
+### What is *not* touched
+
+- **Custom query options.** Part 2 §5.2 requires a custom query option to *not* begin with `$`, so
+  any key without the sigil is passed through untouched: `?myTenant=acme` is your business, and the
+  framework's own `ohdata-skiptoken` continuation offset is deliberately spelled without a `$` for
+  the same reason.
+- **Parameter aliases** (§5.3) begin with `@`, not `$`, and are likewise untouched.
+- **Mixed-case spellings of real options.** `$Select` and `$TOP` are honoured, as they always have
+  been. `Microsoft.AspNetCore.OData` lowercases an option name before matching it whenever the URI
+  resolver enables case-insensitivity - the default - so this is alignment with the stack OhData
+  sits on, not leniency. The inconsistency #359 reported (`$Select` applied, `$slect` ignored,
+  neither rejected) is resolved by rejecting `$slect`.
+- **`$format`.** Accepted on every route: §11.2.12 content negotiation is implemented once, on the
+  group filter that wraps the whole OData surface, so it never reaches a route handler and cannot
+  change a row. An unsupported `$format` *value* is still rejected there.
+
+### The per-route sets
+
+The sets differ, and that is the point - `$filter` is implemented on a collection GET and
+meaningless on a single entity.
+
+| Route | Accepted |
+|---|---|
+| `GET /{Set}` (`GetQueryable`, `GetODataQueryable`) | `$filter` `$orderby` `$top` `$skip` `$select` `$expand` `$count` `$search` `$skiptoken` `$format` |
+| `GET /{Set}` (`GetAll`) | the same, **minus `$skiptoken`** - this path continues with `$skip` and never read a `$skiptoken` |
+| `GET /{Set}/$count` | `$filter` `$top` `$skip` `$format` |
+| `GET /{Set}({key})` | `$select` `$expand` `$format` |
+| `GET /{Set}({key})/{Nav}` | `$select` `$orderby` `$skip` `$top` `$count` `$format` |
+| `GET /{Set}({key})/{Nav}/$count` | `$top` `$skip` `$format` |
+| `GET /{Set}({key})/{Nav}?$skip=N` (the #313 `$expand` continuation) | `$skip` `$format` |
+
+Being in a set means *the route implements the option*, not that this profile permits it: a
+`$filter` on a set with `FilterEnabled = false` is still a `400`, with the capability flag's own
+message naming the flag. A recognized-but-not-implemented-here option and a completely unrecognized
+one share one code, because the client's remedy is identical.
+
+### Why `400` and not `501`
+
+§11.2.5 says a service *SHOULD* return `501 Not Implemented`. OhData returns `400`
+(`UnsupportedQueryOption`), which is what `$apply`/`$compute`/`$index`/`$deltatoken` have returned
+since 1.0.0. Generalising the rule to every `$`-name did not re-word or re-status those four,
+because the same condition must not produce two different envelopes depending on which spelling
+reached the server.

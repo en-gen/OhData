@@ -206,24 +206,34 @@ public class QueryOptionConstructionFaultTests
     // build options of their own (GetById only when $select or $expand is present, hence the
     // companion $select here) — the fix had to reach all five sites, not just the one in the
     // reported stack trace.
-    public static TheoryData<string> SkipTokenRoutes() => new()
+    //
+    // #359/#380/#353 moved the CODE on two of the five, and the guarantee this test exists for is
+    // untouched: a client-reachable 500 became a 400 with an OData error envelope, and it still is
+    // one on all five. GetById and /{Set}/$count do not implement $skiptoken at all, so they now
+    // refuse it by name BEFORE any option object is constructed — "The query option '$skiptoken'
+    // is not supported." is a strictly better answer there than "the value cannot be empty",
+    // which implies some non-empty value would have worked. The three collection routes still
+    // reach SkipTokenQueryOption's own constructor with the empty raw value ($skiptoken is
+    // implemented on two of them, and on the GetAll path options are built before the option gate
+    // runs), so the ArgumentException-to-400 guard is still exercised end-to-end here.
+    public static TheoryData<string, string> SkipTokenRoutes() => new()
     {
-        "/odata/QocQueryable?$skiptoken=",            // Priority-2 GetQueryable collection
-        "/odata/QocQueryable/$count?$skiptoken=",     // collection $count
-        "/odata/QocQueryable(1)?$select=Name&$skiptoken=", // GetById (options built only with $select/$expand)
-        "/odata/QocGetAll?$skiptoken=",               // GetAll collection
-        "/odata/QocPriority1?$skiptoken=",            // Priority-1 collection
+        { "/odata/QocQueryable?$skiptoken=", "InvalidQueryOption" },            // Priority-2 GetQueryable collection
+        { "/odata/QocQueryable/$count?$skiptoken=", "UnsupportedQueryOption" }, // collection $count — $skiptoken unimplemented
+        { "/odata/QocQueryable(1)?$select=Name&$skiptoken=", "UnsupportedQueryOption" }, // GetById — $skiptoken unimplemented
+        { "/odata/QocGetAll?$skiptoken=", "InvalidQueryOption" },               // GetAll collection
+        { "/odata/QocPriority1?$skiptoken=", "InvalidQueryOption" },            // Priority-1 collection
     };
 
     [Theory]
     [MemberData(nameof(SkipTokenRoutes))]
-    public async Task EmptySkipToken_Returns400WithODataErrorEnvelope(string url)
+    public async Task EmptySkipToken_Returns400WithODataErrorEnvelope(string url, string expectedCode)
     {
         await using var fx = await BuildAsync();
         var response = await fx.Client.GetAsync(url);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        await AssertODataErrorEnvelope(response, "InvalidQueryOption");
+        await AssertODataErrorEnvelope(response, expectedCode);
     }
 
     /// <summary>A bare <c>$skiptoken</c> with no <c>=</c> at all reaches the same constructor with

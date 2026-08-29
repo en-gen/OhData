@@ -493,6 +493,117 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   design there, as it is for every category selector, and `All(…)` then `Invoke(…)` is a documented
   refinement idiom.
 
+- **⚠ BREAKING CHANGE — an unrecognized or unimplemented `$`-prefixed system query option is now
+  refused on every read route instead of being parsed and discarded under a `200`
+  (#359, #380, #353).** OData Part 1 §11.2.5: *"If a data service does not support a system query
+  option, it MUST fail any request that contains the unsupported option."* It is Minimal-conformance
+  item 7 (§13.1.1), and the server did not honour it anywhere except through three closed name
+  lists that between them left most of the read surface unexamined.
+
+  **Measured on `develop` at `3781681`** — three faces, one mechanism:
+
+  ```
+  #359  the three collection GETs — rejection was a four-name allowlist
+        GET /Set?$unknown=1&$top=2       -> 200
+        GET /Set?$slect=Name             -> 200  (unprojected, byte-identical to no option)
+        GET /Set?$fliter=Year eq 1972    -> 200  (unfiltered)
+        GET /Set?$expandx=Cast           -> 200
+        GET /Set?$levels=2               -> 200  ($levels is real, but never valid at top level)
+        …and echoed verbatim into the link the server itself generated:
+        @odata.nextLink = …/Set?%24unknown=evil+payload&%24slect=x&%24skiptoken=MgAAAA%3d%3d
+        (only $apply / $compute / $index / $deltatoken were refused, and only those four)
+
+  #380  GET /Set({key}) — implements $select/$expand, rejected NOTHING
+        GET /Set(1)?$filter=Title eq 'nope' -> 200, the entity, filter ignored
+        GET /Set(1)?$orderby=… $count=true $top=1 $apply=… -> 200, all ignored
+
+  #353  GET /Set/$count — silently ignored $search, returning the UNFILTERED total
+        GET /Set?$search=alpha&$count=true  -> 200  "@odata.count":1
+        GET /Set/$count?$search=alpha       -> 200  body: 5     <-- expected 1
+        GET /Set/$count?$apply=x            -> 200  body: 5
+  ```
+
+  The navigation `/$count` route, which no issue named, rejected nothing either.
+
+  **The rule is the `$` sigil, applied against a per-route implemented set.** Part 2 §5.2 reserves
+  the `$` prefix for system query options, so a key that does not start with `$` is a *custom* query
+  option and is passed through untouched — as is a `@`-prefixed parameter alias (§5.3) and the
+  framework's own non-`$` `ohdata-skiptoken` continuation offset. A `$`-prefixed key the route does
+  not implement is refused whether or not any OData version has ever defined it, which is the
+  fail-closed direction: a system option a future spec adds cannot quietly start being dropped on
+  the floor. This generalises the `$`-sigil loop the #313 `$expand` continuation route has used
+  since 1.6.0; that route now shares the same matcher rather than carrying a second copy of it.
+
+  **Who is affected, and in which direction.** A client that sends a `$`-prefixed query option a
+  route does not implement — a typo (`$slect`), an option meant for a different route (`$filter` on
+  `GET /Set({key})`), a real option this build does not implement (`$apply`, `$index`), or anything
+  unrecognized — receives `400` `UnsupportedQueryOption` where it previously received `200`. That is
+  the whole point: the `200` was a wrong answer, because the client's option had been discarded and
+  it had no way to know. Nothing that was *honoured* before is refused now, and no successful
+  response changes by a byte. Remedy: stop sending the option, or send it to a route that
+  implements it.
+
+  Status and envelope are deliberately **unchanged from the four names already refused**: `400`
+  with code `UnsupportedQueryOption` and the message `The query option '$x' is not supported.`
+  §11.2.5 says *SHOULD* return `501`, but those four have shipped as this exact `400` since 1.0.0,
+  and the framework's standing rule — recorded for #357 and #543 in this same release — is that one
+  condition must not produce two envelopes. Promoting them to `501` would be a gratuitous wire
+  break; adding new names at `501` beside them would be worse. The navigation-collection route keeps
+  its own longer wording, which names the options it *does* support.
+
+  **Mixed-case spellings of real options are still honoured, and that is alignment rather than
+  leniency.** `Microsoft.AspNetCore.OData` lowercases a query-option name before matching it
+  whenever the URI resolver enables case-insensitivity, which is the default
+  (`ODataQueryOptions.cs:286-290`, *"by default we support case-insensitive"*), so `$Select` and
+  `$TOP` have always been applied and continue to be. #359 reported the pair — `$Select` applied,
+  `$slect` ignored, neither rejected — as one inconsistency; it is resolved by rejecting `$slect`,
+  never by starting to reject `$Select`. The matching here is `OrdinalIgnoreCase` for the same
+  reason. This *is* a deliberate divergence from Microsoft in the other direction: its own
+  `BuildQueryOptions` carries `default: // we don't throw if we can't recognize the query`
+  (`ODataQueryOptions.cs:1063`), i.e. it silently ignores. §11.2.5's `MUST` wins over matching that.
+
+  Per-route implemented sets, and what each now refuses:
+
+  | Route | Implemented (accepted) | Newly refused |
+  |---|---|---|
+  | `GET /{Set}` — `GetQueryable`, Priority-1 | `$filter` `$orderby` `$top` `$skip` `$select` `$expand` `$count` `$search` `$skiptoken` `$format` | every other `$`-name (the four already refused keep their exact envelope) |
+  | `GET /{Set}` — `GetAll` | the same, **minus `$skiptoken`** | as above, plus `$skiptoken` — #201 continues this path with `$skip` and nothing on it ever read a `$skiptoken` |
+  | `GET /{Set}/$count` | `$filter` `$top` `$skip` `$format` | `$search` (#353), `$orderby`, `$select`, `$expand`, `$count`, and every unrecognized `$`-name |
+  | `GET /{Set}({key})` | `$select` `$expand` `$format` | everything else (#380) |
+  | `GET /{Set}({key})/{Nav}` | `$select` `$orderby` `$skip` `$top` `$count` `$format` | every unrecognized `$`-name (the seven already refused are unchanged) |
+  | `GET /{Set}({key})/{Nav}/$count` | `$top` `$skip` `$format` | everything else |
+  | `GET /{Set}({key})/{Nav}?$skip=N` (#313) | `$skip` `$format` | unchanged; the route now shares the matcher instead of its own copy |
+
+  `$format` is in **every** set and must stay there: it is not a data option. §11.2.12 content
+  negotiation is implemented once, on the group filter wrapping the whole OData surface, so it never
+  reaches these handlers and cannot change a row; an unsupported `$format` **value** is still
+  rejected there, unchanged.
+
+  `$top`/`$skip` stay **accepted no-ops on both `/$count` routes**. The `/$count` segment reports the
+  size of the collection the request addresses, so a window over it is not applicable rather than
+  unsupported; both have been ignored there since 1.0.0, and #353's own control matrix records both
+  as correctly ignored. This is the one silent-ignore the change deliberately preserves.
+
+  **`@odata.nextLink` needed no separate fix, and that is asserted rather than assumed.** Once an
+  unrecognized option is a `400`, no link is built for such a request at all —
+  `Collection_UnrecognizedOption_IsNeverEchoedIntoANextLink` proves the response carries neither a
+  `nextLink` nor a `skiptoken`, against a control on the same fixture that does emit one.
+
+  One further wire change falls out, on two routes: `GET /{Set}({key})?$select=…&$skiptoken=` and
+  `GET /{Set}/$count?$skiptoken=` answered `400 InvalidQueryOption` (*"The value for OData query
+  '$skiptoken' cannot be empty"*, from #402's construction guard) and now answer
+  `400 UnsupportedQueryOption`. Neither route implements `$skiptoken`, so it is refused by name
+  before any option object is built — a better answer, since the old one implied that some non-empty
+  value would have worked. Status and envelope are unchanged, and #402's guarantee (no
+  client-reachable `500` from option construction) is unaffected and still pinned on the three
+  collection routes.
+
+  `UnrecognizedSystemQueryOptionTests` covers all seven routes in both directions — the
+  recognized-but-not-implemented-here case, the unrecognized case, the non-`$` and `@`-alias
+  passthroughs, the mixed-case `$Select`/`$TOP` controls, `$format` on every route, and the
+  `nextLink` case. 44 of its 90 cases fail on the pre-fix tree, every one of them `Expected:
+  BadRequest / Actual: OK`.
+
 ### Added
 
 - **Startup warning when a navigation's target entity set is protected more strictly than the set

@@ -2986,11 +2986,13 @@ internal static class OhDataEndpointFactory
     // $orderby are optionally skipped (checkFilterOrderBy: false) on paths that already reject
     // them structurally regardless of the flag (the GetAll path, which has no ApplyTo pipeline).
     private static IResult? CheckCollectionQueryOptionCapabilities(
-        HttpContext ctx, IEntitySetEndpointSource source, bool checkFilterOrderBy = true)
+        HttpContext ctx, IEntitySetEndpointSource source, string[] implementedOptions,
+        bool checkFilterOrderBy = true)
     {
-        // #196: reject system options this framework does not implement at all, rather than
-        // ignoring them silently (Minimal-conformance item 7 — "parse the option or reject it").
-        IResult? unimplemented = CheckUnimplementedCollectionQueryOptions(ctx);
+        // #196/#359: reject every $-prefixed system option this route does not implement, rather
+        // than ignoring it silently (Minimal-conformance item 7 — "parse the option or reject
+        // it"). The set is the caller's, because the GetAll path implements one option fewer.
+        IResult? unimplemented = CheckUnimplementedCollectionQueryOptions(ctx, implementedOptions);
         if (unimplemented is not null) return unimplemented;
 
         if (checkFilterOrderBy)
@@ -3009,45 +3011,168 @@ internal static class OhDataEndpointFactory
         return sr;
     }
 
-    // S1/B1 fix: system query options the navigation collection GET route does not implement.
-    // $select, $orderby, $skip, $top, and $count ARE implemented (parsed directly off the query
-    // string in the nav-route handler); everything else — most notably $filter — was previously
-    // ignored outright rather than rejected, so a client asking to filter a navigation collection
-    // silently got back the whole, unfiltered set (S1).
-    private static readonly string[] s_navUnsupportedSystemOptions =
+    // ── Unsupported system query options: one matcher, one rule, every read route ──────────
+    //
+    // #359/#380/#353 (Minimal-conformance item 7 / Part 1 §11.2.5 — "If a data service does not
+    // support a system query option, it MUST fail any request that contains the unsupported
+    // option"). This replaced three separate mechanisms that between them left most of the
+    // surface unexamined: a closed four-name allowlist on the collection routes
+    // ($apply/$compute/$index/$deltatoken), a closed seven-name list on the navigation route, and
+    // NOTHING at all on GetById, on /{Set}/$count, or on the navigation /$count. So $unknown,
+    // $slect, $fliter, $expandx and a top-level $levels were all accepted and discarded under a
+    // 200 — and on the collection routes echoed verbatim into the generated @odata.nextLink —
+    // while GetById accepted and discarded $filter/$orderby/$count/$top/$apply and /$count
+    // accepted and discarded $search, returning the unfiltered total.
+    //
+    // THE RULE IS THE '$' SIGIL, not a name allowlist. Part 2 §5.2 reserves the '$' prefix for
+    // system query options, so a key that does NOT start with '$' is a custom query option and is
+    // passed through untouched (as is a '@'-prefixed parameter alias, §5.3, and the framework's
+    // own 'ohdata-skiptoken' continuation offset). A '$'-prefixed key the route does not
+    // implement is refused, whether or not any OData version has ever defined it — the same
+    // fail-closed reasoning the #313 continuation route has always used, generalised: an option
+    // this build has never heard of must be refused rather than silently ignored, and a future
+    // system option cannot quietly start being dropped on the floor.
+    //
+    // The set is PER ROUTE, and that is the point: $filter is implemented on the collection GETs
+    // and not on GetById. A name that is recognized-but-not-implemented-here and a name that is
+    // unrecognized anywhere get the SAME 400 UnsupportedQueryOption — the client's remedy is
+    // identical ("stop sending it"), so a second code would distinguish nothing actionable.
+    //
+    // Matching is OrdinalIgnoreCase, which is ALIGNMENT with Microsoft.AspNetCore.OData rather
+    // than a leniency: ODataQueryOptions.IsSystemQueryOption(string) lowercases the name before
+    // comparing whenever the URI resolver enables case-insensitivity, which is the default
+    // (ODataQueryOptions.cs:286-290, "by default we support case-insensitive"). So $Select and
+    // $TOP are honoured exactly as they are today; #359's complaint that "$Select is applied
+    // while $slect is ignored and neither is rejected" is answered by rejecting $slect, never by
+    // starting to reject $Select. This is a deliberate divergence from MS in the OTHER direction:
+    // its own BuildQueryOptions carries `default: // we don't throw if we can't recognize the
+    // query` (ODataQueryOptions.cs:1063), i.e. it silently ignores. §11.2.5's MUST wins.
+    //
+    // $format is in every set below and must stay there. It is not a data option: §11.2.12
+    // content negotiation is implemented once, on the group filter that wraps the whole OData
+    // surface, so it never reaches these handlers and cannot change a single row. An unsupported
+    // $format VALUE is still rejected there, unchanged.
+
+    private const string FormatOption = "$format";
+
+    // The three collection GET routes over an IQueryable — GetQueryable (Priority-2) and
+    // Priority-1 (GetODataQueryable). $filter/$orderby/$select/$expand/$count are listed here
+    // because the route DOES implement them; whether this profile permits them is the separate
+    // question CheckDisabledQueryOption answers, with its own message. $search likewise: the
+    // route implements it and answers with its own "Configure the Search handler" message when
+    // the profile has none. Not listed, and so refused: $apply/$compute (unimplemented
+    // aggregation), $index (4.01 ordered insert), $deltatoken (change tracking), and every
+    // unrecognized name.
+    private static readonly string[] s_collectionImplementedOptions =
     {
-        "$filter", "$expand", "$search", "$apply", "$compute", "$skiptoken", "$deltatoken",
+        "$filter", "$orderby", "$top", "$skip", "$select", "$expand", "$count",
+        "$search", "$skiptoken", FormatOption,
     };
 
-    // #196: system query options the *main* collection GET routes do not implement at all — as
-    // opposed to the capability-gated $filter/$orderby/$select/$expand/$count (handled by
-    // CheckCollectionQueryOptionCapabilities) or the implemented $top/$skip/$search/$skiptoken.
-    // These were previously ignored silently on the main route even though the navigation route
-    // already rejected them. $apply/$compute are unimplemented aggregation options ($compute is
-    // 4.01-only and blocked by the pinned OData package range); $index is a 4.01 ordered-insert
-    // option; $deltatoken belongs to delta/change-tracking. Ignoring a known option violates
-    // Minimal-conformance item 7 ("parse the option or reject the request").
-    private static readonly string[] s_collectionUnimplementedSystemOptions =
+    // The GetAll (simple read) collection route. Identical except that $skiptoken is NOT
+    // implemented: #201's ApplyGetAllPaging continues with $skip and nothing on this path ever
+    // reads a $skiptoken, so accepting one meant discarding a client's continuation in silence.
+    // $filter/$orderby are listed even though this path always refuses them — it does so earlier,
+    // with a message naming GetQueryable as the remedy, and one condition must not produce two
+    // different envelopes depending on which check saw it first.
+    private static readonly string[] s_getAllCollectionImplementedOptions =
     {
-        "$apply", "$compute", "$index", "$deltatoken",
+        "$filter", "$orderby", "$top", "$skip", "$select", "$expand", "$count",
+        "$search", FormatOption,
     };
 
-    private static IResult? CheckUnimplementedCollectionQueryOptions(HttpContext ctx)
+    // GET /{Set}/$count. It counts; it neither projects nor pages. $filter is the one data option
+    // it applies (and the GetAll-backed fallback branch refuses even that, with its own message).
+    // $top/$skip stay accepted no-ops: the /$count segment reports the size of the collection the
+    // request addresses, so a window over it is not applicable rather than unsupported, and both
+    // have been ignored here since 1.0.0. Everything else — $search included, which is #353's
+    // headline — is refused rather than answered with an unfiltered total under a 200.
+    private static readonly string[] s_countRouteImplementedOptions =
     {
-        string? option = s_collectionUnimplementedSystemOptions
-            .FirstOrDefault(o => ctx.Request.Query.ContainsKey(o));
-        if (option is not null)
+        "$filter", "$top", "$skip", FormatOption,
+    };
+
+    // GET /{Set}({key}). A single entity: there is nothing to filter, order, window or count.
+    // $select/$expand are the whole implemented surface (#380).
+    private static readonly string[] s_getByIdImplementedOptions =
+    {
+        "$select", "$expand", FormatOption,
+    };
+
+    // GET /{Set}({key})/{Nav} — the delegate-backed navigation collection route, which parses
+    // $select/$orderby/$skip/$top/$count directly off the query string.
+    private static readonly string[] s_navCollectionImplementedOptions =
+    {
+        "$select", "$orderby", "$skip", "$top", "$count", FormatOption,
+    };
+
+    // GET /{Set}({key})/{Nav}/$count. Same shape as the entity-set /$count one level down, minus
+    // $filter, which the navigation route does not implement at all.
+    private static readonly string[] s_navCountImplementedOptions =
+    {
+        "$top", "$skip", FormatOption,
+    };
+
+    // GET /{Set}({key})/{Nav}?$skip=N — the #313 bare-$expand continuation. $skip only.
+    private static readonly string[] s_expandContinuationImplementedOptions =
+    {
+        "$skip", FormatOption,
+    };
+
+    /// <summary>
+    /// Returns the first <c>$</c>-prefixed query-string key that is not in
+    /// <paramref name="implemented"/>, or <c>null</c> when the request carries none.
+    /// <para>
+    /// Short-circuits on an empty query string before touching anything, so a request with no
+    /// options at all costs one <see cref="IQueryCollection.Count"/> read and allocates nothing —
+    /// load-bearing on <c>GetById</c>, which is the hottest read route and deliberately builds no
+    /// <see cref="ODataQueryOptions{TEntity}"/> unless <c>$select</c>/<c>$expand</c> is present.
+    /// The check itself only reads key strings: no parsing, no options construction.
+    /// </para>
+    /// </summary>
+    private static string? FindUnsupportedSystemQueryOption(HttpContext ctx, string[] implemented)
+    {
+        IQueryCollection query = ctx.Request.Query;
+        if (query.Count == 0) return null;
+
+        foreach (string key in query.Keys)
         {
-            return ODataError(400, "UnsupportedQueryOption",
-                $"The query option '{option}' is not supported.");
+            if (key.Length == 0 || key[0] != '$') continue;
+
+            bool ok = false;
+            for (int i = 0; i < implemented.Length; i++)
+            {
+                if (string.Equals(key, implemented[i], StringComparison.OrdinalIgnoreCase))
+                {
+                    ok = true;
+                    break;
+                }
+            }
+            if (!ok) return key;
         }
         return null;
     }
 
+    // The generic envelope, shared verbatim with the four names #196 already rejected on the
+    // collection routes so that generalising the rule did not re-word a message that has shipped
+    // since 1.0.0. Used by the collection GETs, /$count, GetById and the navigation /$count.
+    private static IResult? CheckUnsupportedSystemQueryOptions(HttpContext ctx, string[] implemented)
+    {
+        string? option = FindUnsupportedSystemQueryOption(ctx, implemented);
+        return option is null
+            ? null
+            : ODataError(400, "UnsupportedQueryOption", $"The query option '{option}' is not supported.");
+    }
+
+    private static IResult? CheckUnimplementedCollectionQueryOptions(HttpContext ctx, string[] implemented) =>
+        CheckUnsupportedSystemQueryOptions(ctx, implemented);
+
+    // The navigation-collection route keeps its own wording, which names the options it does
+    // support — it has shipped that way since S1/B1 and is more useful than the generic line on a
+    // route whose supported set is small and non-obvious. Same matcher underneath.
     private static IResult? CheckNavUnsupportedQueryOptions(HttpContext ctx)
     {
-        string? option = s_navUnsupportedSystemOptions
-            .FirstOrDefault(o => ctx.Request.Query.ContainsKey(o));
+        string? option = FindUnsupportedSystemQueryOption(ctx, s_navCollectionImplementedOptions);
         if (option is not null)
         {
             return ODataError(400, "UnsupportedQueryOption",
@@ -8781,7 +8906,7 @@ internal static class OhDataEndpointFactory
             {
                 try
                 {
-                    IResult? capabilityError = CheckCollectionQueryOptionCapabilities(ctx, source);
+                    IResult? capabilityError = CheckCollectionQueryOptionCapabilities(ctx, source, s_collectionImplementedOptions);
                     if (capabilityError is not null) return capabilityError;
 
                     var s = ResolveHandlers(ctx);
@@ -8985,7 +9110,7 @@ internal static class OhDataEndpointFactory
             {
                 try
                 {
-                    IResult? capabilityError = CheckCollectionQueryOptionCapabilities(ctx, source);
+                    IResult? capabilityError = CheckCollectionQueryOptionCapabilities(ctx, source, s_collectionImplementedOptions);
                     if (capabilityError is not null) return capabilityError;
 
                     var s = ResolveHandlers(ctx);
@@ -9759,7 +9884,8 @@ internal static class OhDataEndpointFactory
                     // above regardless of flag state, since GetAll has no ApplyTo pipeline
                     // to push them down to. $top/$skip need no flag: they are always live,
                     // exactly like on the GetQueryable path.
-                    IResult? capabilityError = CheckCollectionQueryOptionCapabilities(ctx, source, checkFilterOrderBy: false);
+                    IResult? capabilityError = CheckCollectionQueryOptionCapabilities(
+                        ctx, source, s_getAllCollectionImplementedOptions, checkFilterOrderBy: false);
                     if (capabilityError is not null) return capabilityError;
                     ValidatePropertyAllowlists(options, cachedValidationSettings);
                     // #254: reject a nested $top above MaxExpandTop at any depth. GetAll expands
@@ -9913,6 +10039,15 @@ internal static class OhDataEndpointFactory
             {
                 try
                 {
+                    // #353: this route applies $filter and counts; it does not project, page,
+                    // search or aggregate. It used to accept and DISCARD everything it does not
+                    // apply, so `/$count?$search=alpha` answered 200 with the unfiltered total
+                    // while the sibling collection route honoured (or rejected) the same option.
+                    // $top/$skip stay accepted no-ops — see s_countRouteImplementedOptions.
+                    IResult? countUnsupported =
+                        CheckUnsupportedSystemQueryOptions(ctx, s_countRouteImplementedOptions);
+                    if (countUnsupported is not null) return countUnsupported;
+
                     // B1 fix: $/count's own metadata advertises FilterEnabled: source.FilterEnabled
                     // (the only query option this route actually applies), so enforce it — a
                     // disabled $filter was previously applied unconditionally below.
@@ -10015,6 +10150,17 @@ internal static class OhDataEndpointFactory
                     // collection routes, then actually expand below via the same pipeline the
                     // collection GET uses (batch-handler included), for context/serialization
                     // parity between GET /{Set} and GET /{Set}({key}).
+                    // #380: this route implements $select and $expand and NOTHING else, and used
+                    // to reject nothing at all — $filter/$orderby/$count/$top/$apply were each
+                    // accepted and silently discarded under a 200, so a client that filtered a
+                    // single entity reasonably concluded the filter had been applied. The check
+                    // reads query-string KEYS only (no parsing, no ODataQueryOptions) and
+                    // short-circuits on an empty query string, so the zero-cost no-option path
+                    // this route is built around is preserved.
+                    IResult? unsupportedOption =
+                        CheckUnsupportedSystemQueryOptions(ctx, s_getByIdImplementedOptions);
+                    if (unsupportedOption is not null) return unsupportedOption;
+
                     bool hasSelect = ctx.Request.Query.ContainsKey("$select");
                     bool hasExpand = ctx.Request.Query.ContainsKey("$expand");
                     IResult? selectCapabilityError = CheckDisabledQueryOption(
@@ -11255,27 +11401,17 @@ internal static class OhDataEndpointFactory
                         // 1. The $skip-ONLY surface. Every other system query option is rejected —
                         // conformant (Minimal item 7: parse the option or reject it), and the thing
                         // that keeps this endpoint from quietly becoming a second general-purpose
-                        // collection route. Rejecting by the '$' sigil rather than an allowlist of
-                        // known names is deliberately fail-closed: a future OData system option this
-                        // build has never heard of is refused rather than silently ignored.
-                        //
-                        // $format is the ONE exemption, and it is not a data option at all: §11.2.12
-                        // content negotiation is implemented once, on the group filter in MapAll, for
-                        // every route on the whole OData surface — it never reaches this handler and
-                        // cannot change a single row. Refusing it here would make this the only route
-                        // in the surface that 400s a conformant, already-supported option, and would
-                        // break the common client habit of appending it to a server-issued link. An
-                        // unsupported VALUE is still rejected, by that same group filter, unchanged.
-                        foreach (string queryKey in ctx.Request.Query.Keys)
+                        // collection route. This route's inline '$'-sigil loop was the precedent
+                        // #359 generalised into FindUnsupportedSystemQueryOption; it now shares that
+                        // matcher (and its $format exemption) so the two cannot drift, keeping only
+                        // its own more specific message. See the block above s_collectionImplemented-
+                        // Options for the full rule.
+                        string? contUnsupported = FindUnsupportedSystemQueryOption(
+                            ctx, s_expandContinuationImplementedOptions);
+                        if (contUnsupported is not null)
                         {
-                            if (!queryKey.StartsWith('$') ||
-                                string.Equals(queryKey, "$skip", StringComparison.Ordinal) ||
-                                string.Equals(queryKey, "$format", StringComparison.Ordinal))
-                            {
-                                continue;
-                            }
                             return ODataError(400, "UnsupportedQueryOption",
-                                $"The query option '{queryKey}' is not supported on an $expand " +
+                                $"The query option '{contUnsupported}' is not supported on an $expand " +
                                 "continuation. This route serves the continuation of a BARE $expand " +
                                 "and accepts '$skip' only.");
                         }
@@ -11518,6 +11654,15 @@ internal static class OhDataEndpointFactory
                     {
                         try
                         {
+                            // #359: this route counts the whole related collection and applies no
+                            // data option at all — it used to accept and discard every one of
+                            // them, including the $filter and $select its own sibling nav route
+                            // rejects. $top/$skip stay accepted no-ops for the same reason they
+                            // do on the entity-set /$count.
+                            IResult? navCountUnsupported =
+                                CheckUnsupportedSystemQueryOptions(ctx, s_navCountImplementedOptions);
+                            if (navCountUnsupported is not null) return navCountUnsupported;
+
                             var s = ResolveHandlers(ctx);
                             var requestNav = s.NavigationRoutes.First(n => n.PropertyName == navCountPropertyName);
                             object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
