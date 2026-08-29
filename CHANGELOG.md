@@ -130,7 +130,68 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   documentation carries the **same** predicate over the declared return type, so the advertised shape
   and the served shape cannot disagree.
 
+### Added
+
+- **Unbound functions and actions can now carry their own authorization requirement (#487).**
+  `AddFunction`/`AddAction` take an optional `authorize` lambda using the same
+  `ICategoryAuthorizationBuilder` as `ConfigureAuthorization`:
+
+  ```csharp
+  builder.AddAction(ResetAll, a => a.RequireRole("admin"));
+  builder.AddFunction(Ping,   a => a.AllowAnonymous());   // deliberately public, and says so
+  ```
+
+  This closes an API-shape gap `docs/authorization.md` has named since 1.0. An unbound operation is
+  not scoped to an entity set, so no profile's `RequireAuthorization()`/`RequireRoles()`/
+  `ConfigureAuthorization(...)` reached it, and the only mitigation was a group-level requirement
+  covering the entire surface including `$metadata`. **Measured on the pre-fix tree**, on a
+  registration whose only profile declares `RequireAuthorization()`: `GET /odata/{Set}` → `401`,
+  `POST /odata/Mutate` → `204` **with the handler executed**, `GET /odata/Peek` → `200` with the body.
+
+  `RequireResource()` is refused at the call site — resource-based authorization evaluates the
+  requirement against the entity loaded from a `{key}` segment, and an unbound operation has neither
+  a key nor an entity set, so the rule could only ever be a silent no-op. `AllowAnonymous()` on an
+  unbound operation states intent and silences the warning below; it deliberately does **not** emit
+  `AllowAnonymousAttribute`, so it cannot tunnel the operation out from under a host-applied group
+  requirement.
+
+- **A startup `Warning` names every route that is anonymous in a registration that requires
+  authorization somewhere else (#487).** Two configurations reach it, both previously silent:
+
+  - an unbound function/action with no requirement of its own, and
+  - a `ConfigureAuthorization` profile that leaves an operation **category** rule-less while routes
+    exist in it — most consequentially `Invoke`. A profile migrated from `RequireAuthorization()`
+    (which covers *all* operations) to `.Read(...).Writes(...)` reads as a refinement and is a
+    **widening**: measured pre-fix, that profile answered `401` on its collection `GET` and `204`
+    with the handler executed on both `POST /{Set}/{Action}` and `POST /{Set}({key})/{Action}`.
+
+  Each warning names what is anonymous, the configuration that produced it, and two remedies — the
+  requirement to add, and the explicit `AllowAnonymous()` that states the opposite intent and stops
+  the warning. **Nothing is warned about when the host applies a group-level requirement**, which is
+  the mitigation the docs recommend: the diagnostic runs from an `IEndpointConventionBuilder.Finally`
+  convention rather than inside `MapOhData()`, because the host applies its requirement to the group
+  *after* `MapOhData()` returns and warning earlier would fire on the correct configuration. A
+  registration that requires authorization nowhere is a public service, not a service with a hole,
+  and is never reported.
+
+  **No request-path behaviour changes.** Every route answers exactly as before; the fix is a
+  diagnostic plus the opt-in capability above.
+
 ### Documentation
+
+- **`docs/authorization.md` gains "The composition: securing everything you can name" (#487).** Three
+  individually-documented behaviours compose into a quiet fail-open, and no single document owned the
+  system-level property. The new section states it, and states the third seam that is deliberately
+  *not* changed: a category-level `.AllowAnonymous()` overrides a host-applied
+  `app.MapOhData().RequireAuthorization()`. That is ASP.NET Core's own `AllowAnonymousAttribute`
+  semantics — verified with a control test containing no OhData at all, in which a plain `MapGroup`
+  carrying `RequireAuthorization()` serves an endpoint marked `.AllowAnonymous()` with `200` while its
+  sibling answers `401`, regardless of the order the two were applied in. It is not warned about
+  because `.AllowAnonymous()` is the only way to express a deliberate public hole in an otherwise-
+  gated surface, so a warning would fire on correct configuration with no way to silence it. The
+  "Global auth" section's claim that a group-level requirement covers every route in the group is
+  narrowed accordingly.
+
 
 - **The group exception filter's "outermost group filter (added first)" claim was false and is
   corrected (#496).** The #200 observability filter is added first and wraps it. The consequence is

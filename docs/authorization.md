@@ -107,11 +107,22 @@ Selectors: `.Read(...)`, `.Create(...)`, `.Update(...)`, `.Delete(...)`, `.Write
 - A category with **no rule** emits nothing, so it **inherits** any group-level
   `MapOhData().RequireAuthorization()` - and is anonymous when there is none. This matches
   ASP.NET Core's "anonymous unless you say otherwise" posture and keeps global auth composable.
+  **It also fails open**, which is why `app.MapOhData()` now logs a `Warning` naming any category
+  that ends up anonymous while the same profile requires authorization elsewhere - see
+  ["The composition"](#the-composition-securing-everything-you-can-name-still-leaves-holes-you-did-not)
+  below. The migration that trips it is
+  `RequireAuthorization()` -> `ConfigureAuthorization(a => a.Read(...).Writes(...))`: it reads as a
+  refinement and is a **widening**, because nothing names `Invoke` and every bound operation on the
+  set drops to anonymous.
 - An explicit `.AllowAnonymous()` **overrides** a group-level requirement for that category (it is the
-  standard `AllowAnonymousAttribute`).
-- `$metadata`, the service document, and unbound functions/actions are **not** entity-set-scoped, so
-  `ConfigureAuthorization` does not reach them; protect them with group-level auth (see below), same as
-  the legacy model.
+  standard `AllowAnonymousAttribute`). This is deliberate and it is how you punch a public hole in an
+  otherwise-gated surface - but read the composition section below before relying on group-level auth
+  as a floor, because it is not one.
+- `$metadata` and the service document are **not** entity-set-scoped, so `ConfigureAuthorization` does
+  not reach them; protect them with group-level auth (see below), same as the legacy model. Unbound
+  functions and actions are not entity-set-scoped either, but they now have their **own**
+  per-operation surface - see
+  ["Unbound functions and actions"](#unbound-functions-and-actions-carry-their-own-requirement).
 
 ### One model per profile
 
@@ -208,6 +219,12 @@ returns, so a group-level `.RequireAuthorization()`/`.RequireRoles(...)` call pr
 same as every entity-set route. Group-level auth is the mechanism to reach for if your service's
 schema itself needs to be behind auth (see below).
 
+**It is not a floor, though.** A group-level requirement covers every route that does not say
+otherwise, and a profile can say otherwise: a category-level `.AllowAnonymous()` emits the standard
+`AllowAnonymousAttribute`, which ASP.NET Core's authorization middleware honours over any
+`IAuthorizeData` the group contributed. So "wrap the whole group" secures everything **except what a
+profile has deliberately opened**. See the next section.
+
 ## `$metadata` and the service document are anonymous by default - unless group-level auth is used
 
 `GET /{prefix}` (the service document) and `GET /{prefix}/$metadata` are mapped directly on the
@@ -233,21 +250,86 @@ different questions):
   the rest of the surface open to anonymous per-profile-only configuration - it's an all-or-nothing
   choice between "group auth also covers schema discovery" and "schema discovery is always open."
 
-## Unbound functions and actions have no per-operation auth - only group-level auth reaches them
+## Unbound functions and actions carry their own requirement
 
 `AddFunction`/`AddAction` (registered on `OhDataBuilder`, not inside a profile - see
 [bound-operations.md](bound-operations.md#unbound-functions-and-actions)) are mapped on the same
 top-level route group as `$metadata` and the service document, for the same reason: they aren't
 tied to any single entity set, so there's no profile-level auth group for them to sit inside.
-Consequently:
 
-- **Per-profile `RequireAuthorization()`/`RequireRoles()` cannot protect an unbound operation** -
-  even if every entity set in the registration requires auth, `GET /{prefix}/{UnboundFunction}`
-  and `POST /{prefix}/{UnboundAction}` remain anonymous. There is no per-operation opt-in for
-  unbound functions/actions today (an API-shape gap, not a bug - if you need an authenticated
-  unbound operation with other operations left open, model it as a bound operation on a
-  dedicated, auth-required entity set instead).
-- **Group-level auth does protect them**, via the same mechanism as `$metadata` above: applying
+Pass an `authorize` lambda to give one its own requirement. It takes the same
+`ICategoryAuthorizationBuilder` the `ConfigureAuthorization` categories take:
+
+```csharp
+builder.Services.AddOhData(o => o
+    .AddAction(ResetAll,  a => a.RequireRole("admin"))
+    .AddFunction(Report,  a => a.RequirePolicy("Reporting"))
+    .AddFunction(Ping,    a => a.AllowAnonymous()));   // deliberately public, and says so
+```
+
+- **`RequireResource()` is refused** (`ArgumentException` at registration). Resource-based
+  authorization evaluates the requirement against the entity loaded from a `{key}` segment, and an
+  unbound operation has neither a key nor an entity set - the rule could only ever be a silent no-op.
+- **`AllowAnonymous()` states intent; it does not remove anyone else's requirement.** Unlike the
+  category-level `.AllowAnonymous()` on a profile, it does **not** emit `AllowAnonymousAttribute`, so
+  it cannot tunnel the operation out from under a group-level requirement the host applied. It
+  silences the startup warning below and nothing else.
+- **Per-profile `RequireAuthorization()`/`RequireRoles()` still cannot protect an unbound operation.**
+  Even if every entity set in the registration requires auth, `GET /{prefix}/{UnboundFunction}` and
+  `POST /{prefix}/{UnboundAction}` are anonymous unless you say otherwise, either here or at group
+  level. That configuration is now named at startup - see the next section.
+- **Group-level auth also protects them**, via the same mechanism as `$metadata` above: applying
   `.RequireAuthorization()`/`.RequireRoles(...)` to the `RouteGroupBuilder` `MapOhData()` returns
-  covers every unbound function/action in that registration along with everything else on the
-  group.
+  covers every unbound function/action in that registration along with everything else on the group.
+
+## The composition: securing everything you can name still leaves holes you did not
+
+Three behaviours documented above are individually correct and compose into a quiet fail-open. Each
+one on its own reads as a reasonable default; together they mean that **securing every profile you
+can name still leaves anonymous routes you did not name**, and until 1.7.0 nothing surfaced that.
+
+| # | Behaviour | Status |
+|---|---|---|
+| 1 | An unbound function/action is not entity-set-scoped, so no per-profile requirement reaches it | Fixed: it can carry its own requirement, and an unstated one is warned about |
+| 2 | A `ConfigureAuthorization` category with no rule emits no requirement | Warned about |
+| 3 | A category-level `.AllowAnonymous()` overrides a host-applied group requirement | **Unchanged and unwarned - by design** |
+
+### The startup warning
+
+`app.MapOhData()` logs one `Warning` per anonymous subject - per unbound operation, and per
+(entity set, category) - when **all** of the following hold:
+
+- the route ends up with no authorization requirement at all,
+- nothing stated that it should be anonymous (no `.AllowAnonymous()` on the category, none on the
+  unbound operation, none on the group), and
+- the registration requires authorization **somewhere else**, so it is a service with a hole rather
+  than a service that is simply public.
+
+The message names the subject, the configuration that produced it, the requirement to add, and the
+explicit `AllowAnonymous()` spelling that states the opposite intent and stops the warning. A
+registration with no authorization anywhere is never reported, and neither is one where the host
+applied `app.MapOhData().RequireAuthorization()` - the check runs at endpoint-build time precisely so
+that the mitigation this document recommends really does silence it.
+
+### Why seam 3 is not warned about, and not changed
+
+A category-level `.AllowAnonymous()` really does defeat `app.MapOhData().RequireAuthorization()`. So
+group-level auth is a **backstop for routes nobody has an opinion about**, not a floor under the
+whole surface.
+
+This is ASP.NET Core's own behaviour, not OhData's: `.AllowAnonymous()` emits the standard
+`AllowAnonymousAttribute`, and the authorization middleware short-circuits on any endpoint carrying
+`IAllowAnonymous` regardless of the `IAuthorizeData` its group contributed, and regardless of the
+order the two were applied in. The framework control in `Issue487AuthSeamTests` demonstrates it with
+no OhData in the picture - a plain `MapGroup` with `RequireAuthorization()` applied *after* its
+routes serves the `.AllowAnonymous()` one with `200` while its sibling answers `401`. Diverging from
+that would surprise every developer who knows ASP.NET Core, and would make the "public catalog reads
+inside an otherwise-gated service" design un-expressible.
+
+It is not warned about either, because `.AllowAnonymous()` **is** the way to express that design.
+Warning on it would fire on correct configuration with no way to silence it, which is worse than no
+warning at all.
+
+**So if you rely on group-level auth as a global backstop, audit the `.AllowAnonymous()` calls in
+your profiles.** They are the holes, they are deliberate, and they are the only ones the startup
+warning will not tell you about.

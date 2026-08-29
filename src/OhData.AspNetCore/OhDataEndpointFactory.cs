@@ -1726,9 +1726,15 @@ internal static class OhDataEndpointFactory
             }
         }
 
+        // #487: computed once, consulted by every diagnostic below and by the unbound-operation
+        // auth application. A registration that requires authorization NOWHERE is simply a public
+        // service and has no hole to report.
+        bool registrationRequiresAuth = RegistrationRequiresAuthorizationSomewhere(registration);
+
         // Gap 7: Unbound functions/actions — registered once at service root level (§11.5.1)
         MapUnboundOperations(
-            group, registration.UnboundOperations, effectiveJsonOptions, registration);
+            group, registration.UnboundOperations, effectiveJsonOptions, registration,
+            registrationRequiresAuth);
 
         // #313: named LAST, after every route has mapped, so a registration whose startup validation
         // is about to throw does not first emit advice about a surface it will never serve. Same
@@ -1740,6 +1746,11 @@ internal static class OhDataEndpointFactory
         WarnUndeclaredConventionNavigations(registration, groupLogger);
         // #489: same placement rationale again — after every route has mapped.
         WarnIgnoredPropertiesStillInEdm(registration, groupLogger);
+        // #487: registered last, and unlike its three neighbours it does not warn HERE — it
+        // installs a Finally convention that warns at endpoint-build time, once the host has had
+        // its chance to apply group-level authorization to the group this method returns. See
+        // AttachAnonymousRouteAudit.
+        AttachAnonymousRouteAudit(group, groupLogger);
 
         return group;
     }
@@ -2168,15 +2179,136 @@ internal static class OhDataEndpointFactory
         return new OhDataQueryParametersMetadata { Parameters = list };
     }
 
+    /// <summary>
+    /// #199/#487: replays the ENDPOINT-GATE half of an <see cref="OperationAuthRule"/> onto a route.
+    /// Shared by the per-entity-set <c>ApplyOperationAuth</c> and by <see cref="MapUnboundOperations"/>,
+    /// which authorize the same <see cref="AuthRequirement"/> list and must not translate it twice.
+    /// <para>
+    /// <see cref="AuthRequirementKind.Resource"/> is deliberately absent: it is not an endpoint gate
+    /// at all but a per-request check against the loaded <c>{key}</c> entity (#199 Layer B), applied
+    /// by <c>AttachResourceFilter</c> on the entity-set half and refused outright on the unbound half.
+    /// </para>
+    /// </summary>
+    private static void ApplyAuthRequirements(
+        IEndpointConventionBuilder rb, IReadOnlyList<AuthRequirement> requirements)
+    {
+        // Named policies apply as separate RequireAuthorization(name) calls (they stack -> AND).
+        foreach (var req in requirements.Where(r => r.Kind == AuthRequirementKind.Policy))
+        {
+            rb.RequireAuthorization(req.Name!);
+        }
+
+        // Inline requirements (authenticated/role/claim) replay onto one AuthorizationPolicyBuilder.
+        var inlineRequirements = requirements
+            .Where(r => r.Kind is AuthRequirementKind.AuthenticatedUser
+                               or AuthRequirementKind.Role
+                               or AuthRequirementKind.Claim)
+            .ToList();
+        if (inlineRequirements.Count > 0)
+        {
+            rb.RequireAuthorization(policy =>
+            {
+                foreach (var req in inlineRequirements)
+                {
+                    switch (req.Kind)
+                    {
+                        case AuthRequirementKind.AuthenticatedUser:
+                            policy.RequireAuthenticatedUser();
+                            break;
+                        case AuthRequirementKind.Role:
+                            policy.RequireRole(req.Values!.ToArray());
+                            break;
+                        case AuthRequirementKind.Claim:
+                            if (req.Values is { Count: > 0 })
+                                policy.RequireClaim(req.Name!, req.Values);
+                            else
+                                policy.RequireClaim(req.Name!);
+                            break;
+                    }
+                }
+            });
+        }
+    }
+
+    /// <summary>
+    /// #487: does this registration require authorization ANYWHERE? The gate on every diagnostic
+    /// below, and the reason none of them fires on a service that is simply public.
+    /// <para>
+    /// "Anywhere" means a profile that really imposes a requirement - the legacy profile-wide model
+    /// with <see cref="AuthorizationConfig.Required"/>, or at least one <c>ConfigureAuthorization</c>
+    /// category carrying a <c>Require*</c>. An <c>AllowAnonymous()</c> category is a statement that
+    /// something is open, never that anything is closed, so it does not count.
+    /// </para>
+    /// </summary>
+    private static bool RegistrationRequiresAuthorizationSomewhere(OhDataRegistration registration) =>
+        registration.Profiles.Any(ProfileRequiresAuthorizationSomewhere);
+
+    private static bool ProfileRequiresAuthorizationSomewhere(IEntitySetEndpointSource profile)
+    {
+        if (profile.Authorization is { Required: true }) return true;
+        IReadOnlyList<OperationAuthRule>? rules = profile.OperationAuthorization;
+        return rules is not null
+            && rules.Any(r => !r.AllowAnonymous && r.Requirements.Count > 0);
+    }
+
+    /// <summary>
+    /// #487: emits the startup <c>Warning</c> for every route carrying an
+    /// <see cref="OhDataAnonymousRouteAudit"/> that is still anonymous once the HOST has finished
+    /// configuring the group.
+    /// <para>
+    /// <b>Why <c>Finally</c> and not <c>MapAll</c>.</b> <c>MapOhData()</c> hands the group back and
+    /// the host applies its own <c>RequireAuthorization()</c> to it afterwards - the mitigation
+    /// <c>docs/authorization.md</c> recommends for exactly these routes. At map time a route with
+    /// no rule of its own is therefore indistinguishable from one about to inherit that backstop,
+    /// and warning there would fire on the correct configuration. A <c>Finally</c> convention runs
+    /// after every convention on the endpoint, the host's included, so it can ask the question that
+    /// actually matters: is anything going to authorize this endpoint at all? Measured on .NET
+    /// 10.0.11 - a <c>Finally</c> registered before <c>group.RequireAuthorization()</c> observes
+    /// that requirement's <c>IAuthorizeData</c> on every endpoint under the group.
+    /// </para>
+    /// <para>
+    /// One warning per <see cref="OhDataAnonymousRouteAudit.Key"/>, not per endpoint: a category
+    /// covers a dozen routes and the developer has one decision to make about all of them.
+    /// </para>
+    /// </summary>
+    private static void AttachAnonymousRouteAudit(RouteGroupBuilder group, ILogger? logger)
+    {
+        if (logger is null) return;
+
+        var reported = new HashSet<string>(StringComparer.Ordinal);
+        ((IEndpointConventionBuilder)group).Finally(endpoint =>
+        {
+            OhDataAnonymousRouteAudit? audit =
+                endpoint.Metadata.OfType<OhDataAnonymousRouteAudit>().FirstOrDefault();
+            if (audit is null) return;
+
+            // The documented mitigation, applied: a group-level requirement covers this route, so
+            // there is no hole and nothing to say. An explicit group-level AllowAnonymous is the
+            // host stating the opposite intent just as deliberately, and is equally not a hole.
+            if (endpoint.Metadata.OfType<IAuthorizeData>().Any()) return;
+            if (endpoint.Metadata.OfType<IAllowAnonymous>().Any()) return;
+
+            if (!reported.Add(audit.Key)) return;
+
+            logger.LogWarning(
+                "OhData: {Subject} {Detail} Nothing in this registration authorizes it, yet other " +
+                "parts of the same registration require authorization - so securing everything you " +
+                "named has still left a hole you did not name. {Remedy}",
+                audit.Subject, audit.Detail, audit.Remedy);
+        });
+    }
+
     private static void MapUnboundOperations(
         RouteGroupBuilder group,
         IReadOnlyList<UnboundOperationDefinition> unboundOps,
         JsonSerializerOptions? jsonOptions,
-        OhDataRegistration registration)
+        OhDataRegistration registration,
+        bool registrationRequiresAuthSomewhere)
     {
         foreach (var op in unboundOps)
         {
             var opCapture = op;
+            RouteHandlerBuilder unboundRb;
             if (!op.IsAction)
             {
                 // Unbound function: GET /{prefix}/{FunctionName}?params
@@ -2221,6 +2353,7 @@ internal static class OhDataEndpointFactory
                 // Issue #181: document the function's query-string parameters.
                 var unboundFnQueryParams = BuildFunctionQueryParametersMetadata(opCapture.Parameters, skipKey: false);
                 if (unboundFnQueryParams is not null) rb.WithMetadata(unboundFnQueryParams);
+                unboundRb = rb;
             }
             else
             {
@@ -2304,8 +2437,65 @@ internal static class OhDataEndpointFactory
                             string.Join(", ", opCapture.Parameters.Select(p => $"{p.Name} ({p.ParameterType.Name})")) + "."
                     });
                 }
+                unboundRb = rb;
             }
+
+            // #487 seam 1: an unbound operation is not scoped to an entity set, so no profile's
+            // ConfigureAuthorization can reach it and no per-profile RequireAuthorization applies to
+            // it. Until the `authorize` overloads of AddFunction/AddAction existed there was no way
+            // to state a requirement for one at all: a registration in which EVERY profile required
+            // authorization still served every unbound action anonymously, and measured on the
+            // pre-fix tree that meant POST /{prefix}/{Action} -> 204 with the handler executed.
+            ApplyUnboundOperationAuth(unboundRb, opCapture, registrationRequiresAuthSomewhere);
         }
+    }
+
+    /// <summary>
+    /// #487: applies an unbound operation's own rule, or - when it declared none and the
+    /// registration requires authorization somewhere else - marks the route for the startup
+    /// diagnostic. See <see cref="AttachAnonymousRouteAudit"/> for why the diagnostic cannot be
+    /// decided here.
+    /// </summary>
+    private static void ApplyUnboundOperationAuth(
+        IEndpointConventionBuilder rb,
+        UnboundOperationDefinition op,
+        bool registrationRequiresAuthSomewhere)
+    {
+        string kind = op.IsAction ? "action" : "function";
+
+        if (op.Authorization is { } rule)
+        {
+            if (rule.AllowAnonymous)
+            {
+                // Deliberately anonymous, and said so. Note this is the one place the metadata is
+                // NOT applied as AllowAnonymousAttribute: doing that would let an unbound operation
+                // tunnel out from under a host group requirement (seam 3) - a hole the host cannot
+                // see and did not ask for. Stating "anonymous" here means "I am not adding a
+                // requirement", not "I am removing yours".
+                return;
+            }
+
+            // #220 parity with the entity-set half: expose the resolved requirements so the opt-in
+            // OpenAPI/NSwag auth-requirements filters can render them.
+            rb.WithMetadata(new OhDataOperationAuthMetadata(rule.Requirements));
+            ApplyAuthRequirements(rb, rule.Requirements);
+            return;
+        }
+
+        if (!registrationRequiresAuthSomewhere) return;
+
+        rb.WithMetadata(new OhDataAnonymousRouteAudit(
+            Key: $"unbound:{op.Name}",
+            Subject: $"the unbound {kind} '{op.Name}' ({(op.IsAction ? "POST" : "GET")} /{{prefix}}/{op.Name}) is ANONYMOUS.",
+            Detail: "An unbound operation is not scoped to an entity set, so no profile's " +
+                    "RequireAuthorization()/RequireRoles()/ConfigureAuthorization(...) reaches it.",
+            Remedy: op.IsAction
+                ? $"Declare a requirement on the operation itself - AddAction({op.Name}, a => a.RequireAuthenticatedUser()) - " +
+                  "or apply one to the whole surface with app.MapOhData().RequireAuthorization(). " +
+                  $"If it is meant to be public, say so with AddAction({op.Name}, a => a.AllowAnonymous()) and this warning stops."
+                : $"Declare a requirement on the operation itself - AddFunction({op.Name}, a => a.RequireAuthenticatedUser()) - " +
+                  "or apply one to the whole surface with app.MapOhData().RequireAuthorization(). " +
+                  $"If it is meant to be public, say so with AddFunction({op.Name}, a => a.AllowAnonymous()) and this warning stops."));
     }
 
     // #495: the options for envelopes whose ENTIRE content is framework-generated -- every OData
@@ -8044,6 +8234,47 @@ internal static class OhDataEndpointFactory
             return named ?? generic;
         }
 
+        // #487 seam 2: does this profile impose a requirement on ANY category? Only then is a
+        // rule-less category a hole rather than a service that is simply public. Same question
+        // RegistrationRequiresAuthorizationSomewhere asks, one scope in.
+        bool profileRequiresAuthSomewhere =
+            operationAuthRules is not null
+            && operationAuthRules.Any(r => !r.AllowAnonymous && r.Requirements.Count > 0);
+
+        // #487 seam 2: one audit record per category, built lazily and cached, so the dozen routes
+        // that share a category attach the same instance and the Finally convention's dedupe key
+        // does the rest.
+        var categoryAudits = new Dictionary<OhDataOperation, OhDataAnonymousRouteAudit>();
+        OhDataAnonymousRouteAudit? CategoryAudit(OhDataOperation category)
+        {
+            if (categoryAudits.TryGetValue(category, out var cached)) return cached;
+
+            // The selector is spelled out with its own lambda parameter so both halves of the
+            // remedy are copy-pasteable as written -- the AllowAnonymous form is derived from the
+            // same (method, parameter) pair rather than by string-substituting the ellipsis, which
+            // produced `.Invoke(i => x.AllowAnonymous())`.
+            (string label, string selector, string param) = category switch
+            {
+                OhDataOperation.Read => ("read", "Read", "r"),
+                OhDataOperation.Create => ("create", "Create", "c"),
+                OhDataOperation.Update => ("update", "Update", "u"),
+                OhDataOperation.Delete => ("delete", "Delete", "d"),
+                OhDataOperation.Invoke => ("bound function/action invocation", "Invoke", "i"),
+                _ => (category.ToString(), category.ToString(), "x"),
+            };
+
+            var audit = new OhDataAnonymousRouteAudit(
+                Key: $"set:{name}|{category}",
+                Subject: $"the {label} routes of entity set '{name}' are ANONYMOUS.",
+                Detail: $"Its ConfigureAuthorization(…) block names no rule for the " +
+                        $"{category} category, and a category with no rule emits no requirement.",
+                Remedy: $"Add .{selector}({param} => …) with the requirement you intended. If these " +
+                        $"routes are meant to be public, say so with " +
+                        $".{selector}({param} => {param}.AllowAnonymous()) and this warning stops.");
+            categoryAudits[category] = audit;
+            return audit;
+        }
+
         // Layer C applies coarse per-route auth. `keyBased` marks routes carrying a {key} segment, to
         // which Layer B (resource-based) auth attaches a load-by-key filter (see AttachResourceFilter);
         // collection-level routes (no {key}) pass keyBased: false.
@@ -8051,7 +8282,27 @@ internal static class OhDataEndpointFactory
         {
             if (operationAuthRules is null) return; // legacy group-auth path governs instead
             OperationAuthRule? rule = ResolveOperationRule(category, boundOperationName);
-            if (rule is null) return; // no rule → inherit any group/global auth (anonymous if none)
+            if (rule is null)
+            {
+                // No rule -> inherit any group/global auth, and be anonymous when there is none.
+                //
+                // #487 seam 2: that "when there is none" is the fail-open, and it is silent. A
+                // profile migrated from RequireAuthorization() -- which covers ALL operations --
+                // to ConfigureAuthorization(a => a.Read(...).Writes(...)) reads as a refinement and
+                // is a WIDENING: nothing names the Invoke category, so every bound function and
+                // action on the set drops to anonymous. Measured on the pre-fix tree, that profile
+                // answered 401 on its collection GET and 204-with-the-handler-executed on both
+                // POST /Set/Action and POST /Set(key)/Action.
+                //
+                // Only a category the profile said NOTHING about is audited. An explicit
+                // AllowAnonymous() produces a non-null rule and never reaches here, which is what
+                // makes the diagnostic silenceable by stating the intent it is asking about.
+                if (profileRequiresAuthSomewhere && CategoryAudit(category) is { } audit)
+                {
+                    rb.WithMetadata(audit);
+                }
+                return;
+            }
             if (rule.AllowAnonymous)
             {
                 rb.AllowAnonymous();
@@ -8071,42 +8322,11 @@ internal static class OhDataEndpointFactory
                 AttachResourceFilter(rb, category, boundOperationName);
             }
 
-            // Named policies apply as separate RequireAuthorization(name) calls (they stack → AND).
-            foreach (var req in rule.Requirements.Where(r => r.Kind == AuthRequirementKind.Policy))
-            {
-                rb.RequireAuthorization(req.Name!);
-            }
-
-            // Inline requirements (authenticated/role/claim) replay onto one AuthorizationPolicyBuilder.
-            var inlineRequirements = rule.Requirements
-                .Where(r => r.Kind is AuthRequirementKind.AuthenticatedUser
-                                   or AuthRequirementKind.Role
-                                   or AuthRequirementKind.Claim)
-                .ToList();
-            if (inlineRequirements.Count > 0)
-            {
-                rb.RequireAuthorization(policy =>
-                {
-                    foreach (var req in inlineRequirements)
-                    {
-                        switch (req.Kind)
-                        {
-                            case AuthRequirementKind.AuthenticatedUser:
-                                policy.RequireAuthenticatedUser();
-                                break;
-                            case AuthRequirementKind.Role:
-                                policy.RequireRole(req.Values!.ToArray());
-                                break;
-                            case AuthRequirementKind.Claim:
-                                if (req.Values is { Count: > 0 })
-                                    policy.RequireClaim(req.Name!, req.Values);
-                                else
-                                    policy.RequireClaim(req.Name!);
-                                break;
-                        }
-                    }
-                });
-            }
+            // #487: the endpoint-gate half is shared with MapUnboundOperations rather than
+            // transcribed there. An unbound operation's rule carries the same AuthRequirement list
+            // this one does, and two replays of one list would be two things that must agree,
+            // derived independently.
+            ApplyAuthRequirements(rb, rule.Requirements);
         }
 
         // #199 Layer B helpers ─────────────────────────────────────────────────

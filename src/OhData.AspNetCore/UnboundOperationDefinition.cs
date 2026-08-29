@@ -24,6 +24,20 @@ internal sealed record UnboundOperationDefinition
 
     public required Func<object?[], CancellationToken, Task<object?>> Invoke { get; init; }
 
+    /// <summary>
+    /// #487: this operation's own authorization rule, from the <c>authorize</c> overload of
+    /// <c>OhDataBuilder.AddFunction</c>/<c>AddAction</c>, or <c>null</c> when none was declared.
+    /// <para>
+    /// Always carries <see cref="OhDataOperation.Invoke"/> and a null
+    /// <see cref="OperationAuthRule.BoundOperationName"/>: an unbound operation is not bound to an
+    /// entity set, so there is no per-set category surface to target it from and nothing to
+    /// disambiguate it against. <see cref="AuthRequirementKind.Resource"/> is refused at
+    /// registration -- resource-based authorization loads the <c>{key}</c> entity, and an unbound
+    /// operation has neither key nor entity.
+    /// </para>
+    /// </summary>
+    public OperationAuthRule? Authorization { get; init; }
+
     internal static UnboundOperationDefinition From(Delegate del, bool isAction)
     {
         var method = del.Method;
