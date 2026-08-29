@@ -48,13 +48,15 @@ internal sealed class OpPagedProfile : EntitySetProfile<int, OpPagedItem>
     private Task<IEnumerable<OpPagedItem>> TopRated() => Task.FromResult<IEnumerable<OpPagedItem>>(Store);
     private Task<OpPagedItem?> Headline() => Task.FromResult<OpPagedItem?>(Store[0]);
     private Task<int> HowMany() => Task.FromResult(Store.Count);
-    // Deliberately NOT TModel: Microsoft.OData.ModelBuilder's ActionConfiguration.Returns /
-    // .ReturnsCollection both REFUSE a type already declared as an entity type ("Use the method
-    // 'ReturnsFromEntitySet'" / "'ReturnsCollectionFromEntitySet'"), while the FunctionConfiguration
-    // twins accept it -- so a BindAction returning TModel or IEnumerable<TModel> cannot be
-    // registered at all today (MapOhData throws, quoting a method OhData never calls). That
-    // asymmetry is a separate defect, reported rather than fixed here; it is also why #357's
-    // "bound ACTION returning a collection" half is unreachable for the entity set's own type.
+    // Deliberately NOT TModel, and it now stays that way by choice rather than by necessity. When
+    // #357 wrote this fixture, Microsoft.OData.ModelBuilder's ActionConfiguration.Returns /
+    // .ReturnsCollection REFUSED a type already declared as an entity type ("Use the method
+    // 'ReturnsFromEntitySet'" / "'ReturnsCollectionFromEntitySet'") while the FunctionConfiguration
+    // twins accepted it, so a BindAction returning TModel or IEnumerable<TModel> could not be
+    // registered at all -- which is what #357 meant by its "bound ACTION returning a collection"
+    // half being unreachable. #539 fixed that, and #543 then bounded the action path;
+    // BoundActionEntityReturnTests owns both. This profile keeps an Edm.String collection so the
+    // "not a collection of TModel, therefore not bounded" arm below stays covered.
     private Task<IEnumerable<string>> Touch() => Task.FromResult<IEnumerable<string>>(new[] { "ok" });
     private Task<IEnumerable<OpPagedItem>> Siblings(int key) =>
         Task.FromResult<IEnumerable<OpPagedItem>>(Store.Where(x => x.Id != key));
@@ -115,13 +117,17 @@ internal sealed class OpTinyProfile : EntitySetProfile<int, OpPagedItem>
 /// explicit <c>$top</c> is applied and validated against <c>MaxTop</c>; <c>$skip</c> is applied.
 /// <c>MaxTop = null</c> opts out.</para>
 ///
-/// <para><b>Functions only.</b> A <c>@odata.nextLink</c> is a URL the client GETs (§11.2.5.7); a
-/// bound ACTION's result is not a re-addressable resource — the action-invocation resource has no
-/// representation (§11.5.4), which is the same reason #478 excludes actions from the ETag gate — so
-/// a continuation link there would be a URL that answers 405, and capping without a usable
-/// continuation would be silent data loss. It is moot in practice besides: see
-/// <see cref="OpPagedProfile"/>, a bound action over <c>Task&lt;IEnumerable&lt;TModel&gt;&gt;</c>
-/// cannot be registered at all today.</para>
+/// <para><b>Continuations are functions-only, but the CEILING is not — see #543.</b> A
+/// <c>@odata.nextLink</c> is a URL the client GETs (§11.2.5.7); a bound ACTION's result is not a
+/// re-addressable resource — the action-invocation resource has no representation (§11.5.4), which
+/// is the same reason #478 excludes actions from the ETag gate — so a continuation link there would
+/// be a URL that answers 405. #357 read that as "actions are excluded" and left the ceiling
+/// bypassable through them entirely; #543 separated the two, so an action honours
+/// <c>$top</c>/<c>$skip</c> and <c>MaxTop</c> and refuses a result it cannot serve within the
+/// ceiling rather than truncating it silently. <c>BoundActionEntityReturnTests</c> owns that half.
+/// #357's claim that the exclusion was "moot in practice" — because a bound action could not
+/// declare <c>Task&lt;IEnumerable&lt;TModel&gt;&gt;</c> — was refuted by <c>Task&lt;object&gt;</c>
+/// and then removed outright by #539.</para>
 /// </summary>
 public class OperationCollectionPagingTests
 {

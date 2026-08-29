@@ -895,19 +895,25 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
         var entityCollection = entityType.Collection;
 
+        // #539: the entity-set name handed down is the one this very method opened with
+        // (`builder.EntitySet<TModel>(EntitySetName)` at the top), so the set is known to exist and
+        // to carry exactly TModel — never a name derived from an operation's return type.
+        // RegisterEdmReturnType explains why that distinction is load-bearing.
+        string edmEntitySetName = EntitySetName;
+
         foreach (var method in _functions.Select(x => x.Method))
-            RegisterEdmOperation(method, entityCollection.Function(method.Name), typeof(FunctionConfiguration), skipKeyParameter: false);
+            RegisterEdmOperation(method, entityCollection.Function(method.Name), typeof(FunctionConfiguration), skipKeyParameter: false, edmEntitySetName);
 
         foreach (var method in _actions.Select(x => x.Method))
-            RegisterEdmOperation(method, entityCollection.Action(method.Name), typeof(ActionConfiguration), skipKeyParameter: false);
+            RegisterEdmOperation(method, entityCollection.Action(method.Name), typeof(ActionConfiguration), skipKeyParameter: false, edmEntitySetName);
 
         // Gap 7: entity-level functions/actions bind to the entity type, not the collection. Their
         // first parameter is the entity key (TKey) — skipped here, since it is not an OData parameter.
         foreach (var method in _entityFunctions.Select(x => x.Method))
-            RegisterEdmOperation(method, entityType.Function(method.Name), typeof(FunctionConfiguration), skipKeyParameter: true);
+            RegisterEdmOperation(method, entityType.Function(method.Name), typeof(FunctionConfiguration), skipKeyParameter: true, edmEntitySetName);
 
         foreach (var method in _entityActions.Select(x => x.Method))
-            RegisterEdmOperation(method, entityType.Action(method.Name), typeof(ActionConfiguration), skipKeyParameter: true);
+            RegisterEdmOperation(method, entityType.Action(method.Name), typeof(ActionConfiguration), skipKeyParameter: true, edmEntitySetName);
 
         _resolvedBoundFunctions = _functions.Select(d => BoundOperationDefinition.From(d, isAction: false))
             .Concat(_entityFunctions.Select(d => BoundOperationDefinition.From(d, isAction: false, isEntityLevel: true)))
@@ -1979,8 +1985,12 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     // and — via reflection, since the fluent API only exposes generic Returns<T>/ReturnsCollection<T>
     // — its return type, unwrapping Task<T>/ValueTask<T> and treating void/Task/ValueTask as no return.
     // `skipKeyParameter` drops the leading TKey parameter of entity-level operations.
+    //
+    // #539: `entitySetName` is this profile's OWN entity set, and it is what makes a bound ACTION
+    // able to return the set's own type at all. See RegisterEdmReturnType below.
     private static void RegisterEdmOperation(
-        MethodInfo method, OperationConfiguration operation, Type configType, bool skipKeyParameter)
+        MethodInfo method, OperationConfiguration operation, Type configType, bool skipKeyParameter,
+        string entitySetName)
     {
         var parameters = method.GetParameters().Where(p => p.ParameterType != typeof(CancellationToken));
         if (skipKeyParameter) parameters = parameters.Skip(1);
@@ -2016,11 +2026,82 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
             : AsyncDispatchHelper.UnwrapAsyncReturn(rawReturn);
         if (returnType is null) return;
 
-        var collectionElement = GetCollectionElementType(returnType);
+        RegisterEdmReturnType(method, operation, configType, returnType, entitySetName);
+    }
+
+    // #539: which of Microsoft's four return-type declarations to call.
+    //
+    // MEASURED against Microsoft.OData.ModelBuilder 2.0.0 (ZZProbe, .NET 10.0.11):
+    //   action.Returns<TModel>()             -> InvalidOperationException, AT THE CALL: "The EDM
+    //                                           type '…' is already declared as an entity type. Use
+    //                                           the method 'ReturnsFromEntitySet' if the return type
+    //                                           is an entity."
+    //   action.ReturnsCollection<TModel>()   -> the same, naming 'ReturnsCollectionFromEntitySet'
+    //   function.Returns<TModel>()           -> OK
+    //   function.ReturnsCollection<TModel>() -> OK
+    //
+    // So a `BindAction` over TModel or IEnumerable<TModel> — `POST /Widgets/Archive` answering with
+    // the archived rows, an ordinary OData shape — could not be registered at all: MapOhData() died
+    // quoting a method OhData never called and does not expose, while the FUNCTION twin of the same
+    // signature worked. That asymmetry is the whole of #539.
+    //
+    // The fix is Microsoft's own remedy, and it is applied to FUNCTIONS TOO rather than behind an
+    // is-this-an-action branch. Two reasons, both measured. (1) The CSDL is byte-identical: a bound
+    // operation declared with ReturnsCollectionFromEntitySet emits the same `<ReturnType
+    // Type="Collection(…)"/>` — no EntitySetPath, no extra attribute — as one declared with
+    // ReturnsCollection, so nothing on the function side moves (pinned by
+    // BoundActionEntityReturnTests.BoundFunction_MetadataDeclarationIsUnchanged). (2) It is what
+    // Microsoft's own E2E fixtures do for an entity return, on both operation kinds. One
+    // unconditional rule is also less code than a conditional one, and cannot drift between kinds.
+    //
+    // The entity-set name is THIS PROFILE'S, taken from the EntitySetConfiguration the caller is
+    // already holding — never a name derived from the return type. That is load-bearing:
+    // ReturnsFromEntitySet does NOT validate that the name exists, it CREATES the set (measured: a
+    // bogus name added `EntitySet:Ghosts` to the container and $metadata, silently). Passing the set
+    // we know was registered with exactly this CLR type is the only safe call.
+    private static void RegisterEdmReturnType(
+        MethodInfo method, OperationConfiguration operation, Type configType, Type returnType,
+        string entitySetName)
+    {
+        Type? collectionElement = GetCollectionElementType(returnType);
+        Type declaredType = collectionElement ?? returnType;
+
+        if (declaredType == typeof(TModel))
+        {
+            string fromSetMethod = collectionElement is not null
+                ? "ReturnsCollectionFromEntitySet"
+                : "ReturnsFromEntitySet";
+            // The (Type, string) overload exists on both ActionConfiguration and
+            // FunctionConfiguration, so no MakeGenericMethod is needed here.
+            configType.GetMethod(fromSetMethod, new[] { typeof(Type), typeof(string) })!
+                .Invoke(operation, new object[] { declaredType, entitySetName });
+            return;
+        }
+
         string configMethod = collectionElement is not null ? "ReturnsCollection" : "Returns";
-        configType.GetMethod(configMethod, Array.Empty<Type>())!
-            .MakeGenericMethod(collectionElement ?? returnType)
-            .Invoke(operation, null);
+        try
+        {
+            configType.GetMethod(configMethod, Array.Empty<Type>())!
+                .MakeGenericMethod(declaredType)
+                .Invoke(operation, null);
+        }
+        catch (TargetInvocationException ex) when (ex.InnerException is InvalidOperationException)
+        {
+            // #539 floor. The branch above handles the profile's OWN model type, which is the shape
+            // the issue is about and the only one this class can name an entity set for. A bound
+            // operation returning some OTHER entity type — another profile's model — still lands
+            // here, and Microsoft's message still names a method OhData does not expose. Re-word it
+            // in OhData's own vocabulary, naming the operation and the remedies that actually exist,
+            // rather than letting a raw ModelBuilder string reach the developer. The original is
+            // kept as the inner exception.
+            throw new InvalidOperationException(
+                $"Entity set '{entitySetName}': bound operation '{method.Name}' declares a return " +
+                $"type of '{declaredType.Name}', which is already declared as an entity type in " +
+                "this registration but is not this profile's own model type. OhData can only bind " +
+                "an operation's entity return to the entity set of the profile that declares it. " +
+                "Return this profile's own model type, a complex/DTO type, or a primitive.",
+                ex.InnerException);
+        }
     }
 
     // Kept in lockstep with UnboundOperationDefinition.GetCollectionElementType -- the same question
