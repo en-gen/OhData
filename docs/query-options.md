@@ -342,6 +342,17 @@ The two paths differ only in the shape of the continuation link. `GetQueryable` 
 
 **A page that is exactly `MaxTop`/`maxpagesize` long is not assumed to have more behind it (#360).** On `GetQueryable` and Priority-1 the framework fetches one row *past* the page and emits `@odata.nextLink` only if that probe row actually came back, then discards it. This costs no extra round-trip (it is the same single query, one row wider) and leaves `@odata.count` untouched - that is computed separately, pre-paging. Previously a collection whose row count was an exact multiple of the page size ended every walk with one spurious empty page. `GetAll` never had the problem: it already materializes its source and compares against the pre-paging total.
 
+**A collection-returning bound FUNCTION is bounded the same way (#357).** A bound (or entity-bound)
+function whose result is a collection of the entity set's own type used to bypass `MaxTop`, the
+client's `$top`/`$skip` and server-driven paging entirely - so the ceiling enforced on every route
+above was fully bypassable through any such operation, and a `$top` sent against one was neither
+applied nor rejected. It now follows the `GetAll` rules exactly (in-memory `Skip()`/`Take()` over the
+materialized result, `$skip` continuation, `MaxTop` capping an explicit `$top` with the same message,
+`Prefer: maxpagesize` honoured, `MaxTop = null` to opt out). **Breaking** for a function returning
+more than `MaxTop` entities. Bound and unbound **actions** are excluded - see
+[Bound operations](bound-operations.md#a-collection-returning-function-is-paged-like-any-other-collection-357).
+No other system query option is applied to an operation result.
+
 **`GetAll` now mirrors the "omitted `$top`" behavior above (#201).** An omitted `$top` is capped to `MaxTop` (or a smaller `Prefer: maxpagesize`) with a `@odata.nextLink` for the remainder, so this path is safe-by-default like the others. The one difference from `GetQueryable` is the continuation shape: `GetAll` emits a `$skip` link (which it re-applies against its re-enumerated source) rather than the opaque `$skiptoken`. Because it has the pre-paging total in hand, it emits a link only when rows actually remain. Set `MaxTop = null` on the profile to opt out and return the full set in one response, however large - see the `GetAll` section above.
 
 ---

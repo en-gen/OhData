@@ -155,6 +155,46 @@ raw `ArgumentNullException: 'returnType'` that named neither the profile nor the
 A `byte[]` return is declared as `Edm.Binary` (not `Collection(Edm.Byte)`), matching what the route
 actually serves.
 
+**An ACTION cannot return the entity set's own type.** `Microsoft.OData.ModelBuilder`'s
+`ActionConfiguration.Returns<T>()` / `.ReturnsCollection<T>()` refuse a type already declared as an
+entity type (they direct the caller to `ReturnsFromEntitySet` / `ReturnsCollectionFromEntitySet`,
+which OhData does not call), while the `FunctionConfiguration` twins accept it. So a `BindAction`
+declared `Task<TModel>` or `Task<IEnumerable<TModel>>` fails at `MapOhData()` with an
+`InvalidOperationException` quoting a method OhData never calls. Return a DTO from an action, or use
+a function. Tracked as a separate defect.
+
+### A collection-returning FUNCTION is paged like any other collection (#357)
+
+A **bound function** whose result is a collection of the entity set's own type is bounded by the
+profile's `MaxTop` and served with a `@odata.nextLink` continuation, using exactly the semantics the
+`GetAll` collection route uses (see
+[Query options - `GetAll`](query-options.md#getall---simple-in-memory-path)):
+
+| Request | Behaviour |
+|---|---|
+| no `$top` | capped to `MaxTop` (or a smaller `Prefer: maxpagesize`, echoed in `Preference-Applied`); `@odata.nextLink` carries the remainder as `$skip=N` |
+| `$top=N`, `N <= MaxTop` | applied as-is; suppresses the default cap and emits no `@odata.nextLink` |
+| `$top=N`, `N > MaxTop` | `400 InvalidQueryOption`, with the same message the collection route uses |
+| `$skip=N` | applied |
+| a malformed `$top`/`$skip` | `400 InvalidQueryOption` - never silently ignored |
+| `MaxTop = null` | no cap, no `@odata.nextLink` - the full collection in one response |
+
+Before this, such an operation bypassed `MaxTop`, `$top`/`$skip` and server-driven paging entirely,
+so the ceiling the framework enforces on every ordinary collection route was bypassable through any
+operation that returned a collection. **This is a breaking change** for a function that returns more
+than `MaxTop` (default `1000`) entities: a client that reads `value` without following
+`@odata.nextLink` now sees a truncated result. Set `MaxTop = null` to opt out.
+
+No other system query option is applied to an operation result - `$filter`, `$orderby`, `$select`,
+`$expand` and `$count` are still ignored there, as they always were.
+
+**Actions are excluded, deliberately.** A `@odata.nextLink` is a URL the client GETs
+(Protocol §11.2.5.7), while the target of `POST /Set/Action` is the action-invocation resource, which
+has no representation to continue (§11.5.4) - the same reason
+[ETag preconditions](etags.md) exclude actions. A continuation link there would answer `405`, and
+capping without one would be silent data loss. It is moot in practice besides: see
+[Return types](#return-types) - an action cannot declare `TModel` or `IEnumerable<TModel>` at all.
+
 ## EDM and `$metadata`
 
 Bound operations are registered in the EDM model and appear in `GET /$metadata`. Functions are registered on the entity set (or entity type for entity-bound), making them discoverable by OData-aware clients.
