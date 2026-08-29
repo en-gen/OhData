@@ -192,8 +192,34 @@ A write request (`POST`/`PUT`/`PATCH`, including navigation/`$ref`/property/acti
 body exceeds the limit is rejected with `413 Payload Too Large` and the OData error envelope, before
 the body is deserialized. Enforcement is twofold: an oversized `Content-Length` is rejected up front,
 and the per-request Kestrel `MaxRequestBodySize` is set so a chunked / no-`Content-Length` body is
-bounded during read (its overflow is mapped to the same `413`). The default is `null` — **no
-OhData-level limit**, leaving the host's Kestrel default (~30 MB) in effect.
+bounded during read (its overflow is mapped to the same `413`).
+
+### The default ceiling ([#474](https://github.com/en-gen/OhData/issues/474))
+
+`EntitySetDefaults.MaxRequestBodyBytes` defaults to `EntitySetDefaults.DefaultMaxRequestBodyBytes`
+— **30,000,000 bytes**, which is Kestrel's own default `MaxRequestBodySize`.
+
+It used to default to `null`, meaning *no OhData-level limit*. That reads as harmless only while the
+host's own limit is in place: neither half of the enforcement above ran, so on a host that raised or
+disabled `MaxRequestBodySize` — routine for an app that also accepts uploads — nothing anywhere
+bounded a write body OhData materialises in full before deserializing it.
+
+Kestrel's number was chosen deliberately rather than invented. On a **default** host it changes
+nothing observable except which layer reports the rejection (OhData's `413` envelope instead of
+Kestrel's), because the same byte count was already refused one layer down. The behaviour change
+lands only on a host that raised or removed its own limit — precisely the configuration that had no
+ceiling at all.
+
+To restore the old behaviour, clear it server-wide:
+
+```csharp
+builder.Services.AddOhData(o => o
+    .WithDefaults(d => d.MaxRequestBodyBytes = null) // the host's limit is the only limit
+    .AddEntitySetProfile<OrderProfile>());
+```
+
+There is no per-profile way to say "unlimited": a profile-level `null` means *inherit*, exactly as
+it does for `MaxExpandTop`.
 
 ## `@odata.bind` — not supported
 

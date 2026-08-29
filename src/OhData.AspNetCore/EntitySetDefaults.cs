@@ -161,14 +161,45 @@ public sealed class EntitySetDefaults
     /// </summary>
     public bool ExpandPagingEnabled { get; set; }
 
-    private long? _maxRequestBodyBytes;
+    /// <summary>
+    /// #474: the framework's own default ceiling on a write body, in bytes — <b>30,000,000</b>, which
+    /// is Kestrel's own documented default <c>MaxRequestBodySize</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The number is <b>not invented</b>, and that is the whole point of choosing it. Before #474 a
+    /// registration that never set <see cref="MaxRequestBodyBytes"/> had no OhData-level ceiling at
+    /// all: #203's filter does both of its jobs — the <c>Content-Length</c> fast-reject and setting
+    /// the per-request <c>MaxRequestBodySize</c> — only when the limit resolves non-null, and it
+    /// defaulted to <c>null</c> at both levels. The only thing bounding a materialised body was the
+    /// host's Kestrel limit, which a host that also accepts uploads routinely raises or disables.
+    /// </para>
+    /// <para>
+    /// Adopting Kestrel's number means a <b>default</b> host sees no behaviour change — the same
+    /// byte count was already rejected, one layer down (now with the OData <c>413</c> envelope
+    /// rather than Kestrel's). The behaviour change is confined to exactly the exposed population:
+    /// a host that raised or removed its own limit. That is a breaking change for such a host, and
+    /// the remedy is one line — raise <see cref="MaxRequestBodyBytes"/>, or set it to <c>null</c>
+    /// to restore "the host's limit is the only limit".
+    /// </para>
+    /// <para>
+    /// This is deliberately <i>not</i> the same question as
+    /// <c>BufferRequestBodyAsync</c>'s capacity-hint clamp. That clamp is about a <i>declared</i>
+    /// length driving an allocation before any byte arrives; this is a ceiling on the bytes actually
+    /// received. Both exist, and neither substitutes for the other.
+    /// </para>
+    /// </remarks>
+    public const long DefaultMaxRequestBodyBytes = 30_000_000;
+
+    private long? _maxRequestBodyBytes = DefaultMaxRequestBodyBytes;
 
     /// <summary>
     /// Default maximum request-body size, in bytes, for write operations (POST/PUT/PATCH and their
-    /// navigation/<c>$ref</c>/property/action variants) across all entity sets. <c>null</c> (the
-    /// default) applies no OhData-level limit — the host's Kestrel <c>MaxRequestBodySize</c> (~30 MB
-    /// by default) still applies. When set, a request whose body exceeds the limit is rejected with
-    /// <c>413 Payload Too Large</c> before the body is deserialized. Profile-level
+    /// navigation/<c>$ref</c>/property/action variants) across all entity sets. Defaults to
+    /// <see cref="DefaultMaxRequestBodyBytes"/> (#474). Setting it to <c>null</c> applies no
+    /// OhData-level limit — only the host's Kestrel <c>MaxRequestBodySize</c> then bounds a body.
+    /// A request whose body exceeds the limit is rejected with <c>413 Payload Too Large</c> before
+    /// the body is deserialized. Profile-level
     /// <see cref="EntitySetProfile{TKey,TModel}.MaxRequestBodyBytes"/> overrides this value. Must be
     /// a positive value or <c>null</c>.
     /// </summary>
@@ -433,6 +464,27 @@ public sealed class EntitySetDefaults
     /// <c>PropertyRouteDocsEnabled</c> overrides this value.
     /// </summary>
     public bool PropertyRouteDocsEnabled { get; set; } = false;
+
+    /// <summary>
+    /// #355: whether a write body is checked against the EDM's own <c>Nullable="false"</c>
+    /// annotations before the handler is invoked. Defaults to <c>true</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The framework publishes the nullability of every structural property in its own
+    /// <c>$metadata</c>. Before #355 nothing enforced it: a <c>null</c> for a property the CSDL
+    /// declares <c>Nullable="false"</c> reached the handler, and the persistence layer's rejection
+    /// surfaced as a generic <c>500</c> — a violation the framework could see at its own boundary
+    /// reported as a server fault. With this on, the violation is a <c>400</c> and no handler runs.
+    /// </para>
+    /// <para>
+    /// Turn it off for an entity set whose handler legitimately supplies a value the client is not
+    /// expected to send (a server-stamped audit column, say). The entity's <b>key</b> is exempt
+    /// regardless — a server-generated key is normally omitted on create, and every EDM key is
+    /// <c>Nullable="false"</c>.
+    /// </para>
+    /// </remarks>
+    public bool ValidateRequestBodyNullability { get; set; } = true;
 
     /// <summary>
     /// Whether the entity write routes pass nested navigation-property values through to the
