@@ -258,19 +258,31 @@ public sealed class OhDataBuilder
         var registry = (DeltaProfileRegistry)registryDescriptor!.ImplementationInstance!;
         if (registry.Types.Contains(type))
         {
-            if (explicitCall)
+            // #488 item 5(c): the message may only be used when a duplicate AddDeltaProfile call is
+            // what actually happened. A scan that already discovered the type and then ONE explicit
+            // call is not a duplicate call -- and the reverse order (explicit, then a scan that
+            // re-discovers it) was already a silent no-op, so throwing here made the outcome depend
+            // on declaration order and blamed the user's single explicit call.
+            if (explicitCall && _explicitlyRegisteredDeltaProfiles.Contains(type))
             {
                 throw new InvalidOperationException(
                     $"OhData: delta profile type '{type.Name}' is already registered. " +
                     "Remove the duplicate AddDeltaProfile call.");
             }
-            return; // scan re-discovery of an already-registered type — skip idempotently
+            if (explicitCall) _explicitlyRegisteredDeltaProfiles.Add(type);
+            return; // scan re-discovery, or an explicit call confirming a scanned type — no-op
         }
 
         if (!_services.Any(s => s.ServiceType == type))
             _services.AddScoped(type);
         registry.Types.Add(type);
+        if (explicitCall) _explicitlyRegisteredDeltaProfiles.Add(type);
     }
+
+    // #488 item 5(c): registry.Types alone cannot tell a scan-discovered type from an explicitly
+    // registered one -- the DeltaProfileRegistry is shared across registrations and records only
+    // membership -- so the explicit calls are tracked per builder alongside it.
+    private readonly HashSet<Type> _explicitlyRegisteredDeltaProfiles = new();
 
     /// <summary>
     /// Scans the specified assemblies for <see cref="EntitySetProfile{TKey,TModel}"/> subclasses

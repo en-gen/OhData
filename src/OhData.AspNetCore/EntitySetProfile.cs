@@ -24,12 +24,20 @@ namespace OhData;
 public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisitModelBuilder, IEntitySetEndpointSource
     where TModel : class
 {
-    // Caches the compiled ETag function per concrete type. The delegate accesses model
-    // properties only (no DI dependencies), so it is safe to share across request scopes.
+    // Caches the compiled ETag function per concrete type -- ONLY for a selector that reads
+    // nothing but its lambda parameter (CapturedState.IsCapturedByExpression). #483: the cache is
+    // keyed by GetType() and stores a delegate compiled from the FIRST-constructed instance's
+    // expressions, and that instance comes from the startup scope, which is disposed immediately
+    // after registration. The comment this replaces asserted "no DI dependencies ... safe to share
+    // across request scopes" as a property of the delegate; it was an assumption about USER code,
+    // and profiles are registered AddScoped specifically so they can inject scoped services. A
+    // selector closing over one froze the disposed startup instance into every request for the
+    // process lifetime -- silently, or as an ObjectDisposedException on every request.
     private static readonly ConcurrentDictionary<Type, Func<TModel, string>> s_etagCache = new();
 
     // Caches the compiled key-to-string delegate per concrete type. Expression.Compile() is
-    // expensive (~100μs); caching avoids per-request compilation under scoped resolution.
+    // expensive (~100μs); caching avoids per-request compilation under scoped resolution. Same
+    // #483 capture gate as the ETag cache above.
     private static readonly ConcurrentDictionary<Type, Func<TModel, string>> s_keyToStringCache = new();
 
     // Caches compiled structural-property accessor delegates keyed by property name. Shared
@@ -596,8 +604,20 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         // Like the names above, this must run before the compiled-delegate cache early return.
         _etagSelectors = ExtractSelectorInfo(propertySelectors);
 
+        // #483: the cache may only serve a selector whose compiled delegate is a pure function of
+        // the model. A selector that closes over anything -- most sharply, an injected scoped
+        // dependency -- must be recompiled for each profile instance, because the cached one would
+        // hold the STARTUP scope's captured state for the process lifetime. Decided per instance
+        // rather than per type: a profile is free to call UseETag with different selectors on
+        // different constructions, and the cache must not be poisoned by whichever ran first.
+        bool cacheable = true;
+        foreach (Expression<Func<TModel, object?>> selector in propertySelectors)
+        {
+            if (CapturedState.IsCapturedByExpression(selector)) { cacheable = false; break; }
+        }
+
         // Reuse the cached compiled delegate if available (avoids recompiling on every scoped construction).
-        if (s_etagCache.TryGetValue(GetType(), out var cached))
+        if (cacheable && s_etagCache.TryGetValue(GetType(), out var cached))
         {
             _getETag = cached;
             return;
@@ -629,8 +649,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
             return Convert.ToBase64String(hash);
         };
 
-        // Cache for per-request instances — this delegate only accesses model properties.
-        s_etagCache.TryAdd(GetType(), _getETag);
+        // Cache for per-request instances — only when every selector reads the model alone, so the
+        // delegate cannot outlive anything it needs (#483).
+        if (cacheable) s_etagCache.TryAdd(GetType(), _getETag);
     }
 
     private IReadOnlyCollection<string>? _etagPropertyNames;
@@ -2145,11 +2166,18 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private Func<TModel, string>? _keyToString;
     private Func<TModel, string> CompileKeyToString()
     {
-        return s_keyToStringCache.GetOrAdd(GetType(), _ =>
-        {
-            var compiled = _getKey.Compile();
-            return model => string.Format(CultureInfo.InvariantCulture, "{0}", compiled(model)) ?? "";
-        });
+        // #483: same gate as the ETag cache. The constructor already requires the key selector to
+        // be a direct property access, which leaves exactly one capturing shape reachable
+        // (`x => captured.Member` — still a MemberExpression). Degenerate as a key, but the guard
+        // is applied uniformly so no cache in this type stores instance-derived state.
+        if (CapturedState.IsCapturedByExpression(_getKey)) return BuildKeyToString();
+        return s_keyToStringCache.GetOrAdd(GetType(), _ => BuildKeyToString());
+    }
+
+    private Func<TModel, string> BuildKeyToString()
+    {
+        var compiled = _getKey.Compile();
+        return model => string.Format(CultureInfo.InvariantCulture, "{0}", compiled(model)) ?? "";
     }
     string IEntitySetEndpointSource.InvokeGetKeyString(object model)
         => LazyInitializer.EnsureInitialized(ref _keyToString, CompileKeyToString)((TModel)model);
@@ -2163,11 +2191,15 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private Func<TModel, string>? _keyToUrl;
     private Func<TModel, string> CompileKeyToUrl()
     {
-        return s_keyToUrlCache.GetOrAdd(GetType(), _ =>
-        {
-            var compiled = _getKey.Compile();
-            return model => OhData.ODataEntityKeyUrlFormatter.Format(compiled(model)!);
-        });
+        // #483: see CompileKeyToString.
+        if (CapturedState.IsCapturedByExpression(_getKey)) return BuildKeyToUrl();
+        return s_keyToUrlCache.GetOrAdd(GetType(), _ => BuildKeyToUrl());
+    }
+
+    private Func<TModel, string> BuildKeyToUrl()
+    {
+        var compiled = _getKey.Compile();
+        return model => OhData.ODataEntityKeyUrlFormatter.Format(compiled(model)!);
     }
     string IEntitySetEndpointSource.InvokeGetKeyForUrl(object model)
         => LazyInitializer.EnsureInitialized(ref _keyToUrl, CompileKeyToUrl)((TModel)model);
