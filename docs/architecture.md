@@ -173,6 +173,14 @@ protected override void AdvancedConfigure(EntitySetConfiguration<Product> config
 }
 ```
 
+`Ignore(...)`'s EDM removal rides that same automatic configuration and is ejected with it, while its
+runtime suppression (routes, wire, PATCH binding) still applies. An ignored property therefore stays
+in `$metadata` and stays addressable in `$filter`/`$orderby`/`$select` — a **value oracle** for
+anything ignored for security reasons. `MapOhData()` warns once per affected property; the remedy is
+`config.EntityType.Ignore(...)` inside the override. See
+[ignoring-properties.md](ignoring-properties.md#ignore-under-advancedconfigure-is-a-value-oracle)
+([#489](https://github.com/en-gen/OhData/issues/489)).
+
 ## Dependency structure
 
 ```

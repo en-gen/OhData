@@ -1529,13 +1529,105 @@ internal static class OhDataEndpointFactory
         // startup validation is about to throw does not first emit advice about a surface it will
         // never serve.
         WarnUndeclaredConventionNavigations(registration, groupLogger);
+        // #489: same placement rationale again — after every route has mapped.
+        WarnIgnoredPropertiesStillInEdm(registration, groupLogger);
+
         // #481/#368: same placement rationale again. It runs AFTER
         // WarnUndeclaredConventionNavigations because the two partition the EDM's navigations
         // between them — declared here, undeclared there — and reading them in that order is how
         // a log tells you which half a navigation fell into.
         WarnNavigationTargetAuthorization(registration, groupLogger);
-
         return group;
+    }
+
+    // #489: Ignore() loses its EDM half under AdvancedConfigure, and the consequence is a value
+    // oracle no reader derives from either half on its own.
+    //
+    // Ignore() withholds a property on TWO levels. The EDM removal rides the _configurators pipeline
+    // in EntitySetProfile.VisitModelBuilder; runtime suppression (routes, wire, PATCH binding) is
+    // applied separately from IgnoredPropertyNames. Overriding AdvancedConfigure returns from
+    // VisitModelBuilder BEFORE the configurator pipeline runs, so the EDM half is ejected while the
+    // runtime half still applies. That is the stated contract of the eject hatch and it is CORRECT --
+    // the developer has taken full EDM ownership, and this is deliberately not "fixed":
+    //
+    //   * re-imposing OhData's Ignore() on top of the override would defeat the hatch outright, and
+    //   * it would be arbitrary. HasOptional/HasRequired/HasMany ride the SAME pipeline and stay
+    //     ejected; nothing distinguishes Ignore()'s configurator from theirs except that its
+    //     consequence is a disclosure rather than a missing navigation. A half-ejected pipeline whose
+    //     membership is decided by severity is a worse contract than the one it replaces.
+    //
+    // What is missing is the SIGNAL, so this is the WarnWireShapeIsFlat shape: a legitimate
+    // configuration whose consequence is not predictable from either half gets one startup warning
+    // naming it. With both features in play the property is back in $metadata and query-addressable
+    // while the wire still omits it, so $filter over it answers truthfully one predicate at a time --
+    // the value is never served and is still discoverable. In the ordinary case the EDM removal makes
+    // the property indistinguishable from one that never existed (ODL fails the same "could not find
+    // a property named…" it produces for a genuinely nonexistent name), so the 400 cannot confirm
+    // existence.
+    //
+    // GATED ON THE EDM AS BUILT, not on the mere presence of the override. Re-applying
+    // `configuration.EntityType.Ignore(...)` by hand inside the override is exactly what the
+    // documentation prescribes, and it really does remove the property -- warning on that
+    // configuration would fire on the correct one and teach developers to tune the warning out.
+    // Silent, therefore, whenever the property is genuinely gone from the EDM.
+    //
+    // The query-capability half is deliberately NOT part of the gate. Whether $filter is live depends
+    // on what the override re-enabled (taking the hatch also drops OhData's automatic
+    // Filter()/OrderBy()/Select() calls), but $metadata advertises the property's name and type
+    // regardless, and a capability the override adds later must not silently un-warn the profile.
+    //
+    // Emitted once per affected property per registration at startup, never per request.
+    private static void WarnIgnoredPropertiesStillInEdm(OhDataRegistration registration, ILogger? logger)
+    {
+        if (logger is null) return;
+
+        foreach (IEntitySetEndpointSource profile in registration.Profiles)
+        {
+            if (!profile.IsAdvancedConfigureOverridden || profile.IgnoredPropertyNames.Count == 0)
+            {
+                continue;
+            }
+
+            IEdmEntityType? entityType = registration.EdmModel.EntityContainer?
+                .FindEntitySet(profile.EntitySetName)?.EntityType;
+            if (entityType is null) continue;
+
+            foreach (string clrName in profile.IgnoredPropertyNames)
+            {
+                // IgnoredPropertyNames holds CLR names; the EDM advertises the resolved EDM name,
+                // which a [JsonPropertyName] rename makes different. Resolve through the same single
+                // source of truth every other CLR->EDM name question in this file goes through.
+                PropertyInfo? clrProperty =
+                    ODataPropertyNaming.FindClrPropertyByEdmName(profile.ModelType, clrName);
+                string edmName = clrProperty is not null
+                    ? ODataPropertyNaming.ResolveEdmName(clrProperty)
+                    : clrName;
+
+                if (!entityType.Properties().Any(
+                        p => string.Equals(p.Name, edmName, StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue; // the override re-applied the EDM removal by hand -- nothing to say
+                }
+
+                // Each placeholder appears EXACTLY once — Microsoft.Extensions.Logging binds a
+                // template positionally, so a repeated one would consume an argument that is not
+                // there. Repeated VALUES are passed again under a distinct name.
+                logger.LogWarning(
+                    "OhData: '{EntitySet}' calls Ignore() for '{Property}', but '{Property2}' is still " +
+                    "declared in the EDM because this profile overrides AdvancedConfigure — which ejects " +
+                    "every automatic EDM configuration step, Ignore()'s EDM removal among them. Runtime " +
+                    "suppression still applies, so the property is omitted from every response body, has " +
+                    "no property routes, and is never bound from a write body. But $metadata advertises " +
+                    "its name and type, and it stays addressable in $filter/$orderby/$select wherever " +
+                    "this override re-enabled those capabilities. A withheld-but-addressable property is " +
+                    "a VALUE ORACLE: the value is never served, yet '?$filter={Property3} eq …' answers " +
+                    "truthfully, so it can be probed one predicate at a time. If '{Property4}' is hidden " +
+                    "for tidiness this may be fine; if it is hidden for SECURITY, re-apply the removal " +
+                    "inside the override — configuration.EntityType.Ignore(x => x.{Property5}) — or drop " +
+                    "the AdvancedConfigure override. See docs/ignoring-properties.md.",
+                    profile.EntitySetName, clrName, edmName, edmName, clrName, clrName);
+            }
+        }
     }
 
     // #313: the startup diagnostic that stands in for the ceiling that MaxExpandTop no longer defaults to.
@@ -7832,8 +7924,17 @@ internal static class OhDataEndpointFactory
                 {
                     generic = rule; // last generic rule for this category wins
                 }
+                // #525: OrdinalIgnoreCase, not Ordinal. Everything this rule governs -- the route
+                // template, the operation segment, every other EDM-identifier lookup in this file --
+                // matches case-insensitively, so an Ordinal comparison here made Invoke("stamp", ...)
+                // against an operation declared `Stamp` resolve to NOTHING. The rule was discarded in
+                // silence and the route fell back to the generic Invoke rule, or -- with no generic
+                // rule -- to no requirement at all. That is a fail-OPEN on an authorization rule,
+                // which is why the comparer alone is not the whole fix: the startup validation below
+                // refuses any named rule that resolves to no declared operation, so a MISSPELLED name
+                // (which no comparer can rescue) cannot evaporate either.
                 else if (boundOperationName is not null &&
-                         string.Equals(rule.BoundOperationName, boundOperationName, StringComparison.Ordinal))
+                         string.Equals(rule.BoundOperationName, boundOperationName, StringComparison.OrdinalIgnoreCase))
                 {
                     named = rule; // a name-specific rule (Invoke("Name", …)) wins over a generic one
                 }
@@ -7981,6 +8082,53 @@ internal static class OhDataEndpointFactory
                 }
                 return await next(efc);
             });
+        }
+
+        // #525: a named Invoke rule must name a bound operation this profile really declares.
+        //
+        // The comparer fix above closes the MISCASED spelling, which is the shape that was reported.
+        // It cannot close the class: a misspelled name -- the far likelier typo -- still resolves to
+        // nothing under any comparer, and the consequence is identical and identically silent (the
+        // rule is discarded, the route falls back to the generic Invoke rule or to no requirement at
+        // all, and the developer believes the operation is protected). There is no legitimate
+        // configuration in which a rule targets an operation that does not exist, so this is refused
+        // rather than warned about: an authorization rule that does not apply is not a diagnostic
+        // matter.
+        //
+        // Matched with the SAME comparer ResolveOperationRule uses, and it has to be -- a stricter
+        // check here would reject exactly the miscased rules the fix above just made work, which
+        // would be this very bug re-introduced one layer up and wearing an exception. Placed BEFORE
+        // the #486 GetById guard below (which itself resolves rules by name) so a typo is reported
+        // as a typo rather than as a missing GetById handler.
+        if (operationAuthRules is not null)
+        {
+            string[] declaredOperationNames = source.BoundFunctions
+                .Concat(source.BoundActions)
+                .Select(o => o.Name)
+                .ToArray();
+
+            foreach (OperationAuthRule namedRule in operationAuthRules)
+            {
+                if (namedRule.BoundOperationName is null) continue;
+                if (declaredOperationNames.Any(declared => string.Equals(
+                        declared, namedRule.BoundOperationName, StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue;
+                }
+
+                string candidates = declaredOperationNames.Length == 0
+                    ? "This profile declares no bound operation at all."
+                    : "Declared bound operations (matched case-insensitively): " +
+                      string.Join(", ", declaredOperationNames.Select(n => $"'{n}'")) + ".";
+                throw new InvalidOperationException(
+                    $"Entity set '{name}': the authorization rule Invoke(\"{namedRule.BoundOperationName}\", …) " +
+                    "names an operation this profile does not declare — there is no bound function or " +
+                    "action called that. A named Invoke rule that resolves to nothing is silently " +
+                    "discarded: the route would fall back to the generic Invoke rule, or, when there is " +
+                    $"none, to no authorization requirement at all. {candidates} Correct the name, declare " +
+                    "the operation with BindFunction/BindAction/BindEntityFunction/BindEntityAction, or " +
+                    "remove the rule.");
+            }
         }
 
         // #199 Layer B: resource checks on a KEY-BASED route load the entity by key, so a Resource
