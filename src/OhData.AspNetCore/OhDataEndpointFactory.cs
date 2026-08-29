@@ -1250,6 +1250,18 @@ internal static class OhDataEndpointFactory
         group.AddEndpointFilter(async (ctx, next) =>
         {
             HttpContext http = ctx.HttpContext;
+
+            // Gap 1 / #496 finding 2: OData-Version: 4.0 on EVERY response (§8.1.5, §8.2.6),
+            // including one an inner filter short-circuits. It used to be set by the
+            // $format/Accept filter, which is registered FOURTH -- so the #203 body-limit filter's
+            // Content-Length fast-reject (registered third) returned its 413 without ever reaching
+            // it, and that response shipped with no OData-Version at all (measured). A response
+            // header that must be universal has to be written by the outermost filter, which is
+            // this one; there is nothing above it that can short-circuit. Its placement here is
+            // therefore load-bearing, and Issue496ErrorHandlingTests pins it from the outside by
+            // asserting the header on the fast-reject 413.
+            http.Response.Headers["OData-Version"] = "4.0";
+
             (string? entitySet, string? route, string operation) = DescribeOhDataEndpoint(http);
 
             Activity? activity = OhDataDiagnostics.ActivitySource.StartActivity(
@@ -1297,9 +1309,20 @@ internal static class OhDataEndpointFactory
         // error envelope every other error response uses, with a generic message -- never
         // ex.Message or the stack trace, which could leak internal details (connection strings,
         // type names, file paths) to the client -- and log the real exception so operators can
-        // actually diagnose the failure. Registered as the outermost group filter (added first)
-        // so it also covers exceptions thrown by the OData-Version/$format/Accept and
-        // OData-MaxVersion filters below, not just route handlers.
+        // actually diagnose the failure. It covers every route handler and every filter registered
+        // AFTER it -- the #203 body-limit filter, the $format/Accept filter and the
+        // OData-MaxVersion filter -- because an endpoint filter's try wraps everything reached
+        // through next().
+        //
+        // #496 finding 3: it is NOT the outermost group filter, and this comment used to claim it
+        // was ("Registered as the outermost group filter (added first)"). The #200 observability
+        // filter is added first and therefore wraps THIS one. The consequence, stated plainly
+        // rather than left implied: an exception thrown in the observability filter's own body
+        // (DescribeOhDataEndpoint, activity/tag setup, the instrument calls) or in its
+        // Response.OnCompleted callback escapes this envelope. That is accepted, not overlooked --
+        // reordering the two would move the LogError below outside the request's Activity and lose
+        // trace correlation on the single most important log line the framework emits, which is a
+        // worse trade for framework-only code that does no I/O and no user work.
         //
         // #493: the one exception it declines to catch is a cancellation raised BECAUSE THE CLIENT
         // WENT AWAY -- there is no response left to write, so it is left to ASP.NET Core's own
@@ -1330,7 +1353,11 @@ internal static class OhDataEndpointFactory
             catch (Exception ex) when (ex is not OperationCanceledException
                                        || !ctx.HttpContext.RequestAborted.IsCancellationRequested)
             {
-                groupLogger?.LogError(ex, "OhData: unhandled exception processing {Method} {Path}",
+                // #496 finding 4: unwrap the HandlerFaultException marker so the operator sees the
+                // exception the profile actually threw, not the envelope that kept a read route's
+                // narrow catch from misclassifying it as a client error.
+                groupLogger?.LogError(HandlerFaultException.Unwrap(ex),
+                    "OhData: unhandled exception processing {Method} {Path}",
                     SanitizeLogValue(ctx.HttpContext.Request.Method),
                     SanitizeLogValue(ctx.HttpContext.Request.Path.ToString()));
                 return ODataError(500, "InternalServerError",
@@ -1371,8 +1398,9 @@ internal static class OhDataEndpointFactory
         // $metadata returns application/xml, so it is exempted from the JSON-only checks.
         group.AddEndpointFilter(async (ctx, next) =>
         {
-            ctx.HttpContext.Response.Headers["OData-Version"] = "4.0";
-
+            // #496 finding 2: the OData-Version header used to be set HERE, and this filter is
+            // fourth of five -- the two filters registered between it and the outermost one can
+            // both short-circuit. It is set in the outermost filter now; see the note there.
             string path = ctx.HttpContext.Request.Path.Value ?? "";
             bool isMetadata = path.EndsWith("/$metadata", StringComparison.OrdinalIgnoreCase);
             if (!isMetadata)
@@ -1778,15 +1806,7 @@ internal static class OhDataEndpointFactory
             {
                 rb.Produces<TModel>(200);
             }
-            // #497: the SAME element predicate WrapBoundOpResult applies — assignability, not
-            // equality — so a delegate declared `Task<List<TDerived>>` is documented as the
-            // collection envelope it will actually be served in, rather than as a bare
-            // List<TDerived>. One predicate, two sites; they must move together.
-            else if (returnType != typeof(string) &&
-                     typeof(System.Collections.IEnumerable).IsAssignableFrom(returnType) &&
-                     returnType.GetInterfaces().Concat(new[] { returnType })
-                         .Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IEnumerable<>)
-                                   && typeof(TModel).IsAssignableFrom(i.GetGenericArguments()[0])))
+            else if (DeclaresCollectionOf(returnType, typeof(TModel)))
             {
                 rb.Produces<ODataCollectionResponse<TModel>>(200);
             }
@@ -1796,6 +1816,54 @@ internal static class OhDataEndpointFactory
             }
         }
         rb.Produces(204);
+    }
+
+    // #497: the SAME element predicate WrapBoundOpResult applies at runtime — assignability, not
+    // equality — so a delegate declared `Task<List<TDerived>>` is documented as the collection
+    // envelope it will actually be served in, rather than as a bare List<TDerived>. One predicate,
+    // now literally one method, because #357 gave it a THIRD consumer: the $top/$skip metadata a
+    // collection-returning bound function carries. Three copies of a rule about which shape an
+    // operation produces is how an advertise-vs-serve divergence gets built.
+    private static bool DeclaresCollectionOf(Type declaredReturnType, Type modelType) =>
+        declaredReturnType != typeof(string)
+        && typeof(System.Collections.IEnumerable).IsAssignableFrom(declaredReturnType)
+        && declaredReturnType.GetInterfaces().Concat(new[] { declaredReturnType })
+            .Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IEnumerable<>)
+                      && modelType.IsAssignableFrom(i.GetGenericArguments()[0]));
+
+    // #357/#467: a bound FUNCTION whose declared return type is a collection of the entity set's
+    // own type now honours $top and $skip and caps at MaxTop, so — and only so — its route
+    // documents them. Every other field is false: a bound operation applies no $filter/$orderby/
+    // $select/$expand/$count/$search, and #467's rule is that each field means "this route honours
+    // this option", never "this route is of kind X".
+    //
+    // Attached at the ONE metadata site, in this factory, exactly as #467 requires: all three
+    // OpenAPI companion packages read this record, and a rule transcribed into them separately is
+    // how the same wrong document appeared in all three before.
+    //
+    // Actions get nothing, and that is not an oversight: a @odata.nextLink is a URL the client GETs
+    // (§11.2.5.7), while an action-invocation resource has no representation to continue
+    // (§11.5.4) — the same reason #478 excludes actions from the ETag precondition gate. Capping an
+    // action's result without a usable continuation would be silent data loss. It is moot in
+    // practice besides: Microsoft.OData.ModelBuilder's ActionConfiguration.Returns /
+    // .ReturnsCollection both REFUSE an already-declared entity type, so a BindAction over TModel
+    // or IEnumerable<TModel> cannot be registered at all today.
+    private static void AddBoundFunctionPagingMetadata<TModel>(
+        RouteHandlerBuilder rb, BoundOperationDefinition op, IEntitySetEndpointSource source)
+        where TModel : class
+    {
+        if (op.ReturnType is not { } returnType) return;
+        if (!DeclaresCollectionOf(returnType, typeof(TModel))) return;
+
+        rb.WithMetadata(new OhDataQueryOptionsMetadata(
+            FilterEnabled: false,
+            OrderByEnabled: false,
+            SelectEnabled: false,
+            ExpandEnabled: false,
+            CountEnabled: false,
+            SearchEnabled: false,
+            MaxTop: source.MaxTop,
+            TopSkipSupported: true));
     }
 
     // Issue #181: build the query-parameter documentation marker for a bound/unbound *function*.
@@ -2129,9 +2197,42 @@ internal static class OhDataEndpointFactory
         }
     }
 
-    // Every keyed route peels off the FormatException that ODataKeyParser.Parse throws on an
-    // unparseable key and maps it to the same 400 envelope. `withTarget` preserves the existing
+    // Every keyed route peels off the ODataKeyFormatException that ODataKeyParser.Parse throws on
+    // an unparseable key and maps it to the same 400 envelope. `withTarget` preserves the existing
     // split: entity-addressed routes point `target` at "key"; navigation routes omit it.
+    //
+    // #496 finding 4: the clause used to catch a bare FormatException, and the routes' try covers
+    // the WHOLE handler body -- so a profile handler throwing FormatException from its own code
+    // (a downstream parse, a decimal.Parse on a CSV column) was answered with this 400, asserting
+    // the client's key was malformed for a request whose key had parsed one line earlier. The
+    // dedicated type makes the clause exactly as wide as the condition its message describes; see
+    // ODataKeyFormatException.
+    // #496 finding 4: mark a profile handler's fault so a read route's narrow, framework-facing
+    // catches cannot claim it. See HandlerFaultException for why the marker sits on USER code
+    // rather than on the framework's own option-touching calls. The synchronous seams (the ETag
+    // selector on GetById and the collection pipeline's whole ETag stage) use an inline try with
+    // the same `when` clause instead -- a Func overload would allocate a closure per request or per
+    // page for a fault this rare.
+    //
+    // Takes the already-started Task rather than a Func, so no closure is allocated on the hottest
+    // routes in the framework. That is safe because every Invoke* member of
+    // IEntitySetEndpointSource / IODataEntitySetEndpointSource is an `async` method: a profile
+    // delegate that throws SYNCHRONOUSLY (the ordinary `GetAll = ct => throw ...` lambda shape,
+    // which is not an async lambda) has its exception captured into the returned Task rather than
+    // raised at the call site, so it still lands in the try below. Issue496ErrorHandlingTests uses
+    // exactly that fixture shape, so this invariant is pinned rather than assumed.
+    private static async Task<T> AsHandlerFault<T>(Task<T> handlerCall)
+    {
+        try
+        {
+            return await handlerCall.ConfigureAwait(false);
+        }
+        catch (Exception ex) when (HandlerFaultException.IsMisclassifiable(ex))
+        {
+            throw new HandlerFaultException(ex);
+        }
+    }
+
     private static IResult BadKeyError(ILogger? logger, Exception ex, string key, string name, bool withTarget = true)
     {
         logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
@@ -2746,9 +2847,19 @@ internal static class OhDataEndpointFactory
             serializerOptions, maxLevels: source.MaxExpansionDepth, levelsNavNames: levelsNavNames);
 
         // Stage 2: Inject @odata.etag using the original (pre-expand) items for ETag computation.
+        // #496 finding 4: the whole stage is marked as user code -- the profile's ETag selector runs
+        // once per row inside it, and this pipeline is called from inside every read route's narrow
+        // `catch (ODataException)`. One try per page, not one closure per row.
         if (source.HasETag)
         {
-            InjectETagsIntoJsonArray(json, originalItems, requestSource);
+            try
+            {
+                InjectETagsIntoJsonArray(json, originalItems, requestSource);
+            }
+            catch (Exception ex) when (HandlerFaultException.IsMisclassifiable(ex))
+            {
+                throw new HandlerFaultException(ex);
+            }
         }
 
         // Stage 3: Inject expanded nav properties (if $expand requested), including NESTED
@@ -3161,7 +3272,7 @@ internal static class OhDataEndpointFactory
                     if (keyVal is not null) keys.Add(keyVal);
                 }
 
-                IReadOnlyDictionary<object, object?> map = await navRoute.BatchHandler(keys, ct);
+                IReadOnlyDictionary<object, object?> map = await AsHandlerFault(navRoute.BatchHandler(keys, ct));
                 for (int i = 0; i < items.Count; i++)
                 {
                     // A missing key means "no children" (collection → []) or "no related entity"
@@ -3176,7 +3287,7 @@ internal static class OhDataEndpointFactory
                 for (int i = 0; i < items.Count; i++)
                 {
                     relatedByIndex[i] = keyProp?.GetValue(items[i]) is { } keyVal
-                        ? await navRoute.Handler(keyVal, ct)
+                        ? await AsHandlerFault(navRoute.Handler(keyVal, ct))
                         : (navRoute.IsCollection ? Array.Empty<object>() : null);
                 }
             }
@@ -7775,7 +7886,7 @@ internal static class OhDataEndpointFactory
                     {
                         parsedKey = ODataKeyParser.Parse(keyStr, typeof(TKey));
                     }
-                    catch (FormatException)
+                    catch (ODataKeyFormatException)
                     {
                         return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{keyStr}'", target: "key");
                     }
@@ -7921,7 +8032,7 @@ internal static class OhDataEndpointFactory
                             $"The value of '$top' ({options.Top.Value}) exceeds the maximum allowed value ({source.MaxTop.Value}).");
                     }
 
-                    var odataResult = await odataSrc.InvokeGetODataQueryableAsync(options, ct);
+                    var odataResult = await AsHandlerFault(odataSrc.InvokeGetODataQueryableAsync(options, ct));
                     var queryable = odataResult.Items is IQueryable<TModel> typedQ
                         ? typedQ
                         : odataResult.Items.Cast<TModel>().AsQueryable();
@@ -8094,7 +8205,7 @@ internal static class OhDataEndpointFactory
                     if (capabilityError is not null) return capabilityError;
 
                     var s = ResolveHandlers(ctx);
-                    var queryable = (IQueryable<TModel>)(await s.InvokeGetQueryableAsync(ct))
+                    var queryable = (IQueryable<TModel>)(await AsHandlerFault(s.InvokeGetQueryableAsync(ct)))
                                     .Cast<TModel>();
 
                     // #402: broad-catch-to-400 around exactly the construction. See TryBuildQueryOptions.
@@ -8126,7 +8237,7 @@ internal static class OhDataEndpointFactory
                                 "This resource does not support $search. Configure the Search handler to enable it.");
                         }
 
-                        var searchResults = await s.InvokeSearchAsync(searchTermQ.ToString(), ct);
+                        var searchResults = await AsHandlerFault(s.InvokeSearchAsync(searchTermQ.ToString(), ct));
                         var searchItems = searchResults.Cast<TModel>().AsQueryable();
                         // Continue with filter/orderby/top/skip on searchItems
                         queryable = searchItems;
@@ -8940,7 +9051,7 @@ internal static class OhDataEndpointFactory
                                 "This resource does not support $search. Configure the Search handler to enable it.");
                         }
 
-                        var searchResults = await s.InvokeSearchAsync(searchTerm.ToString(), ct);
+                        var searchResults = await AsHandlerFault(s.InvokeSearchAsync(searchTerm.ToString(), ct));
                         object[] searchItems = searchResults.ToArray();
                         var (pagedSearchItems, searchPreTotal, searchNextLink) = ApplyGetAllPaging(searchItems);
 
@@ -8958,7 +9069,7 @@ internal static class OhDataEndpointFactory
                         return ODataEnvelopeResult(searchEnvelope, jsonOptions);
                     }
 
-                    object? result = await s.InvokeGetAllAsync(ct);
+                    object? result = await AsHandlerFault(s.InvokeGetAllAsync(ct));
                     var enumerable = result as IEnumerable<TModel> ?? Enumerable.Empty<TModel>();
                     var rawItems = enumerable.ToArray();
                     var (pagedItems, preTotal, nextLink) = ApplyGetAllPaging(rawItems);
@@ -9038,7 +9149,7 @@ internal static class OhDataEndpointFactory
                     if (s is IODataEntitySetEndpointSource odataCountSrc && odataCountSrc.HasGetODataQueryable)
                     {
                         // Priority 1 profiles apply query options themselves; don't re-apply $filter.
-                        var countResult = await odataCountSrc.InvokeGetODataQueryableAsync(options, ct);
+                        var countResult = await AsHandlerFault(odataCountSrc.InvokeGetODataQueryableAsync(options, ct));
                         var queryable = countResult.Items is IQueryable<TModel> tq
                             ? tq
                             : countResult.Items.Cast<TModel>().AsQueryable();
@@ -9048,7 +9159,7 @@ internal static class OhDataEndpointFactory
                     }
                     if (source.HasGetQueryable)
                     {
-                        var q = (IQueryable<TModel>)(await s.InvokeGetQueryableAsync(ct)).Cast<TModel>();
+                        var q = (IQueryable<TModel>)(await AsHandlerFault(s.InvokeGetQueryableAsync(ct))).Cast<TModel>();
                         var filtered = options.Filter is not null
                             ? (IQueryable<TModel>)options.Filter.ApplyTo(q, cachedCountSettings)
                             : q;
@@ -9063,7 +9174,7 @@ internal static class OhDataEndpointFactory
                             "$filter is not supported on this resource. Configure GetQueryable to enable server-side filtering.");
                     }
 
-                    var items = await s.InvokeGetAllAsync(ct) as IEnumerable<TModel> ?? Enumerable.Empty<TModel>();
+                    var items = await AsHandlerFault(s.InvokeGetAllAsync(ct)) as IEnumerable<TModel> ?? Enumerable.Empty<TModel>();
                     // Fast path for ICollection (List, Array, etc.) — no enumeration needed.
                     long count = items is ICollection<TModel> coll
                         ? (long)coll.Count
@@ -9166,11 +9277,22 @@ internal static class OhDataEndpointFactory
                             : null;
                     }
 
-                    object? result = await s.InvokeGetByIdAsync(parsedKey!, ct);
+                    object? result = await AsHandlerFault(s.InvokeGetByIdAsync(parsedKey!, ct));
                     string? etagValue = null;
                     if (result is not null && source.HasETag)
                     {
-                        etagValue = s.InvokeGetETag(result);
+                        // #496 finding 4: the profile's ETag selector is user code inside this
+                        // route's `catch (ODataException)`. Inline rather than through
+                        // AsHandlerFault's Task overload -- this one is synchronous, and a lambda
+                        // would allocate a closure per request on the hottest read route.
+                        try
+                        {
+                            etagValue = s.InvokeGetETag(result);
+                        }
+                        catch (Exception ex) when (HandlerFaultException.IsMisclassifiable(ex))
+                        {
+                            throw new HandlerFaultException(ex);
+                        }
                         ctx.Response.Headers.ETag = $"\"{etagValue}\"";
 
                         // Gap 2: If-None-Match for conditional GET (§8.2.5)
@@ -9226,7 +9348,7 @@ internal static class OhDataEndpointFactory
 
                     return ODataEntityResult(ctx, prefix, name, result, jsonOptions, registration.EdmModel, odataId: odataId, etag: etagValue, selectedProps: selectedProps, omitNavsForType: rootEdmType);
                 }
-                catch (FormatException ex)
+                catch (ODataKeyFormatException ex)
                 {
                     return BadKeyError(logger, ex, key, name);
                 }
@@ -9506,7 +9628,29 @@ internal static class OhDataEndpointFactory
                     var s = ResolveHandlers(ctx);
                     logger?.LogDebug("POST {Prefix}/{Name}", prefix, name);
                     object? result = await s.InvokePostAsync(model, ct);
-                    if (result is null) return ODataError(400, "BadRequest", "Post handler returned null.");
+                    if (result is null)
+                    {
+                        // #496 finding 1: a null return is a SERVER-side contract violation, not a
+                        // statement about the request, and this used to answer
+                        // 400 {"code":"BadRequest","message":"Post handler returned null."} --
+                        // the client blamed for the server's own bug, with the server's handler
+                        // named back to it in the message. It was also the only 4xx null policy in
+                        // the framework: GetAll -> 200 with an empty collection, GetById/PUT/PATCH
+                        // -> 404, a bound operation -> 204.
+                        //
+                        // Throwing hands it to the group-level filter, which is the single place
+                        // that decides what an unhandled server fault looks like: the real
+                        // exception logged at Error, and a 500 carrying the OData error envelope
+                        // with a generic message. Same shape as DeltaFactory's TrySetPropertyValue
+                        // assertion -- after the framework's own checks a null here means the
+                        // handler broke its contract, so it is an invariant assertion rather than
+                        // an error path. A profile that wants to REJECT a create deliberately
+                        // returns an ODataError result from the handler, which every deliberate
+                        // error path in this file already does.
+                        throw new InvalidOperationException(
+                            $"The Post handler for entity set '{name}' returned null. Post must " +
+                            "return the created entity.");
+                    }
                     string? postEtag = null;
                     if (source.HasETag)
                     {
@@ -9750,7 +9894,7 @@ internal static class OhDataEndpointFactory
                 {
                     return ODataError(400, "InvalidBody", ex.Message);
                 }
-                catch (FormatException ex)
+                catch (ODataKeyFormatException ex)
                 {
                     return BadKeyError(logger, ex, key, name);
                 }
@@ -9925,7 +10069,7 @@ internal static class OhDataEndpointFactory
                 {
                     return ODataError(400, "InvalidBody", ex.Message);
                 }
-                catch (FormatException ex)
+                catch (ODataKeyFormatException ex)
                 {
                     return BadKeyError(logger, ex, key, name);
                 }
@@ -9960,7 +10104,7 @@ internal static class OhDataEndpointFactory
                         return ODataError(404, "NotFound", $"{name} with key '{key}' was not found.");
                     return Results.NoContent();
                 }
-                catch (FormatException ex)
+                catch (ODataKeyFormatException ex)
                 {
                     return BadKeyError(logger, ex, key, name);
                 }
@@ -10280,7 +10424,7 @@ internal static class OhDataEndpointFactory
                         }
                         return ODataEnvelopeResult(contEnvelope, jsonOptions);
                     }
-                    catch (FormatException ex)
+                    catch (ODataKeyFormatException ex)
                     {
                         return BadKeyError(logger, ex, key, name, withTarget: false);
                     }
@@ -10395,7 +10539,7 @@ internal static class OhDataEndpointFactory
                         // top-level read of that type instead of leaking the full CLR graph.
                         return Results.Ok(ODataEntityNode(ctx, prefix, $"{name}({key})/{navPropertyName}/$entity", result, jsonOptions, registration.EdmModel, omitNavsForType: navTargetEdmType));
                     }
-                    catch (FormatException ex)
+                    catch (ODataKeyFormatException ex)
                     {
                         return BadKeyError(logger, ex, key, name, withTarget: false);
                     }
@@ -10437,7 +10581,7 @@ internal static class OhDataEndpointFactory
                             else count = rawColl is not null ? rawColl.Cast<object>().LongCount() : 1L;
                             return Results.Content(count.ToString(CultureInfo.InvariantCulture), "text/plain");
                         }
-                        catch (FormatException ex)
+                        catch (ODataKeyFormatException ex)
                         {
                             return BadKeyError(logger, ex, key, name, withTarget: false);
                         }
@@ -10545,7 +10689,7 @@ internal static class OhDataEndpointFactory
                             }, jsonOptions);
                         }
                     }
-                    catch (FormatException ex)
+                    catch (ODataKeyFormatException ex)
                     {
                         return BadKeyError(logger, ex, key, name, withTarget: false);
                     }
@@ -10640,7 +10784,7 @@ internal static class OhDataEndpointFactory
                         await requestNav.AddRef!(parsedKey!, (object)relatedId, ct);
                         return Results.NoContent();
                     }
-                    catch (FormatException ex)
+                    catch (ODataKeyFormatException ex)
                     {
                         return BadKeyError(logger, ex, key, name, withTarget: false);
                     }
@@ -10700,7 +10844,7 @@ internal static class OhDataEndpointFactory
                             await requestNav.RemoveRef!(parsedKey!, (object)relatedId, ct);
                             return Results.NoContent();
                         }
-                        catch (FormatException ex)
+                        catch (ODataKeyFormatException ex)
                         {
                             return BadKeyError(logger, ex, key, name, withTarget: false);
                         }
@@ -10730,7 +10874,7 @@ internal static class OhDataEndpointFactory
                         {
                             parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
                         }
-                        catch (FormatException ex)
+                        catch (ODataKeyFormatException ex)
                         {
                             return BadKeyError(logger, ex, key, name);
                         }
@@ -10945,7 +11089,7 @@ internal static class OhDataEndpointFactory
                             // inside the filter's scope rather than deferred. See PreRenderedJson.
                             return PreRenderedJson(envelope, jsonOptions ?? _pascalCaseSerializerOptions);
                         }
-                        catch (FormatException ex)
+                        catch (ODataKeyFormatException ex)
                         {
                             return BadKeyError(logger, ex, key, name);
                         }
@@ -10994,7 +11138,7 @@ internal static class OhDataEndpointFactory
 
                             return Results.Text(FormatRawValue(value), "text/plain");
                         }
-                        catch (FormatException ex)
+                        catch (ODataKeyFormatException ex)
                         {
                             return BadKeyError(logger, ex, key, name);
                         }
@@ -11145,7 +11289,7 @@ internal static class OhDataEndpointFactory
 
                         return Results.NoContent();
                     }
-                    catch (FormatException ex)
+                    catch (ODataKeyFormatException ex)
                     {
                         return BadKeyError(logger, ex, key, name);
                     }
@@ -11202,7 +11346,7 @@ internal static class OhDataEndpointFactory
 
                         return Results.NoContent();
                     }
-                    catch (FormatException ex)
+                    catch (ODataKeyFormatException ex)
                     {
                         return BadKeyError(logger, ex, key, name);
                     }
@@ -11252,9 +11396,10 @@ internal static class OhDataEndpointFactory
                 object? result = await requestFn.Invoke(args, ct);
                 if (result is null) return Results.NoContent();
                 // Gap 1: @odata.context on function results when return type matches TModel
-                return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s);
+                return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s, pagingSource: source);
             }).WithTags(name).Produces(400);
             AddBoundOperationProduces<TModel>(rb, fnCapture);
+            AddBoundFunctionPagingMetadata<TModel>(rb, fnCapture, source);
             // Issue #181: document the function's query-string parameters.
             var boundFnQueryParams = BuildFunctionQueryParametersMetadata(fnCapture.Parameters, skipKey: false);
             if (boundFnQueryParams is not null) rb.WithMetadata(boundFnQueryParams);
@@ -11328,7 +11473,7 @@ internal static class OhDataEndpointFactory
                 object? result = await requestAction.Invoke(args, ct);
                 if (result is null) return Results.NoContent();
                 // Gap 1: @odata.context on action results when return type matches TModel
-                return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s);
+                return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s, pagingSource: null);
             }).WithTags(name).Produces(400).Produces(415);
             AddBoundOperationProduces<TModel>(rb, actionCapture);
             // Leg 2 / #184: synthesize a POCO body schema from the action's parameters (see the
@@ -11396,15 +11541,16 @@ internal static class OhDataEndpointFactory
                         object? result = await requestFn.Invoke(args, ct);
                         if (result is null) return Results.NoContent();
                         // Gap 1: @odata.context on entity-level function results
-                        return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s);
+                        return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s, pagingSource: source);
                     }
-                    catch (FormatException ex)
+                    catch (ODataKeyFormatException ex)
                     {
                         return BadKeyError(logger, ex, key, name);
                     }
                 })
                 .WithTags(name).Produces(400);
             AddBoundOperationProduces<TModel>(rb, fnCapture);
+            AddBoundFunctionPagingMetadata<TModel>(rb, fnCapture, source);
             // Issue #181: document the function's query-string parameters (skip the leading key,
             // which is a route parameter already documented via BindingSource.Path).
             var entityFnQueryParams = BuildFunctionQueryParametersMetadata(fnCapture.Parameters, skipKey: true);
@@ -11502,9 +11648,9 @@ internal static class OhDataEndpointFactory
                         object? result = await requestAction.Invoke(args, ct);
                         if (result is null) return Results.NoContent();
                         // Gap 1: @odata.context on entity-level action results
-                        return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s);
+                        return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s, pagingSource: null);
                     }
-                    catch (FormatException ex)
+                    catch (ODataKeyFormatException ex)
                     {
                         return BadKeyError(logger, ex, key, name);
                     }
@@ -11536,10 +11682,108 @@ internal static class OhDataEndpointFactory
     // For collection results (IEnumerable<TModel>): context = {root}/$metadata#{EntitySet}
     // For single results (TModel): context = {root}/$metadata#{EntitySet}/$entity
     // For primitives/other types: return Results.Ok directly (no wrapping needed).
+    // #357: the operation-result twin of the GetAll route's ApplyGetAllPaging, kept deliberately
+    // equivalent to it -- same precedence between an explicit $top and the default cap, same
+    // Prefer: maxpagesize interaction, same "nextLink only when the default cap was applied AND
+    // rows remain" condition, same $skip continuation shape via BuildNextPageLinkWithSkip. It is a
+    // second implementation rather than a shared call because that one is a local function closing
+    // over the route's ODataQueryOptions, which a bound-operation route does not build.
+    //
+    // $top/$skip are read the way the NAVIGATION-collection route reads them -- int.TryParse
+    // against the raw query string, with that route's existing "is invalid. It must be a
+    // non-negative integer." wording -- rather than through ODataQueryOptions. Both reasons matter.
+    // (1) Precedent: the nav route is the other place in this file that pages a fully materialized
+    // collection with no IQueryable and no ODataQueryOptions behind it, and inventing a third
+    // vocabulary for one client error is how error surfaces drift. (2) Building the whole
+    // ODataQueryOptions here would additionally start rejecting malformed values of options this
+    // route still ignores ($filter=, $skiptoken=), which is a wire change #357 does not ask for and
+    // whose surface is set by somebody else's constructors; and Microsoft's individual
+    // TopQueryOption/SkipQueryOption both require an ODataQueryOptionParser, which needs an
+    // ODataPath a bound-operation route never parses.
+    //
+    // The MaxTop rejection below is OhData's own message and IS shared with the collection routes
+    // verbatim: the same condition must not produce two different envelopes depending on which
+    // route the client reached the same entity set through.
+    //
+    // Returns false with `error` set when the request cannot be served; true otherwise, with `page`
+    // and `nextLink` set.
+    private static bool TryApplyOperationCollectionPaging(
+        HttpContext ctx, IEntitySetEndpointSource startupSource, object[] items,
+        out object[] page, out string? nextLink, out IResult? error)
+    {
+        page = items;
+        nextLink = null;
+        error = null;
+
+        int skip = 0;
+        if (ctx.Request.Query.TryGetValue("$skip", out var skipStr))
+        {
+            if (!int.TryParse(skipStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out skip) || skip < 0)
+            {
+                error = ODataError(400, "InvalidQueryOption",
+                    $"The value of '$skip' ('{skipStr}') is invalid. It must be a non-negative integer.");
+                return false;
+            }
+        }
+
+        int? top = null;
+        if (ctx.Request.Query.TryGetValue("$top", out var topStr))
+        {
+            if (!int.TryParse(topStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out int topVal) || topVal < 0)
+            {
+                error = ODataError(400, "InvalidQueryOption",
+                    $"The value of '$top' ('{topStr}') is invalid. It must be a non-negative integer.");
+                return false;
+            }
+            top = topVal;
+
+            // MaxTop caps an EXPLICIT $top exactly as the three collection read paths do, with the
+            // identical message.
+            if (startupSource.MaxTop.HasValue && topVal > startupSource.MaxTop.Value)
+            {
+                error = ODataError(400, "InvalidQueryOption",
+                    $"The value of '$top' ({topVal}) exceeds the maximum allowed value ({startupSource.MaxTop.Value}).");
+                return false;
+            }
+        }
+
+        long preTotal = items.Length;
+        IEnumerable<object> seq = items;
+        if (skip > 0) seq = seq.Skip(skip);
+
+        int? appliedPageSize = null;
+        if (top is int t)
+        {
+            seq = seq.Take(t);
+        }
+        else
+        {
+            int? preferredPageSize = ParseMaxPageSize(ctx);
+            appliedPageSize = preferredPageSize.HasValue
+                ? (startupSource.MaxTop.HasValue
+                    ? Math.Min(preferredPageSize.Value, startupSource.MaxTop.Value)
+                    : preferredPageSize.Value)
+                : startupSource.MaxTop;
+            if (appliedPageSize.HasValue) seq = seq.Take(appliedPageSize.Value);
+            if (preferredPageSize.HasValue)
+                ctx.Response.Headers["Preference-Applied"] = $"maxpagesize={appliedPageSize!.Value}";
+        }
+
+        page = ReferenceEquals(seq, items) ? items : seq.ToArray();
+
+        // nextLink only when the DEFAULT cap was applied (omitted $top) and more rows remain beyond
+        // this page -- the pre-paging total decides it exactly, so an exactly-full final page does
+        // not walk a client into an empty trailing one.
+        if (appliedPageSize is int ps && ps > 0 && skip + page.Length < preTotal)
+            nextLink = BuildNextPageLinkWithSkip(ctx, skip + page.Length);
+
+        return true;
+    }
+
     private static IResult WrapBoundOpResult(
         HttpContext ctx, string prefix, string entitySetName, object result, Type modelType,
         JsonSerializerOptions? jsonOptions, IEdmEntityType? rootEdmType, IEdmModel? edmModel,
-        IEntitySetEndpointSource source)
+        IEntitySetEndpointSource source, IEntitySetEndpointSource? pagingSource)
     {
         var resultType = result.GetType();
 
@@ -11590,6 +11834,47 @@ internal static class OhDataEndpointFactory
             object[] coll = ((IEnumerable)result).Cast<object>().ToArray();
             string baseUrl = BuildBaseUrl(ctx, prefix);
 
+            // #357: bound the collection exactly as #201 bounds GetAll. Before this, an operation
+            // returning a collection of the entity set's own type bypassed MaxTop, the client's
+            // $top/$skip and server-driven paging entirely -- so the DoS ceiling the framework
+            // advertises and enforces on every ordinary collection route was fully bypassable
+            // through any such operation, and a $top sent against one was neither applied nor
+            // rejected (measured: 77 entities returned for `?$top=2`).
+            //
+            // The situation is identical to GetAll's, which is why the semantics are identical
+            // rather than merely similar: the framework is holding a fully materialized array and
+            // owns the whole pipeline from here on, so an offset continuation is one it can always
+            // honour. An omitted $top caps to MaxTop (or a smaller Prefer: maxpagesize) with a
+            // $skip @odata.nextLink for the remainder; an explicit $top is applied and validated
+            // against MaxTop; $skip is applied. MaxTop = null opts out, as it does on GetAll.
+            //
+            // Parsed HERE, in the runtime collection branch, rather than in the route: a handler
+            // declared Task<object> that returns a List<TModel> must not be a way around the
+            // ceiling, and a function whose result is NOT a collection must keep ignoring $top/$skip
+            // exactly as it did. The OpenAPI metadata is attached from the DECLARED return type, so
+            // the only possible divergence is serving a bound the document did not promise -- the
+            // safe direction of #467's advertise-vs-serve rule.
+            //
+            // `pagingSource` is BOTH the "is this route pageable" flag (non-null only for bound
+            // FUNCTIONS -- see AddBoundFunctionPagingMetadata for why actions are excluded) and the
+            // STARTUP endpoint source. The distinction is load-bearing and not cosmetic:
+            // `source` here is the REQUEST-scoped instance, whose MaxTop is null -- profiles are
+            // registered AddScoped and _resolvedMaxTop is assigned in VisitModelBuilder, which only
+            // ever runs on the startup instance. Reading the ceiling off the request instance
+            // silently disables the whole bound (measured: 25 rows returned and $top=1000 accepted,
+            // on a profile with MaxTop = 10). This is the two-sources rule CLAUDE.md states for
+            // every route closure -- startup source for structural queries, request source for
+            // Invoke* -- and MaxTop is named in it.
+            string? opNextLink = null;
+            if (pagingSource is not null)
+            {
+                if (!TryApplyOperationCollectionPaging(
+                        ctx, pagingSource, coll, out coll, out opNextLink, out IResult? pagingError))
+                {
+                    return pagingError!;
+                }
+            }
+
             // #179: route the collection through the same serialize → ETag → omit-navs stages the
             // normal collection GET uses (ApplyCollectionPipelineAsync). A bound op returns the
             // entity set's own type but takes no $expand, so every declared navigation is omitted
@@ -11617,11 +11902,15 @@ internal static class OhDataEndpointFactory
             // after the filter chain unwound. Rendering with the registration's owned options keeps
             // the envelope keys contractual while the payload inside the array still honours the
             // host's converters/encoder exactly as it did (#252) -- those already ran, above.
-            return PreRenderedJson(new Dictionary<string, object?>
+            var opEnvelope = new Dictionary<string, object?>
             {
                 ["@odata.context"] = $"{baseUrl}/$metadata#{entitySetName}",
-                ["value"] = json
-            }, EnvelopeOptions(serializerOptions));
+            };
+            // #357: between @odata.context and value, matching every other collection envelope in
+            // this file (JSON Format §4.5 -- annotations precede what they describe).
+            if (opNextLink is not null) opEnvelope["@odata.nextLink"] = opNextLink;
+            opEnvelope["value"] = json;
+            return PreRenderedJson(opEnvelope, EnvelopeOptions(serializerOptions));
         }
 
         if (resultType == modelType || modelType.IsAssignableFrom(resultType))

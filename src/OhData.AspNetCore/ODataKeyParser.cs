@@ -65,7 +65,13 @@ internal static class ODataKeyParser
         }
         catch (Exception ex) when (ex is FormatException or InvalidCastException or OverflowException or ArgumentException or NotSupportedException)
         {
-            throw new FormatException($"Cannot parse '{rawKey}' as {keyType.Name}.", ex);
+            // #496 finding 4: ODataKeyFormatException, not a bare FormatException. This is the ONLY
+            // throw site every keyed route's `catch (...)` -> BadKeyError clause is meant to serve,
+            // and while that clause caught FormatException it also caught one thrown by the
+            // profile's own handler -- answering "Invalid key format for X: '1'" for a key that had
+            // parsed cleanly. See ODataKeyFormatException's remarks. A derived type keeps every
+            // out-of-assembly `catch (FormatException)` working.
+            throw new ODataKeyFormatException($"Cannot parse '{rawKey}' as {keyType.Name}.", ex);
         }
     }
 }
