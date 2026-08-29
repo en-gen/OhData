@@ -652,7 +652,11 @@ public sealed class OhDataBuilder
                 capturedPrefix);
 
             var reg = new OhDataRegistration(
-                capturedName, capturedPrefix, edmModel, profiles, capturedUnbound, capturedNamingPolicy, capturedOpenTypes);
+                capturedName, capturedPrefix, edmModel, profiles, capturedUnbound, capturedNamingPolicy, capturedOpenTypes,
+                // #474: the server-wide write-body ceiling, carried onto the registration so the
+                // group filter can apply it to the routes that belong to no entity set (the unbound
+                // actions), which have no profile to resolve a limit from.
+                defaults.MaxRequestBodyBytes);
             // Also register in the collection for named access
             sp.GetRequiredService<OhDataRegistrationCollection>().Add(capturedName, reg);
             return reg;

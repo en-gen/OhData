@@ -239,6 +239,28 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private bool _resolvedAllowDeepWrites;
 
     /// <summary>
+    /// #355: whether a write body for this entity set is checked against the EDM's own
+    /// <c>Nullable="false"</c> annotations before the handler is invoked. Inherits from
+    /// <see cref="EntitySetDefaults.ValidateRequestBodyNullability"/> (default <c>true</c>) when
+    /// <c>null</c>.
+    /// <para>
+    /// A <c>null</c> for a property the framework's own <c>$metadata</c> declares
+    /// <c>Nullable="false"</c> is answered with <c>400</c> and the handler never runs. On
+    /// <c>PATCH</c> and the structural-property writes only a property the body actually named is
+    /// checked, since those are partial updates; on <c>POST</c>/<c>PUT</c> an omitted property is a
+    /// violation too, because the resulting entity would not be a valid instance of the declared
+    /// type (§11.4.2). The entity's <b>key</b> is exempt on every verb — a server-generated key is
+    /// routinely omitted on create, and every EDM key property is <c>Nullable="false"</c>.
+    /// </para>
+    /// <para>
+    /// Set to <c>false</c> for an entity set whose handler legitimately supplies a value the client
+    /// is not expected to send.
+    /// </para>
+    /// </summary>
+    protected bool? ValidateRequestBodyNullability { get; init; }
+    private bool _resolvedValidateRequestBodyNullability = true;
+
+    /// <summary>
     /// Renamed to <see cref="AllowDeepWrites"/> in 1.6.0. Kept as a forwarding property so an
     /// assembly compiled against 1.5.0 keeps binding; it reads and writes
     /// <see cref="AllowDeepWrites"/>, so the two can never disagree.
@@ -787,6 +809,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _resolvedExpandPushdownEnabled = ExpandPushdownEnabled ?? defaults.ExpandPushdownEnabled;
         _resolvedPropertyRouteDocsEnabled = PropertyRouteDocsEnabled ?? defaults.PropertyRouteDocsEnabled;
         _resolvedAllowDeepWrites = AllowDeepWrites ?? defaults.AllowDeepWrites;
+        _resolvedValidateRequestBodyNullability =
+            ValidateRequestBodyNullability ?? defaults.ValidateRequestBodyNullability;
         _resolvedRoundingMode = RoundingMode ?? defaults.RoundingMode;
         _structuralProperties = BuildStructuralProperties();
 
@@ -2227,6 +2251,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     IReadOnlyList<StructuralPropertyInfo> IEntitySetEndpointSource.StructuralProperties =>
         _structuralProperties ??= BuildStructuralProperties();
     bool IEntitySetEndpointSource.AllowDeepWrites => _resolvedAllowDeepWrites;
+    bool IEntitySetEndpointSource.ValidateRequestBodyNullability =>
+        _resolvedValidateRequestBodyNullability;
     // #253 completion: navigations are addressed by their EDM (JSON) names on the OData surface. This
     // exposed view is consumed by the $expand pushdown provenance/keying and the deep-insert strip
     // (which resolves each CLR property to its EDM name before testing membership).

@@ -9,6 +9,64 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking
+
+- **A bound FUNCTION returning a collection of the entity set's own type is now bounded by `MaxTop`,
+  with a `@odata.nextLink` continuation (#357).** Before this, such an operation bypassed `MaxTop`,
+  the client's `$top`/`$skip`, and server-driven paging entirely — so the DoS ceiling the framework
+  advertises and enforces on every ordinary collection route was fully bypassable through any
+  operation that returned a collection, and a `$top` sent against one was neither applied nor
+  rejected. Measured on a profile with `MaxTop = 50`:
+  `GET /v2/Movies?$top=1000` → `400`, while `GET /v2/Movies/TopRated?count=1000&$top=2` → `200`
+  with all 77 entities and no `@odata.nextLink`.
+
+  **What changes on the wire.** `EntitySetDefaults.MaxTop` defaults to **1000**, so this is
+  default-on: an operation that used to return more than 1000 entities of its set's own type now
+  returns the first 1000 plus an `@odata.nextLink`, and a client that reads `value` without
+  following continuations sees a truncated result. A client `$top`/`$skip` is now applied rather
+  than ignored, a `$top` above `MaxTop` is `400 InvalidQueryOption` with the *same* message the
+  collection route uses, a malformed `$top`/`$skip` is `400` rather than silently dropped, and
+  `Prefer: maxpagesize` is honoured (with `Preference-Applied`). Opt out exactly as on `GetAll`:
+  set `MaxTop = null` on the profile or in `EntitySetDefaults`, which restores the previous
+  behaviour byte for byte. A result already under the cap is unchanged, byte for byte.
+
+  The semantics are #201's `ApplyGetAllPaging`, not a new scheme: the framework is holding a fully
+  materialized array and owns the pipeline from there, so an offset continuation is one it can
+  always honour. The bound is applied in the **runtime** collection branch rather than from the
+  declared return type, so a handler declared `Task<object>` returning a `List<TModel>` is not a way
+  around the ceiling; the OpenAPI `$top`/`$skip` documentation is attached from the declared type at
+  the single `OhDataQueryOptionsMetadata` site (#467), so the only possible divergence is serving a
+  bound the document did not promise.
+
+  **Actions are deliberately excluded.** A `@odata.nextLink` is a URL the client GETs (§11.2.5.7)
+  while an action-invocation resource has no representation to continue (§11.5.4) — the same reason
+  #478 excludes actions from the ETag precondition gate — so a continuation there would answer 405,
+  and capping without one would be silent data loss. It is moot in practice besides:
+  `Microsoft.OData.ModelBuilder`'s `ActionConfiguration.Returns`/`.ReturnsCollection` both refuse an
+  already-declared entity type, so a `BindAction` over `TModel` or `IEnumerable<TModel>` cannot be
+  registered at all today (reported separately).
+
+- **A `Post` handler returning `null` is now a logged `500`, not a `400` blaming the client
+  (#496).** It used to answer
+  `400 {"error":{"code":"BadRequest","message":"Post handler returned null."}}` — a server-side
+  contract violation reported as a client error, with the server's own handler named back to the
+  client, and the only 4xx null policy in the framework (`GetAll` → `200` with an empty collection,
+  `GetById`/`PUT`/`PATCH` → `404`, a bound operation → `204`). It now throws, which routes it
+  through the group-level filter: the real exception logged at `Error`, and a `500` carrying the
+  OData error envelope with a generic message. A profile that means to reject a create deliberately
+  returns an `ODataError` result from the handler, as every deliberate error path already does.
+
+- **A handler-thrown `Microsoft.OData.ODataException` or `FormatException` is no longer relabelled
+  as a client error (#496).** Each read route wraps its whole body in a `try` whose
+  `catch (ODataException)` answers `400 InvalidQueryOption` with `ex.Message` passed **verbatim** to
+  the client, and every keyed route's `catch (FormatException)` answers
+  `400 "Invalid key format for <set>: '<key>'"`. Both clauses also enclose handler invocation, so a
+  handler proxying a downstream OData service turned a dependency fault into a client-blamed `400`
+  carrying its own message — a targeted bypass of the rule that no internal exception message
+  reaches the client — and a handler-origin `FormatException` produced a `400` asserting the key was
+  malformed for a request whose key had parsed one line earlier. Both are `500` + the OData error
+  envelope now, with the real exception logged. Framework-raised 400s are unchanged, byte for byte.
+
 ### Added
 
 - **Startup warning when a navigation's target entity set is protected more strictly than the set
@@ -49,6 +107,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and exactly the assurance #481 disproves about the target's.
 
 ### Fixed
+
+- **The `413` from the `MaxRequestBodyBytes` fast-reject carries `OData-Version` (#496).** The
+  `OData-Version: 4.0` header §8.1.5 requires on every response was set by the `$format`/`Accept`
+  filter, which is registered **fourth** of five; the #203 body-limit filter's `Content-Length`
+  fast-reject is registered third and short-circuits above it, so that `413` shipped with no
+  `OData-Version` at all (measured). The header is now written by the outermost group filter, where
+  nothing above it can short-circuit. Only reachable on a profile that sets
+  `MaxRequestBodyBytes`; every other response already carried it and still does, byte for byte.
 
 - **A complex type's own entity-typed navigation is now suppressed like any other (#507).**
   `ODataConventionModelBuilder` models an entity-typed member of a **complex** type as a navigation
@@ -102,6 +168,16 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   returning `List<TModel>` was correct. The element test is assignability now, and the OpenAPI
   documentation carries the **same** predicate over the declared return type, so the advertised shape
   and the served shape cannot disagree.
+
+### Documentation
+
+- **The group exception filter's "outermost group filter (added first)" claim was false and is
+  corrected (#496).** The #200 observability filter is added first and wraps it. The consequence is
+  now stated rather than implied: an exception thrown in the observability filter's own body or in
+  its `Response.OnCompleted` callback escapes the error envelope. Reordering the two is deliberately
+  *not* done — it would move the filter's `LogError` outside the request's `Activity` and lose trace
+  correlation on the single most important log line the framework emits, a worse trade for
+  framework-only code that does no I/O and runs no user code.
 
 ### Tests
 

@@ -1139,7 +1139,18 @@ internal static class OpenTypeJsonOptions
         {
             WriteWithoutUnbindableKeys(writer, element, declaredType, options, ignoredJsonNamesByType);
         }
-        return JsonDocument.Parse(buffer.WrittenMemory);
+        // #514: the re-parse is a THIRD reader over the same body and has to accept what the first
+        // two did. Only MaxDepth can actually differ here — the bytes are the framework's own, so
+        // they carry no comment and no trailing comma — but a host that raised MaxDepth would
+        // otherwise get a body accepted by ParseAsync and then rejected by this line, which the
+        // route's own catch turns into a 400. That divergence is created rather than merely exposed
+        // by the fix at the ParseAsync sites, so it is closed in the same change.
+        return JsonDocument.Parse(buffer.WrittenMemory, new JsonDocumentOptions
+        {
+            AllowTrailingCommas = options.AllowTrailingCommas,
+            CommentHandling = options.ReadCommentHandling,
+            MaxDepth = options.MaxDepth,
+        });
     }
 
     private static void WriteWithoutUnbindableKeys(
