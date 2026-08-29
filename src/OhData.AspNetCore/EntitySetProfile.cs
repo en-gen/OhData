@@ -252,18 +252,23 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// </para>
     /// <para>
     /// <b>An OMITTED property is never a violation</b> (#544), on any verb, whatever the CLR
-    /// declaration would leave behind — <c>= ""</c>, <c>= null!</c>, or a value type. The rule is
-    /// therefore derivable entirely from the wire: identical <c>$metadata</c>, identical answers.
-    /// This is where <c>Microsoft.AspNetCore.OData</c> lands too.
+    /// declaration would leave behind — <c>= ""</c>, <c>= null!</c>, or a value type. So the
+    /// accept/reject decision for an omission no longer depends on a CLR initializer or on
+    /// value-versus-reference, neither of which appears in <c>$metadata</c>. This is where
+    /// <c>Microsoft.AspNetCore.OData</c> lands too.
     /// </para>
     /// <para>
-    /// Two properties are outside the rule because a JSON <c>null</c> for them cannot reach it: the
-    /// entity's <b>key</b> (every EDM key is <c>Nullable="false"</c>, and a server-generated key is
-    /// routinely omitted on create), and a non-nullable <b>value type</b> such as <c>int</c>, for
-    /// which an explicit <c>null</c> is already a <c>400</c> worded by the deserializer. Two more
-    /// are outside it because the EDM says nothing about them: a member no readable CLR property
-    /// backs, and anything the EDM does not declare at all — which is what exempts
-    /// <c>Ignore()</c>d properties. Nullability <i>inside</i> a nested complex value is not checked.
+    /// <b>Four properties are outside the rule</b>, and read the first one as a deliberate choice
+    /// rather than as something unreachable. The entity's <b>key</b> is exempt <i>by choice</i>: a
+    /// service-generated key is routinely omitted on create, §11.4.2 permits omitting a property
+    /// with a service-generated value, and every EDM key is <c>Nullable="false"</c>, so checking it
+    /// would refuse ordinary creates. An explicit <c>null</c> for a reference-typed key is
+    /// therefore <b>not</b> answered by this rule and is not a <c>400</c>. A non-nullable
+    /// <b>value type</b> such as <c>int</c> is outside it because an explicit <c>null</c> there is
+    /// already a <c>400</c> worded by the deserializer. The last two are outside it because the EDM
+    /// says nothing about them: a member no readable CLR property backs, and anything the EDM does
+    /// not declare at all — which is what exempts <c>Ignore()</c>d properties. Nullability
+    /// <i>inside</i> a nested complex value is not checked either.
     /// </para>
     /// <para>
     /// Set to <c>false</c> for an entity set whose handler legitimately supplies a value the client

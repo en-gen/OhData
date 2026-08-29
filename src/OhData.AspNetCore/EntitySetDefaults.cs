@@ -481,7 +481,7 @@ public sealed class EntitySetDefaults
     /// #544: the check fires only on a property the body NAMES with an explicit <c>null</c>. An
     /// omitted property is not a violation on any verb, so the rule is derivable from the wire
     /// alone and does not depend on a CLR initializer the client cannot see. See
-    /// <see cref="EntitySetProfile{TKey, TModel}.ValidateRequestBodyNullability"/> for the full
+    /// <see cref="EntitySetProfile{TKey,TModel}.ValidateRequestBodyNullability"/> for the full
     /// statement and the four properties the rule cannot reach.
     /// </para>
     /// <para>

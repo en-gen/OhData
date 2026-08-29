@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -235,14 +236,19 @@ public class Issue544NullabilityOmissionTests
         using var omitted = new StringContent("{\"Id\":1}", Encoding.UTF8, "application/json");
         var omittedResponse = await fx.Client.PutAsync("/odata/N544OpenThings(1)", omitted);
         Assert.Equal(HttpStatusCode.OK, omittedResponse.StatusCode);
+        Assert.Equal("", N544OpenProfile.LastPut!.Initialized);
         Assert.Null(N544OpenProfile.LastPut!.Uninitialized);
+        Assert.Equal(0, N544OpenProfile.LastPut!.Year);
 
-        N544OpenProfile.LastPut = null;
-        using var explicitNull = new StringContent(
-            "{\"Id\":1,\"Uninitialized\":null}", Encoding.UTF8, "application/json");
-        var nullResponse = await fx.Client.PutAsync("/odata/N544OpenThings(1)", explicitNull);
-        Assert.Equal(HttpStatusCode.BadRequest, nullResponse.StatusCode);
-        Assert.Null(N544OpenProfile.LastPut);
+        foreach (string named in new[] { "Initialized", "Uninitialized", "Year" })
+        {
+            N544OpenProfile.LastPut = null;
+            using var explicitNull = new StringContent(
+                $"{{\"Id\":1,\"{named}\":null}}", Encoding.UTF8, "application/json");
+            var nullResponse = await fx.Client.PutAsync("/odata/N544OpenThings(1)", explicitNull);
+            Assert.Equal(HttpStatusCode.BadRequest, nullResponse.StatusCode);
+            Assert.Null(N544OpenProfile.LastPut);
+        }
     }
 
     /// <summary>The collection POST always materialises a <c>JsonElement</c>; same pair.</summary>
@@ -255,20 +261,25 @@ public class Issue544NullabilityOmissionTests
         N544OpenProfile.LastPosted = null;
         var omitted = await fx.Client.PostAsJsonAsync("/odata/N544OpenThings", new { Id = 1 });
         Assert.Equal(HttpStatusCode.Created, omitted.StatusCode);
+        Assert.Equal("", N544OpenProfile.LastPosted!.Initialized);
         Assert.Null(N544OpenProfile.LastPosted!.Uninitialized);
+        Assert.Equal(0, N544OpenProfile.LastPosted!.Year);
 
-        N544OpenProfile.LastPosted = null;
-        using var explicitNull = new StringContent(
-            "{\"Id\":1,\"Uninitialized\":null}", Encoding.UTF8, "application/json");
-        var nullResponse = await fx.Client.PostAsync("/odata/N544OpenThings", explicitNull);
-        Assert.Equal(HttpStatusCode.BadRequest, nullResponse.StatusCode);
-        Assert.Null(N544OpenProfile.LastPosted);
+        foreach (string named in new[] { "Initialized", "Uninitialized", "Year" })
+        {
+            N544OpenProfile.LastPosted = null;
+            using var explicitNull = new StringContent(
+                $"{{\"Id\":1,\"{named}\":null}}", Encoding.UTF8, "application/json");
+            var nullResponse = await fx.Client.PostAsync("/odata/N544OpenThings", explicitNull);
+            Assert.Equal(HttpStatusCode.BadRequest, nullResponse.StatusCode);
+            Assert.Null(N544OpenProfile.LastPosted);
+        }
     }
 
     // ── The navigation-POST create route ───────────────────────────────────────────
 
     [Fact]
-    public async Task NavigationPost_OmittingTheUninitializedProperty_Is201()
+    public async Task NavigationPost_OmittingEveryNonNullableProperty_Is201_OnAllThreeShapes()
     {
         await using var fx = await TestHostBuilder.BuildAsync(
             o => o.AddEntitySetProfile<N544ThingProfile>());
@@ -280,17 +291,22 @@ public class Issue544NullabilityOmissionTests
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         Assert.NotNull(N544ThingProfile.LastPartCreated);
         Assert.Null(N544ThingProfile.LastPartCreated!.Serial);
+        Assert.Equal("", N544ThingProfile.LastPartCreated!.Initialized);
+        Assert.Equal(0, N544ThingProfile.LastPartCreated!.Year);
     }
 
-    [Fact]
-    public async Task NavigationPost_ExplicitNull_Is400()
+    [Theory]
+    [InlineData("Serial")]
+    [InlineData("Initialized")]
+    [InlineData("Year")]
+    public async Task NavigationPost_ExplicitNull_Is400(string named)
     {
         await using var fx = await TestHostBuilder.BuildAsync(
             o => o.AddEntitySetProfile<N544ThingProfile>());
 
         N544ThingProfile.LastPartCreated = null;
         using var content = new StringContent(
-            "{\"Id\":7,\"Serial\":null}", Encoding.UTF8, "application/json");
+            $"{{\"Id\":7,\"{named}\":null}}", Encoding.UTF8, "application/json");
         var response = await fx.Client.PostAsync("/odata/N544Things(1)/Parts", content);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -420,6 +436,160 @@ public class Issue544NullabilityOmissionTests
         Assert.Null(N544ThingProfile.LastPatchChangedProperties);
     }
 
+    // -- The gate's table follows the BINDER, under a policy that can prove it ------
+    //
+    // Every required property on the fixtures above is a SINGLE WORD, and for a single word
+    // SnakeCaseLower/KebabCaseLower produce a spelling that differs from the CLR name only by case
+    // - which the table's OrdinalIgnoreCase CLR-name alias already covers. So none of them can tell
+    // the contract key apart from the aliases, and BuildBinderBodyNameTable's whole contract branch
+    // could be deleted with the rest of this file still green. That is #511 manifestation (2)'s
+    // blind spot exactly, which is why #511 measured SnakeCaseLower rather than camelCase.
+    //
+    // These tests use MULTI-WORD required properties, where the policy spelling (`created_by`) is
+    // reachable ONLY through JsonTypeInfo.Properties[].Name. Ablating the contract branch makes
+    // `POST {"created_by":null}` a 201 with the handler reached and CreatedBy == null - a fail-OPEN
+    // on the gate, not merely an untested path.
+
+    private static JsonNamingPolicy PolicyFor(string bodyName) =>
+        bodyName.Contains('_') ? JsonNamingPolicy.SnakeCaseLower : JsonNamingPolicy.KebabCaseLower;
+
+    /// <summary>
+    /// The control for the tests below: both required properties really are
+    /// <c>Nullable="false"</c> in the published CSDL, so a miss is the gate failing rather than the
+    /// model never asking.
+    /// <para>
+    /// <c>InheritedStamp</c> carries <c>[Required]</c> deliberately - measured, a bare NRT
+    /// <c>= null!</c> declared on a BASE class comes out <c>Nullable="true"</c>, so it would never
+    /// reach the gate at all and the inherited-member case would prove nothing.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Metadata_DescribesBothMultiWordProperties_AsNullableFalse()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<N544StampedProfile>());
+
+        string csdl = await fx.Client.GetStringAsync("/odata/$metadata");
+        XElement entityType = XDocument.Parse(csdl)
+            .Descendants(EdmNs + "EntityType")
+            .Single(e => (string?)e.Attribute("Name") == "N544Stamped");
+
+        Assert.False(IsCsdlNullable(entityType, "CreatedBy"));
+        Assert.False(IsCsdlNullable(entityType, "InheritedStamp"));
+    }
+
+    /// <summary>
+    /// THE CONTRACT-KEY TEST. Under a non-case-preserving policy the only spelling that names
+    /// <c>CreatedBy</c> is the one the binder converted to, so the gate sees it only if its table
+    /// was keyed off the binder's own contract. Fails <b>open</b> without that key: the value binds
+    /// to null and the handler runs.
+    /// </summary>
+    [Theory]
+    [InlineData("created_by")]
+    [InlineData("created-by")]
+    public async Task Post_ExplicitNull_UnderANonCasePreservingPolicy_Is400(string bodyName)
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o
+            .WithJsonPropertyNamingPolicy(PolicyFor(bodyName))
+            .AddEntitySetProfile<N544StampedProfile>());
+
+        N544StampedProfile.LastPosted = null;
+        using var content = new StringContent(
+            $"{{\"id\":1,\"{bodyName}\":null}}", Encoding.UTF8, "application/json");
+        var response = await fx.Client.PostAsync("/odata/N544Stamped", content);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Null(N544StampedProfile.LastPosted);
+
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("CreatedBy", json.GetProperty("error").GetProperty("target").GetString());
+    }
+
+    /// <summary>
+    /// #462's third defect, on this table. An INHERITED member is where the two reflection walks
+    /// disagree about <c>ReflectedType</c>, so <c>PropertyInfo</c> equality is false for the same
+    /// member and only <c>HasSameMetadataDefinitionAs</c> pairs them. With <c>==</c> the inherited
+    /// property silently loses its contract key and this body is accepted.
+    /// </summary>
+    [Theory]
+    [InlineData("inherited_stamp")]
+    [InlineData("inherited-stamp")]
+    public async Task Post_ExplicitNull_UnderAnInheritedMultiWordProperty_Is400(string bodyName)
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o
+            .WithJsonPropertyNamingPolicy(PolicyFor(bodyName))
+            .AddEntitySetProfile<N544StampedProfile>());
+
+        N544StampedProfile.LastPosted = null;
+        using var content = new StringContent(
+            $"{{\"id\":1,\"{bodyName}\":null}}", Encoding.UTF8, "application/json");
+        var response = await fx.Client.PostAsync("/odata/N544Stamped", content);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Null(N544StampedProfile.LastPosted);
+
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("InheritedStamp", json.GetProperty("error").GetProperty("target").GetString());
+    }
+
+    /// <summary>
+    /// PUT's STREAMING branch asks the same question of raw UTF-8 through
+    /// <c>CreateBinderParityReader</c>, over the same table. Same policy, same answer.
+    /// </summary>
+    [Fact]
+    public async Task Put_ExplicitNull_UnderANonCasePreservingPolicy_Is400()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o
+            .WithJsonPropertyNamingPolicy(JsonNamingPolicy.SnakeCaseLower)
+            .AddEntitySetProfile<N544StampedProfile>());
+
+        N544StampedProfile.LastPut = null;
+        using var content = new StringContent(
+            "{\"id\":1,\"created_by\":null}", Encoding.UTF8, "application/json");
+        var response = await fx.Client.PutAsync("/odata/N544Stamped(1)", content);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Null(N544StampedProfile.LastPut);
+    }
+
+    /// <summary>
+    /// THE OTHER DIRECTION - the whole point of #544. Under the same policy an OMISSION is still
+    /// accepted, so the contract key cannot be re-read as "required in the body".
+    /// </summary>
+    [Fact]
+    public async Task Post_OmittingBothMultiWordProperties_UnderANonCasePreservingPolicy_Is201()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o
+            .WithJsonPropertyNamingPolicy(JsonNamingPolicy.SnakeCaseLower)
+            .AddEntitySetProfile<N544StampedProfile>());
+
+        N544StampedProfile.LastPosted = null;
+        using var content = new StringContent("{\"id\":1}", Encoding.UTF8, "application/json");
+        var response = await fx.Client.PostAsync("/odata/N544Stamped", content);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.NotNull(N544StampedProfile.LastPosted);
+        Assert.Null(N544StampedProfile.LastPosted!.CreatedBy);
+        Assert.Null(N544StampedProfile.LastPosted!.InheritedStamp);
+    }
+
+    /// <summary>And a real value under the policy spelling still binds and is still accepted.</summary>
+    [Fact]
+    public async Task Post_AValueUnderThePolicySpelling_Is201_AndBinds()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o
+            .WithJsonPropertyNamingPolicy(JsonNamingPolicy.SnakeCaseLower)
+            .AddEntitySetProfile<N544StampedProfile>());
+
+        N544StampedProfile.LastPosted = null;
+        using var content = new StringContent(
+            "{\"id\":1,\"created_by\":\"ada\"}", Encoding.UTF8, "application/json");
+        var response = await fx.Client.PostAsync("/odata/N544Stamped", content);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.Equal("ada", N544StampedProfile.LastPosted!.CreatedBy);
+    }
+
     // ── The opt-out still opts out ─────────────────────────────────────────────────
 
     [Fact]
@@ -440,11 +610,17 @@ public class Issue544NullabilityOmissionTests
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────────
 
+/// <summary>
+/// #545's three shapes again, on the navigation-POST child type — so the table is pinned on that
+/// route rather than only its <c>= null!</c> row.
+/// </summary>
 internal class N544Part
 {
     public int Id { get; set; }
     public string Serial { get; set; } = null!;
     public string Uninitialized { get; set; } = null!;
+    public string Initialized { get; set; } = "";
+    public int Year { get; set; }
 }
 
 /// <summary>
@@ -529,6 +705,11 @@ internal class N544OpenThing
 {
     public int Id { get; set; }
     public string Uninitialized { get; set; } = null!;
+
+    // #545's other two rows, so the open-type branches pin the whole three-row table too.
+    public string Initialized { get; set; } = "";
+    public int Year { get; set; }
+
     public N544Bag? Bag { get; set; }
 }
 
@@ -580,6 +761,64 @@ internal class N544UnvalidatedProfile : EntitySetProfile<int, N544Unvalidated>
         {
             LastPosted = thing;
             return Task.FromResult<N544Unvalidated?>(thing);
+        };
+    }
+}
+/// <summary>
+/// The binder-contract fixture (#544). The base class is there for the INHERITED required
+/// property: the looked-up type's own reflection walk reports <c>ReflectedType = N544Stamped</c>
+/// for it while System.Text.Json's <c>JsonPropertyInfo.AttributeProvider</c> reports the declaring
+/// base, so <c>PropertyInfo</c> equality is FALSE for the same member and only
+/// <c>HasSameMetadataDefinitionAs</c> pairs them (#462's third defect, measured on .NET 10.0.11).
+/// </summary>
+internal class N544StampedBase
+{
+    public int Id { get; set; }
+
+    /// <summary>
+    /// <c>[Required]</c> rather than a bare <c>= null!</c>: measured, an NRT-annotated reference
+    /// property declared on a BASE class comes out <c>Nullable="true"</c> in the CSDL, so a plain
+    /// <c>= null!</c> here would never reach the gate and the test would prove nothing.
+    /// </summary>
+    [Required]
+    public string InheritedStamp { get; set; } = null!;
+}
+
+internal class N544Stamped : N544StampedBase
+{
+    /// <summary>
+    /// MULTI-WORD on purpose, and the ordinary EF audit-stamp shape #544 was filed about. A single
+    /// word's <c>snake_case</c> spelling differs from its CLR name only by case, which the table's
+    /// <c>OrdinalIgnoreCase</c> alias already covers - so only a multi-word name can tell the
+    /// contract key apart from the aliases.
+    /// </summary>
+    public string CreatedBy { get; set; } = null!;
+}
+
+internal class N544StampedProfile : EntitySetProfile<int, N544Stamped>
+{
+    public static N544Stamped? LastPosted;
+    public static N544Stamped? LastPut;
+
+    public N544StampedProfile() : base(x => x.Id)
+    {
+        EntitySetName = "N544Stamped";
+
+        GetAll = _ => Task.FromResult<IEnumerable<N544Stamped>>(Array.Empty<N544Stamped>());
+        GetById = (id, _) => Task.FromResult<N544Stamped?>(
+            new N544Stamped { Id = id, CreatedBy = "e", InheritedStamp = "e" });
+
+        Post = (thing, _) =>
+        {
+            LastPosted = thing;
+            return Task.FromResult<N544Stamped?>(thing);
+        };
+
+        Put = (id, thing, _) =>
+        {
+            LastPut = thing;
+            thing.Id = id;
+            return Task.FromResult(thing);
         };
     }
 }

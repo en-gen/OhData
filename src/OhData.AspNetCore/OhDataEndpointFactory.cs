@@ -556,9 +556,10 @@ internal static class OhDataEndpointFactory
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>#544 — why the omitted-property leg is gone.</b> It shipped citing §11.4.2, which requires
-    /// nothing of the kind: its only MUST-fail is about values the request <i>specified</i>, and it
-    /// says in terms that properties with a default, nullable properties and service-computed
+    /// <b>#544 — why the omitted-property leg is gone.</b> It shipped citing §11.4.2, which
+    /// requires nothing of the kind: its only MUST-fail is about values the request
+    /// <i>specified</i>, and it says in terms that properties with a default, nullable properties
+    /// and service-computed
     /// properties MAY be omitted. The clause that does mandate a <c>400</c> for an omission is
     /// §11.4.3, is <b>PUT-only</b>, and is conditioned on the property having <i>"no
     /// service-generated or default value"</i> — a condition this framework provably cannot
@@ -584,11 +585,11 @@ internal static class OhDataEndpointFactory
     /// </para>
     /// </remarks>
     private static IResult? ValidateEdmRequiredProperties(
-        EdmRequiredProperty[] required, object instance, HashSet<string> namedByBody)
+        EdmRequiredProperty[] required, object instance, HashSet<string>? namedByBody)
     {
         foreach (EdmRequiredProperty p in required)
         {
-            if (!namedByBody.Contains(p.Clr.Name)) continue;
+            if (namedByBody is null || !namedByBody.Contains(p.Clr.Name)) continue;
             if (p.Clr.GetValue(instance) is null)
             {
                 return ODataError(400, "InvalidBody",
@@ -597,67 +598,6 @@ internal static class OhDataEndpointFactory
             }
         }
         return null;
-    }
-
-    // #544: the empty answer, for a route whose entity set declares no non-nullable structural
-    // property at all — so the scan is skipped rather than run over a body nothing could match.
-    private static readonly HashSet<string> s_noNamedBodyMembers = new(StringComparer.Ordinal);
-
-    // #544: the body-name table for the gate above — "which spelling would the BINDER have matched
-    // this required property against?"
-    //
-    // Built exactly the way #511 rebuilt deepWriteNavByBodyName, and for the same reason rather than
-    // by analogy: the primary key is read off JsonTypeInfo.Properties[].Name, which IS by
-    // construction the string System.Text.Json matches a body key against, whatever produced it — a
-    // naming policy, a [JsonPropertyName], a resolver modifier, a source-generated contract. Keying
-    // it off the EDM name alone would make the gate blind under a non-case-preserving
-    // PropertyNamingPolicy (SnakeCaseLower, KebabCaseLower), which is #511 manifestation (2); there
-    // the miss let a navigation through unstripped, and here it would let an explicit null through
-    // unreported — both fail-OPEN.
-    //
-    // HasSameMetadataDefinitionAs, never ==, to pair a JsonPropertyInfo back to its PropertyInfo:
-    // PropertyInfo equality also compares ReflectedType and the two reflection walks disagree about
-    // it for an INHERITED member (#462's third defect, measured on .NET 10.0.11).
-    //
-    // The comparer FOLLOWS THE BINDER (PropertyNameCaseInsensitive, read rather than assumed), like
-    // deepWriteNavByBodyName's and unlike patchPropByBodyName's. The two questions differ: PATCH's
-    // table IS the matcher for the root object, so widening it would change what PATCH binds, while
-    // this one shadows the binder and a table NARROWER than the binder is the bypass —
-    // {"uninitialized":null} binds to null and must not slip past a table that only knows
-    // "Uninitialized".
-    //
-    // The EDM name and the CLR name stay as non-overwriting aliases, so a registration whose
-    // contract cannot be resolved at all still gets the pre-#544 spellings. On a default host every
-    // alias collapses onto the contract key under the comparer.
-    private static Dictionary<string, PropertyInfo> BuildRequiredPropByBodyName(
-        EdmRequiredProperty[] required, Type clrType, JsonSerializerOptions? jsonOptions)
-    {
-        var table = new Dictionary<string, PropertyInfo>(
-            (jsonOptions ?? _pascalCaseSerializerOptions).PropertyNameCaseInsensitive
-                ? StringComparer.OrdinalIgnoreCase
-                : StringComparer.Ordinal);
-
-        if (required.Length == 0) return table;
-
-        JsonTypeInfo? contract = TryResolveWriteContract(clrType, jsonOptions);
-        if (contract is not null)
-        {
-            foreach (JsonPropertyInfo contractProp in contract.Properties)
-            {
-                if (contractProp.AttributeProvider is not PropertyInfo clrMember) continue;
-                foreach (EdmRequiredProperty p in required)
-                {
-                    if (!clrMember.HasSameMetadataDefinitionAs(p.Clr)) continue;
-                    table[contractProp.Name] = p.Clr;
-                    break;
-                }
-            }
-        }
-
-        foreach (EdmRequiredProperty p in required) table.TryAdd(p.EdmName, p.Clr);
-        foreach (EdmRequiredProperty p in required) table.TryAdd(p.Clr.Name, p.Clr);
-
-        return table;
     }
 
     /// <summary>
@@ -759,6 +699,97 @@ internal static class OhDataEndpointFactory
         return false;
     }
 
+    // #506/#511/#544: "which spelling would the BINDER have matched this member against?" — the
+    // lookup table every top-level body-presence question below is asked in. Built once per entity
+    // set at startup from a (EDM name, CLR property) list, so "is this body key one of MY members"
+    // has exactly one answer on the write path.
+    //
+    // ONE BUILDER FOR THE THREE CALLERS (the deep-write strip's navigation table, and the
+    // required-property tables for TModel and for the navigation-POST child type), not three copies
+    // of this algorithm. The lists differ, the derivation does not, and a second transcription of it
+    // is precisely the independently-derived-second-model hazard #454/#458/#511 each record — a
+    // hazard this very site has already realised once, since #536 exists only because #511 rebuilt
+    // one of these tables and not the other.
+    //
+    // #511 REPLACED THE PRIMARY KEY WITH THE BINDER'S OWN ANSWER, and the reason is the defect class
+    // rather than the one policy that exposed it. The table used to be keyed by
+    // ODataPropertyNaming.ResolveEdmName (= [JsonPropertyName] ?? CLR name — deliberately
+    // POLICY-FREE, because $metadata advertises the CLR identifier whatever casing payloads use,
+    // OData §4.4) plus the CLR name. The binder matches the [JsonPropertyName] ?? POLICY-CONVERTED
+    // name. camelCase differs from the CLR name only by case, so an OrdinalIgnoreCase comparer hides
+    // the divergence for the only policy anyone had configured; SnakeCaseLower and KebabCaseLower do
+    // not. Measured: with SnakeCaseLower and a `BackOrders` navigation, a body naming `back_orders`
+    // was BOUND by the deserializer and MISSED by this table, so the strip never fired — #504's
+    // hazard, reopened by a spelling.
+    //
+    // Adding PropertyNamingPolicy?.ConvertName(...) as a third key would have closed that one policy.
+    // It would not have closed the CLASS, which is "two things that must agree, derived
+    // independently" — #454's exact shape. So the primary key is read OFF THE CONTRACT the binder
+    // resolves: JsonTypeInfo.Properties[].Name is, by construction, the string System.Text.Json
+    // matches a body key against, whatever produced it — a naming policy, a [JsonPropertyName], a
+    // custom TypeInfoResolver modifier, or a source-generated contract. There is no second
+    // derivation left to drift.
+    //
+    // HasSameMetadataDefinitionAs, never == / ReferenceEquals, to pair a JsonPropertyInfo back to
+    // its PropertyInfo. PropertyInfo equality also compares ReflectedType, and for an INHERITED
+    // member the two reflection walks disagree about it — the looked-up type's own GetProperties()
+    // reports that type while STJ's AttributeProvider reports the declaring base. That exact
+    // comparison bug is #462's third defect (IsNavVisibleInBaseOptions), measured on .NET 10.0.11;
+    // it would show up here as an inherited member silently losing its contract key.
+    //
+    // The comparer FOLLOWS THE BINDER too, the way IgnoredPropertyJsonOptions.WithheldNameComparer
+    // does: OrdinalIgnoreCase whenever PropertyNameCaseInsensitive is set — which is always in
+    // practice (the fallback options set it explicitly and a host's come from
+    // JsonSerializerDefaults.Web), but it is READ rather than assumed. Both directions matter and
+    // they point opposite ways: for the deep-write strip a table WIDER than the binder strips a
+    // navigation the binder never bound (#506's destruction case), while for #355's gate a table
+    // NARROWER than the binder lets {"uninitialized":null} bind to null and slip past a table that
+    // only knows "Uninitialized" (fail-OPEN). Following the binder is what makes both safe at once.
+    //
+    // The EDM name and the CLR name STAY, demoted to non-overwriting aliases. They are what
+    // FindClrPropertyByEdmName resolves through, which is what the PATCH loop uses, so dropping them
+    // would make a [JsonPropertyName]-renamed member named by its CLR name behave differently on
+    // PATCH than on POST/PUT — a per-verb divergence to fix a per-host one — and a registration
+    // whose contract cannot be resolved at all still gets the pre-#511 spellings. On a default host
+    // every alias collapses onto the contract key under the comparer, so nothing shipped moves.
+    //
+    // NOTE this deliberately does NOT serve patchPropByBodyName, whose comparer is unconditionally
+    // OrdinalIgnoreCase. That table IS the matcher for the root object rather than a shadow of a
+    // separate reader, so following the binder there would change what PATCH binds; see its own
+    // comment at the call site.
+    private static Dictionary<string, PropertyInfo> BuildBinderBodyNameTable(
+        (string EdmName, PropertyInfo Clr)[] members,
+        Type clrType,
+        JsonSerializerOptions? jsonOptions)
+    {
+        var table = new Dictionary<string, PropertyInfo>(
+            (jsonOptions ?? _pascalCaseSerializerOptions).PropertyNameCaseInsensitive
+                ? StringComparer.OrdinalIgnoreCase
+                : StringComparer.Ordinal);
+
+        if (members.Length == 0) return table;
+
+        JsonTypeInfo? contract = TryResolveWriteContract(clrType, jsonOptions);
+        if (contract is not null)
+        {
+            foreach (JsonPropertyInfo contractProp in contract.Properties)
+            {
+                if (contractProp.AttributeProvider is not PropertyInfo clrMember) continue;
+                foreach ((string _, PropertyInfo clr) in members)
+                {
+                    if (!clrMember.HasSameMetadataDefinitionAs(clr)) continue;
+                    table[contractProp.Name] = clr;
+                    break;
+                }
+            }
+        }
+
+        foreach ((string edmName, PropertyInfo clr) in members) table.TryAdd(edmName, clr);
+        foreach ((string _, PropertyInfo clr) in members) table.TryAdd(clr.Name, clr);
+
+        return table;
+    }
+
     // #506/#544: "which of these members did the root object actually NAME?" — asked of the
     // deep-write strip's table before it nulls anything (#506), and of the required-property
     // table before #355's gate reports anything (#544). One implementation for both, deliberately:
@@ -766,9 +797,10 @@ internal static class OhDataEndpointFactory
     // exactly the independently-derived-second-model hazard #454/#458/#511 each record.
     //
     // WHY THE DEEP-WRITE STRIP HAS TO ASK IT. The strip exists to stop a handler that does not
-    // expect a graph from silently persisting part of one. If the body sent no graph there is nothing to prevent,
-    // and nulling anyway DESTROYS state: a `List<Child> Kids { get; private set; } = new()` — plain
-    // EF encapsulation, and a navigation the convention model builder discovers — went to the
+    // expect a graph from silently persisting part of one. If the body sent no graph there is
+    // nothing to prevent, and nulling anyway DESTROYS state: a
+    // `List<Child> Kids { get; private set; } = new()` — plain EF encapsulation, and a navigation
+    // the convention model builder discovers — went to the
     // handler as `null` rather than as the empty list the constructor put there, on a PUT whose body
     // was `{"id":1,"title":"t"}`. A handler diff-syncing that collection against the loaded entity
     // then sees null: an NRE in `.Count`, or a "null means clear the relationship" misread.
@@ -794,9 +826,9 @@ internal static class OhDataEndpointFactory
         var present = new HashSet<string>(StringComparer.Ordinal);
 
         // A non-object body names nothing. It cannot reach either caller in practice — the
-        // deserializer rejects it first — but EnumerateObject() throws InvalidOperationException for
-        // any other ValueKind, and an unhandled one of those is a 500 (BUG 2 on the PATCH route,
-        // same shape).
+        // deserializer rejects it first — but EnumerateObject() throws
+        // InvalidOperationException for any other ValueKind, and an unhandled one of those is a
+        // 500 (BUG 2 on the PATCH route, same shape).
         if (body.ValueKind != JsonValueKind.Object) return present;
 
         foreach (JsonProperty prop in body.EnumerateObject())
@@ -10278,8 +10310,9 @@ internal static class OhDataEndpointFactory
         // `[JsonInclude] { get; private set; }` navigation, which STJ binds perfectly well — that
         // OPENS a deep-write hole rather than closing one. What changed instead is that the strip is
         // GATED on the navigation being NAMED IN THE REQUEST BODY (deepWriteNavByBodyName and
-        // CollectPresentBodyMemberClrNames, below), which makes the filter's over-reach harmless: the gate
-        // never fires for a member the client did not send, whatever its accessors look like.
+        // CollectPresentBodyMemberClrNames, below), which makes the filter's over-reach harmless:
+        // the gate never fires for a member the client did not send, whatever its accessors look
+        // like.
         //
         // The follow-on claim about PATCH is true on its own terms and is kept: Delta<T>'s
         // InitializeProperties requires a public getter AND setter, so a setter-less navigation
@@ -10342,80 +10375,21 @@ internal static class OhDataEndpointFactory
             deepWriteNavPropsToStrip.Select(p => p.Name), StringComparer.Ordinal);
 
         // #506: the body-presence gate's lookup table — every JSON name that can NAME one of the
-        // navigations above, mapped to the property it names. Built once at startup from the same
-        // array, so "is this body key a navigation" has exactly one answer on the write path.
-        //
-        // #511 REPLACED THE PRIMARY KEY WITH THE BINDER'S OWN ANSWER, and the reason is the defect
-        // class rather than the one policy that exposed it. The table used to be keyed by
-        // ODataPropertyNaming.ResolveEdmName (= [JsonPropertyName] ?? CLR name — deliberately
-        // POLICY-FREE, because $metadata advertises the CLR identifier whatever casing payloads use,
-        // OData §4.4) plus the CLR name. The binder matches the [JsonPropertyName] ?? POLICY-CONVERTED
-        // name. camelCase differs from the CLR name only by case, so the OrdinalIgnoreCase comparer
-        // hid the divergence for the only policy anyone had configured; SnakeCaseLower and
-        // KebabCaseLower do not. Measured: with SnakeCaseLower and a `BackOrders` navigation, a body
-        // naming `back_orders` was BOUND by the deserializer and MISSED by this table, so the strip
-        // never fired — #504's hazard, reopened by a spelling.
-        //
-        // Adding PropertyNamingPolicy?.ConvertName(...) as a third key would have closed that one
-        // policy. It would not have closed the CLASS, which is "two things that must agree, derived
-        // independently" — #454's exact shape, in this same release. So the primary key is now read
-        // OFF THE CONTRACT the binder resolves: JsonTypeInfo.Properties[].Name is, by construction,
-        // the string System.Text.Json matches a body key against, whatever produced it — a naming
-        // policy, a [JsonPropertyName], a custom TypeInfoResolver modifier, or a source-generated
-        // contract. There is no second derivation left to drift.
-        //
-        // HasSameMetadataDefinitionAs, never == / ReferenceEquals, to pair a JsonPropertyInfo back to
-        // its PropertyInfo. PropertyInfo equality also compares ReflectedType, and for an INHERITED
-        // member the two reflection walks disagree about it — typeof(TModel).GetProperties() reports
-        // TModel while STJ's AttributeProvider reports the declaring base. That exact comparison bug
-        // is #462's third defect (IsNavVisibleInBaseOptions), measured on .NET 10.0.11; it would show
-        // up here as an inherited navigation silently losing its contract key.
-        //
-        // The comparer follows the binder too, the way IgnoredPropertyJsonOptions.WithheldNameComparer
-        // does: OrdinalIgnoreCase whenever PropertyNameCaseInsensitive is set — which is always in
-        // practice (the fallback options set it explicitly and a host's come from
-        // JsonSerializerDefaults.Web), but it is READ rather than assumed, because a table wider than
-        // the binder strips a navigation the binder never bound, which is #506's destruction case.
-        //
-        // The EDM name and the CLR name STAY, demoted to non-overwriting aliases. They are what
-        // FindClrPropertyByEdmName resolves through, which is what the PATCH loop uses, so dropping
-        // them would make a [JsonPropertyName]-renamed navigation named by its CLR name behave
-        // differently on PATCH than on POST/PUT — a per-verb divergence to fix a per-host one. On a
-        // default host every alias collapses onto the contract key under the comparer, so nothing
-        // about the shipped behaviour moves.
+        // navigations above, mapped to the property it names. BuildBinderBodyNameTable owns the
+        // derivation (and the reasoning); see it for why the primary key is the binder's own
+        // contract name rather than the EDM name (#511).
         //
         // This is a lookup TABLE and not a call to FindClrPropertyByEdmName per body key on purpose.
         // That helper memoizes on (Type, string) in a process-wide ConcurrentDictionary keyed by the
         // exact string handed in, so calling it with client-supplied names would let a caller grow
         // that cache without bound. PATCH already does (pre-existing, and out of scope here); POST
         // and PUT must not join it.
-        var deepWriteNavByBodyName = new Dictionary<string, PropertyInfo>(
-            (jsonOptions ?? _pascalCaseSerializerOptions).PropertyNameCaseInsensitive
-                ? StringComparer.OrdinalIgnoreCase
-                : StringComparer.Ordinal);
-
-        if (deepWriteNavPropsToStrip.Length > 0)
-        {
-            JsonTypeInfo? writeContract = TryResolveWriteContract(typeof(TModel), jsonOptions);
-            if (writeContract is not null)
-            {
-                foreach (JsonPropertyInfo contractProp in writeContract.Properties)
-                {
-                    if (contractProp.AttributeProvider is not PropertyInfo clrMember) continue;
-                    foreach (PropertyInfo navProp in deepWriteNavPropsToStrip)
-                    {
-                        if (!clrMember.HasSameMetadataDefinitionAs(navProp)) continue;
-                        deepWriteNavByBodyName[contractProp.Name] = navProp;
-                        break;
-                    }
-                }
-            }
-        }
-
-        foreach (PropertyInfo navProp in deepWriteNavPropsToStrip)
-            deepWriteNavByBodyName.TryAdd(ODataPropertyNaming.ResolveEdmName(navProp), navProp);
-        foreach (PropertyInfo navProp in deepWriteNavPropsToStrip)
-            deepWriteNavByBodyName.TryAdd(navProp.Name, navProp);
+        Dictionary<string, PropertyInfo> deepWriteNavByBodyName = BuildBinderBodyNameTable(
+            Array.ConvertAll(
+                deepWriteNavPropsToStrip,
+                p => (ODataPropertyNaming.ResolveEdmName(p), p)),
+            typeof(TModel),
+            jsonOptions);
 
         // The gate only has work to do when there is something to strip AND the profile has not
         // opted in. Hoisted so neither write route pays a scan it would discard — a model with no
@@ -10541,11 +10515,14 @@ internal static class OhDataEndpointFactory
             ? BuildEdmRequiredProperties(rootEdmType, typeof(TModel))
             : Array.Empty<EdmRequiredProperty>();
 
-        // #544: the spellings a body could name those properties by. Empty (and never consulted)
-        // when there is nothing to check, so the gate below costs an opted-out or unconstrained
-        // entity set exactly one bool test per write.
-        Dictionary<string, PropertyInfo> edmRequiredPropByBodyName =
-            BuildRequiredPropByBodyName(edmRequiredProps, typeof(TModel), jsonOptions);
+        // #544: the spellings a body could name those properties by — the same builder the
+        // deep-write strip's table comes from, because the question is the same one. Empty (and
+        // never consulted) when there is nothing to check, so the gate below costs an opted-out or
+        // unconstrained entity set exactly one bool test per write.
+        Dictionary<string, PropertyInfo> edmRequiredPropByBodyName = BuildBinderBodyNameTable(
+            Array.ConvertAll(edmRequiredProps, p => (p.EdmName, p.Clr)),
+            typeof(TModel),
+            jsonOptions);
         bool edmRequiredGateApplies = edmRequiredProps.Length > 0;
 
         // #355: the same answer as a name set, for the structural-property write/delete routes,
@@ -10639,8 +10616,8 @@ internal static class OhDataEndpointFactory
                     // the two differ. The gate must see the body the binder saw.
                     if (deepWriteNavGateApplies)
                     {
-                        HashSet<string> bodyNavClrNames =
-                            CollectPresentBodyMemberClrNames(postPrepared.Body, deepWriteNavByBodyName);
+                        HashSet<string> bodyNavClrNames = CollectPresentBodyMemberClrNames(
+                            postPrepared.Body, deepWriteNavByBodyName);
                         foreach (var navProp in deepWriteNavPropsToStrip)
                         {
                             if (bodyNavClrNames.Contains(navProp.Name)) navProp.SetValue(model, null);
@@ -10656,9 +10633,10 @@ internal static class OhDataEndpointFactory
                     //
                     // #544: scoped to the properties this body NAMED. postPrepared.Body for the same
                     // reason the strip above reads it — it is the element the deserializer bound.
-                    HashSet<string> postRequiredNamed = edmRequiredGateApplies
-                        ? CollectPresentBodyMemberClrNames(postPrepared.Body, edmRequiredPropByBodyName)
-                        : s_noNamedBodyMembers;
+                    HashSet<string>? postRequiredNamed = edmRequiredGateApplies
+                        ? CollectPresentBodyMemberClrNames(
+                            postPrepared.Body, edmRequiredPropByBodyName)
+                        : null;
                     IResult? postNullabilityFail =
                         ValidateEdmRequiredProperties(edmRequiredProps, model, postRequiredNamed);
                     if (postNullabilityFail is not null) return postNullabilityFail;
@@ -10782,10 +10760,10 @@ internal static class OhDataEndpointFactory
                     HashSet<string>? bodyNavClrNames = null;
 
                     // #544: and which required properties it named, captured on the same two
-                    // branches and for the same reason. Starts at the empty set rather than null:
-                    // "the body named nothing" is the answer that reports nothing, so a branch that
-                    // never assigns cannot accidentally report.
-                    HashSet<string> bodyRequiredNamed = s_noNamedBodyMembers;
+                    // branches and for the same reason. Null is "the body named nothing", which is
+                    // the answer that reports nothing, so a branch that never assigns cannot
+                    // accidentally report.
+                    HashSet<string>? bodyRequiredNamed = null;
 
                     if (registration.OpenTypesActive)
                     {
@@ -10809,8 +10787,8 @@ internal static class OhDataEndpointFactory
                         // it — it is what Deserialize binds on the next line.
                         if (deepWriteNavGateApplies)
                         {
-                            bodyNavClrNames =
-                                CollectPresentBodyMemberClrNames(putPrepared.Body, deepWriteNavByBodyName);
+                            bodyNavClrNames = CollectPresentBodyMemberClrNames(
+                                putPrepared.Body, deepWriteNavByBodyName);
                         }
                         if (edmRequiredGateApplies)
                         {
@@ -10838,9 +10816,10 @@ internal static class OhDataEndpointFactory
 
                         // #506: the second reader over the same buffer, and it must be as
                         // non-authoritative about malformed input as the first one — see
-                        // CollectPresentBodyMemberClrNames(ReadOnlySpan<byte>). Reads GetBuffer() rather
-                        // than the stream, so putBuffered.Position stays at 0 for the deserializer
-                        // below and the DeserializeAsync(Stream) overload #389 L1 pins is untouched.
+                        // CollectPresentBodyMemberClrNames(ReadOnlySpan<byte>). Reads GetBuffer()
+                        // rather than the stream, so putBuffered.Position stays at 0 for the
+                        // below and the DeserializeAsync(Stream) overload #389 L1 pins is
+                        // untouched.
                         if (deepWriteNavGateApplies)
                         {
                             bodyNavClrNames = CollectPresentBodyMemberClrNames(
@@ -11971,7 +11950,10 @@ internal static class OhDataEndpointFactory
                 // #544: the child type's own body-name table — the entity set's table is keyed to
                 // TModel and names nothing on this route.
                 Dictionary<string, PropertyInfo> navPostRequiredPropByBodyName =
-                    BuildRequiredPropByBodyName(navPostRequiredProps, postNavItemType, jsonOptions);
+                    BuildBinderBodyNameTable(
+                        Array.ConvertAll(navPostRequiredProps, p => (p.EdmName, p.Clr)),
+                        postNavItemType,
+                        jsonOptions);
                 bool navPostRequiredGateApplies = navPostRequiredProps.Length > 0;
                 var navPostRb = entityAuthGroup.MapPost($"/{name}({{key}})/{postNavPropertyName}",
                     async (string key, HttpContext ctx, CancellationToken ct) =>
@@ -12003,8 +11985,9 @@ internal static class OhDataEndpointFactory
                         object? child;
 
                         // #544: which required properties the body named, captured on whichever
-                        // branch below holds the bytes — same shape as PUT.
-                        HashSet<string> navBodyRequiredNamed = s_noNamedBodyMembers;
+                        // branch below holds the bytes — same shape as PUT, null meaning "named
+                        // nothing".
+                        HashSet<string>? navBodyRequiredNamed = null;
                         try
                         {
                             // #389 H2: this is a documented CREATE route, so it polices dynamic

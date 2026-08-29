@@ -224,7 +224,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   explicit `null`.
 
   **That is what makes the rule derivable from the wire (#545).** Three properties `$metadata`
-  describes **identically** as `Nullable="false"` now answer identically. Measured, before → after:
+  describes **identically** as `Nullable="false"` now answer identically. Measured, the unreleased
+  #355 revision → what ships — note the "before" column is that revision, **not 1.6.0**, which had no
+  such validation at all and answered `201` to every row:
 
   | CLR declaration | omit → | explicit `null` → |
   |---|---|---|
@@ -242,10 +244,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a property the body actually **named**: a `Delta<T>` is a change set, so an absent property means
   *"leave it alone"*, not *"set it to nothing"*. `POST`/`PUT`/nav-`POST` now ask the same question,
   through `CollectPresentBodyMemberClrNames` — #506's existing top-level scanner, shared rather than
-  transcribed — over a `BuildRequiredPropByBodyName` table keyed off `JsonTypeInfo.Properties[].Name`,
-  so the spelling the gate looks for is the spelling the binder matches (#511). No route reads the
-  body an extra time: every site already had the bytes, and the streaming branches go through
-  `CreateBinderParityReader`.
+  transcribed — over a table built by `BuildBinderBodyNameTable`, the deep-write strip's own builder
+  extracted so both gates derive one answer, keyed off `JsonTypeInfo.Properties[].Name` so the
+  spelling the gate looks for is the spelling the binder matches (#511). **No route BUFFERS the body
+  an extra time** — every site already had the bytes (`postPrepared.Body`, `putPrepared.Body`, #456's
+  `putBuffered`/`navBuffered`), and no new reader kind is introduced. On the two streaming branches
+  (`PUT` and nav-`POST`) it is one more pass over that same buffer, as #456's `@odata.bind` scan
+  already was, through `CreateBinderParityReader`.
 
   Four deliberate exclusions, each of which would otherwise reject a legal request: the entity **key**
   (every EDM key is `Nullable="false"`, and §11.4.2 explicitly permits omitting a service-generated
