@@ -285,6 +285,47 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   > broken; it now refuses to start. `docs/versioning.md` documented the divergence as a *"do not rely
   > on this"* inconsistency, and that note is removed because the inconsistency is gone.
 
+- **`PATCH` now resolves body keys through the binder's own contract, so a body key it silently
+  dropped under a naming policy is bound (#536).** This is #511 manifestation (2) surviving on one
+  route. `PATCH`'s body-name table was keyed by the **EDM** name — `[JsonPropertyName]` ?? CLR name,
+  deliberately policy-free because `$metadata` advertises the CLR identifier whatever casing
+  payloads use (OData §4.4) — plus the CLR name, under `OrdinalIgnoreCase`, while the **value** it
+  binds is deserialized with the registration's serializer options. Under a non-case-preserving
+  `PropertyNamingPolicy` the two disagreed. Measured with
+  `WithJsonPropertyNamingPolicy(JsonNamingPolicy.SnakeCaseLower)` and a `FirstName` property:
+
+  ```
+  PATCH /odata/Customers(1)   {"first_name":"Ada"}   ->  200, delta empty, nothing changed
+  ```
+
+  camelCase differs from the CLR name only by case, so the comparer hid this for the only policy
+  anyone had configured; `SnakeCaseLower` and `KebabCaseLower` did not — which is exactly why #511
+  measured those two. Anyone who configured a snake-case or kebab-case policy had a `PATCH` route
+  that accepted requests and discarded the changes. Note the direction: it is fail-**closed** on the
+  write, so it was data loss under a `200` rather than an unauthorized mutation. Still a silent
+  wrong answer.
+
+  Fixed structurally rather than by adding a `PropertyNamingPolicy?.ConvertName(...)` key, which
+  would have closed one policy and not the class — "two things that must agree, derived
+  independently", #454's shape. The table's primary key is read off the contract the binder
+  resolves: `JsonTypeInfo.Properties[].Name` is by construction the string System.Text.Json matches
+  a body key against, whatever produced it (a policy, a `[JsonPropertyName]`, a resolver modifier,
+  a source-generated contract), so no second derivation is left to drift. It is resolved on a probe
+  **copy** of the serializer options (resolving a contract calls `MakeReadOnly()`, and startup must
+  stay free to keep configuring the real instance), and a `JsonPropertyInfo` is paired back to its
+  `PropertyInfo` with `HasSameMetadataDefinitionAs` rather than `==` — `PropertyInfo` equality also
+  compares `ReflectedType`, and the two reflection walks disagree about it for an **inherited**
+  member (#462), which would show up here as an inherited property silently keeping the defect.
+
+  **What changes.** On a default host, nothing: the EDM and CLR names stay as non-overwriting
+  aliases (`FindClrPropertyByEdmName` is what the rest of the framework resolves through, so
+  dropping them would trade a per-host divergence for a per-verb one), and every alias collapses
+  onto the contract key under the comparer. On a host with a non-case-preserving policy, `PATCH`
+  binds body keys it previously ignored — including the entity **key**, so #454's key-immutability
+  guard now sees an occurrence spelled in the policy's casing and answers `400` (target `key`) on a
+  mismatch where it used to be silently dropped. An `Ignore()`d property is removed from the
+  contract, so it gains no contract key and cannot become newly bindable.
+
 ### Added
 
 - **Startup warning when a navigation's target entity set is protected more strictly than the set
