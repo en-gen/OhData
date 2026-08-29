@@ -96,7 +96,112 @@ public class ActionBodySchemaRegistrationIdentityTests
         Assert.NotSame(v1Schema, v2Schema);
     }
 
+    // ── #547: the key is a NAME, not an identity ────────────────────────────────
+
+    /// <summary>
+    /// #547. #499 keyed the cache by <c>registration.Name</c>, which closes the case above (two
+    /// DIFFERENTLY NAMED registrations) and leaves the one its own subject claimed to close:
+    /// <c>Name</c> is <c>__default__</c> for EVERY unnamed registration in the process, so two
+    /// independent <see cref="WebApplication"/>s that never heard of each other still produce the
+    /// same key. The second host's OpenAPI document then silently documents the FIRST host's body
+    /// shape.
+    ///
+    /// <para>
+    /// Two hosts in one process is not an exotic shape — it is what every integration-test suite
+    /// does, and it is exactly where a wrong OpenAPI document is hardest to attribute.
+    /// </para>
+    ///
+    /// <para>
+    /// All three key sites are asserted in one test because they share one fixture pair and one
+    /// mechanism; splitting them would build four hosts to prove one thing three times.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TwoHosts_BothUnnamedRegistrations_SameEntitySetAndActionName_GetDistinctBodySchemas()
+    {
+        // Host 1 maps first and populates the shared static cache; host 2 is the one that would
+        // silently inherit its schema.
+        await using TestFixture host1 = await BuildSingleDefaultRegistrationHost(
+            o => o.AddEntitySetProfile<ZzSchemaProfileHost1>().AddAction(ZzUnboundHandlers.SubmitHost1, "ZzPing"));
+        await using TestFixture host2 = await BuildSingleDefaultRegistrationHost(
+            o => o.AddEntitySetProfile<ZzSchemaProfileHost2>().AddAction(ZzUnboundHandlers.SubmitHost2, "ZzPing"));
+
+        // Key site 1: collection-level bound action.
+        Type h1Submit = BodySchemaFor(host1, "/odata", "ZZSchemas", "Submit");
+        Type h2Submit = BodySchemaFor(host2, "/odata", "ZZSchemas", "Submit");
+        AssertPropertyNames(h1Submit, "note");
+        AssertPropertyNames(h2Submit, "note", "priority");
+        Assert.NotSame(h1Submit, h2Submit);
+
+        // Key site 2: entity-level bound action.
+        Type h1Approve = BodySchemaFor(host1, "/odata", "ZZSchemas", "Approve");
+        Type h2Approve = BodySchemaFor(host2, "/odata", "ZZSchemas", "Approve");
+        AssertPropertyNames(h1Approve, "reason");
+        AssertPropertyNames(h2Approve, "reason", "escalate");
+        Assert.NotSame(h1Approve, h2Approve);
+
+        // Key site 3: unbound action — the one carrying neither registration nor entity set name.
+        Type h1Ping = UnboundBodySchemaFor(host1, "/odata", "ZzPing");
+        Type h2Ping = UnboundBodySchemaFor(host2, "/odata", "ZzPing");
+        AssertPropertyNames(h1Ping, "message");
+        AssertPropertyNames(h2Ping, "message", "retries");
+        Assert.NotSame(h1Ping, h2Ping);
+    }
+
+    /// <summary>
+    /// The bounding half, and the reason the fix cannot simply be "stop memoizing". The cache is a
+    /// process-wide static on purpose: it exists so the <c>Reflection.Emit</c> work in
+    /// <c>DefineType</c> runs once per distinct shape rather than once per route mapped. Within ONE
+    /// registration, the same route mapped twice — a host started, disposed, and started again over
+    /// the same registration instance — must still hand back the same memoized type.
+    /// </summary>
+    [Fact]
+    public async Task WithinOneRegistration_TheSchemaTypeIsStillMemoized()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Services.AddLogging();
+        builder.Services.AddOhData(o => o
+            .WithPrefix("/odata")
+            .AddEntitySetProfile<ZzSchemaProfileHost1>());
+
+        var app = builder.Build();
+        // Two MapOhData() calls over ONE registration instance: the second must hit the cache.
+        app.MapOhData();
+        app.MapOhData();
+        await app.StartAsync();
+        await using var fx = new TestFixture(app);
+
+        EndpointDataSource source = fx.App.Services.GetRequiredService<EndpointDataSource>();
+        List<Type> submitSchemas = source.Endpoints
+            .OfType<RouteEndpoint>()
+            .Where(e => (e.RoutePattern.RawText ?? "").EndsWith("/Submit", StringComparison.Ordinal))
+            .Select(e => e.Metadata.GetMetadata<OhDataRequestBodyMetadata>())
+            .Where(m => m is not null)
+            .Select(m => m!.BodyType)
+            .ToList();
+
+        Assert.Equal(2, submitSchemas.Count);
+        Assert.Same(submitSchemas[0], submitSchemas[1]);
+    }
+
     // ── Fixture / helpers ───────────────────────────────────────────────────────
+
+    private static async Task<TestFixture> BuildSingleDefaultRegistrationHost(Action<OhDataBuilder> configure)
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Services.AddLogging();
+        builder.Services.AddOhData(o =>
+        {
+            o.WithPrefix("/odata");
+            configure(o);
+        });
+        var app = builder.Build();
+        app.MapOhData();
+        await app.StartAsync();
+        return new TestFixture(app);
+    }
 
     private static async Task<TestFixture> BuildTwoRegistrationFixture()
     {
@@ -233,4 +338,50 @@ internal static class UnboundActionHandlers
 {
     public static void PingV1(string message) { }
     public static void PingV2(string message, int retries) { }
+}
+
+// ── #547 fixtures: the same entity set + action names in two DEFAULT (unnamed) registrations ──
+
+internal class ZzSchema
+{
+    public int Id { get; set; }
+    public string Note { get; set; } = "";
+}
+
+/// <summary>#547: host 1's shape — one body parameter per action.</summary>
+internal class ZzSchemaProfileHost1 : EntitySetProfile<int, ZzSchema>
+{
+    public ZzSchemaProfileHost1() : base(x => x.Id)
+    {
+        EntitySetName = "ZZSchemas";
+        GetAll = ct => Task.FromResult<IEnumerable<ZzSchema>>(Array.Empty<ZzSchema>());
+        GetById = (id, ct) => Task.FromResult<ZzSchema?>(null);
+        BindAction(Submit);
+        BindEntityAction(Approve);
+    }
+
+    private void Submit(string note) { }
+    private void Approve(int key, string reason) { }
+}
+
+/// <summary>#547: host 2's shape — the same entity set and action names, one parameter more.</summary>
+internal class ZzSchemaProfileHost2 : EntitySetProfile<int, ZzSchema>
+{
+    public ZzSchemaProfileHost2() : base(x => x.Id)
+    {
+        EntitySetName = "ZZSchemas";
+        GetAll = ct => Task.FromResult<IEnumerable<ZzSchema>>(Array.Empty<ZzSchema>());
+        GetById = (id, ct) => Task.FromResult<ZzSchema?>(null);
+        BindAction(Submit);
+        BindEntityAction(Approve);
+    }
+
+    private void Submit(string note, int priority) { }
+    private void Approve(int key, string reason, bool escalate) { }
+}
+
+internal static class ZzUnboundHandlers
+{
+    public static void SubmitHost1(string message) { }
+    public static void SubmitHost2(string message, int retries) { }
 }

@@ -456,6 +456,43 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   mismatch where it used to be silently dropped. An `Ignore()`d property is removed from the
   contract, so it gains no contract key and cannot become newly bindable.
 
+- **Two `ConfigureAuthorization` `Invoke(name, …)` rules targeting one bound operation are now
+  refused at startup (#546).** #525 made named rules resolve `OrdinalIgnoreCase`, which is correct —
+  everything the rule governs is matched case-insensitively. But `ResolveOperationRule` keeps
+  last-write-wins, so two rules differing only in case now collapse onto each other and **the order
+  they were declared in decides whether the operation is protected.** Measured, both configurations
+  starting cleanly under #525's new validation:
+
+  ```csharp
+  .Invoke("Stamp", i => i.RequireRole("admin")).Invoke("stamp", i => i.AllowAnonymous())
+  // anonymous GET …/Stamp -> 200
+
+  .Invoke("stamp", i => i.AllowAnonymous()).Invoke("Stamp", i => i.RequireRole("admin"))
+  // anonymous GET …/Stamp -> 401
+  ```
+
+  The first order was deterministically **protected** under the pre-#525 `Ordinal` comparer and is
+  **open** on 1.7.0 — a fail-open produced by a fail-open fix, silent in both directions. #525's own
+  check could not see it: it asks only *"does this name resolve to a declared operation?"*, and both
+  members of a colliding pair do.
+
+  > **⚠ BREAKING CHANGE, in the security direction.** `MapOhData()` now throws
+  > `InvalidOperationException` when two named `Invoke` rules on one profile resolve to the same
+  > bound operation, naming both spellings and the operation. **This includes two rules spelled
+  > identically** — the mechanism (the earlier rule silently discarded) and the consequence are the
+  > same, and case only changes how easy the pair is to spot by eye. An app in this state today is
+  > running under an authorization rule it did not choose; there is no configuration in which two
+  > rules for one operation are meaningful, so it is refused rather than resolved by precedence.
+  > Remedy: keep exactly one `Invoke` rule per operation.
+
+  Matched with the **same comparer `ResolveOperationRule` uses**, and grouped by the declared
+  operation each rule resolves to — which is literally the question that resolution answers per
+  route. A second, independently derived comparison would reject a different set of configurations
+  than the one that actually collapses at runtime, which is #525's own reasoning and still applies.
+  **Generic `Invoke(…)` rules are deliberately unaffected**: `generic = rule` is last-write-wins by
+  design there, as it is for every category selector, and `All(…)` then `Invoke(…)` is a documented
+  refinement idiom.
+
 ### Added
 
 - **Startup warning when a navigation's target entity set is protected more strictly than the set
@@ -691,6 +728,33 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   developer's single explicit call. Explicit registrations are tracked per builder now, and the throw
   fires only when a duplicate explicit call is what actually happened. The identical ordering defect on
   the **entity**-profile path is filed as **#534** and is not fixed here.
+
+- **The action body-schema cache is keyed by registration identity, not by its name (#547).**
+  #499/#527 narrowed this and did not close it: `ActionBodySchemaTypeFactory`'s process-wide cache
+  was keyed by `$"{registration.Name}.{set}.{action}"`, and `Name` is `__default__` for **every**
+  unnamed registration in the process. Measured — two independent `WebApplication`s in one process,
+  both with the default registration, both exposing `ZZSchemas` with a bound action `Submit` of
+  different signatures:
+
+  ```
+  host1  Submit(string note)                 -> body schema props: note
+  host2  Submit(string note, int priority)   -> body schema props: note     <-- wrong
+  same type instance: True
+  ```
+
+  So the second host's OpenAPI document silently documented the first host's request body. All three
+  key sites were affected — the collection-level bound action, the entity-level bound action, and
+  the unbound operation (whose key carried neither a registration nor an entity set name). Mostly a
+  concern for multi-host processes rather than single-host production, but that is precisely what an
+  integration-test suite is, and a wrong document there is hard to attribute.
+
+  The cache is now a `ConditionalWeakTable` keyed on the `OhDataRegistration` **instance**, following
+  `EdmClrTypeMap`'s per-`IEdmModel` shape. Its process-wide **lifetime** is unchanged and deliberate
+  — it exists so the `Reflection.Emit` work runs once per distinct shape rather than once per route
+  mapped, and that memoization is verified to still hold within a registration. The registration name
+  survives only as the generated type's human-readable label, where two registrations sharing one
+  name get the numeric suffix that mechanism already applies. No wire behaviour changes; the
+  generated schema names for existing single-host and named-registration setups are unchanged.
 
 ### Added
 

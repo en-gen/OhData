@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Reflection.Emit;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json.Serialization;
 using System.Threading;
@@ -36,7 +37,43 @@ namespace OhData;
 internal static class ActionBodySchemaTypeFactory
 {
     private static readonly ModuleBuilder s_module = CreateModule();
-    private static readonly ConcurrentDictionary<string, Type> s_cache = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// #547: the memoization is keyed by the <see cref="OhDataRegistration"/> INSTANCE, not by its
+    /// configured name.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// #499 keyed a single process-wide dictionary by <c>$"{registration.Name}.{route}"</c>, which
+    /// closes the case it tested — two <em>differently named</em> registrations in one host — and
+    /// leaves the case its own subject claimed to close. <c>Name</c> is
+    /// <see cref="OhDataDefaults.DefaultRegistrationName"/> for EVERY unnamed registration in the
+    /// process, so two independent <c>WebApplication</c>s that never heard of each other still
+    /// produced one key: measured, two hosts each exposing <c>ZZSchemas</c> with a bound action
+    /// <c>Submit</c> of different signatures got the SAME generated type, and the second host's
+    /// OpenAPI document silently documented the first host's body shape. A name is not an identity.
+    /// </para>
+    /// <para>
+    /// The cache's process-wide LIFETIME is not the defect and is deliberately kept — it exists so
+    /// the <c>System.Reflection.Emit</c> work in <c>DefineType</c> runs once per distinct shape
+    /// rather than once per route mapped. A <see cref="ConditionalWeakTable{TKey,TValue}"/> keyed on
+    /// the registration keeps that memoization exactly where it is useful (one registration is one
+    /// EDM and one set of routes, mapped once and reused for the process's life) while making a
+    /// collision between two registrations structurally impossible. <c>EdmClrTypeMap</c> holds its
+    /// per-<c>IEdmModel</c> map the same way and for the same reason; this follows it.
+    /// </para>
+    /// <para>
+    /// <see cref="s_usedTypeNames"/> stays process-wide, because CLR type names really are scoped to
+    /// the one <see cref="ModuleBuilder"/>. It is the reason the display key handed to
+    /// <c>DefineType</c> still carries the registration NAME: the name is a readable label for the
+    /// generated type (and so for the OpenAPI schema component derived from it), and two
+    /// registrations that share one label simply get the numeric suffix that mechanism already
+    /// applies. A name is fine for a label; it was never fine for a key.
+    /// </para>
+    /// </remarks>
+    private static readonly ConditionalWeakTable<OhDataRegistration, ConcurrentDictionary<string, Type>>
+        s_byRegistration = new();
+
     private static readonly HashSet<string> s_usedTypeNames = new(StringComparer.Ordinal);
     private static readonly object s_defineLock = new();
 
@@ -53,27 +90,35 @@ internal static class ActionBodySchemaTypeFactory
 
     /// <summary>
     /// Returns a synthesized POCO type documenting <paramref name="bodyParameters"/> as the request
-    /// body of an action, memoized per <paramref name="uniqueKey"/> (a stable per-route identifier).
+    /// body of an action, memoized per <paramref name="registration"/> instance and
+    /// <paramref name="routeKey"/> (a stable identifier for the route within that registration).
     /// </summary>
-    public static Type GetOrCreate(string uniqueKey, IReadOnlyList<ParameterInfo> bodyParameters)
+    public static Type GetOrCreate(
+        OhDataRegistration registration, string routeKey, IReadOnlyList<ParameterInfo> bodyParameters)
     {
-        if (s_cache.TryGetValue(uniqueKey, out Type? existing)) return existing;
+        ConcurrentDictionary<string, Type> cache = s_byRegistration.GetValue(
+            registration, static _ => new ConcurrentDictionary<string, Type>(StringComparer.Ordinal));
+
+        if (cache.TryGetValue(routeKey, out Type? existing)) return existing;
         lock (s_defineLock)
         {
             // Double-checked: another thread may have defined it between the read and the lock.
-            // The lock also serializes ModuleBuilder.DefineType, which is not thread-safe.
-            if (s_cache.TryGetValue(uniqueKey, out existing)) return existing;
-            Type created = DefineType(uniqueKey, bodyParameters);
-            s_cache[uniqueKey] = created;
+            // The lock also serializes ModuleBuilder.DefineType, which is not thread-safe, and
+            // guards s_usedTypeNames — both are shared across every registration.
+            if (cache.TryGetValue(routeKey, out existing)) return existing;
+            Type created = DefineType($"{registration.Name}.{routeKey}", bodyParameters);
+            cache[routeKey] = created;
             return created;
         }
     }
 
-    private static Type DefineType(string uniqueKey, IReadOnlyList<ParameterInfo> bodyParameters)
+    private static Type DefineType(string displayKey, IReadOnlyList<ParameterInfo> bodyParameters)
     {
         // A descriptive, collision-free CLR type name — the OpenAPI schema component name derives
-        // from it. Distinct uniqueKeys that sanitize to the same identifier get a numeric suffix.
-        string baseName = "OhData.ActionBodies." + Sanitize(uniqueKey);
+        // from it. displayKey is a LABEL, not the cache key (see s_byRegistration): distinct keys
+        // that sanitize to the same identifier get a numeric suffix, which is also what two
+        // registrations sharing one configured name get.
+        string baseName = "OhData.ActionBodies." + Sanitize(displayKey);
         string typeName = baseName;
         int suffix = 2;
         while (!s_usedTypeNames.Add(typeName))
