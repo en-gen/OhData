@@ -29,6 +29,41 @@ internal sealed class ActRetItem
 /// …" — naming a method OhData never called and did not expose, so this whole fixture failed to
 /// build.</para>
 /// </summary>
+/// <summary>
+/// #539 floor: a second entity type, so a bound operation can declare a return of an entity type
+/// that IS in the registration but is NOT the declaring profile's own model. That is the one shape
+/// the #539 fix deliberately does not make work — OhData can only bind an operation's entity return
+/// to the entity set of the profile that declares it — so it must fail with OhData's own message
+/// rather than Microsoft's, which names a method OhData does not expose.
+/// </summary>
+internal sealed class ActRetOther
+{
+    public int Id { get; set; }
+    public string Label { get; set; } = "";
+}
+
+internal sealed class ActRetOtherProfile : EntitySetProfile<int, ActRetOther>
+{
+    public ActRetOtherProfile() : base(x => x.Id)
+    {
+        EntitySetName = "ActRetOthers";
+        GetAll = _ => Task.FromResult<IEnumerable<ActRetOther>>(new List<ActRetOther>());
+    }
+}
+
+/// <summary>Its bound action returns the OTHER profile's model type.</summary>
+internal sealed class ActRetForeignReturnProfile : EntitySetProfile<int, ActRetItem>
+{
+    public ActRetForeignReturnProfile() : base(x => x.Id)
+    {
+        EntitySetName = "ActRetForeign";
+        GetAll = _ => Task.FromResult<IEnumerable<ActRetItem>>(new List<ActRetItem>());
+        BindAction(Borrow);
+    }
+
+    private Task<ActRetOther> Borrow() => Task.FromResult(new ActRetOther());
+}
+
 internal sealed class ActRetProfile : EntitySetProfile<int, ActRetItem>
 {
     internal static readonly List<ActRetItem> Store =
@@ -323,7 +358,7 @@ public class BoundActionEntityReturnTests
         Assert.Equal(HttpStatusCode.OK, plain.StatusCode);
         string plainBody = await plain.Content.ReadAsStringAsync();
 
-        var withPrefer = new HttpRequestMessage(HttpMethod.Post, "/odata/ActRetTiny/Dump")
+        using var withPrefer = new HttpRequestMessage(HttpMethod.Post, "/odata/ActRetTiny/Dump")
         {
             Content = EmptyBody(),
         };
@@ -334,6 +369,33 @@ public class BoundActionEntityReturnTests
         Assert.Equal(plainBody, await preferred.Content.ReadAsStringAsync());
         Assert.False(preferred.Headers.Contains("Preference-Applied"));
         Assert.DoesNotContain("@odata.nextLink", plainBody);
+    }
+
+
+    // ── #539 floor: the shape the fix deliberately does NOT make work ────────────────────────────
+    //
+    // Codecov flagged this throw as uncovered, and it is the one path in this PR that produces a
+    // message rather than a behaviour. An untested throw in a PR about throws is the gap #528 had.
+
+    [Fact]
+    public async Task BoundAction_ReturningAnotherProfilesModelType_ThrowsOhDatasOwnMessage()
+    {
+        InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await TestHostBuilder.BuildAsync(o =>
+            {
+                o.AddEntitySetProfile<ActRetOtherProfile>();
+                o.AddEntitySetProfile<ActRetForeignReturnProfile>();
+            }));
+
+        // The whole point is that the developer is not handed ModelBuilder's vocabulary.
+        string message = ex.ToString();
+        Assert.Contains("ActRetForeign", message, StringComparison.Ordinal);
+        Assert.Contains("Borrow", message, StringComparison.Ordinal);
+        Assert.Contains("ActRetOther", message, StringComparison.Ordinal);
+        Assert.Contains("this profile's own model type", message, StringComparison.Ordinal);
+
+        // Microsoft's original is kept as the inner exception rather than discarded.
+        Assert.Contains("already declared as an entity type", message, StringComparison.Ordinal);
     }
 
     // ── The FUNCTION half must not move ──────────────────────────────────────────
