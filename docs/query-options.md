@@ -38,8 +38,13 @@ output, `$value`, and bound/unbound function/action results.
 > case-insensitively.
 
 > Note: this affects **response** casing only. OData query-option property references
-> (`$select=Name`, `$filter=…`, `$orderby=…`, `$expand=…`) and request bodies are matched
-> case-insensitively against the EDM, so a client may use either casing on the way in.
+> (`$select=Name`, `$filter=…`, `$orderby=…`, `$expand=…`) are matched case-insensitively against
+> the EDM, so a client may use either casing on the way in. Request **bodies** are matched against
+> the serializer contract the deserializer itself resolves — i.e. the policy-converted name — with
+> the EDM and CLR names accepted as case-insensitive aliases. With the PascalCase default and with
+> camelCase those are the same set; with a non-case-preserving policy (`SnakeCaseLower`,
+> `KebabCaseLower`) a body may name a property in either its policy spelling or its EDM/CLR
+> spelling. Before #536 `PATCH` accepted only the latter and silently discarded the former.
 
 The OpenAPI/Swagger companion packages (`OhData.AspNetCore.OpenApi`, `.NSwag`, `.Swashbuckle`)
 follow this same policy: generated schema property names match the wire casing exactly — PascalCase

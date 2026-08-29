@@ -11,6 +11,133 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking
 
+- **⚠ BREAKING CHANGE — a bound ACTION returning a collection of the entity set's own type is now
+  bounded by `MaxTop`, and a result that does not fit is refused rather than served (#543).**
+  #357 bounded bound *functions* and excluded actions, on a reason that was sound about the
+  continuation and wrongly taken to be about the ceiling as well. `WrapBoundOpResult` was called
+  with `pagingSource: null` for both action call sites, and that one parameter was doing two jobs —
+  "is this route pageable" *and* "here is the startup source to read `MaxTop` off" — so an action
+  skipped the bound entirely.
+
+  **Measured on `develop` at `d2d96d8`**, a profile with `MaxTop = 10` over a 25-row store, with a
+  `BindAction` and a `BindFunction` both declared `Task<object>` and both returning `List<TModel>`:
+
+  ```
+  GET  /ZZObjs                 -> 200  len=10  nextLink=…/ZZObjs?%24skip=10
+  GET  /ZZObjs?$top=999        -> 400  InvalidQueryOption "The value of '$top' (999) exceeds the maximum allowed value (10)."
+  GET  /ZZObjs/DumpFn          -> 200  len=10  nextLink=…/ZZObjs/DumpFn?%24skip=10
+  GET  /ZZObjs/DumpFn?$top=999 -> 400  InvalidQueryOption
+  POST /ZZObjs/Dump            -> 200  len=25  nextLink=<none>
+  POST /ZZObjs/Dump?$top=999   -> 200  len=25  nextLink=<none>
+  POST /ZZObjs/Dump?$top=5     -> 200  len=25  nextLink=<none>
+  POST /ZZObjs/Dump?$skip=20   -> 200  len=25  nextLink=<none>
+  POST /ZZObjs/Dump?$top=abc   -> 200  len=25  nextLink=<none>
+  ```
+
+  That is the exact wire shape #357's entry says it closed, on the operation kind it did not cover:
+  the ceiling fully bypassed, `$top` neither applied nor rejected, a malformed `$top` silently
+  dropped. It was reachable before #539 through any `Task<object>`-declared handler; with #539 below,
+  `Task<IEnumerable<TModel>>` becomes the ordinary spelling of it.
+
+  **What changes on the wire.** `$top`/`$skip` on a bound action are now read and applied, and a
+  `$top` above `MaxTop` or a malformed `$top`/`$skip` is a `400 InvalidQueryOption` carrying the
+  *same message byte for byte* that the collection `GET` and the bound function already produce.
+  With **no** `$top`, an action whose collection result exceeds `MaxTop` (default `1000`) now answers
+  **`500`** + the OData error envelope, with the real reason — the count, the ceiling, and the
+  remedies — logged. A result at or under the ceiling is unchanged, byte for byte, and no header
+  moves. `MaxTop = null` opts the entity set out exactly as it does for `GetAll` and for a bound
+  function. `Prefer: maxpagesize` is deliberately **not** honoured on an action and no
+  `Preference-Applied` is emitted for it — it is a server-driven-paging preference and there is no
+  paging to drive; RFC 7240 makes preferences advisory and forbids claiming `Preference-Applied` for
+  one that was not applied.
+
+  **Why refuse rather than page or truncate — the fork, stated so it can be redirected.** Three
+  shapes were available and two are unavailable here. (1) *Cap and emit `@odata.nextLink`*, what a
+  function does, is invalid: a `nextLink` is a URL the client GETs (§11.2.5.7), the target of
+  `POST /Set/Action` is the action-invocation resource, which has no representation to continue
+  (§11.5.4) — the identity argument #478 already uses to keep actions out of the ETag precondition
+  gate — so the link would answer `405`, and re-POSTing a side-effecting action to collect page 2 is
+  not a continuation in any case. (2) *Cap silently* is forbidden by the framework's own M1 rule: no
+  configuration leaves a bound in place without either a continuation link or a `400`, never silent
+  truncation. (3) Refuse. It is a `500` and not a `400` because #496 settled that distinction in
+  this same release: a `Post` handler returning `null` went from "400 blaming the client" to a
+  logged `500` because the condition is decided entirely by server-side state, and so is this one —
+  the profile declared the ceiling, the handler returned more than fits under it, identically for
+  every client and every request. The `400` half of the ceiling (an explicit `$top` above `MaxTop`)
+  *is* the client's, and stays a `400`.
+
+  The alternative the owner may prefer is to **keep the exclusion and stop advertising the ceiling
+  as universal** — i.e. document `MaxTop` as a bound on collection *GET* routes and bound functions,
+  and leave actions unbounded. That is coherent with #465's "advertise only what the route serves"
+  rule read as a rule about *advertisement*, but it leaves the DoS ceiling the framework enforces
+  everywhere else bypassable through any bound action, which is the sentence #357 exists to make
+  false. Reverting to it is one branch in `TryApplyOperationCollectionPaging` and one call-site flag.
+
+  **Two corrections to #357's own entry, both refuted by the measurement above.** *"the bound is
+  applied in the runtime collection branch rather than from the declared return type, so a handler
+  declared `Task<object>` returning a `List<TModel>` is not a way around the ceiling"* — true of a
+  function, false of an action, which never reached that branch's bound. *"It is moot in practice
+  besides: `ActionConfiguration.Returns`/`.ReturnsCollection` both refuse an already-declared entity
+  type, so a `BindAction` over `TModel` or `IEnumerable<TModel>` cannot be registered at all today"*
+  — true only for a *declared* entity return (that throw is real, and is #539); `Task<object>`
+  registered and served, and #539 removes the declared-return half as well. Both sentences are
+  annotated in place rather than deleted. Riding along, `WrapBoundOpResult`'s
+  *"see `AddBoundFunctionPagingMetadata` for why actions are excluded"* pointed at a method that
+  contained no such rationale; the method is now `AddBoundOperationPagingMetadata`, it is attached to
+  action routes too (an action really does honour `$top`/`$skip` now, which is what
+  `OhDataQueryOptionsMetadata` fields mean under #467), and the dangling cross-reference is gone with
+  the exclusion it described.
+
+- **⚠ BREAKING CHANGE — `BindAction` can return the entity set's own type; the EDM declaration for a
+  bound operation's entity return now goes through `ReturnsFromEntitySet` (#539).**
+  `Microsoft.OData.ModelBuilder`'s `ActionConfiguration.Returns<T>()` / `.ReturnsCollection<T>()`
+  **refuse a CLR type already declared as an entity type** and direct the caller to
+  `ReturnsFromEntitySet` / `ReturnsCollectionFromEntitySet`, which OhData never called and does not
+  expose. The `FunctionConfiguration` twins accept the same type. **Measured against
+  `Microsoft.OData.ModelBuilder` 2.0.0 on .NET 10.0.11:**
+
+  ```
+  action.Returns<TModel>()             -> InvalidOperationException, thrown AT THE CALL:
+                                          "The EDM type '…' is already declared as an entity type.
+                                           Use the method 'ReturnsFromEntitySet' if the return type is an entity."
+  action.ReturnsCollection<TModel>()   -> the same, naming 'ReturnsCollectionFromEntitySet'
+  function.Returns<TModel>()           -> OK
+  function.ReturnsCollection<TModel>() -> OK
+  ```
+
+  So `BindAction((Func<Task<IEnumerable<Widget>>>)Archive)` on the `Widget` profile — `POST
+  /Widgets/Archive` answering with the archived rows, an ordinary OData shape — killed `MapOhData()`
+  with a message quoting a method the developer could not reach, while the bound *function* of the
+  identical signature worked.
+
+  `RegisterEdmReturnType` now calls `ReturnsFromEntitySet` / `ReturnsCollectionFromEntitySet` with
+  the **declaring profile's own entity set** whenever the (element) return type is that profile's
+  model type. Applied to **functions too**, not behind an is-this-an-action branch, for two measured
+  reasons: the CSDL is byte-identical either way (a bound operation declared with
+  `ReturnsCollectionFromEntitySet` emits the same `<ReturnType Type="Collection(…)"/>` — no
+  `EntitySetPath`, no extra attribute — as one declared with `ReturnsCollection`, pinned by
+  `BoundActionEntityReturnTests.BoundFunction_MetadataDeclarationIsUnchanged`), and it is what
+  Microsoft's own E2E fixtures do for an entity return on both operation kinds. One unconditional
+  rule is also less code than a conditional one and cannot drift between kinds.
+
+  The entity-set name passed is always the one `VisitModelBuilder` opened with, never a name derived
+  from the return type, and that is load-bearing: **`ReturnsFromEntitySet` does not validate that the
+  name exists — it creates the set.** Measured, a bogus name silently added `EntitySet:Ghosts` to the
+  container and to `$metadata`.
+
+  **Floor for the residual.** An operation returning some *other* registered entity type — another
+  profile's model — still cannot be expressed, because OhData can only bind an operation's entity
+  return to the entity set of the profile that declares it. That case now throws an OhData-authored
+  `InvalidOperationException` naming the entity set, the operation, the offending type and the
+  remedies, with Microsoft's original as the inner exception, instead of letting a raw ModelBuilder
+  string naming an unreachable method reach the developer.
+
+  **Why this is breaking.** A `BindAction` declared over the profile's own model type used to be a
+  hard startup failure and is now a working route — which means it now reaches #543's ceiling above,
+  and an action returning more than `MaxTop` entities answers `500` rather than never having started.
+  Nothing that previously started up changes shape: every `$metadata` document and every response for
+  a configuration that built before this change is byte-identical.
+
 - **A bound FUNCTION returning a collection of the entity set's own type is now bounded by `MaxTop`,
   with a `@odata.nextLink` continuation (#357).** Before this, such an operation bypassed `MaxTop`,
   the client's `$top`/`$skip`, and server-driven paging entirely — so the DoS ceiling the framework
@@ -34,17 +161,20 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   materialized array and owns the pipeline from there, so an offset continuation is one it can
   always honour. The bound is applied in the **runtime** collection branch rather than from the
   declared return type, so a handler declared `Task<object>` returning a `List<TModel>` is not a way
-  around the ceiling; the OpenAPI `$top`/`$skip` documentation is attached from the declared type at
-  the single `OhDataQueryOptionsMetadata` site (#467), so the only possible divergence is serving a
-  bound the document did not promise.
+  around the ceiling — *true for a bound function, and **measured false for a bound action**, whose
+  route never reached that branch's bound at all; corrected in the #543 entry below* — while the
+  OpenAPI `$top`/`$skip` documentation is attached from the declared type at the single
+  `OhDataQueryOptionsMetadata` site (#467), so the only possible divergence is serving a bound the
+  document did not promise.
 
-  **Actions are deliberately excluded.** A `@odata.nextLink` is a URL the client GETs (§11.2.5.7)
-  while an action-invocation resource has no representation to continue (§11.5.4) — the same reason
-  #478 excludes actions from the ETag precondition gate — so a continuation there would answer 405,
-  and capping without one would be silent data loss. It is moot in practice besides:
-  `Microsoft.OData.ModelBuilder`'s `ActionConfiguration.Returns`/`.ReturnsCollection` both refuse an
-  already-declared entity type, so a `BindAction` over `TModel` or `IEnumerable<TModel>` cannot be
-  registered at all today (reported separately).
+  **Actions were deliberately excluded, and that exclusion was wrong — see the #543 entry below,
+  which supersedes this paragraph.** Two claims made here have been measured false and are corrected
+  there: that the bound "is applied in the runtime collection branch … so a handler declared
+  `Task<object>` returning a `List<TModel>` is not a way around the ceiling" (it was exactly that,
+  for an action), and that the exclusion was "moot in practice besides" because
+  `ActionConfiguration.Returns`/`.ReturnsCollection` refuse an already-declared entity type (true
+  only of a *declared* entity return — `Task<object>` registered fine, and #539 has since made the
+  declared spelling work too).
 
 - **A `Post` handler returning `null` is now a logged `500`, not a `400` blaming the client
   (#496).** It used to answer
@@ -284,6 +414,47 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   > instead of silently producing a shared-then-broken registration. An app doing this was already
   > broken; it now refuses to start. `docs/versioning.md` documented the divergence as a *"do not rely
   > on this"* inconsistency, and that note is removed because the inconsistency is gone.
+
+- **`PATCH` now resolves body keys through the binder's own contract, so a body key it silently
+  dropped under a naming policy is bound (#536).** This is #511 manifestation (2) surviving on one
+  route. `PATCH`'s body-name table was keyed by the **EDM** name — `[JsonPropertyName]` ?? CLR name,
+  deliberately policy-free because `$metadata` advertises the CLR identifier whatever casing
+  payloads use (OData §4.4) — plus the CLR name, under `OrdinalIgnoreCase`, while the **value** it
+  binds is deserialized with the registration's serializer options. Under a non-case-preserving
+  `PropertyNamingPolicy` the two disagreed. Measured with
+  `WithJsonPropertyNamingPolicy(JsonNamingPolicy.SnakeCaseLower)` and a `FirstName` property:
+
+  ```
+  PATCH /odata/Customers(1)   {"first_name":"Ada"}   ->  200, delta empty, nothing changed
+  ```
+
+  camelCase differs from the CLR name only by case, so the comparer hid this for the only policy
+  anyone had configured; `SnakeCaseLower` and `KebabCaseLower` did not — which is exactly why #511
+  measured those two. Anyone who configured a snake-case or kebab-case policy had a `PATCH` route
+  that accepted requests and discarded the changes. Note the direction: it is fail-**closed** on the
+  write, so it was data loss under a `200` rather than an unauthorized mutation. Still a silent
+  wrong answer.
+
+  Fixed structurally rather than by adding a `PropertyNamingPolicy?.ConvertName(...)` key, which
+  would have closed one policy and not the class — "two things that must agree, derived
+  independently", #454's shape. The table's primary key is read off the contract the binder
+  resolves: `JsonTypeInfo.Properties[].Name` is by construction the string System.Text.Json matches
+  a body key against, whatever produced it (a policy, a `[JsonPropertyName]`, a resolver modifier,
+  a source-generated contract), so no second derivation is left to drift. It is resolved on a probe
+  **copy** of the serializer options (resolving a contract calls `MakeReadOnly()`, and startup must
+  stay free to keep configuring the real instance), and a `JsonPropertyInfo` is paired back to its
+  `PropertyInfo` with `HasSameMetadataDefinitionAs` rather than `==` — `PropertyInfo` equality also
+  compares `ReflectedType`, and the two reflection walks disagree about it for an **inherited**
+  member (#462), which would show up here as an inherited property silently keeping the defect.
+
+  **What changes.** On a default host, nothing: the EDM and CLR names stay as non-overwriting
+  aliases (`FindClrPropertyByEdmName` is what the rest of the framework resolves through, so
+  dropping them would trade a per-host divergence for a per-verb one), and every alias collapses
+  onto the contract key under the comparer. On a host with a non-case-preserving policy, `PATCH`
+  binds body keys it previously ignored — including the entity **key**, so #454's key-immutability
+  guard now sees an occurrence spelled in the policy's casing and answers `400` (target `key`) on a
+  mismatch where it used to be silently dropped. An `Ignore()`d property is removed from the
+  contract, so it gains no contract key and cannot become newly bindable.
 
 - **Two `ConfigureAuthorization` `Invoke(name, …)` rules targeting one bound operation are now
   refused at startup (#546).** #525 made named rules resolve `OrdinalIgnoreCase`, which is correct —
