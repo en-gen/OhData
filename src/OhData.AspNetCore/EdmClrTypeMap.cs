@@ -89,7 +89,7 @@ internal static class EdmClrTypeMap
     /// <summary>The EDM structured type <paramref name="model"/> declares for exactly
     /// <paramref name="clrType"/>, or null.</summary>
     internal static IEdmStructuredType? FindStructuredType(IEdmModel? model, Type clrType) =>
-        model is not null && ForModel(model).TryGetValue(clrType, out IEdmStructuredType? edmType)
+        model is not null && ForModel((IEdmModel)model).TryGetValue(clrType, out IEdmStructuredType? edmType)
             ? edmType
             : null;
 

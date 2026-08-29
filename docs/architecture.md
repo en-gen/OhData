@@ -54,11 +54,17 @@ app.MapOhData()
         ├─ GET /$metadata  → CSDL XML from IEdmModel
         ├─ startup validation: throws InvalidOperationException if a structural property name
         │    collides with an entity-level bound function name (see property routes below); if
-        │    a navigation property's `post` handler collides with an entity-level bound action
-        │    name (both POST /{name}({key})/{segment}); if an unbound function/action name
-        │    collides with another unbound operation or with an entity set's own collection
-        │    GET/POST route; or if a BindEntityFunction/BindEntityAction handler's first
-        │    parameter isn't the entity key (TKey)
+        │    a navigation ROUTE's name collides with an entity-level bound function name (both
+        │    GET /{name}({key})/{segment}); if a navigation property's `post` handler collides
+        │    with an entity-level bound action name (both POST /{name}({key})/{segment}); if an
+        │    unbound function/action name collides with another unbound operation or with an
+        │    entity set's own collection GET/POST route; if a BindEntityFunction/BindEntityAction
+        │    handler's first parameter isn't the entity key (TKey); or if .RequireResource()
+        │    covers a key-based route the profile registers while GetById is null. Every name
+        │    comparison is case-insensitive, matching ASP.NET Core route matching.
+        │    Earlier, at bind time: duplicate bound-operation names, and the operation-signature
+        │    rules (a void-returning FUNCTION, a non-trailing/nullable CancellationToken, an
+        │    IResult return type). See docs/bound-operations.md.
         └─ per profile: MakeGenericMethod(KeyType, ModelType).Invoke(MapEntitySet<TKey,TModel>)
               │
               ├─ GET    /{name}                        if HasGetQueryable or HasGetAll

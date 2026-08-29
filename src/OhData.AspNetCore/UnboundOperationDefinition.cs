@@ -63,9 +63,18 @@ internal sealed record UnboundOperationDefinition
         };
     }
 
+    // Kept in lockstep with EntitySetProfile.GetCollectionElementType -- see the note there. Any
+    // change to one belongs in both; they answer the same question for the unbound and bound halves
+    // of the same operations surface.
     private static Type? GetCollectionElementType(Type type)
     {
         if (type == typeof(string)) return null;
+        // #498 §4: byte[] is an ARRAY but not a collection here. Treating it as one produced
+        // ReturnsCollection<byte> -> <ReturnType Type="Collection(Edm.Byte)"/> in $metadata, while
+        // WrapBoundOpResult's primitive map hits byte[] -> Edm.Binary first and serves
+        // {"@odata.context":"...#Edm.Binary","value":"AQID"}. A clean advertise-vs-serve mismatch,
+        // special-cased the way string already was.
+        if (type == typeof(byte[])) return null;
         if (type.IsArray) return type.GetElementType();
         foreach (var iface in new[] { type }.Concat(type.GetInterfaces()))
         {
