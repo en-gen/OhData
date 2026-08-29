@@ -19,8 +19,10 @@ public sealed class OhDataRegistration
         IReadOnlyList<IEntitySetEndpointSource> profiles,
         IReadOnlyList<UnboundOperationDefinition>? unboundOps = null,
         JsonNamingPolicy? jsonPropertyNamingPolicy = null,
-        bool openTypesEnabled = true)
+        bool openTypesEnabled = true,
+        long? defaultMaxRequestBodyBytes = EntitySetDefaults.DefaultMaxRequestBodyBytes)
     {
+        DefaultMaxRequestBodyBytes = defaultMaxRequestBodyBytes;
         Name = name;
         Prefix = prefix;
         EdmModel = edmModel;
@@ -64,6 +66,22 @@ public sealed class OhDataRegistration
     /// registration behaves exactly as it did before #389.
     /// </summary>
     internal bool OpenTypesEnabled { get; }
+
+    /// <summary>
+    /// #474: this registration's server-wide write-body ceiling —
+    /// <c>EntitySetDefaults.MaxRequestBodyBytes</c> as configured, defaulting to
+    /// <see cref="EntitySetDefaults.DefaultMaxRequestBodyBytes"/>. <c>null</c> when the adopter
+    /// cleared it, which means "no OhData-level limit".
+    /// </summary>
+    /// <remarks>
+    /// Read by the group-level body-limit filter as the fallback for a route that carries no
+    /// <c>OhDataBodyLimitMetadata</c> of its own. Every entity-set route does carry it (the metadata
+    /// is attached whenever the resolved per-profile limit is non-null, which is now the default),
+    /// so in practice this covers the routes that belong to no entity set — the <b>unbound</b>
+    /// actions. Carried here rather than re-derived in <c>MapAll</c> because <c>EntitySetDefaults</c>
+    /// is a builder-time object that <c>MapAll</c> never sees.
+    /// </remarks>
+    internal long? DefaultMaxRequestBodyBytes { get; }
 
     /// <summary>
     /// #389 L1: whether open-type handling actually has anything to do — <see cref="OpenTypesEnabled"/>

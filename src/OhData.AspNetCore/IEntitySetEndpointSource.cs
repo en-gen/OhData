@@ -159,6 +159,13 @@ internal interface IEntitySetEndpointSource
     bool AllowDeepWrites { get; }
 
     /// <summary>
+    /// #355: whether a write body is checked against the EDM's own <c>Nullable="false"</c>
+    /// annotations before the handler is invoked. Resolved from the profile flag /
+    /// <c>EntitySetDefaults</c> (default <c>true</c>).
+    /// </summary>
+    bool ValidateRequestBodyNullability { get; }
+
+    /// <summary>
     /// Names of every CLR property declared as a navigation property via
     /// <c>HasOptional</c>/<c>HasRequired</c>/<c>HasMany</c> (any overload). Used by the write
     /// pipeline (unioned with the EDM's own navigation names, #461) to withhold nested

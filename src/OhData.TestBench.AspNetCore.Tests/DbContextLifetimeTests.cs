@@ -135,15 +135,38 @@ public class DbContextLifetimeTests
         });
         Assert.Equal(HttpStatusCode.Created, first.StatusCode);
 
-        // 2) A POST with a null Title violates AppDbContext's non-nullable-property convention
-        // (EF Core InMemory enforces "required" on non-nullable CLR properties) and fails
-        // SaveChanges with a DbUpdateException the framework does not specially handle --
-        // surfacing as 500, exactly as the issue's Evidence section describes. This is the
-        // known, separately-tracked "request body not validated against EDM" defect; #356 is
-        // NOT about fixing this 500, only about what happens to the DbContext afterward.
-        var poison = await client.PostAsJsonAsync("/v1/Movies", new
+        // 2a) #355 CHANGED THIS STEP, and the change is the point. The original poison here was a
+        // POST with a null Title, which reached the handler unvalidated and blew up SaveChanges --
+        // the "request body not validated against EDM" defect this test used to describe as known
+        // and separately tracked. It is tracked no longer: the framework now checks the body
+        // against its own $metadata (Movie.Title is Nullable="false") and answers 400 before any
+        // handler runs. Asserted here rather than merely dropped, because this test is where that
+        // 500 was documented and a reader arriving from #355's Evidence section should find the
+        // outcome, not a deleted step.
+        var rejected = await client.PostAsJsonAsync("/v1/Movies", new
         {
             Title = (string?)null,
+            Year = 2001,
+            Rating = 5m,
+            RatingCount = 1,
+            RuntimeMinutes = 100,
+            GenreCode = "DRAMA",
+            StudioId = 1,
+            ReleaseDate = "2001-01-01",
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+
+        // 2b) #356 still needs a write that genuinely FAILS INSIDE the handler, since what it is
+        // about is the state the DbContext is left in afterward. A duplicate primary key does it:
+        // the body is a valid Movie by every published rule, so nothing the framework validates can
+        // reject it, and `db.Movies.Add(...); db.SaveChanges();` throws on the existing key -- 500,
+        // with the failed entity left Added in the change tracker. That is the same poisoning this
+        // step always produced, sourced from a defect that is not scheduled to be fixed out from
+        // under it.
+        var poison = await client.PostAsJsonAsync("/v1/Movies", new
+        {
+            Id = 1,
+            Title = "Duplicate Key",
             Year = 2001,
             Rating = 5m,
             RatingCount = 1,
