@@ -80,7 +80,7 @@ public class IgnoredPropertyDocsMapTests
     {
         var map = IgnoredPropertyDocsMap.Build(
             Collection(Registration(new IgnoringProfile(), new PlainProfile())));
-        bool names = Assert.Contains(typeof(DocsMapModel), (IReadOnlyDictionary<Type, IReadOnlySet<string>>)map);
+        IReadOnlySet<string> names = Assert.Contains(typeof(DocsMapModel), (IReadOnlyDictionary<Type, IReadOnlySet<string>>)map);
         Assert.Contains("CostBasis", names);
         Assert.DoesNotContain("InternalNotes", names);
     }
@@ -93,7 +93,7 @@ public class IgnoredPropertyDocsMapTests
         var map = IgnoredPropertyDocsMap.Build(Collection(
             Registration(new IgnoringProfile()),
             Registration(new OtherIgnoringProfile())));
-        bool names = Assert.Contains(typeof(DocsMapModel), (IReadOnlyDictionary<Type, IReadOnlySet<string>>)map);
+        IReadOnlySet<string> names = Assert.Contains(typeof(DocsMapModel), (IReadOnlyDictionary<Type, IReadOnlySet<string>>)map);
         Assert.Contains("CostBasis", names);
         Assert.Contains("InternalNotes", names);
     }

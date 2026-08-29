@@ -206,6 +206,41 @@ public class StartupRouteCollisionValidationTests
         Assert.Contains("Bulk", ex.Message, StringComparison.Ordinal);
     }
 
+
+    // Codecov flagged ValidateBoundOperationNameIsUnique's four call sites as only half covered:
+    // the tests above exercise BindEntityFunction and BindAction, leaving BindFunction and
+    // BindEntityAction unproven. The validator takes (isAction, isEntityLevel) and composes the
+    // message and the route template from them, so an untested pair is an untested message as well
+    // as an untested throw -- and this PR exists to add throws.
+
+    [Fact]
+    public async Task DuplicateCollectionLevelBoundFunctionNames_ThrowAtStartup()
+    {
+        InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await TestHostBuilder.BuildAsync(
+                o => o.AddEntitySetProfile<RcvDuplicateCollectionFunctionProfile>()));
+
+        Assert.Contains("RcvDupCollFn", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("Rollup", ex.Message, StringComparison.Ordinal);
+        // A collection-bound function is GET /{Set}/{Name} -- no {key} segment.
+        Assert.Contains("GET /RcvDupCollFn/Rollup", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("function", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DuplicateEntityLevelBoundActionNames_ThrowAtStartup()
+    {
+        InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await TestHostBuilder.BuildAsync(
+                o => o.AddEntitySetProfile<RcvDuplicateEntityActionProfile>()));
+
+        Assert.Contains("RcvDupEntityAction", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("Stamp", ex.Message, StringComparison.Ordinal);
+        // An entity-bound action is POST /{Set}({key})/{Name}.
+        Assert.Contains("POST /RcvDupEntityAction({key})/Stamp", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("action", ex.Message, StringComparison.Ordinal);
+    }
+
     /// <summary>
     /// The control: the same NAME at the two different binding levels claims two different
     /// templates (<c>GET /{Set}/{Name}</c> vs <c>GET /{Set}({key})/{Name}</c>) and dispatch already
@@ -417,6 +452,36 @@ internal class RcvDuplicateCollectionActionProfile : EntitySetProfile<int, RcvPa
 
     private Task<int> Bulk() => Task.FromResult(0);
     private Task<int> Bulk(int n) => Task.FromResult(n);
+}
+
+
+/// <summary>#492 §4: two COLLECTION-level bound functions sharing a name (GET /{Set}/{Name}).</summary>
+internal class RcvDuplicateCollectionFunctionProfile : EntitySetProfile<int, RcvParent>
+{
+    public RcvDuplicateCollectionFunctionProfile() : base(x => x.Id)
+    {
+        EntitySetName = "RcvDupCollFn";
+        BindFunction((Func<Task<int>>)Rollup);
+        BindFunction((Func<int, Task<int>>)Rollup);
+    }
+
+    private Task<int> Rollup() => Task.FromResult(0);
+    private Task<int> Rollup(int n) => Task.FromResult(n);
+}
+
+/// <summary>#492 §4: two ENTITY-level bound actions sharing a name (POST /{Set}({key})/{Name}).</summary>
+internal class RcvDuplicateEntityActionProfile : EntitySetProfile<int, RcvParent>
+{
+    public RcvDuplicateEntityActionProfile() : base(x => x.Id)
+    {
+        EntitySetName = "RcvDupEntityAction";
+        GetById = (id, ct) => Task.FromResult<RcvParent?>(new RcvParent { Id = id });
+        BindEntityAction((Func<int, Task<int>>)Stamp);
+        BindEntityAction((Func<int, int, Task<int>>)Stamp);
+    }
+
+    private Task<int> Stamp(int key) => Task.FromResult(key);
+    private Task<int> Stamp(int key, int extra) => Task.FromResult(key + extra);
 }
 
 /// <summary>Control: one name, two binding levels, two distinct templates.</summary>
