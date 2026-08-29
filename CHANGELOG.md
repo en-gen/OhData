@@ -1,4 +1,4 @@
-# Changelog
+﻿# Changelog
 
 All notable changes to this project will be documented here.
 
@@ -197,50 +197,70 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   malformed for a request whose key had parsed one line earlier. Both are `500` + the OData error
   envelope now, with the real exception logged. Framework-raised 400s are unchanged, byte for byte.
 
-- **A `null` or omitted property the EDM declares `Nullable="false"` is now `400` before the handler
-  runs (#355).** The framework publishes the nullability of every structural property in the CSDL it
-  generates, and until now enforced none of it: a `null` for a property declared `Nullable="false"`
-  reached the handler, and the persistence layer's rejection surfaced as a generic `500` — measured on
-  the shipped test bench, `POST /Movies {"Title":null}` → `500 InternalServerError` from EF's
-  *"Required properties '{'Title'}' are missing"*. A violation the framework could see at its own
-  boundary, reported as a server fault. `BuildEdmRequiredProperties` now asks the EDM once per type at
-  startup, and `POST`/`PUT`/`PATCH`, the navigation-`POST` create route and the structural-property
-  writes answer `400 InvalidBody` — *"Property 'X' is declared non-nullable by the service metadata and
-  cannot be null or omitted."* — before any handler delegate runs.
+- **An explicit `null` for a property the EDM declares `Nullable="false"` is now `400` before the
+  handler runs (#355, narrowed by #544/#545).** The framework publishes the nullability of every
+  structural property in the CSDL it generates, and until now enforced none of it: a `null` for a
+  property declared `Nullable="false"` reached the handler, and the persistence layer's rejection
+  surfaced as a generic `500` — measured on the shipped test bench, `POST /Movies {"Title":null}` →
+  `500 InternalServerError` from EF's *"Required properties '{'Title'}' are missing"*. A violation the
+  framework could see at its own boundary, reported as a server fault. `BuildEdmRequiredProperties`
+  now asks the EDM once per type at startup, and `POST`/`PUT`/`PATCH`, the navigation-`POST` create
+  route and the structural-property writes answer `400 InvalidBody` — *"Property 'X' is declared
+  non-nullable by the service metadata and cannot be null."* — before any handler delegate runs.
+
+  **The rule fires only on a property the request body NAMES with an explicit `null`. An OMITTED
+  property is not a violation on any verb.** An earlier revision of this change also refused an
+  omission on `POST`/`PUT`; #544 removed that leg before release, and this entry describes the shipped
+  behaviour. The removed leg cited **§11.4.2**, which requires nothing of the kind — its only
+  MUST-fail is *"unable to persist all property values **specified** in the request"*, about values
+  sent, and it says in terms that properties with a default, nullable properties and service-computed
+  properties **may be omitted**. The clause that does mandate a `400` for an omission is **§11.4.3, is
+  PUT-only**, and is conditioned on the property having *"no service-generated or default value"* — a
+  condition this framework provably cannot evaluate: `ODataConventionModelBuilder` writes no
+  `Core.Computed` annotation (measured: zero vocabulary annotations on any property, and
+  `[Required] string?` is byte-identical in CSDL to `string = null!`), and a CLR initializer is
+  invisible to the EDM. `Microsoft.AspNetCore.OData` draws the same line: `ApplyStructuralProperties`
+  loops over payload properties only with no reverse pass, while `ValidateNullValueAllowed` rejects an
+  explicit `null`.
+
+  **That is what makes the rule derivable from the wire (#545).** Three properties `$metadata`
+  describes **identically** as `Nullable="false"` now answer identically. Measured, before → after:
+
+  | CLR declaration | omit → | explicit `null` → |
+  |---|---|---|
+  | `string X { get; set; } = ""` | `201` → `201` | `400` → `400` |
+  | `string X { get; set; } = null!` | **`400` → `201`** | `400` → `400` |
+  | `int Year` | `201` → `201` | `400` → `400` (deserializer-worded) |
+
+  No dependence on whether the developer wrote `= ""` or `= null!`, and none on CLR
+  value-versus-reference — neither of which appears in `$metadata`.
 
   The property-write route is the proof that *"ask the EDM"* is not stylistic. It already had a
   nullability check, built on `IsNullableClrType` — for which **every reference type is nullable** — so
   `PUT /{Set}({key})/Name {"value":null}` on a `Nullable="false"` string was a `204`. There is one
   authority now. `PATCH` and the property writes go through the partial-update twin, which checks only
   a property the body actually **named**: a `Delta<T>` is a change set, so an absent property means
-  *"leave it alone"*, not *"set it to nothing"*, and rejecting it would break every ordinary partial
-  update.
+  *"leave it alone"*, not *"set it to nothing"*. `POST`/`PUT`/nav-`POST` now ask the same question,
+  through `CollectPresentBodyMemberClrNames` — #506's existing top-level scanner, shared rather than
+  transcribed — over a `BuildRequiredPropByBodyName` table keyed off `JsonTypeInfo.Properties[].Name`,
+  so the spelling the gate looks for is the spelling the binder matches (#511). No route reads the
+  body an extra time: every site already had the bytes, and the streaming branches go through
+  `CreateBinderParityReader`.
 
   Four deliberate exclusions, each of which would otherwise reject a legal request: the entity **key**
-  (every EDM key is `Nullable="false"` and a server-generated key is routinely omitted on create,
-  §11.4.2); a non-nullable **value type** (`int Year` cannot hold `null`, so a JSON `null` for it is
+  (every EDM key is `Nullable="false"`, and §11.4.2 explicitly permits omitting a service-generated
+  value); a non-nullable **value type** (`int Year` cannot hold `null`, so a JSON `null` for it is
   already a `JsonException` → `400` from the binder); a member the EDM declares that no readable CLR
   property backs; and anything the EDM does not declare at all — which exempts `Ignore()`d properties
   for free. Top level only: a `null` inside a nested complex value is not checked.
 
-  > **⚠ BREAKING CHANGE — and it fires on the ordinary EF shape.** `ODataConventionModelBuilder`
-  > honours nullable reference-type annotations, so a server-populated property written the ordinary
-  > way — `public string CreatedBy { get; set; } = null!;`, with no `[Required]` anywhere — emits
-  > `Nullable="false"` and is now **required in every `POST`/`PUT` body**. Audit stamps, tenant ids and
-  > computed keys are exactly that shape, and most projects enable nullable reference types by default,
-  > so upgrading can turn every create against such an entity set into a `400` before the handler runs.
-  > Measured: `POST /odata/ZZAudits {"Name":"x"}` → `400`, handler reached `False`; likewise for an
-  > omitted non-nullable **complex** member. Opt out per entity set, or in `EntitySetDefaults`, with
-  > `ValidateRequestBodyNullability = false`, which restores the previous behaviour.
-  >
-  > Two known incoherences ship alongside it, both open. **#544** asks whether this should be opt-in
-  > rather than opt-out at all; what is described here is what 1.7.0 ships. **#545** records that the
-  > rule is not derivable from the published contract in the other direction: a `= ""` initializer binds
-  > to `""` and a non-nullable value type binds to `0`, so three properties `$metadata` describes
-  > identically (`Nullable="false"`) answer `201`, `400` and `201` depending on whether the developer
-  > wrote `= ""` or `= null!` and on CLR value-versus-reference — neither of which appears in
-  > `$metadata`. The shipped `EntitySetProfile.ValidateRequestBodyNullability` XML doc names the key as
-  > the *only* exemption when there are four; that text is wrong, and is tracked in #545.
+  > **⚠ BREAKING CHANGE.** An adopter whose handler relied on receiving an explicit `null` for a
+  > property the EDM declares `Nullable="false"` now gets a `400` instead, and the handler does not
+  > run. `ODataConventionModelBuilder` honours nullable reference-type annotations, so a property
+  > written the ordinary way — `public string CreatedBy { get; set; } = null!;`, with no `[Required]`
+  > anywhere — emits `Nullable="false"`; sending `{"createdBy":null}` for it is now refused, while
+  > **omitting** it is accepted exactly as before. Opt out per entity set, or in `EntitySetDefaults`,
+  > with `ValidateRequestBodyNullability = false`.
 
 - **`EntitySetDefaults.MaxRequestBodyBytes` now defaults to 30,000,000 bytes (#474).** The #203
   body-limit filter does both of its jobs — the `Content-Length` fast-reject and the per-request Kestrel

@@ -244,13 +244,26 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// <see cref="EntitySetDefaults.ValidateRequestBodyNullability"/> (default <c>true</c>) when
     /// <c>null</c>.
     /// <para>
-    /// A <c>null</c> for a property the framework's own <c>$metadata</c> declares
-    /// <c>Nullable="false"</c> is answered with <c>400</c> and the handler never runs. On
-    /// <c>PATCH</c> and the structural-property writes only a property the body actually named is
-    /// checked, since those are partial updates; on <c>POST</c>/<c>PUT</c> an omitted property is a
-    /// violation too, because the resulting entity would not be a valid instance of the declared
-    /// type (§11.4.2). The entity's <b>key</b> is exempt on every verb — a server-generated key is
-    /// routinely omitted on create, and every EDM key property is <c>Nullable="false"</c>.
+    /// <b>The rule, in one sentence:</b> a property the request body NAMES with an explicit
+    /// <c>null</c>, where the framework's own <c>$metadata</c> declares that property
+    /// <c>Nullable="false"</c>, is answered with <c>400</c> (<c>InvalidBody</c>, <c>target:</c> the
+    /// property) and the handler never runs. It applies uniformly to <c>POST</c>, <c>PUT</c>,
+    /// <c>PATCH</c>, the navigation-<c>POST</c> create route and the structural-property writes.
+    /// </para>
+    /// <para>
+    /// <b>An OMITTED property is never a violation</b> (#544), on any verb, whatever the CLR
+    /// declaration would leave behind — <c>= ""</c>, <c>= null!</c>, or a value type. The rule is
+    /// therefore derivable entirely from the wire: identical <c>$metadata</c>, identical answers.
+    /// This is where <c>Microsoft.AspNetCore.OData</c> lands too.
+    /// </para>
+    /// <para>
+    /// Two properties are outside the rule because a JSON <c>null</c> for them cannot reach it: the
+    /// entity's <b>key</b> (every EDM key is <c>Nullable="false"</c>, and a server-generated key is
+    /// routinely omitted on create), and a non-nullable <b>value type</b> such as <c>int</c>, for
+    /// which an explicit <c>null</c> is already a <c>400</c> worded by the deserializer. Two more
+    /// are outside it because the EDM says nothing about them: a member no readable CLR property
+    /// backs, and anything the EDM does not declare at all — which is what exempts
+    /// <c>Ignore()</c>d properties. Nullability <i>inside</i> a nested complex value is not checked.
     /// </para>
     /// <para>
     /// Set to <c>false</c> for an entity set whose handler legitimately supplies a value the client

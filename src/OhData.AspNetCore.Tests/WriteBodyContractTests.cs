@@ -362,14 +362,19 @@ public class WriteBodyContractTests
     }
 
     /// <summary>
-    /// Omission is checked too — but only to the extent it is OBSERVABLE, which is the honest
-    /// boundary of validating the bound instance rather than the raw body. A required property whose
-    /// CLR declaration carries a non-null initializer (<c>= ""</c>) is never null after binding, so
-    /// there is nothing invalid to report and nothing that would have failed downstream; one
-    /// declared <c>= null!</c> — the ordinary EF-entity shape — is.
+    /// #544 REVERSED THIS. Omission is not a violation on any verb, whatever the CLR declaration
+    /// left behind: the omission-<c>400</c> clause is §11.4.3, is PUT-only, and is conditioned on
+    /// <i>"no service-generated or default value"</i> — which the framework cannot evaluate — while
+    /// §11.4.2, cited by the shipped doc, requires nothing of the kind.
+    /// <para>
+    /// Both shapes are asserted here together, because the whole point is that they AGREE: a
+    /// required property declared <c>= null!</c> (the ordinary EF-entity shape) and one declared
+    /// <c>= ""</c> are described identically by <c>$metadata</c> and must answer identically.
+    /// <c>Issue544NullabilityOmissionTests</c> carries the full three-row table.
+    /// </para>
     /// </summary>
     [Fact]
-    public async Task Post_OmittingANonNullableEdmProperty_Returns400_WhenItBindsToNull()
+    public async Task Post_OmittingANonNullableEdmProperty_IsAccepted_WhateverTheClrInitializerLeft()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o
             .AddEntitySetProfile<WbStampedProfile>()
@@ -378,18 +383,34 @@ public class WriteBodyContractTests
         WbStampedProfile.LastPosted = null;
         var response = await fx.Client.PostAsJsonAsync("/odata/WbStamps", new { Id = 9 });
 
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Null(WbStampedProfile.LastPosted);
-        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal("Stamp", json.GetProperty("error").GetProperty("target").GetString());
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.NotNull(WbStampedProfile.LastPosted);
+        Assert.Null(WbStampedProfile.LastPosted!.Stamp);
 
-        // BOUNDING: a required property with a non-null CLR initializer binds to "" and is
-        // therefore not a violation. Asserted so the boundary above is a pinned decision rather
-        // than an accident of the fixture.
         WbContactProfile.LastPosted = null;
         var initialized = await fx.Client.PostAsJsonAsync("/odata/WbContacts", new { Id = 9, Age = 1 });
         Assert.Equal(HttpStatusCode.Created, initialized.StatusCode);
         Assert.Equal("", WbContactProfile.LastPosted!.Name);
+    }
+
+    /// <summary>
+    /// #544 CONTROL: the same <c>= null!</c> fixture still refuses an explicit <c>null</c>, so the
+    /// change above narrows the rule rather than removing it.
+    /// </summary>
+    [Fact]
+    public async Task Post_ExplicitNullForAnUninitializedRequiredProperty_StillReturns400()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<WbStampedProfile>());
+
+        WbStampedProfile.LastPosted = null;
+        var response = await fx.Client.PostAsJsonAsync(
+            "/odata/WbStamps", new { Id = 9, Stamp = (string?)null });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Null(WbStampedProfile.LastPosted);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Stamp", json.GetProperty("error").GetProperty("target").GetString());
     }
 
     [Fact]
