@@ -9,6 +9,45 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Startup warning when a navigation's target entity set is protected more strictly than the set
+  declaring it (#481, closes #368).** Authorization in OhData is per-profile and does **not** compose
+  across a navigation: every navigation-family route, and every `$expand` call site, runs under the
+  **declaring** profile's rule and never the target set's. Measured across 19 route shapes on #481 —
+  with an admin-gated child set and an anonymous parent declaring a navigation into it, the nav `GET`,
+  its `/$count`, all four `$ref` shapes, the navigation-`POST` create route and `$expand` (delegate,
+  batch and pushdown) all succeeded anonymously, and `$ref` `POST`/`PUT`/`DELETE` and navigation-`POST`
+  **executed the write**.
+
+  **No request-path behaviour changed, deliberately.** This is what `Microsoft.AspNetCore.OData` does
+  — verified against its source, which contains no authorization code at all and routes the navigation
+  action onto the *parent's* controller — so enforcing the target's rule would be a divergence from
+  OData norms rather than a correction toward them; it would also break the ordinary scoped-navigation
+  pattern (a customer-scoped `Orders` navigation beside a separately registered, admin-gated `Orders`
+  set is correct code), is not well-defined where sibling sets share one EDM type (#458), and collides
+  with #293's Model B rule that a sibling's declaration must not retroactively poison a navigation
+  another set legitimately serves. The navigation declaration is therefore the opt-in, and
+  `MapOhData()` now makes that decision loud at the moment it is introduced.
+
+  Targeting, each point measured rather than reasoned: the target is resolved through the **EDM
+  navigation property's own target type** (not `ChildEntitySetName`, which the `batchGetAll` overload
+  never sets, and not `NavItemType`, which `HasOptional`/`HasRequired` never set) and then through the
+  same candidate **union** the two `$expand` call sites use — never the EDM's navigation-source
+  binding, which is *deleted* the moment a second entity set is registered over the child type. It
+  fires on the **declared** navigation, not the routed one, because a bare `HasMany(x => x.Children)`
+  with no handler and no route still serves the target's rows through `$expand`; an *undeclared*,
+  convention-discovered navigation stays silent, because #440/#446 already made it reachable by
+  nothing. The comparison is **per operation category** — `Read` always, `Create` only with a `post`
+  handler, `Update` only with `$ref` handlers — so a target guarded only on writes does not warn about
+  a navigation that exposes only reads. Silent on equal authorization, on a *less* strict target, on
+  no authorization anywhere, and when no profile owns the target type. Measured over the repository's
+  own seven test projects: **zero** emissions from any pre-existing fixture.
+
+  `docs/authorization.md` gains the matching section, and its claim that navigation/`$ref` routes are
+  *"covered uniformly - there's no bypass"* is narrowed — true of the declaring profile's own rule,
+  and exactly the assurance #481 disproves about the target's.
+
 ### Fixed
 
 - **A complex type's own entity-typed navigation is now suppressed like any other (#507).**
