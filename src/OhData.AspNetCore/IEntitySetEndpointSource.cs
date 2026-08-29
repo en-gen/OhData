@@ -159,8 +159,9 @@ internal interface IEntitySetEndpointSource
     bool AllowDeepWrites { get; }
 
     /// <summary>
-    /// #355: whether a write body is checked against the EDM's own <c>Nullable="false"</c>
-    /// annotations before the handler is invoked. Resolved from the profile flag /
+    /// #355/#544: whether a property the write body NAMES with an explicit <c>null</c> is checked
+    /// against the EDM's own <c>Nullable="false"</c> annotations before the handler is invoked. An
+    /// omitted property is not a violation. Resolved from the profile flag /
     /// <c>EntitySetDefaults</c> (default <c>true</c>).
     /// </summary>
     bool ValidateRequestBodyNullability { get; }
