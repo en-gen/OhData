@@ -35,9 +35,16 @@ public sealed class OhDataRegistration
     /// <summary>
     /// #499: the keyed-DI registration name this instance was built for (<c>AddOhData(name, ...)</c>
     /// / <c>MapOhData(name)</c>; <see cref="OhDataDefaults.DefaultRegistrationName"/> for the
-    /// unnamed overload). Used to scope process-wide static caches keyed by a route identifier
-    /// (e.g. <c>ActionBodySchemaTypeFactory</c>) that would otherwise collide between two
-    /// registrations declaring the same entity set / operation name.
+    /// unnamed overload).
+    /// <para>
+    /// <b>#547: a LABEL, never a cache key.</b> It is
+    /// <see cref="OhDataDefaults.DefaultRegistrationName"/> for every unnamed registration in the
+    /// process, so two independent hosts share it — which is exactly how
+    /// <c>ActionBodySchemaTypeFactory</c>'s process-wide cache came to serve one host's generated
+    /// body-schema type to another. Anything that must be distinct per registration keys off the
+    /// <see cref="OhDataRegistration"/> instance (a <c>ConditionalWeakTable</c>); this name is for
+    /// human-readable identifiers, such as the generated schema type's own name.
+    /// </para>
     /// </summary>
     internal string Name { get; }
 

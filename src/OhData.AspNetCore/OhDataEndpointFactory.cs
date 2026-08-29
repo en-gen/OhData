@@ -2616,13 +2616,14 @@ internal static class OhDataEndpointFactory
                 {
                     rb.WithMetadata(new OhDataRequestBodyMetadata
                     {
-                        // #499: the key must carry registration identity -- "Unbound.{Name}" alone
-                        // is scoped to nothing but the operation name, so two registrations
+                        // #499/#547: the key must carry registration IDENTITY -- "Unbound.{Name}"
+                        // alone is scoped to nothing but the operation name, so two registrations
                         // declaring an unbound operation of the same name collided even when
                         // nothing else about them overlapped (the worst of the three sites, per
-                        // #499/#425, since it doesn't even carry an entity set name).
+                        // #499/#425, since it doesn't even carry an entity set name). The
+                        // registration is passed as the identity; the route key is scoped to it.
                         BodyType = ActionBodySchemaTypeFactory.GetOrCreate(
-                            $"{registration.Name}.Unbound.{opCapture.Name}", opCapture.Parameters),
+                            registration, $"Unbound.{opCapture.Name}", opCapture.Parameters),
                         Description = "JSON object with the action's parameters: " +
                             string.Join(", ", opCapture.Parameters.Select(p => $"{p.Name} ({p.ParameterType.Name})")) + "."
                     });
@@ -8612,6 +8613,28 @@ internal static class OhDataEndpointFactory
         // would be this very bug re-introduced one layer up and wearing an exception. Placed BEFORE
         // the #486 GetById guard below (which itself resolves rules by name) so a typo is reported
         // as a typo rather than as a missing GetById handler.
+        //
+        // #546: …and no two named rules may resolve to the SAME declared operation.
+        //
+        // That is the hazard the OrdinalIgnoreCase comparer INTRODUCED, and #525's check could not
+        // see it: it asks only "does this name resolve to a declared operation?", and both members
+        // of a colliding pair do. ResolveOperationRule keeps last-write-wins (`named = rule`), so
+        // two rules that collapse onto one operation make DECLARATION ORDER decide authorization --
+        // measured, `.Invoke("Stamp", RequireRole("admin")).Invoke("stamp", AllowAnonymous())`
+        // served an anonymous invocation 200, where the pre-#525 Ordinal comparer had made that
+        // exact configuration deterministically PROTECTED. Same fail-open direction as #525, same
+        // silence, arrived at from the other side.
+        //
+        // Refused rather than resolved by precedence for the same reason as above: there is no
+        // configuration in which two rules for one operation are meaningful, so picking a winner
+        // would only make the loser's disappearance quieter. It applies to identically-spelled
+        // duplicates too -- the mechanism and the consequence are the same, and the only thing case
+        // changes is how easy the pair is to spot by eye.
+        //
+        // Grouped by the DECLARED operation each rule resolves to, under the same comparer, which
+        // is literally the question ResolveOperationRule answers per route. GENERIC Invoke rules are
+        // deliberately out of scope: `generic = rule` is last-write-wins BY DESIGN there, as it is
+        // for every category selector (All(…) then Invoke(…) is a documented refinement idiom).
         if (operationAuthRules is not null)
         {
             string[] declaredOperationNames = source.BoundFunctions
@@ -8619,27 +8642,45 @@ internal static class OhDataEndpointFactory
                 .Select(o => o.Name)
                 .ToArray();
 
+            // Resolved declared name -> the first rule that claimed it, so the message can name the
+            // pair rather than only the survivor.
+            var claimedBy = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
             foreach (OperationAuthRule namedRule in operationAuthRules)
             {
                 if (namedRule.BoundOperationName is null) continue;
-                if (declaredOperationNames.Any(declared => string.Equals(
-                        declared, namedRule.BoundOperationName, StringComparison.OrdinalIgnoreCase)))
+
+                string? resolved = declaredOperationNames.FirstOrDefault(declared => string.Equals(
+                    declared, namedRule.BoundOperationName, StringComparison.OrdinalIgnoreCase));
+
+                if (resolved is null)
                 {
-                    continue;
+                    string candidates = declaredOperationNames.Length == 0
+                        ? "This profile declares no bound operation at all."
+                        : "Declared bound operations (matched case-insensitively): " +
+                          string.Join(", ", declaredOperationNames.Select(n => $"'{n}'")) + ".";
+                    throw new InvalidOperationException(
+                        $"Entity set '{name}': the authorization rule Invoke(\"{namedRule.BoundOperationName}\", …) " +
+                        "names an operation this profile does not declare — there is no bound function or " +
+                        "action called that. A named Invoke rule that resolves to nothing is silently " +
+                        "discarded: the route would fall back to the generic Invoke rule, or, when there is " +
+                        $"none, to no authorization requirement at all. {candidates} Correct the name, declare " +
+                        "the operation with BindFunction/BindAction/BindEntityFunction/BindEntityAction, or " +
+                        "remove the rule.");
                 }
 
-                string candidates = declaredOperationNames.Length == 0
-                    ? "This profile declares no bound operation at all."
-                    : "Declared bound operations (matched case-insensitively): " +
-                      string.Join(", ", declaredOperationNames.Select(n => $"'{n}'")) + ".";
-                throw new InvalidOperationException(
-                    $"Entity set '{name}': the authorization rule Invoke(\"{namedRule.BoundOperationName}\", …) " +
-                    "names an operation this profile does not declare — there is no bound function or " +
-                    "action called that. A named Invoke rule that resolves to nothing is silently " +
-                    "discarded: the route would fall back to the generic Invoke rule, or, when there is " +
-                    $"none, to no authorization requirement at all. {candidates} Correct the name, declare " +
-                    "the operation with BindFunction/BindAction/BindEntityFunction/BindEntityAction, or " +
-                    "remove the rule.");
+                if (claimedBy.TryGetValue(resolved, out string? firstSpelling))
+                {
+                    throw new InvalidOperationException(
+                        $"Entity set '{name}': two authorization rules — Invoke(\"{firstSpelling}\", …) and " +
+                        $"Invoke(\"{namedRule.BoundOperationName}\", …) — both target the bound operation " +
+                        $"'{resolved}'. Named Invoke rules are matched case-insensitively and the LAST one " +
+                        "declared wins, so the earlier rule is silently discarded and the order the two were " +
+                        "written in decides whether the operation is protected. Keep exactly one rule per " +
+                        "operation.");
+                }
+
+                claimedBy[resolved] = namedRule.BoundOperationName;
             }
         }
 
@@ -12357,12 +12398,12 @@ internal static class OhDataEndpointFactory
             {
                 rb.WithMetadata(new OhDataRequestBodyMetadata
                 {
-                    // #499: prefix with the registration name so two registrations declaring the
-                    // same entity set + action name (e.g. v1/v2 of the same versioned action) get
-                    // distinct memoized schema types instead of silently sharing whichever one
-                    // mapped first.
+                    // #499/#547: scope the memoization to this REGISTRATION INSTANCE so two
+                    // registrations declaring the same entity set + action name (e.g. v1/v2 of the
+                    // same versioned action, or two hosts in one process) get distinct memoized
+                    // schema types instead of silently sharing whichever one mapped first.
                     BodyType = ActionBodySchemaTypeFactory.GetOrCreate(
-                        $"{registration.Name}.{name}.{actionCapture.Name}", actionCapture.Parameters),
+                        registration, $"{name}.{actionCapture.Name}", actionCapture.Parameters),
                     Description = "JSON object with the action's parameters: " +
                         string.Join(", ", actionCapture.Parameters.Select(p => $"{p.Name} ({p.ParameterType.Name})")) + "."
                 });
@@ -12540,10 +12581,10 @@ internal static class OhDataEndpointFactory
                 ParameterInfo[] bodyParams = actionCapture.Parameters.Skip(1).ToArray();
                 rb.WithMetadata(new OhDataRequestBodyMetadata
                 {
-                    // #499: same registration-identity prefix as the collection-level bound action
-                    // above.
+                    // #499/#547: same registration-identity scoping as the collection-level bound
+                    // action above.
                     BodyType = ActionBodySchemaTypeFactory.GetOrCreate(
-                        $"{registration.Name}.{name}.{actionCapture.Name}.Entity", bodyParams),
+                        registration, $"{name}.{actionCapture.Name}.Entity", bodyParams),
                     Description = "JSON object with the action's parameters: " +
                         string.Join(", ", bodyParams.Select(p => $"{p.Name} ({p.ParameterType.Name})")) + "."
                 });
