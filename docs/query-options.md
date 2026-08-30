@@ -392,24 +392,39 @@ Gating: the **inline** form (`$count=true`) is gated by `CountEnabled`. The **st
 resource, not a query option) - on that route only `$filter` is gated, by `FilterEnabled`
 (and the `FilterProperties` allowlist).
 
-> **`$filter` and `$format` are the whole implemented set on the `/$count` segment; every other
-> `$`-prefixed option is refused (#353).** `GET /odata/Products/$count?$search=alpha` returns `501`
-> (`UnsupportedQueryOption`). Until 1.7.0 it returned the **unfiltered** total under a `200`, which
-> §11.2.9 forbids and which no client could detect. Ask for the searched count inline instead -
-> `GET /odata/Products?$search=alpha&$count=true` and read `@odata.count`, which does honour it.
+> **§11.2.9 decides what this segment implements, and it splits the options in two.** Verbatim:
 >
-> **⚠ `$top` and `$skip` are refused here too (`501`), and that is a breaking change.** They were accepted
-> no-ops from 1.0.0 through 1.7.x. The reading that made them no-ops - "a window over a count is not
-> applicable rather than unsupported" - does not survive being stated beside `$orderby`, `$select`
-> and `$expand`, which this release refuses: **none of the five can change a count.** You cannot
-> sort a number, project fields out of it, or take the first 5 of it. So all five are refused, and
-> the segment implements only what can actually move the number it returns. §11.2.5 permits this
-> ("MUST fail any request that contains the unsupported option"); this **diverges knowingly** from
-> `Microsoft.AspNetCore.OData`, which silently ignores all five on a count request
-> (`ODataQueryOptions.ApplyTo` returns early on `Request.IsCountRequest()` before it reaches the
-> `$orderby`/`$skip`/`$top` block). The cost is real and was accepted: swapping `/{Set}` for
-> `/{Set}/$count` on a grid URL and keeping the query string now answers `501`. The remedy is one
-> edit - **drop the option; it never did anything.**
+> > "On success, the response body MUST contain the count of items matching the request after
+> > applying any `$filter` or `$search` system query options … **The returned count MUST NOT be
+> > affected by `$top`, `$skip`, `$orderby`, or `$expand`.**"
+>
+> | Option | On `GET /{Set}/$count` | Why |
+> |---|---|---|
+> | `$filter` | **Applied** | §11.2.9: the count is taken after applying it |
+> | `$top` `$skip` `$orderby` `$expand` | **Accepted and ignored** | §11.2.9 names these four and says the count MUST NOT be affected by them |
+> | `$select` | **Accepted and ignored** | not named by that sentence, but it changes an item's *shape*, never its membership, and the body is a bare scalar |
+> | `$format` | **Accepted and ignored** | §11.2.9 disallows content negotiation here; the body is `text/plain` regardless |
+> | `$search` | **`501`** | §11.2.9 requires the count to be taken *after applying* it, and this route has no `$search` leg — ignoring it would return a **wrong number** under a `200` |
+> | `$apply` `$compute` `$count`, any unrecognized `$`-name | **`501`** | outside the clause, and implemented nowhere here |
+>
+> **`$search` is `501` and that is #353 (`GET /odata/Products/$count?$search=alpha`).** Until 1.7.0
+> it returned the **unfiltered** total under a `200`, which §11.2.9 forbids and which no client
+> could detect. Ask for the searched count inline instead - `GET /odata/Products?$search=alpha&$count=true`
+> and read `@odata.count`, which does honour it.
+>
+> **The four §11.2.9 names, and `$select`, are accepted and ignored — the same behaviour as
+> 1.0.0 through 1.6.0.** Ignoring them is what the clause specifies, so under Minimal item 7's
+> *"either follow the specification or return 501 … for any unsupported functionality"* it is the
+> follow arm; a `501` there would claim non-implementation of something this route has done
+> correctly since 1.0.0. This also matches `Microsoft.AspNetCore.OData`, whose
+> `ODataQueryOptions.ApplyTo` returns early on `Request.IsCountRequest()` before reaching the
+> `$orderby`/`$skip`/`$top` block, and it is what `Microsoft.OData.Client` requires: it translates
+> `LongCount()` by appending `/$count` to the query it has **already** built and strips nothing, so
+> `q.OrderBy(…).LongCount()`, `q.Take(n).LongCount()` and `q.Skip(n).LongCount()` all send the
+> option along.
+>
+> `Accept: application/xml` on this segment still answers `406` — §11.2.9 forbids the *client* to
+> negotiate, which is not a licence for the server to ship a media type the client refused.
 >
 > See [Unsupported system query options are rejected](#unsupported-system-query-options-are-rejected-359-380-353).
 
@@ -1124,7 +1139,7 @@ GET /odata/Products?$slect=Name       -> 501
 GET /odata/Products?$levels=2         -> 501   ($levels is a real option, but only inside $expand)
 GET /odata/Products(1)?$filter=…      -> 501   (a single entity has nothing to filter)
 GET /odata/Products/$count?$search=x  -> 501
-GET /odata/Products?$apply=…          -> 501   (was 400 through 1.7.x)
+GET /odata/Products?$apply=…          -> 501   (was 400 from 1.0.0 through 1.6.0)
 ```
 
 Until 1.7.0 each of these returned `200` with the option parsed and thrown away - and on the
@@ -1154,7 +1169,7 @@ this same request succeed on this same route?** Yes -> `400`. No -> `501`.
 | Condition | Status | Code |
 |---|---|---|
 | An unrecognized `$`-name, or an option this build implements nowhere (`$apply` `$compute` `$index` `$deltatoken`) | `501` | `UnsupportedQueryOption` |
-| An option the addressed **route** does not implement (`$filter` on `GET /Set({key})`, `$top` on a `/$count`, `$select` on a single-valued navigation) | `501` | `UnsupportedQueryOption` |
+| An option the addressed **route** does not implement (`$filter` on `GET /Set({key})`, `$search` on a `/$count`, `$select` on a single-valued navigation) | `501` | `UnsupportedQueryOption` |
 | `$filter`/`$orderby` on the `GetAll` path, and `$filter` on the `GetAll`-backed `/$count` | `501` | `UnsupportedQueryOption` |
 | A capability flag left `false` (`FilterEnabled`, `OrderByEnabled`, `SelectEnabled`, `ExpandEnabled`, `CountEnabled`) | `400` | `UnsupportedQueryOption` |
 | A property allowlist rejection (`FilterProperties` and friends) | `400` | `InvalidQueryOption` |
@@ -1219,11 +1234,11 @@ meaningless on a single entity.
 |---|---|
 | `GET /{Set}` (`GetQueryable`, `GetODataQueryable`) | `$filter` `$orderby` `$top` `$skip` `$select` `$expand` `$count` `$search` `$skiptoken` `$format` |
 | `GET /{Set}` (`GetAll`) | the same, **minus `$skiptoken`** - this path continues with `$skip` and never read a `$skiptoken` |
-| `GET /{Set}/$count` | `$filter` `$format` |
+| `GET /{Set}/$count` | `$filter` `$top` `$skip` `$orderby` `$expand` `$select` `$format` - only `$filter` is applied; §11.2.9 requires the rest to be ignored |
 | `GET /{Set}({key})` | `$select` `$expand` `$format` |
 | `GET /{Set}({key})/{Nav}` — **collection**-valued (`HasMany`) | `$select` `$orderby` `$skip` `$top` `$count` `$format` |
 | `GET /{Set}({key})/{Nav}` — **single**-valued (`HasOptional`/`HasRequired`) | `$format` only |
-| `GET /{Set}({key})/{Nav}/$count` | `$format` only - it applies not even `$filter` |
+| `GET /{Set}({key})/{Nav}/$count` | `$top` `$skip` `$orderby` `$expand` `$select` `$format` - it applies **none** of them, and refuses `$filter` as well as `$search` |
 | `GET /{Set}({key})/{Nav}?$skip=N` (the #313 `$expand` continuation) | `$skip` `$format` |
 | `GET\|POST /{Set}/{Op}` and `GET\|POST /{Set}({key})/{Op}` (bound operations) | `$top` `$skip` `$format` |
 | `GET\|POST /{Op}` (unbound operations) | `$format` only |
@@ -1251,13 +1266,22 @@ refusing a link the server itself issued. Unbound operations have no such pipeli
 operation's **own parameters** are query-string keys without a `$` (functions) or JSON body
 members (actions), so the sigil rule never examines them.
 
-**The two `/$count` rows are the narrowest sets on the surface, deliberately.** A `/$count` route
-returns one number, so it implements only what can change that number: `$filter` on the entity-set
-segment, and nothing at all on the navigation segment, whose handler invokes the navigation
-delegate and counts what comes back. `$top`, `$skip`, `$orderby`, `$select` and `$expand` are all
-refused there — see the [⚠ breaking-change callout](#count) above for why
-`$top`/`$skip` moved from accepted no-ops to `400`, and for the deliberate divergence from
-`Microsoft.AspNetCore.OData` that comes with it.
+**The two `/$count` rows are governed by §11.2.9 rather than by this feature's general rule, and
+they are the one place an accepted option is deliberately ignored.** That clause partitions the
+system query options for a count segment: the count is taken *after applying any `$filter` or
+`$search`*, and it *MUST NOT be affected by `$top`, `$skip`, `$orderby`, or `$expand`*. So the
+options in the first class are **applied where the route can and refused where it cannot** —
+ignoring one would answer a wrong number under a `200` — and the options in the second class are
+**accepted and ignored**, because that is the behaviour the clause specifies rather than a
+shortfall to confess with a `501`.
+
+The two rows differ only in how much the route can apply. The entity-set segment applies `$filter`
+and refuses `$search`; the navigation segment invokes the navigation delegate and counts what comes
+back, so it can apply neither and refuses both. `$select` is not named by §11.2.9 but is ignored on
+the same reasoning as the four that are: it changes an item's shape, never its membership, and the
+response is a bare scalar. `$format` is accepted-and-ignored too — §11.2.9 disallows content
+negotiation on this segment, so unlike every other row in the table it does not mean "negotiated
+here". See the [`/$count` table](#count) above.
 
 ### Why `501`, and what it costs
 
