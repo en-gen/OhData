@@ -28,38 +28,93 @@ jobs:
         run: dotnet format src/OhData.sln --verify-no-changes
 
       - name: Build
+        id: build
         run: dotnet build src/OhData.sln --no-restore -c Release
 
-      - name: Test with coverage
+      # One step per suite, each `!cancelled()`, so a failure in one does not hide the other six.
+      # As a single `run:` block, bash `set -e` aborted at the first failing suite and Codecov
+      # received only that suite's results - losing exactly the data Test Analytics exists to
+      # collect, on exactly the runs that need it. Any failing step still fails the job; the
+      # `steps.build.outcome` half keeps all seven skipped when the build never produced binaries,
+      # rather than restating one build failure as seven test failures.
+      - name: "Test: OhData.AspNetCore.Tests"
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           dotnet test src/OhData.AspNetCore.Tests/OhData.AspNetCore.Tests.csproj \
             --no-build -c Release \
             --collect:"XPlat Code Coverage" \
+            --logger "junit;LogFilePath=$GITHUB_WORKSPACE/TestResults/{assembly}.junit.xml" \
             --results-directory ./coverage
+
+      - name: "Test: OhData.Client.Tests"
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
           dotnet test src/OhData.Client.Tests/OhData.Client.Tests.csproj \
             --no-build -c Release \
             --collect:"XPlat Code Coverage" \
+            --logger "junit;LogFilePath=$GITHUB_WORKSPACE/TestResults/{assembly}.junit.xml" \
             --results-directory ./coverage
+
+      - name: "Test: OhData.MicrosoftODataClient.Tests"
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
           dotnet test src/OhData.MicrosoftODataClient.Tests/OhData.MicrosoftODataClient.Tests.csproj \
             --no-build -c Release \
             --collect:"XPlat Code Coverage" \
+            --logger "junit;LogFilePath=$GITHUB_WORKSPACE/TestResults/{assembly}.junit.xml" \
             --results-directory ./coverage
+
+      - name: "Test: OhData.AspNetCore.OpenApi.Tests"
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
           dotnet test src/OhData.AspNetCore.OpenApi.Tests/OhData.AspNetCore.OpenApi.Tests.csproj \
             --no-build -c Release \
             --collect:"XPlat Code Coverage" \
+            --logger "junit;LogFilePath=$GITHUB_WORKSPACE/TestResults/{assembly}.junit.xml" \
             --results-directory ./coverage
+
+      - name: "Test: OhData.AspNetCore.NSwag.Tests"
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
           dotnet test src/OhData.AspNetCore.NSwag.Tests/OhData.AspNetCore.NSwag.Tests.csproj \
             --no-build -c Release \
             --collect:"XPlat Code Coverage" \
+            --logger "junit;LogFilePath=$GITHUB_WORKSPACE/TestResults/{assembly}.junit.xml" \
             --results-directory ./coverage
+
+      - name: "Test: OhData.AspNetCore.Swashbuckle.Tests"
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
           dotnet test src/OhData.AspNetCore.Swashbuckle.Tests/OhData.AspNetCore.Swashbuckle.Tests.csproj \
             --no-build -c Release \
             --collect:"XPlat Code Coverage" \
+            --logger "junit;LogFilePath=$GITHUB_WORKSPACE/TestResults/{assembly}.junit.xml" \
             --results-directory ./coverage
+
+      - name: "Test: OhData.TestBench.AspNetCore.Tests"
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
           dotnet test src/OhData.TestBench.AspNetCore.Tests/OhData.TestBench.AspNetCore.Tests.csproj \
             --no-build -c Release \
             --collect:"XPlat Code Coverage" \
+            --logger "junit;LogFilePath=$GITHUB_WORKSPACE/TestResults/{assembly}.junit.xml" \
             --results-directory ./coverage
+
+      # Codecov Test Analytics: per-test pass/fail history, flaky-test detection, and a PR
+      # comment naming the tests a PR broke. Uploads the JUnit XML the seven suites above
+      # wrote (JunitXml.TestLogger, referenced by all seven test projects).
+      #
+      # Carries the same condition as the suites above, for the same reason: a run whose tests
+      # FAILED is exactly the run whose results are worth having, so a failing suite must not
+      # skip this - while a build that produced no binaries leaves nothing to upload.
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          report_type: test_results
+          directory: ./TestResults
+          fail_ci_if_error: false
 
       - name: Pack (dry run)
         run: |
@@ -87,5 +142,6 @@ jobs:
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           directory: ./coverage
           fail_ci_if_error: false
