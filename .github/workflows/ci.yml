@@ -6,6 +6,16 @@ on:
   pull_request:
     branches: [main, develop]
 
+# Supersede an in-flight run when the same PR is pushed again: the older run is answering a
+# question nobody is asking any more, and CI/CodeQL/k6 are the three most expensive workflows
+# here. Scoped to pull_request on purpose: a run on develop or main establishes that branch's
+# baseline - coverage and Test Analytics, CodeQL alerts, the commit status a release reads - so
+# it must always finish. PR and push runs land in different groups anyway, since github.ref is
+# refs/pull/N/merge for one and refs/heads/X for the other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
@@ -24,8 +34,26 @@ jobs:
       - name: Restore
         run: dotnet restore src/OhData.sln
 
+      # Whitespace only, and --no-restore because the step above already restored.
+      #
+      # `dotnet format` without a subcommand runs whitespace + style + analyzers, and the last
+      # two are already enforced one step later: src/Directory.Build.props sets
+      # EnforceCodeStyleInBuild=true and TreatWarningsAsErrors=true, so every IDE/CA rule at
+      # warning severity is a BUILD error - and warning is exactly the severity floor
+      # `dotnet format style` itself defaults to, so the two check the same set. Measured on
+      # this tree: a block-scoped namespace (IDE0161, `:warning` in .editorconfig) fails
+      # `dotnet build` with `error IDE0161`, while trailing whitespace builds clean with 0
+      # warnings and is caught only here. Whitespace is the sole additive part.
+      #
+      # Cost, measured locally: full 55s, whitespace 19s (style alone 50s, analyzers 45s -
+      # they overlap because each pays the same workspace load). CI's full run was 95s.
+      #
+      # Residual: a style rule Roslyn exposes to the format CLI but not to the compiler would
+      # now go unchecked in CI. The husky pre-commit hook still runs the FULL `dotnet format`
+      # locally, so that gap is only reachable by a commit made with --no-verify or through
+      # the GitHub web editor. Restore the old behaviour by deleting the `whitespace` word.
       - name: Format check
-        run: dotnet format src/OhData.sln --verify-no-changes
+        run: dotnet format whitespace src/OhData.sln --verify-no-changes --no-restore
 
       - name: Build
         id: build
