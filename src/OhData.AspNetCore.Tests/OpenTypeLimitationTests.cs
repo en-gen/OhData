@@ -369,7 +369,7 @@ public class OpenTypeDynamicKeyReadPathTests
         string body = await resp.Content.ReadAsStringAsync();
         _out.WriteLine($"GetAll {query}: {(int)resp.StatusCode} {body}");
 
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.NotImplemented, resp.StatusCode);
         Assert.Contains("UnsupportedQueryOption", body, StringComparison.Ordinal);
         Assert.Contains("Configure GetQueryable", body, StringComparison.Ordinal);
     }

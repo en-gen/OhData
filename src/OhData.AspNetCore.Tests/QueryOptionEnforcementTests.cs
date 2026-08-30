@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Threading;
@@ -155,6 +156,39 @@ public class QueryOptionEnforcementTests
         JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/AllOnWidgets?$count=true");
         Assert.True(json.TryGetProperty("@odata.count", out JsonElement countEl));
         Assert.Equal(2L, countEl.GetInt64());
+    }
+
+    // ── 501 is "can't", 400 is "won't" ─────────────────────────────────
+
+    /// <summary>
+    /// The consequence of the 501/400 taxonomy that looks odd at a glance and is correct: the
+    /// <b>same option</b> gets a different status on two entity sets over the <b>same model type</b>,
+    /// decided by which read handler the profile supplies. <c>Widgets</c> is <c>GetAll</c>-backed, so
+    /// there is no <c>IQueryable</c> and the framework <i>cannot</i> filter it under any
+    /// configuration -- 501. <c>AllOffWidgets</c> is <c>GetQueryable</c>-backed with
+    /// <c>FilterEnabled = false</c>, so it <i>can</i> and the adopter chose not to expose it -- 400.
+    /// Conformance is per-resource (§13.1.1 is about what a service does when asked, not a global
+    /// constant), and the two answers tell a client genuinely different things. This test exists so
+    /// that nobody "harmonises" the pair.
+    /// </summary>
+    [Fact]
+    public async Task SameFilterOption_Is501WhereItCannotApply_And400WhereItIsMerelyDisabled()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o
+            .AddEntitySetProfile<WidgetProfile>()
+            .AddEntitySetProfile<AllOffProfile>());
+
+        HttpResponseMessage cannot = await fx.Client.GetAsync("/odata/Widgets?$filter=Name eq 'Alpha'");
+        Assert.Equal(HttpStatusCode.NotImplemented, cannot.StatusCode);
+
+        HttpResponseMessage wont = await fx.Client.GetAsync("/odata/AllOffWidgets?$filter=Name eq 'Alpha'");
+        Assert.Equal(HttpStatusCode.BadRequest, wont.StatusCode);
+
+        // Both carry the same code; the status is the whole difference.
+        JsonElement cannotBody = await cannot.Content.ReadFromJsonAsync<JsonElement>();
+        JsonElement wontBody = await wont.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("UnsupportedQueryOption", cannotBody.GetProperty("error").GetProperty("code").GetString());
+        Assert.Equal("UnsupportedQueryOption", wontBody.GetProperty("error").GetProperty("code").GetString());
     }
 
     // ── /$count route: disabled $filter → 400 ────────────────────────────────────
@@ -413,17 +447,18 @@ public class QueryOptionEnforcementTests
         Assert.Contains("$orderby", message);
     }
 
-    // ── Navigation route: $filter and other unimplemented options → 400 ──────────
+    // ── Navigation route: $filter and other unimplemented options → 501 ──────────
 
     [Theory]
     [InlineData("$filter=Name eq 'Child1'", "$filter")]
     [InlineData("$expand=Nested", "$expand")]
     [InlineData("$search=foo", "$search")]
-    public async Task NavRoute_UnsupportedOption_Returns400(string query, string optionName)
+    public async Task NavRoute_UnsupportedOption_Returns501(string query, string optionName)
     {
+        // The navigation route implements none of these three, on any configuration — §9.3.1.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<NavEnforcementProfile>());
         HttpResponseMessage response = await fx.Client.GetAsync($"/odata/NavEnforcementParents(1)/Children?{query}");
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(HttpStatusCode.NotImplemented, response.StatusCode);
         JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
         JsonElement error = json.GetProperty("error");
         Assert.Equal("UnsupportedQueryOption", error.GetProperty("code").GetString());

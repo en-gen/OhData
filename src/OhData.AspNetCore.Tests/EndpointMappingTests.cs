@@ -674,11 +674,11 @@ public class EndpointMappingTests
 
     // ── H9: GetAll rejects unsupported query options ──────────────────────────
     [Fact]
-    public async Task GetAll_WithFilter_Returns400()
+    public async Task GetAll_WithFilter_Returns501()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/Widgets?$filter=Name eq 'Sprocket'");
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(HttpStatusCode.NotImplemented, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("UnsupportedQueryOption", json.GetProperty("error").GetProperty("code").GetString());
     }
@@ -697,11 +697,13 @@ public class EndpointMappingTests
 
     // ── H3: $count on GetAll rejects $filter ─────────────────────────────────
     [Fact]
-    public async Task Count_GetAllPath_WithFilter_Returns400()
+    public async Task Count_GetAllPath_WithFilter_Returns501()
     {
+        // 501: the GetAll-backed /$count branch has no IQueryable and therefore no filter code,
+        // and no flag turns one on — §9.3.1 functionality the service does not implement.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/Widgets/$count?$filter=Name eq 'Sprocket'");
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(HttpStatusCode.NotImplemented, response.StatusCode);
     }
 
     // ── H5: Bound function with Guid parameter ────────────────────────────────
