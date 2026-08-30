@@ -220,7 +220,7 @@ framework's own CSDL publishes as `Nullable="false"`, passed the check, the `nul
 handler, and the persistence layer's rejection came back as a `500`. The check now reads the EDM,
 which is the same authority the entity-level write routes use. A property the EDM does not declare
 (possible under an `AdvancedConfigure` model) still falls back to the CLR answer, and setting
-`ValidateRequestBodyNullability = false` on the profile restores the CLR-only behaviour for that
+`RequestBodyNullabilityValidationEnabled = false` on the profile restores the CLR-only behaviour for that
 entity set.
 
 These two routes were always **withholding-based** — they check the one property the request

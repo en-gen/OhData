@@ -164,7 +164,7 @@ internal interface IEntitySetEndpointSource
     /// omitted property is not a violation. Resolved from the profile flag /
     /// <c>EntitySetDefaults</c> (default <c>true</c>).
     /// </summary>
-    bool ValidateRequestBodyNullability { get; }
+    bool RequestBodyNullabilityValidationEnabled { get; }
 
     /// <summary>
     /// Names of every CLR property declared as a navigation property via

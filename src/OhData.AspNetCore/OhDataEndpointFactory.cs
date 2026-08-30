@@ -10511,7 +10511,7 @@ internal static class OhDataEndpointFactory
         // #355: the EDM's own Nullable="false" structural properties for this entity set, resolved
         // once at startup. Empty (so every check below is a length-0 loop) when the profile opts
         // out, which is the shape that keeps an opted-out registration paying nothing.
-        EdmRequiredProperty[] edmRequiredProps = source.ValidateRequestBodyNullability
+        EdmRequiredProperty[] edmRequiredProps = source.RequestBodyNullabilityValidationEnabled
             ? BuildEdmRequiredProperties(rootEdmType, typeof(TModel))
             : Array.Empty<EdmRequiredProperty>();
 
@@ -10531,7 +10531,7 @@ internal static class OhDataEndpointFactory
         // key — it has its own KeyImmutableError stubs — and leaving it out here would be a claim
         // about the key that this set is not making.
         var edmNonNullablePropertyNames = new HashSet<string>(StringComparer.Ordinal);
-        if (source.ValidateRequestBodyNullability && rootEdmType is not null)
+        if (source.RequestBodyNullabilityValidationEnabled && rootEdmType is not null)
         {
             foreach (IEdmStructuralProperty edmProp in rootEdmType.StructuralProperties())
             {
@@ -11941,7 +11941,8 @@ internal static class OhDataEndpointFactory
                 // place the framework creates an entity of another type. The EDM type is resolved
                 // through EdmClrTypeMap rather than by name convention (#508); a child type the EDM
                 // does not declare yields an empty set and the route behaves exactly as before.
-                EdmRequiredProperty[] navPostRequiredProps = source.ValidateRequestBodyNullability
+                EdmRequiredProperty[] navPostRequiredProps =
+                    source.RequestBodyNullabilityValidationEnabled
                     ? BuildEdmRequiredProperties(
                         EdmClrTypeMap.FindStructuredType(registration.EdmModel, postNavItemType),
                         postNavItemType)
