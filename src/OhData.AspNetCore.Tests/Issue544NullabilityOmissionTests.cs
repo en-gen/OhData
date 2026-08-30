@@ -754,7 +754,7 @@ internal class N544UnvalidatedProfile : EntitySetProfile<int, N544Unvalidated>
     public N544UnvalidatedProfile() : base(x => x.Id)
     {
         EntitySetName = "N544Unvalidated";
-        ValidateRequestBodyNullability = false;
+        RequestBodyNullabilityValidationEnabled = false;
 
         GetAll = _ => Task.FromResult<IEnumerable<N544Unvalidated>>(Array.Empty<N544Unvalidated>());
         Post = (thing, _) =>

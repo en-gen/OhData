@@ -481,15 +481,15 @@ public sealed class EntitySetDefaults
     /// #544: the check fires only on a property the body NAMES with an explicit <c>null</c>. An
     /// omitted property is not a violation on any verb, so the rule is derivable from the wire
     /// alone and does not depend on a CLR initializer the client cannot see. See
-    /// <see cref="EntitySetProfile{TKey,TModel}.ValidateRequestBodyNullability"/> for the full
-    /// statement and the four properties the rule cannot reach.
+    /// <see cref="EntitySetProfile{TKey,TModel}.RequestBodyNullabilityValidationEnabled"/>
+    /// for the full statement and the four properties the rule cannot reach.
     /// </para>
     /// <para>
     /// Turn it off for an entity set whose handler legitimately supplies a value the client is not
     /// expected to send (a server-stamped audit column, say).
     /// </para>
     /// </remarks>
-    public bool ValidateRequestBodyNullability { get; set; } = true;
+    public bool RequestBodyNullabilityValidationEnabled { get; set; } = true;
 
     /// <summary>
     /// Whether the entity write routes pass nested navigation-property values through to the

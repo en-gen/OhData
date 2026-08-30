@@ -241,8 +241,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// <summary>
     /// #355: whether a write body for this entity set is checked against the EDM's own
     /// <c>Nullable="false"</c> annotations before the handler is invoked. Inherits from
-    /// <see cref="EntitySetDefaults.ValidateRequestBodyNullability"/> (default <c>true</c>) when
-    /// <c>null</c>.
+    /// <see cref="EntitySetDefaults.RequestBodyNullabilityValidationEnabled"/>
+    /// (default <c>true</c>) when <c>null</c>.
     /// <para>
     /// <b>The rule, in one sentence:</b> a property the request body NAMES with an explicit
     /// <c>null</c>, where the framework's own <c>$metadata</c> declares that property
@@ -275,8 +275,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// is not expected to send.
     /// </para>
     /// </summary>
-    protected bool? ValidateRequestBodyNullability { get; init; }
-    private bool _resolvedValidateRequestBodyNullability = true;
+    protected bool? RequestBodyNullabilityValidationEnabled { get; init; }
+    private bool _resolvedRequestBodyNullabilityValidationEnabled = true;
 
     /// <summary>
     /// Renamed to <see cref="AllowDeepWrites"/> in 1.6.0. Kept as a forwarding property so an
@@ -827,8 +827,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _resolvedExpandPushdownEnabled = ExpandPushdownEnabled ?? defaults.ExpandPushdownEnabled;
         _resolvedPropertyRouteDocsEnabled = PropertyRouteDocsEnabled ?? defaults.PropertyRouteDocsEnabled;
         _resolvedAllowDeepWrites = AllowDeepWrites ?? defaults.AllowDeepWrites;
-        _resolvedValidateRequestBodyNullability =
-            ValidateRequestBodyNullability ?? defaults.ValidateRequestBodyNullability;
+        _resolvedRequestBodyNullabilityValidationEnabled = RequestBodyNullabilityValidationEnabled
+            ?? defaults.RequestBodyNullabilityValidationEnabled;
         _resolvedRoundingMode = RoundingMode ?? defaults.RoundingMode;
         _structuralProperties = BuildStructuralProperties();
 
@@ -2350,8 +2350,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     IReadOnlyList<StructuralPropertyInfo> IEntitySetEndpointSource.StructuralProperties =>
         _structuralProperties ??= BuildStructuralProperties();
     bool IEntitySetEndpointSource.AllowDeepWrites => _resolvedAllowDeepWrites;
-    bool IEntitySetEndpointSource.ValidateRequestBodyNullability =>
-        _resolvedValidateRequestBodyNullability;
+    bool IEntitySetEndpointSource.RequestBodyNullabilityValidationEnabled =>
+        _resolvedRequestBodyNullabilityValidationEnabled;
     // #253 completion: navigations are addressed by their EDM (JSON) names on the OData surface. This
     // exposed view is consumed by the $expand pushdown provenance/keying and the deep-insert strip
     // (which resolves each CLR property to its EDM name before testing membership).

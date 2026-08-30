@@ -265,7 +265,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   > written the ordinary way — `public string CreatedBy { get; set; } = null!;`, with no `[Required]`
   > anywhere — emits `Nullable="false"`; sending `{"createdBy":null}` for it is now refused, while
   > **omitting** it is accepted exactly as before. Opt out per entity set, or in `EntitySetDefaults`,
-  > with `ValidateRequestBodyNullability = false`.
+  > with `RequestBodyNullabilityValidationEnabled = false`.
 
 - **`EntitySetDefaults.MaxRequestBodyBytes` now defaults to 30,000,000 bytes (#474).** The #203
   body-limit filter does both of its jobs — the `Content-Length` fast-reject and the per-request Kestrel

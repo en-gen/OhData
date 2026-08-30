@@ -641,7 +641,7 @@ internal class WbUnvalidatedProfile : EntitySetProfile<int, WbContact>
     public WbUnvalidatedProfile() : base(x => x.Id)
     {
         EntitySetName = "WbUnvalidatedContacts";
-        ValidateRequestBodyNullability = false;
+        RequestBodyNullabilityValidationEnabled = false;
 
         GetAll = _ => Task.FromResult<IEnumerable<WbContact>>(Array.Empty<WbContact>());
         Post = (contact, _) =>
