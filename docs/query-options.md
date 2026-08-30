@@ -1133,6 +1133,13 @@ generated. A `200` from `?$filter=…` reasonably tells a client that the filter
 - **`$format`.** Accepted on every route: §11.2.12 content negotiation is implemented once, on the
   group filter that wraps the whole OData surface, so it never reaches a route handler and cannot
   change a row. An unsupported `$format` *value* is still rejected there.
+- **Three routes outside the table, which still ignore every query option.** Read the table as a
+  list of what *is* gated, not as the whole URL surface. The structural-property reads and writes
+  (`GET|PUT|PATCH|DELETE /{Set}({key})/{Prop}` and `GET /{Set}({key})/{Prop}/$value`), the service
+  document (`GET /{prefix}`) and `GET /{prefix}/$metadata` are ungated: `GET /odata?$unknown=1`
+  answers `200` with the service document, and the property routes answer `200` with the property.
+  None of them builds a link, so none can echo an option back the way #359 reported; closing them
+  is a separate change.
 
 ### The per-route sets
 
@@ -1145,14 +1152,35 @@ meaningless on a single entity.
 | `GET /{Set}` (`GetAll`) | the same, **minus `$skiptoken`** - this path continues with `$skip` and never read a `$skiptoken` |
 | `GET /{Set}/$count` | `$filter` `$top` `$skip` `$format` |
 | `GET /{Set}({key})` | `$select` `$expand` `$format` |
-| `GET /{Set}({key})/{Nav}` | `$select` `$orderby` `$skip` `$top` `$count` `$format` |
+| `GET /{Set}({key})/{Nav}` — **collection**-valued (`HasMany`) | `$select` `$orderby` `$skip` `$top` `$count` `$format` |
+| `GET /{Set}({key})/{Nav}` — **single**-valued (`HasOptional`/`HasRequired`) | `$format` only |
 | `GET /{Set}({key})/{Nav}/$count` | `$top` `$skip` `$format` |
 | `GET /{Set}({key})/{Nav}?$skip=N` (the #313 `$expand` continuation) | `$skip` `$format` |
+| `GET\|POST /{Set}/{Op}` and `GET\|POST /{Set}({key})/{Op}` (bound operations) | `$top` `$skip` `$format` |
+| `GET\|POST /{Op}` (unbound operations) | `$format` only |
 
 Being in a set means *the route implements the option*, not that this profile permits it: a
 `$filter` on a set with `FilterEnabled = false` is still a `400`, with the capability flag's own
 message naming the flag. A recognized-but-not-implemented-here option and a completely unrecognized
 one share one code, because the client's remedy is identical.
+
+Two things in that table are worth reading twice.
+
+**The two navigation rows are one URL shape with two handlers.** `GET /{Set}({key})/{Nav}` is
+mapped once, and which branch runs is decided by whether the navigation was declared with
+`HasMany` or with `HasOptional`/`HasRequired`. Only the collection branch applies query options:
+the single-valued branch serializes the related entity and reads nothing off the query string,
+not even `$select`. It therefore accepts `$format` and refuses everything else — including
+`$select`, which its collection sibling really does implement. If you need a projection of a
+single related entity, read it from its own entity set (`GET /{ChildSet}({childKey})?$select=…`).
+
+**Bound operations honour `$top`/`$skip`, unbound ones do not.** A bound function or action that
+returns a collection of the profile's model type is bounded by `MaxTop` and pages with a
+`$skip` continuation (#357 for a function, #543 for an action), so `$top`/`$skip` are real
+there and are listed unconditionally — the server can emit a `$skip` link on any of those routes, and refusing the option would mean
+refusing a link the server itself issued. Unbound operations have no such pipeline. An
+operation's **own parameters** are query-string keys without a `$` (functions) or JSON body
+members (actions), so the sigil rule never examines them.
 
 ### Why `400` and not `501`
 

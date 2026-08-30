@@ -1041,6 +1041,26 @@ public sealed class BareExpandContinuationFailClosedTests : IAsyncLifetime
     /// assertion, and what shows the exemption forwards to the existing check rather than disabling it.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// #359: this route's own inline sigil loop compared with <c>StringComparison.Ordinal</c>, so
+    /// <c>$SKIP</c> and <c>$FORMAT</c> were <c>400</c>. Sharing the framework-wide matcher makes the
+    /// comparison <c>OrdinalIgnoreCase</c> -- alignment with <c>Microsoft.AspNetCore.OData</c>, which
+    /// lowercases an option name before matching whenever the URI resolver enables
+    /// case-insensitivity (the default), and with every other read route. This is a real behaviour
+    /// change on this route and is pinned here rather than described as "unchanged".
+    /// </summary>
+    [Theory]
+    [InlineData("$SKIP=3")]
+    [InlineData("$Skip=3")]
+    [InlineData("$skip=3&$FORMAT=json")]
+    public async Task MixedCaseSkipAndFormat_AreHonoured_NotRejected(string query)
+    {
+        HttpResponseMessage resp = await _fx.Client.GetAsync($"/odata/BeAuthors(1)/Books?{query}");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal(2, JsonDocument.Parse(await resp.Content.ReadAsStringAsync())
+            .RootElement.GetProperty("value").GetArrayLength());
+    }
+
     [Fact]
     public async Task TheContinuationRouteAcceptsFormat_BecauseTheGroupFilterOwnsIt()
     {

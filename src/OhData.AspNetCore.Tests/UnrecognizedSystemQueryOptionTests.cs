@@ -38,6 +38,9 @@ public class UnrecognizedSystemQueryOptionTests
         .AddEntitySetProfile<SqGetAllProfile>()
         .AddEntitySetProfile<SqODataProfile>());
 
+    private static Task<TestFixture> BuildOpsAsync() => TestHostBuilder.BuildAsync(o => o
+        .AddEntitySetProfile<SqOpsProfile>());
+
     private static async Task AssertUnsupportedAsync(HttpResponseMessage resp, string option)
     {
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
@@ -141,21 +144,47 @@ public class UnrecognizedSystemQueryOptionTests
     // ── Controls: what must NOT be rejected ──────────────────────────────────────
 
     [Theory]
-    [InlineData("/odata/SqQueryables?$Select=Name")]
-    [InlineData("/odata/SqQueryables?$TOP=2")]
-    [InlineData("/odata/SqQueryables?$SELECT=Name")]
-    [InlineData("/odata/SqQueryables?$Count=true")]
-    [InlineData("/odata/SqGetAlls?$Select=Name")]
-    [InlineData("/odata/SqGetAlls?$TOP=2")]
-    [InlineData("/odata/SqODatas?$Select=Name")]
-    public async Task MixedCaseSpellingOfARealOption_IsStillHonoured(string url)
+    [InlineData("/odata/SqQueryables?$Select=Name", "SqQueryables(Name)")]
+    [InlineData("/odata/SqQueryables?$SELECT=Name", "SqQueryables(Name)")]
+    [InlineData("/odata/SqGetAlls?$Select=Name", "SqGetAlls(Name)")]
+    [InlineData("/odata/SqODatas?$Select=Name", "SqODatas(Name)")]
+    public async Task MixedCaseSelect_IsStillHonoured_AndReallyProjects(string url, string context)
     {
         // Alignment with Microsoft.AspNetCore.OData: ODataQueryOptions lowercases the option name
         // before matching whenever the URI resolver enables case-insensitivity, which is the
         // default. $Select being APPLIED is not the defect; $slect being IGNORED was.
+        //
+        // Asserting the EFFECT, not the status: "200" alone is satisfied by an ablation that makes
+        // a mixed-case option accepted-and-ignored, which is precisely the failure mode this whole
+        // change exists to remove. The projected @odata.context suffix (JSON SS10.8) and the absent
+        // Id member are what only an APPLIED $select produces.
         await using TestFixture fx = await BuildAsync();
         HttpResponseMessage resp = await fx.Client.GetAsync(url);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        JsonElement body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.EndsWith(context, body.GetProperty("@odata.context").GetString()!);
+        JsonElement first = body.GetProperty("value")[0];
+        Assert.True(first.TryGetProperty("Name", out _));
+        Assert.False(first.TryGetProperty("Id", out _));
+    }
+
+    [Theory]
+    [InlineData("/odata/SqQueryables?$TOP=1")]
+    [InlineData("/odata/SqGetAlls?$TOP=1")]
+    public async Task MixedCaseTop_IsStillHonoured_AndReallyWindows(string url)
+    {
+        // Same rule for $top: the page really is one row, not the whole (or MaxTop-capped) set.
+        await using TestFixture fx = await BuildAsync();
+        JsonElement body = await fx.Client.GetFromJsonAsync<JsonElement>(url);
+        Assert.Equal(1, body.GetProperty("value").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task MixedCaseCount_IsStillHonoured_AndReallyAnnotates()
+    {
+        await using TestFixture fx = await BuildAsync();
+        JsonElement body = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/SqQueryables?$Count=true");
+        Assert.Equal(3, body.GetProperty("@odata.count").GetInt32());
     }
 
     [Theory]
@@ -214,16 +243,36 @@ public class UnrecognizedSystemQueryOptionTests
         await AssertUnsupportedAsync(resp, option);
     }
 
-    [Theory]
-    [InlineData("/odata/SqQueryables(1)")]
-    [InlineData("/odata/SqQueryables(1)?$select=Name")]
-    [InlineData("/odata/SqQueryables(1)?$Select=Name")]
-    [InlineData("/odata/SqQueryables(1)?$expand=Children")]
-    public async Task GetById_ImplementedOptions_StillSucceed(string url)
+    [Fact]
+    public async Task GetById_NoOptions_StillSucceeds()
     {
         await using TestFixture fx = await BuildAsync();
-        HttpResponseMessage resp = await fx.Client.GetAsync(url);
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        JsonElement body = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/SqQueryables(1)");
+        Assert.Equal(1, body.GetProperty("Id").GetInt32());
+        Assert.Equal("Alpha", body.GetProperty("Name").GetString());
+    }
+
+    [Theory]
+    [InlineData("$select=Name")]
+    [InlineData("$Select=Name")]
+    [InlineData("$SELECT=Name")]
+    public async Task GetById_Select_IsHonoured_AndReallyProjects(string query)
+    {
+        // Effect, not status: a mixed-case $select that were accepted-and-ignored would still be a
+        // 200 with the whole entity, which is the exact defect #380 names.
+        await using TestFixture fx = await BuildAsync();
+        JsonElement body = await fx.Client.GetFromJsonAsync<JsonElement>($"/odata/SqQueryables(1)?{query}");
+        Assert.EndsWith("SqQueryables(Name)/$entity", body.GetProperty("@odata.context").GetString()!);
+        Assert.True(body.TryGetProperty("Name", out _));
+        Assert.False(body.TryGetProperty("Id", out _));
+    }
+
+    [Fact]
+    public async Task GetById_Expand_IsHonoured_AndReallyExpands()
+    {
+        await using TestFixture fx = await BuildAsync();
+        JsonElement body = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/SqQueryables(1)?$expand=Children");
+        Assert.Equal(2, body.GetProperty("Children").GetArrayLength());
     }
 
     // ── #353: /{Set}/$count ──────────────────────────────────────────────────────
@@ -330,6 +379,207 @@ public class UnrecognizedSystemQueryOptionTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         Assert.Equal("2", await resp.Content.ReadAsStringAsync());
     }
+
+    // -- Single-valued navigation route (HasOptional/HasRequired) --------------------
+
+    [Theory]
+    [InlineData("$select=Name", "$select")]
+    [InlineData("$orderby=Name", "$orderby")]
+    [InlineData("$top=1", "$top")]
+    [InlineData("$skip=1", "$skip")]
+    [InlineData("$count=true", "$count")]
+    [InlineData("$expand=Children", "$expand")]
+    [InlineData("$filter=Id eq 1", "$filter")]
+    [InlineData("$unknown=1", "$unknown")]
+    public async Task NavSingle_OptionItDoesNotImplement_Returns400(string query, string option)
+    {
+        // The single-valued navigation branch serializes the related entity through
+        // ODataEntityNode and reads NO query option at all -- not even $select, which its
+        // collection sibling applies in BuildNavEnvelope. Gating it with the COLLECTION nav's
+        // implemented set therefore accepted-and-dropped $select/$orderby/$top/$count here, which
+        // is #380's defect statement verbatim ("known, implemented-elsewhere options being
+        // silently dropped on a route that does not implement them") one route over.
+        await using TestFixture fx = await BuildAsync();
+        HttpResponseMessage resp = await fx.Client.GetAsync($"/odata/SqQueryables(1)/Owner?{query}");
+        await AssertUnsupportedAsync(resp, option);
+    }
+
+    [Fact]
+    public async Task NavSingle_Message_ListsWhatThisRouteActuallyAccepts()
+    {
+        await using TestFixture fx = await BuildAsync();
+        HttpResponseMessage resp = await fx.Client.GetAsync("/odata/SqQueryables(1)/Owner?$select=Name");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        JsonElement body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(
+            "This navigation route does not support $select. A single-valued navigation " +
+            "route supports no data query options.",
+            body.GetProperty("error").GetProperty("message").GetString());
+    }
+
+    [Theory]
+    [InlineData("/odata/SqQueryables(1)/Owner")]
+    [InlineData("/odata/SqQueryables(1)/Owner?$format=json")]
+    [InlineData("/odata/SqQueryables(1)/Owner?custom=1")]
+    [InlineData("/odata/SqQueryables(1)/Owner?%40p1=1")]
+    public async Task NavSingle_WhatItDoesAccept_StillSucceeds(string url)
+    {
+        await using TestFixture fx = await BuildAsync();
+        HttpResponseMessage resp = await fx.Client.GetAsync(url);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task NavCollection_And_NavSingle_AreGatedIndependently()
+    {
+        // The two branches share one route template shape and used to share one implemented set.
+        // $select is real on the collection branch and absent from the single-valued one, so the
+        // sets must differ -- this is the pair that fails if the gate is hoisted back above the
+        // navIsCollection branch.
+        await using TestFixture fx = await BuildAsync();
+        Assert.Equal(HttpStatusCode.OK,
+            (await fx.Client.GetAsync("/odata/SqQueryables(1)/Children?$select=Name")).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest,
+            (await fx.Client.GetAsync("/odata/SqQueryables(1)/Owner?$select=Name")).StatusCode);
+    }
+
+    // -- Bound operation routes: #359's nextLink half -------------------------------
+
+    [Theory]
+    [InlineData("$unknown=evil", "$unknown")]
+    [InlineData("$apply=groupby((Name))", "$apply")]
+    [InlineData("$filter=Id eq 1", "$filter")]
+    [InlineData("$select=Name", "$select")]
+    [InlineData("$orderby=Name", "$orderby")]
+    [InlineData("$skiptoken=abc", "$skiptoken")]
+    public async Task BoundFunction_OptionItDoesNotImplement_Returns400(string query, string option)
+    {
+        await using TestFixture fx = await BuildOpsAsync();
+        HttpResponseMessage resp = await fx.Client.GetAsync($"/odata/SqOps/TopRated?{query}");
+        await AssertUnsupportedAsync(resp, option);
+    }
+
+    [Fact]
+    public async Task BoundFunction_UnrecognizedOption_IsNeverEchoedIntoANextLink()
+    {
+        // #359's second half, on the route #357/#543 gave a nextLink in this very release.
+        // TryApplyOperationCollectionPaging emits BuildNextPageLinkWithSkip, which copies the
+        // WHOLE incoming query string -- so before this fix ?$unknown=evil came back inside the
+        // server's own continuation link under a 200.
+        await using TestFixture fx = await BuildOpsAsync();
+        HttpResponseMessage resp = await fx.Client.GetAsync("/odata/SqOps/TopRated?$unknown=evil");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        string raw = await resp.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("nextLink", raw);
+        Assert.DoesNotContain("unknown=evil", raw);
+    }
+
+    [Fact]
+    public async Task BoundFunction_PagedRequest_EmitsNextLink_Control()
+    {
+        // The control the test above needs: this route really does page and really does emit a
+        // link, so "no nextLink" is a consequence of the rejection and not of the fixture.
+        await using TestFixture fx = await BuildOpsAsync();
+        JsonElement json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/SqOps/TopRated");
+        Assert.Equal(2, json.GetProperty("value").GetArrayLength());
+        Assert.Contains("skip=2", json.GetProperty("@odata.nextLink").GetString()!);
+    }
+
+    [Theory]
+    [InlineData("/odata/SqOps/TopRated?$top=1")]
+    [InlineData("/odata/SqOps/TopRated?$skip=2")]
+    [InlineData("/odata/SqOps/TopRated?$TOP=1")]
+    [InlineData("/odata/SqOps/TopRated?$format=json")]
+    [InlineData("/odata/SqOps/TopRated?minRating=1")]
+    public async Task BoundFunction_TopSkipFormatAndItsOwnParameters_StillAccepted(string url)
+    {
+        // $top/$skip are the route's implemented set per #357/#543, and they must STAY implemented
+        // even when the declared return type is not a collection: the framework's own continuation
+        // link carries "$skip=N", so refusing $skip would make the server emit a link it then
+        // rejects. A bound function's own parameters are non-'$' keys (Part 2 5.2) and are never
+        // examined by the sigil rule.
+        await using TestFixture fx = await BuildOpsAsync();
+        HttpResponseMessage resp = await fx.Client.GetAsync(url);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task BoundFunction_TopAboveMaxTop_KeepsItsOwnEnvelope()
+    {
+        // The sigil gate runs before parameter binding and must not shadow the #357 ceiling
+        // message, which is shared verbatim with the collection routes.
+        await using TestFixture fx = await BuildOpsAsync();
+        HttpResponseMessage resp = await fx.Client.GetAsync("/odata/SqOps/TopRated?$top=999");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        string raw = await resp.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("is not supported", raw);
+    }
+
+    [Theory]
+    [InlineData("$unknown=evil", "$unknown")]
+    [InlineData("$apply=groupby((Name))", "$apply")]
+    [InlineData("$select=Name", "$select")]
+    public async Task BoundAction_OptionItDoesNotImplement_Returns400_AndNeverRuns(
+        string query, string option)
+    {
+        // The gate is up front, before the body is read and before the handler delegate runs, so a
+        // refused invocation provably has no side effect -- the same placement CheckETagAsync uses.
+        await using TestFixture fx = await BuildOpsAsync();
+        SqOpsProfile.ActionInvocations = 0;
+        HttpResponseMessage resp = await fx.Client.PostAsync(
+            $"/odata/SqOps/Dump?{query}", JsonContent.Create(new { }));
+        await AssertUnsupportedAsync(resp, option);
+        Assert.Equal(0, SqOpsProfile.ActionInvocations);
+    }
+
+    [Fact]
+    public async Task BoundAction_TopAndSkip_StillAccepted()
+    {
+        await using TestFixture fx = await BuildOpsAsync();
+        HttpResponseMessage resp = await fx.Client.PostAsync(
+            "/odata/SqOps/Dump?$top=1", JsonContent.Create(new { }));
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+    }
+
+    // -- Characterization: the three route families still OUTSIDE the rule ---------
+
+    [Theory]
+    [InlineData("/odata?$unknown=1")]
+    [InlineData("/odata/$metadata?$unknown=1")]
+    [InlineData("/odata/SqQueryables(1)/Name?$unknown=1")]
+    [InlineData("/odata/SqQueryables(1)/Name/$value?$unknown=1")]
+    public async Task DeliberateResiduals_StillIgnoreEveryQueryOption(string url)
+    {
+        // Named in docs/query-options.md so its per-route table is not read as the whole URL
+        // surface. None of these generates a link, so none carries #359's echo; gating them is a
+        // separate change. Characterization, not endorsement -- this test is what makes closing
+        // them a deliberate act rather than an accident.
+        await using TestFixture fx = await BuildAsync();
+        HttpResponseMessage resp = await fx.Client.GetAsync(url);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("$unknown=1", "$unknown")]
+    [InlineData("$apply=groupby((Name))", "$apply")]
+    public async Task EntityBoundFunction_OptionItDoesNotImplement_Returns400(
+        string query, string option)
+    {
+        await using TestFixture fx = await BuildOpsAsync();
+        HttpResponseMessage resp = await fx.Client.GetAsync($"/odata/SqOps(1)/Stamp?{query}");
+        await AssertUnsupportedAsync(resp, option);
+    }
+
+    [Fact]
+    public async Task EntityBoundAction_OptionItDoesNotImplement_Returns400_AndNeverRuns()
+    {
+        await using TestFixture fx = await BuildOpsAsync();
+        SqOpsProfile.EntityActionInvocations = 0;
+        HttpResponseMessage resp = await fx.Client.PostAsync(
+            "/odata/SqOps(1)/Touch?$unknown=1", JsonContent.Create(new { }));
+        await AssertUnsupportedAsync(resp, "$unknown");
+        Assert.Equal(0, SqOpsProfile.EntityActionInvocations);
+    }
 }
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────────
@@ -339,6 +589,7 @@ internal class SqParent
     public int Id { get; set; }
     public string Name { get; set; } = "";
     public IEnumerable<SqChild>? Children { get; set; }
+    public SqChild? Owner { get; set; }
 }
 
 internal class SqChild
@@ -380,6 +631,11 @@ internal class SqQueryableProfile : EntitySetProfile<int, SqParent>
         GetById = (id, ct) => Task.FromResult(SqStore.Parents.FirstOrDefault(p => p.Id == id));
         HasMany(x => x.Children!,
             getAll: (parentId, ct) => Task.FromResult<IEnumerable<SqChild>>(SqStore.Children));
+        // A SINGLE-VALUED navigation route. Its handler branch reads no query option at all, so
+        // its implemented set is not the collection branch's -- see NavSingle_* above.
+        HasOptional(x => x.Owner!,
+            get: (parentId, ct) => Task.FromResult<SqChild?>(SqStore.Children[0]),
+            refTargetEntitySet: null);
     }
 }
 
@@ -409,5 +665,45 @@ internal class SqODataProfile : ODataEntitySetProfile<int, SqParent>
         CountEnabled = true;
         GetODataQueryable = (options, ct) =>
             Task.FromResult(ODataQueryResult<SqParent>.FromQueryable(SqStore.Parents.AsQueryable()));
+    }
+}
+
+/// <summary>
+/// #359's <c>@odata.nextLink</c> half lands on the BOUND OPERATION collection route, which #357
+/// (function) and #543 (action) gave a <c>$skip</c> continuation in this same release while it had
+/// no query-option gate at all: <c>BuildNextPageLinkWithSkip</c> copies the whole incoming query
+/// string, so an unrecognized option came back inside the server's own link under a <c>200</c>.
+/// </summary>
+internal class SqOpsProfile : EntitySetProfile<int, SqParent>
+{
+    internal static int ActionInvocations;
+    internal static int EntityActionInvocations;
+
+    public SqOpsProfile() : base(x => x.Id)
+    {
+        EntitySetName = "SqOps";
+        MaxTop = 2;
+        GetById = (id, ct) => Task.FromResult(SqStore.Parents.FirstOrDefault(p => p.Id == id));
+        BindFunction(TopRated);
+        BindAction(Dump);
+        BindEntityFunction(Stamp);
+        BindEntityAction(Touch);
+    }
+
+    private static Task<IEnumerable<SqParent>> TopRated(int minRating = 0) =>
+        Task.FromResult<IEnumerable<SqParent>>(SqStore.Parents);
+
+    private static Task<IEnumerable<SqParent>> Dump()
+    {
+        ActionInvocations++;
+        return Task.FromResult<IEnumerable<SqParent>>(SqStore.Parents);
+    }
+
+    private static Task<string> Stamp(int key) => Task.FromResult($"stamp-{key}");
+
+    private static Task<string> Touch(int key)
+    {
+        EntityActionInvocations++;
+        return Task.FromResult($"touched-{key}");
     }
 }

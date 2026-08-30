@@ -564,9 +564,23 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `GET /Set({key})`), a real option this build does not implement (`$apply`, `$index`), or anything
   unrecognized — receives `400` `UnsupportedQueryOption` where it previously received `200`. That is
   the whole point: the `200` was a wrong answer, because the client's option had been discarded and
-  it had no way to know. Nothing that was *honoured* before is refused now, and no successful
-  response changes by a byte. Remedy: stop sending the option, or send it to a route that
-  implements it.
+  it had no way to know. No successful response changes by a byte. Remedy: stop sending the
+  option, or send it to a route that implements it.
+
+  **One narrow exception to *"nothing that was honoured before is refused now"*, and it is a real
+  break.** A **Priority-1** profile (`GetODataQueryable`) receives the whole `ODataQueryOptions`
+  and may read anything it likes off `options.Request.Query` — a shape #465's note explicitly
+  endorses for `$search`. A profile that had invented a `$`-prefixed option of its own and read it
+  there now never sees the request: the framework refuses it before the handler runs. Remedy:
+  spell the option **without** the `$`, which is what Part 2 §5.2 requires of a custom query
+  option in the first place (`$myTenant` → `myTenant`); non-`$` keys are passed through untouched
+  and always have been.
+
+  **Three route families stay outside the rule**, deliberately, and the table below is a list of
+  what *is* gated rather than of the whole URL surface: the structural-property routes
+  (`GET`\|`PUT`\|`PATCH`\|`DELETE /{Set}({key})/{Prop}` and `/$value`), the service document
+  (`GET /{prefix}`) and `GET /{prefix}/$metadata`. Measured: `GET /odata?$unknown=1` → `200`.
+  None of them generates a link, so none carries #359's echo; closing them is a separate change.
 
   Status and envelope are deliberately **unchanged from the four names already refused**: `400`
   with code `UnsupportedQueryOption` and the message `The query option '$x' is not supported.`
@@ -579,13 +593,23 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   **Mixed-case spellings of real options are still honoured, and that is alignment rather than
   leniency.** `Microsoft.AspNetCore.OData` lowercases a query-option name before matching it
   whenever the URI resolver enables case-insensitivity, which is the default
-  (`ODataQueryOptions.cs:286-290`, *"by default we support case-insensitive"*), so `$Select` and
+  (`ODataQueryOptions.cs:283` for the comment, `:284-287` for the branch it guards, `:289-290`
+  for the lowercasing), so `$Select` and
   `$TOP` have always been applied and continue to be. #359 reported the pair — `$Select` applied,
   `$slect` ignored, neither rejected — as one inconsistency; it is resolved by rejecting `$slect`,
   never by starting to reject `$Select`. The matching here is `OrdinalIgnoreCase` for the same
-  reason. This *is* a deliberate divergence from Microsoft in the other direction: its own
+  reason.
+
+  **That is a real behaviour change on one route.** The #313 `$expand` continuation's own inline
+  sigil loop compared with `StringComparison.Ordinal`, so `GET /{Set}({key})/{Nav}?$SKIP=3` and a
+  `$FORMAT=json` beside a `$skip` were `400` there — and are now honoured, like every other
+  route. It is the only place this change makes the server *more* accepting, and
+  `MixedCaseSkipAndFormat_AreHonoured_NotRejected` pins it (verified to fail on the pre-change
+  tree, `Expected: OK / Actual: BadRequest`, for all three spellings). This *is* a deliberate divergence from Microsoft in the other direction: its own
   `BuildQueryOptions` carries `default: // we don't throw if we can't recognize the query`
-  (`ODataQueryOptions.cs:1063`), i.e. it silently ignores. §11.2.5's `MUST` wins over matching that.
+  (`ODataQueryOptions.cs:1061`), i.e. it silently ignores. §11.2.5's `MUST` wins over matching
+  that. (Note that MS's own `IsSystemQueryOption` (`:172-198`) recognizes thirteen names and
+  `$index` is **not** among them — it is refused here by the sigil, like `$unknown`.)
 
   Per-route implemented sets, and what each now refuses:
 
@@ -595,9 +619,37 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   | `GET /{Set}` — `GetAll` | the same, **minus `$skiptoken`** | as above, plus `$skiptoken` — #201 continues this path with `$skip` and nothing on it ever read a `$skiptoken` |
   | `GET /{Set}/$count` | `$filter` `$top` `$skip` `$format` | `$search` (#353), `$orderby`, `$select`, `$expand`, `$count`, and every unrecognized `$`-name |
   | `GET /{Set}({key})` | `$select` `$expand` `$format` | everything else (#380) |
-  | `GET /{Set}({key})/{Nav}` | `$select` `$orderby` `$skip` `$top` `$count` `$format` | every unrecognized `$`-name (the seven already refused are unchanged) |
+  | `GET /{Set}({key})/{Nav}` — **collection**-valued (`HasMany`) | `$select` `$orderby` `$skip` `$top` `$count` `$format` | every unrecognized `$`-name (the seven already refused are unchanged) |
+  | `GET /{Set}({key})/{Nav}` — **single**-valued (`HasOptional`/`HasRequired`) | `$format` only | `$select` `$orderby` `$top` `$skip` `$count`, plus every unrecognized `$`-name |
   | `GET /{Set}({key})/{Nav}/$count` | `$top` `$skip` `$format` | everything else |
-  | `GET /{Set}({key})/{Nav}?$skip=N` (#313) | `$skip` `$format` | unchanged; the route now shares the matcher instead of its own copy |
+  | `GET /{Set}({key})/{Nav}?$skip=N` (#313) | `$skip` `$format` | nothing newly refused — but `$SKIP`/`$FORMAT` are now **accepted**; see below |
+  | `GET`\|`POST /{Set}/{Op}`, `GET`\|`POST /{Set}({key})/{Op}` (bound operations) | `$top` `$skip` `$format` | every other `$`-name |
+  | `GET`\|`POST /{Op}` (unbound operations) | `$format` only | every other `$`-name |
+
+  **The two navigation rows are one route template with two handlers**, and that is what made
+  the single-valued one a defect of its own. `GET /{Set}({key})/{Nav}` is mapped once; the
+  branch that runs is decided by `HasMany` versus `HasOptional`/`HasRequired`. Every option the
+  route applies is applied inside the collection branch — `$select` in `BuildNavEnvelope`,
+  `$orderby`/`$skip`/`$top`/`$count` in the branch body — while the single-valued branch
+  serializes the related entity through `ODataEntityNode` and reads nothing off the query
+  string. Gating both with the collection set therefore left `$select`/`$orderby`/`$top`/
+  `$count` accepted and **discarded** under a `200` there (measured), which is #380's own defect
+  statement — *"known, implemented-elsewhere options being silently dropped on a route that does
+  not implement them"* — and put `GET /Set(1)?$orderby=X` at `400` beside
+  `GET /Set(1)/Owner?$orderby=X` at `200`. The single-valued branch is refused rather than
+  taught `$select`: this change is about refusing what is not implemented, and `$select` there
+  needs the projection, the allowlist validation and the `@odata.context` projection suffix that
+  `ODataEntityResult` carries and `ODataEntityNode` does not. Read a projection of a single
+  related entity from its own entity set.
+
+  **`$top`/`$skip` are listed unconditionally on the bound-operation routes**, and not derived
+  from the declared return type the way `AddBoundOperationPagingMetadata`'s `TopSkipSupported`
+  is. The ceiling is applied in the *runtime* collection branch (#357's rule that a handler
+  declared `Task<object>` must not be a way around it), so such a route really can emit a
+  `$skip=N` continuation — deriving the set from the declared type would make the server refuse
+  a link it had just issued. Where the result is not a collection they are accepted no-ops, the
+  same reading `/$count` takes. An operation's own parameters are non-`$` keys (a query string
+  for a function, a JSON body for an action) and are never examined.
 
   `$format` is in **every** set and must stay there: it is not a data option. §11.2.12 content
   negotiation is implemented once, on the group filter wrapping the whole OData surface, so it never
@@ -606,20 +658,42 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
   `$top`/`$skip` stay **accepted no-ops on both `/$count` routes**. The `/$count` segment reports the
   size of the collection the request addresses, so a window over it is not applicable rather than
-  unsupported; both have been ignored there since 1.0.0, and #353's own control matrix records both
-  as correctly ignored. This is the one silent-ignore the change deliberately preserves.
+  unsupported. This matches `Microsoft.AspNetCore.OData` rather than merely predating a decision:
+  `ODataQueryOptions.ApplyTo` returns on `Request.IsCountRequest()` **before** it reaches the
+  `$orderby`/`$skip`/`$top` block (`ODataQueryOptions.cs:425-429`), so MS ignores both on a count
+  too. Both have also been ignored here since 1.0.0, and #353's own control matrix records both as
+  correctly ignored. This is the one silent-ignore the change deliberately preserves.
 
-  **`@odata.nextLink` needed no separate fix, and that is asserted rather than assumed.** Once an
-  unrecognized option is a `400`, no link is built for such a request at all —
-  `Collection_UnrecognizedOption_IsNeverEchoedIntoANextLink` proves the response carries neither a
-  `nextLink` nor a `skiptoken`, against a control on the same fixture that does emit one.
+  **`@odata.nextLink` needed no separate fix on the routes that were already gated, and needed
+  exactly this one on the routes that were not.** Once an unrecognized option is a `400`, no link
+  is built for that request at all — `Collection_UnrecognizedOption_IsNeverEchoedIntoANextLink`
+  proves the response carries neither a `nextLink` nor a `skiptoken`, against a control on the
+  same fixture that does emit one. But `@odata.nextLink` is generated by
+  `BuildNextPageLinkWithSkip`, which copies the **whole** incoming query string, and #357/#543
+  gave the *bound-operation* collection route a `nextLink` in this very release while it had no
+  option gate at all. Measured, with `MaxTop = 2` over three rows:
+
+  ```
+  GET /odata/SqOps/TopRated?$unknown=evil -> 200
+     "@odata.nextLink": "…/SqOps/TopRated?%24unknown=evil&%24skip=2"
+  GET /odata/SqOps/TopRated?$apply=groupby((Name)) -> 200 + nextLink
+     (400 on the sibling collection route)
+  ```
+
+  That is byte for byte the wire shape #359 reports. All six operation routes — the four bound
+  ones and the two unbound — are gated for it, and the gate runs **before** parameter binding and
+  before the handler delegate, so a refused **action** invocation provably mutates nothing
+  (`BoundAction_OptionItDoesNotImplement_Returns400_AndNeverRuns` asserts the delegate was not
+  reached, not just the status code).
 
   One further wire change falls out, on two routes: `GET /{Set}({key})?$select=…&$skiptoken=` and
-  `GET /{Set}/$count?$skiptoken=` answered `400 InvalidQueryOption` (*"The value for OData query
-  '$skiptoken' cannot be empty"*, from #402's construction guard) and now answer
+  `GET /{Set}/$count?$skiptoken=` answered `400 InvalidQueryOption` — *"One or more system query
+  options in the request URL could not be parsed."*, #402's **generic** message, because an
+  empty `$skiptoken` throws `ArgumentException` out of `SkipTokenQueryOption`'s own constructor
+  rather than the `ODataException` whose message #402 passes through — and now answer
   `400 UnsupportedQueryOption`. Neither route implements `$skiptoken`, so it is refused by name
-  before any option object is built — a better answer, since the old one implied that some non-empty
-  value would have worked. Status and envelope are unchanged, and #402's guarantee (no
+  before any option object is built — a better answer, since the old one said only that
+  *something* in the URL had failed to parse. Status and envelope are unchanged, and #402's guarantee (no
   client-reachable `500` from option construction) is unaffected and still pinned on the three
   collection routes.
 
