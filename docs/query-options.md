@@ -392,14 +392,26 @@ Gating: the **inline** form (`$count=true`) is gated by `CountEnabled`. The **st
 resource, not a query option) - on that route only `$filter` is gated, by `FilterEnabled`
 (and the `FilterProperties` allowlist).
 
-> **`$search` is not implemented on the `/$count` segment, and is refused rather than ignored
-> (#353).** `GET /odata/Products/$count?$search=alpha` returns `400` (`UnsupportedQueryOption`).
-> Until 1.7.0 it returned the **unfiltered** total under a `200`, which §11.2.9 forbids and which no
-> client could detect. Ask for the searched count inline instead - `GET /odata/Products?$search=alpha&$count=true`
-> and read `@odata.count`, which does honour it. `$top` and `$skip` remain **accepted no-ops** on the
-> segment: it reports the size of the collection the request addresses, so a window over it is not
-> applicable. Every other `$`-prefixed option is refused - see
-> [Unsupported system query options are rejected](#unsupported-system-query-options-are-rejected-359-380-353).
+> **`$filter` and `$format` are the whole implemented set on the `/$count` segment; every other
+> `$`-prefixed option is refused (#353).** `GET /odata/Products/$count?$search=alpha` returns `501`
+> (`UnsupportedQueryOption`). Until 1.7.0 it returned the **unfiltered** total under a `200`, which
+> §11.2.9 forbids and which no client could detect. Ask for the searched count inline instead -
+> `GET /odata/Products?$search=alpha&$count=true` and read `@odata.count`, which does honour it.
+>
+> **⚠ `$top` and `$skip` are refused here too (`501`), and that is a breaking change.** They were accepted
+> no-ops from 1.0.0 through 1.7.x. The reading that made them no-ops - "a window over a count is not
+> applicable rather than unsupported" - does not survive being stated beside `$orderby`, `$select`
+> and `$expand`, which this release refuses: **none of the five can change a count.** You cannot
+> sort a number, project fields out of it, or take the first 5 of it. So all five are refused, and
+> the segment implements only what can actually move the number it returns. §11.2.5 permits this
+> ("MUST fail any request that contains the unsupported option"); this **diverges knowingly** from
+> `Microsoft.AspNetCore.OData`, which silently ignores all five on a count request
+> (`ODataQueryOptions.ApplyTo` returns early on `Request.IsCountRequest()` before it reaches the
+> `$orderby`/`$skip`/`$top` block). The cost is real and was accepted: swapping `/{Set}` for
+> `/{Set}/$count` on a grid URL and keeping the query string now answers `501`. The remedy is one
+> edit - **drop the option; it never did anything.**
+>
+> See [Unsupported system query options are rejected](#unsupported-system-query-options-are-rejected-359-380-353).
 
 Behaviour depends on the handler path:
 
@@ -1103,20 +1115,77 @@ OData Part 1 §11.2.5: *"If a data service does not support a system query optio
 request that contains the unsupported option."* Every read route enforces that, and enforces it by
 the **`$` sigil** rather than by a list of names it happens to know about.
 
-Concretely, a request is refused with `400` (`UnsupportedQueryOption`) when it carries a query key
-that begins with `$` and is not in the route's own implemented set:
+Concretely, a request is refused with **`501 Not Implemented`** (`UnsupportedQueryOption`) when it
+carries a query key that begins with `$` and is not in the route's own implemented set:
 
 ```
-GET /odata/Products?$unknown=1        -> 400  "The query option '$unknown' is not supported."
-GET /odata/Products?$slect=Name       -> 400
-GET /odata/Products?$levels=2         -> 400   ($levels is a real option, but only inside $expand)
-GET /odata/Products(1)?$filter=…      -> 400   (a single entity has nothing to filter)
-GET /odata/Products/$count?$search=x  -> 400
+GET /odata/Products?$unknown=1        -> 501  "The query option '$unknown' is not supported."
+GET /odata/Products?$slect=Name       -> 501
+GET /odata/Products?$levels=2         -> 501   ($levels is a real option, but only inside $expand)
+GET /odata/Products(1)?$filter=…      -> 501   (a single entity has nothing to filter)
+GET /odata/Products/$count?$search=x  -> 501
+GET /odata/Products?$apply=…          -> 501   (was 400 through 1.7.x)
 ```
 
 Until 1.7.0 each of these returned `200` with the option parsed and thrown away - and on the
 collection routes the discarded option was echoed back into the `@odata.nextLink` the server
 generated. A `200` from `?$filter=…` reasonably tells a client that the filter was applied.
+
+### `501` or `400`: which, and why
+
+Both statuses are correct, for different conditions, and OData decides between them.
+
+- **§9.3.1** (a MUST): *"If the client requests functionality not implemented by the OData Service,
+  the service MUST respond with 501 Not Implemented and the response body SHOULD describe the
+  functionality not implemented."*
+- **§13.1.1 item 7**, inside the Minimal Conformance MUST list: *"MUST successfully parse the
+  request according to [OData-ABNF] for any supported system query string options and either follow
+  the specification or return 501 Not Implemented (section 9.3.1) for any unsupported
+  functionality"*.
+- **§11.2.5**'s own status advice is only a SHOULD, but it points the same way.
+
+OhData claims Minimal conformance, so the `501` is not optional. In five words:
+
+> **`501` is "can't". `400` is "won't".**
+
+The test for which side a refusal falls on is mechanical: **could any setting on the profile make
+this same request succeed on this same route?** Yes -> `400`. No -> `501`.
+
+| Condition | Status | Code |
+|---|---|---|
+| An unrecognized `$`-name, or an option this build implements nowhere (`$apply` `$compute` `$index` `$deltatoken`) | `501` | `UnsupportedQueryOption` |
+| An option the addressed **route** does not implement (`$filter` on `GET /Set({key})`, `$top` on a `/$count`, `$select` on a single-valued navigation) | `501` | `UnsupportedQueryOption` |
+| `$filter`/`$orderby` on the `GetAll` path, and `$filter` on the `GetAll`-backed `/$count` | `501` | `UnsupportedQueryOption` |
+| A capability flag left `false` (`FilterEnabled`, `OrderByEnabled`, `SelectEnabled`, `ExpandEnabled`, `CountEnabled`) | `400` | `UnsupportedQueryOption` |
+| A property allowlist rejection (`FilterProperties` and friends) | `400` | `InvalidQueryOption` |
+| `$search` with no `Search` handler, on a route that has a `$search` leg | `400` | `UnsupportedQueryOption` |
+| A malformed or empty option **value** on a route that implements the option (`$top=abc`, `$skiptoken=`) | `400` | `InvalidQueryOption` |
+| A value outside a configured bound (`MaxTop`, `MaxExpandTop`) | `400` | `InvalidQueryOption` |
+
+`$search` shows both sides of the line for one option: with no `Search` handler it is a `400` on the
+collection `GET`s, which really do invoke one when configured, and a `501` on `/$count` and
+`GET /Set({key})`, which have no `$search` leg at all.
+
+`$filter`/`$orderby` on `GetAll` is "can't". Its message names a configuration change
+(*"Configure GetQueryable…"*), which reads like the `400` side, but the refusal is
+flag-**independent**: there is no `IQueryable` on that path and therefore no filter code, so
+`FilterEnabled = true` changes nothing, and the remedy supplies a **different handler** — it has the
+request served by a different route implementation rather than switching this one on. That is
+§9.3.1's *"functionality not implemented"*, and the existing message is already what its `SHOULD`
+asks the body to do: it describes the unimplemented functionality.
+
+> **The same option can be `501` on one entity set and `400` on another**, decided by which read
+> handler the profile supplies. `$filter` on a `GetAll`-backed set is `501` — the framework *can't*
+> filter it, under any configuration. `$filter` on a `GetQueryable`-backed set with
+> `FilterEnabled = false` is `400` — it *can*, and you chose not to expose it. That is correct, not
+> an inconsistency: conformance is per-**resource**, and the two answers tell a client genuinely
+> different things — *"no configuration of this endpoint will ever do that"* versus *"this endpoint
+> could, and is not offering it"*.
+
+> **⚠ BREAKING for `$apply`/`$compute`/`$index`/`$deltatoken`.** Those four have answered
+> `400 UnsupportedQueryOption` since 1.0.0 and now answer `501`. The error **code** and the message
+> **bytes** are unchanged, so a client matching on the envelope keeps working; code branching on
+> `StatusCode == 400` for this condition must add `501`.
 
 ### What is *not* touched
 
@@ -1150,11 +1219,11 @@ meaningless on a single entity.
 |---|---|
 | `GET /{Set}` (`GetQueryable`, `GetODataQueryable`) | `$filter` `$orderby` `$top` `$skip` `$select` `$expand` `$count` `$search` `$skiptoken` `$format` |
 | `GET /{Set}` (`GetAll`) | the same, **minus `$skiptoken`** - this path continues with `$skip` and never read a `$skiptoken` |
-| `GET /{Set}/$count` | `$filter` `$top` `$skip` `$format` |
+| `GET /{Set}/$count` | `$filter` `$format` |
 | `GET /{Set}({key})` | `$select` `$expand` `$format` |
 | `GET /{Set}({key})/{Nav}` — **collection**-valued (`HasMany`) | `$select` `$orderby` `$skip` `$top` `$count` `$format` |
 | `GET /{Set}({key})/{Nav}` — **single**-valued (`HasOptional`/`HasRequired`) | `$format` only |
-| `GET /{Set}({key})/{Nav}/$count` | `$top` `$skip` `$format` |
+| `GET /{Set}({key})/{Nav}/$count` | `$format` only - it applies not even `$filter` |
 | `GET /{Set}({key})/{Nav}?$skip=N` (the #313 `$expand` continuation) | `$skip` `$format` |
 | `GET\|POST /{Set}/{Op}` and `GET\|POST /{Set}({key})/{Op}` (bound operations) | `$top` `$skip` `$format` |
 | `GET\|POST /{Op}` (unbound operations) | `$format` only |
@@ -1182,10 +1251,24 @@ refusing a link the server itself issued. Unbound operations have no such pipeli
 operation's **own parameters** are query-string keys without a `$` (functions) or JSON body
 members (actions), so the sigil rule never examines them.
 
-### Why `400` and not `501`
+**The two `/$count` rows are the narrowest sets on the surface, deliberately.** A `/$count` route
+returns one number, so it implements only what can change that number: `$filter` on the entity-set
+segment, and nothing at all on the navigation segment, whose handler invokes the navigation
+delegate and counts what comes back. `$top`, `$skip`, `$orderby`, `$select` and `$expand` are all
+refused there — see the [⚠ breaking-change callout](#count) above for why
+`$top`/`$skip` moved from accepted no-ops to `400`, and for the deliberate divergence from
+`Microsoft.AspNetCore.OData` that comes with it.
 
-§11.2.5 says a service *SHOULD* return `501 Not Implemented`. OhData returns `400`
-(`UnsupportedQueryOption`), which is what `$apply`/`$compute`/`$index`/`$deltatoken` have returned
-since 1.0.0. Generalising the rule to every `$`-name did not re-word or re-status those four,
-because the same condition must not produce two different envelopes depending on which spelling
-reached the server.
+### Why `501`, and what it costs
+
+§11.2.5's status advice is a SHOULD, and an earlier revision of this feature leaned on that to
+answer `400` throughout. Two other clauses settle it the other way: **§9.3.1** makes `501` a MUST
+for *"functionality not implemented by the OData Service"*, and **§13.1.1 item 7** puts that same
+`501` inside the Minimal Conformance MUST list, which this project claims. See the table above for
+the `501`/`400` split.
+
+The cost is a wire break on `$apply`/`$compute`/`$index`/`$deltatoken`, which had answered `400`
+since 1.0.0. It was accepted because the alternative is failing a MUST in the conformance level the
+project advertises. What is preserved instead is the **envelope**: the error `code`
+(`UnsupportedQueryOption`) and the message bytes are identical to the `400` they replace, on every
+route, so one condition still produces one body and only the status line moves.

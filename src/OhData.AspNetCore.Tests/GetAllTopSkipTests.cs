@@ -113,21 +113,23 @@ public class GetAllTopSkipTests
     }
 
     [Fact]
-    public async Task Filter_StillUnsupportedOnGetAll_Returns400UnsupportedQueryOption()
+    public async Task Filter_StillUnsupportedOnGetAll_Returns501UnsupportedQueryOption()
     {
+        // 501 rather than 400 since the taxonomy landed: this path has no IQueryable, so the
+        // refusal is flag-independent and no profile setting makes the request succeed here.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/Widgets?$filter=Id eq 1");
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(HttpStatusCode.NotImplemented, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("UnsupportedQueryOption", json.GetProperty("error").GetProperty("code").GetString());
     }
 
     [Fact]
-    public async Task OrderBy_StillUnsupportedOnGetAll_Returns400UnsupportedQueryOption()
+    public async Task OrderBy_StillUnsupportedOnGetAll_Returns501UnsupportedQueryOption()
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var response = await fx.Client.GetAsync("/odata/Widgets?$orderby=Name");
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(HttpStatusCode.NotImplemented, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("UnsupportedQueryOption", json.GetProperty("error").GetProperty("code").GetString());
     }

@@ -1021,7 +1021,7 @@ public sealed class BareExpandContinuationFailClosedTests : IAsyncLifetime
     public async Task TheContinuationRouteRejectsEverythingExceptSkip(string option)
     {
         HttpResponseMessage resp = await _fx.Client.GetAsync($"/odata/BeAuthors(1)/Books?$skip=3&{option}");
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.NotImplemented, resp.StatusCode);
 
         string body = await resp.Content.ReadAsStringAsync();
         Assert.Contains("UnsupportedQueryOption", body, StringComparison.Ordinal);

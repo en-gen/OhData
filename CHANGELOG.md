@@ -519,11 +519,16 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   refinement idiom.
 
 - **⚠ BREAKING CHANGE — an unrecognized or unimplemented `$`-prefixed system query option is now
-  refused on every read route instead of being parsed and discarded under a `200`
-  (#359, #380, #353).** OData Part 1 §11.2.5: *"If a data service does not support a system query
-  option, it MUST fail any request that contains the unsupported option."* It is Minimal-conformance
-  item 7 (§13.1.1), and the server did not honour it anywhere except through three closed name
-  lists that between them left most of the read surface unexamined.
+  refused with `501 Not Implemented` on every read route, instead of being parsed and discarded
+  under a `200` (#359, #380, #353).** OData Part 1 §11.2.5: *"If a data service does not support a
+  system query option, it MUST fail any request that contains the unsupported option."* It is
+  Minimal-conformance item 7 (§13.1.1), and the server did not honour it anywhere except through
+  three closed name lists that between them left most of the read surface unexamined.
+
+  There are **three** distinct breaking changes in this entry and each has its own callout below:
+  the refusal itself (a `200` becomes an error), the status of every refusal (`400` becomes `501`,
+  which moves the four names refused since 1.0.0), and `$top`/`$skip` on the two `/$count` routes
+  (accepted no-ops become refusals).
 
   **Measured on `develop` at `3781681`** — three faces, one mechanism:
 
@@ -582,13 +587,77 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`GET /{prefix}`) and `GET /{prefix}/$metadata`. Measured: `GET /odata?$unknown=1` → `200`.
   None of them generates a link, so none carries #359's echo; closing them is a separate change.
 
-  Status and envelope are deliberately **unchanged from the four names already refused**: `400`
-  with code `UnsupportedQueryOption` and the message `The query option '$x' is not supported.`
-  §11.2.5 says *SHOULD* return `501`, but those four have shipped as this exact `400` since 1.0.0,
-  and the framework's standing rule — recorded for #357 and #543 in this same release — is that one
-  condition must not produce two envelopes. Promoting them to `501` would be a gratuitous wire
-  break; adding new names at `501` beside them would be worse. The navigation-collection route keeps
-  its own longer wording, which names the options it *does* support.
+  > **⚠ BREAKING CHANGE — every one of these refusals is `501 Not Implemented`, and that moves
+  > `$apply`/`$compute`/`$index`/`$deltatoken`, which have answered `400` since 1.0.0.**
+  >
+  > An earlier revision of this change answered `400` throughout, reasoning from §11.2.5's status
+  > advice being a *SHOULD*. That reading does not survive two other clauses, quoted verbatim from
+  > the OASIS text:
+  >
+  > - **§9.3.1** — *"If the client requests functionality not implemented by the OData Service, the
+  >   service **MUST** respond with 501 Not Implemented and the response body SHOULD describe the
+  >   functionality not implemented."*
+  > - **§13.1.1 item 7**, inside the Minimal Conformance **MUST** list — *"MUST successfully parse
+  >   the request according to [OData-ABNF] for any supported system query string options and either
+  >   follow the specification or return **501 Not Implemented** (section 9.3.1) for any unsupported
+  >   functionality"*.
+  >
+  > OhData claims Minimal conformance, so the `501` is not optional. **Who is affected and in which
+  > direction:** a client sending `$apply`, `$compute`, `$index` or `$deltatoken` to a collection
+  > `GET` receives `501` where every release since 1.0.0 gave `400`. Every other refusal in this
+  > entry is new, so for those the change is `200` → `501` rather than `400` → `501`.
+  > **Remedy:** treat `501` as you treated `400` — the option is not going to work; stop sending it.
+  > Code that branches on `response.StatusCode == 400` for this condition must add `501`.
+  >
+  > **The error code and the message bytes do not move.** A refusal is still
+  > `{"error":{"code":"UnsupportedQueryOption","message":"The query option '$x' is not supported."}}`,
+  > byte for byte, and the navigation-collection route keeps its own longer wording. §9.3.1's *"body
+  > SHOULD describe the functionality not implemented"* is already satisfied by that text, so only
+  > the status line moves — a client matching on the envelope keeps working, and
+  > `ErrorEnvelopeFidelityTests` pins the bytes across the change. One condition still produces one
+  > envelope, which is the standing rule recorded for #357/#543 in this same release; what changed is
+  > which envelope, not how many.
+
+  **`400` is not gone — it now means something specific.** In five words:
+
+  > **`501` is "can't". `400` is "won't".**
+
+  The test is mechanical: **could any setting on the profile make this same request succeed on this
+  same route?** Yes → `400`. No → `501`.
+
+  | Condition | Status | Why |
+  |---|---|---|
+  | Unrecognized `$`-name (`$unknown`, `$slect`, top-level `$levels`) | `501` | implemented nowhere |
+  | `$apply` `$compute` `$index` `$deltatoken` | `501` | implemented nowhere (**was `400`**) |
+  | An option the addressed **route** does not implement (`$filter` on `GET /Set({key})`, `$top` on a `/$count`, `$select` on a single-valued nav) | `501` | no configuration adds it to that route |
+  | `$filter`/`$orderby` on the `GetAll` path, and `$filter` on the `GetAll`-backed `/$count` | `501` | flag-**independent**: that path has no `IQueryable`, so `FilterEnabled = true` changes nothing and the remedy is a different handler |
+  | A capability flag left `false` (`FilterEnabled`/`OrderByEnabled`/`SelectEnabled`/`ExpandEnabled`/`CountEnabled`) | `400` | implemented; this resource declines to offer it |
+  | A property allowlist rejection (`FilterProperties` etc.) | `400` | same |
+  | `$search` with no `Search` handler, on a route that **has** a `$search` leg | `400` | implemented; unconfigured on this profile |
+  | A malformed or empty option **value** (`$top=abc`, `$skiptoken=`, `$filter=`) on a route that implements the option (#402) | `400` | a bad request about supported functionality |
+  | A value outside a configured bound (`MaxTop`, `MaxExpandTop`) | `400` `InvalidQueryOption` | same |
+
+  `$search` is the clearest illustration that the same option can land on either side: no `Search`
+  handler is a `400` on the collection `GET`s, which really do invoke one when configured, and a
+  `501` on `/$count` and `GET /Set({key})`, which have no `$search` leg at all.
+
+  The `GetAll` `$filter`/`$orderby` row is "can't", and is recorded at the code. It *reads* like the
+  `400` side because its message names a configuration change (*"Configure GetQueryable…"*), but the
+  refusal is flag-independent — `CheckCollectionQueryOptionCapabilities` is called with
+  `checkFilterOrderBy: false` on that path precisely because the flag changes nothing there — and
+  the remedy supplies a **different handler**, i.e. has the request served by a different route
+  implementation rather than switching this one on. That is §9.3.1's *"functionality not
+  implemented"*, and the existing message is already what its `SHOULD` asks the body to do: it
+  describes the unimplemented functionality. Its response body is byte-identical to before; only the
+  status moved.
+
+  > **The same option can be `501` on one entity set and `400` on another**, decided by which read
+  > handler the profile supplies. `$filter` on a `GetAll`-backed set is `501` — the framework
+  > *can't* filter it, under any configuration. `$filter` on a `GetQueryable`-backed set with
+  > `FilterEnabled = false` is `400` — it *can*, and the adopter chose not to expose it. That is
+  > correct rather than an inconsistency: conformance is per-**resource**, and the two answers tell
+  > a client genuinely different things — *"no configuration of this endpoint will ever do that"*
+  > versus *"this endpoint could, and is not offering it"*.
 
   **Mixed-case spellings of real options are still honoured, and that is alignment rather than
   leniency.** `Microsoft.AspNetCore.OData` lowercases a query-option name before matching it
@@ -617,11 +686,11 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   |---|---|---|
   | `GET /{Set}` — `GetQueryable`, Priority-1 | `$filter` `$orderby` `$top` `$skip` `$select` `$expand` `$count` `$search` `$skiptoken` `$format` | every other `$`-name (the four already refused keep their exact envelope) |
   | `GET /{Set}` — `GetAll` | the same, **minus `$skiptoken`** | as above, plus `$skiptoken` — #201 continues this path with `$skip` and nothing on it ever read a `$skiptoken` |
-  | `GET /{Set}/$count` | `$filter` `$top` `$skip` `$format` | `$search` (#353), `$orderby`, `$select`, `$expand`, `$count`, and every unrecognized `$`-name |
+  | `GET /{Set}/$count` | `$filter` `$format` | `$search` (#353), `$orderby`, `$select`, `$expand`, `$count`, **`$top` and `$skip`** (breaking — see the callout), and every unrecognized `$`-name |
   | `GET /{Set}({key})` | `$select` `$expand` `$format` | everything else (#380) |
   | `GET /{Set}({key})/{Nav}` — **collection**-valued (`HasMany`) | `$select` `$orderby` `$skip` `$top` `$count` `$format` | every unrecognized `$`-name (the seven already refused are unchanged) |
   | `GET /{Set}({key})/{Nav}` — **single**-valued (`HasOptional`/`HasRequired`) | `$format` only | `$select` `$orderby` `$top` `$skip` `$count`, plus every unrecognized `$`-name |
-  | `GET /{Set}({key})/{Nav}/$count` | `$top` `$skip` `$format` | everything else |
+  | `GET /{Set}({key})/{Nav}/$count` | `$format` only — it applies not even `$filter` | everything else, **`$top` and `$skip` included** (breaking — see the callout) |
   | `GET /{Set}({key})/{Nav}?$skip=N` (#313) | `$skip` `$format` | nothing newly refused — but `$SKIP`/`$FORMAT` are now **accepted**; see below |
   | `GET`\|`POST /{Set}/{Op}`, `GET`\|`POST /{Set}({key})/{Op}` (bound operations) | `$top` `$skip` `$format` | every other `$`-name |
   | `GET`\|`POST /{Op}` (unbound operations) | `$format` only | every other `$`-name |
@@ -648,24 +717,54 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   declared `Task<object>` must not be a way around it), so such a route really can emit a
   `$skip=N` continuation — deriving the set from the declared type would make the server refuse
   a link it had just issued. Where the result is not a collection they are accepted no-ops, the
-  same reading `/$count` takes. An operation's own parameters are non-`$` keys (a query string
-  for a function, a JSON body for an action) and are never examined.
+  same reading the earlier revision took for `/$count` — and, since the `/$count` ruling above, the
+  only place that reading survives. The difference is the point: on a `/$count` those two options can
+  never do anything on any request the route serves, so refusing them is a statement about the route;
+  on a bound operation they are real on the collection shape and the route cannot know at startup
+  which shape a handler declared `Task<object>` will return, so refusing them would refuse a link the
+  server itself had just issued. An operation's own parameters are non-`$` keys (a query string for a
+  function, a JSON body for an action) and are never examined.
 
   `$format` is in **every** set and must stay there: it is not a data option. §11.2.12 content
   negotiation is implemented once, on the group filter wrapping the whole OData surface, so it never
   reaches these handlers and cannot change a row; an unsupported `$format` **value** is still
   rejected there, unchanged.
 
-  `$top`/`$skip` stay **accepted no-ops on both `/$count` routes**. The `/$count` segment reports the
-  size of the collection the request addresses, so a window over it is not applicable rather than
-  unsupported. This matches `Microsoft.AspNetCore.OData` rather than merely predating a decision:
-  `ODataQueryOptions.ApplyTo` returns on `Request.IsCountRequest()` **before** it reaches the
-  `$orderby`/`$skip`/`$top` block (`ODataQueryOptions.cs:425-429`), so MS ignores both on a count
-  too. Both have also been ignored here since 1.0.0, and #353's own control matrix records both as
-  correctly ignored. This is the one silent-ignore the change deliberately preserves.
+  > **⚠ BREAKING CHANGE — `$top` and `$skip` on a `/$count` route are refused, where they were
+  > accepted no-ops from 1.0.0 through 1.7.x.**
+  >
+  > ```
+  > GET /odata/Widgets/$count?$top=5   1.7.x -> 200  body: 77     now -> 501 UnsupportedQueryOption
+  > GET /odata/Widgets/$count?$skip=2  1.7.x -> 200  body: 77     now -> 501 UnsupportedQueryOption
+  > GET /odata/Widgets(1)/Lines/$count?$top=5   likewise, and `$filter` there too
+  > ```
+  >
+  > **Who is affected:** anyone who swaps `/{Set}` for `/{Set}/$count` on a grid or list URL and
+  > keeps the query string — the ordinary way a UI asks "how many rows would that page over?".
+  > That request now fails instead of answering the total. **Remedy: drop the option.** It never did
+  > anything; the number you got back was always the count of the whole addressed collection, and it
+  > still is. Only `$filter` ever changed a `/$count` result, and it still does.
+  >
+  > **Why.** An earlier revision kept these two as no-ops on the reading that *"a window over a count
+  > is not applicable rather than unsupported"*. That reading does not survive being stated beside
+  > the `$orderby`/`$select`/`$expand` this change refuses on the same route: **none of the five can
+  > change a count.** You cannot sort a number, project fields out of it, or take the first 5 of it.
+  > The milestone's rule is that an option the route does not act on is refused rather than ignored,
+  > and §11.2.5 permits refusing outright, so all five are refused and a `/$count` route implements
+  > only what can actually move the number it returns — `$filter` (plus `$format`) on the entity-set
+  > segment, and **nothing at all** on the navigation segment, whose handler invokes the navigation
+  > delegate and counts what comes back.
+  >
+  > **This diverges from `Microsoft.AspNetCore.OData`, knowingly.** Verified against its source at
+  > `a05e1ad0` (9.5.0-7): `ODataQueryOptions`' constructor synthesises `Count = "true"` for any
+  > request whose path ends in `/$count` (`Query/ODataQueryOptions.cs:1072-1084`), so `ApplyTo`'s
+  > `Request.IsCountRequest()` early return (`:425-429`) always fires there — before the
+  > `$orderby`/`$skip`/`$top` block and before `SelectExpand` — and MS silently ignores all five.
+  > §11.2.9 mandates nothing about them either way. The cost of diverging is real and was weighed
+  > rather than overlooked; the owner ruled for refusing.
 
   **`@odata.nextLink` needed no separate fix on the routes that were already gated, and needed
-  exactly this one on the routes that were not.** Once an unrecognized option is a `400`, no link
+  exactly this one on the routes that were not.** Once an unrecognized option is refused, no link
   is built for that request at all — `Collection_UnrecognizedOption_IsNeverEchoedIntoANextLink`
   proves the response carries neither a `nextLink` nor a `skiptoken`, against a control on the
   same fixture that does emit one. But `@odata.nextLink` is generated by
@@ -683,7 +782,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   That is byte for byte the wire shape #359 reports. All six operation routes — the four bound
   ones and the two unbound — are gated for it, and the gate runs **before** parameter binding and
   before the handler delegate, so a refused **action** invocation provably mutates nothing
-  (`BoundAction_OptionItDoesNotImplement_Returns400_AndNeverRuns` asserts the delegate was not
+  (`BoundAction_OptionItDoesNotImplement_Returns501_AndNeverRuns` asserts the delegate was not
   reached, not just the status code).
 
   One further wire change falls out, on two routes: `GET /{Set}({key})?$select=…&$skiptoken=` and
@@ -691,17 +790,23 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   options in the request URL could not be parsed."*, #402's **generic** message, because an
   empty `$skiptoken` throws `ArgumentException` out of `SkipTokenQueryOption`'s own constructor
   rather than the `ODataException` whose message #402 passes through — and now answer
-  `400 UnsupportedQueryOption`. Neither route implements `$skiptoken`, so it is refused by name
+  `501 UnsupportedQueryOption`. Neither route implements `$skiptoken`, so it is refused by name
   before any option object is built — a better answer, since the old one said only that
-  *something* in the URL had failed to parse. Status and envelope are unchanged, and #402's guarantee (no
-  client-reachable `500` from option construction) is unaffected and still pinned on the three
-  collection routes.
+  *something* in the URL had failed to parse, implying some non-empty value would have worked.
+  **#402's guarantee is unaffected and is now pinned as the taxonomy's sharpest statement**:
+  `QueryOptionConstructionFaultTests.EmptySkipToken_ReturnsODataErrorEnvelope` sends the same empty
+  `$skiptoken` to five routes and asserts `400 InvalidQueryOption` on the three that implement the
+  option (the empty value is malformed input for supported functionality) beside `501
+  UnsupportedQueryOption` on the two that do not. No client-reachable `500` from option
+  construction, on any of the five.
 
-  `UnrecognizedSystemQueryOptionTests` covers all seven routes in both directions — the
+  `UnrecognizedSystemQueryOptionTests` covers every gated route in both directions — the
   recognized-but-not-implemented-here case, the unrecognized case, the non-`$` and `@`-alias
-  passthroughs, the mixed-case `$Select`/`$TOP` controls, `$format` on every route, and the
-  `nextLink` case. 44 of its 90 cases fail on the pre-fix tree, every one of them `Expected:
-  BadRequest / Actual: OK`.
+  passthroughs, the mixed-case `$Select`/`$TOP` controls, `$format` on every route, the `nextLink`
+  case, and controls proving `$filter` still applies on the entity-set `/$count` and that a bare
+  `/$count` still returns the total. The status taxonomy is pinned across the suite: nine other test
+  classes moved a `BadRequest` expectation to `NotImplemented` for a sigil refusal, and none of them
+  moved an expectation for a capability flag, an allowlist or a malformed value.
 
 ### Added
 

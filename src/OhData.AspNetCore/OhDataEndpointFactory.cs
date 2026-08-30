@@ -3180,7 +3180,7 @@ internal static class OhDataEndpointFactory
     //
     // The set is PER ROUTE, and that is the point: $filter is implemented on the collection GETs
     // and not on GetById. A name that is recognized-but-not-implemented-here and a name that is
-    // unrecognized anywhere get the SAME 400 UnsupportedQueryOption — the client's remedy is
+    // unrecognized anywhere get the SAME 501 UnsupportedQueryOption — the client's remedy is
     // identical ("stop sending it"), so a second code would distinguish nothing actionable.
     //
     // Matching is OrdinalIgnoreCase, which is ALIGNMENT with Microsoft.AspNetCore.OData rather
@@ -3204,17 +3204,69 @@ internal static class OhDataEndpointFactory
     // surface, so it never reaches these handlers and cannot change a single row. An unsupported
     // $format VALUE is still rejected there, unchanged.
     //
-    // WHY 400 AND NOT THE SPEC'S SHOULD-501, recorded here because this file answers 501 elsewhere
-    // (the @odata.bind refusal, the deep-write refusal) and re-aligning "for consistency" is a live
-    // future edit. §11.2.5's status advice is a SHOULD; its MUST is only that the request fail. The
-    // four names #196 already refused — $apply/$compute/$index/$deltatoken — have shipped as this
-    // exact 400 UnsupportedQueryOption envelope, message included, since 1.0.0. Generalising the
-    // rule to every $-name must therefore neither re-status those four (a wire break on the only
-    // part of this surface clients have been able to rely on) nor introduce new names answering 501
-    // beside them, which would make ONE condition — "this route does not implement this option" —
-    // produce two different envelopes depending on which spelling reached the server. That is the
-    // same rule #357/#543 state for the MaxTop message and #496 states for the null-Post handler.
-    // Moving to 501 is defensible only as a single change that moves all of them together.
+    // 501 OR 400: THE TAXONOMY. State it as five words and the rest follows —
+    //
+    //                        *** 501 IS "CAN'T". 400 IS "WON'T". ***
+    //
+    // Both statuses are correct, for different conditions, and the line between them is "can this
+    // service perform the functionality on this resource at all", not "is the client going to be
+    // annoyed". Three clauses of OData v4.0 Part 1 set it, quoted verbatim:
+    //
+    //   §9.3.1  "If the client requests functionality not implemented by the OData Service, the
+    //           service MUST respond with 501 Not Implemented and the response body SHOULD
+    //           describe the functionality not implemented."
+    //   §13.1.1 item 7, inside the Minimal Conformance MUST list: "MUST successfully parse the
+    //           request according to [OData-ABNF] for any supported system query string options and
+    //           either follow the specification or return 501 Not Implemented (section 9.3.1) for
+    //           any unsupported functionality (section 11.2.1)"
+    //   §11.2.5 "If a data service does not support a system query option, it MUST fail any
+    //           request that contains the unsupported option and SHOULD return 501 Not Implemented."
+    //
+    // §11.2.5 alone is a SHOULD and an earlier revision of this file leaned on that to justify a
+    // uniform 400. That reading does not survive the other two: §9.3.1 is a MUST, and §13.1.1 item 7
+    // puts the same 501 inside the MUST list a service has to satisfy to claim Minimal conformance
+    // — which this project claims. So:
+    //
+    //   501 — THE SERVICE DOES NOT IMPLEMENT IT. Every refusal driven by this sigil rule: an
+    //         unrecognized $-name ($unknown, $slect, a top-level $levels), a real OData option this
+    //         build implements nowhere ($apply, $compute, $index, $deltatoken), and a real option
+    //         this build implements on OTHER routes but not on the one addressed ($filter on
+    //         GetById, $top on a /$count, $select on a single-valued navigation). Also the two
+    //         FLAG-INDEPENDENT structural refusals below — GetAll's $filter/$orderby and the
+    //         /$count GetAll fallback's $filter — which no configuration of that profile can turn
+    //         on, because that route has no IQueryable and therefore no filter code at all.
+    //   400 — IMPLEMENTED, SWITCHED OFF HERE. A capability flag the adopter left false
+    //         (CheckDisabledQueryOption: FilterEnabled/OrderByEnabled/SelectEnabled/ExpandEnabled/
+    //         CountEnabled), a property allowlist rejection, and $search on a route that HAS a
+    //         $search leg but whose profile supplied no Search handler. The service implements the
+    //         functionality; this resource declines to offer it, which is not what §9.3.1 describes.
+    //         Everything #402 owns stays 400 too — a malformed or empty option VALUE ($top=abc,
+    //         $skiptoken=, $filter=) is a bad request about a supported option, not unimplemented
+    //         functionality — as does an out-of-range value (MaxTop, MaxExpandTop).
+    //
+    // The test for which side a refusal falls on is therefore mechanical: could any setting on the
+    // profile make this same request succeed on this same route? Yes -> 400 ("won't"). No -> 501
+    // ("can't"). That is why $search splits: no Search handler is a 400 on the collection GETs (the
+    // route invokes one when configured) and a 501 on /$count and GetById (no $search leg exists
+    // there at all).
+    //
+    // A CONSEQUENCE WORTH STATING SO NOBODY "FIXES" IT: the SAME option can be 501 on one entity
+    // set and 400 on another, decided by which read handler the profile supplies. $filter on a
+    // GetAll-backed set is 501 — no IQueryable exists, so the framework CANNOT apply it there under
+    // any configuration — while $filter on a GetQueryable-backed set with FilterEnabled = false is
+    // 400: it can, and the adopter chose not to expose it. That is not an inconsistency to be
+    // smoothed over. Conformance is per-RESOURCE (§13.1.1 is a statement about what a service does
+    // when asked, not a global constant), and the two answers describe genuinely different
+    // conditions: one tells the client "no configuration of this endpoint will ever do that", the
+    // other "this endpoint could, and is not offering it".
+    //
+    // BREAKING, and it is the largest wire change on this branch. $apply/$compute/$index/
+    // $deltatoken have answered 400 UnsupportedQueryOption with this exact message since 1.0.0 and
+    // now answer 501 with the same code and the same message. The error CODE and the message bytes
+    // are deliberately unchanged — §9.3.1's "body SHOULD describe the functionality not
+    // implemented" is satisfied by the text that already named the option — so a client matching on
+    // the envelope keeps working and only status-code branching moves. One condition still produces
+    // one envelope: every sigil refusal on every route is 501 with code UnsupportedQueryOption.
 
     private const string FormatOption = "$format";
 
@@ -3258,18 +3310,32 @@ internal static class OhDataEndpointFactory
     };
 
     // GET /{Set}/$count. It counts; it neither projects nor pages. $filter is the one data option
-    // it applies (and the GetAll-backed fallback branch refuses even that, with its own message).
-    // $top/$skip stay accepted no-ops: the /$count segment reports the size of the collection the
-    // request addresses, so a window over it is not applicable rather than unsupported. This
-    // MATCHES Microsoft.AspNetCore.OData rather than merely predating a decision —
-    // ODataQueryOptions.ApplyTo returns on Request.IsCountRequest() BEFORE it reaches the
-    // $orderby/$skip/$top block (ODataQueryOptions.cs:425-429), so MS ignores both on a count too.
-    // They have also been ignored here since 1.0.0, and #353's own control matrix records both as
-    // "correctly ignored". Everything else — $search included, which is #353's headline — is
-    // refused rather than answered with an unfiltered total under a 200.
+    // it applies (and the GetAll-backed fallback branch refuses even that, with its own message),
+    // so $filter and $format are the whole implemented set. Everything else — $search included,
+    // which is #353's headline — is refused rather than answered with an unfiltered total under a
+    // 200.
+    //
+    // $top AND $skip ARE REFUSED, AND THAT IS A BREAKING CHANGE (owner ruling). They were accepted
+    // no-ops here from 1.0.0 through 1.7.x, and #353's own control matrix recorded both as
+    // "correctly ignored". The reading that produced that — "a window over a count is not
+    // applicable rather than unsupported" — separates them from the $orderby/$select/$expand this
+    // change refuses one line up, and there is no principle behind the separation: NONE of the
+    // five can change a count. You cannot sort a number, project fields out of it, or take the
+    // first 5 of it. The milestone's rule is that an option the route does not act on is refused
+    // rather than ignored, and §11.2.5 permits refusing ("MUST fail any request that contains the
+    // unsupported option"), so all five are refused and one condition keeps one envelope.
+    //
+    // This DIVERGES from Microsoft.AspNetCore.OData, knowingly. Verified against the vendored
+    // source at a05e1ad0 (9.5.0-7): ODataQueryOptions' constructor synthesises Count = "true" for
+    // any request whose path ends in /$count (ODataQueryOptions.cs:1072-1084), so ApplyTo's
+    // Request.IsCountRequest() early return (:425-429) always fires there — before the
+    // $orderby/$skip/$top block and before SelectExpand — and MS silently ignores all five. The
+    // cost of diverging is real and was accepted rather than overlooked: a client that swaps
+    // /{Set} for /{Set}/$count on a grid URL and keeps the query string now gets a 400 where MS
+    // and 1.7.x gave a 200. The remedy is one edit — drop the option; it never did anything.
     private static readonly string[] s_countRouteImplementedOptions =
     {
-        "$filter", "$top", "$skip", FormatOption,
+        "$filter", FormatOption,
     };
 
     // GET /{Set}({key}). A single entity: there is nothing to filter, order, window or count.
@@ -3303,12 +3369,13 @@ internal static class OhDataEndpointFactory
     // and ODataEntityNode does not — a feature, with its own wire-shape decisions.
     private static readonly string[] s_navSingleImplementedOptions = { FormatOption };
 
-    // GET /{Set}({key})/{Nav}/$count. Same shape as the entity-set /$count one level down, minus
-    // $filter, which the navigation route does not implement at all.
-    private static readonly string[] s_navCountImplementedOptions =
-    {
-        "$top", "$skip", FormatOption,
-    };
+    // GET /{Set}({key})/{Nav}/$count. Same ruling as the entity-set /$count one level down, minus
+    // $filter: the handler invokes the navigation delegate and counts what comes back, so it
+    // applies no data option WHATSOEVER and $format is the entire implemented set. $top/$skip were
+    // accepted no-ops here from 1.0.0 through 1.7.x and are refused now for the reason recorded on
+    // s_countRouteImplementedOptions — BREAKING, and the same divergence from
+    // Microsoft.AspNetCore.OData.
+    private static readonly string[] s_navCountImplementedOptions = { FormatOption };
 
     // GET /{Set}({key})/{Nav}?$skip=N — the #313 bare-$expand continuation. $skip only.
     private static readonly string[] s_expandContinuationImplementedOptions =
@@ -3334,8 +3401,12 @@ internal static class OhDataEndpointFactory
     // Task<object> returning a List<TModel> must not be a way around the ceiling), so such a route
     // really can emit a "$skip=N" continuation. Deriving the set from the declared type would make
     // the server refuse a link it had just issued. Where the result is not a collection they are
-    // accepted no-ops, which is the same "not applicable rather than unsupported" reading
-    // s_countRouteImplementedOptions already takes for $top/$skip on a /$count.
+    // accepted no-ops. That is NOT the reading s_countRouteImplementedOptions takes for $top/$skip
+    // on a /$count, and the difference is the point: there, $top/$skip can never do anything on
+    // any request the route serves, so refusing them is a statement about the route; here they are
+    // real on the collection shape and the route cannot know at startup which shape a handler
+    // declared Task<object> will return, so refusing them would refuse a link the server itself
+    // had just issued.
     private static readonly string[] s_boundOperationImplementedOptions =
     {
         "$top", "$skip", FormatOption,
@@ -3389,7 +3460,7 @@ internal static class OhDataEndpointFactory
         string? option = FindUnsupportedSystemQueryOption(ctx, implemented);
         return option is null
             ? null
-            : ODataError(400, "UnsupportedQueryOption", $"The query option '{option}' is not supported.");
+            : ODataError(501, "UnsupportedQueryOption", $"The query option '{option}' is not supported.");
     }
 
     // The navigation route keeps its own wording, which names the options it does support — it
@@ -3414,7 +3485,7 @@ internal static class OhDataEndpointFactory
             ctx, isCollection ? s_navCollectionImplementedOptions : s_navSingleImplementedOptions);
         if (option is null) return null;
 
-        return ODataError(400, "UnsupportedQueryOption", isCollection
+        return ODataError(501, "UnsupportedQueryOption", isCollection
             ? $"This navigation route does not support {option}. Supported query options " +
               "are $select, $orderby, $skip, $top, and $count."
             : $"This navigation route does not support {option}. A single-valued navigation " +
@@ -9381,6 +9452,11 @@ internal static class OhDataEndpointFactory
                     {
                         if (!source.HasSearch)
                         {
+                            // 400, not 501: this route HAS a $search leg (the two lines below
+                            // invoke it), so the functionality is implemented and merely
+                            // unconfigured on this profile — the 400 side of the taxonomy above,
+                            // the same shape as a false capability flag. $search on a route with
+                            // no $search leg at all (/$count, GetById) is 501 by the sigil rule.
                             return ODataError(400, "UnsupportedQueryOption",
                                 "This resource does not support $search. Configure the Search handler to enable it.");
                         }
@@ -10100,9 +10176,24 @@ internal static class OhDataEndpointFactory
                     // $top/$skip, by contrast, are pure post-materialization Skip()/Take() — the
                     // same class of operation as the already-live $select/$expand/$count below —
                     // so they are implemented rather than rejected. See docs/query-options.md.
+                    //
+                    // 501, not 400 — CAN'T, not WON'T (see the taxonomy above
+                    // s_collectionImplementedOptions). This path has no IQueryable, so the
+                    // framework cannot apply $filter to this resource under ANY configuration of
+                    // this handler: the refusal is flag-INDEPENDENT, which is exactly why
+                    // CheckCollectionQueryOptionCapabilities is called with checkFilterOrderBy:
+                    // false here — FilterEnabled = true changes nothing on this path. It READS
+                    // like the 400 side because the message names a configuration change
+                    // ("Configure GetQueryable"), but that change supplies a DIFFERENT HANDLER and
+                    // so has the request served by a different route implementation; it does not
+                    // switch this one on. §9.3.1's "functionality not implemented by the OData
+                    // Service", and the existing message is already what its SHOULD asks the body
+                    // to do — it describes the unimplemented functionality. The corollary is that
+                    // $filter is 501 on a GetAll-backed set and 400 on a GetQueryable-backed set
+                    // with FilterEnabled = false; that is correct, not an inconsistency.
                     if (options.Filter is not null || options.OrderBy is not null)
                     {
-                        return ODataError(400, "UnsupportedQueryOption",
+                        return ODataError(501, "UnsupportedQueryOption",
                             "This resource does not support $filter or $orderby. " +
                             "Configure GetQueryable to enable server-side query processing.");
                     }
@@ -10196,6 +10287,7 @@ internal static class OhDataEndpointFactory
                     {
                         if (!source.HasSearch)
                         {
+                            // 400, not 501 — see the identical check on the GetQueryable path.
                             return ODataError(400, "UnsupportedQueryOption",
                                 "This resource does not support $search. Configure the Search handler to enable it.");
                         }
@@ -10282,7 +10374,7 @@ internal static class OhDataEndpointFactory
                     // search or aggregate. It used to accept and DISCARD everything it does not
                     // apply, so `/$count?$search=alpha` answered 200 with the unfiltered total
                     // while the sibling collection route honoured (or rejected) the same option.
-                    // $top/$skip stay accepted no-ops — see s_countRouteImplementedOptions.
+                    // $top/$skip are refused too, BREAKING — see s_countRouteImplementedOptions.
                     IResult? countUnsupported =
                         CheckUnsupportedSystemQueryOptions(ctx, s_countRouteImplementedOptions);
                     if (countUnsupported is not null) return countUnsupported;
@@ -10328,7 +10420,11 @@ internal static class OhDataEndpointFactory
                     }
                     if (options.Filter is not null)
                     {
-                        return ODataError(400, "UnsupportedQueryOption",
+                        // 501 for the same reason the sibling collection route's $filter/$orderby
+                        // refusal is: this branch is reached only when the profile has no
+                        // IQueryable source, so there is no filter code on the path and no flag
+                        // that turns one on. Flag-independent => unimplemented => §9.3.1.
+                        return ODataError(501, "UnsupportedQueryOption",
                             "$filter is not supported on this resource. Configure GetQueryable to enable server-side filtering.");
                     }
 
@@ -10352,7 +10448,7 @@ internal static class OhDataEndpointFactory
                 }
             }).WithTags(name).Produces<long>(200, "text/plain").Produces(400)
               .WithMetadata(new OhDataQueryOptionsMetadata(
-                  // #467 (F3): the GetAll fallback branch above returns 400 UnsupportedQueryOption
+                  // #467 (F3): the GetAll fallback branch above returns 501 UnsupportedQueryOption
                   // for any $filter regardless of the flag -- there is no IQueryable to apply one
                   // to. Only the Priority-1 and GetQueryable branches actually honour it, so the
                   // advertisement is gated on the source, not on the flag alone. This is the same
@@ -10364,14 +10460,18 @@ internal static class OhDataEndpointFactory
                   ExpandEnabled: false,
                   // #467 (F2): CountEnabled means "the $count OPTION is honoured here", not "this
                   // route is a count". /$count returns a bare text/plain number: there is no
-                  // envelope to carry an inline @odata.count, and the option is ignored. It used
-                  // to be set true to say "this route IS the count", which the OpenAPI
-                  // transformers -- the metadata's only consumers -- read as the other meaning
-                  // and documented a $count query parameter that does nothing.
+                  // envelope to carry an inline @odata.count. It used to be set true to say "this
+                  // route IS the count", which the OpenAPI transformers -- the metadata's only
+                  // consumers -- read as the other meaning and documented a $count query parameter
+                  // that does nothing. $count is now REFUSED here rather than merely undocumented,
+                  // so false is doubly right.
                   CountEnabled: false,
                   SearchEnabled: false,
                   MaxTop: null,
                   // #467 (F2): /$count applies neither $top nor $skip. It counts the whole set.
+                  // Both were accepted no-ops when this field was set false and are refused now
+                  // (see s_countRouteImplementedOptions); the value is unchanged either way, which
+                  // is what keeps the three companion documents byte-identical across this change.
                   TopSkipSupported: false));
             ApplyOperationAuth(countCollRb, OhDataOperation.Read, keyBased: false);
         }
@@ -10538,7 +10638,7 @@ internal static class OhDataEndpointFactory
                   // #467 (F2): a single-entity read has nothing to page, so this route does not
                   // honour $top/$skip and must not document them. Since #380 it does not ignore
                   // them either — they are not in s_getByIdImplementedOptions and are refused with
-                  // 400 UnsupportedQueryOption. The metadata value is the same; what changed is
+                  // 501 UnsupportedQueryOption. The metadata value is the same; what changed is
                   // that "not documented" and "not accepted" now agree, which is the whole point of
                   // #467's rule that a field means "this route honours this option".
                   TopSkipSupported: false));
@@ -11637,7 +11737,7 @@ internal static class OhDataEndpointFactory
                             ctx, s_expandContinuationImplementedOptions);
                         if (contUnsupported is not null)
                         {
-                            return ODataError(400, "UnsupportedQueryOption",
+                            return ODataError(501, "UnsupportedQueryOption",
                                 $"The query option '{contUnsupported}' is not supported on an $expand " +
                                 "continuation. This route serves the continuation of a BARE $expand " +
                                 "and accepts '$skip' only.");
@@ -11889,8 +11989,8 @@ internal static class OhDataEndpointFactory
                             // #359: this route counts the whole related collection and applies no
                             // data option at all — it used to accept and discard every one of
                             // them, including the $filter and $select its own sibling nav route
-                            // rejects. $top/$skip stay accepted no-ops for the same reason they
-                            // do on the entity-set /$count.
+                            // rejects. $top/$skip are refused too, BREAKING, for the same reason
+                            // they are on the entity-set /$count.
                             IResult? navCountUnsupported =
                                 CheckUnsupportedSystemQueryOptions(ctx, s_navCountImplementedOptions);
                             if (navCountUnsupported is not null) return navCountUnsupported;

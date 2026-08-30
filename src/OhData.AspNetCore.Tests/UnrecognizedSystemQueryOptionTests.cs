@@ -12,9 +12,13 @@ namespace OhData.AspNetCore.Tests;
 
 /// <summary>
 /// #359 / #380 / #353 — one mechanism, three faces. An unimplemented or unrecognized
-/// <c>$</c>-prefixed system query option must be REJECTED (<c>400 UnsupportedQueryOption</c>),
-/// never parsed-and-discarded under a <c>200</c> (OData Part 1 §11.2.5; Minimal-conformance
-/// item 7, §13.1.1).
+/// <c>$</c>-prefixed system query option must be REJECTED, never parsed-and-discarded under a
+/// <c>200</c>, and the status is <c>501 Not Implemented</c> with code
+/// <c>UnsupportedQueryOption</c>: §9.3.1 makes 501 a MUST for "functionality not implemented by
+/// the OData Service", and §13.1.1 item 7 puts that same 501 inside the Minimal-conformance MUST
+/// list. <c>400</c> is reserved for functionality the service DOES implement and this resource has
+/// switched off — a false capability flag, a property allowlist, a <c>Search</c> handler that was
+/// never supplied — and for a malformed option VALUE (#402).
 /// <list type="bullet">
 /// <item>#359 — the three collection GETs rejected a closed four-name allowlist
 ///   (<c>$apply</c>/<c>$compute</c>/<c>$index</c>/<c>$deltatoken</c>); everything else beginning
@@ -43,7 +47,9 @@ public class UnrecognizedSystemQueryOptionTests
 
     private static async Task AssertUnsupportedAsync(HttpResponseMessage resp, string option)
     {
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        // 501, not 400 — §9.3.1's MUST, and §13.1.1 item 7's Minimal-conformance MUST list. The
+        // error code and message are unchanged from the 400 these used to answer.
+        Assert.Equal(HttpStatusCode.NotImplemented, resp.StatusCode);
         JsonElement body = await resp.Content.ReadFromJsonAsync<JsonElement>();
         JsonElement error = body.GetProperty("error");
         Assert.Equal("UnsupportedQueryOption", error.GetProperty("code").GetString());
@@ -70,7 +76,7 @@ public class UnrecognizedSystemQueryOptionTests
     [InlineData("/odata/SqODatas", "$fliter")]
     [InlineData("/odata/SqODatas", "$expandx")]
     [InlineData("/odata/SqODatas", "$levels")]
-    public async Task Collection_UnrecognizedDollarOption_Returns400(string url, string option)
+    public async Task Collection_UnrecognizedDollarOption_Returns501(string url, string option)
     {
         await using TestFixture fx = await BuildAsync();
         HttpResponseMessage resp = await fx.Client.GetAsync($"{url}?{System.Uri.EscapeDataString(option)}=2");
@@ -82,15 +88,17 @@ public class UnrecognizedSystemQueryOptionTests
     [InlineData("/odata/SqQueryables", "$compute", "1 add 1 as Two")]
     [InlineData("/odata/SqQueryables", "$index", "0")]
     [InlineData("/odata/SqQueryables", "$deltatoken", "abc")]
-    public async Task Collection_TheFourAlreadyRejectedNames_KeepTheirExactEnvelope(
+    public async Task Collection_TheFourAlreadyRejectedNames_Move400To501_KeepTheirExactBody(
         string url, string option, string value)
     {
-        // Regression guard on the wire: these four have shipped as 400 UnsupportedQueryOption with
-        // this exact message since 1.0.0 and must not be re-worded (or promoted to 501) by the
-        // generalisation that now covers every other $-name.
+        // BREAKING, and the largest wire change on this branch. These four have shipped as
+        // 400 UnsupportedQueryOption since 1.0.0 and now answer 501 — §9.3.1's MUST for
+        // functionality the service does not implement. The error CODE and the message BYTES are
+        // deliberately unchanged, so a client matching on the envelope keeps working and only
+        // status-code branching moves; that byte-identity is what this test pins.
         await using TestFixture fx = await BuildAsync();
         HttpResponseMessage resp = await fx.Client.GetAsync($"{url}?{option}={System.Uri.EscapeDataString(value)}");
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.NotImplemented, resp.StatusCode);
         JsonElement body = await resp.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("UnsupportedQueryOption", body.GetProperty("error").GetProperty("code").GetString());
         Assert.Equal($"The query option '{option}' is not supported.",
@@ -131,11 +139,11 @@ public class UnrecognizedSystemQueryOptionTests
     public async Task Collection_UnrecognizedOption_IsNeverEchoedIntoANextLink()
     {
         // #359's second half: the unknown option was echoed verbatim into the generated
-        // @odata.nextLink. Once the option is a 400 there is no nextLink to echo into —
+        // @odata.nextLink. Once the option is refused there is no nextLink to echo into —
         // asserted here rather than assumed.
         await using TestFixture fx = await BuildAsync();
         HttpResponseMessage resp = await fx.Client.GetAsync("/odata/SqQueryables?$unknown=evil%20payload");
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.NotImplemented, resp.StatusCode);
         string raw = await resp.Content.ReadAsStringAsync();
         Assert.DoesNotContain("nextLink", raw);
         Assert.DoesNotContain("skiptoken", raw);
@@ -236,7 +244,7 @@ public class UnrecognizedSystemQueryOptionTests
     [InlineData("$skiptoken=abc", "$skiptoken")]
     [InlineData("$unknown=1", "$unknown")]
     [InlineData("$slect=Name", "$slect")]
-    public async Task GetById_OptionItDoesNotImplement_Returns400(string query, string option)
+    public async Task GetById_OptionItDoesNotImplement_Returns501(string query, string option)
     {
         await using TestFixture fx = await BuildAsync();
         HttpResponseMessage resp = await fx.Client.GetAsync($"/odata/SqQueryables(1)?{query}");
@@ -285,8 +293,10 @@ public class UnrecognizedSystemQueryOptionTests
     [InlineData("$select=Name", "$select")]
     [InlineData("$expand=Children", "$expand")]
     [InlineData("$count=true", "$count")]
+    [InlineData("$top=1", "$top")]
+    [InlineData("$skip=1", "$skip")]
     [InlineData("$unknown=1", "$unknown")]
-    public async Task Count_OptionItDoesNotApply_Returns400(string query, string option)
+    public async Task Count_OptionItDoesNotApply_Returns501(string query, string option)
     {
         await using TestFixture fx = await BuildAsync();
         HttpResponseMessage resp = await fx.Client.GetAsync($"/odata/SqQueryables/$count?{query}");
@@ -303,18 +313,36 @@ public class UnrecognizedSystemQueryOptionTests
     }
 
     [Theory]
-    [InlineData("/odata/SqQueryables/$count", "3")]
-    [InlineData("/odata/SqQueryables/$count?$top=1", "3")]
-    [InlineData("/odata/SqQueryables/$count?$skip=2", "3")]
-    public async Task Count_TopAndSkip_StayAcceptedNoOps(string url, string expected)
+    [InlineData("$top=1", "$top")]
+    [InlineData("$skip=2", "$skip")]
+    public async Task Count_TopAndSkip_AreRefused_BreakingSince100(string query, string option)
     {
-        // The /$count segment reports the size of the collection the request addresses after
-        // $filter/$search; $top and $skip are not applicable to it and are ignored. Unchanged
-        // from 1.0.0, and #353's own control matrix records both as "correctly ignored".
+        // Two breaking changes compose on this one request: $top/$skip move from accepted no-op to
+        // refused (the /$count ruling), and the refusal's status is 501 rather than 400.
+        // BREAKING. $top/$skip were accepted no-ops on /$count from 1.0.0 through 1.7.x, and
+        // #353's own control matrix recorded both as "correctly ignored". The owner ruled that a
+        // /$count route implements only what can change the count: none of
+        // $top/$skip/$orderby/$select/$expand can, so all five are refused rather than ignored.
+        // The envelope is the same generic one every other name on this route gets — one
+        // condition, one envelope.
         await using TestFixture fx = await BuildAsync();
-        HttpResponseMessage resp = await fx.Client.GetAsync(url);
+        HttpResponseMessage resp = await fx.Client.GetAsync($"/odata/SqQueryables/$count?{query}");
+        Assert.Equal(HttpStatusCode.NotImplemented, resp.StatusCode);
+        JsonElement body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("UnsupportedQueryOption", body.GetProperty("error").GetProperty("code").GetString());
+        Assert.Equal($"The query option '{option}' is not supported.",
+            body.GetProperty("error").GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task Count_Bare_StillReturnsTheTotal()
+    {
+        // The control the refusal above must not break: a /$count with no query string at all
+        // still answers the whole-collection total as text/plain.
+        await using TestFixture fx = await BuildAsync();
+        HttpResponseMessage resp = await fx.Client.GetAsync("/odata/SqQueryables/$count");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-        Assert.Equal(expected, await resp.Content.ReadAsStringAsync());
+        Assert.Equal("3", await resp.Content.ReadAsStringAsync());
     }
 
     // ── Navigation collection route and its /$count ──────────────────────────────
@@ -323,7 +351,7 @@ public class UnrecognizedSystemQueryOptionTests
     [InlineData("$unknown=1", "$unknown")]
     [InlineData("$slect=Name", "$slect")]
     [InlineData("$levels=2", "$levels")]
-    public async Task NavCollection_UnrecognizedDollarOption_Returns400(string query, string option)
+    public async Task NavCollection_UnrecognizedDollarOption_Returns501(string query, string option)
     {
         await using TestFixture fx = await BuildAsync();
         HttpResponseMessage resp = await fx.Client.GetAsync($"/odata/SqQueryables(1)/Children?{query}");
@@ -335,7 +363,7 @@ public class UnrecognizedSystemQueryOptionTests
     {
         await using TestFixture fx = await BuildAsync();
         HttpResponseMessage resp = await fx.Client.GetAsync("/odata/SqQueryables(1)/Children?$filter=Id eq 1");
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.NotImplemented, resp.StatusCode);
         JsonElement body = await resp.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("UnsupportedQueryOption", body.GetProperty("error").GetProperty("code").GetString());
         Assert.Equal(
@@ -363,9 +391,17 @@ public class UnrecognizedSystemQueryOptionTests
     [InlineData("$search=x", "$search")]
     [InlineData("$filter=Id eq 1", "$filter")]
     [InlineData("$select=Name", "$select")]
+    [InlineData("$orderby=Name", "$orderby")]
+    [InlineData("$count=true", "$count")]
+    [InlineData("$top=1", "$top")]
+    [InlineData("$skip=1", "$skip")]
     [InlineData("$unknown=1", "$unknown")]
-    public async Task NavCount_OptionItDoesNotApply_Returns400(string query, string option)
+    public async Task NavCount_OptionItDoesNotApply_Returns501(string query, string option)
     {
+        // $format is the WHOLE implemented set here: the handler calls the navigation delegate and
+        // counts what comes back, applying not even the $filter the entity-set /$count applies.
+        // $top/$skip were accepted no-ops from 1.0.0 through 1.7.x and are refused now — BREAKING,
+        // same owner ruling as the entity-set /$count above.
         await using TestFixture fx = await BuildAsync();
         HttpResponseMessage resp = await fx.Client.GetAsync($"/odata/SqQueryables(1)/Children/$count?{query}");
         await AssertUnsupportedAsync(resp, option);
@@ -391,7 +427,7 @@ public class UnrecognizedSystemQueryOptionTests
     [InlineData("$expand=Children", "$expand")]
     [InlineData("$filter=Id eq 1", "$filter")]
     [InlineData("$unknown=1", "$unknown")]
-    public async Task NavSingle_OptionItDoesNotImplement_Returns400(string query, string option)
+    public async Task NavSingle_OptionItDoesNotImplement_Returns501(string query, string option)
     {
         // The single-valued navigation branch serializes the related entity through
         // ODataEntityNode and reads NO query option at all -- not even $select, which its
@@ -409,7 +445,7 @@ public class UnrecognizedSystemQueryOptionTests
     {
         await using TestFixture fx = await BuildAsync();
         HttpResponseMessage resp = await fx.Client.GetAsync("/odata/SqQueryables(1)/Owner?$select=Name");
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.NotImplemented, resp.StatusCode);
         JsonElement body = await resp.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(
             "This navigation route does not support $select. A single-valued navigation " +
@@ -439,7 +475,7 @@ public class UnrecognizedSystemQueryOptionTests
         await using TestFixture fx = await BuildAsync();
         Assert.Equal(HttpStatusCode.OK,
             (await fx.Client.GetAsync("/odata/SqQueryables(1)/Children?$select=Name")).StatusCode);
-        Assert.Equal(HttpStatusCode.BadRequest,
+        Assert.Equal(HttpStatusCode.NotImplemented,
             (await fx.Client.GetAsync("/odata/SqQueryables(1)/Owner?$select=Name")).StatusCode);
     }
 
@@ -452,7 +488,7 @@ public class UnrecognizedSystemQueryOptionTests
     [InlineData("$select=Name", "$select")]
     [InlineData("$orderby=Name", "$orderby")]
     [InlineData("$skiptoken=abc", "$skiptoken")]
-    public async Task BoundFunction_OptionItDoesNotImplement_Returns400(string query, string option)
+    public async Task BoundFunction_OptionItDoesNotImplement_Returns501(string query, string option)
     {
         await using TestFixture fx = await BuildOpsAsync();
         HttpResponseMessage resp = await fx.Client.GetAsync($"/odata/SqOps/TopRated?{query}");
@@ -468,7 +504,7 @@ public class UnrecognizedSystemQueryOptionTests
         // server's own continuation link under a 200.
         await using TestFixture fx = await BuildOpsAsync();
         HttpResponseMessage resp = await fx.Client.GetAsync("/odata/SqOps/TopRated?$unknown=evil");
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.NotImplemented, resp.StatusCode);
         string raw = await resp.Content.ReadAsStringAsync();
         Assert.DoesNotContain("nextLink", raw);
         Assert.DoesNotContain("unknown=evil", raw);
@@ -507,7 +543,9 @@ public class UnrecognizedSystemQueryOptionTests
     public async Task BoundFunction_TopAboveMaxTop_KeepsItsOwnEnvelope()
     {
         // The sigil gate runs before parameter binding and must not shadow the #357 ceiling
-        // message, which is shared verbatim with the collection routes.
+        // message, which is shared verbatim with the collection routes. It also stays a 400: an
+        // out-of-range VALUE for an option the route implements is a bad request, not
+        // unimplemented functionality, so it does not follow the sigil refusals to 501.
         await using TestFixture fx = await BuildOpsAsync();
         HttpResponseMessage resp = await fx.Client.GetAsync("/odata/SqOps/TopRated?$top=999");
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
@@ -519,7 +557,7 @@ public class UnrecognizedSystemQueryOptionTests
     [InlineData("$unknown=evil", "$unknown")]
     [InlineData("$apply=groupby((Name))", "$apply")]
     [InlineData("$select=Name", "$select")]
-    public async Task BoundAction_OptionItDoesNotImplement_Returns400_AndNeverRuns(
+    public async Task BoundAction_OptionItDoesNotImplement_Returns501_AndNeverRuns(
         string query, string option)
     {
         // The gate is up front, before the body is read and before the handler delegate runs, so a
@@ -562,7 +600,7 @@ public class UnrecognizedSystemQueryOptionTests
     [Theory]
     [InlineData("$unknown=1", "$unknown")]
     [InlineData("$apply=groupby((Name))", "$apply")]
-    public async Task EntityBoundFunction_OptionItDoesNotImplement_Returns400(
+    public async Task EntityBoundFunction_OptionItDoesNotImplement_Returns501(
         string query, string option)
     {
         await using TestFixture fx = await BuildOpsAsync();
@@ -571,7 +609,7 @@ public class UnrecognizedSystemQueryOptionTests
     }
 
     [Fact]
-    public async Task EntityBoundAction_OptionItDoesNotImplement_Returns400_AndNeverRuns()
+    public async Task EntityBoundAction_OptionItDoesNotImplement_Returns501_AndNeverRuns()
     {
         await using TestFixture fx = await BuildOpsAsync();
         SqOpsProfile.EntityActionInvocations = 0;
