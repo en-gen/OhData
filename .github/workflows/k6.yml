@@ -6,13 +6,28 @@ on:
   pull_request:
     branches: [develop, main]
 
+# Supersede an in-flight run when the same PR is pushed again: the older run is answering a
+# question nobody is asking any more, and CI/CodeQL/k6 are the three most expensive workflows
+# here. Scoped to pull_request on purpose: a run on develop or main establishes that branch's
+# baseline - coverage and Test Analytics, CodeQL alerts, the commit status a release reads - so
+# it must always finish. PR and push runs land in different groups anyway, since github.ref is
+# refs/pull/N/merge for one and refs/heads/X for the other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   k6:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0  # GitVersion requires full history to compute semantic version
+          # Load-bearing: docker-compose.k6.yml builds src/OhData.TestBench.AspNetCore/Dockerfile,
+          # which does `COPY . .` (no .dockerignore) and publishes WITHOUT
+          # /p:DisableGitVersionTask, so GitVersion.MsBuild runs inside the image against the
+          # copied .git and needs full history. The root ./Dockerfile is the one that disables
+          # GitVersion - it is a different file and is not what this job builds.
+          fetch-depth: 0
       - name: Prepare k6 reports directory
         run: mkdir -p tests/k6/reports && chmod 777 tests/k6/reports
       - name: Run k6 tests
