@@ -11,8 +11,10 @@ namespace OhData.AspNetCore.Tests;
 
 /// <summary>
 /// #196: the main collection GET routes must <em>reject</em> system query options the framework
-/// does not implement (<c>$apply</c>, <c>$compute</c>, <c>$index</c>, <c>$deltatoken</c>) with
-/// <c>400 UnsupportedQueryOption</c>, rather than parsing the request and silently ignoring them.
+/// does not implement (<c>$apply</c>, <c>$compute</c>, <c>$index</c>, <c>$deltatoken</c>) rather
+/// than parsing the request and silently ignoring them. The status moved from <c>400</c> to
+/// <c>501 Not Implemented</c> (code and message unchanged) when the §9.3.1 / §13.1.1-item-7
+/// taxonomy landed — these four are functionality this build implements nowhere.
 /// The navigation-collection route already did this; the main route did not. Ignoring a known
 /// option violates OData Minimal-conformance item 7 ("parse the option or reject the request").
 /// The rejection lives in the shared capability gate, so it applies uniformly to all three
@@ -34,7 +36,7 @@ public class UnimplementedQueryOptionTests
     [InlineData("/odata/ODataWidgets", "$compute", "1 add 1 as Two")]
     [InlineData("/odata/ODataWidgets", "$index", "0")]
     [InlineData("/odata/ODataWidgets", "$deltatoken", "abc")]
-    public async Task UnimplementedOption_OnAnyCollectionPath_Returns400(string url, string option, string value)
+    public async Task UnimplementedOption_OnAnyCollectionPath_Returns501(string url, string option, string value)
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o
             .AddEntitySetProfile<WidgetProfile>()
@@ -43,7 +45,7 @@ public class UnimplementedQueryOptionTests
 
         var resp = await fx.Client.GetAsync($"{url}?{option}={System.Uri.EscapeDataString(value)}");
 
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.NotImplemented, resp.StatusCode);
         var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("UnsupportedQueryOption", body.GetProperty("error").GetProperty("code").GetString());
         Assert.Contains(option, body.GetProperty("error").GetProperty("message").GetString());

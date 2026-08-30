@@ -635,7 +635,7 @@ identical CLR types on both sides — only the source of the `IQueryable` differ
 
 | Read path | `$filter=Metadata/tier eq 3` | `$orderby=Metadata/tier` |
 |---|---|---|
-| `GetAll` (`IEnumerable`) | `400` `UnsupportedQueryOption` | `400` `UnsupportedQueryOption` |
+| `GetAll` (`IEnumerable`) | `501` `UnsupportedQueryOption` | `501` `UnsupportedQueryOption` |
 | `GetQueryable` over an **in-memory** `IQueryable` (`List<T>.AsQueryable()`) | **`200` — filters correctly** | **`200` — sorts correctly** |
 | `GetQueryable` over **EF Core** (measured on SQLite) | **`500`** | **`500`** |
 

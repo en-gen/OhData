@@ -126,7 +126,9 @@ public class ErrorEnvelopeFidelityTests
             "{\"error\":{\"code\":\"BadRequest\",\"message\":\"Invalid key format for Widgets: 'abc'\",\"target\":\"key\"}}"
         },
         {
-            "/odata/Widgets?$orderby=Name", HttpStatusCode.BadRequest,
+            // 501 since the §9.3.1 taxonomy landed. The BYTES are unchanged, which is the point:
+            // only the status line moved, so a client matching on the envelope keeps working.
+            "/odata/Widgets?$orderby=Name", HttpStatusCode.NotImplemented,
             "{\"error\":{\"code\":\"UnsupportedQueryOption\",\"message\":\"This resource does not support $filter or $orderby. Configure GetQueryable to enable server-side query processing.\"}}"
         },
         {
