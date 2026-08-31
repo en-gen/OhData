@@ -30,6 +30,9 @@ jobs:
           fetch-depth: 0
       - name: Prepare k6 reports directory
         run: mkdir -p tests/k6/reports && chmod 777 tests/k6/reports
+      # Both k6 scripts run against ONE container start (see the k6 service's command in
+      # tests/docker-compose.k6.yml) and the container exits non-zero if EITHER of them failed,
+      # so --exit-code-from k6 gates the build on both.
       - name: Run k6 tests
         run: docker compose -f tests/docker-compose.k6.yml up --abort-on-container-exit --exit-code-from k6
       - name: Upload k6 report
@@ -41,6 +44,14 @@ jobs:
       - name: Write summary
         if: always()
         run: |
-          if [ -f tests/k6/reports/summary.md ]; then
-            cat tests/k6/reports/summary.md >> $GITHUB_STEP_SUMMARY
-          fi
+          for report in smoke conformance; do
+            f="tests/k6/reports/${report}-summary.md"
+            if [ -f "$f" ]; then
+              echo "## k6: ${report}" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              cat "$f" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+            else
+              echo "## k6: ${report} — no summary written (the script did not reach handleSummary)" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
