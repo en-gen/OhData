@@ -286,15 +286,14 @@ public class UnrecognizedSystemQueryOptionTests
     // ── #353: /{Set}/$count ──────────────────────────────────────────────────────
 
     [Theory]
+    // $search AFFECTS the count under §11.2.9 ("after applying any $filter or $search") and this
+    // route has no $search leg, so ignoring it would answer a wrong number under a 200 -- #353's
+    // headline, and it stands. $apply/$compute/$count/$unknown fall outside the clause entirely:
+    // unimplemented here, refused under §9.3.1.
     [InlineData("$search=alpha", "$search")]
     [InlineData("$apply=groupby((Name))", "$apply")]
     [InlineData("$compute=1 add 1 as Two", "$compute")]
-    [InlineData("$orderby=Name", "$orderby")]
-    [InlineData("$select=Name", "$select")]
-    [InlineData("$expand=Children", "$expand")]
     [InlineData("$count=true", "$count")]
-    [InlineData("$top=1", "$top")]
-    [InlineData("$skip=1", "$skip")]
     [InlineData("$unknown=1", "$unknown")]
     public async Task Count_OptionItDoesNotApply_Returns501(string query, string option)
     {
@@ -313,25 +312,43 @@ public class UnrecognizedSystemQueryOptionTests
     }
 
     [Theory]
-    [InlineData("$top=1", "$top")]
-    [InlineData("$skip=2", "$skip")]
-    public async Task Count_TopAndSkip_AreRefused_BreakingSince100(string query, string option)
+    [InlineData("$top=1")]
+    [InlineData("$skip=2")]
+    [InlineData("$orderby=Name")]
+    [InlineData("$expand=Children")]
+    [InlineData("$select=Name")]
+    public async Task Count_OptionsThatCannotAffectACount_AreAcceptedAndIgnored(string query)
     {
-        // Two breaking changes compose on this one request: $top/$skip move from accepted no-op to
-        // refused (the /$count ruling), and the refusal's status is 501 rather than 400.
-        // BREAKING. $top/$skip were accepted no-ops on /$count from 1.0.0 through 1.7.x, and
-        // #353's own control matrix recorded both as "correctly ignored". The owner ruled that a
-        // /$count route implements only what can change the count: none of
-        // $top/$skip/$orderby/$select/$expand can, so all five are refused rather than ignored.
-        // The envelope is the same generic one every other name on this route gets — one
-        // condition, one envelope.
+        // §11.2.9, verbatim: "The returned count MUST NOT be affected by $top, $skip, $orderby, or
+        // $expand." That is a specification of BEHAVIOUR -- present and ignored -- not silence, so
+        // under §13.1.1 item 7's "either follow the specification or return 501 ... for any
+        // unsupported functionality" these four are the FOLLOW arm. Refusing them claimed
+        // non-implementation of something this route has done correctly since 1.0.0.
+        //
+        // $select is not named by that sentence and is the same answer by the clause's positive
+        // half: the count is of "items matching the request after applying any $filter or
+        // $search", and $select changes an item's shape rather than its membership. The response
+        // is a bare text/plain scalar besides -- there is nothing to project out of it.
+        //
+        // The number asserted is the WHOLE-collection total, so this fails if any of the five is
+        // ever actually APPLIED as well as if it is refused.
         await using TestFixture fx = await BuildAsync();
         HttpResponseMessage resp = await fx.Client.GetAsync($"/odata/SqQueryables/$count?{query}");
-        Assert.Equal(HttpStatusCode.NotImplemented, resp.StatusCode);
-        JsonElement body = await resp.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal("UnsupportedQueryOption", body.GetProperty("error").GetProperty("code").GetString());
-        Assert.Equal($"The query option '{option}' is not supported.",
-            body.GetProperty("error").GetProperty("message").GetString());
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal("3", await resp.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Count_FilterBesideIgnoredOptions_AppliesOnlyTheFilter()
+    {
+        // The whole §11.2.9 partition on one request, which is the shape a paging client sends:
+        // $filter narrows the count and the window/ordering options leave it alone. Two rows match
+        // Id gt 1, and neither $top=1 nor $skip=1 nor $orderby moves the answer off 2.
+        await using TestFixture fx = await BuildAsync();
+        HttpResponseMessage resp = await fx.Client.GetAsync(
+            "/odata/SqQueryables/$count?$filter=Id gt 1&$orderby=Name&$skip=1&$top=1");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal("2", await resp.Content.ReadAsStringAsync());
     }
 
     [Fact]
@@ -390,21 +407,34 @@ public class UnrecognizedSystemQueryOptionTests
     [Theory]
     [InlineData("$search=x", "$search")]
     [InlineData("$filter=Id eq 1", "$filter")]
-    [InlineData("$select=Name", "$select")]
-    [InlineData("$orderby=Name", "$orderby")]
     [InlineData("$count=true", "$count")]
-    [InlineData("$top=1", "$top")]
-    [InlineData("$skip=1", "$skip")]
     [InlineData("$unknown=1", "$unknown")]
     public async Task NavCount_OptionItDoesNotApply_Returns501(string query, string option)
     {
-        // $format is the WHOLE implemented set here: the handler calls the navigation delegate and
-        // counts what comes back, applying not even the $filter the entity-set /$count applies.
-        // $top/$skip were accepted no-ops from 1.0.0 through 1.7.x and are refused now — BREAKING,
-        // same owner ruling as the entity-set /$count above.
+        // BOTH options §11.2.9 says a count is taken after are refused here, where the entity-set
+        // /$count refuses only $search: this handler calls the navigation delegate and counts what
+        // comes back, so it cannot apply $filter either, and ignoring it would answer a wrong
+        // number under a 200. Same rule, different answer, because the route applies less.
         await using TestFixture fx = await BuildAsync();
         HttpResponseMessage resp = await fx.Client.GetAsync($"/odata/SqQueryables(1)/Children/$count?{query}");
         await AssertUnsupportedAsync(resp, option);
+    }
+
+    [Theory]
+    [InlineData("$top=1")]
+    [InlineData("$skip=1")]
+    [InlineData("$orderby=Name")]
+    [InlineData("$expand=Children")]
+    [InlineData("$select=Name")]
+    public async Task NavCount_OptionsThatCannotAffectACount_AreAcceptedAndIgnored(string query)
+    {
+        // §11.2.9 governs "a collection of entities or items of a collection-valued property", so
+        // a navigation /$count is squarely inside it and gets the same treatment as the entity-set
+        // one. The related collection has two members and none of these may move that.
+        await using TestFixture fx = await BuildAsync();
+        HttpResponseMessage resp = await fx.Client.GetAsync($"/odata/SqQueryables(1)/Children/$count?{query}");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal("2", await resp.Content.ReadAsStringAsync());
     }
 
     [Fact]
