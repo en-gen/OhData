@@ -3231,7 +3231,7 @@ internal static class OhDataEndpointFactory
     //         unrecognized $-name ($unknown, $slect, a top-level $levels), a real OData option this
     //         build implements nowhere ($apply, $compute, $index, $deltatoken), and a real option
     //         this build implements on OTHER routes but not on the one addressed ($filter on
-    //         GetById, $top on a /$count, $select on a single-valued navigation). Also the two
+    //         GetById, $search on a /$count, $select on a single-valued navigation). Also the two
     //         FLAG-INDEPENDENT structural refusals below — GetAll's $filter/$orderby and the
     //         /$count GetAll fallback's $filter — which no configuration of that profile can turn
     //         on, because that route has no IQueryable and therefore no filter code at all.
@@ -3309,33 +3309,80 @@ internal static class OhDataEndpointFactory
         "$search", FormatOption,
     };
 
-    // GET /{Set}/$count. It counts; it neither projects nor pages. $filter is the one data option
-    // it applies (and the GetAll-backed fallback branch refuses even that, with its own message),
-    // so $filter and $format are the whole implemented set. Everything else — $search included,
-    // which is #353's headline — is refused rather than answered with an unfiltered total under a
-    // 200.
+    // GET /{Set}/$count. §11.2.9 GOVERNS THIS ROUTE'S IMPLEMENTED SET, AND IT PARTITIONS THE
+    // SYSTEM QUERY OPTIONS INTO EXACTLY TWO CLASSES. Verbatim:
     //
-    // $top AND $skip ARE REFUSED, AND THAT IS A BREAKING CHANGE (owner ruling). They were accepted
-    // no-ops here from 1.0.0 through 1.7.x, and #353's own control matrix recorded both as
-    // "correctly ignored". The reading that produced that — "a window over a count is not
-    // applicable rather than unsupported" — separates them from the $orderby/$select/$expand this
-    // change refuses one line up, and there is no principle behind the separation: NONE of the
-    // five can change a count. You cannot sort a number, project fields out of it, or take the
-    // first 5 of it. The milestone's rule is that an option the route does not act on is refused
-    // rather than ignored, and §11.2.5 permits refusing ("MUST fail any request that contains the
-    // unsupported option"), so all five are refused and one condition keeps one envelope.
+    //   "On success, the response body MUST contain the count of items matching the request after
+    //    applying any $filter or $search system query options, formatted as a simple scalar
+    //    integer value with media type text/plain. The returned count MUST NOT be affected by
+    //    $top, $skip, $orderby, or $expand."
     //
-    // This DIVERGES from Microsoft.AspNetCore.OData, knowingly. Verified against the vendored
-    // source at a05e1ad0 (9.5.0-7): ODataQueryOptions' constructor synthesises Count = "true" for
-    // any request whose path ends in /$count (ODataQueryOptions.cs:1072-1084), so ApplyTo's
-    // Request.IsCountRequest() early return (:425-429) always fires there — before the
-    // $orderby/$skip/$top block and before SelectExpand — and MS silently ignores all five. The
-    // cost of diverging is real and was accepted rather than overlooked: a client that swaps
-    // /{Set} for /{Set}/$count on a grid URL and keeps the query string now gets a 400 where MS
-    // and 1.7.x gave a 200. The remedy is one edit — drop the option; it never did anything.
+    // So:
+    //
+    //   AFFECTS THE COUNT ($filter, $search) -- a route that cannot apply one MUST refuse it.
+    //         Ignoring it returns a WRONG NUMBER under a 200, which is the defect #353 reported.
+    //         This route applies $filter on its two IQueryable-backed branches and refuses it with
+    //         its own message on the GetAll fallback (no IQueryable exists there, so no
+    //         configuration turns one on -- flag-independent, hence 501). $search has no leg here
+    //         at all and is refused unconditionally: that is #353's headline and it STANDS.
+    //   MUST NOT AFFECT THE COUNT ($top, $skip, $orderby, $expand) -- accepted and IGNORED, because
+    //         ignoring them is not a shortfall the service is confessing to, it is the behaviour
+    //         the clause specifies. Under §13.1.1 item 7's disjunction -- "either follow the
+    //         specification or return 501 Not Implemented ... for any unsupported functionality" --
+    //         ignoring these IS following the specification, so 501 would claim non-implementation
+    //         of something this route has implemented correctly since 1.0.0.
+    //   NEITHER (everything else: $apply, $compute, $index, $deltatoken, $skiptoken, and every
+    //         unrecognized $-name) -- outside the clause, unimplemented here, refused under
+    //         §9.3.1 and §13.1.1 item 7 exactly as on every other route.
+    //
+    // An earlier revision of this comment asserted that "§11.2.9 mandates nothing either way" and
+    // refused all of $top/$skip/$orderby/$select/$expand on the strength of it. The clause had not
+    // been consulted; it names four of those five and specifies their behaviour.
+    //
+    // $select IS ACCEPTED AND IGNORED, AND IT IS A RULING RATHER THAN AN OVERSIGHT. §11.2.9's
+    // MUST-NOT sentence does not name it -- it names the four options that change WHICH ITEMS, or
+    // in what ORDER, a collection page carries, which are the four a naive implementation would
+    // have applied. The clause's POSITIVE half settles $select anyway, and it is exhaustive: the
+    // count is of "items MATCHING THE REQUEST after applying any $filter or $search". $select
+    // changes an item's SHAPE, never its membership, so it cannot move that number; and the
+    // response is a bare text/plain scalar, so there is no representation left to project out of.
+    // Refusing it alone among the five options a grid URL carries would reinstate exactly the
+    // unprincipled split this comment's previous revision was written to remove -- $expand ignored
+    // beside $select refused, one line apart, for no statable reason. MS ignores it too (below).
+    //
+    // $format IS ACCEPTED AND IGNORED, AND THAT IS THE OPPOSITE ERROR FROM THE ONE ABOVE, SO STATE
+    // IT. §11.2.9's closing sentence -- "Content negotiation using the Accept request header or
+    // the $format system query option is not allowed with the path segment /$count" -- means this
+    // entry canNOT mean "negotiated here", which is what FormatOption means in every other array
+    // in this file. It means "not refused", for three reasons. (1) The clause constrains the
+    // CLIENT and prescribes no server response; §9.3.1's 501 is for functionality not
+    // implemented, and $format IS implemented service-wide (§11.2.12, on the group filter), so
+    // 501 would be a false statement -- while the 400 arm of the taxonomy needs a capability flag,
+    // of which this condition has none. (2) The response is text/plain whatever $format says, so
+    // accepting it cannot make the response wrong: it is a no-op in exactly the sense the four
+    // named options are. (3) Refusing it would produce TWO envelopes for one disallowed option,
+    // because the group filter already answers 400 UnsupportedFormat for a non-JSON $format BEFORE
+    // this route runs -- $format=xml would 400 from the filter and $format=json would 501 from
+    // here. One condition, one envelope, is the rule this file is built on.
+    //
+    // Accept: application/xml still answers 406, unchanged and deliberately. §11.2.9 forbids the
+    // CLIENT to negotiate on this segment; it does not licence the SERVER to ship a media type the
+    // client said it will not take, and RFC 9110 §12.5.1 makes 406 the right answer to that.
+    //
+    // THIS ROUTE AGREES WITH Microsoft.AspNetCore.OData, which matters because a divergence here
+    // is not theoretical. Verified against the vendored source at a05e1ad0 (9.5.0-7):
+    // ODataQueryOptions' constructor synthesises Count = "true" for any request whose path ends in
+    // /$count (ODataQueryOptions.cs:1072-1084), so ApplyTo's Request.IsCountRequest() early return
+    // (:425-429) always fires -- before the $orderby/$skip/$top block and before SelectExpand --
+    // and MS silently ignores all five. Microsoft.OData.Client relies on it: it translates
+    // LongCount() by appending /$count to the query string it has ALREADY built and stripping
+    // nothing, so .OrderBy(...).LongCount(), .Take(n).LongCount() and .Skip(n).LongCount() all
+    // send the option along. Refusing them broke standard pagination for the industry-standard
+    // OData client, not merely a hand-built grid URL; MsODataClientIntegrationTests' Count_* cases
+    // pin every shape through the real client so a future narrowing fails there first.
     private static readonly string[] s_countRouteImplementedOptions =
     {
-        "$filter", FormatOption,
+        "$filter", "$top", "$skip", "$orderby", "$expand", "$select", FormatOption,
     };
 
     // GET /{Set}({key}). A single entity: there is nothing to filter, order, window or count.
@@ -3369,13 +3416,27 @@ internal static class OhDataEndpointFactory
     // and ODataEntityNode does not — a feature, with its own wire-shape decisions.
     private static readonly string[] s_navSingleImplementedOptions = { FormatOption };
 
-    // GET /{Set}({key})/{Nav}/$count. Same ruling as the entity-set /$count one level down, minus
-    // $filter: the handler invokes the navigation delegate and counts what comes back, so it
-    // applies no data option WHATSOEVER and $format is the entire implemented set. $top/$skip were
-    // accepted no-ops here from 1.0.0 through 1.7.x and are refused now for the reason recorded on
-    // s_countRouteImplementedOptions — BREAKING, and the same divergence from
-    // Microsoft.AspNetCore.OData.
-    private static readonly string[] s_navCountImplementedOptions = { FormatOption };
+    // GET /{Set}({key})/{Nav}/$count. The same §11.2.9 partition as the entity-set /$count one
+    // level down, resolved differently in exactly one class because this handler applies even
+    // less: it invokes the navigation delegate and counts what comes back, applying NO data option
+    // whatsoever.
+    //
+    //   AFFECTS THE COUNT -- $filter AND $search are both refused here, where the entity-set route
+    //         refuses only $search. That is not an inconsistency; it is the same rule reaching a
+    //         different answer on a route with no IQueryable. §11.2.9 requires the count to be
+    //         taken after applying them, this route cannot, and ignoring either would answer a
+    //         wrong number under a 200.
+    //   MUST NOT AFFECT THE COUNT -- $top/$skip/$orderby/$expand, and $select by the positive
+    //         half's "items matching the request" (see the ruling on the entity-set array), are
+    //         accepted and ignored. They were accepted no-ops here from 1.0.0 through 1.6.0 and
+    //         are again.
+    //   NEITHER -- refused, as everywhere else.
+    //
+    // $format carries the same "not refused, never negotiated" meaning it carries above.
+    private static readonly string[] s_navCountImplementedOptions =
+    {
+        "$top", "$skip", "$orderby", "$expand", "$select", FormatOption,
+    };
 
     // GET /{Set}({key})/{Nav}?$skip=N — the #313 bare-$expand continuation. $skip only.
     private static readonly string[] s_expandContinuationImplementedOptions =
@@ -3401,12 +3462,11 @@ internal static class OhDataEndpointFactory
     // Task<object> returning a List<TModel> must not be a way around the ceiling), so such a route
     // really can emit a "$skip=N" continuation. Deriving the set from the declared type would make
     // the server refuse a link it had just issued. Where the result is not a collection they are
-    // accepted no-ops. That is NOT the reading s_countRouteImplementedOptions takes for $top/$skip
-    // on a /$count, and the difference is the point: there, $top/$skip can never do anything on
-    // any request the route serves, so refusing them is a statement about the route; here they are
-    // real on the collection shape and the route cannot know at startup which shape a handler
-    // declared Task<object> will return, so refusing them would refuse a link the server itself
-    // had just issued.
+    // accepted no-ops -- the same answer s_countRouteImplementedOptions gives them, reached by a
+    // different route: there §11.2.9 requires $top/$skip to be present and ignored, while here
+    // they are real on the collection shape and the route cannot know at startup which shape a
+    // handler declared Task<object> will return, so refusing them would refuse a link the server
+    // itself had just issued.
     private static readonly string[] s_boundOperationImplementedOptions =
     {
         "$top", "$skip", FormatOption,
@@ -10370,11 +10430,14 @@ internal static class OhDataEndpointFactory
             {
                 try
                 {
-                    // #353: this route applies $filter and counts; it does not project, page,
-                    // search or aggregate. It used to accept and DISCARD everything it does not
-                    // apply, so `/$count?$search=alpha` answered 200 with the unfiltered total
-                    // while the sibling collection route honoured (or rejected) the same option.
-                    // $top/$skip are refused too, BREAKING — see s_countRouteImplementedOptions.
+                    // #353: this route applies $filter and counts; it does not search or
+                    // aggregate. It used to accept and DISCARD everything it does not apply, so
+                    // `/$count?$search=alpha` answered 200 with the unfiltered total while the
+                    // sibling collection route honoured (or rejected) the same option. The options
+                    // §11.2.9 says MUST NOT affect a count are accepted and ignored -- that
+                    // clause's specified behaviour, not a shortfall. See
+                    // s_countRouteImplementedOptions for the partition and the $select/$format
+                    // rulings.
                     IResult? countUnsupported =
                         CheckUnsupportedSystemQueryOptions(ctx, s_countRouteImplementedOptions);
                     if (countUnsupported is not null) return countUnsupported;
@@ -10469,9 +10532,11 @@ internal static class OhDataEndpointFactory
                   SearchEnabled: false,
                   MaxTop: null,
                   // #467 (F2): /$count applies neither $top nor $skip. It counts the whole set.
-                  // Both were accepted no-ops when this field was set false and are refused now
-                  // (see s_countRouteImplementedOptions); the value is unchanged either way, which
-                  // is what keeps the three companion documents byte-identical across this change.
+                  // The field means "this route HONOURS this option", so false is right even
+                  // though both are ACCEPTED: §11.2.9 requires them to be present and IGNORED, and
+                  // documenting a parameter that provably cannot change the response is the
+                  // advertise-vs-serve mismatch #467 exists to remove. See
+                  // s_countRouteImplementedOptions.
                   TopSkipSupported: false));
             ApplyOperationAuth(countCollRb, OhDataOperation.Read, keyBased: false);
         }
@@ -11986,11 +12051,13 @@ internal static class OhDataEndpointFactory
                     {
                         try
                         {
-                            // #359: this route counts the whole related collection and applies no
-                            // data option at all — it used to accept and discard every one of
-                            // them, including the $filter and $select its own sibling nav route
-                            // rejects. $top/$skip are refused too, BREAKING, for the same reason
-                            // they are on the entity-set /$count.
+                            // #359: this route counts the whole related collection and applies
+                            // no data option at all -- it used to accept and discard every one of
+                            // them, including the $filter its own sibling nav route rejects.
+                            // $filter and $search are refused because §11.2.9 requires the count
+                            // to be taken AFTER applying them and this route cannot; the four the
+                            // same clause says MUST NOT affect a count are accepted and ignored.
+                            // See s_navCountImplementedOptions.
                             IResult? navCountUnsupported =
                                 CheckUnsupportedSystemQueryOptions(ctx, s_navCountImplementedOptions);
                             if (navCountUnsupported is not null) return navCountUnsupported;

@@ -525,10 +525,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Minimal-conformance item 7 (§13.1.1), and the server did not honour it anywhere except through
   three closed name lists that between them left most of the read surface unexamined.
 
-  There are **three** distinct breaking changes in this entry and each has its own callout below:
-  the refusal itself (a `200` becomes an error), the status of every refusal (`400` becomes `501`,
-  which moves the four names refused since 1.0.0), and `$top`/`$skip` on the two `/$count` routes
-  (accepted no-ops become refusals).
+  There are **two** distinct breaking changes in this entry and each has its own callout below:
+  the refusal itself (a `200` becomes an error), and the status of every refusal (`400` becomes
+  `501`, which moves the four names refused since 1.0.0). The two `/$count` routes keep their
+  1.0.0-through-1.6.0 behaviour for the options §11.2.9 says a count MUST NOT be affected by —
+  accepted and ignored — which is a following of that clause rather than a change; see the
+  `/$count` note below.
 
   **Measured on `develop` at `3781681`** — three faces, one mechanism:
 
@@ -629,7 +631,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   |---|---|---|
   | Unrecognized `$`-name (`$unknown`, `$slect`, top-level `$levels`) | `501` | implemented nowhere |
   | `$apply` `$compute` `$index` `$deltatoken` | `501` | implemented nowhere (**was `400`**) |
-  | An option the addressed **route** does not implement (`$filter` on `GET /Set({key})`, `$top` on a `/$count`, `$select` on a single-valued nav) | `501` | no configuration adds it to that route |
+  | An option the addressed **route** does not implement (`$filter` on `GET /Set({key})`, `$search` on a `/$count`, `$select` on a single-valued nav) | `501` | no configuration adds it to that route |
   | `$filter`/`$orderby` on the `GetAll` path, and `$filter` on the `GetAll`-backed `/$count` | `501` | flag-**independent**: that path has no `IQueryable`, so `FilterEnabled = true` changes nothing and the remedy is a different handler |
   | A capability flag left `false` (`FilterEnabled`/`OrderByEnabled`/`SelectEnabled`/`ExpandEnabled`/`CountEnabled`) | `400` | implemented; this resource declines to offer it |
   | A property allowlist rejection (`FilterProperties` etc.) | `400` | same |
@@ -686,11 +688,11 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   |---|---|---|
   | `GET /{Set}` — `GetQueryable`, Priority-1 | `$filter` `$orderby` `$top` `$skip` `$select` `$expand` `$count` `$search` `$skiptoken` `$format` | every other `$`-name (the four already refused keep their exact envelope) |
   | `GET /{Set}` — `GetAll` | the same, **minus `$skiptoken`** | as above, plus `$skiptoken` — #201 continues this path with `$skip` and nothing on it ever read a `$skiptoken` |
-  | `GET /{Set}/$count` | `$filter` `$format` | `$search` (#353), `$orderby`, `$select`, `$expand`, `$count`, **`$top` and `$skip`** (breaking — see the callout), and every unrecognized `$`-name |
+  | `GET /{Set}/$count` | `$filter` `$top` `$skip` `$orderby` `$expand` `$select` `$format` | `$search` (#353), `$count`, `$apply`, `$compute`, and every unrecognized `$`-name. §11.2.9 requires the four it names — `$top`/`$skip`/`$orderby`/`$expand` — to be accepted and **ignored**; see the note below |
   | `GET /{Set}({key})` | `$select` `$expand` `$format` | everything else (#380) |
   | `GET /{Set}({key})/{Nav}` — **collection**-valued (`HasMany`) | `$select` `$orderby` `$skip` `$top` `$count` `$format` | every unrecognized `$`-name (the seven already refused are unchanged) |
   | `GET /{Set}({key})/{Nav}` — **single**-valued (`HasOptional`/`HasRequired`) | `$format` only | `$select` `$orderby` `$top` `$skip` `$count`, plus every unrecognized `$`-name |
-  | `GET /{Set}({key})/{Nav}/$count` | `$format` only — it applies not even `$filter` | everything else, **`$top` and `$skip` included** (breaking — see the callout) |
+  | `GET /{Set}({key})/{Nav}/$count` | `$top` `$skip` `$orderby` `$expand` `$select` `$format` | `$filter` **and** `$search` — it applies neither — plus `$count` and every unrecognized `$`-name |
   | `GET /{Set}({key})/{Nav}?$skip=N` (#313) | `$skip` `$format` | nothing newly refused — but `$SKIP`/`$FORMAT` are now **accepted**; see below |
   | `GET`\|`POST /{Set}/{Op}`, `GET`\|`POST /{Set}({key})/{Op}` (bound operations) | `$top` `$skip` `$format` | every other `$`-name |
   | `GET`\|`POST /{Op}` (unbound operations) | `$format` only | every other `$`-name |
@@ -716,52 +718,90 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is. The ceiling is applied in the *runtime* collection branch (#357's rule that a handler
   declared `Task<object>` must not be a way around it), so such a route really can emit a
   `$skip=N` continuation — deriving the set from the declared type would make the server refuse
-  a link it had just issued. Where the result is not a collection they are accepted no-ops, the
-  same reading the earlier revision took for `/$count` — and, since the `/$count` ruling above, the
-  only place that reading survives. The difference is the point: on a `/$count` those two options can
-  never do anything on any request the route serves, so refusing them is a statement about the route;
-  on a bound operation they are real on the collection shape and the route cannot know at startup
-  which shape a handler declared `Task<object>` will return, so refusing them would refuse a link the
-  server itself had just issued. An operation's own parameters are non-`$` keys (a query string for a
-  function, a JSON body for an action) and are never examined.
+  a link it had just issued. Where the result is not a collection they are accepted no-ops, which is
+  the same answer the two `/$count` routes give them, reached by a different road: there §11.2.9
+  requires them to be present and ignored, whereas here they are real on the collection shape and the
+  route cannot know at startup which shape a handler declared `Task<object>` will return, so refusing
+  them would refuse a link the server itself had just issued. An operation's own parameters are
+  non-`$` keys (a query string for a function, a JSON body for an action) and are never examined.
 
   `$format` is in **every** set and must stay there: it is not a data option. §11.2.12 content
   negotiation is implemented once, on the group filter wrapping the whole OData surface, so it never
   reaches these handlers and cannot change a row; an unsupported `$format` **value** is still
   rejected there, unchanged.
 
-  > **⚠ BREAKING CHANGE — `$top` and `$skip` on a `/$count` route are refused, where they were
-  > accepted no-ops from 1.0.0 through 1.7.x.**
+  > **`/$count` follows §11.2.9, which decides this route's implemented set outright.** The four
+  > options that clause names are accepted and **ignored** — unchanged behaviour from 1.0.0 through
+  > 1.6.0, and not a breaking change. Verbatim:
+  >
+  > > "On success, the response body MUST contain the count of items matching the request after
+  > > applying any `$filter` or `$search` system query options, formatted as a simple scalar integer
+  > > value with media type `text/plain`. **The returned count MUST NOT be affected by `$top`,
+  > > `$skip`, `$orderby`, or `$expand`.**"
+  > >
+  > > "Content negotiation using the Accept request header or the `$format` system query option is
+  > > not allowed with the path segment `/$count`."
+  >
+  > That partitions the system query options into exactly two classes, and each gets the answer the
+  > clause specifies. Under Minimal item 7's disjunction — *"either follow the specification or return
+  > 501 Not Implemented … for any unsupported functionality"* — ignoring the second class **is**
+  > following the specification, so a `501` there claimed non-implementation of something this route
+  > had implemented correctly since 1.0.0.
+  >
+  > | Class | Options | Answer |
+  > |---|---|---|
+  > | **Affects the count** | `$filter`, `$search` | Applied where the route can; **refused** where it cannot |
+  > | **MUST NOT affect the count** | `$top`, `$skip`, `$orderby`, `$expand` (and `$select`) | Accepted and **ignored** |
+  > | **Outside the clause** | `$apply`, `$compute`, `$index`, `$deltatoken`, `$skiptoken`, `$count`, any unrecognized `$`-name | **Refused** (`501`) |
+  >
+  > **`$search` and `$apply` stay refused, and #353's headline is unchanged.** §11.2.9 requires the
+  > count to be taken *after applying any `$filter` or `$search`*, so a route with no `$search` leg
+  > that ignored one would answer a **wrong number** under a `200`. The same argument refuses
+  > `$filter` on the **navigation** `/$count`, whose handler invokes the navigation delegate and
+  > counts what comes back — it can apply neither, so it refuses both. `$apply`/`$compute` fall
+  > outside the clause and are unimplemented anywhere in this build.
+  >
+  > **`$select` is accepted and ignored, deliberately.** §11.2.9's MUST-NOT sentence does not name
+  > it, but the clause's positive half is exhaustive about what *does* move the number: the count is
+  > of "items **matching the request** after applying any `$filter` or `$search`". `$select` changes
+  > an item's **shape**, never its membership, and the response is a bare `text/plain` scalar with no
+  > representation left to project out of. Refusing it alone among the five options a grid URL
+  > carries would be an unprincipled split.
+  >
+  > **`$format` is accepted and ignored, which is the opposite error and is stated rather than left
+  > implicit.** §11.2.9 says content negotiation "is not allowed" on this segment, so the entry
+  > cannot mean "negotiated here" as it does in every other route's set — it means "not refused".
+  > Refusing it was rejected on three grounds: the clause constrains the *client* and prescribes no
+  > server response; `$format` **is** implemented service-wide (§11.2.12, on the group filter), so a
+  > `501` would be a false statement, while the `400` arm of the taxonomy needs a capability flag
+  > this condition has none of; and the group filter already answers `400 UnsupportedFormat` for a
+  > non-JSON `$format` *before* the route runs, so refusing here would give one disallowed option two
+  > envelopes (`$format=xml` → `400`, `$format=json` → `501`). The response is `text/plain` whatever
+  > `$format` says. `Accept: application/xml` still answers `406`, unchanged: §11.2.9 forbids the
+  > *client* to negotiate, it does not licence the server to ship a media type the client said it
+  > will not take, and RFC 9110 §12.5.1 makes `406` the right answer to that.
+  >
+  > **This route agrees with `Microsoft.AspNetCore.OData`, and that agreement is load-bearing.**
+  > Verified against its source at `a05e1ad0` (9.5.0-7): `ODataQueryOptions`' constructor synthesises
+  > `Count = "true"` for any request whose path ends in `/$count`
+  > (`Query/ODataQueryOptions.cs:1072-1084`), so `ApplyTo`'s `Request.IsCountRequest()` early return
+  > (`:425-429`) always fires — before the `$orderby`/`$skip`/`$top` block and before `SelectExpand`
+  > — and MS silently ignores all five. **`Microsoft.OData.Client` depends on that**: it translates
+  > `LongCount()` by appending `/$count` to the query string it has *already* built and stripping
+  > nothing, so an ordinary paging shape sends the option along. Measured against
+  > `Microsoft.OData.Client` 8.4.4:
   >
   > ```
-  > GET /odata/Widgets/$count?$top=5   1.7.x -> 200  body: 77     now -> 501 UnsupportedQueryOption
-  > GET /odata/Widgets/$count?$skip=2  1.7.x -> 200  body: 77     now -> 501 UnsupportedQueryOption
-  > GET /odata/Widgets(1)/Lines/$count?$top=5   likewise, and `$filter` there too
+  > q.LongCount()                       -> /Widgets/$count                  200
+  > q.Where(...).LongCount()            -> /Widgets/$count?$filter=Id gt 1  200
+  > q.OrderBy(w => w.Name).LongCount()  -> /Widgets/$count?$orderby=Name    200
+  > q.Take(2).LongCount()               -> /Widgets/$count?$top=2           200
+  > q.Skip(1).LongCount()               -> /Widgets/$count?$skip=1          200
   > ```
   >
-  > **Who is affected:** anyone who swaps `/{Set}` for `/{Set}/$count` on a grid or list URL and
-  > keeps the query string — the ordinary way a UI asks "how many rows would that page over?".
-  > That request now fails instead of answering the total. **Remedy: drop the option.** It never did
-  > anything; the number you got back was always the count of the whole addressed collection, and it
-  > still is. Only `$filter` ever changed a `/$count` result, and it still does.
-  >
-  > **Why.** An earlier revision kept these two as no-ops on the reading that *"a window over a count
-  > is not applicable rather than unsupported"*. That reading does not survive being stated beside
-  > the `$orderby`/`$select`/`$expand` this change refuses on the same route: **none of the five can
-  > change a count.** You cannot sort a number, project fields out of it, or take the first 5 of it.
-  > The milestone's rule is that an option the route does not act on is refused rather than ignored,
-  > and §11.2.5 permits refusing outright, so all five are refused and a `/$count` route implements
-  > only what can actually move the number it returns — `$filter` (plus `$format`) on the entity-set
-  > segment, and **nothing at all** on the navigation segment, whose handler invokes the navigation
-  > delegate and counts what comes back.
-  >
-  > **This diverges from `Microsoft.AspNetCore.OData`, knowingly.** Verified against its source at
-  > `a05e1ad0` (9.5.0-7): `ODataQueryOptions`' constructor synthesises `Count = "true"` for any
-  > request whose path ends in `/$count` (`Query/ODataQueryOptions.cs:1072-1084`), so `ApplyTo`'s
-  > `Request.IsCountRequest()` early return (`:425-429`) always fires there — before the
-  > `$orderby`/`$skip`/`$top` block and before `SelectExpand` — and MS silently ignores all five.
-  > §11.2.9 mandates nothing about them either way. The cost of diverging is real and was weighed
-  > rather than overlooked; the owner ruled for refusing.
+  > Refusing those four therefore broke standard pagination for the industry-standard OData client,
+  > not merely a hand-built grid URL. `MsODataClientIntegrationTests`' `Count_*` cases pin every shape
+  > above through the real client, so a future narrowing of this route fails there first.
 
   **`@odata.nextLink` needed no separate fix on the routes that were already gated, and needed
   exactly this one on the routes that were not.** Once an unrecognized option is refused, no link
