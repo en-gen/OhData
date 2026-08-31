@@ -349,11 +349,26 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected Func<TKey, TModel, CancellationToken, Task<TModel>>? Put = null;
 
     /// <summary>
-    /// Registers the <c>POST /{EntitySet}</c> handler (OData §11.4.1 — Create an Entity).
-    /// Return <c>null</c> to produce a <c>400 Bad Request</c> response.
+    /// Registers the <c>POST /{EntitySet}</c> handler (OData §11.4.2 — Create an Entity).
+    /// It must return the created entity.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Leaving this <c>null</c> (the default) means no <c>POST /{EntitySet}</c> route is registered.
+    /// </para>
+    /// <para>
+    /// <b>Returning <c>null</c> is a contract violation, not a rejection (#496).</b> It answered
+    /// <c>400 Bad Request</c> through 1.6.0 — the client blamed for a server-side bug, and the only
+    /// 4xx null policy in the framework. It now throws, which the group-level exception filter turns
+    /// into a logged <c>500</c> carrying the OData error envelope.
+    /// </para>
+    /// <para>
+    /// To <em>reject</em> a create deliberately, do it before the handler: this delegate returns
+    /// <typeparamref name="TModel"/> (as does every other entity-set handler), so it cannot return an
+    /// <c>IResult</c> and there is no way to choose a status code from inside it. Use a
+    /// <c>Create</c> authorization rule, <see cref="RequestBodyNullabilityValidationEnabled"/>, or
+    /// throw — which is the same <c>500</c>.
+    /// </para>
     /// </remarks>
     protected Func<TModel, CancellationToken, Task<TModel?>>? Post = null;
 
