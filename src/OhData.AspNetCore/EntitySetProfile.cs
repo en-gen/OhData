@@ -116,19 +116,19 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected bool? ExpandEnabled { get; init; }
 
     /// <summary>
-    /// Controls whether <c>$filter</c> is allowed on this entity set (OData §11.2.6.1).
+    /// Controls whether <c>$filter</c> is allowed on this entity set (OData §11.2.5.1).
     /// Inherits from <see cref="EntitySetDefaults"/> when <c>null</c> (the default).
     /// </summary>
     protected bool? FilterEnabled { get; init; }
 
     /// <summary>
-    /// Controls whether <c>$orderby</c> is allowed on this entity set (OData §11.2.6.2).
+    /// Controls whether <c>$orderby</c> is allowed on this entity set (OData §11.2.5.2).
     /// Inherits from <see cref="EntitySetDefaults"/> when <c>null</c> (the default).
     /// </summary>
     protected bool? OrderByEnabled { get; init; }
 
     /// <summary>
-    /// Controls whether <c>$count</c> is allowed on this entity set (OData §11.2.6.5).
+    /// Controls whether <c>$count</c> is allowed on this entity set (OData §11.2.5.5).
     /// Inherits from <see cref="EntitySetDefaults"/> when <c>null</c> (the default).
     /// </summary>
     protected bool? CountEnabled { get; init; }
@@ -261,7 +261,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// <b>Four properties are outside the rule</b>, and read the first one as a deliberate choice
     /// rather than as something unreachable. The entity's <b>key</b> is exempt <i>by choice</i>: a
     /// service-generated key is routinely omitted on create, §11.4.2 permits omitting a property
-    /// with a service-generated value, and every EDM key is <c>Nullable="false"</c>, so checking it
+    /// the service computes (<c>Core.Computed</c>), and every EDM key is <c>Nullable="false"</c>, so checking it
     /// would refuse ordinary creates. An explicit <c>null</c> for a reference-typed key is
     /// therefore <b>not</b> answered by this rule and is not a <c>400</c>. A non-nullable
     /// <b>value type</b> such as <c>int</c> is outside it because an explicit <c>null</c> there is
@@ -381,7 +381,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
     /// <summary>
     /// Registers a free-text search handler for <c>GET /{EntitySet}?$search=term</c>
-    /// (OData §11.2.6.6 — System Query Option <c>$search</c>). The raw search term from the
+    /// (OData §11.2.5.6 — System Query Option <c>$search</c>). The raw search term from the
     /// query string is passed to this delegate; return matching entities.
     /// </summary>
     /// <remarks>
@@ -393,7 +393,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private int? _maxTop;
 
     /// <summary>
-    /// Maximum value the client may specify in <c>$top</c> (OData §11.2.6.3).
+    /// Maximum value the client may specify in <c>$top</c> (OData §11.2.5.3).
     /// The framework enforces this limit; requests exceeding it receive a
     /// <c>400 Bad Request</c>. Inherits from <see cref="EntitySetDefaults.MaxTop"/> when
     /// <c>null</c>. Must be a positive integer.
@@ -418,7 +418,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// <c>$count</c> may materialize. A nested <c>$top</c> greater than this is rejected with
     /// <c>400 Bad Request</c> before any handler runs; a nested <c>$count</c> whose related
     /// collection exceeds it is likewise rejected with <c>400</c> rather than silently truncated
-    /// (OData §11.2.4.2 requires <c>Nav@odata.count</c> to report the full filtered collection).
+    /// (OData §11.2.5.5 requires a count to report the full filtered collection).
     /// #313 widened what the value covers once it is set: it now bounds <b>every</b> collection
     /// <c>$expand</c> level — a bare <c>?$expand=Children</c> included, and every level of a
     /// <c>$levels=N</c> recursion — not just the two #254 shapes, and composes the child-key
@@ -610,7 +610,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// <summary>
     /// Opts in to ETag generation. The framework hashes the values of the specified
     /// properties using SHA-256 and encodes the result as Base64, returning it in the
-    /// <c>ETag</c> response header (OData §8.2.6) and the <c>@odata.etag</c> annotation.
+    /// <c>ETag</c> response header (OData §8.3.1) and the <c>@odata.etag</c> annotation.
     /// <para>
     /// Supports <c>byte[]</c> values (e.g. row-version columns) directly; all other values are
     /// hashed as their UTF-8 string representations, formatted round-trippably and under
@@ -620,10 +620,23 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// </para>
     /// </summary>
     /// <remarks>
-    /// When ETags are enabled the framework checks the <c>If-Match</c> request header on
-    /// mutating operations (PUT, PATCH, DELETE) and returns <c>412 Precondition Failed</c>
-    /// on mismatch (OData §8.2.5). GET responses support <c>If-None-Match</c> with
-    /// <c>304 Not Modified</c> (OData §8.2.5).
+    /// When ETags are enabled the framework checks the <c>If-Match</c> request header on every
+    /// state-changing route it owns and can key — entity <c>PUT</c>/<c>PATCH</c>/<c>DELETE</c>,
+    /// the structural-property writes, all three <c>$ref</c> link-management routes and the
+    /// navigation-<c>POST</c> create route (#478) — and returns <c>412 Precondition Failed</c>
+    /// on mismatch (OData §8.2.4). GET responses support <c>If-None-Match</c> with
+    /// <c>304 Not Modified</c> (OData §8.2.5). <b>Bound and unbound actions are excluded, and that
+    /// is a known deviation, not a spec allowance</b> — §11.4.1.1, §8.2.4 and §8.3.1 all name
+    /// Action Requests explicitly. Tracked as
+    /// <see href="https://github.com/en-gen/OhData/issues/566">#566</see>.
+    /// <para>
+    /// <b>Performance note (#483).</b> A selector that captures anything outside its own lambda
+    /// parameter (a field, a local, an injected service) can no longer be cached across requests
+    /// and is recompiled per profile instance — measured at roughly 2.5–3.5x the per-request cost
+    /// of a non-capturing selector on <c>GET /Set(key)</c>. Keep the lambda reading only its
+    /// parameter (fold the value into a model property); assigning it to a local first does not
+    /// help, because a captured local is still compiled into a display class.
+    /// </para>
     /// </remarks>
     /// <param name="propertySelectors">
     /// One or more property selectors whose values are combined into the ETag hash.

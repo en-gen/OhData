@@ -26,7 +26,8 @@ public sealed class OhDataBuilder
     private readonly string _name;
     private readonly EntitySetDefaults _defaults = new();
     // #252: OhData owns its response casing independently of the host's HttpJsonOptions.
-    // null = PascalCase (the CLR names $metadata declares, OData §4.4). This is the source of
+    // null = PascalCase (the CLR names $metadata declares -- OData JSON Format; Part 1 has no
+    // §4.4, so no section number is cited). This is the source of
     // truth for every OhData response path; the host's PropertyNamingPolicy is not inherited.
     private JsonNamingPolicy? _jsonPropertyNamingPolicy;
     // #389: OData open complex types. ON by default -- a complex type with a dictionary member IS an
@@ -101,7 +102,7 @@ public sealed class OhDataBuilder
     /// </summary>
     /// <remarks>
     /// Defaults to <c>null</c> — <b>PascalCase</b>, the CLR property names OhData's <c>$metadata</c>
-    /// declares — so payload casing matches the EDM (OData §4.4). OhData owns this default
+    /// declares — so payload casing matches the EDM. OhData owns this default
     /// independently of the host's <c>HttpJsonOptions.SerializerOptions.PropertyNamingPolicy</c>,
     /// which is intentionally not inherited. Pass <see cref="JsonNamingPolicy.CamelCase"/> to emit
     /// camelCase payloads instead; an explicit value here always wins.
@@ -109,7 +110,7 @@ public sealed class OhDataBuilder
     /// <b>Warning — this policy shapes payloads and OpenAPI schemas, NOT <c>$metadata</c>.</b> Opting
     /// into camelCase makes response bodies and the generated OpenAPI schema camelCase, but
     /// <c>$metadata</c> continues to advertise the EDM property names — PascalCase, or the
-    /// <c>[System.Text.Json.Serialization.JsonPropertyName]</c> value where one is present (§4.4).
+    /// <c>[System.Text.Json.Serialization.JsonPropertyName]</c> value where one is present.
     /// The <c>$select</c>/<c>$filter</c>/<c>$orderby</c> parser resolves those EDM names
     /// case-insensitively, so a camelCase query option still binds; but a strict OData-native client
     /// that binds by the exact <c>$metadata</c> name will not match a camelCase payload key under this

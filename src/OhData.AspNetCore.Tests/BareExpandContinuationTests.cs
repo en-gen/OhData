@@ -1030,7 +1030,7 @@ public sealed class BareExpandContinuationFailClosedTests : IAsyncLifetime
 
     /// <summary>
     /// <c>$format</c> is the ONE exemption from the rule above, and it is a deliberate deviation from
-    /// the brief's "reject every other query option". It is not a data option: §11.2.12 content
+    /// the brief's "reject every other query option". It is not a data option: §11.2.10 content
     /// negotiation is implemented once on the group filter in <c>MapAll</c>, for every route on the
     /// whole OData surface, and never reaches this handler. Refusing it would make this the only
     /// route in the surface that <c>400</c>s a conformant, already-supported option, and would break

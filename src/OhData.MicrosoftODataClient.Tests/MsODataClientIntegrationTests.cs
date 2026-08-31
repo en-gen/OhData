@@ -248,7 +248,7 @@ internal sealed class MsClientFixture : IAsyncDisposable
         builder.WebHost.UseTestServer();
         builder.Services.AddLogging(b => b.ClearProviders());
         // MS OData Client expects PascalCase property names (per OData 4.0 spec). Since #252 that
-        // is OhData's default — payloads match $metadata (OData §4.4) with no host JSON config —
+        // is OhData's default -- payloads match $metadata with no host JSON config --
         // so the former ConfigureHttpJsonOptions(PropertyNamingPolicy = null) override is redundant
         // and has been removed. This fixture now proves the server is spec-compliant out of the box.
         builder.Services.AddOhData(o =>

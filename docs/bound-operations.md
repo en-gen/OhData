@@ -121,7 +121,7 @@ Optional parameters and their defaults are reflected in `$metadata`.
 
 ## Return types
 
-Any return type is supported - the result is serialized as JSON. Wrap in `Task<T>` for async operations. `ValueTask` and `ValueTask<T>` are also supported alongside `Task`/`Task<T>` - the framework detects the return type via reflection at startup and dispatches accordingly:
+Almost any return type is supported - the result is serialized as JSON. Wrap in `Task<T>` for async operations. `ValueTask` and `ValueTask<T>` are also supported alongside `Task`/`Task<T>` - the framework detects the return type via reflection at startup and dispatches accordingly. Three shapes are **refused at bind time** and are listed in [Signatures the framework rejects at bind time](#signatures-the-framework-rejects-at-bind-time) below: a `void`-returning *function*, a `CancellationToken` that is not the last parameter (or a nullable one), and any return type implementing `IResult`.
 
 ```csharp
 // Returns a single entity
@@ -214,11 +214,11 @@ A **bound action** whose result is a collection of the entity set's own type hon
 | `MaxTop = null` | no ceiling — the full collection in one response |
 | `Prefer: maxpagesize` | **not honoured**, and no `Preference-Applied` is emitted |
 
-**Why a refusal and not a page.** A `@odata.nextLink` is a URL the client GETs (Protocol §11.2.5.7),
-while the target of `POST /Set/Action` is the action-invocation resource, which has no
-representation to continue (§11.5.4) — the same reason [ETag preconditions](etags.md) exclude
-actions. A continuation link there would answer `405`, and re-POSTing a side-effecting action to
-collect page 2 is not a continuation in any case. Capping *without* a link would be silent
+**Why a refusal and not a page.** A `@odata.nextLink` is a URL the client **GETs** (Protocol
+§11.2.5.7), and an action is invoked by `POST` to its action URL (§11.5.4.1) — so there is no
+GET-addressable continuation of an action invocation for a link to point at. A continuation link
+there would answer `405`, and re-POSTing a side-effecting action to collect page 2 is not a
+continuation in any case. Capping *without* a link would be silent
 truncation, which the framework does nowhere. That leaves refusing, and the refusal is a `500`
 rather than a `400` because the condition is decided entirely by server-side state — the profile
 declared the ceiling and the handler returned more than fits under it, identically for every client
@@ -236,6 +236,38 @@ answered `200` with all 25 entities and no `@odata.nextLink`, and `$top=999`, `$
 and `$top=abc` were all likewise `200` with the full 25 — while the sibling *function* capped at 10
 with a continuation and `400`d `$top=999`.
 
+## System query options on an operation route (#359)
+
+All six operation routes — collection-bound and entity-bound function and action, and the two
+unbound ones — refuse any `$`-prefixed query option they do not implement with
+**`501 Not Implemented`** (`UnsupportedQueryOption`). The implemented sets are small:
+
+| Route | Implemented `$` options | Everything else |
+|---|---|---|
+| `GET /{Set}/{Function}`, `GET /{Set}({key})/{Function}` | `$top`, `$skip`, `$format` | `501` |
+| `POST /{Set}/{Action}`, `POST /{Set}({key})/{Action}` | `$top`, `$skip`, `$format` | `501` |
+| `GET /{Function}`, `POST /{Action}` (unbound) | `$format` | `501` |
+
+Three things worth knowing:
+
+- **An operation's own parameters are unaffected.** A function's parameters are ordinary
+  (non-`$`) query keys and an action's are in the body, so the gate never looks at them. Only
+  `$`-prefixed keys are examined, per Part 2 §5.2's reservation of `$` for system query options.
+- **`$top`/`$skip` are listed unconditionally**, not derived from the declared return type. The
+  `MaxTop` ceiling is applied to whatever the handler returns at runtime, so a handler declared
+  `Task<object>` really can produce a `$skip=N` continuation — and refusing the option would mean
+  refusing a link the server itself had just issued. Where the result is not a collection they are
+  accepted no-ops. On an **unbound** operation there is no collection branch and no continuation,
+  so they are refused.
+- **The gate runs before parameter binding and before the handler delegate**, so a refused
+  **action** invocation provably mutates nothing.
+
+Before #359 the operation routes had no gate at all, and `TryApplyOperationCollectionPaging` copies
+the *whole* incoming query string into the `@odata.nextLink` it builds — so an unrecognized option
+was echoed verbatim into a link the server generated. See
+[query-options.md](query-options.md#unsupported-system-query-options-are-rejected-359-380-353) for
+the full `501`-vs-`400` taxonomy.
+
 ## EDM and `$metadata`
 
 Bound operations are registered in the EDM model and appear in `GET /$metadata`. Functions are registered on the entity set (or entity type for entity-bound), making them discoverable by OData-aware clients.
@@ -247,9 +279,25 @@ back as a `500 Internal Server Error` with the standard OData error envelope
 (`code: "InternalServerError"`, a generic message - the exception's own message/stack trace is
 never echoed to the client, only logged). See
 [Error responses](spec-compliance.md#error-responses) ("Unhandled handler exceptions" row) for the
-full behavior. To return a more specific OData error from within a handler, catch the failure yourself
-and return `ODataError`-shaped `Results.Json(...)`/`Results.BadRequest(...)` (matching the
-`{"error":{"code":...,"message":...}}` shape), rather than relying on the generic 500 fallback.
+full behavior.
+
+**An operation handler cannot choose its own status code.** Earlier revisions of this page told you
+to *"catch the failure yourself and return `ODataError`-shaped `Results.Json(...)` /
+`Results.BadRequest(...)`"*. **Do not do that** — since #498 an `IResult` return type is refused at
+bind time, so a handler written that way now throws `InvalidOperationException` from the profile
+constructor and the app does not start. OhData owns the HTTP envelope for an operation route: it
+writes the status, the `@odata.context` and the response shape.
+
+What is available today:
+
+| You want | Do this |
+|---|---|
+| To signal failure | `throw`. The group filter logs the real exception and answers `500` + the OData error envelope (`code: "InternalServerError"`, a generic message — nothing from your exception reaches the client). |
+| A client-visible outcome that is not an exception | Model it in the **return value** — return a DTO with your own status/reason members. It comes back as a `200`. |
+| A real `4xx` with an OData error envelope | Not expressible from an operation handler. Use an entity-set route (`Post`/`Patch`/…), whose handlers *can* refuse, or validate before invoking the operation. |
+
+Returning `null` from an operation handler is not an error path either — it produces `204 No
+Content`, the same as a `void`/`Task`/`ValueTask` action.
 
 ## Unbound functions and actions
 

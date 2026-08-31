@@ -92,6 +92,27 @@ Selectors: `.Read(...)`, `.Create(...)`, `.Update(...)`, `.Delete(...)`, `.Write
 
 **`Invoke("Name", ...)` matches the operation name case-insensitively, and an unmatched name is refused at startup.** Both halves are [#525](https://github.com/en-gen/OhData/issues/525). The name is matched the way the route that serves the operation is matched, so `.Invoke("stamp", ...)` governs a `Stamp` function; before the fix that comparison was ordinal, so a miscased rule silently matched nothing and the operation fell back to the generic `.Invoke(...)` rule — or, with no generic rule, to **no requirement at all**. Because a *misspelled* name evaporates the same way and no comparer can rescue it, `app.MapOhData()` now throws `InvalidOperationException` when a named `Invoke` rule does not resolve to a bound operation the profile declares, naming the rule and listing the declared operations. There is no valid configuration in which a rule targets an operation that does not exist.
 
+**Exactly one `Invoke(name, …)` rule per bound operation, or startup throws.**
+[#546](https://github.com/en-gen/OhData/issues/546). Named rules are resolved last-write-wins, so
+once #525 made the match case-insensitive, two rules differing only in case collapsed onto each
+other and **the order they were declared in decided whether the operation was protected**:
+
+```csharp
+.Invoke("Stamp", i => i.RequireRole("admin")).Invoke("stamp", i => i.AllowAnonymous())
+// anonymous GET …/Stamp  ->  200        (protected before #525)
+
+.Invoke("stamp", i => i.AllowAnonymous()).Invoke("Stamp", i => i.RequireRole("admin"))
+// anonymous GET …/Stamp  ->  401
+```
+
+`MapOhData()` now throws `InvalidOperationException` when two named `Invoke` rules on one profile
+resolve to the same bound operation, naming both spellings and the operation — **including two
+rules spelled identically**, since the mechanism (the earlier rule silently discarded) and the
+consequence are the same. The grouping uses the same comparer the resolution does. **Generic
+`Invoke(…)` rules are unaffected**: last-write-wins is the design there, and `.All(…)` followed by
+`.Invoke(…)` is a documented refinement idiom. Remedy: keep exactly one `Invoke` rule per
+operation.
+
 **Per-category requirements** mirror `AuthorizationPolicyBuilder` and combine with **AND**:
 
 | Method | Meaning |
