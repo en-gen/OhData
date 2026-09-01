@@ -1459,20 +1459,22 @@ status will catch them.
   checkable, so each corrected site now carries one.
 
 - **A fabricated OData quotation is withdrawn from the documentation *and* from the source (#578,
-  #566).** Ten sites justified excluding bound actions from the `If-Match` precondition gate by
-  asserting that an action-invocation resource *"has no representation and therefore no entity
-  tag"*, citing Protocol §11.5.4. **That phrase appears nowhere in Part 1** — `grep -ic
+  #566).** **Twelve** sites justified excluding bound actions from the `If-Match` precondition gate
+  by asserting that an action-invocation resource *"has no representation and therefore no entity
+  tag"*, citing Protocol §11.5.4 — six of them under `src/`, one of those the runtime exception
+  message the bound-action ceiling throws, which had been carrying the false citation to operators
+  in text that ships. **That phrase appears nowhere in Part 1** — `grep -ic
   "no representation"` over the specification returns `0` — and four clauses say the opposite:
   §11.4.1.1 is a MUST covering *"a Data Modification Request **or Action Request**"*, §8.2.4 and
   §8.3.1 name Action Requests explicitly, and §11.5.4.1 instructs the **client** to send `If-Match`
   for exactly this case. The behaviour is unchanged and now ships labelled as a **known deviation**
   tracked by [#566](https://github.com/en-gen/OhData/issues/566) — in `docs/etags.md`,
-  `docs/spec-compliance.md`, `CLAUDE.md`, the two comment sites in `OhDataEndpointFactory` and the
-  two test fixtures that had been asserting the exclusion as correct behaviour. The separate
+  `docs/spec-compliance.md`, `CLAUDE.md`, the four comment sites in `OhDataEndpointFactory` and the
+  three test fixtures that had been asserting the exclusion as correct behaviour. The separate
   *no-continuation* argument for a bound action survives on its own footing and is re-grounded in
   §11.2.5.7 — a next link is one that *"allows retrieving the next partial set of items"*, and
-  `POST /{Set}/{Action}` is not GET-addressable — including in the runtime exception message the
-  ceiling throws, which had been carrying the fabricated citation to operators.
+  `POST /{Set}/{Action}` is not GET-addressable — which is what the corrected exception message
+  now says.
 
 - **`README.md` no longer asserts a security claim this release withdrew (#578).** It said the
   resource check *"covers property/navigation/`$ref` routes too … so there's no bypass"* — the exact
