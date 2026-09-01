@@ -23,7 +23,7 @@ namespace OhData.AspNetCore.Tests;
 /// Every walk here asserts the same three things, since a paging bug shows up as exactly one of
 /// them: the walk TERMINATES, no row is served TWICE, and no row is SKIPPED. <c>@odata.count</c>
 /// is asserted alongside because both fixes touch the code that computes the page — and the count
-/// is computed independently of it (§11.2.6.5: unaffected by <c>$top</c>/<c>$skip</c>).
+/// is computed independently of it (§11.2.5.5: unaffected by <c>$top</c>/<c>$skip</c>).
 /// </para>
 /// <para>
 /// Each test here was checked against the unfixed code. The three <c>GetAll_*</c> tests are

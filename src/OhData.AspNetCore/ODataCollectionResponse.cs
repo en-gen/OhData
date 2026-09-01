@@ -22,7 +22,7 @@ public sealed class ODataCollectionResponse<T>
     public string ODataContext { get; set; } = "";
 
     /// <summary>
-    /// The total count of matching entities when <c>$count=true</c> was requested (§11.2.6.5).
+    /// The total count of matching entities when <c>$count=true</c> was requested (§11.2.5.5).
     /// Omitted from the wire response (and thus <see langword="null"/> here) otherwise.
     /// </summary>
     [JsonPropertyName("@odata.count")]

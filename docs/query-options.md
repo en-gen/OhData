@@ -6,7 +6,7 @@ OhData supports the OData 4.0 system query options. Which ones are applied depen
 
 By default OhData serializes response property names in **PascalCase** — the CLR property names,
 which are exactly the identifiers declared in `$metadata` (the EDM). Payload casing therefore
-matches `$metadata` casing, satisfying OData §4.4 and letting case-sensitive OData-native clients
+matches `$metadata` casing, which is what lets case-sensitive OData-native clients
 (e.g. `Microsoft.OData.Client`) bind properties out of the box.
 
 This default is **owned by OhData**, not inherited from the host's
@@ -34,7 +34,7 @@ output, `$value`, and bound/unbound function/action results.
 > property names (the EDM has no naming policy). Opting into camelCase therefore desyncs your
 > payload casing from `$metadata` — a case-sensitive OData-native client that reads `$metadata` to
 > learn property names will not match the camelCase keys on the wire. The PascalCase default keeps
-> payloads and `$metadata` in agreement (OData §4.4); opt into camelCase only when your clients bind
+> payloads and `$metadata` in agreement; opt into camelCase only when your clients bind
 > case-insensitively.
 
 > Note: this affects **response** casing only. OData query-option property references
@@ -67,7 +67,7 @@ Returns all items. The framework does **not** apply `$filter` or `$orderby` to t
 
 `MaxTop` caps an **explicit** `$top` on this path exactly like it does on `GetQueryable`: a `$top` value greater than `MaxTop` returns `400 Bad Request` (`InvalidQueryOption`). As of #201, an **omitted** `$top` is also capped to `MaxTop` (or a smaller `Prefer: maxpagesize`), and the response carries a `@odata.nextLink` for the remainder - so `GetAll` is safe-by-default and can no longer be coerced into returning an unbounded result set. This became possible because `GetAll` re-enumerates its source on each request and applies `$skip` itself, so an offset `$skip` link is a valid continuation story - the framework only ever emits a link it also honors (note it is `$skip`, not the opaque `$skiptoken` `GetQueryable` emits, nor the framework-private token the Priority-1 path uses). **To opt out** - return the full set in one response, however large - set `MaxTop = null` on the profile; an omitted `$top` then applies no cap and emits no `@odata.nextLink`. `Preference-Applied` echoes the honored page size, clamped so `maxpagesize` can never lift the `MaxTop` ceiling.
 
-`@odata.count` (`$count=true`) reflects the **pre-paging** total on this path too, per §11.2.6.5 - it is computed from the full materialized array before `$skip`/`$top` are applied, not from the length of the returned page.
+`@odata.count` (`$count=true`) reflects the **pre-paging** total on this path too, per §11.2.5.5 - it is computed from the full materialized array before `$skip`/`$top` are applied, not from the length of the returned page.
 
 Use `GetAll` when your data source is small and in-memory, or when you want complete control over what is returned.
 
@@ -610,7 +610,7 @@ A pushed (delegate-less) `$expand` honors the nested options of the expanded col
 | `$filter` — `Children($filter=active eq true)` | ✅ | filtered `Include` (SQL `WHERE` in the JOIN) |
 | `$orderby` — `Children($orderby=name desc)` | ✅ | ordered `Include` (SQL `ORDER BY` in the JOIN) |
 | `$top` / `$skip` — `Children($orderby=name;$top=5)` | ✅ | paged `Include` (SQL `ROW_NUMBER` window); `$top` is capped by [`MaxExpandTop`](#complexity-limits-202) when that is set (it defaults to no ceiling) |
-| `$count` — `Children($count=true)` | ✅ | inline `Children@odata.count` = full filtered count (paging is applied after counting, per §11.2.4.2); bounded by [`MaxExpandTop`](#complexity-limits-202) when that is set (it defaults to no ceiling) |
+| `$count` — `Children($count=true)` | ✅ | inline `Children@odata.count` = full filtered count (paging is applied after counting, per §11.2.5.5); bounded by [`MaxExpandTop`](#complexity-limits-202) when that is set (it defaults to no ceiling) |
 | **nested `$expand`** — `Children($expand=Grandkids)` | ✅ | multi-level pushdown: folded into the same query as an `Include`→`ThenInclude` JOIN when every level is delegate-less (see [Multi-level `$expand`](#multi-level-expand-and-levels-206) below) |
 | `$levels` — `Children($levels=2)` / `Children($levels=max)` | ✅ | recursive self-referential expand, bounded by `MaxExpansionDepth`; may carry `$filter`/`$orderby`/`$skip`/`$top`/`$count`/`$select`, applied at **every** level (see below) |
 | `$search` / `$compute` / `$apply` | ❌ (deferred) | not implemented on the pushdown path |
@@ -736,7 +736,7 @@ two no-ops survive the parser, and both count as bare —
 | `$expand=Books()` | `400` | rejected by the OData URI parser before OhData sees it — *"Missing expand option on navigation property 'Books'"* |
 | `$expand=Books($filter=…)` / `($orderby=…)` / `($select=…)` | `400` | a `$skip`-only link cannot carry a nested option, so hop 2 could not reproduce hop 1 |
 | `$expand=Books($skip=N)`, `N > 0` | `400` | same: the offset is already in play and the link carries only `$skip` |
-| `$expand=Books($count=true)` | `400` | §11.2.4.2 requires `Nav@odata.count` to be the **full filtered** count; a paged collection cannot report one. `Nav@odata.count` and `Nav@odata.nextLink` therefore never coexist |
+| `$expand=Books($count=true)` | `400` | §11.2.5.5 requires a count to be *"the total count of results across all pages"*, i.e. the **full filtered** count; a paged collection cannot report one. `Nav@odata.count` and `Nav@odata.nextLink` therefore never coexist |
 | `$expand=Books($expand=Chapters)` | `400` | a level with children is not SQL-bounded at all (`APPLY`/`LATERAL`); the rows were already fully materialized, so a link would advertise a bound that does not exist |
 | `$expand=Nav($levels=N)` | `400` | same, at every level |
 | a nav whose element type has a composite or unresolvable key | `400` | no single key ⇒ no total order ⇒ no sound `$skip` walk |
@@ -795,7 +795,7 @@ Four properties of that route worth knowing:
   heard of is refused rather than silently ignored. This route's sigil check was the precedent
   [#359 generalised to every read route](#unsupported-system-query-options-are-rejected-359-380-353),
   and it now shares that matcher rather than carrying its own copy.
-- **`$format` is the one exemption, and it is not a data option.** §11.2.12 content negotiation is
+- **`$format` is the one exemption, and it is not a data option.** §11.2.10 content negotiation is
   implemented once, on the group filter that wraps the whole OData surface, so `$format` never
   reaches this handler and cannot change a single row. Refusing it would make this the only route in
   the surface that `400`s a conformant, already-supported option, and would break the common client
@@ -1214,7 +1214,7 @@ asks the body to do: it describes the unimplemented functionality.
   resolver enables case-insensitivity - the default - so this is alignment with the stack OhData
   sits on, not leniency. The inconsistency #359 reported (`$Select` applied, `$slect` ignored,
   neither rejected) is resolved by rejecting `$slect`.
-- **`$format`.** Accepted on every route: §11.2.12 content negotiation is implemented once, on the
+- **`$format`.** Accepted on every route: §11.2.10 content negotiation is implemented once, on the
   group filter that wraps the whole OData surface, so it never reaches a route handler and cannot
   change a row. An unsupported `$format` *value* is still rejected there.
 - **Three routes outside the table, which still ignore every query option.** Read the table as a
