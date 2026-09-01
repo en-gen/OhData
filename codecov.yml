@@ -1,6 +1,14 @@
-# Codecov configuration. Coverage is collected by coverlet.collector in the five
-# test projects (ci.yml "Test with coverage") and uploaded by codecov-action.
+# Codecov configuration. Coverage is collected by coverlet.collector in the seven
+# test projects (ci.yml's per-suite "Test: <project>" steps) and uploaded by
+# codecov-action.
 # Only the shipped libraries count toward the number on the badge.
+#
+# Those steps also write one JUnit XML report per test assembly (via
+# JunitXml.TestLogger) into ./TestResults, uploaded by ci.yml's "Upload test
+# results to Codecov" step for Test Analytics: per-test pass/fail history,
+# flaky-test detection, and a PR comment naming the tests a PR broke. Test
+# Analytics has no settings in this file - the `ignore` list below applies to
+# coverage only.
 #
 # Status checks are informational for now: coverage uploads were broken until
 # 2026-07 (no coverlet.collector -> zero reports), so there is no trustworthy

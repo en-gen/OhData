@@ -161,14 +161,11 @@ Two profiles with the same `EntitySetName` in a single registration throw
 `/v1/Products` and `/v2/Products` coexist.
 
 The profile-type check is the cross-cutting one: the same type in two registrations throws, as does
-the same type twice in one registration. Both throw from `AddEntitySetProfile<T>()` itself, so the
-failure surfaces while services are being configured rather than at map time.
-
-> The type check is enforced by `AddEntitySetProfile<T>()`. The assembly-scanning overloads
-> (`AddProfilesFrom`, `AddProfilesFromAssemblyOf<T>`, `AddProfilesFromAssembly`) do not currently
-> apply it, so scanning the same assembly into two registrations does not throw. Do not rely on
-> that: it is an inconsistency between the two registration paths, not a supported way to share a
-> profile type.
+the same type twice in one registration. It fires from `AddEntitySetProfile<T>()` — and, since
+#424, identically from the assembly-scanning overloads (`AddProfilesFrom`,
+`AddProfilesFromAssemblyOf<T>`, `AddProfilesFromAssembly`), which route through the same guard — so
+the failure surfaces while services are being configured rather than at map time, regardless of
+which registration path discovered the type first.
 
 Every example on this page is executed as a test — `VersioningDocExampleTests` in
 `OhData.AspNetCore.Tests` boots each one and asserts the documented routes respond. If you change a

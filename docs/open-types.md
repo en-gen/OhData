@@ -635,7 +635,7 @@ identical CLR types on both sides — only the source of the `IQueryable` differ
 
 | Read path | `$filter=Metadata/tier eq 3` | `$orderby=Metadata/tier` |
 |---|---|---|
-| `GetAll` (`IEnumerable`) | `400` `UnsupportedQueryOption` | `400` `UnsupportedQueryOption` |
+| `GetAll` (`IEnumerable`) | `501` `UnsupportedQueryOption` | `501` `UnsupportedQueryOption` |
 | `GetQueryable` over an **in-memory** `IQueryable` (`List<T>.AsQueryable()`) | **`200` — filters correctly** | **`200` — sorts correctly** |
 | `GetQueryable` over **EF Core** (measured on SQLite) | **`500`** | **`500`** |
 
@@ -730,8 +730,15 @@ in the underlying object graph structurally unreachable.
 
 Open types do **not** widen that. The bag's values already reached the serializer before this
 feature — they were simply written one level deeper. Flattening changes only where the keys land
-in the emitted JSON; it adds no object to the graph the serializer walks, applies only to complex
-types (which carry no EDM navigations), and never touches an entity type or a navigation property.
+in the emitted JSON; it adds no object to the graph the serializer walks, applies only to the
+container member of a complex type, and never touches an entity type or a navigation property.
+
+> A complex type **can** carry EDM navigations — `ODataConventionModelBuilder` creates one for every
+> entity-typed member of a complex type — and since `#507` those are suppressed exactly like an
+> entity type's, so the clause-bounded guarantee above holds for them too. (Before `#507` they were
+> served inline on every read, and a reference cycle through one was a 500 on a plain `GET`.) The
+> flattening modifier and the suppression modifier still cannot contend for a member: the container
+> is a dictionary member, which the EDM never calls a navigation.
 
 Be aware of the corollary: a dynamic value is arbitrary caller-supplied CLR state, so **whatever
 a handler puts in the bag is serialized as-is**. Putting a tracked entity (or anything with a

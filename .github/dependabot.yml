@@ -1,15 +1,67 @@
 version: 2
+
+# Grouping rationale
+# ------------------
+# Every Dependabot PR costs a full CI cycle: build-and-test (~4m) + CodeQL (~5m) + k6 (~1m),
+# plus GitHub's own Code Quality and dependency-submission runs (~6m). At the previous
+# ungrouped limits (10 nuget + 5 actions) a quiet week could open fifteen PRs and burn ~4
+# hours of runner time moving test-package version numbers. Grouping collapses the routine
+# half of that into one PR per ecosystem while keeping the half that can change the SHIPPED
+# packages on its own PR, where it gets its own review and its own CHANGELOG line.
+#
+# The split is not "important vs unimportant" — it is "does this change what an adopter
+# resolves". The six excluded ids below are PackageReferences of the five packable projects,
+# so a bump there moves a dependency RANGE in the published .nuspec (1.7.0 shipped exactly
+# such a change: Microsoft.OpenApi's minimum went 2.12.0 -> 2.12.2). Microsoft.OData.Client
+# is excluded for a different reason: it is dev-only, but it is the compatibility TARGET of
+# OhData.MicrosoftODataClient.Tests, and several claims in CLAUDE.md and the CHANGELOG are
+# measured against a specific version of it. A silent batch bump would invalidate a measured
+# claim with nothing pointing at it.
+#
+# Majors are deliberately NOT grouped. `update-types: [minor, patch]` means a major lands on
+# its own PR — which is what you want, given xunit.runner.visualstudio went 3.1.5 -> 4.0.0
+# during the 1.7.0 cycle.
+#
+# open-pull-requests-limit matches this repo's "at most 5 PRs in flight" rule: 3 + 2. With
+# grouping the steady state is one or two, so the cap is a backstop, not a throttle.
+
 updates:
   - package-ecosystem: nuget
     directory: /src
     schedule:
       interval: weekly
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 3
     target-branch: develop
+    groups:
+      dev-dependencies:
+        # Everything that cannot reach a published .nuspec: test frameworks, runners,
+        # coverage, benchmarks, fixtures, and the TestBench's own UI packages.
+        patterns:
+          - "*"
+        exclude-patterns:
+          # --- PackageReferences of the five packable projects (shipped dependency ranges) ---
+          - "Microsoft.AspNetCore.OData"
+          - "Microsoft.AspNetCore.OpenApi"
+          - "Microsoft.OData.ModelBuilder"
+          - "Microsoft.OpenApi"
+          - "NSwag.Generation.AspNetCore"
+          - "Swashbuckle.AspNetCore.SwaggerGen"
+          # --- dev-only, but the measured compatibility target of the MS-client suite ---
+          - "Microsoft.OData.Client"
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 2
     target-branch: develop
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"

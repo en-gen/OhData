@@ -21,6 +21,30 @@ services:
     volumes:
       - ./k6:/scripts
       - ./k6/reports:/reports
-    command: run --out json=/reports/results.json /scripts/smoke.js
+    # Both scripts run against ONE container start. The image build dominates this job, so
+    # starting the stack twice to run two scripts would roughly double it.
+    #
+    # `k6` is this image's entrypoint, so it is overridden to a shell in order to run two
+    # commands. They run UNCONDITIONALLY rather than chained with `&&`: a failure in smoke.js
+    # must not cost us conformance.js's report, which is exactly when that report is most worth
+    # reading. The container then exits non-zero if EITHER script failed, which is what
+    # `--abort-on-container-exit --exit-code-from k6` propagates to CI -- so both scripts can
+    # fail the build.
+    #
+    # `$$` is a literal `$` after Compose interpolation. There is no `--out json=...` any more:
+    # each script's handleSummary writes its own <name>-summary.md and <name>-results.json into
+    # /reports, so the two runs cannot overwrite each other's evidence.
+    #
+    # `command` MUST stay a LIST holding one block scalar. A plain string (or a `>` folded
+    # scalar, which is still a string) is shell-word-split by Compose, so `sh -c` would receive
+    # only the first word as its script and the rest as positional parameters -- measured: k6
+    # printed its usage banner and the container exited 0, i.e. a green build that ran no tests.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        k6 run /scripts/smoke.js;       s=$$?
+        k6 run /scripts/conformance.js; c=$$?
+        echo "k6 exit codes: smoke=$$s conformance=$$c"
+        [ "$$s" -eq 0 ] && [ "$$c" -eq 0 ]
     environment:
       BASE_URL: http://testbench:8080

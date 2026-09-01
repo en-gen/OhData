@@ -202,6 +202,15 @@ internal sealed class MsClientFixture : IAsyncDisposable
     private readonly HttpClient _httpClient;
     public DataServiceContext Context { get; }
 
+    /// <summary>
+    /// Every request URI Microsoft.OData.Client built, in order, recorded by the same
+    /// <c>OnMessageCreating</c> hook that supplies the transport. This is what lets a test assert
+    /// the URL the client PRODUCES rather than only the answer it got back: the difference matters
+    /// on <c>/$count</c>, where the client appends the segment to an already-built option string
+    /// and strips nothing, so a server that refuses those options breaks standard pagination.
+    /// </summary>
+    public List<Uri> RequestedUris { get; } = new();
+
     private MsClientFixture(WebApplication app)
     {
         _app = app;
@@ -218,7 +227,11 @@ internal sealed class MsClientFixture : IAsyncDisposable
         Context = new DataServiceContext(serviceUri);
         // Wire the MS OData client to use the TestServer HttpClient for all requests.
         Context.Configurations.RequestPipeline.OnMessageCreating =
-            args => new TestServerRequestMessage(args, _httpClient);
+            args =>
+            {
+                RequestedUris.Add(args.RequestUri);
+                return new TestServerRequestMessage(args, _httpClient);
+            };
         Context.Format.UseJson(model);
         // Map EDM type names to the CLR type.
         Context.ResolveType = name =>
@@ -235,7 +248,7 @@ internal sealed class MsClientFixture : IAsyncDisposable
         builder.WebHost.UseTestServer();
         builder.Services.AddLogging(b => b.ClearProviders());
         // MS OData Client expects PascalCase property names (per OData 4.0 spec). Since #252 that
-        // is OhData's default — payloads match $metadata (OData §4.4) with no host JSON config —
+        // is OhData's default -- payloads match $metadata with no host JSON config --
         // so the former ConfigureHttpJsonOptions(PropertyNamingPolicy = null) override is redundant
         // and has been removed. This fixture now proves the server is spec-compliant out of the box.
         builder.Services.AddOhData(o =>
@@ -408,5 +421,101 @@ public class MsODataClientIntegrationTests : IAsyncDisposable
             .AddQueryOption("$filter", "Id eq 9999");
         var widgets = (await query.ExecuteAsync()).ToList();
         Assert.Empty(widgets);
+    }
+
+    // -- /$count through the real client: the LINQ shapes that build the URL -------------------
+    //
+    // These exist because the entity-set /$count route was once narrowed to an implemented set of
+    // $filter + $format, refusing $top/$skip/$orderby/$expand with 501. That narrowing passed the
+    // whole server suite: this project -- which exists for exactly this compatibility question --
+    // covered only a bare GET /odata/Widgets/$count, so nothing failed.
+    //
+    // Microsoft.OData.Client translates LongCount() by appending the /$count segment to the query
+    // it has ALREADY built and stripping nothing from the option string, so OrderBy/Take/Skip
+    // before a LongCount() all ride along into the request. Refusing them therefore breaks the
+    // standard pagination shape of the industry-standard OData client, not merely a hand-built
+    // grid URL. OData v4.0 Part 1 §11.2.9 settles the behaviour independently: the count is taken
+    // "after applying any $filter or $search" and "MUST NOT be affected by $top, $skip, $orderby,
+    // or $expand" -- present and ignored, which is what these assert.
+    //
+    // Each test asserts BOTH halves: the URL the client produced (so a future narrowing cannot be
+    // waved off as "no client sends that") and the count that came back (so accept-and-ignore is
+    // proved, rather than merely accept).
+
+    private string LastCountUri()
+    {
+        Uri uri = Assert.Single(
+            _fixture.RequestedUris,
+            u => u.AbsolutePath.EndsWith("/$count", StringComparison.Ordinal));
+        return Uri.UnescapeDataString(uri.ToString());
+    }
+
+    [Fact]
+    public void Count_BareLongCount_HitsCountSegment_AndReturnsTotal()
+    {
+        var q = Context.CreateQuery<WidgetDto>("WidgetDtos");
+        long count = q.LongCount();
+
+        Assert.EndsWith("/odata/WidgetDtos/$count", LastCountUri(), StringComparison.Ordinal);
+        Assert.Equal(3, count);
+    }
+
+    [Fact]
+    public void Count_WhereThenLongCount_AppliesTheFilter()
+    {
+        // §11.2.9's positive half: $filter is one of the two options the count IS taken after.
+        var q = Context.CreateQuery<WidgetDto>("WidgetDtos");
+        long count = q.Where(w => w.Id > 1).LongCount();
+
+        Assert.EndsWith("/odata/WidgetDtos/$count?$filter=Id gt 1", LastCountUri(), StringComparison.Ordinal);
+        Assert.Equal(2, count);
+    }
+
+    [Fact]
+    public void Count_OrderByThenLongCount_IgnoresTheOrderBy()
+    {
+        var q = Context.CreateQuery<WidgetDto>("WidgetDtos");
+        long count = q.OrderBy(w => w.Name).LongCount();
+
+        Assert.EndsWith("/odata/WidgetDtos/$count?$orderby=Name", LastCountUri(), StringComparison.Ordinal);
+        Assert.Equal(3, count);
+    }
+
+    [Fact]
+    public void Count_TakeThenLongCount_IgnoresTheTop()
+    {
+        // Take(2) would leave 2 rows on the collection route; on /$count the total stays 3.
+        var q = Context.CreateQuery<WidgetDto>("WidgetDtos");
+        long count = q.Take(2).LongCount();
+
+        Assert.EndsWith("/odata/WidgetDtos/$count?$top=2", LastCountUri(), StringComparison.Ordinal);
+        Assert.Equal(3, count);
+    }
+
+    [Fact]
+    public void Count_SkipThenLongCount_IgnoresTheSkip()
+    {
+        var q = Context.CreateQuery<WidgetDto>("WidgetDtos");
+        long count = q.Skip(1).LongCount();
+
+        Assert.EndsWith("/odata/WidgetDtos/$count?$skip=1", LastCountUri(), StringComparison.Ordinal);
+        Assert.Equal(3, count);
+    }
+
+    [Fact]
+    public void Count_FilterAndWindowTogether_AppliesOnlyTheFilter()
+    {
+        // The whole §11.2.9 partition on one request: $filter narrows the count to 2, and neither
+        // $orderby nor $skip nor $top moves it off 2. This is the shape a paging client actually
+        // emits -- "how many match, ignoring which page I am on".
+        var q = Context.CreateQuery<WidgetDto>("WidgetDtos");
+        long count = q.Where(w => w.Id > 1).OrderBy(w => w.Name).Skip(1).Take(1).LongCount();
+
+        string uri = LastCountUri();
+        Assert.Contains("$filter=Id gt 1", uri, StringComparison.Ordinal);
+        Assert.Contains("$orderby=Name", uri, StringComparison.Ordinal);
+        Assert.Contains("$skip=1", uri, StringComparison.Ordinal);
+        Assert.Contains("$top=1", uri, StringComparison.Ordinal);
+        Assert.Equal(2, count);
     }
 }

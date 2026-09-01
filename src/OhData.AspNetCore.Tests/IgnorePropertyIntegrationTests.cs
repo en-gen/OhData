@@ -6,6 +6,7 @@ using System.Net.Http;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.DependencyInjection;
 using OhData;
 using Xunit;
 
@@ -88,30 +89,52 @@ internal static class IgnData
     };
 }
 
+/// <summary>
+/// #515: what <see cref="IgnProductProfile"/>'s write handlers actually received — on <b>this
+/// host</b>. Registered as a singleton by <see cref="IgnProductHost"/>, so every
+/// <c>TestFixture</c> gets its own and no two test classes can see each other's captures.
+/// </summary>
+/// <remarks>
+/// <para>
+/// These used to be three <c>static</c> fields on the profile, set to <c>null</c> and then asserted
+/// against by <c>IgnorePropertyIntegrationTests</c> AND by <c>OpenTypeIgnoreContainmentTests</c> —
+/// the latter clearing two of them from its own <c>InitializeAsync</c>, so its SETUP could land
+/// inside the other's reset-to-assert window. That was #484's race exactly, and it was papered over
+/// with a shared <c>[Collection]</c>: xUnit then serialised the two classes, which schedules around
+/// the shared state rather than removing it and costs parallelism between two classes with no
+/// reason to be serialised.
+/// </para>
+/// <para>
+/// There is deliberately no <c>Reset</c>, for #484's reason: a capture that cannot be reset cannot
+/// be reset at the wrong moment. Nothing needs one — xUnit constructs a fresh test-class instance
+/// per test, so <c>IAsyncLifetime.InitializeAsync</c> builds a fresh host, and a fresh host means a
+/// fresh capture.
+/// </para>
+/// <para>
+/// The dependency is <b>constructor-required</b> on the profile rather than resolved lazily, so a
+/// host that registers <c>IgnProductProfile</c> without this singleton cannot silently no-op: DI
+/// throws while <c>MapOhData()</c> resolves the profile, i.e. at <c>TestHostBuilder.BuildAsync</c>,
+/// before a single request. That is what makes <see cref="IgnProductHost"/> the only viable
+/// registration route, which is what makes "a missed site" impossible to miss.
+/// </para>
+/// </remarks>
+public sealed class IgnProductWriteCaptures
+{
+    /// <summary>The model the <c>Post</c> handler last received on this host.</summary>
+    internal IgnProduct? LastPosted { get; set; }
+
+    /// <summary>The model the <c>Put</c> handler last received on this host.</summary>
+    internal IgnProduct? LastPut { get; set; }
+
+    /// <summary>The delta's changed-property names from the last <c>Patch</c> on this host.</summary>
+    internal IReadOnlyList<string>? LastPatchChangedNames { get; set; }
+}
+
 public sealed class IgnProductProfile : EntitySetProfile<int, IgnProduct>
 {
-    // Captures what the handlers actually received, for binding assertions.
-    //
-    // #484 SWEEP — PROCESS-WIDE STATE, RESET-THEN-ASSERTED BY TWO CLASSES. These three are set to
-    // null and then asserted against by IgnorePropertyIntegrationTests (this file) AND by
-    // OpenTypeIgnoreContainmentTests, which additionally clears two of them from its own
-    // InitializeAsync. That is #484's pattern exactly: a reset in one class can land inside the
-    // other's reset-to-assert window. Both classes are therefore pinned into one xUnit collection
-    // (IgnProductCaptureCollection) so xUnit serialises them.
-    //
-    // The COLLECTION rather than #484's preferred per-fixture instance, deliberately and only here:
-    // IgnProductProfile is registered from three files across six call sites, so injecting a capture
-    // object would mean threading a singleton registration through every one of them — a missed site
-    // being a request-time DI failure — for a fixture that is not the one #484 is about. The
-    // structural fix stays available; this is the cheap half of it. If a third class ever asserts on
-    // these fields, give it the collection attribute too, or do the injection properly.
-    internal static IgnProduct? LastPosted;
-    internal static IgnProduct? LastPut;
-    internal static IReadOnlyList<string>? LastPatchChangedNames;
-
     private readonly List<IgnProduct> _store = IgnData.Products();
 
-    public IgnProductProfile() : base(x => x.Id)
+    public IgnProductProfile(IgnProductWriteCaptures captures) : base(x => x.Id)
     {
         Ignore(x => x.CostBasis, x => x.Audit);
         SelectEnabled = true;
@@ -126,19 +149,19 @@ public sealed class IgnProductProfile : EntitySetProfile<int, IgnProduct>
         GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(p => p.Id == id));
         Post = (model, ct) =>
         {
-            LastPosted = model;
+            captures.LastPosted = model;
             model.Id = 99;
             _store.Add(model);
             return Task.FromResult<IgnProduct?>(model);
         };
         Put = (id, model, ct) =>
         {
-            LastPut = model;
+            captures.LastPut = model;
             return Task.FromResult(model);
         };
         Patch = (id, delta, ct) =>
         {
-            LastPatchChangedNames = delta.GetChangedPropertyNames().ToList();
+            captures.LastPatchChangedNames = delta.GetChangedPropertyNames().ToList();
             var existing = _store.FirstOrDefault(p => p.Id == id);
             if (existing is null) return Task.FromResult<IgnProduct?>(null);
             delta.Patch(existing);
@@ -165,28 +188,70 @@ public sealed class IgnControlProfile : EntitySetProfile<int, IgnControl>
 }
 
 /// <summary>
-/// #484 sweep: the xUnit collection that serialises every test class asserting on
-/// <see cref="IgnProductProfile"/>'s static write captures. Membership is the whole contract — a
-/// class outside it can reset those fields while a class inside it is between its own reset and its
-/// assertion, which is the race #484 documents.
+/// #515: the ONE place a host carrying <see cref="IgnProductProfile"/> is built. The profile takes
+/// <see cref="IgnProductWriteCaptures"/> as a required constructor parameter, so a host built any
+/// other way throws out of <c>MapOhData()</c> — a loud startup failure rather than the request-time
+/// DI failure that made the six scattered registration sites too risky to convert by hand.
 /// </summary>
-public static class IgnProductCaptureCollection
+/// <remarks>
+/// The six sites this replaced: <c>IgnorePropertyIntegrationTests.InitializeAsync</c>,
+/// <c>OpenTypeIgnoreContainmentTests.InitializeAsync</c> and its
+/// <c>StartupStillRejectsTwoProfilesDisagreeingAboutWhatIsIgnored</c>, and the three inline hosts in
+/// <c>OpenTypeModifierOrderingTests</c> — the last of which never touches the captures at all, which
+/// is exactly why a per-site registration would have been easy to miss.
+/// </remarks>
+internal static class IgnProductHost
 {
-    internal const string Name = "IgnProductProfile write captures";
+    /// <summary>The standard trio every capture-asserting test uses.</summary>
+    internal static Task<TestFixture> BuildAsync() =>
+        BuildAsync(b => b
+            .AddEntitySetProfile<IgnProductProfile>()
+            .AddEntitySetProfile<IgnTagProfile>()
+            .AddEntitySetProfile<IgnControlProfile>());
+
+    /// <summary>A caller-chosen profile set, with the capture singleton registered regardless.</summary>
+    internal static Task<TestFixture> BuildAsync(Action<OhDataBuilder> registerProfiles) =>
+        TestHostBuilder.BuildAsync(
+            registerProfiles,
+            configureServices: s => s.AddSingleton<IgnProductWriteCaptures>());
 }
 
-[Collection(IgnProductCaptureCollection.Name)]
+/// <summary>
+/// #515: the safety net that makes <see cref="IgnProductHost"/> the only viable route. The issue's
+/// stated reason the capture object was NOT injected the first time was that
+/// <c>IgnProductProfile</c> is registered from three files across six call sites and "a missed site
+/// is a request-time DI failure rather than a compile error". Measured here: it is neither silent
+/// nor request-time — <c>MapOhData()</c> resolves every profile in a temporary scope while building
+/// the registration, so the host fails to start.
+/// </summary>
+public class IgnProductCaptureRegistrationTests
+{
+    [Fact]
+    public async Task AHostThatSkipsTheCaptureSingleton_FailsToStart_RatherThanFailingPerRequest()
+    {
+        InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        {
+            await using TestFixture fx = await TestHostBuilder.BuildAsync(
+                b => b.AddEntitySetProfile<IgnProductProfile>());
+        });
+
+        Assert.Contains(nameof(IgnProductWriteCaptures), ex.ToString(), StringComparison.Ordinal);
+    }
+}
+
 public class IgnorePropertyIntegrationTests : IAsyncLifetime
 {
     private TestFixture _fx = null!;
 
-    public async Task InitializeAsync()
-    {
-        _fx = await TestHostBuilder.BuildAsync(b => b
-            .AddEntitySetProfile<IgnProductProfile>()
-            .AddEntitySetProfile<IgnTagProfile>()
-            .AddEntitySetProfile<IgnControlProfile>());
-    }
+    public async Task InitializeAsync() => _fx = await IgnProductHost.BuildAsync();
+
+    /// <summary>
+    /// #515: the captures belong to <b>this</b> host. xUnit builds a fresh test-class instance — and
+    /// therefore a fresh host — per test, so there is nothing to reset and nothing another class can
+    /// reset underneath an assertion here.
+    /// </summary>
+    private IgnProductWriteCaptures Captures =>
+        _fx.App.Services.GetRequiredService<IgnProductWriteCaptures>();
 
     public async Task DisposeAsync() => await _fx.DisposeAsync();
 
@@ -297,14 +362,13 @@ public class IgnorePropertyIntegrationTests : IAsyncLifetime
     [Fact]
     public async Task Post_IgnoredMembersInBody_NotBound()
     {
-        IgnProductProfile.LastPosted = null;
         using var body = new StringContent(
             "{\"name\":\"New\",\"costBasis\":42.5,\"audit\":{\"createdBy\":\"attacker\"}}",
             Encoding.UTF8, "application/json");
         var resp = await _fx.Client.PostAsync("/odata/IgnProducts", body);
         Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
-        Assert.NotNull(IgnProductProfile.LastPosted);
-        IgnProduct lastPosted = IgnProductProfile.LastPosted!;
+        Assert.NotNull(Captures.LastPosted);
+        IgnProduct lastPosted = Captures.LastPosted!;
         Assert.Equal("New", lastPosted.Name);
         Assert.Equal(0m, lastPosted.CostBasis);
         Assert.Null(lastPosted.Audit);
@@ -313,14 +377,13 @@ public class IgnorePropertyIntegrationTests : IAsyncLifetime
     [Fact]
     public async Task Put_IgnoredMembersInBody_NotBound()
     {
-        IgnProductProfile.LastPut = null;
         using var body = new StringContent(
             "{\"id\":1,\"name\":\"Renamed\",\"costBasis\":42.5}",
             Encoding.UTF8, "application/json");
         var resp = await _fx.Client.PutAsync("/odata/IgnProducts(1)", body);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-        Assert.NotNull(IgnProductProfile.LastPut);
-        IgnProduct lastPut = IgnProductProfile.LastPut!;
+        Assert.NotNull(Captures.LastPut);
+        IgnProduct lastPut = Captures.LastPut!;
         Assert.Equal("Renamed", lastPut.Name);
         Assert.Equal(0m, lastPut.CostBasis);
     }
@@ -328,15 +391,14 @@ public class IgnorePropertyIntegrationTests : IAsyncLifetime
     [Fact]
     public async Task Patch_IgnoredMemberInBody_NotInDelta()
     {
-        IgnProductProfile.LastPatchChangedNames = null;
         using var body = new StringContent(
             "{\"name\":\"Patched\",\"costBasis\":99.9}",
             Encoding.UTF8, "application/json");
         var resp = await _fx.Client.PatchAsync("/odata/IgnProducts(2)", body);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-        Assert.NotNull(IgnProductProfile.LastPatchChangedNames);
-        Assert.Contains("Name", IgnProductProfile.LastPatchChangedNames!);
-        Assert.DoesNotContain("CostBasis", IgnProductProfile.LastPatchChangedNames!);
+        Assert.NotNull(Captures.LastPatchChangedNames);
+        Assert.Contains("Name", Captures.LastPatchChangedNames!);
+        Assert.DoesNotContain("CostBasis", Captures.LastPatchChangedNames!);
     }
 }
 

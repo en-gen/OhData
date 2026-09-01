@@ -6,6 +6,7 @@ using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Microsoft.Extensions.DependencyInjection;
 using OhData;
 using Xunit;
 
@@ -56,24 +57,21 @@ namespace OhData.AspNetCore.Tests;
 /// defect precisely because every fixture in it was green-field.
 /// </para>
 /// </remarks>
-// #484 sweep: this class and IgnorePropertyIntegrationTests both reset-then-assert
-// IgnProductProfile's static write captures, and this one clears two of them from InitializeAsync.
-// Without a shared collection xUnit runs the two in parallel and either can reset inside the other's
-// assertion window. See IgnProductCaptureCollection.
-[Collection(IgnProductCaptureCollection.Name)]
+// #515: this class and IgnorePropertyIntegrationTests both used to reset-then-assert
+// IgnProductProfile's STATIC write captures, and this one cleared two of them from InitializeAsync —
+// so its setup could land inside the other's assertion window. The [Collection] that serialised the
+// two classes is gone with the statics: the captures are now a per-host singleton
+// (IgnProductWriteCaptures), so the two classes run in parallel again and neither can see the
+// other's writes. See IgnProductHost.
 public class OpenTypeIgnoreContainmentTests : IAsyncLifetime
 {
     private TestFixture _fx = null!;
 
-    public async Task InitializeAsync()
-    {
-        IgnProductProfile.LastPosted = null;
-        IgnProductProfile.LastPut = null;
-        _fx = await TestHostBuilder.BuildAsync(b => b
-            .AddEntitySetProfile<IgnProductProfile>()
-            .AddEntitySetProfile<IgnTagProfile>()
-            .AddEntitySetProfile<IgnControlProfile>());
-    }
+    public async Task InitializeAsync() => _fx = await IgnProductHost.BuildAsync();
+
+    /// <summary>#515: this host's captures. Nothing to clear — a fresh host means a fresh capture.</summary>
+    private IgnProductWriteCaptures Captures =>
+        _fx.App.Services.GetRequiredService<IgnProductWriteCaptures>();
 
     public async Task DisposeAsync() => await _fx.DisposeAsync();
 
@@ -124,7 +122,7 @@ public class OpenTypeIgnoreContainmentTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
 
         // It reached the handler, in the complex type's bag.
-        IDictionary<string, object?> bag = IgnProductProfile.LastPosted!.Spec!.Extras!;
+        IDictionary<string, object?> bag = Captures.LastPosted!.Spec!.Extras!;
         Assert.Equal(new[] { "CostBasis" }, bag.Keys.OrderBy(k => k, StringComparer.Ordinal));
 
         // And it is echoed back from there, flat — while the ENTITY's own CostBasis stays withheld.
@@ -159,8 +157,8 @@ public class OpenTypeIgnoreContainmentTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
 
         // The handler never saw either withheld value.
-        Assert.Equal(0m, IgnProductProfile.LastPosted!.CostBasis);
-        Assert.Null(IgnProductProfile.LastPosted!.Audit);
+        Assert.Equal(0m, Captures.LastPosted!.CostBasis);
+        Assert.Null(Captures.LastPosted!.Audit);
 
         // And neither is echoed.
         string body = await resp.Content.ReadAsStringAsync();
@@ -178,9 +176,9 @@ public class OpenTypeIgnoreContainmentTests : IAsyncLifetime
             """));
 
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-        Assert.Equal(0m, IgnProductProfile.LastPut!.CostBasis);
+        Assert.Equal(0m, Captures.LastPut!.CostBasis);
         // The bag still binds — the containment must not have cost the feature it rides on.
-        Assert.Equal("gloss", IgnProductProfile.LastPut!.Spec!.Extras!["finish"]!.ToString());
+        Assert.Equal("gloss", Captures.LastPut!.Spec!.Extras!["finish"]!.ToString());
     }
 
     /// <summary>
@@ -214,7 +212,7 @@ public class OpenTypeIgnoreContainmentTests : IAsyncLifetime
     {
         InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
         {
-            await using TestFixture fx = await TestHostBuilder.BuildAsync(b => b
+            await using TestFixture fx = await IgnProductHost.BuildAsync(b => b
                 .AddEntitySetProfile<IgnProductProfile>()
                 .AddEntitySetProfile<IgnProductConflictingProfile>());
             await fx.Client.GetAsync("/odata/$metadata");

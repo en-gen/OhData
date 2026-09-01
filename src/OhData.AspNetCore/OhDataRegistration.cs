@@ -13,13 +13,17 @@ namespace OhData;
 public sealed class OhDataRegistration
 {
     internal OhDataRegistration(
+        string name,
         string prefix,
         IEdmModel edmModel,
         IReadOnlyList<IEntitySetEndpointSource> profiles,
         IReadOnlyList<UnboundOperationDefinition>? unboundOps = null,
         JsonNamingPolicy? jsonPropertyNamingPolicy = null,
-        bool openTypesEnabled = true)
+        bool openTypesEnabled = true,
+        long? defaultMaxRequestBodyBytes = EntitySetDefaults.DefaultMaxRequestBodyBytes)
     {
+        DefaultMaxRequestBodyBytes = defaultMaxRequestBodyBytes;
+        Name = name;
         Prefix = prefix;
         EdmModel = edmModel;
         Profiles = profiles;
@@ -27,6 +31,22 @@ public sealed class OhDataRegistration
         JsonPropertyNamingPolicy = jsonPropertyNamingPolicy;
         OpenTypesEnabled = openTypesEnabled;
     }
+
+    /// <summary>
+    /// #499: the keyed-DI registration name this instance was built for (<c>AddOhData(name, ...)</c>
+    /// / <c>MapOhData(name)</c>; <see cref="OhDataDefaults.DefaultRegistrationName"/> for the
+    /// unnamed overload).
+    /// <para>
+    /// <b>#547: a LABEL, never a cache key.</b> It is
+    /// <see cref="OhDataDefaults.DefaultRegistrationName"/> for every unnamed registration in the
+    /// process, so two independent hosts share it — which is exactly how
+    /// <c>ActionBodySchemaTypeFactory</c>'s process-wide cache came to serve one host's generated
+    /// body-schema type to another. Anything that must be distinct per registration keys off the
+    /// <see cref="OhDataRegistration"/> instance (a <c>ConditionalWeakTable</c>); this name is for
+    /// human-readable identifiers, such as the generated schema type's own name.
+    /// </para>
+    /// </summary>
+    internal string Name { get; }
 
     /// <summary>The URL prefix under which all entity set routes are mounted, e.g. <c>"/odata"</c>.</summary>
     public string Prefix { get; }
@@ -53,6 +73,22 @@ public sealed class OhDataRegistration
     /// registration behaves exactly as it did before #389.
     /// </summary>
     internal bool OpenTypesEnabled { get; }
+
+    /// <summary>
+    /// #474: this registration's server-wide write-body ceiling —
+    /// <c>EntitySetDefaults.MaxRequestBodyBytes</c> as configured, defaulting to
+    /// <see cref="EntitySetDefaults.DefaultMaxRequestBodyBytes"/>. <c>null</c> when the adopter
+    /// cleared it, which means "no OhData-level limit".
+    /// </summary>
+    /// <remarks>
+    /// Read by the group-level body-limit filter as the fallback for a route that carries no
+    /// <c>OhDataBodyLimitMetadata</c> of its own. Every entity-set route does carry it (the metadata
+    /// is attached whenever the resolved per-profile limit is non-null, which is now the default),
+    /// so in practice this covers the routes that belong to no entity set — the <b>unbound</b>
+    /// actions. Carried here rather than re-derived in <c>MapAll</c> because <c>EntitySetDefaults</c>
+    /// is a builder-time object that <c>MapAll</c> never sees.
+    /// </remarks>
+    internal long? DefaultMaxRequestBodyBytes { get; }
 
     /// <summary>
     /// #389 L1: whether open-type handling actually has anything to do — <see cref="OpenTypesEnabled"/>

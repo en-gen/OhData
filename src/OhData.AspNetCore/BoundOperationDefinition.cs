@@ -43,6 +43,13 @@ internal sealed record BoundOperationDefinition
     /// The delegate's declared return type, unwrapped from <c>Task&lt;T&gt;</c>/<c>ValueTask&lt;T&gt;</c>
     /// (and <see langword="null"/> for a <c>void</c>/<c>Task</c>/<c>ValueTask</c> return — every
     /// invocation of such an operation produces <c>204 No Content</c>, never <c>200</c>).
+    /// <para>
+    /// #498: that null case is reachable for <b>actions only</b>. CSDL requires a function to
+    /// declare a return type, so a void-returning function used to kill <c>GetEdmModel()</c> with a
+    /// raw <c>ArgumentNullException: 'returnType'</c> naming nothing — it is now refused at bind time
+    /// by <see cref="OperationSignatureValidation"/>, which points at <c>BindAction</c>. This
+    /// sentence used to promise 204 for both kinds; it never held for functions.
+    /// </para>
     /// Computed once at bind time; used only to build OpenAPI response documentation
     /// (<c>Produces(...)</c>) for the operation's route — it plays no part in the actual
     /// per-request invocation, which goes through <see cref="Invoke"/> instead.

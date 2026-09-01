@@ -49,6 +49,19 @@ scalar projection - `x => x.Related.Id`, `x => x.Related.RowVersion`.
 The check sees only the *declared* type. A selector declared as `IFormattable` (or any base type)
 is accepted, and it is then the type's responsibility to render culture-independently.
 
+### Selectors that close over profile state
+
+A selector that reads only its lambda parameter (`x => x.RowVersion`) is compiled **once per
+process** and shared by every request-scoped instance of the profile.
+
+A selector that closes over anything else — a field of the profile, an injected dependency, a
+captured local — is compiled **per profile instance** instead. That costs one
+`Expression.Compile()` per request for that entity set, and it is what makes the selector correct:
+sharing it would freeze whatever the *startup-scope* instance captured (a `DbContext` resolved in a
+scope disposed immediately after registration) into every later request. Nothing is rejected and no
+configuration changes; only the caching does. The same rule applies to the key selector passed to
+the profile's base constructor.
+
 ### How values are formatted
 
 Non-binary values are formatted **round-trippably and under `InvariantCulture`** before hashing,
@@ -198,16 +211,32 @@ representation exists.
 ### Actions do not honor `If-Match`
 
 Bound and unbound **actions** (`POST /{EntitySet}/{Action}`, `POST /{EntitySet}({key})/{Action}`,
-`POST /{Action}`) are deliberately outside the precondition gate. A conditional header sent to an
-action is ignored, and the action runs.
+`POST /{Action}`) are outside the precondition gate. A conditional header sent to an action is
+ignored, and the action runs.
 
-The reason is the identity of the target resource. RFC 9110 §13.1.1 evaluates `If-Match` against
-the current representation of the *target resource*, and the target of `POST /Products(1)/Reorder`
-is the action-invocation resource (Protocol §11.5.4) - which has no representation and therefore
-no entity tag. `Products(1)` is the action's binding parameter, not the request target. A `$ref`
-write is different in kind: OData §11.4.6 defines it as a modification of the addressed entity's
-own relationship state, so there the entity really is the target. Collection-level and unbound
-actions have no key at all.
+> **⚠ This is a known deviation from OData 4.0, not a design choice.** It is tracked as
+> [#566](https://github.com/en-gen/OhData/issues/566) and is expected to be fixed.
+
+Three clauses put action requests inside the gate, and Part 1 says so in as many words:
+
+- **§11.4.1.1** (a MUST): *"If an ETag value is specified in an `If-Match` or `If-None-Match`
+  header of a Data Modification Request **or Action Request**, the operation MUST only be invoked
+  if the if-match or if-none-match condition is satisfied."*
+- **§8.2.4**: a mismatched `If-Match` *"for a Data Modification Request **or Action Request**"*
+  MUST answer `412` and MUST ensure no observable change occurs.
+- **§8.3.1**: the `ETag` header value may be used *"in updating, deleting, **or invoking the action
+  bound to the entity**."*
+- **§11.5.4.1** even instructs the client to do it: *"To request processing of the action only if
+  the binding parameter value … is unmodified, the client includes the `If-Match` header."*
+
+Earlier revisions of this page defended the exclusion by saying the action-invocation resource
+*"has no representation and therefore no entity tag"*, citing Protocol §11.5.4. **That phrase does
+not appear anywhere in Part 1** - `grep -ic "no representation"` over the specification returns
+`0` - and the clauses above contradict the conclusion it was used to reach. The claim has been
+withdrawn.
+
+Collection-level and unbound actions genuinely have no key to load by, so they are outside the
+gate for a reason that survives; the entity-bound case is not.
 
 If your action mutates its binding entity and you want it to be conditional, you have to implement
 that yourself. An action handler does not receive `HttpContext` - its parameters are bound from the

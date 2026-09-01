@@ -14,8 +14,15 @@ namespace OhData.AspNetCore.Tests;
 /// <summary>
 /// #203: a per-entity-set (or global-default) <c>MaxRequestBodyBytes</c> limit rejects an oversized
 /// write body with <c>413 Payload Too Large</c> before the handler deserializes it. The limit is
-/// enforced by a group-level filter for body-bearing write methods (POST/PUT/PATCH). Absent limit =
-/// no OhData-level cap (Kestrel's global still applies).
+/// enforced by a group-level filter for body-bearing write methods (POST/PUT/PATCH).
+/// <para>
+/// #474 changed what "absent limit" means: <c>EntitySetDefaults.MaxRequestBodyBytes</c> now defaults
+/// to <c>EntitySetDefaults.DefaultMaxRequestBodyBytes</c> (30,000,000 — Kestrel's own number), so an
+/// unconfigured registration has a framework ceiling rather than none. Every body in this file is a
+/// few hundred bytes, so nothing here moved; <c>WriteBodyContractTests</c> covers the new default and
+/// <c>RequestBodySizeFeatureTests</c> covers the per-request Kestrel assignment, which TestHost
+/// cannot reach (it supplies no <c>IHttpMaxRequestBodySizeFeature</c>).
+/// </para>
 /// </summary>
 public class RequestBodySizeLimitTests
 {
@@ -55,7 +62,8 @@ public class RequestBodySizeLimitTests
     [Fact]
     public async Task Post_NoLimitConfigured_LargeBodySucceeds()
     {
-        // WidgetProfile sets no MaxRequestBodyBytes, so a large body is not rejected by OhData.
+        // WidgetProfile sets no MaxRequestBodyBytes, so this ~400-byte body is bounded only by
+        // #474's framework default (30,000,000) and is nowhere near it.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var resp = await fx.Client.PostAsync(UnlimitedUrl, Json(LargeBody()));
         Assert.Equal(HttpStatusCode.Created, resp.StatusCode);

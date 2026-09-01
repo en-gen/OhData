@@ -44,11 +44,67 @@ An `$expand`-nested child hides *its own* profile's ignored properties automatic
   `AddOhData("v2", ...)`) are independent — v2 may expose a property v1 ignores.
 - **`AdvancedConfigure`** ejects the automatic EDM removal like all automatic EDM config — call
   `configuration.EntityType.Ignore(...)` yourself. Route suppression, wire suppression, and the
-  validations above still apply.
+  validations above still apply. **This has a security consequence — see
+  [below](#ignore-under-advancedconfigure-is-a-value-oracle).**
 - **ETags:** an ignored property MAY participate in `UseETag(...)` — useful for row-version
   columns that should never be exposed.
 - **Navigation-only types** (a related type with no profile of its own) have no `Ignore`
   surface; give the type a profile if its wire shape needs trimming.
+
+## `Ignore()` under `AdvancedConfigure` is a value oracle
+
+> **Security warning.** If a property is ignored for **security** rather than tidiness, do not
+> combine `Ignore(...)` with an `AdvancedConfigure` override unless the override re-applies the EDM
+> removal by hand. ([#489](https://github.com/en-gen/OhData/issues/489))
+
+`Ignore()` withholds a property on **two** levels:
+
+| Half | Where it comes from | What it does |
+|---|---|---|
+| EDM removal | rides the configurator pipeline in `VisitModelBuilder` | property leaves `$metadata` and stops being a valid query identifier |
+| Runtime suppression | applied from the profile's ignored-name set | no property routes, omitted from every response body, never bound from a write body, never in a `Delta<TModel>` |
+
+Overriding [`AdvancedConfigure`](architecture.md#advancedconfigure---full-edm-control) **ejects the
+EDM half** — that is the whole point of the hatch, and it ejects `HasMany`/`HasOptional`/
+`HasRequired` alongside it. The runtime half still applies. So the property becomes *withheld but
+addressable*:
+
+```
+GET /Widgets                              ->  200, Secret absent from every row
+GET /Widgets?$filter=Secret eq 'abc'      ->  200, N rows      ← the value is discoverable
+GET /$metadata                            ->  <Property Name="Secret" Type="Edm.String" … />
+```
+
+The response never carries the value, but a client can **probe it one predicate at a time**, and
+`$metadata` discloses its name and type outright. Compare the ordinary case, where the EDM removal
+makes the property indistinguishable from one that never existed: `$filter` naming it fails at parse
+with the same *"could not find a property named…"* a genuinely nonexistent property produces, so the
+`400` cannot confirm existence.
+
+Two things widen or narrow this in practice:
+
+- `$filter`/`$orderby`/`$select` are only *live* to the extent the override re-enabled them (taking
+  the hatch also drops OhData's automatic `Filter()`/`OrderBy()`/`Select()` calls, so the documented
+  `config.EntityType.Select().OrderBy().Filter()` line is what turns the oracle on).
+- The `$metadata` disclosure happens either way, capabilities or not.
+
+**The fix in your own code** is one line inside the override:
+
+```csharp
+protected override void AdvancedConfigure(EntitySetConfiguration<Widget> configuration)
+{
+    configuration.EntityType.HasKey(x => x.Id);
+    configuration.EntityType.Select().OrderBy().Filter();
+    configuration.EntityType.Ignore(x => x.Secret);   // ← re-apply the EDM half
+}
+```
+
+OhData does not do this for you: re-imposing `Ignore()` on top of an override would defeat the hatch,
+and singling out `Ignore()`'s configurator while leaving the navigation configurators ejected would
+make the pipeline's membership depend on severity rather than on a rule. Instead, `app.MapOhData()`
+emits **one `Warning` per affected property** naming the entity set, the property, and this remedy —
+the same shape the open-type wire-shape warning uses. Re-apply the removal and the warning goes away,
+because it is gated on the EDM as actually built, not on the presence of the override.
 
 ## Performance
 

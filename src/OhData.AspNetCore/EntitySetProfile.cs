@@ -24,12 +24,20 @@ namespace OhData;
 public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisitModelBuilder, IEntitySetEndpointSource
     where TModel : class
 {
-    // Caches the compiled ETag function per concrete type. The delegate accesses model
-    // properties only (no DI dependencies), so it is safe to share across request scopes.
+    // Caches the compiled ETag function per concrete type -- ONLY for a selector that reads
+    // nothing but its lambda parameter (CapturedState.IsCapturedByExpression). #483: the cache is
+    // keyed by GetType() and stores a delegate compiled from the FIRST-constructed instance's
+    // expressions, and that instance comes from the startup scope, which is disposed immediately
+    // after registration. The comment this replaces asserted "no DI dependencies ... safe to share
+    // across request scopes" as a property of the delegate; it was an assumption about USER code,
+    // and profiles are registered AddScoped specifically so they can inject scoped services. A
+    // selector closing over one froze the disposed startup instance into every request for the
+    // process lifetime -- silently, or as an ObjectDisposedException on every request.
     private static readonly ConcurrentDictionary<Type, Func<TModel, string>> s_etagCache = new();
 
     // Caches the compiled key-to-string delegate per concrete type. Expression.Compile() is
-    // expensive (~100μs); caching avoids per-request compilation under scoped resolution.
+    // expensive (~100μs); caching avoids per-request compilation under scoped resolution. Same
+    // #483 capture gate as the ETag cache above.
     private static readonly ConcurrentDictionary<Type, Func<TModel, string>> s_keyToStringCache = new();
 
     // Caches compiled structural-property accessor delegates keyed by property name. Shared
@@ -108,19 +116,19 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected bool? ExpandEnabled { get; init; }
 
     /// <summary>
-    /// Controls whether <c>$filter</c> is allowed on this entity set (OData §11.2.6.1).
+    /// Controls whether <c>$filter</c> is allowed on this entity set (OData §11.2.5.1).
     /// Inherits from <see cref="EntitySetDefaults"/> when <c>null</c> (the default).
     /// </summary>
     protected bool? FilterEnabled { get; init; }
 
     /// <summary>
-    /// Controls whether <c>$orderby</c> is allowed on this entity set (OData §11.2.6.2).
+    /// Controls whether <c>$orderby</c> is allowed on this entity set (OData §11.2.5.2).
     /// Inherits from <see cref="EntitySetDefaults"/> when <c>null</c> (the default).
     /// </summary>
     protected bool? OrderByEnabled { get; init; }
 
     /// <summary>
-    /// Controls whether <c>$count</c> is allowed on this entity set (OData §11.2.6.5).
+    /// Controls whether <c>$count</c> is allowed on this entity set (OData §11.2.5.5).
     /// Inherits from <see cref="EntitySetDefaults"/> when <c>null</c> (the default).
     /// </summary>
     protected bool? CountEnabled { get; init; }
@@ -231,6 +239,46 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private bool _resolvedAllowDeepWrites;
 
     /// <summary>
+    /// #355: whether a write body for this entity set is checked against the EDM's own
+    /// <c>Nullable="false"</c> annotations before the handler is invoked. Inherits from
+    /// <see cref="EntitySetDefaults.RequestBodyNullabilityValidationEnabled"/>
+    /// (default <c>true</c>) when <c>null</c>.
+    /// <para>
+    /// <b>The rule, in one sentence:</b> a property the request body NAMES with an explicit
+    /// <c>null</c>, where the framework's own <c>$metadata</c> declares that property
+    /// <c>Nullable="false"</c>, is answered with <c>400</c> (<c>InvalidBody</c>, <c>target:</c> the
+    /// property) and the handler never runs. It applies uniformly to <c>POST</c>, <c>PUT</c>,
+    /// <c>PATCH</c>, the navigation-<c>POST</c> create route and the structural-property writes.
+    /// </para>
+    /// <para>
+    /// <b>An OMITTED property is never a violation</b> (#544), on any verb, whatever the CLR
+    /// declaration would leave behind — <c>= ""</c>, <c>= null!</c>, or a value type. So the
+    /// accept/reject decision for an omission no longer depends on a CLR initializer or on
+    /// value-versus-reference, neither of which appears in <c>$metadata</c>. This is where
+    /// <c>Microsoft.AspNetCore.OData</c> lands too.
+    /// </para>
+    /// <para>
+    /// <b>Four properties are outside the rule</b>, and read the first one as a deliberate choice
+    /// rather than as something unreachable. The entity's <b>key</b> is exempt <i>by choice</i>: a
+    /// service-generated key is routinely omitted on create, §11.4.2 permits omitting a property
+    /// the service computes (<c>Core.Computed</c>), and every EDM key is <c>Nullable="false"</c>, so checking it
+    /// would refuse ordinary creates. An explicit <c>null</c> for a reference-typed key is
+    /// therefore <b>not</b> answered by this rule and is not a <c>400</c>. A non-nullable
+    /// <b>value type</b> such as <c>int</c> is outside it because an explicit <c>null</c> there is
+    /// already a <c>400</c> worded by the deserializer. The last two are outside it because the EDM
+    /// says nothing about them: a member no readable CLR property backs, and anything the EDM does
+    /// not declare at all — which is what exempts <c>Ignore()</c>d properties. Nullability
+    /// <i>inside</i> a nested complex value is not checked either.
+    /// </para>
+    /// <para>
+    /// Set to <c>false</c> for an entity set whose handler legitimately supplies a value the client
+    /// is not expected to send.
+    /// </para>
+    /// </summary>
+    protected bool? RequestBodyNullabilityValidationEnabled { get; init; }
+    private bool _resolvedRequestBodyNullabilityValidationEnabled = true;
+
+    /// <summary>
     /// Renamed to <see cref="AllowDeepWrites"/> in 1.6.0. Kept as a forwarding property so an
     /// assembly compiled against 1.5.0 keeps binding; it reads and writes
     /// <see cref="AllowDeepWrites"/>, so the two can never disagree.
@@ -301,11 +349,26 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected Func<TKey, TModel, CancellationToken, Task<TModel>>? Put = null;
 
     /// <summary>
-    /// Registers the <c>POST /{EntitySet}</c> handler (OData §11.4.1 — Create an Entity).
-    /// Return <c>null</c> to produce a <c>400 Bad Request</c> response.
+    /// Registers the <c>POST /{EntitySet}</c> handler (OData §11.4.2 — Create an Entity).
+    /// It must return the created entity.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Leaving this <c>null</c> (the default) means no <c>POST /{EntitySet}</c> route is registered.
+    /// </para>
+    /// <para>
+    /// <b>Returning <c>null</c> is a contract violation, not a rejection (#496).</b> It answered
+    /// <c>400 Bad Request</c> through 1.6.0 — the client blamed for a server-side bug, and the only
+    /// 4xx null policy in the framework. It now throws, which the group-level exception filter turns
+    /// into a logged <c>500</c> carrying the OData error envelope.
+    /// </para>
+    /// <para>
+    /// To <em>reject</em> a create deliberately, do it before the handler: this delegate returns
+    /// <typeparamref name="TModel"/> (as does every other entity-set handler), so it cannot return an
+    /// <c>IResult</c> and there is no way to choose a status code from inside it. Use a
+    /// <c>Create</c> authorization rule, <see cref="RequestBodyNullabilityValidationEnabled"/>, or
+    /// throw — which is the same <c>500</c>.
+    /// </para>
     /// </remarks>
     protected Func<TModel, CancellationToken, Task<TModel?>>? Post = null;
 
@@ -333,7 +396,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
     /// <summary>
     /// Registers a free-text search handler for <c>GET /{EntitySet}?$search=term</c>
-    /// (OData §11.2.6.6 — System Query Option <c>$search</c>). The raw search term from the
+    /// (OData §11.2.5.6 — System Query Option <c>$search</c>). The raw search term from the
     /// query string is passed to this delegate; return matching entities.
     /// </summary>
     /// <remarks>
@@ -345,7 +408,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private int? _maxTop;
 
     /// <summary>
-    /// Maximum value the client may specify in <c>$top</c> (OData §11.2.6.3).
+    /// Maximum value the client may specify in <c>$top</c> (OData §11.2.5.3).
     /// The framework enforces this limit; requests exceeding it receive a
     /// <c>400 Bad Request</c>. Inherits from <see cref="EntitySetDefaults.MaxTop"/> when
     /// <c>null</c>. Must be a positive integer.
@@ -370,7 +433,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// <c>$count</c> may materialize. A nested <c>$top</c> greater than this is rejected with
     /// <c>400 Bad Request</c> before any handler runs; a nested <c>$count</c> whose related
     /// collection exceeds it is likewise rejected with <c>400</c> rather than silently truncated
-    /// (OData §11.2.4.2 requires <c>Nav@odata.count</c> to report the full filtered collection).
+    /// (OData §11.2.5.5 requires a count to report the full filtered collection).
     /// #313 widened what the value covers once it is set: it now bounds <b>every</b> collection
     /// <c>$expand</c> level — a bare <c>?$expand=Children</c> included, and every level of a
     /// <c>$levels=N</c> recursion — not just the two #254 shapes, and composes the child-key
@@ -562,7 +625,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// <summary>
     /// Opts in to ETag generation. The framework hashes the values of the specified
     /// properties using SHA-256 and encodes the result as Base64, returning it in the
-    /// <c>ETag</c> response header (OData §8.2.6) and the <c>@odata.etag</c> annotation.
+    /// <c>ETag</c> response header (OData §8.3.1) and the <c>@odata.etag</c> annotation.
     /// <para>
     /// Supports <c>byte[]</c> values (e.g. row-version columns) directly; all other values are
     /// hashed as their UTF-8 string representations, formatted round-trippably and under
@@ -572,10 +635,23 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// </para>
     /// </summary>
     /// <remarks>
-    /// When ETags are enabled the framework checks the <c>If-Match</c> request header on
-    /// mutating operations (PUT, PATCH, DELETE) and returns <c>412 Precondition Failed</c>
-    /// on mismatch (OData §8.2.5). GET responses support <c>If-None-Match</c> with
-    /// <c>304 Not Modified</c> (OData §8.2.5).
+    /// When ETags are enabled the framework checks the <c>If-Match</c> request header on every
+    /// state-changing route it owns and can key — entity <c>PUT</c>/<c>PATCH</c>/<c>DELETE</c>,
+    /// the structural-property writes, all three <c>$ref</c> link-management routes and the
+    /// navigation-<c>POST</c> create route (#478) — and returns <c>412 Precondition Failed</c>
+    /// on mismatch (OData §8.2.4). GET responses support <c>If-None-Match</c> with
+    /// <c>304 Not Modified</c> (OData §8.2.5). <b>Bound and unbound actions are excluded, and that
+    /// is a known deviation, not a spec allowance</b> — §11.4.1.1, §8.2.4 and §8.3.1 all name
+    /// Action Requests explicitly. Tracked as
+    /// <see href="https://github.com/en-gen/OhData/issues/566">#566</see>.
+    /// <para>
+    /// <b>Performance note (#483).</b> A selector that captures anything outside its own lambda
+    /// parameter (a field, a local, an injected service) can no longer be cached across requests
+    /// and is recompiled per profile instance — measured at roughly 2.5–3.5x the per-request cost
+    /// of a non-capturing selector on <c>GET /Set(key)</c>. Keep the lambda reading only its
+    /// parameter (fold the value into a model property); assigning it to a local first does not
+    /// help, because a captured local is still compiled into a display class.
+    /// </para>
     /// </remarks>
     /// <param name="propertySelectors">
     /// One or more property selectors whose values are combined into the ETag hash.
@@ -596,8 +672,16 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         // Like the names above, this must run before the compiled-delegate cache early return.
         _etagSelectors = ExtractSelectorInfo(propertySelectors);
 
+        // #483: the cache may only serve a selector whose compiled delegate is a pure function of
+        // the model. A selector that closes over anything -- most sharply, an injected scoped
+        // dependency -- must be recompiled for each profile instance, because the cached one would
+        // hold the STARTUP scope's captured state for the process lifetime. Decided per instance
+        // rather than per type: a profile is free to call UseETag with different selectors on
+        // different constructions, and the cache must not be poisoned by whichever ran first.
+        bool cacheable = !propertySelectors.Any(CapturedState.IsCapturedByExpression);
+
         // Reuse the cached compiled delegate if available (avoids recompiling on every scoped construction).
-        if (s_etagCache.TryGetValue(GetType(), out var cached))
+        if (cacheable && s_etagCache.TryGetValue(GetType(), out var cached))
         {
             _getETag = cached;
             return;
@@ -629,8 +713,9 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
             return Convert.ToBase64String(hash);
         };
 
-        // Cache for per-request instances — this delegate only accesses model properties.
-        s_etagCache.TryAdd(GetType(), _getETag);
+        // Cache for per-request instances — only when every selector reads the model alone, so the
+        // delegate cannot outlive anything it needs (#483).
+        if (cacheable) s_etagCache.TryAdd(GetType(), _getETag);
     }
 
     private IReadOnlyCollection<string>? _etagPropertyNames;
@@ -770,6 +855,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _resolvedExpandPushdownEnabled = ExpandPushdownEnabled ?? defaults.ExpandPushdownEnabled;
         _resolvedPropertyRouteDocsEnabled = PropertyRouteDocsEnabled ?? defaults.PropertyRouteDocsEnabled;
         _resolvedAllowDeepWrites = AllowDeepWrites ?? defaults.AllowDeepWrites;
+        _resolvedRequestBodyNullabilityValidationEnabled = RequestBodyNullabilityValidationEnabled
+            ?? defaults.RequestBodyNullabilityValidationEnabled;
         _resolvedRoundingMode = RoundingMode ?? defaults.RoundingMode;
         _structuralProperties = BuildStructuralProperties();
 
@@ -854,19 +941,25 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
         var entityCollection = entityType.Collection;
 
+        // #539: the entity-set name handed down is the one this very method opened with
+        // (`builder.EntitySet<TModel>(EntitySetName)` at the top), so the set is known to exist and
+        // to carry exactly TModel — never a name derived from an operation's return type.
+        // RegisterEdmReturnType explains why that distinction is load-bearing.
+        string edmEntitySetName = EntitySetName;
+
         foreach (var method in _functions.Select(x => x.Method))
-            RegisterEdmOperation(method, entityCollection.Function(method.Name), typeof(FunctionConfiguration), skipKeyParameter: false);
+            RegisterEdmOperation(method, entityCollection.Function(method.Name), typeof(FunctionConfiguration), skipKeyParameter: false, edmEntitySetName);
 
         foreach (var method in _actions.Select(x => x.Method))
-            RegisterEdmOperation(method, entityCollection.Action(method.Name), typeof(ActionConfiguration), skipKeyParameter: false);
+            RegisterEdmOperation(method, entityCollection.Action(method.Name), typeof(ActionConfiguration), skipKeyParameter: false, edmEntitySetName);
 
         // Gap 7: entity-level functions/actions bind to the entity type, not the collection. Their
         // first parameter is the entity key (TKey) — skipped here, since it is not an OData parameter.
         foreach (var method in _entityFunctions.Select(x => x.Method))
-            RegisterEdmOperation(method, entityType.Function(method.Name), typeof(FunctionConfiguration), skipKeyParameter: true);
+            RegisterEdmOperation(method, entityType.Function(method.Name), typeof(FunctionConfiguration), skipKeyParameter: true, edmEntitySetName);
 
         foreach (var method in _entityActions.Select(x => x.Method))
-            RegisterEdmOperation(method, entityType.Action(method.Name), typeof(ActionConfiguration), skipKeyParameter: true);
+            RegisterEdmOperation(method, entityType.Action(method.Name), typeof(ActionConfiguration), skipKeyParameter: true, edmEntitySetName);
 
         _resolvedBoundFunctions = _functions.Select(d => BoundOperationDefinition.From(d, isAction: false))
             .Concat(_entityFunctions.Select(d => BoundOperationDefinition.From(d, isAction: false, isEntityLevel: true)))
@@ -1744,10 +1837,17 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// A delegate whose method name is the function name. Parameters (excluding
     /// <see cref="CancellationToken"/>) are exposed as OData function parameters.
     /// </param>
+    /// <exception cref="InvalidOperationException">
+    /// #498: the handler returns <c>void</c>/<c>Task</c>/<c>ValueTask</c> (use <see cref="BindAction"/>),
+    /// returns an <c>IResult</c>, or declares a non-trailing or nullable <see cref="CancellationToken"/>.
+    /// </exception>
     protected void BindFunction(Delegate handler)
     {
         ThrowIfSealed();
-        _functions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
+        if (handler is null) throw new ArgumentNullException(nameof(handler));
+        ValidateBoundOperationSignature(handler, nameof(BindFunction), isAction: false, nameof(BindAction));
+        ValidateBoundOperationNameIsUnique(handler, _functions, nameof(BindFunction), isAction: false, isEntityLevel: false);
+        _functions.Add(handler);
     }
 
     /// <summary>
@@ -1759,10 +1859,18 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// A delegate whose method name is the action name. Parameters (excluding
     /// <see cref="CancellationToken"/>) are read from the JSON body as named properties.
     /// </param>
+    /// <exception cref="InvalidOperationException">
+    /// #498: the handler returns an <c>IResult</c>, or declares a non-trailing or nullable
+    /// <see cref="CancellationToken"/>. (A <c>void</c>/<c>Task</c>/<c>ValueTask</c> return is legal
+    /// here — an action with no return value produces <c>204 No Content</c>.)
+    /// </exception>
     protected void BindAction(Delegate handler)
     {
         ThrowIfSealed();
-        _actions.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
+        if (handler is null) throw new ArgumentNullException(nameof(handler));
+        ValidateBoundOperationSignature(handler, nameof(BindAction), isAction: true, nameof(BindAction));
+        ValidateBoundOperationNameIsUnique(handler, _actions, nameof(BindAction), isAction: true, isEntityLevel: false);
+        _actions.Add(handler);
     }
 
     /// <summary>
@@ -1781,6 +1889,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         ThrowIfSealed();
         if (handler is null) throw new ArgumentNullException(nameof(handler));
         ValidateEntityBoundOperationSignature(handler, nameof(BindEntityFunction));
+        ValidateBoundOperationSignature(handler, nameof(BindEntityFunction), isAction: false, nameof(BindEntityAction));
+        ValidateBoundOperationNameIsUnique(handler, _entityFunctions, nameof(BindEntityFunction), isAction: false, isEntityLevel: true);
         _entityFunctions.Add(handler);
     }
 
@@ -1800,8 +1910,66 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         ThrowIfSealed();
         if (handler is null) throw new ArgumentNullException(nameof(handler));
         ValidateEntityBoundOperationSignature(handler, nameof(BindEntityAction));
+        ValidateBoundOperationSignature(handler, nameof(BindEntityAction), isAction: true, nameof(BindEntityAction));
+        ValidateBoundOperationNameIsUnique(handler, _entityActions, nameof(BindEntityAction), isAction: true, isEntityLevel: true);
         _entityActions.Add(handler);
     }
+
+    // #492 §4: two bound operations of one kind at one binding level claim a single
+    // (template, method) pair -- GET/POST /{Set}/{Name} for a collection-bound operation,
+    // GET/POST /{Set}({key})/{Name} for an entity-bound one -- and nothing validated it. The route
+    // pair surfaced only as an AmbiguousMatchException at REQUEST time, thrown by routing before
+    // OhData's group filter, so with no OData error envelope.
+    //
+    // It is a second-order defect too: request-time dispatch is
+    // `BoundFunctions.First(f => f.Name == … && f.IsEntityLevel)`, which would silently pick the
+    // first even if routing did not collide. So the duplicate is ambiguous in the dispatch layer as
+    // well as unrouteable, and neither half is fixable by choosing a winner.
+    //
+    // Checked at BIND time rather than in MapEntitySet beside its sibling collision checks, because
+    // Microsoft.OData.ModelBuilder rejects a repeated ACTION name itself, earlier, from inside
+    // VisitModelBuilder -- "Found more than one action with name 'X'", naming neither the profile
+    // nor the entity set nor the remedy. A check downstream of that would never run for actions.
+    //
+    // Scoped per (kind, binding level): a function is GET and an action POST, and the two levels
+    // claim different templates -- which is why the four lists are checked separately rather than
+    // merged. Compared OrdinalIgnoreCase, since ASP.NET Core's literal segment matching is.
+    private void ValidateBoundOperationNameIsUnique(
+        Delegate handler, IEnumerable<Delegate> alreadyBound, string bindMethodName, bool isAction, bool isEntityLevel)
+    {
+        string operationName = handler.Method.Name;
+        Delegate? existing = alreadyBound.FirstOrDefault(
+            d => string.Equals(d.Method.Name, operationName, StringComparison.OrdinalIgnoreCase));
+        if (existing is null) return;
+
+        string kind = isAction ? "action" : "function";
+        string httpMethod = isAction ? "POST" : "GET";
+        string template = isEntityLevel
+            ? $"{EntitySetName}({{key}})/{operationName}"
+            : $"{EntitySetName}/{operationName}";
+
+        throw new InvalidOperationException(
+            $"{bindMethodName}('{operationName}') on entity set '{EntitySetName}': a bound {kind} " +
+            $"named '{existing.Method.Name}' is already registered at this binding level. Both would " +
+            $"register {httpMethod} /{template} (route templates are case-insensitive), and " +
+            $"request-time dispatch resolves a bound {kind} by name, so it could not tell them apart " +
+            $"either. Give each bound {kind} on this entity set a distinct name -- C# overloads share " +
+            "one method name, so two overloads cannot both be bound.");
+    }
+
+    // #498: the three signature rules that apply to EVERY bound operation, delegated to the shared
+    // validator so the four Bind* methods here and OhDataBuilder's AddFunction/AddAction cannot
+    // drift apart. Called from the Bind* method rather than from BoundOperationDefinition.From so
+    // the throw surfaces from the profile's own constructor -- From runs inside VisitModelBuilder,
+    // whose exceptions are wrapped in a generic "failed to build EDM for profile" message.
+    private void ValidateBoundOperationSignature(
+        Delegate handler, string bindMethodName, bool isAction, string actionAlternative) =>
+        OperationSignatureValidation.Validate(
+            handler.Method,
+            handler.Method.Name,
+            isAction,
+            $"{bindMethodName}('{handler.Method.Name}') on entity set '{EntitySetName}'",
+            actionAlternative);
 
     // S6: entity-bound operations are invoked at request time by placing the parsed route key
     // directly into args[0] (see OhDataEndpointFactory) -- the delegate's Parameters array
@@ -1863,8 +2031,12 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     // and — via reflection, since the fluent API only exposes generic Returns<T>/ReturnsCollection<T>
     // — its return type, unwrapping Task<T>/ValueTask<T> and treating void/Task/ValueTask as no return.
     // `skipKeyParameter` drops the leading TKey parameter of entity-level operations.
+    //
+    // #539: `entitySetName` is this profile's OWN entity set, and it is what makes a bound ACTION
+    // able to return the set's own type at all. See RegisterEdmReturnType below.
     private static void RegisterEdmOperation(
-        MethodInfo method, OperationConfiguration operation, Type configType, bool skipKeyParameter)
+        MethodInfo method, OperationConfiguration operation, Type configType, bool skipKeyParameter,
+        string entitySetName)
     {
         var parameters = method.GetParameters().Where(p => p.ParameterType != typeof(CancellationToken));
         if (skipKeyParameter) parameters = parameters.Skip(1);
@@ -1875,7 +2047,21 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
             if (param.IsOptional) opParam.Optional();
             if (param.HasDefaultValue)
             {
-                string defaultStr = param.DefaultValue is bool b ? (b ? "true" : "false") : $"{param.DefaultValue}";
+                // #498 §5: InvariantCulture, not the ambient one. `$"{param.DefaultValue}"` formats
+                // under CurrentCulture, so `decimal maxPrice = 1.5m` rendered as DefaultValue="1,5"
+                // in the CSDL on a de-DE server -- the $metadata document's contents are a wire
+                // format, not localised text. Same class as the /$count culture inconsistency in
+                // #496. bool keeps its explicit lowercase mapping (bool.ToString() is not
+                // culture-sensitive but returns "True"/"False", which CSDL does not accept).
+                string defaultStr = param.DefaultValue switch
+                {
+                    bool b => b ? "true" : "false",
+                    IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+                    // `$"{null}"` produced the empty string; preserved rather than "improved", since
+                    // what CSDL should say for a null default is a separate question from culture.
+                    null => "",
+                    var other => other.ToString() ?? "",
+                };
                 opParam.HasDefaultValue(defaultStr);
             }
         }
@@ -1886,16 +2072,93 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
             : AsyncDispatchHelper.UnwrapAsyncReturn(rawReturn);
         if (returnType is null) return;
 
-        var collectionElement = GetCollectionElementType(returnType);
-        string configMethod = collectionElement is not null ? "ReturnsCollection" : "Returns";
-        configType.GetMethod(configMethod, Array.Empty<Type>())!
-            .MakeGenericMethod(collectionElement ?? returnType)
-            .Invoke(operation, null);
+        RegisterEdmReturnType(method, operation, configType, returnType, entitySetName);
     }
 
+    // #539: which of Microsoft's four return-type declarations to call.
+    //
+    // MEASURED against Microsoft.OData.ModelBuilder 2.0.0 (ZZProbe, .NET 10.0.11):
+    //   action.Returns<TModel>()             -> InvalidOperationException, AT THE CALL: "The EDM
+    //                                           type '…' is already declared as an entity type. Use
+    //                                           the method 'ReturnsFromEntitySet' if the return type
+    //                                           is an entity."
+    //   action.ReturnsCollection<TModel>()   -> the same, naming 'ReturnsCollectionFromEntitySet'
+    //   function.Returns<TModel>()           -> OK
+    //   function.ReturnsCollection<TModel>() -> OK
+    //
+    // So a `BindAction` over TModel or IEnumerable<TModel> — `POST /Widgets/Archive` answering with
+    // the archived rows, an ordinary OData shape — could not be registered at all: MapOhData() died
+    // quoting a method OhData never called and does not expose, while the FUNCTION twin of the same
+    // signature worked. That asymmetry is the whole of #539.
+    //
+    // The fix is Microsoft's own remedy, and it is applied to FUNCTIONS TOO rather than behind an
+    // is-this-an-action branch. Two reasons, both measured. (1) The CSDL is byte-identical: a bound
+    // operation declared with ReturnsCollectionFromEntitySet emits the same `<ReturnType
+    // Type="Collection(…)"/>` — no EntitySetPath, no extra attribute — as one declared with
+    // ReturnsCollection, so nothing on the function side moves (pinned by
+    // BoundActionEntityReturnTests.BoundFunction_MetadataDeclarationIsUnchanged). (2) It is what
+    // Microsoft's own E2E fixtures do for an entity return, on both operation kinds. One
+    // unconditional rule is also less code than a conditional one, and cannot drift between kinds.
+    //
+    // The entity-set name is THIS PROFILE'S, taken from the EntitySetConfiguration the caller is
+    // already holding — never a name derived from the return type. That is load-bearing:
+    // ReturnsFromEntitySet does NOT validate that the name exists, it CREATES the set (measured: a
+    // bogus name added `EntitySet:Ghosts` to the container and $metadata, silently). Passing the set
+    // we know was registered with exactly this CLR type is the only safe call.
+    private static void RegisterEdmReturnType(
+        MethodInfo method, OperationConfiguration operation, Type configType, Type returnType,
+        string entitySetName)
+    {
+        Type? collectionElement = GetCollectionElementType(returnType);
+        Type declaredType = collectionElement ?? returnType;
+
+        if (declaredType == typeof(TModel))
+        {
+            string fromSetMethod = collectionElement is not null
+                ? "ReturnsCollectionFromEntitySet"
+                : "ReturnsFromEntitySet";
+            // The (Type, string) overload exists on both ActionConfiguration and
+            // FunctionConfiguration, so no MakeGenericMethod is needed here.
+            configType.GetMethod(fromSetMethod, new[] { typeof(Type), typeof(string) })!
+                .Invoke(operation, new object[] { declaredType, entitySetName });
+            return;
+        }
+
+        string configMethod = collectionElement is not null ? "ReturnsCollection" : "Returns";
+        try
+        {
+            configType.GetMethod(configMethod, Array.Empty<Type>())!
+                .MakeGenericMethod(declaredType)
+                .Invoke(operation, null);
+        }
+        catch (TargetInvocationException ex) when (ex.InnerException is InvalidOperationException)
+        {
+            // #539 floor. The branch above handles the profile's OWN model type, which is the shape
+            // the issue is about and the only one this class can name an entity set for. A bound
+            // operation returning some OTHER entity type — another profile's model — still lands
+            // here, and Microsoft's message still names a method OhData does not expose. Re-word it
+            // in OhData's own vocabulary, naming the operation and the remedies that actually exist,
+            // rather than letting a raw ModelBuilder string reach the developer. The original is
+            // kept as the inner exception.
+            throw new InvalidOperationException(
+                $"Entity set '{entitySetName}': bound operation '{method.Name}' declares a return " +
+                $"type of '{declaredType.Name}', which is already declared as an entity type in " +
+                "this registration but is not this profile's own model type. OhData can only bind " +
+                "an operation's entity return to the entity set of the profile that declares it. " +
+                "Return this profile's own model type, a complex/DTO type, or a primitive.",
+                ex.InnerException);
+        }
+    }
+
+    // Kept in lockstep with UnboundOperationDefinition.GetCollectionElementType -- the same question
+    // for the unbound half of the same operations surface. Any change to one belongs in both.
     private static Type? GetCollectionElementType(Type type)
     {
         if (type == typeof(string)) return null; // string is IEnumerable<char> but not a "collection" here
+        // #498 §4: byte[] is an ARRAY but not a collection here. Treating it as one declared
+        // <ReturnType Type="Collection(Edm.Byte)"/> in $metadata while WrapBoundOpResult's primitive
+        // map hits byte[] -> Edm.Binary first and serves {"@odata.context":"...#Edm.Binary",...}.
+        if (type == typeof(byte[])) return null;
         if (type.IsArray) return type.GetElementType();
         foreach (var iface in new[] { type }.Concat(type.GetInterfaces()))
         {
@@ -2014,6 +2277,19 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
     bool IEntitySetEndpointSource.HasGetAll => GetAll is not null;
     bool IEntitySetEndpointSource.HasGetQueryable => GetQueryable is not null;
+
+    // #492 §1: the ONE answer to "does MapEntitySet register a collection GET for this profile",
+    // mirroring the three-branch `if/else if/else if` chain there. It is implemented on the base
+    // class rather than re-implemented per subclass deliberately: `ODataEntitySetProfile` adds a
+    // read path by adding an INTERFACE (IODataEntitySetEndpointSource), so asking that interface
+    // here keeps every present and future subclass answering correctly from a single site. The
+    // caller that motivated it (the unbound-operation collision pass) had enumerated the paths by
+    // hand and missed one.
+    bool IEntitySetEndpointSource.HasCollectionGet =>
+        GetAll is not null
+        || GetQueryable is not null
+        || (this is IODataEntitySetEndpointSource p1 && p1.HasGetODataQueryable);
+
     bool IEntitySetEndpointSource.HasGetById => GetById is not null;
     bool IEntitySetEndpointSource.HasPost => Post is not null;
     bool IEntitySetEndpointSource.HasPut => Put is not null;
@@ -2037,11 +2313,18 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private Func<TModel, string>? _keyToString;
     private Func<TModel, string> CompileKeyToString()
     {
-        return s_keyToStringCache.GetOrAdd(GetType(), _ =>
-        {
-            var compiled = _getKey.Compile();
-            return model => string.Format(CultureInfo.InvariantCulture, "{0}", compiled(model)) ?? "";
-        });
+        // #483: same gate as the ETag cache. The constructor already requires the key selector to
+        // be a direct property access, which leaves exactly one capturing shape reachable
+        // (`x => captured.Member` — still a MemberExpression). Degenerate as a key, but the guard
+        // is applied uniformly so no cache in this type stores instance-derived state.
+        if (CapturedState.IsCapturedByExpression(_getKey)) return BuildKeyToString();
+        return s_keyToStringCache.GetOrAdd(GetType(), _ => BuildKeyToString());
+    }
+
+    private Func<TModel, string> BuildKeyToString()
+    {
+        var compiled = _getKey.Compile();
+        return model => string.Format(CultureInfo.InvariantCulture, "{0}", compiled(model)) ?? "";
     }
     string IEntitySetEndpointSource.InvokeGetKeyString(object model)
         => LazyInitializer.EnsureInitialized(ref _keyToString, CompileKeyToString)((TModel)model);
@@ -2055,11 +2338,15 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private Func<TModel, string>? _keyToUrl;
     private Func<TModel, string> CompileKeyToUrl()
     {
-        return s_keyToUrlCache.GetOrAdd(GetType(), _ =>
-        {
-            var compiled = _getKey.Compile();
-            return model => OhData.ODataEntityKeyUrlFormatter.Format(compiled(model)!);
-        });
+        // #483: see CompileKeyToString.
+        if (CapturedState.IsCapturedByExpression(_getKey)) return BuildKeyToUrl();
+        return s_keyToUrlCache.GetOrAdd(GetType(), _ => BuildKeyToUrl());
+    }
+
+    private Func<TModel, string> BuildKeyToUrl()
+    {
+        var compiled = _getKey.Compile();
+        return model => OhData.ODataEntityKeyUrlFormatter.Format(compiled(model)!);
     }
     string IEntitySetEndpointSource.InvokeGetKeyForUrl(object model)
         => LazyInitializer.EnsureInitialized(ref _keyToUrl, CompileKeyToUrl)((TModel)model);
@@ -2091,6 +2378,8 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     IReadOnlyList<StructuralPropertyInfo> IEntitySetEndpointSource.StructuralProperties =>
         _structuralProperties ??= BuildStructuralProperties();
     bool IEntitySetEndpointSource.AllowDeepWrites => _resolvedAllowDeepWrites;
+    bool IEntitySetEndpointSource.RequestBodyNullabilityValidationEnabled =>
+        _resolvedRequestBodyNullabilityValidationEnabled;
     // #253 completion: navigations are addressed by their EDM (JSON) names on the OData surface. This
     // exposed view is consumed by the $expand pushdown provenance/keying and the deep-insert strip
     // (which resolves each CLR property to its EDM name before testing membership).

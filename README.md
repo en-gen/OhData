@@ -195,11 +195,17 @@ See [docs/navigation-routing.md](docs/navigation-routing.md), [docs/property-acc
 
 And to *shrink* the surface instead of growing it: `Ignore(x => x.CostBasis)` hides a property
 from `$metadata`, query options, routes, and every request/response body — without touching the
-CLR model. See [docs/ignoring-properties.md](docs/ignoring-properties.md).
+CLR model. **One exception:** overriding `AdvancedConfigure` takes the EDM out of OhData's hands,
+which drops `Ignore()`'s EDM half — the property is back in `$metadata` and query-addressable,
+though still absent from every response body. `MapOhData()` emits a startup `Warning` naming each
+affected property and the one-line remedy. See
+[docs/ignoring-properties.md](docs/ignoring-properties.md).
 
 ### Authorization
 
-OhData rides ASP.NET Core's own authentication and authorization - there's no OhData-specific auth system. Protect a whole entity set with one call:
+OhData rides ASP.NET Core's own authentication and authorization — you keep your existing scheme, policies, roles and `IAuthorizationHandler`s, and profiles never reference an ASP.NET Core type. What OhData adds on top is a *declaration* layer: five operation categories (`Read`/`Create`/`Update`/`Delete`/`Invoke`, plus the `Writes` and `All` selectors) that map to routes, `.RequireResource()` for instance-level checks, per-operation `Invoke(name, …)` rules with their own startup validation, an `authorize` lambda on unbound operations, and a startup audit that warns about routes left anonymous in a registration that requires authorization elsewhere. Requirements are stored as plain policy/role/claim names and replayed onto the endpoints; the evaluation is entirely ASP.NET Core's.
+
+Protect a whole entity set with one call:
 
 ```csharp
 RequireAuthorization("AdminOnly");   // or RequireAuthorization() / RequireRoles("Admin")
@@ -239,7 +245,9 @@ public sealed class OrderAuthorizationHandler
 // Program.cs:  services.AddScoped<IAuthorizationHandler, OrderAuthorizationHandler>();
 ```
 
-So a request to `PATCH /odata/Orders(42)` runs the role check (must be an `Editors` member) **and** loads order 42 and asks the handler whether this caller owns it — both must pass. The check covers property/navigation/`$ref` routes too (the resource is the parent entity in the path), so there's no bypass. `.RequireResource("PolicyName")` evaluates a **named policy** against the entity instead. Profiles stay free of ASP.NET Core types — requirements are stored as plain policy/role/claim names. See [docs/authorization.md](docs/authorization.md).
+So a request to `PATCH /odata/Orders(42)` runs the role check (must be an `Editors` member) **and** loads order 42 and asks the handler whether this caller owns it — both must pass. The check covers property/navigation/`$ref` routes too (the resource is the parent entity in the path), so none of *this profile's* routes escapes *this profile's* rule. `.RequireResource("PolicyName")` evaluates a **named policy** against the entity instead. Profiles stay free of ASP.NET Core types — requirements are stored as plain policy/role/claim names.
+
+**Read that scope literally: a rule is per profile, and it does not compose across a navigation.** A navigation is authorized by the profile that *declares* it, never by the profile that owns its target entity set — so if `Customers` declares a navigation into a separately registered, more strictly gated `Tickets` set, the nav `GET`, its `/$count`, all four `$ref` routes, the navigation-`POST` and `$expand` all run under the `Customers` rule. The writes are on that list too. `MapOhData()` emits a startup `Warning` for every such pair. `Microsoft.AspNetCore.OData` behaves the same way and structurally cannot do otherwise. See [docs/authorization.md](docs/authorization.md#authorization-is-per-profile-and-does-not-compose-across-a-navigation) for the full route table, the reasoning, and the two remedies.
 
 ---
 

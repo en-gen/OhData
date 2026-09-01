@@ -192,8 +192,34 @@ A write request (`POST`/`PUT`/`PATCH`, including navigation/`$ref`/property/acti
 body exceeds the limit is rejected with `413 Payload Too Large` and the OData error envelope, before
 the body is deserialized. Enforcement is twofold: an oversized `Content-Length` is rejected up front,
 and the per-request Kestrel `MaxRequestBodySize` is set so a chunked / no-`Content-Length` body is
-bounded during read (its overflow is mapped to the same `413`). The default is `null` — **no
-OhData-level limit**, leaving the host's Kestrel default (~30 MB) in effect.
+bounded during read (its overflow is mapped to the same `413`).
+
+### The default ceiling ([#474](https://github.com/en-gen/OhData/issues/474))
+
+`EntitySetDefaults.MaxRequestBodyBytes` defaults to `EntitySetDefaults.DefaultMaxRequestBodyBytes`
+— **30,000,000 bytes**, which is Kestrel's own default `MaxRequestBodySize`.
+
+It used to default to `null`, meaning *no OhData-level limit*. That reads as harmless only while the
+host's own limit is in place: neither half of the enforcement above ran, so on a host that raised or
+disabled `MaxRequestBodySize` — routine for an app that also accepts uploads — nothing anywhere
+bounded a write body OhData materialises in full before deserializing it.
+
+Kestrel's number was chosen deliberately rather than invented. On a **default** host it changes
+nothing observable except which layer reports the rejection (OhData's `413` envelope instead of
+Kestrel's), because the same byte count was already refused one layer down. The behaviour change
+lands only on a host that raised or removed its own limit — precisely the configuration that had no
+ceiling at all.
+
+To restore the old behaviour, clear it server-wide:
+
+```csharp
+builder.Services.AddOhData(o => o
+    .WithDefaults(d => d.MaxRequestBodyBytes = null) // the host's limit is the only limit
+    .AddEntitySetProfile<OrderProfile>());
+```
+
+There is no per-profile way to say "unlimited": a profile-level `null` means *inherit*, exactly as
+it does for `MaxExpandTop`.
 
 ## `@odata.bind` — not supported
 
@@ -242,6 +268,58 @@ If you want a nested graph on `PUT`/`PATCH`, set `AllowDeepWrites = true` and ow
 handler — the framework passes the graph through and does nothing else with it (no transaction, no
 relationship fixup, no `$metadata` advertisement).
 
+## Non-nullable properties are checked at the boundary (#355, #544, #545)
+
+This page owns *what the handler receives from a write body*, and the strip above is not the only
+thing that happens to one. Since [#355](https://github.com/en-gen/OhData/issues/355) OhData also
+validates the body against **its own `$metadata`** before the handler runs.
+
+**The rule, in one sentence:** a property the request body *names* with an explicit `null`, where
+the framework's own `$metadata` declares that property `Nullable="false"`, is answered
+`400 Bad Request` (`code: "InvalidBody"`, `target:` the property) and the handler never runs.
+
+It applies uniformly to the collection `POST`, `PUT`, `PATCH`, the navigation-`POST` create route
+and the structural-property writes. Before #355 such a body reached the handler and the persistence
+layer's rejection surfaced as a generic `500` — measured on the shipped TestBench,
+`POST /v1/Movies {"Title":null}` returned `500` carrying EF's *"Required properties '{'Title'}' are
+missing"*.
+
+**An omitted property is never a violation** ([#544](https://github.com/en-gen/OhData/issues/544) /
+[#545](https://github.com/en-gen/OhData/issues/545)), on any verb, whatever the CLR declaration
+would leave behind. Three properties that `$metadata` describes *identically* as
+`Nullable="false"` used to answer differently on an omission:
+
+```
+POST {}   against   public string Title  = "";       201  ->  201
+POST {}   against   public string Title  = null!;    400  ->  201
+POST {}   against   public int    Year;              201  ->  201
+```
+
+…so the wire answer depended on a CLR initializer and on value-versus-reference, neither of which
+appears in the published contract. All three now accept the omission, and all three still answer
+`400` for an explicit `{"Title": null}` (the last one by way of the deserializer, since `int`
+cannot hold `null`). Part 1 backs this: §11.4.2's only MUST-fail is about *"all property values
+**specified in the request**"*, and §11.4.3 — the one clause that speaks to a *missing* property at
+all — asks for it to be **set to its default value**, not for the request to be refused.
+
+**Four properties are outside the rule.** The entity **key** (exempt by choice — a service-computed
+key is routinely omitted on create, and every EDM key is `Nullable="false"`, so checking it would
+refuse ordinary creates); a non-nullable **value type** such as `int` (an explicit `null` there is
+already a deserializer-worded `400`); a member no readable CLR property backs; and anything the EDM
+does not declare at all — which is what exempts `Ignore()`d properties for free. Nullability
+*inside* a nested complex value is not checked.
+
+**Opting out.** `RequestBodyNullabilityValidationEnabled = false` on the profile (or on
+`EntitySetDefaults`, which it inherits from) for an entity set whose handler legitimately supplies a
+value the client is not expected to send. It defaults to `true`.
+
+> **The property was called `ValidateRequestBodyNullability` earlier in the 1.7.0 cycle.**
+> [#570](https://github.com/en-gen/OhData/issues/570) renamed it to
+> `RequestBodyNullabilityValidationEnabled`, matching every other capability flag on
+> `EntitySetProfile`/`EntitySetDefaults` (`FilterEnabled`, `PropertyAccessEnabled`,
+> `ExpandPagingEnabled`, …). The old name is **gone**, not obsoleted — it shipped in no release, so
+> nothing can be binding against it.
+
 ## Response semantics
 
 | Condition | Response |
@@ -251,7 +329,8 @@ relationship fixup, no `$metadata` advertisement).
 | `@odata.bind` present anywhere in the body | `501 Not Implemented` (OData error, `code: "NotImplemented"`) |
 | Malformed / empty JSON body | `400 Bad Request` (OData error) |
 | Non-JSON `Content-Type` | `415 Unsupported Media Type` |
-| `Post` handler returns `null` | `400 Bad Request` (`"Post handler returned null."`) — same as today |
+| A property the body **names** with an explicit `null` where `$metadata` says `Nullable="false"` | `400 Bad Request` (`code: "InvalidBody"`, `target:` the property) — before the handler runs; see [Non-nullable properties are checked at the boundary](#non-nullable-properties-are-checked-at-the-boundary-355-544-545) |
+| `Post` handler returns `null` | **`500 Internal Server Error`** + the OData error envelope (`code: "InternalServerError"`), with the real exception logged |
 
 ## Not supported (documented non-goals)
 
