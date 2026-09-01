@@ -38,7 +38,7 @@ public class SchemaPropertyCasingTests
     }
 
     private static OhDataRegistration Registration(JsonNamingPolicy? policy, params IEntitySetEndpointSource[] profiles) =>
-        new("/odata", new EdmModel(), profiles, null, policy);
+        new("__test__", "/odata", new EdmModel(), profiles, null, policy);
 
     private static OhDataRegistrationCollection Collection(params OhDataRegistration[] registrations)
     {

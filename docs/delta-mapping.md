@@ -58,6 +58,12 @@ builder.Services.AddOhData(o => o
     .AddProfilesFromAssemblyOf<Program>());   // finds EntitySetProfile *and* DeltaProfile subclasses
 ```
 
+The scan discovers concrete, non-abstract, **closed** profile types. An open generic
+(`class MyProfile<T> : DeltaProfile`) is a template rather than a profile and is skipped, in either
+order relative to any explicit registration: a scan followed by an explicit `AddDeltaProfile<T>()`
+for a type the scan already found is a no-op, exactly as the reverse order already was. Two explicit
+registrations of one type are still an error.
+
 ## Consume — one injected `IDeltaFactory`
 
 `IDeltaFactory` is a DI singleton (mirroring AutoMapper's single `IMapper`, not a closed generic
@@ -124,7 +130,7 @@ At startup (forced when `app.MapOhData()` runs) the framework walks every regist
 resolves conventions, validates every rule, and compiles each plan once. It throws
 `InvalidOperationException` if, for any mapping:
 
-- a writable model property is not convention-matched, renamed, converted, or ignored;
+- a mappable model property is not convention-matched, renamed, converted, or ignored;
 - a rename/convert target entity property does not exist or is not writable;
 - a target entity property exists and is writable but `Delta<TEntity>` does not **track** it, so the
   write would be discarded at runtime (see below);
@@ -137,8 +143,21 @@ resolves conventions, validates every rule, and compiles each plan once. It thro
   properties target the same entity property (ambiguous);
 - the same `(model, entity)` pair is declared more than once across all profiles.
 
-A "writable model property" is a public instance property with both a public getter and a public
-setter. Get-only computed properties are out of scope automatically and need no `Ignore()`.
+A "mappable model property" is a public instance property with a public getter that is **either**
+settable **or** one `Delta<TModel>` really tracks. The second half matters: `Delta<T>` admits a
+setter-less *collection* property, so `public List<int> Tags { get; }` can arrive in a
+`Delta<TModel>` change set and therefore has to be mapped or `Ignore()`d like any other. Get-only
+**scalar** properties are still out of scope automatically and need no `Ignore()`.
+
+A `.Convert(...)` converter must not capture anything. It is compiled into a plan that is held for
+the process lifetime, while the `DeltaProfile` that declared it is resolved in a scope disposed
+immediately afterwards — so a converter closing over an injected `DbContext`, a constructor
+parameter, or a local would be using stale or disposed state on every later call. It is refused at
+declaration; write `static v => ...` or a static method. Delta mapping is dependency-free by design,
+and a `DeltaProfile` constructor should not need injected services at all.
+
+Each of `.Rename(...)` and `.Convert(...)` may be declared **once** per model property. A second
+declaration for the same source throws rather than silently replacing the first.
 
 ### What the entity type has to satisfy
 
@@ -147,7 +166,8 @@ will track and what it can construct. Both are checked at startup, against `Delt
 rather than against a copy of its rules:
 
 - **It must be trackable.** `Delta<T>` tracks a public instance property only when it has a public
-  getter *and* a public setter, and is not excluded by `[NotMapped]`, `[IgnoreDataMember]`, or being
+  getter *and* a public setter (or is a collection, see below), and is not excluded by
+  `[NotMapped]`, `[IgnoreDataMember]`, or being
   an unmarked property of a `[DataContract]` type. Note the last one is a **whole-type** switch: put
   `[DataContract]` on an entity and every property without `[DataMember]` stops being tracked at
   once. A mapping onto an untracked property used to compile clean and then discard the write
@@ -158,6 +178,12 @@ rather than against a copy of its rules:
   constructor. A protected/private parameterless constructor beside a public parameterized one (the
   usual EF Core shape), a positional `record`, and an abstract type all fail this — previously at
   request time, on every request; now at startup.
+- **A setter-less collection target must actually be writable.** `Delta<T>` applies a write to a
+  setter-less collection by clearing and refilling the instance already there, so
+  `public List<int> Tags { get; }` is a legal target. An **array** is not: it has no `Clear` method
+  and `Delta<T>` throws when the write is applied. The framework decides this by performing the
+  write on a throwaway delta at startup, so an entity property it cannot land on is reported as
+  "not writable" there rather than becoming a 500 on every request.
 
 If a write is ever rejected at runtime despite this validation, `Create` throws
 `InvalidOperationException` naming the model and entity property rather than returning a delta that
@@ -182,9 +208,23 @@ if (delta.TryGetChanged(x => x.Price, out decimal price)) { /* price was sent */
 
 ## Scope
 
-`Create` touches only scalar/structural properties. Navigation writes stay with `$ref`,
+`Create` is intended for scalar/structural properties. Navigation writes stay with `$ref`,
 [deep insert](deep-insert.md), or custom handler logic — nested-object mapping and implicit type
 coercion are out of scope by design (that is where a full object-mapper begins). There is no
 convention-based read projector; the read side already works with hand-written `.Select(...)`.
+
+### What "no navigation writes" enforces, exactly
+
+The enforcement is narrower than the intent, and the difference is worth stating rather than
+discovering. A model property is refused as a navigation when it is a **collection whose element
+type is a class** (`List<Order>`, `Order[]`, `IReadOnlyList<Order>`, a bare non-generic
+`IEnumerable`) — with or without a setter. Collections of scalars stay mappable, and so do `string`
+and `byte[]`, which are collection-shaped scalars.
+
+A **single, non-collection reference** is *not* refused. Reflection cannot tell an EDM complex type
+(structural, and legitimately mappable) from an entity type (a navigation), so
+`public Customer Customer { get; set; }` on a DTO auto-maps by identity and `Patch` writes the whole
+related-entity reference onto the graph. If your DTO reuses an entity type for a single reference,
+`Ignore()` it — the framework will not stop you.
 
 Delta mapping is dependency-free and ships in the core `OhData.AspNetCore` package.

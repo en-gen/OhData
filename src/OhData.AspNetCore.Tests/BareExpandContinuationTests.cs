@@ -1021,7 +1021,7 @@ public sealed class BareExpandContinuationFailClosedTests : IAsyncLifetime
     public async Task TheContinuationRouteRejectsEverythingExceptSkip(string option)
     {
         HttpResponseMessage resp = await _fx.Client.GetAsync($"/odata/BeAuthors(1)/Books?$skip=3&{option}");
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.NotImplemented, resp.StatusCode);
 
         string body = await resp.Content.ReadAsStringAsync();
         Assert.Contains("UnsupportedQueryOption", body, StringComparison.Ordinal);
@@ -1030,7 +1030,7 @@ public sealed class BareExpandContinuationFailClosedTests : IAsyncLifetime
 
     /// <summary>
     /// <c>$format</c> is the ONE exemption from the rule above, and it is a deliberate deviation from
-    /// the brief's "reject every other query option". It is not a data option: §11.2.12 content
+    /// the brief's "reject every other query option". It is not a data option: §11.2.10 content
     /// negotiation is implemented once on the group filter in <c>MapAll</c>, for every route on the
     /// whole OData surface, and never reaches this handler. Refusing it would make this the only
     /// route in the surface that <c>400</c>s a conformant, already-supported option, and would break
@@ -1041,6 +1041,26 @@ public sealed class BareExpandContinuationFailClosedTests : IAsyncLifetime
     /// assertion, and what shows the exemption forwards to the existing check rather than disabling it.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// #359: this route's own inline sigil loop compared with <c>StringComparison.Ordinal</c>, so
+    /// <c>$SKIP</c> and <c>$FORMAT</c> were <c>400</c>. Sharing the framework-wide matcher makes the
+    /// comparison <c>OrdinalIgnoreCase</c> -- alignment with <c>Microsoft.AspNetCore.OData</c>, which
+    /// lowercases an option name before matching whenever the URI resolver enables
+    /// case-insensitivity (the default), and with every other read route. This is a real behaviour
+    /// change on this route and is pinned here rather than described as "unchanged".
+    /// </summary>
+    [Theory]
+    [InlineData("$SKIP=3")]
+    [InlineData("$Skip=3")]
+    [InlineData("$skip=3&$FORMAT=json")]
+    public async Task MixedCaseSkipAndFormat_AreHonoured_NotRejected(string query)
+    {
+        HttpResponseMessage resp = await _fx.Client.GetAsync($"/odata/BeAuthors(1)/Books?{query}");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal(2, JsonDocument.Parse(await resp.Content.ReadAsStringAsync())
+            .RootElement.GetProperty("value").GetArrayLength());
+    }
+
     [Fact]
     public async Task TheContinuationRouteAcceptsFormat_BecauseTheGroupFilterOwnsIt()
     {

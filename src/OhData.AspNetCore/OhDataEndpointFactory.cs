@@ -473,6 +473,163 @@ internal static class OhDataEndpointFactory
         }
     }
 
+    // #355: one structural property the EDM declares Nullable="false", paired with the CLR member a
+    // bound instance carries it on.
+    private sealed record EdmRequiredProperty(string EdmName, PropertyInfo Clr);
+
+    // #355: "which properties does the framework's OWN $metadata say cannot be null?" — asked of the
+    // EDM, once per type at startup.
+    //
+    // #544 SCOPES WHAT IS DONE WITH THE ANSWER: a property is checked only where the request BODY
+    // NAMED it. Every consumer below — POST, PUT, the navigation-POST create route, PATCH and the
+    // structural-property writes — now asks the same question, and the set built here is only the
+    // vocabulary those questions are asked in.
+    //
+    // WHY THE EDM AND NOTHING ELSE. The framework publishes the nullability of every structural
+    // property in the CSDL it generates, and before #355 nothing enforced it: a null for a property
+    // declared Nullable="false" reached the handler, and the persistence layer's rejection surfaced
+    // as a generic 500 (measured on the shipped TestBench: POST /Movies {"Title":null} ->
+    // 500 InternalServerError, from EF's "Required properties '{'Title'}' are missing"). A violation
+    // the framework could see at its own boundary, reported as a server fault.
+    //
+    // The alternative — deriving "required" from the CLR type, from [Required], or from nullable
+    // reference-type annotations — is the second-independently-derived-model hazard this codebase
+    // records over and over (#454, #458, #511). It is not hypothetical here: the structural-property
+    // write route already had a nullability check built on IsNullableClrType, for which EVERY
+    // reference type is nullable, so a Nullable="false" string sailed straight through it. That
+    // route now asks the same question of the same authority (see propIsNullable), so there is one
+    // answer rather than two.
+    //
+    // FOUR DELIBERATE EXCLUSIONS, each of which would otherwise reject a legal request:
+    //   - the KEY. Every EDM key is Nullable="false", and §11.4.2 explicitly permits omitting a
+    //     property with a service-generated value, which a key routinely has. Taken from
+    //     edmType.Key() rather than from the profile's selector so entity and navigation-child
+    //     types are answered the same way. Since #544 this exclusion only governs an EXPLICIT null
+    //     for the key; omitting it was never a violation on any route.
+    //   - a non-nullable VALUE type. `int Year` cannot hold null, so a JSON null for it is already
+    //     a JsonException -> 400 from the binder, worded by the deserializer. Checking it would cost
+    //     a boxing read per request to answer a question with one possible answer.
+    //   - a member the EDM declares but no readable CLR property backs. Nothing to read.
+    //   - anything the EDM does not declare at all. Ignore()d properties are removed from the EDM,
+    //     and a property withheld from the published contract cannot be required by it.
+    //
+    // TOP LEVEL ONLY, and stated rather than assumed: a null inside a nested complex value is not
+    // checked. Widening to the complex graph is a separate decision with its own recursion and
+    // cycle questions; #355 is about the root body the handler is handed.
+    private static EdmRequiredProperty[] BuildEdmRequiredProperties(
+        IEdmStructuredType? edmType, Type clrType)
+    {
+        if (edmType is null) return Array.Empty<EdmRequiredProperty>();
+
+        var keyNames = new HashSet<string>(StringComparer.Ordinal);
+        if (edmType is IEdmEntityType entityType && entityType.Key() is { } keys)
+        {
+            foreach (IEdmStructuralProperty k in keys) keyNames.Add(k.Name);
+        }
+
+        var required = new List<EdmRequiredProperty>();
+        foreach (IEdmStructuralProperty edmProp in edmType.StructuralProperties())
+        {
+            if (edmProp.Type.IsNullable) continue;
+            if (keyNames.Contains(edmProp.Name)) continue;
+
+            // The EDM name IS the [JsonPropertyName]-or-CLR name (#253), which is exactly what
+            // FindClrPropertyByEdmName resolves. The string comes from the model, never from a
+            // request, so this is a bounded startup-time use of the memoizing helper (#510).
+            PropertyInfo? clr = ODataPropertyNaming.FindClrPropertyByEdmName(clrType, edmProp.Name);
+            if (clr is null || !clr.CanRead) continue;
+            if (clr.PropertyType.IsValueType && Nullable.GetUnderlyingType(clr.PropertyType) is null)
+                continue;
+
+            required.Add(new EdmRequiredProperty(edmProp.Name, clr));
+        }
+
+        return required.Count == 0 ? Array.Empty<EdmRequiredProperty>() : required.ToArray();
+    }
+
+    /// <summary>
+    /// #355/#544: the whole-instance check, for the routes that produce a complete entity — the
+    /// collection <c>POST</c>, <c>PUT</c>, and the navigation-<c>POST</c> create route. Only a
+    /// property the request body actually NAMED is checked, and only when the value it bound to is
+    /// <c>null</c>: an explicit <c>null</c> for a <c>Nullable="false"</c> property is the violation,
+    /// and an omission is not one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>#544 — why the omitted-property leg is gone.</b> It shipped citing §11.4.2, which
+    /// requires nothing of the kind: its only MUST-fail is <i>"The service MUST fail if unable to
+    /// persist all property values <b>specified in the request</b>"</i> — about values that were
+    /// sent. §11.4.2 also permits omission outright, though for exactly two categories rather than
+    /// the broad set once claimed here: <i>"Properties computed by the service (annotated with the
+    /// term Core.Computed …) and properties that are tied to properties of the principal entity by
+    /// a referential constraint, can be omitted and MUST ignored if included in the request."</i>
+    /// <b>No clause anywhere in Part 1 mandates a <c>400</c> for an omitted property.</b> The
+    /// nearest one is §11.4.3, is <b>PUT-only</b>, and prescribes the opposite remedy:
+    /// <i>"Missing non-key, updatable structural properties not defined as dependent properties
+    /// within a referential constraint MUST be set to their default values."</i> That is a
+    /// statement about what the service stores, not about refusing the request, and OhData leaves
+    /// it to the handler, which owns persistence. <c>Microsoft.AspNetCore.OData</c> lands in the
+    /// same place — <c>ApplyStructuralProperties</c> loops over payload properties only and has no
+    /// reverse pass, while <c>ValidateNullValueAllowed</c> rejects an explicit <c>null</c>.
+    /// </para>
+    /// <para>
+    /// <b>Why that also RESOLVES the incoherence #545 recorded.</b> Three properties the
+    /// framework's own <c>$metadata</c> describes identically as <c>Nullable="false"</c> —
+    /// <c>string X = ""</c>, <c>string X = null!</c> and <c>int Year</c> — used to answer
+    /// <c>201</c>, <c>400</c> and <c>201</c> on an omission, i.e. the wire behaviour was decided by
+    /// a CLR initializer and by value-versus-reference, neither of which appears in the published
+    /// contract. All three now accept an omission and reject an explicit <c>null</c>.
+    /// </para>
+    /// <para>
+    /// <b>It still reads the BOUND INSTANCE</b>, intersected with the names the body carried, so the
+    /// check remains a statement about what the handler would have received. That intersection is a
+    /// strict narrowing of the pre-#544 condition: nothing newly rejects, which is what keeps #355's
+    /// own defect (<c>POST {"Title":null}</c> reaching EF as a <c>500</c>) closed.
+    /// </para>
+    /// </remarks>
+    private static IResult? ValidateEdmRequiredProperties(
+        EdmRequiredProperty[] required, object instance, HashSet<string>? namedByBody)
+    {
+        foreach (EdmRequiredProperty p in required)
+        {
+            if (namedByBody is null || !namedByBody.Contains(p.Clr.Name)) continue;
+            if (p.Clr.GetValue(instance) is null)
+            {
+                return ODataError(400, "InvalidBody",
+                    $"Property '{p.EdmName}' is declared non-nullable by the service metadata and " +
+                    "cannot be null.", target: p.EdmName);
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// #355: the partial-update twin, for <c>PATCH</c> and the structural-property writes. Only a
+    /// property the body actually NAMED is checked — a <c>Delta&lt;T&gt;</c> is a change set, so an
+    /// absent property is "leave it alone", not "set it to nothing", and rejecting it would break
+    /// every ordinary partial update.
+    /// </summary>
+    private static IResult? ValidateEdmRequiredDelta<TDelta>(
+        EdmRequiredProperty[] required,
+        Microsoft.AspNetCore.OData.Deltas.Delta<TDelta> delta)
+        where TDelta : class
+    {
+        if (required.Length == 0) return null;
+
+        var changed = new HashSet<string>(delta.GetChangedPropertyNames(), StringComparer.Ordinal);
+        foreach (EdmRequiredProperty p in required)
+        {
+            if (!changed.Contains(p.Clr.Name)) continue;
+            if (delta.TryGetPropertyValue(p.Clr.Name, out object? value) && value is null)
+            {
+                return ODataError(400, "InvalidBody",
+                    $"Property '{p.EdmName}' is declared non-nullable by the service metadata and " +
+                    "cannot be set to null.", target: p.EdmName);
+            }
+        }
+        return null;
+    }
+
     private static ReadOnlySpan<byte> Utf8Bom => new byte[] { 0xEF, 0xBB, 0xBF };
 
     private static Utf8JsonReader CreateBinderParityReader(
@@ -487,6 +644,36 @@ internal static class OhDataEndpointFactory
             CommentHandling = options.ReadCommentHandling,
             MaxDepth = options.MaxDepth,
         });
+    }
+
+    // #514: the JsonDocument half of #511's rule. Every place the write path materialises a body
+    // with JsonDocument shadows the same binder, and a default JsonDocumentOptions makes it a
+    // SECOND authority on what well-formed JSON is: startupJsonOptions copies the host's Http.Json
+    // options, so DeserializeAsync honours ReadCommentHandling.Skip, AllowTrailingCommas and a
+    // raised MaxDepth, and JsonDocument.ParseAsync with the defaults does not.
+    //
+    // Measured on the pre-fix tree with a host setting Skip + AllowTrailingCommas: the same bytes
+    // answered 200 on PUT (which streams into the binder) and 400 on the collection POST — the
+    // per-verb divergence this milestone spent ten PRs removing, one option over from #456's.
+    //
+    // It fails CLOSED, which is the whole reason it is a lower-severity issue than #511 and not a
+    // safety one: the stricter reader rejects a request rather than silently disabling a guard. The
+    // three members are the same three CreateBinderParityReader derives and for the same reason —
+    // they are what JsonSerializerOptions.GetReaderOptions() derives internally for
+    // DeserializeAsync, so this is parity rather than a second guess. MaxDepth needs no translation:
+    // 0 means "the 64 default" on both types. .NET 10's AllowDuplicateProperties is deliberately not
+    // derived, exactly as in CreateBinderParityReader — net8.0 has neither member, and the residual
+    // runs the safe way.
+    private static JsonDocumentOptions CreateBinderParityDocumentOptions(
+        JsonSerializerOptions? jsonOptions)
+    {
+        JsonSerializerOptions options = jsonOptions ?? _pascalCaseSerializerOptions;
+        return new JsonDocumentOptions
+        {
+            AllowTrailingCommas = options.AllowTrailingCommas,
+            CommentHandling = options.ReadCommentHandling,
+            MaxDepth = options.MaxDepth,
+        };
     }
 
     private static bool ContainsODataBindAnnotation(
@@ -515,47 +702,150 @@ internal static class OhDataEndpointFactory
         return false;
     }
 
-    // #506: "which navigations did this body actually NAME?" — the question the deep-write strip
-    // has to answer before it nulls anything.
+    // #506/#511/#544: "which spelling would the BINDER have matched this member against?" — the
+    // lookup table every top-level body-presence question below is asked in. Built once per entity
+    // set at startup from a (EDM name, CLR property) list, so "is this body key one of MY members"
+    // has exactly one answer on the write path.
     //
-    // WHY IT HAS TO BE ASKED AT ALL. The strip exists to stop a handler that does not expect a graph
-    // from silently persisting part of one. If the body sent no graph there is nothing to prevent,
-    // and nulling anyway DESTROYS state: a `List<Child> Kids { get; private set; } = new()` — plain
-    // EF encapsulation, and a navigation the convention model builder discovers — went to the
+    // ONE BUILDER FOR THE THREE CALLERS (the deep-write strip's navigation table, and the
+    // required-property tables for TModel and for the navigation-POST child type), not three copies
+    // of this algorithm. The lists differ, the derivation does not, and a second transcription of it
+    // is precisely the independently-derived-second-model hazard #454/#458/#511 each record — a
+    // hazard this very site has already realised once, since #536 exists only because #511 rebuilt
+    // one of these tables and not the other.
+    //
+    // #511 REPLACED THE PRIMARY KEY WITH THE BINDER'S OWN ANSWER, and the reason is the defect class
+    // rather than the one policy that exposed it. The table used to be keyed by
+    // ODataPropertyNaming.ResolveEdmName (= [JsonPropertyName] ?? CLR name — deliberately
+    // POLICY-FREE, because $metadata advertises the CLR identifier whatever casing payloads use,
+    // OData §4.4) plus the CLR name. The binder matches the [JsonPropertyName] ?? POLICY-CONVERTED
+    // name. camelCase differs from the CLR name only by case, so an OrdinalIgnoreCase comparer hides
+    // the divergence for the only policy anyone had configured; SnakeCaseLower and KebabCaseLower do
+    // not. Measured: with SnakeCaseLower and a `BackOrders` navigation, a body naming `back_orders`
+    // was BOUND by the deserializer and MISSED by this table, so the strip never fired — #504's
+    // hazard, reopened by a spelling.
+    //
+    // Adding PropertyNamingPolicy?.ConvertName(...) as a third key would have closed that one policy.
+    // It would not have closed the CLASS, which is "two things that must agree, derived
+    // independently" — #454's exact shape. So the primary key is read OFF THE CONTRACT the binder
+    // resolves: JsonTypeInfo.Properties[].Name is, by construction, the string System.Text.Json
+    // matches a body key against, whatever produced it — a naming policy, a [JsonPropertyName], a
+    // custom TypeInfoResolver modifier, or a source-generated contract. There is no second
+    // derivation left to drift.
+    //
+    // HasSameMetadataDefinitionAs, never == / ReferenceEquals, to pair a JsonPropertyInfo back to
+    // its PropertyInfo. PropertyInfo equality also compares ReflectedType, and for an INHERITED
+    // member the two reflection walks disagree about it — the looked-up type's own GetProperties()
+    // reports that type while STJ's AttributeProvider reports the declaring base. That exact
+    // comparison bug is #462's third defect (IsNavVisibleInBaseOptions), measured on .NET 10.0.11;
+    // it would show up here as an inherited member silently losing its contract key.
+    //
+    // The comparer FOLLOWS THE BINDER too, the way IgnoredPropertyJsonOptions.WithheldNameComparer
+    // does: OrdinalIgnoreCase whenever PropertyNameCaseInsensitive is set — which is always in
+    // practice (the fallback options set it explicitly and a host's come from
+    // JsonSerializerDefaults.Web), but it is READ rather than assumed. Both directions matter and
+    // they point opposite ways: for the deep-write strip a table WIDER than the binder strips a
+    // navigation the binder never bound (#506's destruction case), while for #355's gate a table
+    // NARROWER than the binder lets {"uninitialized":null} bind to null and slip past a table that
+    // only knows "Uninitialized" (fail-OPEN). Following the binder is what makes both safe at once.
+    //
+    // The EDM name and the CLR name STAY, demoted to non-overwriting aliases. They are what
+    // FindClrPropertyByEdmName resolves through, which is what the PATCH loop uses, so dropping them
+    // would make a [JsonPropertyName]-renamed member named by its CLR name behave differently on
+    // PATCH than on POST/PUT — a per-verb divergence to fix a per-host one — and a registration
+    // whose contract cannot be resolved at all still gets the pre-#511 spellings. On a default host
+    // every alias collapses onto the contract key under the comparer, so nothing shipped moves.
+    //
+    // NOTE this deliberately does NOT serve patchPropByBodyName, whose comparer is unconditionally
+    // OrdinalIgnoreCase. That table IS the matcher for the root object rather than a shadow of a
+    // separate reader, so following the binder there would change what PATCH binds; see its own
+    // comment at the call site.
+    private static Dictionary<string, PropertyInfo> BuildBinderBodyNameTable(
+        (string EdmName, PropertyInfo Clr)[] members,
+        Type clrType,
+        JsonSerializerOptions? jsonOptions)
+    {
+        var table = new Dictionary<string, PropertyInfo>(
+            (jsonOptions ?? _pascalCaseSerializerOptions).PropertyNameCaseInsensitive
+                ? StringComparer.OrdinalIgnoreCase
+                : StringComparer.Ordinal);
+
+        if (members.Length == 0) return table;
+
+        JsonTypeInfo? contract = TryResolveWriteContract(clrType, jsonOptions);
+        if (contract is not null)
+        {
+            foreach (JsonPropertyInfo contractProp in contract.Properties)
+            {
+                if (contractProp.AttributeProvider is not PropertyInfo clrMember) continue;
+                foreach ((string _, PropertyInfo clr) in members)
+                {
+                    if (!clrMember.HasSameMetadataDefinitionAs(clr)) continue;
+                    table[contractProp.Name] = clr;
+                    break;
+                }
+            }
+        }
+
+        foreach ((string edmName, PropertyInfo clr) in members) table.TryAdd(edmName, clr);
+        foreach ((string _, PropertyInfo clr) in members) table.TryAdd(clr.Name, clr);
+
+        return table;
+    }
+
+    // #506/#544: "which of these members did the root object actually NAME?" — asked of the
+    // deep-write strip's table before it nulls anything (#506), and of the required-property
+    // table before #355's gate reports anything (#544). One implementation for both, deliberately:
+    // the two tables differ, the question does not, and a second transcription of this walk is
+    // exactly the independently-derived-second-model hazard #454/#458/#511 each record.
+    //
+    // WHY THE DEEP-WRITE STRIP HAS TO ASK IT. The strip exists to stop a handler that does not
+    // expect a graph from silently persisting part of one. If the body sent no graph there is
+    // nothing to prevent, and nulling anyway DESTROYS state: a
+    // `List<Child> Kids { get; private set; } = new()` — plain EF encapsulation, and a navigation
+    // the convention model builder discovers — went to the
     // handler as `null` rather than as the empty list the constructor put there, on a PUT whose body
     // was `{"id":1,"title":"t"}`. A handler diff-syncing that collection against the loaded entity
     // then sees null: an NRE in `.Count`, or a "null means clear the relationship" misread.
     //
-    // TOP LEVEL ONLY, and that is not a shortcut. deepWriteNavPropsToStrip holds properties of
-    // TModel; a navigation named inside a nested object belongs to some other type and is stripped
-    // (or not) by whatever handles that type — here it is already inside a subtree that the root
-    // navigation's own presence accounts for.
+    // WHY #355's GATE HAS TO ASK IT. Before #544 the required-property check read the BOUND
+    // INSTANCE alone, so "the body named this property with a null" and "the body said nothing and
+    // the CLR declaration left it null" were the same observation. They are not the same request,
+    // and answering them alike made the wire behaviour depend on a CLR initializer that appears
+    // nowhere in $metadata. This is the seam that separates them.
+    //
+    // TOP LEVEL ONLY, and that is not a shortcut. Both tables hold properties of the ROOT type; a
+    // member named inside a nested object belongs to some other type and is answered (or not) by
+    // whatever handles that type — for the strip it is already inside a subtree the root
+    // navigation's own presence accounts for, and for #355's gate the nested value is out of scope
+    // by the same top-level-only rule BuildEdmRequiredProperties states.
     //
     // The returned set holds CLR property names (ordinal, like deepWriteNavClrNames) rather than the
-    // body's spelling, so the strip loop can test `navProp.Name` directly and two spellings of one
-    // navigation collapse to one entry.
-    private static HashSet<string> CollectPresentNavClrNames(
-        JsonElement body, Dictionary<string, PropertyInfo> navByBodyName)
+    // body's spelling, so a caller can test `PropertyInfo.Name` directly and two spellings of one
+    // member collapse to one entry.
+    private static HashSet<string> CollectPresentBodyMemberClrNames(
+        JsonElement body, Dictionary<string, PropertyInfo> byBodyName)
     {
         var present = new HashSet<string>(StringComparer.Ordinal);
 
-        // A non-object body names nothing. It cannot reach the strip in practice — the deserializer
-        // rejects it first — but EnumerateObject() throws InvalidOperationException for any other
-        // ValueKind, and an unhandled one of those is a 500 (BUG 2 on the PATCH route, same shape).
+        // A non-object body names nothing. It cannot reach either caller in practice — the
+        // deserializer rejects it first — but EnumerateObject() throws
+        // InvalidOperationException for any other ValueKind, and an unhandled one of those is a
+        // 500 (BUG 2 on the PATCH route, same shape).
         if (body.ValueKind != JsonValueKind.Object) return present;
 
         foreach (JsonProperty prop in body.EnumerateObject())
         {
-            if (navByBodyName.TryGetValue(prop.Name, out PropertyInfo? navProp))
-                present.Add(navProp.Name);
+            if (byBodyName.TryGetValue(prop.Name, out PropertyInfo? member))
+                present.Add(member.Name);
         }
 
         return present;
     }
 
-    // #506: the same question asked of RAW UTF-8, for PUT's non-open-type branch — the one write
-    // path that has neither a JsonDocument nor a JsonElement, only the buffer #456 already made for
-    // the '@odata.bind' scan.
+    // #506/#544: the same question asked of RAW UTF-8, for the two write paths that have neither a
+    // JsonDocument nor a JsonElement on their default branch (PUT and the navigation-POST create
+    // route), only the buffer #456 already made for the '@odata.bind' scan.
     //
     // Same discipline as ContainsODataBindAnnotation(ReadOnlySpan<byte>) and for the same reason:
     // the reader's own JsonException is SWALLOWED, because JsonSerializer.DeserializeAsync must stay
@@ -576,9 +866,11 @@ internal static class OhDataEndpointFactory
     //
     // #511: the reader comes from CreateBinderParityReader, so it accepts exactly what the binder
     // accepts. Constructing a DEFAULT one here made every reader-configuration divergence a silent
-    // "this body names no navigation" — see that method for the three measured ones.
-    private static HashSet<string> CollectPresentNavClrNames(
-        ReadOnlySpan<byte> utf8Json, Dictionary<string, PropertyInfo> navByBodyName,
+    // "this body names nothing" — see that method for the three measured ones. For #544's caller
+    // that silence is the SAFE direction (nothing named ⇒ nothing reported), which is the opposite
+    // of what it is for the strip; the parity is what makes both true at once.
+    private static HashSet<string> CollectPresentBodyMemberClrNames(
+        ReadOnlySpan<byte> utf8Json, Dictionary<string, PropertyInfo> byBodyName,
         JsonSerializerOptions? jsonOptions)
     {
         var present = new HashSet<string>(StringComparer.Ordinal);
@@ -589,8 +881,8 @@ internal static class OhDataEndpointFactory
             {
                 if (reader.TokenType != JsonTokenType.PropertyName || reader.CurrentDepth != 1)
                     continue;
-                if (navByBodyName.TryGetValue(reader.GetString()!, out PropertyInfo? navProp))
-                    present.Add(navProp.Name);
+                if (byBodyName.TryGetValue(reader.GetString()!, out PropertyInfo? member))
+                    present.Add(member.Name);
             }
         }
         catch (JsonException)
@@ -648,17 +940,18 @@ internal static class OhDataEndpointFactory
     // it the stream just doubles, which costs a few reallocations on genuinely large bodies — the
     // right trade against removing the primitive.
     //
-    // WHAT ACTUALLY BOUNDS THE COPY, stated plainly because the honest answer is weaker than the
-    // #203 commentary above it reads as. #203's filter does BOTH of its jobs — the Content-Length
-    // fast-reject AND setting Kestrel's per-request MaxRequestBodySize — only when
-    // OhDataBodyLimitMetadata is attached, and that metadata exists only when the profile or
-    // EntitySetDefaults set MaxRequestBodyBytes, which DEFAULTS TO NULL at both levels. So on a
-    // default configuration neither half runs, and the only thing bounding this copy is the HOST's
-    // Kestrel MaxRequestBodySize (~30 MB by default). If the host raised or disabled that — routine
-    // for an app that also accepts uploads — nothing in OhData bounds it. That is not a new
-    // exposure: the collection POST has materialised whole bodies through JsonDocument.ParseAsync
-    // under exactly the same (non-)guarantee since 1.0. It IS shared by two more routes now, and it
-    // is tracked as #474 rather than assumed away. Configure MaxRequestBodyBytes for a real ceiling.
+    // WHAT ACTUALLY BOUNDS THE COPY — and since #474 the answer is finally "OhData does". It used
+    // not to be, and the #203 commentary above read as more protective than the code was: #203's
+    // filter does BOTH of its jobs — the Content-Length fast-reject AND setting Kestrel's
+    // per-request MaxRequestBodySize — only when OhDataBodyLimitMetadata is attached, and that
+    // metadata existed only when the profile or EntitySetDefaults set MaxRequestBodyBytes, which
+    // DEFAULTED TO NULL at both levels. So on a default configuration neither half ran and the only
+    // ceiling was the HOST's Kestrel MaxRequestBodySize — which an app that also accepts uploads
+    // routinely raises or disables, leaving nothing at all. EntitySetDefaults.MaxRequestBodyBytes
+    // now defaults to EntitySetDefaults.DefaultMaxRequestBodyBytes (30,000,000 — Kestrel's own
+    // number, chosen so a DEFAULT host sees no behaviour change), and the group filter falls back to
+    // the registration's copy of it for the routes that belong to no entity set. Setting it to null
+    // server-wide restores the old "the host's limit is the only limit" behaviour.
     //
     // (Note the collection POST is NOT a precedent for the capacity hint, only for the
     // materialisation: JsonDocument.ParseAsync grows incrementally from pooled buffers and never
@@ -1088,7 +1381,7 @@ internal static class OhDataEndpointFactory
         return Expression.Lambda<Func<TModel, TKey>>(body, param);
     }
 
-    // #241: guarantees the deterministic total order server paging requires (OData §11.2.6.2).
+    // #241: guarantees the deterministic total order server paging requires (OData §11.2.5.2).
     // - Client supplied $orderby: append the entity key as a final tiebreaker so paging is stable
     //   even when the client sorts on a non-unique column.
     // - No client $orderby and the result order is not already established: order by the entity key
@@ -1250,6 +1543,18 @@ internal static class OhDataEndpointFactory
         group.AddEndpointFilter(async (ctx, next) =>
         {
             HttpContext http = ctx.HttpContext;
+
+            // Gap 1 / #496 finding 2: OData-Version: 4.0 on EVERY response (§8.1.5, §8.2.6),
+            // including one an inner filter short-circuits. It used to be set by the
+            // $format/Accept filter, which is registered FOURTH -- so the #203 body-limit filter's
+            // Content-Length fast-reject (registered third) returned its 413 without ever reaching
+            // it, and that response shipped with no OData-Version at all (measured). A response
+            // header that must be universal has to be written by the outermost filter, which is
+            // this one; there is nothing above it that can short-circuit. Its placement here is
+            // therefore load-bearing, and Issue496ErrorHandlingTests pins it from the outside by
+            // asserting the header on the fast-reject 413.
+            http.Response.Headers["OData-Version"] = "4.0";
+
             (string? entitySet, string? route, string operation) = DescribeOhDataEndpoint(http);
 
             Activity? activity = OhDataDiagnostics.ActivitySource.StartActivity(
@@ -1297,9 +1602,20 @@ internal static class OhDataEndpointFactory
         // error envelope every other error response uses, with a generic message -- never
         // ex.Message or the stack trace, which could leak internal details (connection strings,
         // type names, file paths) to the client -- and log the real exception so operators can
-        // actually diagnose the failure. Registered as the outermost group filter (added first)
-        // so it also covers exceptions thrown by the OData-Version/$format/Accept and
-        // OData-MaxVersion filters below, not just route handlers.
+        // actually diagnose the failure. It covers every route handler and every filter registered
+        // AFTER it -- the #203 body-limit filter, the $format/Accept filter and the
+        // OData-MaxVersion filter -- because an endpoint filter's try wraps everything reached
+        // through next().
+        //
+        // #496 finding 3: it is NOT the outermost group filter, and this comment used to claim it
+        // was ("Registered as the outermost group filter (added first)"). The #200 observability
+        // filter is added first and therefore wraps THIS one. The consequence, stated plainly
+        // rather than left implied: an exception thrown in the observability filter's own body
+        // (DescribeOhDataEndpoint, activity/tag setup, the instrument calls) or in its
+        // Response.OnCompleted callback escapes this envelope. That is accepted, not overlooked --
+        // reordering the two would move the LogError below outside the request's Activity and lose
+        // trace correlation on the single most important log line the framework emits, which is a
+        // worse trade for framework-only code that does no I/O and no user work.
         //
         // #493: the one exception it declines to catch is a cancellation raised BECAUSE THE CLIENT
         // WENT AWAY -- there is no response left to write, so it is left to ASP.NET Core's own
@@ -1330,7 +1646,11 @@ internal static class OhDataEndpointFactory
             catch (Exception ex) when (ex is not OperationCanceledException
                                        || !ctx.HttpContext.RequestAborted.IsCancellationRequested)
             {
-                groupLogger?.LogError(ex, "OhData: unhandled exception processing {Method} {Path}",
+                // #496 finding 4: unwrap the HandlerFaultException marker so the operator sees the
+                // exception the profile actually threw, not the envelope that kept a read route's
+                // narrow catch from misclassifying it as a client error.
+                groupLogger?.LogError(HandlerFaultException.Unwrap(ex),
+                    "OhData: unhandled exception processing {Method} {Path}",
                     SanitizeLogValue(ctx.HttpContext.Request.Method),
                     SanitizeLogValue(ctx.HttpContext.Request.Path.ToString()));
                 return ODataError(500, "InternalServerError",
@@ -1344,22 +1664,46 @@ internal static class OhDataEndpointFactory
         // (a resulting BadHttpRequestException is mapped to 413 by the filter above) — and
         // fast-rejects an oversized Content-Length before the handler reads the body. Sits inside the
         // exception filter above so its 413 mapping covers the streamed-body case.
+        // #474: the fallback for a route that carries no per-entity-set metadata — i.e. an UNBOUND
+        // action, which belongs to no profile and so had no limit to resolve. Every entity-set route
+        // still carries its own metadata and that still wins; this only fills the gap.
+        long? registrationBodyLimit = registration.DefaultMaxRequestBodyBytes;
         group.AddEndpointFilter(async (ctx, next) =>
         {
             var http = ctx.HttpContext;
-            if (IsBodyBearingWriteMethod(http.Request.Method) &&
-                http.GetEndpoint()?.Metadata.GetMetadata<OhDataBodyLimitMetadata>() is { } limit)
+            if (IsBodyBearingWriteMethod(http.Request.Method)
+                && (http.GetEndpoint()?.Metadata.GetMetadata<OhDataBodyLimitMetadata>()?.MaxBytes
+                    ?? registrationBodyLimit) is long limit)
             {
                 IHttpMaxRequestBodySizeFeature? sizeFeature = http.Features.Get<IHttpMaxRequestBodySizeFeature>();
                 if (sizeFeature is { IsReadOnly: false })
                 {
-                    sizeFeature.MaxRequestBodySize = limit.MaxBytes;
+                    // #474: a limit the FRAMEWORK chose may only lower the host's own ceiling, never
+                    // raise it. #203 assigns this unconditionally, which was right while the limit
+                    // could only come from the adopter — "this set accepts up to 4 MB" is a
+                    // deliberate per-route override and still behaves that way. But now that
+                    // EntitySetDefaults.MaxRequestBodyBytes defaults to 30,000,000, an unconditional
+                    // assignment would RAISE the ceiling on a host that had deliberately lowered
+                    // Kestrel's below it — a security fix loosening a hardening step, on a
+                    // registration that configured nothing.
+                    //
+                    // "The framework chose it" is read as "the resolved value IS the framework's
+                    // constant" rather than tracked through a separate configured/not-configured
+                    // flag. The only case that misreads is an adopter who explicitly sets exactly
+                    // 30,000,000 on a host with a lower limit and wants it raised, and clamping is
+                    // the safe direction there. A null host limit (the host disabled it) is where
+                    // #474 has the most to do, and the assignment still happens.
+                    sizeFeature.MaxRequestBodySize =
+                        limit == EntitySetDefaults.DefaultMaxRequestBodyBytes
+                        && sizeFeature.MaxRequestBodySize is long hostLimit
+                            ? Math.Min(hostLimit, limit)
+                            : limit;
                 }
 
-                if (http.Request.ContentLength is long len && len > limit.MaxBytes)
+                if (http.Request.ContentLength is long len && len > limit)
                 {
                     return ODataError(413, "RequestEntityTooLarge",
-                        $"The request body ({len} bytes) exceeds the maximum allowed size ({limit.MaxBytes} bytes).");
+                        $"The request body ({len} bytes) exceeds the maximum allowed size ({limit} bytes).");
                 }
             }
             return await next(ctx);
@@ -1367,17 +1711,18 @@ internal static class OhDataEndpointFactory
 
         // Gap 1: Add OData-Version: 4.0 header to all responses (§8.2.6).
         // Batch 4: Return 406 Not Acceptable when the client cannot accept application/json (§8.2.3).
-        // Batch 5: Validate $format query option (§11.2.12); it overrides the Accept header.
+        // Batch 5: Validate $format query option (§11.2.10); it overrides the Accept header.
         // $metadata returns application/xml, so it is exempted from the JSON-only checks.
         group.AddEndpointFilter(async (ctx, next) =>
         {
-            ctx.HttpContext.Response.Headers["OData-Version"] = "4.0";
-
+            // #496 finding 2: the OData-Version header used to be set HERE, and this filter is
+            // fourth of five -- the two filters registered between it and the outermost one can
+            // both short-circuit. It is set in the outermost filter now; see the note there.
             string path = ctx.HttpContext.Request.Path.Value ?? "";
             bool isMetadata = path.EndsWith("/$metadata", StringComparison.OrdinalIgnoreCase);
             if (!isMetadata)
             {
-                // §11.2.12: $format overrides Accept. Only application/json (and the shorthand
+                // §11.2.10: $format overrides Accept. Only application/json (and the shorthand
                 // "json") are supported; any other value is rejected with 400.
                 bool formatAccepted = false;
                 if (ctx.HttpContext.Request.Query.TryGetValue("$format", out var formatParam))
@@ -1398,12 +1743,12 @@ internal static class OhDataEndpointFactory
 
                 if (!formatAccepted)
                 {
-                    // §8.2.3 / RFC 7231 §5.3.2 (issue #182): reject Accept headers that don't include
+                    // §8.2.1 / RFC 7231 §5.3.2 (issue #182): reject Accept headers that don't include
                     // a media range this route can satisfy. Most routes produce application/json, but
                     // the raw-value routes are exceptions (like $metadata's application/xml above):
-                    // /$count returns the count as text/plain (§11.2.6.5), and /{property}/$value
+                    // /$count returns the count as text/plain (§11.2.9), and /{property}/$value
                     // returns the raw value as text/plain for scalars or application/octet-stream for
-                    // byte[] (§11.2.4.3), so those segments can satisfy the corresponding types too.
+                    // byte[] (§11.2.3.1), so those segments can satisfy the corresponding types too.
                     // A client (e.g. Swagger UI, reading the content types those routes advertise in
                     // the OpenAPI document) that asks for text/plain on /$count is making a valid
                     // request and must not get a 406. Negotiation goes through AcceptHeaderPermits,
@@ -1517,9 +1862,15 @@ internal static class OhDataEndpointFactory
             }
         }
 
+        // #487: computed once, consulted by every diagnostic below and by the unbound-operation
+        // auth application. A registration that requires authorization NOWHERE is simply a public
+        // service and has no hole to report.
+        bool registrationRequiresAuth = RegistrationRequiresAuthorizationSomewhere(registration);
+
         // Gap 7: Unbound functions/actions — registered once at service root level (§11.5.1)
         MapUnboundOperations(
-            group, registration.UnboundOperations, effectiveJsonOptions, registration);
+            group, registration.UnboundOperations, effectiveJsonOptions, registration,
+            registrationRequiresAuth);
 
         // #313: named LAST, after every route has mapped, so a registration whose startup validation
         // is about to throw does not first emit advice about a surface it will never serve. Same
@@ -1529,8 +1880,110 @@ internal static class OhDataEndpointFactory
         // startup validation is about to throw does not first emit advice about a surface it will
         // never serve.
         WarnUndeclaredConventionNavigations(registration, groupLogger);
+        // #489: same placement rationale again — after every route has mapped.
+        WarnIgnoredPropertiesStillInEdm(registration, groupLogger);
+        // #487: registered last, and unlike its three neighbours it does not warn HERE — it
+        // installs a Finally convention that warns at endpoint-build time, once the host has had
+        // its chance to apply group-level authorization to the group this method returns. See
+        // AttachAnonymousRouteAudit.
+        AttachAnonymousRouteAudit(group, groupLogger);
 
+        // #481/#368: same placement rationale again. It runs AFTER
+        // WarnUndeclaredConventionNavigations because the two partition the EDM's navigations
+        // between them — declared here, undeclared there — and reading them in that order is how
+        // a log tells you which half a navigation fell into.
+        WarnNavigationTargetAuthorization(registration, groupLogger);
         return group;
+    }
+
+    // #489: Ignore() loses its EDM half under AdvancedConfigure, and the consequence is a value
+    // oracle no reader derives from either half on its own.
+    //
+    // Ignore() withholds a property on TWO levels. The EDM removal rides the _configurators pipeline
+    // in EntitySetProfile.VisitModelBuilder; runtime suppression (routes, wire, PATCH binding) is
+    // applied separately from IgnoredPropertyNames. Overriding AdvancedConfigure returns from
+    // VisitModelBuilder BEFORE the configurator pipeline runs, so the EDM half is ejected while the
+    // runtime half still applies. That is the stated contract of the eject hatch and it is CORRECT --
+    // the developer has taken full EDM ownership, and this is deliberately not "fixed":
+    //
+    //   * re-imposing OhData's Ignore() on top of the override would defeat the hatch outright, and
+    //   * it would be arbitrary. HasOptional/HasRequired/HasMany ride the SAME pipeline and stay
+    //     ejected; nothing distinguishes Ignore()'s configurator from theirs except that its
+    //     consequence is a disclosure rather than a missing navigation. A half-ejected pipeline whose
+    //     membership is decided by severity is a worse contract than the one it replaces.
+    //
+    // What is missing is the SIGNAL, so this is the WarnWireShapeIsFlat shape: a legitimate
+    // configuration whose consequence is not predictable from either half gets one startup warning
+    // naming it. With both features in play the property is back in $metadata and query-addressable
+    // while the wire still omits it, so $filter over it answers truthfully one predicate at a time --
+    // the value is never served and is still discoverable. In the ordinary case the EDM removal makes
+    // the property indistinguishable from one that never existed (ODL fails the same "could not find
+    // a property named…" it produces for a genuinely nonexistent name), so the 400 cannot confirm
+    // existence.
+    //
+    // GATED ON THE EDM AS BUILT, not on the mere presence of the override. Re-applying
+    // `configuration.EntityType.Ignore(...)` by hand inside the override is exactly what the
+    // documentation prescribes, and it really does remove the property -- warning on that
+    // configuration would fire on the correct one and teach developers to tune the warning out.
+    // Silent, therefore, whenever the property is genuinely gone from the EDM.
+    //
+    // The query-capability half is deliberately NOT part of the gate. Whether $filter is live depends
+    // on what the override re-enabled (taking the hatch also drops OhData's automatic
+    // Filter()/OrderBy()/Select() calls), but $metadata advertises the property's name and type
+    // regardless, and a capability the override adds later must not silently un-warn the profile.
+    //
+    // Emitted once per affected property per registration at startup, never per request.
+    private static void WarnIgnoredPropertiesStillInEdm(OhDataRegistration registration, ILogger? logger)
+    {
+        if (logger is null) return;
+
+        foreach (IEntitySetEndpointSource profile in registration.Profiles)
+        {
+            if (!profile.IsAdvancedConfigureOverridden || profile.IgnoredPropertyNames.Count == 0)
+            {
+                continue;
+            }
+
+            IEdmEntityType? entityType = registration.EdmModel.EntityContainer?
+                .FindEntitySet(profile.EntitySetName)?.EntityType;
+            if (entityType is null) continue;
+
+            foreach (string clrName in profile.IgnoredPropertyNames)
+            {
+                // IgnoredPropertyNames holds CLR names; the EDM advertises the resolved EDM name,
+                // which a [JsonPropertyName] rename makes different. Resolve through the same single
+                // source of truth every other CLR->EDM name question in this file goes through.
+                PropertyInfo? clrProperty =
+                    ODataPropertyNaming.FindClrPropertyByEdmName(profile.ModelType, clrName);
+                string edmName = clrProperty is not null
+                    ? ODataPropertyNaming.ResolveEdmName(clrProperty)
+                    : clrName;
+
+                if (!entityType.Properties().Any(
+                        p => string.Equals(p.Name, edmName, StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue; // the override re-applied the EDM removal by hand -- nothing to say
+                }
+
+                // Each placeholder appears EXACTLY once — Microsoft.Extensions.Logging binds a
+                // template positionally, so a repeated one would consume an argument that is not
+                // there. Repeated VALUES are passed again under a distinct name.
+                logger.LogWarning(
+                    "OhData: '{EntitySet}' calls Ignore() for '{Property}', but '{Property2}' is still " +
+                    "declared in the EDM because this profile overrides AdvancedConfigure — which ejects " +
+                    "every automatic EDM configuration step, Ignore()'s EDM removal among them. Runtime " +
+                    "suppression still applies, so the property is omitted from every response body, has " +
+                    "no property routes, and is never bound from a write body. But $metadata advertises " +
+                    "its name and type, and it stays addressable in $filter/$orderby/$select wherever " +
+                    "this override re-enabled those capabilities. A withheld-but-addressable property is " +
+                    "a VALUE ORACLE: the value is never served, yet '?$filter={Property3} eq …' answers " +
+                    "truthfully, so it can be probed one predicate at a time. If '{Property4}' is hidden " +
+                    "for tidiness this may be fine; if it is hidden for SECURITY, re-apply the removal " +
+                    "inside the override — configuration.EntityType.Ignore(x => x.{Property5}) — or drop " +
+                    "the AdvancedConfigure override. See docs/ignoring-properties.md.",
+                    profile.EntitySetName, clrName, edmName, edmName, clrName, clrName);
+            }
+        }
     }
 
     // #313: the startup diagnostic that stands in for the ceiling that MaxExpandTop no longer defaults to.
@@ -1736,6 +2189,191 @@ internal static class OhDataEndpointFactory
         }
     }
 
+    // #481/#368: authorization is PER PROFILE and does not compose across a navigation. Every
+    // navigation-family route, and every $expand call site, runs under the DECLARING entity set's
+    // rule; the target set's own rule is never consulted — the only two authorization-state reads
+    // in this file are `source.Authorization` and `source.OperationAuthorization`, both on the
+    // profile currently being mapped. Measured across 19 route shapes on #481: with an admin-gated
+    // child set and an anonymous parent declaring a navigation into it, the nav GET, its /$count,
+    // all four $ref shapes, the nav-POST create route and $expand (delegate, batch and pushdown)
+    // all succeeded anonymously — and $ref POST/PUT/DELETE and nav-POST *executed the write*.
+    //
+    // A WARNING, and NOTHING ELSE. The owner's ruling on #481 rejected consulting the target
+    // profile at request time, for three reasons worth keeping here because they are the reasons a
+    // future reader would otherwise "fix" this into an enforcement pass:
+    //   - It is what Microsoft.AspNetCore.OData does. Verified against its source: the library
+    //     contains no authorization code at all (0 files each for IAuthorizationService,
+    //     AuthorizationPolicy, RequireAuthorization, IAllowAnonymous, AuthorizeAttribute,
+    //     ClaimsPrincipal, Microsoft.AspNetCore.Authorization), and its navigation action lives on
+    //     the PARENT controller, so [Authorize] on the child's controller is never consulted
+    //     either. Enforcing would be a divergence from OData norms, not a correction toward them.
+    //   - It would break the most idiomatic OData shape there is — a scoped `Orders` navigation off
+    //     `Customers` beside a separately-registered, admin-gated `Orders` set — turning correct
+    //     code into 403s, with no opt-out flag to point at.
+    //   - It is not well-defined where sibling sets share one EDM type (#458), and it collides head
+    //     on with #293's frozen Model B rule that "a delegate on a sibling/derived set never
+    //     retroactively poisons a nav that ANOTHER set legitimately serves raw" — fail-closed is
+    //     exactly that poisoning, one concern over.
+    // So the navigation declaration IS the opt-in, and this makes that configuration decision loud
+    // at the moment it is introduced. docs/authorization.md carries the same statement for readers
+    // who never see a startup log.
+    //
+    // THREE TARGETING RULES, each measured rather than reasoned (#481's probe):
+    //
+    //   1. The target is resolved through the EDM navigation property's OWN target type, then
+    //      through ResolveProfilesForEdmType — the same union the two $expand call sites resolve
+    //      candidates with. NOT through NavigationRouteDefinition.ChildEntitySetName (never set by
+    //      the HasMany(nav, batchGetAll) overload — probe case 7 leaked through exactly that) and
+    //      NOT through NavItemType (never set by HasOptional/HasRequired).
+    //
+    //   2. It fires on the DECLARED navigation, not the routed one. Probe B-1: a bare
+    //      HasMany(x => x.Children) with no handler and no route still serves the protected rows
+    //      through $expand, so gating on route presence would miss the case with the weakest
+    //      opt-in argument. The converse — an UNDECLARED, convention-discovered navigation (probe
+    //      B-2) — is deliberately silent: #440/#446 already made it served by nothing at all, and
+    //      WarnUndeclaredConventionNavigations above already names it, saying something different.
+    //
+    //   3. The union, never the EDM's navigation-source binding. Per the decision recorded at
+    //      ResolveProfilesForEdmType: (A) exactly one entity set exposes the target type → a REAL
+    //      IEdmEntitySet binding exists, and the union is that one set, so the two agree; (B) two
+    //      or more → NavigationPropertyBindings is EMPTY and FindNavigationTarget returns an
+    //      EdmUnknownEntitySet placeholder; (C) none → the same placeholder. A binding-only check
+    //      therefore stops working the moment someone registers an unrelated second entity set
+    //      over the child type, silently. Warning if ANY candidate is stricter is the fail-loud
+    //      direction, and case (C)'s empty union warns about nothing, correctly.
+    //
+    // WHY THE COMPARISON IS PER CATEGORY rather than one union of everything the target requires.
+    // A warning that fires on a correct configuration gets ignored, which costs more than the
+    // warning is worth. `ConfigureAuthorization(auth => auth.Read(r => r.AllowAnonymous())
+    // .Writes(w => w.RequireRole("admin")))` on the target is an ordinary shape, and a read-only
+    // navigation into it loses NOTHING — so the categories are compared separately, and each is
+    // considered only where this navigation really exposes it:
+    //   Read   — always, because $expand needs no route (rule 2), and because a NavigationRoute-
+    //            Definition always registers a nav GET (the loop over source.NavigationRoutes maps
+    //            one for every entry, even a post/addRef-only navigation whose GET 404s).
+    //   Create — only with a `post` handler (the nav-POST create route).
+    //   Update — only with addRef/setRef/removeRef (the three $ref write routes).
+    // Delete and Invoke are excluded because no navigation route is ever mapped in either category
+    // — see the ApplyOperationAuth call sites on the nav routes.
+    //
+    // Emitted once per (declaring set, navigation, stricter target set) at startup, never per
+    // request. Placed after every route has mapped, for the same reason WarnUnboundedBareExpand and
+    // WarnUndeclaredConventionNavigations are: a registration whose startup validation is about to
+    // throw should not first emit advice about a surface it will never serve.
+    private static void WarnNavigationTargetAuthorization(OhDataRegistration registration, ILogger? logger)
+    {
+        if (logger is null) return;
+
+        foreach (IEntitySetEndpointSource profile in registration.Profiles)
+        {
+            IEdmEntityType? entityType = registration.EdmModel.EntityContainer?
+                .FindEntitySet(profile.EntitySetName)?.EntityType;
+            if (entityType is null) continue;
+
+            foreach (IEdmNavigationProperty nav in entityType.NavigationProperties())
+            {
+                // Rule 2. OrdinalIgnoreCase, and against NavigationPropertyNames rather than a
+                // separately derived EDM-name set, so this and WarnUndeclaredConventionNavigations
+                // partition the navigations between them and can never both fire (or both stay
+                // silent) for one declaration.
+                if (!profile.NavigationPropertyNames.Any(
+                        n => string.Equals(n, nav.Name, StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue;
+                }
+
+                NavigationRouteDefinition? route = profile.NavigationRoutes.FirstOrDefault(
+                    r => string.Equals(r.PropertyName, nav.Name, StringComparison.OrdinalIgnoreCase));
+
+                List<OhDataOperation> categories = new(3) { OhDataOperation.Read };
+                if (route?.PostChild is not null) categories.Add(OhDataOperation.Create);
+                if (route is not null && (route.AddRef is not null || route.RemoveRef is not null))
+                    categories.Add(OhDataOperation.Update);
+
+                foreach (IEntitySetEndpointSource target in
+                         ResolveProfilesForEdmType(nav.ToEntityType(), registration))
+                {
+                    // A self-referential navigation, or one into this profile's own entity set,
+                    // resolves to this profile: it is governed by its own rule by definition.
+                    if (ReferenceEquals(target, profile)) continue;
+
+                    string? unapplied = DescribeUnappliedRequirements(profile, target, categories);
+                    if (unapplied is null) continue;
+
+                    // Each placeholder appears EXACTLY once — Microsoft.Extensions.Logging binds a
+                    // template positionally, so a repeated one would consume an argument that is
+                    // not there. Repeated VALUES are passed again under a distinct name.
+                    logger.LogWarning(
+                        "OhData: '{EntitySet}' declares the navigation '{Navigation}', whose target " +
+                        "entity type is also exposed as the entity set '{TargetEntitySet}' — and that " +
+                        "set's own profile requires {Unapplied}, which is NOT applied here, because " +
+                        "authorization is not applied across a navigation. Every route OhData maps " +
+                        "for '{EntitySet2}' runs under '{EntitySet3}'s own rule and never " +
+                        "'{TargetEntitySet2}'s: 'GET /{EntitySet4}({{key}})/{Nav}', its '/$count' and " +
+                        "'/$ref' routes, the '$ref' and navigation-POST writes, and every " +
+                        "'$expand={Nav2}' — the last of which needs no route at all, so the " +
+                        "navigation declaration is the opt-in, by itself. Microsoft.AspNetCore.OData behaves the " +
+                        "same way (its navigation action lives on the parent's controller, and it " +
+                        "has no per-set authorization concept at all), so this is the OData norm " +
+                        "rather than a gap OhData will close: it will NOT start consulting " +
+                        "'{TargetEntitySet3}'s rule at request time. If the data reached through " +
+                        "this navigation needs that protection, configure the same requirement on " +
+                        "'{EntitySet5}' with RequireAuthorization/RequireRoles/ConfigureAuthorization, " +
+                        "or split the surface so the protected rows are not reachable from an " +
+                        "unprotected parent. If reaching them from here is intended — a scoped " +
+                        "navigation off a parent the caller is already allowed to read — this is a " +
+                        "valid design and nothing needs to change. See docs/authorization.md.",
+                        profile.EntitySetName, nav.Name, target.EntitySetName, unapplied,
+                        profile.EntitySetName, profile.EntitySetName, target.EntitySetName,
+                        profile.EntitySetName, nav.Name, nav.Name,
+                        target.EntitySetName, profile.EntitySetName);
+                }
+            }
+        }
+    }
+
+    // Renders "one of the roles (admin) on reads and updates" for the categories in which
+    // <paramref name="target"/> requires something <paramref name="declaring"/> does not; null when
+    // nothing goes unapplied. Categories sharing an identical unapplied set are grouped so the
+    // profile-wide authorization model — where every category carries the same requirements —
+    // produces one clause rather than three copies of it.
+    private static string? DescribeUnappliedRequirements(
+        IEntitySetEndpointSource declaring,
+        IEntitySetEndpointSource target,
+        IReadOnlyList<OhDataOperation> categories)
+    {
+        List<(OhDataOperation Category, string Requirements)> unapplied = new(categories.Count);
+        foreach (OhDataOperation category in categories)
+        {
+            IReadOnlyList<string> missing =
+                NavigationTargetAuthorization.RequirementsNotApplied(declaring, target, category);
+            if (missing.Count > 0) unapplied.Add((category, string.Join(", ", missing)));
+        }
+        if (unapplied.Count == 0) return null;
+
+        List<string> clauses = new();
+        foreach (var group in unapplied.GroupBy(u => u.Requirements, StringComparer.Ordinal))
+        {
+            string subjects = JoinWithAnd(group.Select(u => CategoryNoun(u.Category)).ToList());
+            clauses.Add($"{group.Key} on {subjects}");
+        }
+        return string.Join("; ", clauses);
+    }
+
+    private static string CategoryNoun(OhDataOperation category) => category switch
+    {
+        OhDataOperation.Create => "creates",
+        OhDataOperation.Update => "updates",
+        _ => "reads",
+    };
+
+    private static string JoinWithAnd(IReadOnlyList<string> parts) => parts.Count switch
+    {
+        1 => parts[0],
+        2 => $"{parts[0]} and {parts[1]}",
+        _ => $"{string.Join(", ", parts.Take(parts.Count - 1))} and {parts[parts.Count - 1]}",
+    };
+
     // Leg 3 (docs-fidelity): an unbound function/action's success response is the bare
     // Invoke() result (no @odata.context envelope — see MapUnboundOperations below), so the
     // most honest static schema available is the operation's own declared return type
@@ -1743,6 +2381,11 @@ internal static class OhDataEndpointFactory
     // Task&lt;T&gt;/ValueTask&lt;T&gt; and, for a collection return, down to its element type, at
     // registration time). A void/Task-returning operation has no 200 response at all — every
     // call to it produces 204 — so ReturnType is null there and only 204 is registered.
+    //
+    // #498: that null case is reachable for unbound ACTIONS only. CSDL requires a function to
+    // declare a return type, so AddFunction now refuses a void/Task/ValueTask handler at
+    // registration (OperationSignatureValidation), where it previously killed GetEdmModel() with a
+    // raw ArgumentNullException naming nothing. The sentence above used to imply both kinds.
     private static void AddUnboundOperationProduces(RouteHandlerBuilder rb, UnboundOperationDefinition op)
     {
         if (op.ReturnType is not null)
@@ -1773,11 +2416,7 @@ internal static class OhDataEndpointFactory
             {
                 rb.Produces<TModel>(200);
             }
-            else if (returnType != typeof(string) &&
-                     typeof(System.Collections.IEnumerable).IsAssignableFrom(returnType) &&
-                     returnType.GetInterfaces().Concat(new[] { returnType })
-                         .Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IEnumerable<>)
-                                   && i.GetGenericArguments()[0] == typeof(TModel)))
+            else if (DeclaresCollectionOf(returnType, typeof(TModel)))
             {
                 rb.Produces<ODataCollectionResponse<TModel>>(200);
             }
@@ -1787,6 +2426,58 @@ internal static class OhDataEndpointFactory
             }
         }
         rb.Produces(204);
+    }
+
+    // #497: the SAME element predicate WrapBoundOpResult applies at runtime — assignability, not
+    // equality — so a delegate declared `Task<List<TDerived>>` is documented as the collection
+    // envelope it will actually be served in, rather than as a bare List<TDerived>. One predicate,
+    // now literally one method, because #357 gave it a THIRD consumer: the $top/$skip metadata a
+    // collection-returning bound function carries. Three copies of a rule about which shape an
+    // operation produces is how an advertise-vs-serve divergence gets built.
+    private static bool DeclaresCollectionOf(Type declaredReturnType, Type modelType) =>
+        declaredReturnType != typeof(string)
+        && typeof(System.Collections.IEnumerable).IsAssignableFrom(declaredReturnType)
+        && declaredReturnType.GetInterfaces().Concat(new[] { declaredReturnType })
+            .Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IEnumerable<>)
+                      && modelType.IsAssignableFrom(i.GetGenericArguments()[0]));
+
+    // #357/#467: a bound operation whose declared return type is a collection of the entity set's
+    // own type honours $top and $skip and caps at MaxTop, so — and only so — its route documents
+    // them. Every other field is false: a bound operation applies no $filter/$orderby/$select/
+    // $expand/$count/$search, and #467's rule is that each field means "this route honours this
+    // option", never "this route is of kind X".
+    //
+    // Attached at the ONE metadata site, in this factory, exactly as #467 requires: all three
+    // OpenAPI companion packages read this record, and a rule transcribed into them separately is
+    // how the same wrong document appeared in all three before.
+    //
+    // #543: bound ACTIONS are attached too, and the rename off "…FunctionPaging…" is the point.
+    // They were excluded on the reasoning that a @odata.nextLink is a URL the client GETs
+    // (§11.2.5.7) and POST /Set/Action is not GET-addressable as a continuation — which is
+    // sound about the
+    // CONTINUATION and was wrongly taken to be about the CEILING as well. An action now honours
+    // $top/$skip and validates them against MaxTop exactly as a function does; the only thing it
+    // does not do is emit a nextLink (see TryApplyOperationCollectionPaging, which refuses instead).
+    // So "this route honours $top/$skip" is now true of both kinds, and #467's rule says document
+    // it on both. The dangling "see AddBoundFunctionPagingMetadata for why actions are excluded"
+    // cross-reference in WrapBoundOpResult, which pointed at a rationale this method never
+    // contained, is gone with the exclusion it described.
+    private static void AddBoundOperationPagingMetadata<TModel>(
+        RouteHandlerBuilder rb, BoundOperationDefinition op, IEntitySetEndpointSource source)
+        where TModel : class
+    {
+        if (op.ReturnType is not { } returnType) return;
+        if (!DeclaresCollectionOf(returnType, typeof(TModel))) return;
+
+        rb.WithMetadata(new OhDataQueryOptionsMetadata(
+            FilterEnabled: false,
+            OrderByEnabled: false,
+            SelectEnabled: false,
+            ExpandEnabled: false,
+            CountEnabled: false,
+            SearchEnabled: false,
+            MaxTop: source.MaxTop,
+            TopSkipSupported: true));
     }
 
     // Issue #181: build the query-parameter documentation marker for a bound/unbound *function*.
@@ -1818,20 +2509,147 @@ internal static class OhDataEndpointFactory
         return new OhDataQueryParametersMetadata { Parameters = list };
     }
 
+    /// <summary>
+    /// #199/#487: replays the ENDPOINT-GATE half of an <see cref="OperationAuthRule"/> onto a route.
+    /// Shared by the per-entity-set <c>ApplyOperationAuth</c> and by <see cref="MapUnboundOperations"/>,
+    /// which authorize the same <see cref="AuthRequirement"/> list and must not translate it twice.
+    /// <para>
+    /// <see cref="AuthRequirementKind.Resource"/> is deliberately absent: it is not an endpoint gate
+    /// at all but a per-request check against the loaded <c>{key}</c> entity (#199 Layer B), applied
+    /// by <c>AttachResourceFilter</c> on the entity-set half and refused outright on the unbound half.
+    /// </para>
+    /// </summary>
+    private static void ApplyAuthRequirements(
+        IEndpointConventionBuilder rb, IReadOnlyList<AuthRequirement> requirements)
+    {
+        // Named policies apply as separate RequireAuthorization(name) calls (they stack -> AND).
+        foreach (var req in requirements.Where(r => r.Kind == AuthRequirementKind.Policy))
+        {
+            rb.RequireAuthorization(req.Name!);
+        }
+
+        // Inline requirements (authenticated/role/claim) replay onto one AuthorizationPolicyBuilder.
+        var inlineRequirements = requirements
+            .Where(r => r.Kind is AuthRequirementKind.AuthenticatedUser
+                               or AuthRequirementKind.Role
+                               or AuthRequirementKind.Claim)
+            .ToList();
+        if (inlineRequirements.Count > 0)
+        {
+            rb.RequireAuthorization(policy =>
+            {
+                foreach (var req in inlineRequirements)
+                {
+                    switch (req.Kind)
+                    {
+                        case AuthRequirementKind.AuthenticatedUser:
+                            policy.RequireAuthenticatedUser();
+                            break;
+                        case AuthRequirementKind.Role:
+                            policy.RequireRole(req.Values!.ToArray());
+                            break;
+                        case AuthRequirementKind.Claim:
+                            if (req.Values is { Count: > 0 })
+                                policy.RequireClaim(req.Name!, req.Values);
+                            else
+                                policy.RequireClaim(req.Name!);
+                            break;
+                    }
+                }
+            });
+        }
+    }
+
+    /// <summary>
+    /// #487: does this registration require authorization ANYWHERE? The gate on every diagnostic
+    /// below, and the reason none of them fires on a service that is simply public.
+    /// <para>
+    /// "Anywhere" means a profile that really imposes a requirement - the legacy profile-wide model
+    /// with <see cref="AuthorizationConfig.Required"/>, or at least one <c>ConfigureAuthorization</c>
+    /// category carrying a <c>Require*</c>. An <c>AllowAnonymous()</c> category is a statement that
+    /// something is open, never that anything is closed, so it does not count.
+    /// </para>
+    /// </summary>
+    private static bool RegistrationRequiresAuthorizationSomewhere(OhDataRegistration registration) =>
+        registration.Profiles.Any(ProfileRequiresAuthorizationSomewhere);
+
+    private static bool ProfileRequiresAuthorizationSomewhere(IEntitySetEndpointSource profile)
+    {
+        if (profile.Authorization is { Required: true }) return true;
+        IReadOnlyList<OperationAuthRule>? rules = profile.OperationAuthorization;
+        return rules is not null
+            && rules.Any(r => !r.AllowAnonymous && r.Requirements.Count > 0);
+    }
+
+    /// <summary>
+    /// #487: emits the startup <c>Warning</c> for every route carrying an
+    /// <see cref="OhDataAnonymousRouteAudit"/> that is still anonymous once the HOST has finished
+    /// configuring the group.
+    /// <para>
+    /// <b>Why <c>Finally</c> and not <c>MapAll</c>.</b> <c>MapOhData()</c> hands the group back and
+    /// the host applies its own <c>RequireAuthorization()</c> to it afterwards - the mitigation
+    /// <c>docs/authorization.md</c> recommends for exactly these routes. At map time a route with
+    /// no rule of its own is therefore indistinguishable from one about to inherit that backstop,
+    /// and warning there would fire on the correct configuration. A <c>Finally</c> convention runs
+    /// after every convention on the endpoint, the host's included, so it can ask the question that
+    /// actually matters: is anything going to authorize this endpoint at all? Measured on .NET
+    /// 10.0.11 - a <c>Finally</c> registered before <c>group.RequireAuthorization()</c> observes
+    /// that requirement's <c>IAuthorizeData</c> on every endpoint under the group.
+    /// </para>
+    /// <para>
+    /// One warning per <see cref="OhDataAnonymousRouteAudit.Key"/>, not per endpoint: a category
+    /// covers a dozen routes and the developer has one decision to make about all of them.
+    /// </para>
+    /// </summary>
+    private static void AttachAnonymousRouteAudit(RouteGroupBuilder group, ILogger? logger)
+    {
+        if (logger is null) return;
+
+        var reported = new HashSet<string>(StringComparer.Ordinal);
+        ((IEndpointConventionBuilder)group).Finally(endpoint =>
+        {
+            OhDataAnonymousRouteAudit? audit =
+                endpoint.Metadata.OfType<OhDataAnonymousRouteAudit>().FirstOrDefault();
+            if (audit is null) return;
+
+            // The documented mitigation, applied: a group-level requirement covers this route, so
+            // there is no hole and nothing to say. An explicit group-level AllowAnonymous is the
+            // host stating the opposite intent just as deliberately, and is equally not a hole.
+            if (endpoint.Metadata.OfType<IAuthorizeData>().Any()) return;
+            if (endpoint.Metadata.OfType<IAllowAnonymous>().Any()) return;
+
+            if (!reported.Add(audit.Key)) return;
+
+            logger.LogWarning(
+                "OhData: {Subject} {Detail} Nothing in this registration authorizes it, yet other " +
+                "parts of the same registration require authorization - so securing everything you " +
+                "named has still left a hole you did not name. {Remedy}",
+                audit.Subject, audit.Detail, audit.Remedy);
+        });
+    }
+
     private static void MapUnboundOperations(
         RouteGroupBuilder group,
         IReadOnlyList<UnboundOperationDefinition> unboundOps,
         JsonSerializerOptions? jsonOptions,
-        OhDataRegistration registration)
+        OhDataRegistration registration,
+        bool registrationRequiresAuthSomewhere)
     {
         foreach (var op in unboundOps)
         {
             var opCapture = op;
+            RouteHandlerBuilder unboundRb;
             if (!op.IsAction)
             {
                 // Unbound function: GET /{prefix}/{FunctionName}?params
                 var rb = group.MapGet($"/{op.Name}", async (HttpContext ctx, CancellationToken ct) =>
                 {
+                    // #359: the sigil gate, before parameter binding and before the handler
+                    // delegate runs. See s_unboundOperationImplementedOptions.
+                    IResult? opUnsupported = CheckUnsupportedSystemQueryOptions(
+                        ctx, s_unboundOperationImplementedOptions);
+                    if (opUnsupported is not null) return opUnsupported;
+
                     object?[] args = new object?[opCapture.Parameters.Length];
                     for (int i = 0; i < opCapture.Parameters.Length; i++)
                     {
@@ -1871,12 +2689,19 @@ internal static class OhDataEndpointFactory
                 // Issue #181: document the function's query-string parameters.
                 var unboundFnQueryParams = BuildFunctionQueryParametersMetadata(opCapture.Parameters, skipKey: false);
                 if (unboundFnQueryParams is not null) rb.WithMetadata(unboundFnQueryParams);
+                unboundRb = rb;
             }
             else
             {
                 // Unbound action: POST /{prefix}/{ActionName} with JSON body
                 var rb = group.MapPost($"/{op.Name}", async (HttpContext ctx, CancellationToken ct) =>
                 {
+                    // #359: the sigil gate, before parameter binding and before the handler
+                    // delegate runs. See s_unboundOperationImplementedOptions.
+                    IResult? opUnsupported = CheckUnsupportedSystemQueryOptions(
+                        ctx, s_unboundOperationImplementedOptions);
+                    if (opUnsupported is not null) return opUnsupported;
+
                     object?[] args = new object?[opCapture.Parameters.Length];
                     if (opCapture.Parameters.Length > 0)
                     {
@@ -1943,14 +2768,77 @@ internal static class OhDataEndpointFactory
                 {
                     rb.WithMetadata(new OhDataRequestBodyMetadata
                     {
+                        // #499/#547: the key must carry registration IDENTITY -- "Unbound.{Name}"
+                        // alone is scoped to nothing but the operation name, so two registrations
+                        // declaring an unbound operation of the same name collided even when
+                        // nothing else about them overlapped (the worst of the three sites, per
+                        // #499/#425, since it doesn't even carry an entity set name). The
+                        // registration is passed as the identity; the route key is scoped to it.
                         BodyType = ActionBodySchemaTypeFactory.GetOrCreate(
-                            $"Unbound.{opCapture.Name}", opCapture.Parameters),
+                            registration, $"Unbound.{opCapture.Name}", opCapture.Parameters),
                         Description = "JSON object with the action's parameters: " +
                             string.Join(", ", opCapture.Parameters.Select(p => $"{p.Name} ({p.ParameterType.Name})")) + "."
                     });
                 }
+                unboundRb = rb;
             }
+
+            // #487 seam 1: an unbound operation is not scoped to an entity set, so no profile's
+            // ConfigureAuthorization can reach it and no per-profile RequireAuthorization applies to
+            // it. Until the `authorize` overloads of AddFunction/AddAction existed there was no way
+            // to state a requirement for one at all: a registration in which EVERY profile required
+            // authorization still served every unbound action anonymously, and measured on the
+            // pre-fix tree that meant POST /{prefix}/{Action} -> 204 with the handler executed.
+            ApplyUnboundOperationAuth(unboundRb, opCapture, registrationRequiresAuthSomewhere);
         }
+    }
+
+    /// <summary>
+    /// #487: applies an unbound operation's own rule, or - when it declared none and the
+    /// registration requires authorization somewhere else - marks the route for the startup
+    /// diagnostic. See <see cref="AttachAnonymousRouteAudit"/> for why the diagnostic cannot be
+    /// decided here.
+    /// </summary>
+    private static void ApplyUnboundOperationAuth(
+        IEndpointConventionBuilder rb,
+        UnboundOperationDefinition op,
+        bool registrationRequiresAuthSomewhere)
+    {
+        string kind = op.IsAction ? "action" : "function";
+
+        if (op.Authorization is { } rule)
+        {
+            if (rule.AllowAnonymous)
+            {
+                // Deliberately anonymous, and said so. Note this is the one place the metadata is
+                // NOT applied as AllowAnonymousAttribute: doing that would let an unbound operation
+                // tunnel out from under a host group requirement (seam 3) - a hole the host cannot
+                // see and did not ask for. Stating "anonymous" here means "I am not adding a
+                // requirement", not "I am removing yours".
+                return;
+            }
+
+            // #220 parity with the entity-set half: expose the resolved requirements so the opt-in
+            // OpenAPI/NSwag auth-requirements filters can render them.
+            rb.WithMetadata(new OhDataOperationAuthMetadata(rule.Requirements));
+            ApplyAuthRequirements(rb, rule.Requirements);
+            return;
+        }
+
+        if (!registrationRequiresAuthSomewhere) return;
+
+        rb.WithMetadata(new OhDataAnonymousRouteAudit(
+            Key: $"unbound:{op.Name}",
+            Subject: $"the unbound {kind} '{op.Name}' ({(op.IsAction ? "POST" : "GET")} /{{prefix}}/{op.Name}) is ANONYMOUS.",
+            Detail: "An unbound operation is not scoped to an entity set, so no profile's " +
+                    "RequireAuthorization()/RequireRoles()/ConfigureAuthorization(...) reaches it.",
+            Remedy: op.IsAction
+                ? $"Declare a requirement on the operation itself - AddAction({op.Name}, a => a.RequireAuthenticatedUser()) - " +
+                  "or apply one to the whole surface with app.MapOhData().RequireAuthorization(). " +
+                  $"If it is meant to be public, say so with AddAction({op.Name}, a => a.AllowAnonymous()) and this warning stops."
+                : $"Declare a requirement on the operation itself - AddFunction({op.Name}, a => a.RequireAuthenticatedUser()) - " +
+                  "or apply one to the whole surface with app.MapOhData().RequireAuthorization(). " +
+                  $"If it is meant to be public, say so with AddFunction({op.Name}, a => a.AllowAnonymous()) and this warning stops."));
     }
 
     // #495: the options for envelopes whose ENTIRE content is framework-generated -- every OData
@@ -2115,9 +3003,42 @@ internal static class OhDataEndpointFactory
         }
     }
 
-    // Every keyed route peels off the FormatException that ODataKeyParser.Parse throws on an
-    // unparseable key and maps it to the same 400 envelope. `withTarget` preserves the existing
+    // Every keyed route peels off the ODataKeyFormatException that ODataKeyParser.Parse throws on
+    // an unparseable key and maps it to the same 400 envelope. `withTarget` preserves the existing
     // split: entity-addressed routes point `target` at "key"; navigation routes omit it.
+    //
+    // #496 finding 4: the clause used to catch a bare FormatException, and the routes' try covers
+    // the WHOLE handler body -- so a profile handler throwing FormatException from its own code
+    // (a downstream parse, a decimal.Parse on a CSV column) was answered with this 400, asserting
+    // the client's key was malformed for a request whose key had parsed one line earlier. The
+    // dedicated type makes the clause exactly as wide as the condition its message describes; see
+    // ODataKeyFormatException.
+    // #496 finding 4: mark a profile handler's fault so a read route's narrow, framework-facing
+    // catches cannot claim it. See HandlerFaultException for why the marker sits on USER code
+    // rather than on the framework's own option-touching calls. The synchronous seams (the ETag
+    // selector on GetById and the collection pipeline's whole ETag stage) use an inline try with
+    // the same `when` clause instead -- a Func overload would allocate a closure per request or per
+    // page for a fault this rare.
+    //
+    // Takes the already-started Task rather than a Func, so no closure is allocated on the hottest
+    // routes in the framework. That is safe because every Invoke* member of
+    // IEntitySetEndpointSource / IODataEntitySetEndpointSource is an `async` method: a profile
+    // delegate that throws SYNCHRONOUSLY (the ordinary `GetAll = ct => throw ...` lambda shape,
+    // which is not an async lambda) has its exception captured into the returned Task rather than
+    // raised at the call site, so it still lands in the try below. Issue496ErrorHandlingTests uses
+    // exactly that fixture shape, so this invariant is pinned rather than assumed.
+    private static async Task<T> AsHandlerFault<T>(Task<T> handlerCall)
+    {
+        try
+        {
+            return await handlerCall.ConfigureAwait(false);
+        }
+        catch (Exception ex) when (HandlerFaultException.IsMisclassifiable(ex))
+        {
+            throw new HandlerFaultException(ex);
+        }
+    }
+
     private static IResult BadKeyError(ILogger? logger, Exception ex, string key, string name, bool withTarget = true)
     {
         logger?.LogWarning(ex, "OhData: bad key '{Key}' for {Name}", SanitizeLogValue(key), name);
@@ -2213,11 +3134,13 @@ internal static class OhDataEndpointFactory
     // $orderby are optionally skipped (checkFilterOrderBy: false) on paths that already reject
     // them structurally regardless of the flag (the GetAll path, which has no ApplyTo pipeline).
     private static IResult? CheckCollectionQueryOptionCapabilities(
-        HttpContext ctx, IEntitySetEndpointSource source, bool checkFilterOrderBy = true)
+        HttpContext ctx, IEntitySetEndpointSource source, string[] implementedOptions,
+        bool checkFilterOrderBy = true)
     {
-        // #196: reject system options this framework does not implement at all, rather than
-        // ignoring them silently (Minimal-conformance item 7 — "parse the option or reject it").
-        IResult? unimplemented = CheckUnimplementedCollectionQueryOptions(ctx);
+        // #196/#359: reject every $-prefixed system option this route does not implement, rather
+        // than ignoring it silently (Minimal-conformance item 7 — "parse the option or reject
+        // it"). The set is the caller's, because the GetAll path implements one option fewer.
+        IResult? unimplemented = CheckUnsupportedSystemQueryOptions(ctx, implementedOptions);
         if (unimplemented is not null) return unimplemented;
 
         if (checkFilterOrderBy)
@@ -2236,52 +3159,400 @@ internal static class OhDataEndpointFactory
         return sr;
     }
 
-    // S1/B1 fix: system query options the navigation collection GET route does not implement.
-    // $select, $orderby, $skip, $top, and $count ARE implemented (parsed directly off the query
-    // string in the nav-route handler); everything else — most notably $filter — was previously
-    // ignored outright rather than rejected, so a client asking to filter a navigation collection
-    // silently got back the whole, unfiltered set (S1).
-    private static readonly string[] s_navUnsupportedSystemOptions =
+    // ── Unsupported system query options: one matcher, one rule, every read route ──────────
+    //
+    // #359/#380/#353 (Minimal-conformance item 7 / Part 1 §11.2.5 — "If a data service does not
+    // support a system query option, it MUST fail any request that contains the unsupported
+    // option"). This replaced three separate mechanisms that between them left most of the
+    // surface unexamined: a closed four-name allowlist on the collection routes
+    // ($apply/$compute/$index/$deltatoken), a closed seven-name list on the navigation route, and
+    // NOTHING at all on GetById, on /{Set}/$count, or on the navigation /$count. So $unknown,
+    // $slect, $fliter, $expandx and a top-level $levels were all accepted and discarded under a
+    // 200 — and on the collection routes echoed verbatim into the generated @odata.nextLink —
+    // while GetById accepted and discarded $filter/$orderby/$count/$top/$apply and /$count
+    // accepted and discarded $search, returning the unfiltered total.
+    //
+    // THE RULE IS THE '$' SIGIL, not a name allowlist. Part 2 §5.2 reserves the '$' prefix for
+    // system query options, so a key that does NOT start with '$' is a custom query option and is
+    // passed through untouched (as is a '@'-prefixed parameter alias, §5.3, and the framework's
+    // own 'ohdata-skiptoken' continuation offset). A '$'-prefixed key the route does not
+    // implement is refused, whether or not any OData version has ever defined it — the same
+    // fail-closed reasoning the #313 continuation route has always used, generalised: an option
+    // this build has never heard of must be refused rather than silently ignored, and a future
+    // system option cannot quietly start being dropped on the floor.
+    //
+    // The set is PER ROUTE, and that is the point: $filter is implemented on the collection GETs
+    // and not on GetById. A name that is recognized-but-not-implemented-here and a name that is
+    // unrecognized anywhere get the SAME 501 UnsupportedQueryOption — the client's remedy is
+    // identical ("stop sending it"), so a second code would distinguish nothing actionable.
+    //
+    // Matching is OrdinalIgnoreCase, which is ALIGNMENT with Microsoft.AspNetCore.OData rather
+    // than a leniency: ODataQueryOptions.IsSystemQueryOption(string) lowercases the name before
+    // comparing whenever the URI resolver enables case-insensitivity, which is the default
+    // (ODataQueryOptions.cs:283 for the comment, :284-287 for the branch it guards, :289-290 for
+    // the lowercasing itself). So $Select and
+    // $TOP are honoured exactly as they are today; #359's complaint that "$Select is applied
+    // while $slect is ignored and neither is rejected" is answered by rejecting $slect, never by
+    // starting to reject $Select. This is a deliberate divergence from MS in the OTHER direction:
+    // its own BuildQueryOptions carries `default: // we don't throw if we can't recognize the
+    // query` (ODataQueryOptions.cs:1061), i.e. it silently ignores. §11.2.5's MUST wins.
+    //
+    // Note that MS's own IsSystemQueryOption (:172-198) recognizes THIRTEEN names and $index is not
+    // among them, so "$index is a system option MS knows about" would be wrong: it is refused here
+    // for the same reason $unknown is, by the sigil, and it is named in the list above only because
+    // 4.01 §11.2.5 defines it and a reader will look for it.
+    //
+    // $format is in every set below and must stay there. It is not a data option: §11.2.10
+    // content negotiation is implemented once, on the group filter that wraps the whole OData
+    // surface, so it never reaches these handlers and cannot change a single row. An unsupported
+    // $format VALUE is still rejected there, unchanged.
+    //
+    // 501 OR 400: THE TAXONOMY. State it as five words and the rest follows —
+    //
+    //                        *** 501 IS "CAN'T". 400 IS "WON'T". ***
+    //
+    // Both statuses are correct, for different conditions, and the line between them is "can this
+    // service perform the functionality on this resource at all", not "is the client going to be
+    // annoyed". Three clauses of OData v4.0 Part 1 set it, quoted verbatim:
+    //
+    //   §9.3.1  "If the client requests functionality not implemented by the OData Service, the
+    //           service MUST respond with 501 Not Implemented and the response body SHOULD
+    //           describe the functionality not implemented."
+    //   §13.1.1 item 7, inside the Minimal Conformance MUST list: "MUST successfully parse the
+    //           request according to [OData-ABNF] for any supported system query string options and
+    //           either follow the specification or return 501 Not Implemented (section 9.3.1) for
+    //           any unsupported functionality (section 11.2.1)"
+    //   §11.2.5 "If a data service does not support a system query option, it MUST fail any
+    //           request that contains the unsupported option and SHOULD return 501 Not Implemented."
+    //
+    // §11.2.5 alone is a SHOULD and an earlier revision of this file leaned on that to justify a
+    // uniform 400. That reading does not survive the other two: §9.3.1 is a MUST, and §13.1.1 item 7
+    // puts the same 501 inside the MUST list a service has to satisfy to claim Minimal conformance
+    // — which this project claims. So:
+    //
+    //   501 — THE SERVICE DOES NOT IMPLEMENT IT. Every refusal driven by this sigil rule: an
+    //         unrecognized $-name ($unknown, $slect, a top-level $levels), a real OData option this
+    //         build implements nowhere ($apply, $compute, $index, $deltatoken), and a real option
+    //         this build implements on OTHER routes but not on the one addressed ($filter on
+    //         GetById, $search on a /$count, $select on a single-valued navigation). Also the two
+    //         FLAG-INDEPENDENT structural refusals below — GetAll's $filter/$orderby and the
+    //         /$count GetAll fallback's $filter — which no configuration of that profile can turn
+    //         on, because that route has no IQueryable and therefore no filter code at all.
+    //   400 — IMPLEMENTED, SWITCHED OFF HERE. A capability flag the adopter left false
+    //         (CheckDisabledQueryOption: FilterEnabled/OrderByEnabled/SelectEnabled/ExpandEnabled/
+    //         CountEnabled), a property allowlist rejection, and $search on a route that HAS a
+    //         $search leg but whose profile supplied no Search handler. The service implements the
+    //         functionality; this resource declines to offer it, which is not what §9.3.1 describes.
+    //         Everything #402 owns stays 400 too — a malformed or empty option VALUE ($top=abc,
+    //         $skiptoken=, $filter=) is a bad request about a supported option, not unimplemented
+    //         functionality — as does an out-of-range value (MaxTop, MaxExpandTop).
+    //
+    // The test for which side a refusal falls on is therefore mechanical: could any setting on the
+    // profile make this same request succeed on this same route? Yes -> 400 ("won't"). No -> 501
+    // ("can't"). That is why $search splits: no Search handler is a 400 on the collection GETs (the
+    // route invokes one when configured) and a 501 on /$count and GetById (no $search leg exists
+    // there at all).
+    //
+    // A CONSEQUENCE WORTH STATING SO NOBODY "FIXES" IT: the SAME option can be 501 on one entity
+    // set and 400 on another, decided by which read handler the profile supplies. $filter on a
+    // GetAll-backed set is 501 — no IQueryable exists, so the framework CANNOT apply it there under
+    // any configuration — while $filter on a GetQueryable-backed set with FilterEnabled = false is
+    // 400: it can, and the adopter chose not to expose it. That is not an inconsistency to be
+    // smoothed over. Conformance is per-RESOURCE (§13.1.1 is a statement about what a service does
+    // when asked, not a global constant), and the two answers describe genuinely different
+    // conditions: one tells the client "no configuration of this endpoint will ever do that", the
+    // other "this endpoint could, and is not offering it".
+    //
+    // BREAKING, and it is the largest wire change on this branch. $apply/$compute/$index/
+    // $deltatoken have answered 400 UnsupportedQueryOption with this exact message since 1.0.0 and
+    // now answer 501 with the same code and the same message. The error CODE and the message bytes
+    // are deliberately unchanged — §9.3.1's "body SHOULD describe the functionality not
+    // implemented" is satisfied by the text that already named the option — so a client matching on
+    // the envelope keeps working and only status-code branching moves. One condition still produces
+    // one envelope: every sigil refusal on every route is 501 with code UnsupportedQueryOption.
+
+    private const string FormatOption = "$format";
+
+    // The two collection GET routes over an IQueryable — GetQueryable (Priority-2) and
+    // Priority-1 (GetODataQueryable). The third collection GET, GetAll, has its own array below.
+    // $filter/$orderby/$select/$expand/$count are listed here
+    // because the route DOES implement them; whether this profile permits them is the separate
+    // question CheckDisabledQueryOption answers, with its own message. Not listed, and so refused:
+    // $apply/$compute (unimplemented aggregation), $index (4.01 ordered insert), $deltatoken
+    // (change tracking), and every unrecognized name.
+    //
+    // $search is the one entry this array's two consumers do NOT agree about, and it is listed
+    // because of the Priority-2 consumer. There, $search is implemented: the route invokes the
+    // Search handler and answers with its own "Configure the Search handler" message when the
+    // profile has none. On the PRIORITY-1 consumer there is no $search leg in the route body at
+    // all — the metadata it attaches declares SearchEnabled: false, #465 refuses GetODataQueryable
+    // + Search at startup, and $search there is the profile's own business via options.Search — so
+    // listing it means Priority-1 accepts and ignores one option ($skiptoken is the same shape: the
+    // profile owns it, the framework never reads it). Splitting the array would express that
+    // honestly, and is deliberately NOT done: the Priority-1 contract hands the whole
+    // ODataQueryOptions to the profile, so "the framework does not read it" is not the same
+    // statement as "the request does not honour it", and refusing $search on the one path whose
+    // entire point is that the profile applies the options itself would break the documented
+    // options.Search remedy #465 prescribes.
+    private static readonly string[] s_collectionImplementedOptions =
     {
-        "$filter", "$expand", "$search", "$apply", "$compute", "$skiptoken", "$deltatoken",
+        "$filter", "$orderby", "$top", "$skip", "$select", "$expand", "$count",
+        "$search", "$skiptoken", FormatOption,
     };
 
-    // #196: system query options the *main* collection GET routes do not implement at all — as
-    // opposed to the capability-gated $filter/$orderby/$select/$expand/$count (handled by
-    // CheckCollectionQueryOptionCapabilities) or the implemented $top/$skip/$search/$skiptoken.
-    // These were previously ignored silently on the main route even though the navigation route
-    // already rejected them. $apply/$compute are unimplemented aggregation options ($compute is
-    // 4.01-only and blocked by the pinned OData package range); $index is a 4.01 ordered-insert
-    // option; $deltatoken belongs to delta/change-tracking. Ignoring a known option violates
-    // Minimal-conformance item 7 ("parse the option or reject the request").
-    private static readonly string[] s_collectionUnimplementedSystemOptions =
+    // The GetAll (simple read) collection route. Identical except that $skiptoken is NOT
+    // implemented: #201's ApplyGetAllPaging continues with $skip and nothing on this path ever
+    // reads a $skiptoken, so accepting one meant discarding a client's continuation in silence.
+    // $filter/$orderby are listed even though this path always refuses them — it does so earlier,
+    // with a message naming GetQueryable as the remedy, and one condition must not produce two
+    // different envelopes depending on which check saw it first.
+    private static readonly string[] s_getAllCollectionImplementedOptions =
     {
-        "$apply", "$compute", "$index", "$deltatoken",
+        "$filter", "$orderby", "$top", "$skip", "$select", "$expand", "$count",
+        "$search", FormatOption,
     };
 
-    private static IResult? CheckUnimplementedCollectionQueryOptions(HttpContext ctx)
+    // GET /{Set}/$count. §11.2.9 GOVERNS THIS ROUTE'S IMPLEMENTED SET, AND IT PARTITIONS THE
+    // SYSTEM QUERY OPTIONS INTO EXACTLY TWO CLASSES. Verbatim:
+    //
+    //   "On success, the response body MUST contain the count of items matching the request after
+    //    applying any $filter or $search system query options, formatted as a simple scalar
+    //    integer value with media type text/plain. The returned count MUST NOT be affected by
+    //    $top, $skip, $orderby, or $expand."
+    //
+    // So:
+    //
+    //   AFFECTS THE COUNT ($filter, $search) -- a route that cannot apply one MUST refuse it.
+    //         Ignoring it returns a WRONG NUMBER under a 200, which is the defect #353 reported.
+    //         This route applies $filter on its two IQueryable-backed branches and refuses it with
+    //         its own message on the GetAll fallback (no IQueryable exists there, so no
+    //         configuration turns one on -- flag-independent, hence 501). $search has no leg here
+    //         at all and is refused unconditionally: that is #353's headline and it STANDS.
+    //   MUST NOT AFFECT THE COUNT ($top, $skip, $orderby, $expand) -- accepted and IGNORED, because
+    //         ignoring them is not a shortfall the service is confessing to, it is the behaviour
+    //         the clause specifies. Under §13.1.1 item 7's disjunction -- "either follow the
+    //         specification or return 501 Not Implemented ... for any unsupported functionality" --
+    //         ignoring these IS following the specification, so 501 would claim non-implementation
+    //         of something this route has implemented correctly since 1.0.0.
+    //   NEITHER (everything else: $apply, $compute, $index, $deltatoken, $skiptoken, and every
+    //         unrecognized $-name) -- outside the clause, unimplemented here, refused under
+    //         §9.3.1 and §13.1.1 item 7 exactly as on every other route.
+    //
+    // An earlier revision of this comment asserted that "§11.2.9 mandates nothing either way" and
+    // refused all of $top/$skip/$orderby/$select/$expand on the strength of it. The clause had not
+    // been consulted; it names four of those five and specifies their behaviour.
+    //
+    // $select IS ACCEPTED AND IGNORED, AND IT IS A RULING RATHER THAN AN OVERSIGHT. §11.2.9's
+    // MUST-NOT sentence does not name it -- it names the four options that change WHICH ITEMS, or
+    // in what ORDER, a collection page carries, which are the four a naive implementation would
+    // have applied. The clause's POSITIVE half settles $select anyway, and it is exhaustive: the
+    // count is of "items MATCHING THE REQUEST after applying any $filter or $search". $select
+    // changes an item's SHAPE, never its membership, so it cannot move that number; and the
+    // response is a bare text/plain scalar, so there is no representation left to project out of.
+    // Refusing it alone among the five options a grid URL carries would reinstate exactly the
+    // unprincipled split this comment's previous revision was written to remove -- $expand ignored
+    // beside $select refused, one line apart, for no statable reason. MS ignores it too (below).
+    //
+    // $format IS ACCEPTED AND IGNORED, AND THAT IS THE OPPOSITE ERROR FROM THE ONE ABOVE, SO STATE
+    // IT. §11.2.9's closing sentence -- "Content negotiation using the Accept request header or
+    // the $format system query option is not allowed with the path segment /$count" -- means this
+    // entry canNOT mean "negotiated here", which is what FormatOption means in every other array
+    // in this file. It means "not refused", for three reasons. (1) The clause constrains the
+    // CLIENT and prescribes no server response; §9.3.1's 501 is for functionality not
+    // implemented, and $format IS implemented service-wide (§11.2.10, on the group filter), so
+    // 501 would be a false statement -- while the 400 arm of the taxonomy needs a capability flag,
+    // of which this condition has none. (2) The response is text/plain whatever $format says, so
+    // accepting it cannot make the response wrong: it is a no-op in exactly the sense the four
+    // named options are. (3) Refusing it would produce TWO envelopes for one disallowed option,
+    // because the group filter already answers 400 UnsupportedFormat for a non-JSON $format BEFORE
+    // this route runs -- $format=xml would 400 from the filter and $format=json would 501 from
+    // here. One condition, one envelope, is the rule this file is built on.
+    //
+    // Accept: application/xml still answers 406, unchanged and deliberately. §11.2.9 forbids the
+    // CLIENT to negotiate on this segment; it does not licence the SERVER to ship a media type the
+    // client said it will not take, and RFC 9110 §12.5.1 makes 406 the right answer to that.
+    //
+    // THIS ROUTE AGREES WITH Microsoft.AspNetCore.OData, which matters because a divergence here
+    // is not theoretical. Verified against the vendored source at a05e1ad0 (9.5.0-7):
+    // ODataQueryOptions' constructor synthesises Count = "true" for any request whose path ends in
+    // /$count (ODataQueryOptions.cs:1072-1084), so ApplyTo's Request.IsCountRequest() early return
+    // (:425-429) always fires -- before the $orderby/$skip/$top block and before SelectExpand --
+    // and MS silently ignores all five. Microsoft.OData.Client relies on it: it translates
+    // LongCount() by appending /$count to the query string it has ALREADY built and stripping
+    // nothing, so .OrderBy(...).LongCount(), .Take(n).LongCount() and .Skip(n).LongCount() all
+    // send the option along. Refusing them broke standard pagination for the industry-standard
+    // OData client, not merely a hand-built grid URL; MsODataClientIntegrationTests' Count_* cases
+    // pin every shape through the real client so a future narrowing fails there first.
+    private static readonly string[] s_countRouteImplementedOptions =
     {
-        string? option = s_collectionUnimplementedSystemOptions
-            .FirstOrDefault(o => ctx.Request.Query.ContainsKey(o));
-        if (option is not null)
+        "$filter", "$top", "$skip", "$orderby", "$expand", "$select", FormatOption,
+    };
+
+    // GET /{Set}({key}). A single entity: there is nothing to filter, order, window or count.
+    // $select/$expand are the whole implemented surface (#380).
+    private static readonly string[] s_getByIdImplementedOptions =
+    {
+        "$select", "$expand", FormatOption,
+    };
+
+    // GET /{Set}({key})/{Nav} — the delegate-backed navigation COLLECTION route, which parses
+    // $select/$orderby/$skip/$top/$count directly off the query string.
+    private static readonly string[] s_navCollectionImplementedOptions =
+    {
+        "$select", "$orderby", "$skip", "$top", "$count", FormatOption,
+    };
+
+    // GET /{Set}({key})/{Nav} where the navigation is SINGLE-VALUED (HasOptional/HasRequired).
+    // Same route template, different handler branch, and the branch reads NO query option at all:
+    // it serializes the related entity through ODataEntityNode, whose own remark records that no
+    // $expand is possible on that path, and every option the collection branch applies is applied
+    // inside `if (navIsCollection)` — $select in BuildNavEnvelope, $orderby/$skip/$top/$count in
+    // the branch body. Sharing the collection set here therefore accepted and DISCARDED
+    // $select/$orderby/$top/$count under a 200 (measured), which is #380's own defect statement —
+    // "known, implemented-elsewhere options being silently dropped on a route that does not
+    // implement them" — on a route this change touches, and left GET /Set(1)?$orderby=X a 400
+    // beside GET /Set(1)/Owner?$orderby=X a 200.
+    //
+    // The refusal is the fix rather than implementing $select here: this change is about refusing
+    // what is not implemented, and $select on a single-valued nav needs the projection, the
+    // allowlist validation and the @odata.context projection suffix that ODataEntityResult carries
+    // and ODataEntityNode does not — a feature, with its own wire-shape decisions.
+    private static readonly string[] s_navSingleImplementedOptions = { FormatOption };
+
+    // GET /{Set}({key})/{Nav}/$count. The same §11.2.9 partition as the entity-set /$count one
+    // level down, resolved differently in exactly one class because this handler applies even
+    // less: it invokes the navigation delegate and counts what comes back, applying NO data option
+    // whatsoever.
+    //
+    //   AFFECTS THE COUNT -- $filter AND $search are both refused here, where the entity-set route
+    //         refuses only $search. That is not an inconsistency; it is the same rule reaching a
+    //         different answer on a route with no IQueryable. §11.2.9 requires the count to be
+    //         taken after applying them, this route cannot, and ignoring either would answer a
+    //         wrong number under a 200.
+    //   MUST NOT AFFECT THE COUNT -- $top/$skip/$orderby/$expand, and $select by the positive
+    //         half's "items matching the request" (see the ruling on the entity-set array), are
+    //         accepted and ignored. They were accepted no-ops here from 1.0.0 through 1.6.0 and
+    //         are again.
+    //   NEITHER -- refused, as everywhere else.
+    //
+    // $format carries the same "not refused, never negotiated" meaning it carries above.
+    private static readonly string[] s_navCountImplementedOptions =
+    {
+        "$top", "$skip", "$orderby", "$expand", "$select", FormatOption,
+    };
+
+    // GET /{Set}({key})/{Nav}?$skip=N — the #313 bare-$expand continuation. $skip only.
+    private static readonly string[] s_expandContinuationImplementedOptions =
+    {
+        "$skip", FormatOption,
+    };
+
+    // The four BOUND operation routes — GET|POST /{Set}/{Op} and GET|POST /{Set}({key})/{Op}.
+    // A bound operation's own parameters are non-'$' keys (a query string for a function, a JSON
+    // body for an action), so the sigil rule never examines them; what it examines is the system
+    // options, of which #357 (function) and #543 (action) made $top/$skip real on these routes.
+    //
+    // #359's SECOND half lands here and nowhere else. TryApplyOperationCollectionPaging emits
+    // BuildNextPageLinkWithSkip, which copies the WHOLE incoming query string, so on an ungated
+    // route an unrecognized option came back inside the server's own @odata.nextLink under a 200 —
+    // byte for byte the wire shape #359's evidence block reports:
+    //   GET /odata/SqOps/TopRated?$unknown=evil -> 200
+    //     "@odata.nextLink": ".../TopRated?%24unknown=evil&%24skip=2"
+    //
+    // $top/$skip are listed UNCONDITIONALLY, not off BoundOperationDefinition.ReturnType the way
+    // AddBoundOperationPagingMetadata's TopSkipSupported is, and that asymmetry is deliberate: the
+    // bound is applied in the RUNTIME collection branch (#357 decision 2 — a handler declared
+    // Task<object> returning a List<TModel> must not be a way around the ceiling), so such a route
+    // really can emit a "$skip=N" continuation. Deriving the set from the declared type would make
+    // the server refuse a link it had just issued. Where the result is not a collection they are
+    // accepted no-ops -- the same answer s_countRouteImplementedOptions gives them, reached by a
+    // different route: there §11.2.9 requires $top/$skip to be present and ignored, while here
+    // they are real on the collection shape and the route cannot know at startup which shape a
+    // handler declared Task<object> will return, so refusing them would refuse a link the server
+    // itself had just issued.
+    private static readonly string[] s_boundOperationImplementedOptions =
+    {
+        "$top", "$skip", FormatOption,
+    };
+
+    // The two UNBOUND operation routes — GET|POST /{Op} on the outer group. They serve the
+    // handler's result through PreRenderedJson with no collection branch, no MaxTop bound and no
+    // continuation link, so $top/$skip are not implemented there and are refused rather than
+    // ignored. (That they carry no ceiling at all is a separate, pre-existing gap.)
+    private static readonly string[] s_unboundOperationImplementedOptions = { FormatOption };
+
+    /// <summary>
+    /// Returns the first <c>$</c>-prefixed query-string key that is not in
+    /// <paramref name="implemented"/>, or <c>null</c> when the request carries none.
+    /// <para>
+    /// Short-circuits on an empty query string before touching anything, so a request with no
+    /// options at all costs one <see cref="IQueryCollection.Count"/> read and allocates nothing —
+    /// load-bearing on <c>GetById</c>, which is the hottest read route and deliberately builds no
+    /// <see cref="ODataQueryOptions{TEntity}"/> unless <c>$select</c>/<c>$expand</c> is present.
+    /// The check itself only reads key strings: no parsing, no options construction.
+    /// </para>
+    /// </summary>
+    private static string? FindUnsupportedSystemQueryOption(HttpContext ctx, string[] implemented)
+    {
+        IQueryCollection query = ctx.Request.Query;
+        if (query.Count == 0) return null;
+
+        foreach (string key in query.Keys)
         {
-            return ODataError(400, "UnsupportedQueryOption",
-                $"The query option '{option}' is not supported.");
+            if (key.Length == 0 || key[0] != '$') continue;
+
+            bool ok = false;
+            for (int i = 0; i < implemented.Length; i++)
+            {
+                if (string.Equals(key, implemented[i], StringComparison.OrdinalIgnoreCase))
+                {
+                    ok = true;
+                    break;
+                }
+            }
+            if (!ok) return key;
         }
         return null;
     }
 
-    private static IResult? CheckNavUnsupportedQueryOptions(HttpContext ctx)
+    // The generic envelope, shared verbatim with the four names #196 already rejected on the
+    // collection routes so that generalising the rule did not re-word a message that has shipped
+    // since 1.0.0. Used by the collection GETs, /$count, GetById and the navigation /$count.
+    private static IResult? CheckUnsupportedSystemQueryOptions(HttpContext ctx, string[] implemented)
     {
-        string? option = s_navUnsupportedSystemOptions
-            .FirstOrDefault(o => ctx.Request.Query.ContainsKey(o));
-        if (option is not null)
-        {
-            return ODataError(400, "UnsupportedQueryOption",
-                $"This navigation route does not support {option}. Supported query options " +
-                "are $select, $orderby, $skip, $top, and $count.");
-        }
-        return null;
+        string? option = FindUnsupportedSystemQueryOption(ctx, implemented);
+        return option is null
+            ? null
+            : ODataError(501, "UnsupportedQueryOption", $"The query option '{option}' is not supported.");
+    }
+
+    // The navigation route keeps its own wording, which names the options it does support — it
+    // has shipped that way since S1/B1 and is more useful than the generic line on a route whose
+    // supported set is small and non-obvious. Same matcher underneath.
+    //
+    // isCollection is the nav's STARTUP-captured NavigationRouteDefinition.IsCollection, so the set
+    // and the message describe the branch the request will actually reach. The two branches share
+    // one route template and used to share one set; see s_navSingleImplementedOptions.
+    //
+    // NEITHER message names $format, which both branches accept. Deliberate, and the two are
+    // consistent about it: $format is not a DATA query option — §11.2.10 negotiation is handled
+    // once on the group filter and never reaches a route handler — which is the framing the
+    // single-valued line states outright and the collection line inherits. The collection line's
+    // bytes are additionally pinned as unchanged by the generalisation
+    // (NavCollection_ClosedListNames_KeepTheirExactEnvelope), so adding $format to it would be a
+    // wire change to a message that has shipped since S1/B1 in exchange for restating something
+    // no route refuses.
+    private static IResult? CheckNavUnsupportedQueryOptions(HttpContext ctx, bool isCollection)
+    {
+        string? option = FindUnsupportedSystemQueryOption(
+            ctx, isCollection ? s_navCollectionImplementedOptions : s_navSingleImplementedOptions);
+        if (option is null) return null;
+
+        return ODataError(501, "UnsupportedQueryOption", isCollection
+            ? $"This navigation route does not support {option}. Supported query options " +
+              "are $select, $orderby, $skip, $top, and $count."
+            : $"This navigation route does not support {option}. A single-valued navigation " +
+              "route supports no data query options.");
     }
 
     // #202: per-entity-set validation settings, built once per set from the source's resolved
@@ -2496,7 +3767,7 @@ internal static class OhDataEndpointFactory
     private static IResult? ValidateExpandBreadth(SelectExpandClause? clause, int cap, int maxExpansionDepth)
     {
         if (clause is null) return null;
-        int count = CountExpandNodes(clause, maxExpansionDepth, cap);
+        int count = CountExpandNodes((SelectExpandClause)clause, maxExpansionDepth, cap);
         if (count <= cap) return null;
 
         // The message states the LIMIT, not the request's actual count: CountExpandNodes stops as
@@ -2705,9 +3976,9 @@ internal static class OhDataEndpointFactory
         // an opinion at its OWN level, and a navigation with an opinion never reaches the
         // no-opinion arm at all. Issue466NavOmissionRegressionTests is the tripwire.
         HashSet<string>? levelsNavNames = pushedLevelsNavNames;
-        if (rootClauseForSerialize is not null && ClauseHasLevels(rootClauseForSerialize) &&
+        if (rootClauseForSerialize is not null && ClauseHasLevels((SelectExpandClause)rootClauseForSerialize) &&
             CollectRawServedLevelsNavNames(
-                rootClauseForSerialize, new[] { requestSource }, registration, requestServices,
+                (SelectExpandClause)rootClauseForSerialize, new[] { requestSource }, registration, requestServices,
                 null, depth: 1) is { } rawLevelsNavNames)
         {
             if (levelsNavNames is null)
@@ -2732,9 +4003,19 @@ internal static class OhDataEndpointFactory
             serializerOptions, maxLevels: source.MaxExpansionDepth, levelsNavNames: levelsNavNames);
 
         // Stage 2: Inject @odata.etag using the original (pre-expand) items for ETag computation.
+        // #496 finding 4: the whole stage is marked as user code -- the profile's ETag selector runs
+        // once per row inside it, and this pipeline is called from inside every read route's narrow
+        // `catch (ODataException)`. One try per page, not one closure per row.
         if (source.HasETag)
         {
-            InjectETagsIntoJsonArray(json, originalItems, requestSource);
+            try
+            {
+                InjectETagsIntoJsonArray(json, originalItems, requestSource);
+            }
+            catch (Exception ex) when (HandlerFaultException.IsMisclassifiable(ex))
+            {
+                throw new HandlerFaultException(ex);
+            }
         }
 
         // Stage 3: Inject expanded nav properties (if $expand requested), including NESTED
@@ -3147,7 +4428,7 @@ internal static class OhDataEndpointFactory
                     if (keyVal is not null) keys.Add(keyVal);
                 }
 
-                IReadOnlyDictionary<object, object?> map = await navRoute.BatchHandler(keys, ct);
+                IReadOnlyDictionary<object, object?> map = await AsHandlerFault(navRoute.BatchHandler(keys, ct));
                 for (int i = 0; i < items.Count; i++)
                 {
                     // A missing key means "no children" (collection → []) or "no related entity"
@@ -3162,7 +4443,7 @@ internal static class OhDataEndpointFactory
                 for (int i = 0; i < items.Count; i++)
                 {
                     relatedByIndex[i] = keyProp?.GetValue(items[i]) is { } keyVal
-                        ? await navRoute.Handler(keyVal, ct)
+                        ? await AsHandlerFault(navRoute.Handler(keyVal, ct))
                         : (navRoute.IsCollection ? Array.Empty<object>() : null);
                 }
             }
@@ -3561,15 +4842,21 @@ internal static class OhDataEndpointFactory
 
     // Gate-side convenience over ResolveProfilesForEdmType: resolves a CLR element type (as seen at
     // query-plan time, e.g. binding.ElementType) to its declared EDM entity type via the same
-    // model.FindDeclaredType(...) convention IsMemberInitProjectable already relies on, then defers to
+    // EdmClrTypeMap lookup IsMemberInitProjectable already relies on, then defers to
     // ResolveProfilesForEdmType so the gate's candidate set is computed by the exact same EDM-type
     // match the delegate path uses — never CLR-type equality/assignability on its own, which is what
     // made #293's original fix over-broad (matching a base/derived CLR type rather than the exact EDM
     // entity type the level is actually reached through).
+    //
+    // #508: the lookup used to be model.FindDeclaredType(clrType.FullName), which matches on the EDM
+    // type's FULL NAME and so returns null for EVERY type on a renamed schema. The candidate set was
+    // then empty, ResolveNavTreatment saw no candidates, and the gate deferred — silently, model-wide.
+    // See EdmClrTypeMap for why the annotation route has no such failure mode, and why the lookup
+    // stays EXACT here.
     private static IReadOnlyList<IEntitySetEndpointSource> ResolveProfilesForClrType(
         Type clrType, IEdmModel model, OhDataRegistration registration)
     {
-        IEdmEntityType? edmType = model.FindDeclaredType(clrType.FullName ?? clrType.Name) as IEdmEntityType;
+        IEdmEntityType? edmType = EdmClrTypeMap.FindEntityType(model, clrType);
         return ResolveProfilesForEdmType(edmType, registration);
     }
 
@@ -3944,7 +5231,7 @@ internal static class OhDataEndpointFactory
         }
 
         Type clrType = value.GetType();
-        JsonSerializerOptions navSuppressed = GetNavSuppressedOptions(opts, model, edmType, clrType);
+        JsonSerializerOptions navSuppressed = GetNavSuppressedOptions(opts, model, (IEdmEntityType)edmType, clrType);
         JsonNode? node = JsonSerializer.SerializeToNode(value, clrType, navSuppressed);
 
         // Fold-in #2 (200→500 regression): a custom JsonConverter on the ENTITY type itself may
@@ -3960,7 +5247,7 @@ internal static class OhDataEndpointFactory
         (Dictionary<string, SelectExpandClause?>? expanded, Dictionary<string, int>? levelsRemaining) =
             BuildExpandLookup(clause, levelsNavNames, maxLevels);
 
-        SpliceKeptNavigations(obj, value, clrType, edmType, model, expanded, levelsRemaining, activeLevels, opts,
+        SpliceKeptNavigations(obj, value, clrType, (IEdmEntityType)edmType, model, expanded, levelsRemaining, activeLevels, opts,
             maxLevels, levelsNavNames);
 
         return obj;
@@ -4135,7 +5422,7 @@ internal static class OhDataEndpointFactory
             Type t = value.GetType();
             if ((seenTypes ??= new HashSet<Type>()).Add(t))
             {
-                navSuppressed = GetNavSuppressedOptions(opts, model, edmType, t);
+                navSuppressed = GetNavSuppressedOptions(opts, model, (IEdmEntityType)edmType, t);
                 // Piggy-backed on the distinct-type pass that already exists, so the polymorphism
                 // test costs one cached lookup per DISTINCT runtime type per collection — never a
                 // per-element check on the hot path.
@@ -4209,7 +5496,7 @@ internal static class OhDataEndpointFactory
             // null entity) is likewise left as whatever the batched call already produced for it.
             if (values[i] is not { } value || batched[i] is not JsonObject obj) continue;
 
-            SpliceKeptNavigations(obj, value, value.GetType(), edmType, model, expanded, levelsRemaining,
+            SpliceKeptNavigations(obj, value, value.GetType(), (IEdmEntityType)edmType, model, expanded, levelsRemaining,
                 activeLevels, opts, maxLevels, levelsNavNames);
         }
 
@@ -4321,7 +5608,7 @@ internal static class OhDataEndpointFactory
     // THE ORDER DEPENDENCE IS NOW GONE BY CONSTRUCTION, not patched edge by edge. The modifier below
     // computes the suppression set ITSELF, as a pure function of (typeInfo.Type, the EDM), at the
     // moment STJ resolves the contract — so it cannot matter which route reached the type, or
-    // whether any route reached it at all. `EdmEntityTypeByClrType` is what makes that function
+    // whether any route reached it at all. `EdmTypeByClrType` is what makes that function
     // total: one walk of the schema (SeedNavSuppressionModel) maps EVERY EDM-declared entity type to
     // its CLR type up front, before any contract can be resolved on Derived. Nothing about the
     // caller, the call order, or the reachability path is consulted.
@@ -4339,6 +5626,34 @@ internal static class OhDataEndpointFactory
     // proxy or any other CLR subclass the EDM does not declare (the base-chain walk in
     // BuildNavClrNames resolves it to its nearest EDM-known ancestor), and any future edge nobody
     // has thought of — because none of them is an edge any more.
+    //
+    // #507 — THE "COMPLEX TYPE CARRYING AN ENTITY-TYPED MEMBER" CLAIM ABOVE WAS FALSE WHEN #491
+    // MADE IT, AND IS TRUE ONLY NOW. The seed walked model.SchemaElements.OfType<IEdmEntityType>()
+    // alone, and AddNavClrNames read navigations off entity types alone. But
+    // ODataConventionModelBuilder models an entity-typed member of a COMPLEX type as a navigation
+    // ON THE COMPLEX TYPE (measured: `class PxMeta { string Note; PxEntity Owner; }` yields
+    // `<ComplexType Name="PxMeta"><NavigationProperty Name="Owner" .../>`), so BuildNavClrNames'
+    // base-chain lookup into an entity-only map computed an EMPTY set for every complex CLR type and
+    // the modifier removed nothing. What #491's own measurement covered was the entity reached
+    // THROUGH the member — `Owner.Children` really was suppressed — which is exactly why the gap
+    // looked closed. Measured on the pre-fix tree, both consequences on a PLAIN GET with no query
+    // string: `"Meta":{"Note":"y","Owner":{...}}` — navigation data inline with no $expand naming it
+    // (§4.5.1) — and `E.Meta.Owner = E` throwing `JsonException: A possible object cycle was
+    // detected`, i.e. the group filter's 500, on every request. Neither is order-dependent and
+    // neither needs open types, unlike #482's poisoning step.
+    //
+    // The map is therefore keyed by IEdmStructuredType now, and the invariant test that could not
+    // see this (RuntimeTypeConfigResolutionTests.EveryEdmEntityType_ResolvesSuppressed_*, a universal
+    // statement that quantified over ENTITY types only) has a complex-type twin.
+    //
+    // SUPPRESSED, NOT SERVED, for the same reason a derived-declared navigation is (see
+    // GetNavSuppressedOptions' remarks): §4.5.1/§11.2.4.2 require a non-expanded navigation to be
+    // omitted, and SpliceKeptNavigations iterates the ENTITY type's navigations, so a complex type's
+    // navigation has no route into `expanded` and no splice would ever put it back. "Serve it" would
+    // mean serving it unconditionally, which is the defect. `$expand=Meta/Owner` — a complex-type
+    // path segment the OData parser does accept — is consequently omitted rather than expanded; that
+    // is a pre-existing feature gap (the splice never handled it), not a regression, and it now fails
+    // the same way an unexpanded navigation does instead of leaking the whole graph.
     //
     // The review's third reasoned edge — a navigation FindClrPropertyByEdmName cannot resolve — is
     // REAL and is closed at AddNavClrNames instead, by reading the model builder's own
@@ -4364,13 +5679,14 @@ internal static class OhDataEndpointFactory
     // the process, which matters for test suites (e.g. WebApplicationFactory) that construct a fresh
     // host — and therefore fresh options — per test class.
     //
-    // EdmEntityTypeByClrType (#482): every EDM-declared entity type of every model seeded onto this
-    // options instance, keyed by its CLR type. Filled by SeedNavSuppressionModel BEFORE any contract
-    // can be resolved on Derived; read — never written — by the resolver modifier. Together with the
-    // type it is handed, it is the WHOLE of the modifier's input.
+    // EdmTypeByClrType (#482, widened to complex types by #507): every EDM-declared STRUCTURED type
+    // — entity AND complex — of every model seeded onto this options instance, keyed by its CLR type.
+    // Filled by SeedNavSuppressionModel BEFORE any contract can be resolved on Derived; read — never
+    // written — by the resolver modifier. Together with the type it is handed, it is the WHOLE of the
+    // modifier's input.
     //
     // SeededModels/SeedGate (#482): which IEdmModel instances have already been walked into
-    // EdmEntityTypeByClrType, and the gate that publishes that flag LAST so a second thread which
+    // EdmTypeByClrType, and the gate that publishes that flag LAST so a second thread which
     // observes "seeded" also observes a COMPLETE map. See SeedNavSuppressionModel for why a bare
     // ConcurrentDictionary flag would not be enough.
     private sealed record NavSuppressionState(
@@ -4379,7 +5695,7 @@ internal static class OhDataEndpointFactory
         ConcurrentDictionary<Type, HashSet<string>> NavClrNamesByType,
         ConcurrentDictionary<Type, JsonTypeInfo?> BaseTypeInfoByType,
         ConcurrentDictionary<Type, bool> PolymorphicByType,
-        ConcurrentDictionary<Type, NavSourceBinding> EdmEntityTypeByClrType,
+        ConcurrentDictionary<Type, NavSourceBinding> EdmTypeByClrType,
         ConcurrentDictionary<IEdmModel, bool> SeededModels,
         object SeedGate);
 
@@ -4387,7 +5703,9 @@ internal static class OhDataEndpointFactory
     // navigation -> CLR member mapping the builder recorded lives as an annotation ON THE MODEL, and
     // Microsoft.OData.Edm gives an IEdmNavigationProperty no back-reference to the model that owns
     // it - the same reason IEdmModel is threaded through the SerializeBounded family (#343).
-    private readonly record struct NavSourceBinding(IEdmModel? Model, IEdmEntityType EdmType);
+    // #507: IEdmStructuredType, not IEdmEntityType — a complex type carrying an entity-typed member
+    // declares navigations too, and they were never in the map (see CreateNavSuppressionState).
+    private readonly record struct NavSourceBinding(IEdmModel? Model, IEdmStructuredType EdmType);
 
     private static readonly ConditionalWeakTable<JsonSerializerOptions, NavSuppressionState>
         s_navSuppressedOptionsCache = new();
@@ -4395,7 +5713,7 @@ internal static class OhDataEndpointFactory
     private static NavSuppressionState CreateNavSuppressionState(JsonSerializerOptions baseOptions)
     {
         var navClrNamesByType = new ConcurrentDictionary<Type, HashSet<string>>();
-        var edmEntityTypeByClrType = new ConcurrentDictionary<Type, NavSourceBinding>();
+        var edmTypeByClrType = new ConcurrentDictionary<Type, NavSourceBinding>();
         IJsonTypeInfoResolver baseResolver = baseOptions.TypeInfoResolver ?? new DefaultJsonTypeInfoResolver();
         var derived = new JsonSerializerOptions(baseOptions);
         derived.TypeInfoResolver = baseResolver.WithAddedModifier(typeInfo =>
@@ -4406,7 +5724,7 @@ internal static class OhDataEndpointFactory
             // un-suppressed forever. GetOrAdd means the answer for a type is decided HERE, once, from
             // the EDM, no matter who reached it or in what order.
             HashSet<string> navClrNames =
-                navClrNamesByType.GetOrAdd(typeInfo.Type, t => BuildNavClrNames(t, edmEntityTypeByClrType));
+                navClrNamesByType.GetOrAdd(typeInfo.Type, t => BuildNavClrNames(t, edmTypeByClrType));
             if (navClrNames.Count == 0) return;
             for (int i = typeInfo.Properties.Count - 1; i >= 0; i--)
             {
@@ -4417,7 +5735,7 @@ internal static class OhDataEndpointFactory
         return new NavSuppressionState(
             derived, baseResolver, navClrNamesByType,
             new ConcurrentDictionary<Type, JsonTypeInfo?>(), new ConcurrentDictionary<Type, bool>(),
-            edmEntityTypeByClrType, new ConcurrentDictionary<IEdmModel, bool>(), new object());
+            edmTypeByClrType, new ConcurrentDictionary<IEdmModel, bool>(), new object());
     }
 
     // #482: the modifier's pure function. The CLR property names on <paramref name="clrType"/> that
@@ -4442,12 +5760,12 @@ internal static class OhDataEndpointFactory
     // entity. The schema walk that feeds it is measured at ~0.9 us per EDM entity type (0.44 ms for a
     // 400-entity-type model), paid once at MapOhData().
     private static HashSet<string> BuildNavClrNames(
-        Type clrType, ConcurrentDictionary<Type, NavSourceBinding> edmEntityTypeByClrType)
+        Type clrType, ConcurrentDictionary<Type, NavSourceBinding> edmTypeByClrType)
     {
         var navClrNames = new HashSet<string>(StringComparer.Ordinal);
         for (Type? cur = clrType; cur is not null && cur != typeof(object); cur = cur.BaseType)
         {
-            if (edmEntityTypeByClrType.TryGetValue(cur, out NavSourceBinding binding))
+            if (edmTypeByClrType.TryGetValue(cur, out NavSourceBinding binding))
                 AddNavClrNames(navClrNames, binding.Model, binding.EdmType, clrType);
         }
         return navClrNames;
@@ -4478,23 +5796,23 @@ internal static class OhDataEndpointFactory
     // already refuses within a registration.
     private static void SeedNavSuppressionModel(NavSuppressionState state, IEdmModel? model)
     {
-        if (model is null || state.SeededModels.ContainsKey(model)) return;
+        if (model is null || state.SeededModels.ContainsKey((IEdmModel)model)) return;
         lock (state.SeedGate)
         {
-            if (state.SeededModels.ContainsKey(model)) return;
-            foreach (IEdmEntityType edmType in model.SchemaElements.OfType<IEdmEntityType>())
+            if (state.SeededModels.ContainsKey((IEdmModel)model)) return;
+            // EdmClrTypeMap reads ODataConventionModelBuilder's own ClrTypeAnnotation for every
+            // STRUCTURED type the schema declares — the same "read the builder's own annotation"
+            // route OpenTypeJsonOptions takes for a complex type's dynamic-property container, and
+            // for the same reason: it involves no name convention, so a renamed schema namespace
+            // cannot make it miss. Absent only for a hand-built IEdmModel, which OhData never
+            // produces; GetNavSuppressedOptions' caller pairing below covers that residue for
+            // directly served types.
+            //
+            // #507: entity AND complex. The walk used to be OfType<IEdmEntityType>(), which is why a
+            // complex type's own entity-typed navigation was never in any suppression set.
+            foreach (KeyValuePair<Type, IEdmStructuredType> pair in EdmClrTypeMap.ForModel((IEdmModel)model))
             {
-                // ODataConventionModelBuilder records the backing CLR type as a ClrTypeAnnotation on
-                // every type it builds — the same "read the builder's own annotation" route
-                // OpenTypeJsonOptions takes for a complex type's dynamic-property container, and for
-                // the same reason: it involves no name convention, so a renamed schema namespace
-                // cannot make it miss. Absent only for a hand-built IEdmModel, which OhData never
-                // produces; GetNavSuppressedOptions' caller pairing below covers that residue for
-                // directly served types.
-                Type? clrType = model
-                    .GetAnnotationValue<Microsoft.OData.ModelBuilder.ClrTypeAnnotation>(edmType)?.ClrType;
-                if (clrType is not null)
-                    state.EdmEntityTypeByClrType.TryAdd(clrType, new NavSourceBinding(model, edmType));
+                state.EdmTypeByClrType.TryAdd(pair.Key, new NavSourceBinding(model, pair.Value));
             }
             state.SeededModels[model] = true;
         }
@@ -4554,19 +5872,25 @@ internal static class OhDataEndpointFactory
     // runtime type's OWN declared EDM type first, the caller's DECLARED base type second, and both
     // lose to whatever the seed already put there — TryAdd never overwrites.
     //
-    // Guarded by ContainsKey because this method runs ONCE PER ENTITY on the single-entity path,
-    // and FindDeclaredType is a schema lookup, not a field read. In steady state the whole method is
-    // two dictionary probes — the same order of cost as the single GetOrAdd it replaced.
+    // Guarded by ContainsKey because this method runs ONCE PER ENTITY on the single-entity path. In
+    // steady state the whole method is two dictionary probes — the same order of cost as the single
+    // GetOrAdd it replaced.
+    //
+    // #508: the residue guard's first TryAdd used model.FindDeclaredType(clrType.FullName), the last
+    // read-path survivor of that convention. It is EdmClrTypeMap now — which, on a model built by
+    // ODataConventionModelBuilder, is exactly what the seed above already put in the map, so this
+    // branch is reached only for a hand-built IEdmModel with no ClrTypeAnnotation at all. There the
+    // second TryAdd (the CALLER's declared EDM type) is the whole of the residue guard, unchanged.
     private static JsonSerializerOptions GetNavSuppressedOptions(
         JsonSerializerOptions baseOptions, IEdmModel? model, IEdmEntityType edmType, Type clrType)
     {
         NavSuppressionState state = s_navSuppressedOptionsCache.GetValue(baseOptions, CreateNavSuppressionState);
         SeedNavSuppressionModel(state, model);
-        if (!state.EdmEntityTypeByClrType.ContainsKey(clrType))
+        if (!state.EdmTypeByClrType.ContainsKey(clrType))
         {
-            if (model?.FindDeclaredType(clrType.FullName ?? clrType.Name) is IEdmEntityType runtimeEdmType)
-                state.EdmEntityTypeByClrType.TryAdd(clrType, new NavSourceBinding(model, runtimeEdmType));
-            state.EdmEntityTypeByClrType.TryAdd(clrType, new NavSourceBinding(model, edmType));
+            if (EdmClrTypeMap.FindStructuredType(model, clrType) is { } runtimeEdmType)
+                state.EdmTypeByClrType.TryAdd(clrType, new NavSourceBinding(model, runtimeEdmType));
+            state.EdmTypeByClrType.TryAdd(clrType, new NavSourceBinding(model, edmType));
         }
         return state.Derived;
     }
@@ -4574,6 +5898,10 @@ internal static class OhDataEndpointFactory
     // The CLR property names on <paramref name="clrType"/> that back <paramref name="edmType"/>'s
     // navigations (NavigationProperties() is inherited-inclusive, so a base type's navigations come
     // along with a derived one's).
+    //
+    // #507: edmType is an IEdmStructuredType, not an IEdmEntityType. NavigationProperties() is
+    // declared on IEdmStructuredType precisely because a COMPLEX type can carry them, and
+    // ODataConventionModelBuilder puts one there for every entity-typed member of a complex type.
     //
     // TWO routes, UNIONED, because either one alone has a blind spot (#482, the third edge the review
     // reasoned about).
@@ -4602,7 +5930,7 @@ internal static class OhDataEndpointFactory
     // change the same request ALSO emitted the whole un-suppressed CLR graph under the wrong key, so
     // suppression strictly improves it.
     private static void AddNavClrNames(
-        HashSet<string> into, IEdmModel? model, IEdmEntityType edmType, Type clrType)
+        HashSet<string> into, IEdmModel? model, IEdmStructuredType edmType, Type clrType)
     {
         foreach (IEdmNavigationProperty navProp in edmType.NavigationProperties())
         {
@@ -5463,7 +6791,11 @@ internal static class OhDataEndpointFactory
         {
             (Type elementType, IEdmModel model) = key;
             if (elementType.GetConstructor(Type.EmptyTypes) is null) return false;
-            if (model.FindDeclaredType(elementType.FullName ?? elementType.Name) is not IEdmEntityType edmType)
+            // #508: EdmClrTypeMap, not model.FindDeclaredType(elementType.FullName) — the latter
+            // matches on the EDM type's full name, so on a renamed schema it answered null for every
+            // element type, this method answered false for every element type, and TryBuildEngagedExpand
+            // deferred EVERY $expand branch off pushdown. See EdmClrTypeMap.
+            if (EdmClrTypeMap.FindEntityType(model, elementType) is not { } edmType)
             {
                 return false;
             }
@@ -5485,7 +6817,10 @@ internal static class OhDataEndpointFactory
     // returned property is guaranteed settable and present.
     private static IEnumerable<PropertyInfo> ScalarStructuralClrProps(Type elementType, IEdmModel model)
     {
-        if (model.FindDeclaredType(elementType.FullName ?? elementType.Name) is not IEdmEntityType edmType)
+        // #508: EdmClrTypeMap, not model.FindDeclaredType(elementType.FullName). Callers gate on
+        // IsMemberInitProjectable, which resolves through the same lookup — so the two must never be
+        // able to disagree about which EDM type backs the element type.
+        if (EdmClrTypeMap.FindEntityType(model, elementType) is not { } edmType)
             yield break;
         foreach (IEdmStructuralProperty sp in edmType.StructuralProperties()
             .Where(sp => sp.Type.Definition is not IEdmComplexType))
@@ -5910,7 +7245,10 @@ internal static class OhDataEndpointFactory
     // keyless type, or a CLR name that does not resolve — the caller then simply skips stabilization.
     private static PropertyInfo? TryGetKeyClrProperty(IEdmModel model, Type elem)
     {
-        if (model.FindDeclaredType(elem.FullName ?? elem.Name) is not IEdmEntityType entityType) return null;
+        // #508: EdmClrTypeMap, not model.FindDeclaredType(elem.FullName). On a renamed schema this
+        // answered null for every element type, which made every navigation non-pageable (#313) and
+        // dropped the nested-paging tiebreaker.
+        if (EdmClrTypeMap.FindEntityType(model, elem) is not { } entityType) return null;
         var keys = entityType.Key().ToList();
         if (keys.Count != 1) return null; // composite / keyless → leave order to the provider
         // #253: the EDM key name may be a [JsonPropertyName] rename — resolve back to the CLR property.
@@ -7571,13 +8909,63 @@ internal static class OhDataEndpointFactory
                 {
                     generic = rule; // last generic rule for this category wins
                 }
+                // #525: OrdinalIgnoreCase, not Ordinal. Everything this rule governs -- the route
+                // template, the operation segment, every other EDM-identifier lookup in this file --
+                // matches case-insensitively, so an Ordinal comparison here made Invoke("stamp", ...)
+                // against an operation declared `Stamp` resolve to NOTHING. The rule was discarded in
+                // silence and the route fell back to the generic Invoke rule, or -- with no generic
+                // rule -- to no requirement at all. That is a fail-OPEN on an authorization rule,
+                // which is why the comparer alone is not the whole fix: the startup validation below
+                // refuses any named rule that resolves to no declared operation, so a MISSPELLED name
+                // (which no comparer can rescue) cannot evaporate either.
                 else if (boundOperationName is not null &&
-                         string.Equals(rule.BoundOperationName, boundOperationName, StringComparison.Ordinal))
+                         string.Equals(rule.BoundOperationName, boundOperationName, StringComparison.OrdinalIgnoreCase))
                 {
                     named = rule; // a name-specific rule (Invoke("Name", …)) wins over a generic one
                 }
             }
             return named ?? generic;
+        }
+
+        // #487 seam 2: does this profile impose a requirement on ANY category? Only then is a
+        // rule-less category a hole rather than a service that is simply public. Same question
+        // RegistrationRequiresAuthorizationSomewhere asks, one scope in.
+        bool profileRequiresAuthSomewhere =
+            operationAuthRules is not null
+            && operationAuthRules.Any(r => !r.AllowAnonymous && r.Requirements.Count > 0);
+
+        // #487 seam 2: one audit record per category, built lazily and cached, so the dozen routes
+        // that share a category attach the same instance and the Finally convention's dedupe key
+        // does the rest.
+        var categoryAudits = new Dictionary<OhDataOperation, OhDataAnonymousRouteAudit>();
+        OhDataAnonymousRouteAudit? CategoryAudit(OhDataOperation category)
+        {
+            if (categoryAudits.TryGetValue(category, out var cached)) return cached;
+
+            // The selector is spelled out with its own lambda parameter so both halves of the
+            // remedy are copy-pasteable as written -- the AllowAnonymous form is derived from the
+            // same (method, parameter) pair rather than by string-substituting the ellipsis, which
+            // produced `.Invoke(i => x.AllowAnonymous())`.
+            (string label, string selector, string param) = category switch
+            {
+                OhDataOperation.Read => ("read", "Read", "r"),
+                OhDataOperation.Create => ("create", "Create", "c"),
+                OhDataOperation.Update => ("update", "Update", "u"),
+                OhDataOperation.Delete => ("delete", "Delete", "d"),
+                OhDataOperation.Invoke => ("bound function/action invocation", "Invoke", "i"),
+                _ => (category.ToString(), category.ToString(), "x"),
+            };
+
+            var audit = new OhDataAnonymousRouteAudit(
+                Key: $"set:{name}|{category}",
+                Subject: $"the {label} routes of entity set '{name}' are ANONYMOUS.",
+                Detail: $"Its ConfigureAuthorization(…) block names no rule for the " +
+                        $"{category} category, and a category with no rule emits no requirement.",
+                Remedy: $"Add .{selector}({param} => …) with the requirement you intended. If these " +
+                        $"routes are meant to be public, say so with " +
+                        $".{selector}({param} => {param}.AllowAnonymous()) and this warning stops.");
+            categoryAudits[category] = audit;
+            return audit;
         }
 
         // Layer C applies coarse per-route auth. `keyBased` marks routes carrying a {key} segment, to
@@ -7587,7 +8975,27 @@ internal static class OhDataEndpointFactory
         {
             if (operationAuthRules is null) return; // legacy group-auth path governs instead
             OperationAuthRule? rule = ResolveOperationRule(category, boundOperationName);
-            if (rule is null) return; // no rule → inherit any group/global auth (anonymous if none)
+            if (rule is null)
+            {
+                // No rule -> inherit any group/global auth, and be anonymous when there is none.
+                //
+                // #487 seam 2: that "when there is none" is the fail-open, and it is silent. A
+                // profile migrated from RequireAuthorization() -- which covers ALL operations --
+                // to ConfigureAuthorization(a => a.Read(...).Writes(...)) reads as a refinement and
+                // is a WIDENING: nothing names the Invoke category, so every bound function and
+                // action on the set drops to anonymous. Measured on the pre-fix tree, that profile
+                // answered 401 on its collection GET and 204-with-the-handler-executed on both
+                // POST /Set/Action and POST /Set(key)/Action.
+                //
+                // Only a category the profile said NOTHING about is audited. An explicit
+                // AllowAnonymous() produces a non-null rule and never reaches here, which is what
+                // makes the diagnostic silenceable by stating the intent it is asking about.
+                if (profileRequiresAuthSomewhere && CategoryAudit(category) is { } audit)
+                {
+                    rb.WithMetadata(audit);
+                }
+                return;
+            }
             if (rule.AllowAnonymous)
             {
                 rb.AllowAnonymous();
@@ -7607,42 +9015,11 @@ internal static class OhDataEndpointFactory
                 AttachResourceFilter(rb, category, boundOperationName);
             }
 
-            // Named policies apply as separate RequireAuthorization(name) calls (they stack → AND).
-            foreach (var req in rule.Requirements.Where(r => r.Kind == AuthRequirementKind.Policy))
-            {
-                rb.RequireAuthorization(req.Name!);
-            }
-
-            // Inline requirements (authenticated/role/claim) replay onto one AuthorizationPolicyBuilder.
-            var inlineRequirements = rule.Requirements
-                .Where(r => r.Kind is AuthRequirementKind.AuthenticatedUser
-                                   or AuthRequirementKind.Role
-                                   or AuthRequirementKind.Claim)
-                .ToList();
-            if (inlineRequirements.Count > 0)
-            {
-                rb.RequireAuthorization(policy =>
-                {
-                    foreach (var req in inlineRequirements)
-                    {
-                        switch (req.Kind)
-                        {
-                            case AuthRequirementKind.AuthenticatedUser:
-                                policy.RequireAuthenticatedUser();
-                                break;
-                            case AuthRequirementKind.Role:
-                                policy.RequireRole(req.Values!.ToArray());
-                                break;
-                            case AuthRequirementKind.Claim:
-                                if (req.Values is { Count: > 0 })
-                                    policy.RequireClaim(req.Name!, req.Values);
-                                else
-                                    policy.RequireClaim(req.Name!);
-                                break;
-                        }
-                    }
-                });
-            }
+            // #487: the endpoint-gate half is shared with MapUnboundOperations rather than
+            // transcribed there. An unbound operation's rule carries the same AuthRequirement list
+            // this one does, and two replays of one list would be two things that must agree,
+            // derived independently.
+            ApplyAuthRequirements(rb, rule.Requirements);
         }
 
         // #199 Layer B helpers ─────────────────────────────────────────────────
@@ -7704,7 +9081,7 @@ internal static class OhDataEndpointFactory
                     {
                         parsedKey = ODataKeyParser.Parse(keyStr, typeof(TKey));
                     }
-                    catch (FormatException)
+                    catch (ODataKeyFormatException)
                     {
                         return ODataError(400, "BadRequest", $"Invalid key format for {name}: '{keyStr}'", target: "key");
                     }
@@ -7722,16 +9099,149 @@ internal static class OhDataEndpointFactory
             });
         }
 
-        // #199 Layer B: resource checks on Read/Update/Delete load the entity by key, so a Resource
-        // requirement on any of those categories requires a GetById handler. Fail fast at startup.
-        if (operationAuthRules is not null && !source.HasGetById
-            && (CategoryHasResource(OhDataOperation.Read, null)
-                || CategoryHasResource(OhDataOperation.Update, null)
-                || CategoryHasResource(OhDataOperation.Delete, null)))
+        // #525: a named Invoke rule must name a bound operation this profile really declares.
+        //
+        // The comparer fix above closes the MISCASED spelling, which is the shape that was reported.
+        // It cannot close the class: a misspelled name -- the far likelier typo -- still resolves to
+        // nothing under any comparer, and the consequence is identical and identically silent (the
+        // rule is discarded, the route falls back to the generic Invoke rule or to no requirement at
+        // all, and the developer believes the operation is protected). There is no legitimate
+        // configuration in which a rule targets an operation that does not exist, so this is refused
+        // rather than warned about: an authorization rule that does not apply is not a diagnostic
+        // matter.
+        //
+        // Matched with the SAME comparer ResolveOperationRule uses, and it has to be -- a stricter
+        // check here would reject exactly the miscased rules the fix above just made work, which
+        // would be this very bug re-introduced one layer up and wearing an exception. Placed BEFORE
+        // the #486 GetById guard below (which itself resolves rules by name) so a typo is reported
+        // as a typo rather than as a missing GetById handler.
+        //
+        // #546: …and no two named rules may resolve to the SAME declared operation.
+        //
+        // That is the hazard the OrdinalIgnoreCase comparer INTRODUCED, and #525's check could not
+        // see it: it asks only "does this name resolve to a declared operation?", and both members
+        // of a colliding pair do. ResolveOperationRule keeps last-write-wins (`named = rule`), so
+        // two rules that collapse onto one operation make DECLARATION ORDER decide authorization --
+        // measured, `.Invoke("Stamp", RequireRole("admin")).Invoke("stamp", AllowAnonymous())`
+        // served an anonymous invocation 200, where the pre-#525 Ordinal comparer had made that
+        // exact configuration deterministically PROTECTED. Same fail-open direction as #525, same
+        // silence, arrived at from the other side.
+        //
+        // Refused rather than resolved by precedence for the same reason as above: there is no
+        // configuration in which two rules for one operation are meaningful, so picking a winner
+        // would only make the loser's disappearance quieter. It applies to identically-spelled
+        // duplicates too -- the mechanism and the consequence are the same, and the only thing case
+        // changes is how easy the pair is to spot by eye.
+        //
+        // Grouped by the DECLARED operation each rule resolves to, under the same comparer, which
+        // is literally the question ResolveOperationRule answers per route. GENERIC Invoke rules are
+        // deliberately out of scope: `generic = rule` is last-write-wins BY DESIGN there, as it is
+        // for every category selector (All(…) then Invoke(…) is a documented refinement idiom).
+        if (operationAuthRules is not null)
         {
-            throw new InvalidOperationException(
-                $"Entity set '{name}': resource-based authorization (.RequireResource()) on Read/Update/Delete " +
-                "requires a GetById handler to load the entity for the check.");
+            string[] declaredOperationNames = source.BoundFunctions
+                .Concat(source.BoundActions)
+                .Select(o => o.Name)
+                .ToArray();
+
+            // Resolved declared name -> the first rule that claimed it, so the message can name the
+            // pair rather than only the survivor.
+            var claimedBy = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (OperationAuthRule namedRule in operationAuthRules)
+            {
+                if (namedRule.BoundOperationName is null) continue;
+
+                string? resolved = declaredOperationNames.FirstOrDefault(declared => string.Equals(
+                    declared, namedRule.BoundOperationName, StringComparison.OrdinalIgnoreCase));
+
+                if (resolved is null)
+                {
+                    string candidates = declaredOperationNames.Length == 0
+                        ? "This profile declares no bound operation at all."
+                        : "Declared bound operations (matched case-insensitively): " +
+                          string.Join(", ", declaredOperationNames.Select(n => $"'{n}'")) + ".";
+                    throw new InvalidOperationException(
+                        $"Entity set '{name}': the authorization rule Invoke(\"{namedRule.BoundOperationName}\", …) " +
+                        "names an operation this profile does not declare — there is no bound function or " +
+                        "action called that. A named Invoke rule that resolves to nothing is silently " +
+                        "discarded: the route would fall back to the generic Invoke rule, or, when there is " +
+                        $"none, to no authorization requirement at all. {candidates} Correct the name, declare " +
+                        "the operation with BindFunction/BindAction/BindEntityFunction/BindEntityAction, or " +
+                        "remove the rule.");
+                }
+
+                if (claimedBy.TryGetValue(resolved, out string? firstSpelling))
+                {
+                    throw new InvalidOperationException(
+                        $"Entity set '{name}': two authorization rules — Invoke(\"{firstSpelling}\", …) and " +
+                        $"Invoke(\"{namedRule.BoundOperationName}\", …) — both target the bound operation " +
+                        $"'{resolved}'. Named Invoke rules are matched case-insensitively and the LAST one " +
+                        "declared wins, so the earlier rule is silently discarded and the order the two were " +
+                        "written in decides whether the operation is protected. Keep exactly one rule per " +
+                        "operation.");
+                }
+
+                claimedBy[resolved] = namedRule.BoundOperationName;
+            }
+        }
+
+        // #199 Layer B: resource checks on a KEY-BASED route load the entity by key, so a Resource
+        // requirement on such a route requires a GetById handler. Fail fast at startup.
+        //
+        // #486: this used to name Read/Update/Delete only -- three of the five categories that can
+        // reach AttachResourceFilter. The filter also attaches on Create (the key-based
+        // navigation-POST route) and on Invoke (entity-bound functions and actions), and it calls
+        // InvokeGetByIdAsync, i.e. `GetById!.Invoke(...)`. So `.Create(c => c.RequireResource())`
+        // beside a nav-POST handler, or `.Invoke(i => i.RequireResource())` beside an entity-bound
+        // operation, passed startup and then NullReferenced on 100% of requests -- the generic 500
+        // envelope. It fails closed (nothing is exposed), but it is exactly the configuration this
+        // guard exists to make unreachable.
+        //
+        // The condition below asks the question the filter asks: does this profile register a
+        // key-based route in a category whose rule carries a Resource requirement? The
+        // COLLECTION-level members of those two categories are deliberately excluded and are not an
+        // oversight -- the collection POST evaluates its Create requirement inline against the
+        // deserialized model (never through GetById), and a collection-bound operation's route has
+        // no {key} segment for the filter to read, so both are legal without GetById.
+        if (operationAuthRules is not null && !source.HasGetById)
+        {
+            if (CategoryHasResource(OhDataOperation.Read, null)
+                || CategoryHasResource(OhDataOperation.Update, null)
+                || CategoryHasResource(OhDataOperation.Delete, null))
+            {
+                throw new InvalidOperationException(
+                    $"Entity set '{name}': resource-based authorization (.RequireResource()) on Read/Update/Delete " +
+                    "requires a GetById handler to load the entity for the check.");
+            }
+
+            if (CategoryHasResource(OhDataOperation.Create, null)
+                && source.NavigationRoutes.FirstOrDefault(n => n.PostChild is not null) is { } resourceNavPost)
+            {
+                throw new InvalidOperationException(
+                    $"Entity set '{name}': resource-based authorization (.RequireResource()) on Create " +
+                    $"requires a GetById handler. The POST route of navigation property " +
+                    $"'{resourceNavPost.PropertyName}' (POST /{name}({{key}})/{resourceNavPost.PropertyName}) " +
+                    "is key-based, so the check loads the parent entity by key before running. Add a " +
+                    "GetById handler, drop the navigation's post handler, or scope the requirement to " +
+                    "the categories that do not need one.");
+            }
+
+            // Invoke rules can be scoped to a single operation name (Invoke("Name", ...)), so the
+            // question is asked per entity-level operation rather than once for the category.
+            BoundOperationDefinition? resourceEntityOp = source.BoundFunctions.Concat(source.BoundActions)
+                .FirstOrDefault(o => o.IsEntityLevel && CategoryHasResource(OhDataOperation.Invoke, o.Name));
+            if (resourceEntityOp is not null)
+            {
+                string opKind = resourceEntityOp.IsAction ? "action" : "function";
+                string opMethod = resourceEntityOp.IsAction ? "POST" : "GET";
+                throw new InvalidOperationException(
+                    $"Entity set '{name}': resource-based authorization (.RequireResource()) on Invoke " +
+                    $"requires a GetById handler. Entity-bound {opKind} '{resourceEntityOp.Name}' " +
+                    $"({opMethod} /{name}({{key}})/{resourceEntityOp.Name}) is key-based, so the check " +
+                    "loads the entity by key before the operation runs. Add a GetById handler, or scope " +
+                    "the requirement to collection-bound operations only.");
+            }
         }
 
         // #465: a Search handler on a Priority-1 profile is DEAD CODE, and used to be advertised
@@ -7769,7 +9279,7 @@ internal static class OhDataEndpointFactory
             {
                 try
                 {
-                    IResult? capabilityError = CheckCollectionQueryOptionCapabilities(ctx, source);
+                    IResult? capabilityError = CheckCollectionQueryOptionCapabilities(ctx, source, s_collectionImplementedOptions);
                     if (capabilityError is not null) return capabilityError;
 
                     var s = ResolveHandlers(ctx);
@@ -7804,7 +9314,7 @@ internal static class OhDataEndpointFactory
                             $"The value of '$top' ({options.Top.Value}) exceeds the maximum allowed value ({source.MaxTop.Value}).");
                     }
 
-                    var odataResult = await odataSrc.InvokeGetODataQueryableAsync(options, ct);
+                    var odataResult = await AsHandlerFault(odataSrc.InvokeGetODataQueryableAsync(options, ct));
                     var queryable = odataResult.Items is IQueryable<TModel> typedQ
                         ? typedQ
                         : odataResult.Items.Cast<TModel>().AsQueryable();
@@ -7973,11 +9483,11 @@ internal static class OhDataEndpointFactory
             {
                 try
                 {
-                    IResult? capabilityError = CheckCollectionQueryOptionCapabilities(ctx, source);
+                    IResult? capabilityError = CheckCollectionQueryOptionCapabilities(ctx, source, s_collectionImplementedOptions);
                     if (capabilityError is not null) return capabilityError;
 
                     var s = ResolveHandlers(ctx);
-                    var queryable = (IQueryable<TModel>)(await s.InvokeGetQueryableAsync(ct))
+                    var queryable = (IQueryable<TModel>)(await AsHandlerFault(s.InvokeGetQueryableAsync(ct)))
                                     .Cast<TModel>();
 
                     // #402: broad-catch-to-400 around exactly the construction. See TryBuildQueryOptions.
@@ -8005,11 +9515,16 @@ internal static class OhDataEndpointFactory
                     {
                         if (!source.HasSearch)
                         {
+                            // 400, not 501: this route HAS a $search leg (the two lines below
+                            // invoke it), so the functionality is implemented and merely
+                            // unconfigured on this profile — the 400 side of the taxonomy above,
+                            // the same shape as a false capability flag. $search on a route with
+                            // no $search leg at all (/$count, GetById) is 501 by the sigil rule.
                             return ODataError(400, "UnsupportedQueryOption",
                                 "This resource does not support $search. Configure the Search handler to enable it.");
                         }
 
-                        var searchResults = await s.InvokeSearchAsync(searchTermQ.ToString(), ct);
+                        var searchResults = await AsHandlerFault(s.InvokeSearchAsync(searchTermQ.ToString(), ct));
                         var searchItems = searchResults.Cast<TModel>().AsQueryable();
                         // Continue with filter/orderby/top/skip on searchItems
                         queryable = searchItems;
@@ -8724,9 +10239,24 @@ internal static class OhDataEndpointFactory
                     // $top/$skip, by contrast, are pure post-materialization Skip()/Take() — the
                     // same class of operation as the already-live $select/$expand/$count below —
                     // so they are implemented rather than rejected. See docs/query-options.md.
+                    //
+                    // 501, not 400 — CAN'T, not WON'T (see the taxonomy above
+                    // s_collectionImplementedOptions). This path has no IQueryable, so the
+                    // framework cannot apply $filter to this resource under ANY configuration of
+                    // this handler: the refusal is flag-INDEPENDENT, which is exactly why
+                    // CheckCollectionQueryOptionCapabilities is called with checkFilterOrderBy:
+                    // false here — FilterEnabled = true changes nothing on this path. It READS
+                    // like the 400 side because the message names a configuration change
+                    // ("Configure GetQueryable"), but that change supplies a DIFFERENT HANDLER and
+                    // so has the request served by a different route implementation; it does not
+                    // switch this one on. §9.3.1's "functionality not implemented by the OData
+                    // Service", and the existing message is already what its SHOULD asks the body
+                    // to do — it describes the unimplemented functionality. The corollary is that
+                    // $filter is 501 on a GetAll-backed set and 400 on a GetQueryable-backed set
+                    // with FilterEnabled = false; that is correct, not an inconsistency.
                     if (options.Filter is not null || options.OrderBy is not null)
                     {
-                        return ODataError(400, "UnsupportedQueryOption",
+                        return ODataError(501, "UnsupportedQueryOption",
                             "This resource does not support $filter or $orderby. " +
                             "Configure GetQueryable to enable server-side query processing.");
                     }
@@ -8747,7 +10277,8 @@ internal static class OhDataEndpointFactory
                     // above regardless of flag state, since GetAll has no ApplyTo pipeline
                     // to push them down to. $top/$skip need no flag: they are always live,
                     // exactly like on the GetQueryable path.
-                    IResult? capabilityError = CheckCollectionQueryOptionCapabilities(ctx, source, checkFilterOrderBy: false);
+                    IResult? capabilityError = CheckCollectionQueryOptionCapabilities(
+                        ctx, source, s_getAllCollectionImplementedOptions, checkFilterOrderBy: false);
                     if (capabilityError is not null) return capabilityError;
                     ValidatePropertyAllowlists(options, cachedValidationSettings);
                     // #254: reject a nested $top above MaxExpandTop at any depth. GetAll expands
@@ -8764,7 +10295,7 @@ internal static class OhDataEndpointFactory
 
                     // Post-materialization paging for GetAll, applied AFTER the handler call (GetAll
                     // or Search) fills the array and BEFORE $select/$expand serialization.
-                    // @odata.count reflects the PRE-paging total (§11.2.6.5 — unaffected by
+                    // @odata.count reflects the PRE-paging total (§11.2.5.5 — unaffected by
                     // $top/$skip), captured from the array length before paging.
                     //
                     // #201: an OMITTED $top is now capped to MaxTop (or a smaller Prefer:
@@ -8819,11 +10350,12 @@ internal static class OhDataEndpointFactory
                     {
                         if (!source.HasSearch)
                         {
+                            // 400, not 501 — see the identical check on the GetQueryable path.
                             return ODataError(400, "UnsupportedQueryOption",
                                 "This resource does not support $search. Configure the Search handler to enable it.");
                         }
 
-                        var searchResults = await s.InvokeSearchAsync(searchTerm.ToString(), ct);
+                        var searchResults = await AsHandlerFault(s.InvokeSearchAsync(searchTerm.ToString(), ct));
                         object[] searchItems = searchResults.ToArray();
                         var (pagedSearchItems, searchPreTotal, searchNextLink) = ApplyGetAllPaging(searchItems);
 
@@ -8832,7 +10364,7 @@ internal static class OhDataEndpointFactory
                         var searchEnvelope = new Dictionary<string, object?>();
                         searchEnvelope["@odata.context"] = $"{searchBaseUrl}/$metadata#{AppendSelectSuffix(name, searchSelectedProps)}";
                         // Batch 5: include @odata.count for search results when $count=true is
-                        // requested. Leg 1: reflects the pre-paging total, per §11.2.6.5.
+                        // requested. Leg 1: reflects the pre-paging total, per §11.2.5.5.
                         if (options.Count?.Value == true)
                             searchEnvelope["@odata.count"] = searchPreTotal;
                         if (searchNextLink is not null)
@@ -8841,7 +10373,7 @@ internal static class OhDataEndpointFactory
                         return ODataEnvelopeResult(searchEnvelope, jsonOptions);
                     }
 
-                    object? result = await s.InvokeGetAllAsync(ct);
+                    object? result = await AsHandlerFault(s.InvokeGetAllAsync(ct));
                     var enumerable = result as IEnumerable<TModel> ?? Enumerable.Empty<TModel>();
                     var rawItems = enumerable.ToArray();
                     var (pagedItems, preTotal, nextLink) = ApplyGetAllPaging(rawItems);
@@ -8851,7 +10383,7 @@ internal static class OhDataEndpointFactory
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
                     envelope["@odata.context"] = $"{baseUrl}/$metadata#{AppendSelectSuffix(name, selectedProps)}";
-                    // Batch 5 / Leg 1: §11.2.6.5 — include @odata.count when $count=true is
+                    // Batch 5 / Leg 1: §11.2.5.5 — include @odata.count when $count=true is
                     // requested on the GetAll path, reflecting the pre-paging total.
                     if (options.Count?.Value == true)
                         envelope["@odata.count"] = preTotal;
@@ -8901,6 +10433,18 @@ internal static class OhDataEndpointFactory
             {
                 try
                 {
+                    // #353: this route applies $filter and counts; it does not search or
+                    // aggregate. It used to accept and DISCARD everything it does not apply, so
+                    // `/$count?$search=alpha` answered 200 with the unfiltered total while the
+                    // sibling collection route honoured (or rejected) the same option. The options
+                    // §11.2.9 says MUST NOT affect a count are accepted and ignored -- that
+                    // clause's specified behaviour, not a shortfall. See
+                    // s_countRouteImplementedOptions for the partition and the $select/$format
+                    // rulings.
+                    IResult? countUnsupported =
+                        CheckUnsupportedSystemQueryOptions(ctx, s_countRouteImplementedOptions);
+                    if (countUnsupported is not null) return countUnsupported;
+
                     // B1 fix: $/count's own metadata advertises FilterEnabled: source.FilterEnabled
                     // (the only query option this route actually applies), so enforce it — a
                     // disabled $filter was previously applied unconditionally below.
@@ -8921,7 +10465,7 @@ internal static class OhDataEndpointFactory
                     if (s is IODataEntitySetEndpointSource odataCountSrc && odataCountSrc.HasGetODataQueryable)
                     {
                         // Priority 1 profiles apply query options themselves; don't re-apply $filter.
-                        var countResult = await odataCountSrc.InvokeGetODataQueryableAsync(options, ct);
+                        var countResult = await AsHandlerFault(odataCountSrc.InvokeGetODataQueryableAsync(options, ct));
                         var queryable = countResult.Items is IQueryable<TModel> tq
                             ? tq
                             : countResult.Items.Cast<TModel>().AsQueryable();
@@ -8931,7 +10475,7 @@ internal static class OhDataEndpointFactory
                     }
                     if (source.HasGetQueryable)
                     {
-                        var q = (IQueryable<TModel>)(await s.InvokeGetQueryableAsync(ct)).Cast<TModel>();
+                        var q = (IQueryable<TModel>)(await AsHandlerFault(s.InvokeGetQueryableAsync(ct))).Cast<TModel>();
                         var filtered = options.Filter is not null
                             ? (IQueryable<TModel>)options.Filter.ApplyTo(q, cachedCountSettings)
                             : q;
@@ -8942,11 +10486,15 @@ internal static class OhDataEndpointFactory
                     }
                     if (options.Filter is not null)
                     {
-                        return ODataError(400, "UnsupportedQueryOption",
+                        // 501 for the same reason the sibling collection route's $filter/$orderby
+                        // refusal is: this branch is reached only when the profile has no
+                        // IQueryable source, so there is no filter code on the path and no flag
+                        // that turns one on. Flag-independent => unimplemented => §9.3.1.
+                        return ODataError(501, "UnsupportedQueryOption",
                             "$filter is not supported on this resource. Configure GetQueryable to enable server-side filtering.");
                     }
 
-                    var items = await s.InvokeGetAllAsync(ct) as IEnumerable<TModel> ?? Enumerable.Empty<TModel>();
+                    var items = await AsHandlerFault(s.InvokeGetAllAsync(ct)) as IEnumerable<TModel> ?? Enumerable.Empty<TModel>();
                     // Fast path for ICollection (List, Array, etc.) — no enumeration needed.
                     long count = items is ICollection<TModel> coll
                         ? (long)coll.Count
@@ -8966,7 +10514,7 @@ internal static class OhDataEndpointFactory
                 }
             }).WithTags(name).Produces<long>(200, "text/plain").Produces(400)
               .WithMetadata(new OhDataQueryOptionsMetadata(
-                  // #467 (F3): the GetAll fallback branch above returns 400 UnsupportedQueryOption
+                  // #467 (F3): the GetAll fallback branch above returns 501 UnsupportedQueryOption
                   // for any $filter regardless of the flag -- there is no IQueryable to apply one
                   // to. Only the Priority-1 and GetQueryable branches actually honour it, so the
                   // advertisement is gated on the source, not on the flag alone. This is the same
@@ -8978,14 +10526,20 @@ internal static class OhDataEndpointFactory
                   ExpandEnabled: false,
                   // #467 (F2): CountEnabled means "the $count OPTION is honoured here", not "this
                   // route is a count". /$count returns a bare text/plain number: there is no
-                  // envelope to carry an inline @odata.count, and the option is ignored. It used
-                  // to be set true to say "this route IS the count", which the OpenAPI
-                  // transformers -- the metadata's only consumers -- read as the other meaning
-                  // and documented a $count query parameter that does nothing.
+                  // envelope to carry an inline @odata.count. It used to be set true to say "this
+                  // route IS the count", which the OpenAPI transformers -- the metadata's only
+                  // consumers -- read as the other meaning and documented a $count query parameter
+                  // that does nothing. $count is now REFUSED here rather than merely undocumented,
+                  // so false is doubly right.
                   CountEnabled: false,
                   SearchEnabled: false,
                   MaxTop: null,
                   // #467 (F2): /$count applies neither $top nor $skip. It counts the whole set.
+                  // The field means "this route HONOURS this option", so false is right even
+                  // though both are ACCEPTED: §11.2.9 requires them to be present and IGNORED, and
+                  // documenting a parameter that provably cannot change the response is the
+                  // advertise-vs-serve mismatch #467 exists to remove. See
+                  // s_countRouteImplementedOptions.
                   TopSkipSupported: false));
             ApplyOperationAuth(countCollRb, OhDataOperation.Read, keyBased: false);
         }
@@ -9003,6 +10557,17 @@ internal static class OhDataEndpointFactory
                     // collection routes, then actually expand below via the same pipeline the
                     // collection GET uses (batch-handler included), for context/serialization
                     // parity between GET /{Set} and GET /{Set}({key}).
+                    // #380: this route implements $select and $expand and NOTHING else, and used
+                    // to reject nothing at all — $filter/$orderby/$count/$top/$apply were each
+                    // accepted and silently discarded under a 200, so a client that filtered a
+                    // single entity reasonably concluded the filter had been applied. The check
+                    // reads query-string KEYS only (no parsing, no ODataQueryOptions) and
+                    // short-circuits on an empty query string, so the zero-cost no-option path
+                    // this route is built around is preserved.
+                    IResult? unsupportedOption =
+                        CheckUnsupportedSystemQueryOptions(ctx, s_getByIdImplementedOptions);
+                    if (unsupportedOption is not null) return unsupportedOption;
+
                     bool hasSelect = ctx.Request.Query.ContainsKey("$select");
                     bool hasExpand = ctx.Request.Query.ContainsKey("$expand");
                     IResult? selectCapabilityError = CheckDisabledQueryOption(
@@ -9049,11 +10614,22 @@ internal static class OhDataEndpointFactory
                             : null;
                     }
 
-                    object? result = await s.InvokeGetByIdAsync(parsedKey!, ct);
+                    object? result = await AsHandlerFault(s.InvokeGetByIdAsync(parsedKey!, ct));
                     string? etagValue = null;
                     if (result is not null && source.HasETag)
                     {
-                        etagValue = s.InvokeGetETag(result);
+                        // #496 finding 4: the profile's ETag selector is user code inside this
+                        // route's `catch (ODataException)`. Inline rather than through
+                        // AsHandlerFault's Task overload -- this one is synchronous, and a lambda
+                        // would allocate a closure per request on the hottest read route.
+                        try
+                        {
+                            etagValue = s.InvokeGetETag(result);
+                        }
+                        catch (Exception ex) when (HandlerFaultException.IsMisclassifiable(ex))
+                        {
+                            throw new HandlerFaultException(ex);
+                        }
                         ctx.Response.Headers.ETag = $"\"{etagValue}\"";
 
                         // Gap 2: If-None-Match for conditional GET (§8.2.5)
@@ -9109,7 +10685,7 @@ internal static class OhDataEndpointFactory
 
                     return ODataEntityResult(ctx, prefix, name, result, jsonOptions, registration.EdmModel, odataId: odataId, etag: etagValue, selectedProps: selectedProps, omitNavsForType: rootEdmType);
                 }
-                catch (FormatException ex)
+                catch (ODataKeyFormatException ex)
                 {
                     return BadKeyError(logger, ex, key, name);
                 }
@@ -9127,8 +10703,12 @@ internal static class OhDataEndpointFactory
                   CountEnabled: false,
                   SearchEnabled: false,
                   MaxTop: null,
-                  // #467 (F2): a single-entity read has nothing to page. $top/$skip are ignored
-                  // here (200 with the whole entity), so they must not be documented.
+                  // #467 (F2): a single-entity read has nothing to page, so this route does not
+                  // honour $top/$skip and must not document them. Since #380 it does not ignore
+                  // them either — they are not in s_getByIdImplementedOptions and are refused with
+                  // 501 UnsupportedQueryOption. The metadata value is the same; what changed is
+                  // that "not documented" and "not accepted" now agree, which is the whole point of
+                  // #467's rule that a field means "this route honours this option".
                   TopSkipSupported: false));
             ApplyOperationAuth(rb, OhDataOperation.Read);
         }
@@ -9154,8 +10734,9 @@ internal static class OhDataEndpointFactory
         // `[JsonInclude] { get; private set; }` navigation, which STJ binds perfectly well — that
         // OPENS a deep-write hole rather than closing one. What changed instead is that the strip is
         // GATED on the navigation being NAMED IN THE REQUEST BODY (deepWriteNavByBodyName and
-        // CollectPresentNavClrNames, below), which makes the filter's over-reach harmless: the gate
-        // never fires for a member the client did not send, whatever its accessors look like.
+        // CollectPresentBodyMemberClrNames, below), which makes the filter's over-reach harmless:
+        // the gate never fires for a member the client did not send, whatever its accessors look
+        // like.
         //
         // The follow-on claim about PATCH is true on its own terms and is kept: Delta<T>'s
         // InitializeProperties requires a public getter AND setter, so a setter-less navigation
@@ -9218,85 +10799,169 @@ internal static class OhDataEndpointFactory
             deepWriteNavPropsToStrip.Select(p => p.Name), StringComparer.Ordinal);
 
         // #506: the body-presence gate's lookup table — every JSON name that can NAME one of the
-        // navigations above, mapped to the property it names. Built once at startup from the same
-        // array, so "is this body key a navigation" has exactly one answer on the write path.
-        //
-        // #511 REPLACED THE PRIMARY KEY WITH THE BINDER'S OWN ANSWER, and the reason is the defect
-        // class rather than the one policy that exposed it. The table used to be keyed by
-        // ODataPropertyNaming.ResolveEdmName (= [JsonPropertyName] ?? CLR name — deliberately
-        // POLICY-FREE, because $metadata advertises the CLR identifier whatever casing payloads use,
-        // OData §4.4) plus the CLR name. The binder matches the [JsonPropertyName] ?? POLICY-CONVERTED
-        // name. camelCase differs from the CLR name only by case, so the OrdinalIgnoreCase comparer
-        // hid the divergence for the only policy anyone had configured; SnakeCaseLower and
-        // KebabCaseLower do not. Measured: with SnakeCaseLower and a `BackOrders` navigation, a body
-        // naming `back_orders` was BOUND by the deserializer and MISSED by this table, so the strip
-        // never fired — #504's hazard, reopened by a spelling.
-        //
-        // Adding PropertyNamingPolicy?.ConvertName(...) as a third key would have closed that one
-        // policy. It would not have closed the CLASS, which is "two things that must agree, derived
-        // independently" — #454's exact shape, in this same release. So the primary key is now read
-        // OFF THE CONTRACT the binder resolves: JsonTypeInfo.Properties[].Name is, by construction,
-        // the string System.Text.Json matches a body key against, whatever produced it — a naming
-        // policy, a [JsonPropertyName], a custom TypeInfoResolver modifier, or a source-generated
-        // contract. There is no second derivation left to drift.
-        //
-        // HasSameMetadataDefinitionAs, never == / ReferenceEquals, to pair a JsonPropertyInfo back to
-        // its PropertyInfo. PropertyInfo equality also compares ReflectedType, and for an INHERITED
-        // member the two reflection walks disagree about it — typeof(TModel).GetProperties() reports
-        // TModel while STJ's AttributeProvider reports the declaring base. That exact comparison bug
-        // is #462's third defect (IsNavVisibleInBaseOptions), measured on .NET 10.0.11; it would show
-        // up here as an inherited navigation silently losing its contract key.
-        //
-        // The comparer follows the binder too, the way IgnoredPropertyJsonOptions.WithheldNameComparer
-        // does: OrdinalIgnoreCase whenever PropertyNameCaseInsensitive is set — which is always in
-        // practice (the fallback options set it explicitly and a host's come from
-        // JsonSerializerDefaults.Web), but it is READ rather than assumed, because a table wider than
-        // the binder strips a navigation the binder never bound, which is #506's destruction case.
-        //
-        // The EDM name and the CLR name STAY, demoted to non-overwriting aliases. They are what
-        // FindClrPropertyByEdmName resolves through, which is what the PATCH loop uses, so dropping
-        // them would make a [JsonPropertyName]-renamed navigation named by its CLR name behave
-        // differently on PATCH than on POST/PUT — a per-verb divergence to fix a per-host one. On a
-        // default host every alias collapses onto the contract key under the comparer, so nothing
-        // about the shipped behaviour moves.
+        // navigations above, mapped to the property it names. BuildBinderBodyNameTable owns the
+        // derivation (and the reasoning); see it for why the primary key is the binder's own
+        // contract name rather than the EDM name (#511).
         //
         // This is a lookup TABLE and not a call to FindClrPropertyByEdmName per body key on purpose.
         // That helper memoizes on (Type, string) in a process-wide ConcurrentDictionary keyed by the
         // exact string handed in, so calling it with client-supplied names would let a caller grow
         // that cache without bound. PATCH already does (pre-existing, and out of scope here); POST
         // and PUT must not join it.
-        var deepWriteNavByBodyName = new Dictionary<string, PropertyInfo>(
-            (jsonOptions ?? _pascalCaseSerializerOptions).PropertyNameCaseInsensitive
-                ? StringComparer.OrdinalIgnoreCase
-                : StringComparer.Ordinal);
-
-        if (deepWriteNavPropsToStrip.Length > 0)
-        {
-            JsonTypeInfo? writeContract = TryResolveWriteContract(typeof(TModel), jsonOptions);
-            if (writeContract is not null)
-            {
-                foreach (JsonPropertyInfo contractProp in writeContract.Properties)
-                {
-                    if (contractProp.AttributeProvider is not PropertyInfo clrMember) continue;
-                    foreach (PropertyInfo navProp in deepWriteNavPropsToStrip)
-                    {
-                        if (!clrMember.HasSameMetadataDefinitionAs(navProp)) continue;
-                        deepWriteNavByBodyName[contractProp.Name] = navProp;
-                        break;
-                    }
-                }
-            }
-        }
-
-        foreach (PropertyInfo navProp in deepWriteNavPropsToStrip)
-            deepWriteNavByBodyName.TryAdd(ODataPropertyNaming.ResolveEdmName(navProp), navProp);
-        foreach (PropertyInfo navProp in deepWriteNavPropsToStrip)
-            deepWriteNavByBodyName.TryAdd(navProp.Name, navProp);
+        Dictionary<string, PropertyInfo> deepWriteNavByBodyName = BuildBinderBodyNameTable(
+            Array.ConvertAll(
+                deepWriteNavPropsToStrip,
+                p => (ODataPropertyNaming.ResolveEdmName(p), p)),
+            typeof(TModel),
+            jsonOptions);
 
         // The gate only has work to do when there is something to strip AND the profile has not
         // opted in. Hoisted so neither write route pays a scan it would discard — a model with no
         // navigations at all (the common shape) never walks a body for this.
         bool deepWriteNavGateApplies = !source.AllowDeepWrites && deepWriteNavPropsToStrip.Length > 0;
+
+        // #514: derived once per entity set at startup, because JsonDocumentOptions is an immutable
+        // struct of three values and nothing about it varies per request.
+        JsonDocumentOptions binderParityDocumentOptions =
+            CreateBinderParityDocumentOptions(jsonOptions);
+
+        // #510: PATCH's own body-name lookup table — the same move #506 made for the deep-write gate
+        // on POST/PUT, now applied to the one route that was left calling the memoizing helper with
+        // client-supplied strings.
+        //
+        // ODataPropertyNaming.FindClrPropertyByEdmName memoizes on (Type, string) in a PROCESS-WIDE
+        // ConcurrentDictionary keyed by the caller's exact string, and the PATCH delta loop called it
+        // once per BODY PROPERTY NAME. The lookup is what caches, not the result, so a caller could
+        // grow that dictionary without bound by sending bodies full of distinct unmatched keys —
+        // each one a permanent entry for the life of the process. No single request costs anything
+        // worth measuring; the growth is cumulative and never reclaimed. That is out of line with the
+        // posture the rest of the framework takes (OpenTypeJsonOptions' ValidatedKeys cache is capped
+        // at 1024 entries and memoises non-ASCII keys only, with the reasoning written out).
+        //
+        // Option 3 of the three the issue lists, and the one the write path was already heading
+        // toward: the names PATCH can encounter are now bounded by the MODEL rather than by the
+        // request. Nothing else changes — capping the shared cache or refusing to cache misses would
+        // both have made a hot READ-path helper slower to close a WRITE-path hole.
+        //
+        // #510 built the table from the same reflection walk (public instance, non-indexer), keyed
+        // EDM name first and CLR name second as non-overwriting aliases — which is exactly
+        // FindClrPropertyByEdmName's two-stage FirstOrDefault, since insertion follows
+        // GetProperties() order and TryAdd keeps the first writer. That was deliberately behaviour-
+        // preserving, and it preserved a defect along with the behaviour.
+        //
+        // #536 GAVE IT THE BINDER'S OWN ANSWER AS ITS PRIMARY KEY. ⚠ BREAKING: PATCH now binds body
+        // keys it silently dropped before. This is #511 manifestation (2) surviving on one route.
+        // The EDM name is deliberately POLICY-FREE ($metadata advertises the CLR identifier whatever
+        // casing payloads use, OData §4.4), while the VALUE this loop binds is deserialized with the
+        // registration's serializer options — so under a non-case-preserving PropertyNamingPolicy
+        // the two disagreed and PATCH answered 200 having changed nothing. camelCase differs from
+        // the CLR name only by case, so the OrdinalIgnoreCase comparer hid it for the one policy
+        // anyone had configured; SnakeCaseLower and KebabCaseLower did not. Measured: with
+        // SnakeCaseLower, PATCH {"first_name":"x"} against a `FirstName` property was a 200 no-op.
+        //
+        // Direction: fail-CLOSED on the write (the change is dropped, not applied), so it is data
+        // loss under a 200 rather than an unauthorized mutation — the mirror of #511's direction,
+        // and still a silent wrong answer.
+        //
+        // Fixed the way #511 fixed the deep-write table, and for the same reason: adding
+        // PropertyNamingPolicy?.ConvertName(...) as a third key closes one policy, not the CLASS,
+        // which is "two things that must agree, derived independently" (#454's shape). The primary
+        // key is read OFF THE CONTRACT the binder resolves. JsonTypeInfo.Properties[].Name is, by
+        // construction, the string System.Text.Json matches a body key against, whatever produced it
+        // — a naming policy, a [JsonPropertyName], a custom TypeInfoResolver modifier, or a
+        // source-generated contract — so there is no second derivation left to drift.
+        //
+        // HasSameMetadataDefinitionAs, never == / ReferenceEquals, to pair a JsonPropertyInfo back
+        // to its PropertyInfo. PropertyInfo equality also compares ReflectedType, and for an
+        // INHERITED member the two reflection walks disagree about it — typeof(TModel).GetProperties()
+        // reports TModel while STJ's AttributeProvider reports the declaring base. That is #462's
+        // third defect, measured on .NET 10.0.11; here it would show up as an inherited property
+        // silently losing its contract key, i.e. this very defect surviving on one member.
+        //
+        // The EDM name and the CLR name STAY, demoted to non-overwriting aliases, exactly as in
+        // deepWriteNavByBodyName. FindClrPropertyByEdmName is what the rest of the framework resolves
+        // through, so dropping them would trade a per-host divergence for a per-verb one. On a
+        // default host every alias collapses onto the contract key under the comparer, so nothing
+        // shipped moves.
+        //
+        // The comparer stays OrdinalIgnoreCase UNCONDITIONALLY and does NOT follow
+        // PropertyNameCaseInsensitive the way deepWriteNavByBodyName's does. The two tables answer
+        // different questions. That one shadows a separate reader (the deserializer), so a table
+        // wider than the binder strips a navigation the binder never bound — #506's destruction
+        // case. This table has no reader to shadow: PATCH enumerates the body's own members and
+        // deserializes each VALUE individually, so the table IS the matcher for the root object.
+        // Narrowing it to Ordinal on a host that cleared the flag would change what PATCH binds in a
+        // direction #536 does not ask for, and would break the FindClrPropertyByEdmName parity the
+        // aliases exist to preserve.
+        //
+        // A property the contract does not carry gets no contract key — an Ignore()d one, which
+        // IgnoredPropertyJsonOptions REMOVES from typeInfo.Properties. It keeps its EDM/CLR aliases
+        // and the loop below still skips it via IgnoredPropertyNames, so the widening cannot make a
+        // withheld property newly bindable under a policy spelling.
+        //
+        // This is a lookup TABLE and not a call to FindClrPropertyByEdmName per body key on purpose;
+        // that is #510's reason and it is unchanged. The helper memoizes on (Type, string) in a
+        // process-wide ConcurrentDictionary keyed by the exact string handed in, and the PATCH delta
+        // loop called it once per BODY PROPERTY NAME — so a caller could grow that dictionary
+        // without bound by sending bodies full of distinct unmatched keys, each a permanent entry
+        // for the life of the process. The names PATCH can encounter are bounded by the MODEL.
+        var patchPropByBodyName = new Dictionary<string, PropertyInfo>(StringComparer.OrdinalIgnoreCase);
+        PropertyInfo[] patchCandidateProps = typeof(TModel)
+            .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(p => p.GetIndexParameters().Length == 0)
+            .ToArray();
+
+        JsonTypeInfo? patchWriteContract = TryResolveWriteContract(typeof(TModel), jsonOptions);
+        if (patchWriteContract is not null)
+        {
+            foreach (JsonPropertyInfo contractProp in patchWriteContract.Properties)
+            {
+                if (contractProp.AttributeProvider is not PropertyInfo clrMember) continue;
+                PropertyInfo? match = patchCandidateProps.FirstOrDefault(
+                    candidate => clrMember.HasSameMetadataDefinitionAs(candidate));
+                if (match is not null) patchPropByBodyName[contractProp.Name] = match;
+            }
+        }
+
+        foreach (PropertyInfo p in patchCandidateProps)
+            patchPropByBodyName.TryAdd(ODataPropertyNaming.ResolveEdmName(p), p);
+        foreach (PropertyInfo p in patchCandidateProps)
+            patchPropByBodyName.TryAdd(p.Name, p);
+
+        // Local: the table's own accessor, so every PATCH-side resolution goes through one line.
+        PropertyInfo? ResolvePatchBodyProperty(string bodyName) =>
+            patchPropByBodyName.TryGetValue(bodyName, out PropertyInfo? found) ? found : null;
+
+        // #355: the EDM's own Nullable="false" structural properties for this entity set, resolved
+        // once at startup. Empty (so every check below is a length-0 loop) when the profile opts
+        // out, which is the shape that keeps an opted-out registration paying nothing.
+        EdmRequiredProperty[] edmRequiredProps = source.RequestBodyNullabilityValidationEnabled
+            ? BuildEdmRequiredProperties(rootEdmType, typeof(TModel))
+            : Array.Empty<EdmRequiredProperty>();
+
+        // #544: the spellings a body could name those properties by — the same builder the
+        // deep-write strip's table comes from, because the question is the same one. Empty (and
+        // never consulted) when there is nothing to check, so the gate below costs an opted-out or
+        // unconstrained entity set exactly one bool test per write.
+        Dictionary<string, PropertyInfo> edmRequiredPropByBodyName = BuildBinderBodyNameTable(
+            Array.ConvertAll(edmRequiredProps, p => (p.EdmName, p.Clr)),
+            typeof(TModel),
+            jsonOptions);
+        bool edmRequiredGateApplies = edmRequiredProps.Length > 0;
+
+        // #355: the same answer as a name set, for the structural-property write/delete routes,
+        // which ask about ONE named property rather than validating a whole instance. Includes the
+        // key (which edmRequiredProps deliberately excludes) because those routes do not reach the
+        // key — it has its own KeyImmutableError stubs — and leaving it out here would be a claim
+        // about the key that this set is not making.
+        var edmNonNullablePropertyNames = new HashSet<string>(StringComparer.Ordinal);
+        if (source.RequestBodyNullabilityValidationEnabled && rootEdmType is not null)
+        {
+            foreach (IEdmStructuralProperty edmProp in rootEdmType.StructuralProperties())
+            {
+                if (!edmProp.Type.IsNullable) edmNonNullablePropertyNames.Add(edmProp.Name);
+            }
+        }
 
         if (source.HasPost)
         {
@@ -9309,7 +10974,10 @@ internal static class OhDataEndpointFactory
                 JsonDocument document;
                 try
                 {
-                    document = await JsonDocument.ParseAsync(ctx.Request.Body, cancellationToken: ct);
+                    // #514: read the body the way the binder reads it — see
+                    // CreateBinderParityDocumentOptions.
+                    document = await JsonDocument.ParseAsync(
+                        ctx.Request.Body, binderParityDocumentOptions, ct);
                 }
                 catch (JsonException ex)
                 {
@@ -9372,13 +11040,30 @@ internal static class OhDataEndpointFactory
                     // the two differ. The gate must see the body the binder saw.
                     if (deepWriteNavGateApplies)
                     {
-                        HashSet<string> bodyNavClrNames =
-                            CollectPresentNavClrNames(postPrepared.Body, deepWriteNavByBodyName);
+                        HashSet<string> bodyNavClrNames = CollectPresentBodyMemberClrNames(
+                            postPrepared.Body, deepWriteNavByBodyName);
                         foreach (var navProp in deepWriteNavPropsToStrip)
                         {
                             if (bodyNavClrNames.Contains(navProp.Name)) navProp.SetValue(model, null);
                         }
                     }
+
+                    // #355: the body must not contradict the type the framework's own $metadata
+                    // publishes. Below the strip and above everything that reads the model, so the
+                    // check sees exactly what the handler would have received — and above
+                    // CheckResourceAuthAsync deliberately: a malformed body is a client error
+                    // regardless of who sent it, and evaluating a resource policy against an
+                    // instance the service already knows is invalid tells the policy nothing.
+                    //
+                    // #544: scoped to the properties this body NAMED. postPrepared.Body for the same
+                    // reason the strip above reads it — it is the element the deserializer bound.
+                    HashSet<string>? postRequiredNamed = edmRequiredGateApplies
+                        ? CollectPresentBodyMemberClrNames(
+                            postPrepared.Body, edmRequiredPropByBodyName)
+                        : null;
+                    IResult? postNullabilityFail =
+                        ValidateEdmRequiredProperties(edmRequiredProps, model, postRequiredNamed);
+                    if (postNullabilityFail is not null) return postNullabilityFail;
 
                     // #199 Layer B: resource-based Create auth runs against the incoming (pre-persist)
                     // entity — there is no stored row yet, so the collection POST cannot use the
@@ -9389,7 +11074,34 @@ internal static class OhDataEndpointFactory
                     var s = ResolveHandlers(ctx);
                     logger?.LogDebug("POST {Prefix}/{Name}", prefix, name);
                     object? result = await s.InvokePostAsync(model, ct);
-                    if (result is null) return ODataError(400, "BadRequest", "Post handler returned null.");
+                    if (result is null)
+                    {
+                        // #496 finding 1: a null return is a SERVER-side contract violation, not a
+                        // statement about the request, and this used to answer
+                        // 400 {"code":"BadRequest","message":"Post handler returned null."} --
+                        // the client blamed for the server's own bug, with the server's handler
+                        // named back to it in the message. It was also the only 4xx null policy in
+                        // the framework: GetAll -> 200 with an empty collection, GetById/PUT/PATCH
+                        // -> 404, a bound operation -> 204.
+                        //
+                        // Throwing hands it to the group-level filter, which is the single place
+                        // that decides what an unhandled server fault looks like: the real
+                        // exception logged at Error, and a 500 carrying the OData error envelope
+                        // with a generic message. Same shape as DeltaFactory's TrySetPropertyValue
+                        // assertion -- after the framework's own checks a null here means the
+                        // handler broke its contract, so it is an invariant assertion rather than
+                        // an error path.
+                        //
+                        // A profile that wants to REJECT a create deliberately has to do it BEFORE
+                        // the handler: Post is typed Task<TModel?> -- as is every other entity-set
+                        // handler delegate -- so it cannot return an IResult, and there is no
+                        // "return an ODataError from the handler" idiom available here. Use a
+                        // Create authorization rule, RequestBodyNullabilityValidationEnabled, or
+                        // throw, which is this same 500.
+                        throw new InvalidOperationException(
+                            $"The Post handler for entity set '{name}' returned null. Post must " +
+                            "return the created entity.");
+                    }
                     string? postEtag = null;
                     if (source.HasETag)
                     {
@@ -9476,6 +11188,12 @@ internal static class OhDataEndpointFactory
                     // that keeps the branches from paying for a scan they would discard.
                     HashSet<string>? bodyNavClrNames = null;
 
+                    // #544: and which required properties it named, captured on the same two
+                    // branches and for the same reason. Null is "the body named nothing", which is
+                    // the answer that reports nothing, so a branch that never assigns cannot
+                    // accidentally report.
+                    HashSet<string>? bodyRequiredNamed = null;
+
                     if (registration.OpenTypesActive)
                     {
                         // #389: dynamic-property names are policed BEFORE binding, and that check
@@ -9487,8 +11205,10 @@ internal static class OhDataEndpointFactory
                         // types stopped being byte-identical to an opted-out one (#389 L1): the two
                         // reads report a malformed body differently, JsonDocument.ParseAsync
                         // omitting the "Path: $" that JsonSerializer.DeserializeAsync includes.
-                        using JsonDocument putDocument =
-                            await JsonDocument.ParseAsync(ctx.Request.Body, cancellationToken: ct);
+                        // #514: read the body the way the binder reads it — see
+                        // CreateBinderParityDocumentOptions.
+                        using JsonDocument putDocument = await JsonDocument.ParseAsync(
+                            ctx.Request.Body, binderParityDocumentOptions, ct);
                         using PreparedWriteBody putPrepared = PrepareWriteBody(
                             registration, putDocument.RootElement, typeof(TModel), jsonOptions);
                         if (putPrepared.Error is not null) return putPrepared.Error;
@@ -9496,8 +11216,13 @@ internal static class OhDataEndpointFactory
                         // it — it is what Deserialize binds on the next line.
                         if (deepWriteNavGateApplies)
                         {
-                            bodyNavClrNames =
-                                CollectPresentNavClrNames(putPrepared.Body, deepWriteNavByBodyName);
+                            bodyNavClrNames = CollectPresentBodyMemberClrNames(
+                                putPrepared.Body, deepWriteNavByBodyName);
+                        }
+                        if (edmRequiredGateApplies)
+                        {
+                            bodyRequiredNamed = CollectPresentBodyMemberClrNames(
+                                putPrepared.Body, edmRequiredPropByBodyName);
                         }
                         model = putPrepared.Body.Deserialize<TModel>(jsonOptions);
                     }
@@ -9520,14 +11245,24 @@ internal static class OhDataEndpointFactory
 
                         // #506: the second reader over the same buffer, and it must be as
                         // non-authoritative about malformed input as the first one — see
-                        // CollectPresentNavClrNames(ReadOnlySpan<byte>). Reads GetBuffer() rather
-                        // than the stream, so putBuffered.Position stays at 0 for the deserializer
-                        // below and the DeserializeAsync(Stream) overload #389 L1 pins is untouched.
+                        // CollectPresentBodyMemberClrNames(ReadOnlySpan<byte>). Reads GetBuffer()
+                        // rather than the stream, so putBuffered.Position stays at 0 for the
+                        // below and the DeserializeAsync(Stream) overload #389 L1 pins is
+                        // untouched.
                         if (deepWriteNavGateApplies)
                         {
-                            bodyNavClrNames = CollectPresentNavClrNames(
+                            bodyNavClrNames = CollectPresentBodyMemberClrNames(
                                 putBuffered.GetBuffer().AsSpan(0, (int)putBuffered.Length),
                                 deepWriteNavByBodyName,
+                                jsonOptions);
+                        }
+
+                        // #544: the same buffer, the same reader, the other table.
+                        if (edmRequiredGateApplies)
+                        {
+                            bodyRequiredNamed = CollectPresentBodyMemberClrNames(
+                                putBuffered.GetBuffer().AsSpan(0, (int)putBuffered.Length),
+                                edmRequiredPropByBodyName,
                                 jsonOptions);
                         }
 
@@ -9560,6 +11295,18 @@ internal static class OhDataEndpointFactory
                             if (bodyNavClrNames.Contains(navProp.Name)) navProp.SetValue(model, null);
                         }
                     }
+
+                    // #355/#544: an explicit null for a Nullable="false" property is refused here
+                    // too. PUT is the ONE verb with a clause about omitted properties at all
+                    // (§11.4.3), and that clause does not ask for a 400: it says a missing non-key,
+                    // updatable structural property "MUST be set to [its] default value", which is
+                    // the handler's business, not the boundary's. See ValidateEdmRequiredProperties.
+                    // Grouped with the key-mismatch check below
+                    // rather than after the precondition gate, following this route's existing
+                    // ordering (body shape first, then If-Match).
+                    IResult? putNullabilityFail =
+                        ValidateEdmRequiredProperties(edmRequiredProps, model, bodyRequiredNamed);
+                    if (putNullabilityFail is not null) return putNullabilityFail;
 
                     string bodyKeyStr = s.InvokeGetKeyString(model);
                     string parsedKeyStr = string.Format(CultureInfo.InvariantCulture, "{0}", parsedKey);
@@ -9633,7 +11380,7 @@ internal static class OhDataEndpointFactory
                 {
                     return ODataError(400, "InvalidBody", ex.Message);
                 }
-                catch (FormatException ex)
+                catch (ODataKeyFormatException ex)
                 {
                     return BadKeyError(logger, ex, key, name);
                 }
@@ -9702,8 +11449,13 @@ internal static class OhDataEndpointFactory
                     //
                     // A body that omits the key is still valid -- PATCH is a partial update and the
                     // URL key is authoritative.
-                    PropertyInfo? patchKeyClrProp =
-                        ODataPropertyNaming.FindClrPropertyByEdmName(typeof(TModel), source.KeyPropertyName);
+                    //
+                    // #510: both halves resolve through the startup table now instead of through
+                    // FindClrPropertyByEdmName, so a client-supplied name never reaches that
+                    // helper's process-wide cache. The table answers identically (see its
+                    // construction), so #454's "both halves consult the same set" property is
+                    // preserved by construction rather than restated.
+                    PropertyInfo? patchKeyClrProp = ResolvePatchBodyProperty(source.KeyPropertyName);
                     string patchParsedKeyStr = string.Format(CultureInfo.InvariantCulture, "{0}", parsedKey);
                     foreach (var prop in patchBody.EnumerateObject())
                     {
@@ -9713,16 +11465,15 @@ internal static class OhDataEndpointFactory
                     }
 
                     // Local: does this body property name resolve to the entity's key property?
-                    // Resolution goes through the same helper the delta loop uses, so the two cannot
+                    // Resolution goes through the same table the delta loop uses, so the two cannot
                     // disagree. The name-only fallback covers the (unexpected) case where the key
                     // property does not resolve to a CLR property at all -- it preserves the old
                     // behaviour rather than silently validating nothing.
-                    static bool IsPatchKeyOccurrence(string jsonName, PropertyInfo? keyClrProp, string keyPropertyName)
+                    bool IsPatchKeyOccurrence(string jsonName, PropertyInfo? keyClrProp, string keyPropertyName)
                     {
                         if (keyClrProp is null)
                             return string.Equals(jsonName, keyPropertyName, StringComparison.OrdinalIgnoreCase);
-                        PropertyInfo? resolved =
-                            ODataPropertyNaming.FindClrPropertyByEdmName(typeof(TModel), jsonName);
+                        PropertyInfo? resolved = ResolvePatchBodyProperty(jsonName);
                         return resolved is not null
                             && string.Equals(resolved.Name, keyClrProp.Name, StringComparison.Ordinal);
                     }
@@ -9740,7 +11491,9 @@ internal static class OhDataEndpointFactory
                         // #253: request body keys are JSON names — a [JsonPropertyName]-renamed property
                         // arrives under its JSON name, so resolve by EDM name (which honors the rename)
                         // rather than a plain CLR-name lookup that would silently drop the renamed member.
-                        var clrProp = ODataPropertyNaming.FindClrPropertyByEdmName(typeof(TModel), prop.Name);
+                        // #510: through the startup table, so prop.Name (client-supplied) never keys a
+                        // process-wide cache.
+                        PropertyInfo? clrProp = ResolvePatchBodyProperty(prop.Name);
                         // #454: the key never enters the delta. Every occurrence was validated
                         // against the URL key above (and a mismatch already returned 400), so what
                         // reaches here can only be a restatement of the key the URL already carries
@@ -9777,6 +11530,13 @@ internal static class OhDataEndpointFactory
                         }
                     }
 
+                    // #355: only the properties this body NAMED are in the delta, so this is exactly
+                    // the "client explicitly sent null for a Nullable='false' property" case — a
+                    // partial update that omits the property is untouched.
+                    IResult? patchNullabilityFail =
+                        ValidateEdmRequiredDelta(edmRequiredProps, patchDelta);
+                    if (patchNullabilityFail is not null) return patchNullabilityFail;
+
                     object? result = await s.InvokePatchAsync(parsedKey!, patchDelta, ct);
 
                     string? patchEtag = null;
@@ -9808,7 +11568,7 @@ internal static class OhDataEndpointFactory
                 {
                     return ODataError(400, "InvalidBody", ex.Message);
                 }
-                catch (FormatException ex)
+                catch (ODataKeyFormatException ex)
                 {
                     return BadKeyError(logger, ex, key, name);
                 }
@@ -9843,7 +11603,7 @@ internal static class OhDataEndpointFactory
                         return ODataError(404, "NotFound", $"{name} with key '{key}' was not found.");
                     return Results.NoContent();
                 }
-                catch (FormatException ex)
+                catch (ODataKeyFormatException ex)
                 {
                     return BadKeyError(logger, ex, key, name);
                 }
@@ -9851,6 +11611,12 @@ internal static class OhDataEndpointFactory
             rb.WithTags(name).Produces(204).Produces(400).Produces(404);
             ApplyOperationAuth(rb, OhDataOperation.Delete);
         }
+
+        // NOTE (#492 §4): duplicate bound-operation names within one profile are refused at BIND
+        // time, in EntitySetProfile.Bind*/ValidateBoundOperationNameIsUnique -- not here. They have
+        // to be: Microsoft.OData.ModelBuilder rejects a repeated ACTION name itself, from inside
+        // VisitModelBuilder, with "Found more than one action with name 'X'" and no mention of the
+        // profile or the entity set, so a check placed here would never run for half the cases.
 
         // Startup route-collision validation: POST /{name}({key})/{segment}.
         // A navigation property registered with a `post` handler (PostChild) claims
@@ -9860,15 +11626,57 @@ internal static class OhDataEndpointFactory
         // GET), these are both POST, so a shared name is a genuine route collision that ASP.NET
         // Core would only surface as an ambiguous-match failure at request time. Catch it at
         // startup instead, matching the existing idiom.
+        //
+        // #492 §2: OrdinalIgnoreCase, not Ordinal. ASP.NET Core literal-segment matching is
+        // case-insensitive -- which OhDataBuilder.Register()'s own sibling checks already knew and
+        // said so in a comment. This one and the two beside it did not, so a bound action named
+        // `kids` beside a navigation `Kids` passed startup and made BOTH spellings of the URL an
+        // AmbiguousMatchException.
         foreach (var navWithPost in source.NavigationRoutes.Where(n => n.PostChild is not null))
         {
             foreach (var collidingAction in source.BoundActions.Where(a =>
-                a.IsEntityLevel && string.Equals(navWithPost.PropertyName, a.Name, StringComparison.Ordinal)))
+                a.IsEntityLevel && string.Equals(navWithPost.PropertyName, a.Name, StringComparison.OrdinalIgnoreCase)))
             {
                 throw new InvalidOperationException(
                     $"Entity set '{name}': bound action '{collidingAction.Name}' conflicts with the " +
                     $"POST handler of navigation property '{navWithPost.PropertyName}' on " +
-                    $"POST /{name}({{key}})/{collidingAction.Name}. Rename the bound action or the navigation property.");
+                    $"POST /{name}({{key}})/{collidingAction.Name} (route templates are case-insensitive). " +
+                    "Rename the bound action or the navigation property.");
+            }
+        }
+
+        // ── #416 / #492 §3: entity-level bound function vs a navigation ROUTE ────────────────
+        //
+        // Every entry in NavigationRoutes gets `GET /{name}({key})/{nav.PropertyName}` mapped for
+        // it below -- including one declared with only `post`/`addRef`/`removeRef`, whose GET is
+        // registered with a null-returning handler that 404s. An entity-level bound function claims
+        // `GET /{name}({key})/{fn.Name}`. Same template, same method, and NO check existed: the
+        // three pre-existing ones cover structural properties (a set from which
+        // BuildStructuralProperties SUBTRACTS every declared navigation, which is exactly why this
+        // pair fell through), the nav-POST-vs-action pair above, and the #313 continuation route.
+        //
+        // #416 raised warn-vs-throw on the grounds that an app might be "relying on whichever route
+        // wins registration order". Measured, none does: ASP.NET Core raises AmbiguousMatchException
+        // and NEITHER endpoint runs, so there is no working configuration to break -- only a raw 500
+        // on every request to that URL, moved to a named startup failure.
+        //
+        // The check keys off NavigationRoutes rather than off which particular delegate was
+        // supplied, because the GET is mapped for the whole list. A navigation declared with NO
+        // handler is absent from that list, registers no route, and stays legal (the shape #313
+        // stage 5 deliberately left alone, and which its own check governs once the continuation
+        // route exists).
+        foreach (var navRoute in source.NavigationRoutes)
+        {
+            foreach (var collidingFn in source.BoundFunctions.Where(f =>
+                f.IsEntityLevel && string.Equals(navRoute.PropertyName, f.Name, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidOperationException(
+                    $"Entity set '{name}': bound function '{collidingFn.Name}' conflicts with " +
+                    $"navigation property '{navRoute.PropertyName}' on " +
+                    $"GET /{name}({{key}})/{collidingFn.Name} (route templates are case-insensitive). " +
+                    "That navigation registers a GET route because it was declared with a handler " +
+                    "(getAll/get, post, addRef, removeRef or refTargetEntitySet). Rename the bound " +
+                    "function or the navigation property.");
             }
         }
 
@@ -9897,14 +11705,17 @@ internal static class OhDataEndpointFactory
             // would surface that as an ambiguous-match failure at REQUEST time, on a route that only
             // exists because someone opted in. Fail at MapOhData() instead, matching the idiom of the
             // two collision checks already in this file.
+            // #492 §2: OrdinalIgnoreCase, not Ordinal -- ASP.NET Core literal-segment matching is
+            // case-insensitive, so `books` and `Books` claim the same template.
             BoundOperationDefinition? collidingFn = source.BoundFunctions.FirstOrDefault(f =>
-                f.IsEntityLevel && string.Equals(f.Name, pagingNav.EdmName, StringComparison.Ordinal));
+                f.IsEntityLevel && string.Equals(f.Name, pagingNav.EdmName, StringComparison.OrdinalIgnoreCase));
             if (collidingFn is not null)
             {
                 throw new InvalidOperationException(
                     $"Entity set '{name}': bound function '{collidingFn.Name}' conflicts with the " +
                     $"$expand continuation route of navigation property '{pagingNav.EdmName}' on " +
-                    $"GET /{name}({{key}})/{pagingNav.EdmName}. That route is registered because " +
+                    $"GET /{name}({{key}})/{pagingNav.EdmName} (route templates are case-insensitive). " +
+                    "That route is registered because " +
                     "ExpandPagingEnabled is on for this entity set; rename the bound function or the " +
                     "navigation property, or turn ExpandPagingEnabled off.");
             }
@@ -9991,27 +11802,17 @@ internal static class OhDataEndpointFactory
                         // 1. The $skip-ONLY surface. Every other system query option is rejected —
                         // conformant (Minimal item 7: parse the option or reject it), and the thing
                         // that keeps this endpoint from quietly becoming a second general-purpose
-                        // collection route. Rejecting by the '$' sigil rather than an allowlist of
-                        // known names is deliberately fail-closed: a future OData system option this
-                        // build has never heard of is refused rather than silently ignored.
-                        //
-                        // $format is the ONE exemption, and it is not a data option at all: §11.2.12
-                        // content negotiation is implemented once, on the group filter in MapAll, for
-                        // every route on the whole OData surface — it never reaches this handler and
-                        // cannot change a single row. Refusing it here would make this the only route
-                        // in the surface that 400s a conformant, already-supported option, and would
-                        // break the common client habit of appending it to a server-issued link. An
-                        // unsupported VALUE is still rejected, by that same group filter, unchanged.
-                        foreach (string queryKey in ctx.Request.Query.Keys)
+                        // collection route. This route's inline '$'-sigil loop was the precedent
+                        // #359 generalised into FindUnsupportedSystemQueryOption; it now shares that
+                        // matcher (and its $format exemption) so the two cannot drift, keeping only
+                        // its own more specific message. See the block above s_collectionImplemented-
+                        // Options for the full rule.
+                        string? contUnsupported = FindUnsupportedSystemQueryOption(
+                            ctx, s_expandContinuationImplementedOptions);
+                        if (contUnsupported is not null)
                         {
-                            if (!queryKey.StartsWith('$') ||
-                                string.Equals(queryKey, "$skip", StringComparison.Ordinal) ||
-                                string.Equals(queryKey, "$format", StringComparison.Ordinal))
-                            {
-                                continue;
-                            }
-                            return ODataError(400, "UnsupportedQueryOption",
-                                $"The query option '{queryKey}' is not supported on an $expand " +
+                            return ODataError(501, "UnsupportedQueryOption",
+                                $"The query option '{contUnsupported}' is not supported on an $expand " +
                                 "continuation. This route serves the continuation of a BARE $expand " +
                                 "and accepts '$skip' only.");
                         }
@@ -10112,7 +11913,7 @@ internal static class OhDataEndpointFactory
                         }
                         return ODataEnvelopeResult(contEnvelope, jsonOptions);
                     }
-                    catch (FormatException ex)
+                    catch (ODataKeyFormatException ex)
                     {
                         return BadKeyError(logger, ex, key, name, withTarget: false);
                     }
@@ -10150,12 +11951,17 @@ internal static class OhDataEndpointFactory
                 {
                     try
                     {
-                        // S1/B1 fix: this route parses $orderby/$skip/$top/$count/$select (below)
-                        // but previously ignored anything else — most notably $filter — silently,
-                        // returning 200 with the full unfiltered collection. That violates
-                        // Minimal item 7 ("parse the option or reject it"): reject up front
-                        // instead of quietly under-applying what the client asked for.
-                        IResult? navCapabilityError = CheckNavUnsupportedQueryOptions(ctx);
+                        // S1/B1 fix: the COLLECTION branch parses $orderby/$skip/$top/$count/
+                        // $select (below) but previously ignored anything else — most notably
+                        // $filter — silently, returning 200 with the full unfiltered collection.
+                        // That violates Minimal item 7 ("parse the option or reject it"): reject up
+                        // front instead of quietly under-applying what the client asked for.
+                        //
+                        // The set is chosen by navIsCollection because the SINGLE-VALUED branch
+                        // (below, past `if (navIsCollection)`) reads no query option at all; gating
+                        // it with the collection set accepted and dropped $select/$orderby/$top/
+                        // $count there under a 200.
+                        IResult? navCapabilityError = CheckNavUnsupportedQueryOptions(ctx, navIsCollection);
                         if (navCapabilityError is not null) return navCapabilityError;
 
                         var s = ResolveHandlers(ctx);
@@ -10227,7 +12033,7 @@ internal static class OhDataEndpointFactory
                         // top-level read of that type instead of leaking the full CLR graph.
                         return Results.Ok(ODataEntityNode(ctx, prefix, $"{name}({key})/{navPropertyName}/$entity", result, jsonOptions, registration.EdmModel, omitNavsForType: navTargetEdmType));
                     }
-                    catch (FormatException ex)
+                    catch (ODataKeyFormatException ex)
                     {
                         return BadKeyError(logger, ex, key, name, withTarget: false);
                     }
@@ -10254,6 +12060,17 @@ internal static class OhDataEndpointFactory
                     {
                         try
                         {
+                            // #359: this route counts the whole related collection and applies
+                            // no data option at all -- it used to accept and discard every one of
+                            // them, including the $filter its own sibling nav route rejects.
+                            // $filter and $search are refused because §11.2.9 requires the count
+                            // to be taken AFTER applying them and this route cannot; the four the
+                            // same clause says MUST NOT affect a count are accepted and ignored.
+                            // See s_navCountImplementedOptions.
+                            IResult? navCountUnsupported =
+                                CheckUnsupportedSystemQueryOptions(ctx, s_navCountImplementedOptions);
+                            if (navCountUnsupported is not null) return navCountUnsupported;
+
                             var s = ResolveHandlers(ctx);
                             var requestNav = s.NavigationRoutes.First(n => n.PropertyName == navCountPropertyName);
                             object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
@@ -10269,7 +12086,7 @@ internal static class OhDataEndpointFactory
                             else count = rawColl is not null ? rawColl.Cast<object>().LongCount() : 1L;
                             return Results.Content(count.ToString(CultureInfo.InvariantCulture), "text/plain");
                         }
-                        catch (FormatException ex)
+                        catch (ODataKeyFormatException ex)
                         {
                             return BadKeyError(logger, ex, key, name, withTarget: false);
                         }
@@ -10377,7 +12194,7 @@ internal static class OhDataEndpointFactory
                             }, jsonOptions);
                         }
                     }
-                    catch (FormatException ex)
+                    catch (ODataKeyFormatException ex)
                     {
                         return BadKeyError(logger, ex, key, name, withTarget: false);
                     }
@@ -10472,7 +12289,7 @@ internal static class OhDataEndpointFactory
                         await requestNav.AddRef!(parsedKey!, (object)relatedId, ct);
                         return Results.NoContent();
                     }
-                    catch (FormatException ex)
+                    catch (ODataKeyFormatException ex)
                     {
                         return BadKeyError(logger, ex, key, name, withTarget: false);
                     }
@@ -10532,7 +12349,7 @@ internal static class OhDataEndpointFactory
                             await requestNav.RemoveRef!(parsedKey!, (object)relatedId, ct);
                             return Results.NoContent();
                         }
-                        catch (FormatException ex)
+                        catch (ODataKeyFormatException ex)
                         {
                             return BadKeyError(logger, ex, key, name, withTarget: false);
                         }
@@ -10552,6 +12369,29 @@ internal static class OhDataEndpointFactory
                 string postNavPropertyName = navPropertyName;
                 Type postNavItemType = navItemType ?? typeof(object);
                 var postNavCapture = nav;
+
+                // #355: the child type's own required properties. This is a documented CREATE route
+                // (#389 H2 wired the dynamic-key policing into it for exactly that reason), so a
+                // body that violates the published contract answers the same way here as it does on
+                // the collection POST — leaving it out would be a per-route divergence in the one
+                // place the framework creates an entity of another type. The EDM type is resolved
+                // through EdmClrTypeMap rather than by name convention (#508); a child type the EDM
+                // does not declare yields an empty set and the route behaves exactly as before.
+                EdmRequiredProperty[] navPostRequiredProps =
+                    source.RequestBodyNullabilityValidationEnabled
+                    ? BuildEdmRequiredProperties(
+                        EdmClrTypeMap.FindStructuredType(registration.EdmModel, postNavItemType),
+                        postNavItemType)
+                    : Array.Empty<EdmRequiredProperty>();
+
+                // #544: the child type's own body-name table — the entity set's table is keyed to
+                // TModel and names nothing on this route.
+                Dictionary<string, PropertyInfo> navPostRequiredPropByBodyName =
+                    BuildBinderBodyNameTable(
+                        Array.ConvertAll(navPostRequiredProps, p => (p.EdmName, p.Clr)),
+                        postNavItemType,
+                        jsonOptions);
+                bool navPostRequiredGateApplies = navPostRequiredProps.Length > 0;
                 var navPostRb = entityAuthGroup.MapPost($"/{name}({{key}})/{postNavPropertyName}",
                     async (string key, HttpContext ctx, CancellationToken ct) =>
                     {
@@ -10562,7 +12402,7 @@ internal static class OhDataEndpointFactory
                         {
                             parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
                         }
-                        catch (FormatException ex)
+                        catch (ODataKeyFormatException ex)
                         {
                             return BadKeyError(logger, ex, key, name);
                         }
@@ -10580,6 +12420,11 @@ internal static class OhDataEndpointFactory
                         if (navPostEtagCheck is not null) return navPostEtagCheck;
 
                         object? child;
+
+                        // #544: which required properties the body named, captured on whichever
+                        // branch below holds the bytes — same shape as PUT, null meaning "named
+                        // nothing".
+                        HashSet<string>? navBodyRequiredNamed = null;
                         try
                         {
                             // #389 H2: this is a documented CREATE route, so it polices dynamic
@@ -10591,11 +12436,18 @@ internal static class OhDataEndpointFactory
                             // straight into the deserializer.
                             if (registration.OpenTypesActive)
                             {
-                                using JsonDocument navDocument =
-                                    await JsonDocument.ParseAsync(ctx.Request.Body, cancellationToken: ct);
+                                // #514: read the body the way the binder reads it — see
+                                // CreateBinderParityDocumentOptions.
+                                using JsonDocument navDocument = await JsonDocument.ParseAsync(
+                                    ctx.Request.Body, binderParityDocumentOptions, ct);
                                 using PreparedWriteBody navPrepared = PrepareWriteBody(
                                     registration, navDocument.RootElement, postNavItemType, jsonOptions);
                                 if (navPrepared.Error is not null) return navPrepared.Error;
+                                if (navPostRequiredGateApplies)
+                                {
+                                    navBodyRequiredNamed = CollectPresentBodyMemberClrNames(
+                                        navPrepared.Body, navPostRequiredPropByBodyName);
+                                }
                                 child = navPrepared.Body.Deserialize(postNavItemType, jsonOptions);
                             }
                             else
@@ -10609,6 +12461,14 @@ internal static class OhDataEndpointFactory
                                     return ODataBindNotImplementedError();
                                 }
 
+                                if (navPostRequiredGateApplies)
+                                {
+                                    navBodyRequiredNamed = CollectPresentBodyMemberClrNames(
+                                        navBuffered.GetBuffer().AsSpan(0, (int)navBuffered.Length),
+                                        navPostRequiredPropByBodyName,
+                                        jsonOptions);
+                                }
+
                                 child = await JsonSerializer.DeserializeAsync(navBuffered, postNavItemType, jsonOptions, ct);
                             }
                         }
@@ -10619,6 +12479,11 @@ internal static class OhDataEndpointFactory
 
                         if (child is null)
                             return ODataError(400, "InvalidBody", "Request body is empty or could not be deserialized.");
+
+                        // #355: same check, same message, same authority as the collection POST.
+                        IResult? navPostNullabilityFail = ValidateEdmRequiredProperties(
+                            navPostRequiredProps, child, navBodyRequiredNamed);
+                        if (navPostNullabilityFail is not null) return navPostNullabilityFail;
 
                         var requestNav = s.NavigationRoutes.First(n => n.PropertyName == postNavPropertyName);
                         logger?.LogDebug("POST {Prefix}/{Name}({Key})/{Nav}", prefix, name, SanitizeLogValue(key), postNavPropertyName);
@@ -10711,16 +12576,19 @@ internal static class OhDataEndpointFactory
             // /{name}({key})/{segment}) sharing a name with a structural property. $ref/$count/
             // $value carry a reserved '$' sigil and can never collide with a bare property name.
             // Entity-level bound actions are POST, so method disjointness rules them out here.
+            // #492 §2: OrdinalIgnoreCase, not Ordinal. Measured: structural property `Price` plus a
+            // BindEntityFunction handler named `price` passed startup, and then BOTH
+            // GET /{Set}(1)/price and GET /{Set}(1)/Price were AmbiguousMatchException.
             foreach (var collidingFn in source.BoundFunctions.Where(f => f.IsEntityLevel))
             {
-                bool propertyNameCollision = structuralRouteProperties
-                    .Any(p => string.Equals(p.Name, collidingFn.Name, StringComparison.Ordinal));
-                if (propertyNameCollision)
+                StructuralPropertyInfo? collidingProperty = structuralRouteProperties
+                    .FirstOrDefault(p => string.Equals(p.Name, collidingFn.Name, StringComparison.OrdinalIgnoreCase));
+                if (collidingProperty is not null)
                 {
                     throw new InvalidOperationException(
                         $"Entity set '{name}': bound function '{collidingFn.Name}' conflicts with " +
-                        $"structural property '{collidingFn.Name}' on GET /{name}({{key}})/{collidingFn.Name}. " +
-                        "Rename the bound function or the property.");
+                        $"structural property '{collidingProperty.Name}' on GET /{name}({{key}})/{collidingFn.Name} " +
+                        "(route templates are case-insensitive). Rename the bound function or the property.");
                 }
             }
 
@@ -10774,7 +12642,7 @@ internal static class OhDataEndpointFactory
                             // inside the filter's scope rather than deferred. See PreRenderedJson.
                             return PreRenderedJson(envelope, jsonOptions ?? _pascalCaseSerializerOptions);
                         }
-                        catch (FormatException ex)
+                        catch (ODataKeyFormatException ex)
                         {
                             return BadKeyError(logger, ex, key, name);
                         }
@@ -10823,7 +12691,7 @@ internal static class OhDataEndpointFactory
 
                             return Results.Text(FormatRawValue(value), "text/plain");
                         }
-                        catch (FormatException ex)
+                        catch (ODataKeyFormatException ex)
                         {
                             return BadKeyError(logger, ex, key, name);
                         }
@@ -10854,7 +12722,17 @@ internal static class OhDataEndpointFactory
                 // #253: propName is the OData/EDM name (route segment, error targets); the underlying
                 // Delta<TModel> keys by the CLR property name, which differs under [JsonPropertyName].
                 string clrPropName = propCapture.Property.Name;
-                bool propIsNullable = propCapture.IsNullable;
+                // #355: ASK THE EDM, not the CLR type. StructuralPropertyInfo.IsNullable answers
+                // "can this CLR type hold null", for which EVERY reference type qualifies — so a
+                // property the framework's own $metadata declares Nullable="false" (an ordinary
+                // non-nullable `string`) passed this gate, the null reached the handler through a
+                // one-property Delta, and the persistence layer's rejection came back as a 500.
+                // That is #355's defect on the property routes, and it is the same defect the entity
+                // write routes have: two independently derived answers to one question. The CLR
+                // answer is kept only as the fallback for a property the EDM does not declare (an
+                // AdvancedConfigure model may omit one) and for a profile that opted out.
+                bool propIsNullable =
+                    !edmNonNullablePropertyNames.Contains(propCapture.Name) && propCapture.IsNullable;
                 bool propIsComplex = propCapture.IsComplex;
                 Type propClrType = propCapture.ClrType;
 
@@ -10974,7 +12852,7 @@ internal static class OhDataEndpointFactory
 
                         return Results.NoContent();
                     }
-                    catch (FormatException ex)
+                    catch (ODataKeyFormatException ex)
                     {
                         return BadKeyError(logger, ex, key, name);
                     }
@@ -11031,7 +12909,7 @@ internal static class OhDataEndpointFactory
 
                         return Results.NoContent();
                     }
-                    catch (FormatException ex)
+                    catch (ODataKeyFormatException ex)
                     {
                         return BadKeyError(logger, ex, key, name);
                     }
@@ -11046,6 +12924,15 @@ internal static class OhDataEndpointFactory
             var fnCapture = fn;
             var rb = entityGroup.MapGet($"/{fn.Name}", async (HttpContext ctx, CancellationToken ct) =>
             {
+                // #359: the sigil gate, before parameter binding and before the handler
+                // delegate runs — so a refused invocation of an ACTION provably mutates
+                // nothing, the same placement CheckETagAsync uses. See
+                // s_boundOperationImplementedOptions for why $top/$skip are listed
+                // unconditionally.
+                IResult? opUnsupported = CheckUnsupportedSystemQueryOptions(
+                    ctx, s_boundOperationImplementedOptions);
+                if (opUnsupported is not null) return opUnsupported;
+
                 var s = ResolveHandlers(ctx);
                 var requestFn = s.BoundFunctions.First(f => f.Name == fnCapture.Name && !f.IsEntityLevel);
                 object?[] args = new object?[fnCapture.Parameters.Length];
@@ -11081,9 +12968,10 @@ internal static class OhDataEndpointFactory
                 object? result = await requestFn.Invoke(args, ct);
                 if (result is null) return Results.NoContent();
                 // Gap 1: @odata.context on function results when return type matches TModel
-                return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s);
+                return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s, startupSource: source, fnCapture.Name, continuable: true);
             }).WithTags(name).Produces(400);
             AddBoundOperationProduces<TModel>(rb, fnCapture);
+            AddBoundOperationPagingMetadata<TModel>(rb, fnCapture, source);
             // Issue #181: document the function's query-string parameters.
             var boundFnQueryParams = BuildFunctionQueryParametersMetadata(fnCapture.Parameters, skipKey: false);
             if (boundFnQueryParams is not null) rb.WithMetadata(boundFnQueryParams);
@@ -11098,6 +12986,15 @@ internal static class OhDataEndpointFactory
             var actionCapture = action;
             var rb = entityGroup.MapPost($"/{action.Name}", async (HttpContext ctx, CancellationToken ct) =>
             {
+                // #359: the sigil gate, before parameter binding and before the handler
+                // delegate runs — so a refused invocation of an ACTION provably mutates
+                // nothing, the same placement CheckETagAsync uses. See
+                // s_boundOperationImplementedOptions for why $top/$skip are listed
+                // unconditionally.
+                IResult? opUnsupported = CheckUnsupportedSystemQueryOptions(
+                    ctx, s_boundOperationImplementedOptions);
+                if (opUnsupported is not null) return opUnsupported;
+
                 var s = ResolveHandlers(ctx);
                 var requestAction = s.BoundActions.First(a => a.Name == actionCapture.Name && !a.IsEntityLevel);
                 object?[] args = new object?[actionCapture.Parameters.Length];
@@ -11157,17 +13054,22 @@ internal static class OhDataEndpointFactory
                 object? result = await requestAction.Invoke(args, ct);
                 if (result is null) return Results.NoContent();
                 // Gap 1: @odata.context on action results when return type matches TModel
-                return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s);
+                return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s, startupSource: source, actionCapture.Name, continuable: false);
             }).WithTags(name).Produces(400).Produces(415);
             AddBoundOperationProduces<TModel>(rb, actionCapture);
+            AddBoundOperationPagingMetadata<TModel>(rb, actionCapture, source);
             // Leg 2 / #184: synthesize a POCO body schema from the action's parameters (see the
             // matching comment on the unbound-action branch of MapUnboundOperations).
             if (actionCapture.Parameters.Length > 0)
             {
                 rb.WithMetadata(new OhDataRequestBodyMetadata
                 {
+                    // #499/#547: scope the memoization to this REGISTRATION INSTANCE so two
+                    // registrations declaring the same entity set + action name (e.g. v1/v2 of the
+                    // same versioned action, or two hosts in one process) get distinct memoized
+                    // schema types instead of silently sharing whichever one mapped first.
                     BodyType = ActionBodySchemaTypeFactory.GetOrCreate(
-                        $"{name}.{actionCapture.Name}", actionCapture.Parameters),
+                        registration, $"{name}.{actionCapture.Name}", actionCapture.Parameters),
                     Description = "JSON object with the action's parameters: " +
                         string.Join(", ", actionCapture.Parameters.Select(p => $"{p.Name} ({p.ParameterType.Name})")) + "."
                 });
@@ -11184,6 +13086,15 @@ internal static class OhDataEndpointFactory
                 {
                     try
                     {
+                        // #359: the sigil gate, before parameter binding and before the handler
+                        // delegate runs — so a refused invocation of an ACTION provably mutates
+                        // nothing, the same placement CheckETagAsync uses. See
+                        // s_boundOperationImplementedOptions for why $top/$skip are listed
+                        // unconditionally.
+                        IResult? opUnsupported = CheckUnsupportedSystemQueryOptions(
+                            ctx, s_boundOperationImplementedOptions);
+                        if (opUnsupported is not null) return opUnsupported;
+
                         var s = ResolveHandlers(ctx);
                         var requestFn = s.BoundFunctions.First(f => f.Name == fnCapture.Name && f.IsEntityLevel);
                         object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
@@ -11221,15 +13132,16 @@ internal static class OhDataEndpointFactory
                         object? result = await requestFn.Invoke(args, ct);
                         if (result is null) return Results.NoContent();
                         // Gap 1: @odata.context on entity-level function results
-                        return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s);
+                        return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s, startupSource: source, fnCapture.Name, continuable: true);
                     }
-                    catch (FormatException ex)
+                    catch (ODataKeyFormatException ex)
                     {
                         return BadKeyError(logger, ex, key, name);
                     }
                 })
                 .WithTags(name).Produces(400);
             AddBoundOperationProduces<TModel>(rb, fnCapture);
+            AddBoundOperationPagingMetadata<TModel>(rb, fnCapture, source);
             // Issue #181: document the function's query-string parameters (skip the leading key,
             // which is a route parameter already documented via BindingSource.Path).
             var entityFnQueryParams = BuildFunctionQueryParametersMetadata(fnCapture.Parameters, skipKey: true);
@@ -11239,27 +13151,34 @@ internal static class OhDataEndpointFactory
 
         // Gap 7: Entity-level bound actions — POST /{name}({key})/{action.Name}
         //
-        // #478 -- DELIBERATE If-Match EXCLUSION, and the one place in this file where a
-        // state-changing keyed route does NOT call CheckETagAsync. The $ref and navigation-POST
-        // routes above were brought under the precondition gate; actions were not, and the reason
-        // is the identity of the *target resource*, not convenience:
+        // #478/#566 -- If-Match is NOT checked here, and this is the one place in this file where
+        // a state-changing keyed route does not call CheckETagAsync. It is a KNOWN DEVIATION,
+        // tracked by #566 -- not a design choice, and not spec-sanctioned:
         //
-        //   RFC 9110 §13.1.1 evaluates If-Match against "the current representation of the target
-        //   resource". The target resource of POST /Set(key)/Action is the ACTION-INVOCATION
-        //   resource (OData Protocol §11.5.4), which has no representation and therefore no
-        //   entity tag of its own. `Set(key)` is the action's binding parameter, not the request
-        //   target. A $ref write is different in kind: OData §11.4.6 defines it as a modification
-        //   of the addressed entity's own relationship state, so the entity IS the target.
+        //   §11.4.1.1 is a MUST -- "If an ETag value is specified in an If-Match or If-None-Match
+        //   header of a Data Modification Request OR ACTION REQUEST, the operation MUST only be
+        //   invoked if the if-match or if-none-match condition is satisfied." §8.2.4 and §8.3.1
+        //   name Action Requests just as explicitly, and §11.5.4.1 instructs the CLIENT to send
+        //   If-Match for exactly this case.
         //
-        // Consequences the exclusion accepts: an action that mutates its binding entity ignores a
+        // An earlier revision of this comment defended the exclusion by asserting that the
+        // action-invocation resource "has no representation and therefore no entity tag", citing
+        // Protocol §11.5.4. That phrase appears NOWHERE in Part 1 (`grep -ic "no representation"`
+        // over the specification returns 0) and the clauses above contradict the conclusion it was
+        // used to reach. The claim is withdrawn; do not restore it. A $ref write is a different
+        // case that still holds on its own: OData §11.4.6 defines it as a modification of the
+        // addressed entity's own relationship state, so the entity IS unambiguously the target.
+        //
+        // What the deviation costs today: an action that mutates its binding entity ignores a
         // received If-Match, and the only way to honour it is for the profile to inject
         // IHttpContextAccessor and hand-implement the comparison. That escape hatch exists for
         // EVERY handler on a scoped profile, $ref delegates included -- so "the author cannot do
         // it" is NOT the reason the $ref routes above are gated; the reason is that the addressed
         // entity is unambiguously their target and the server should do it once, correctly.
         // Collection-level bound actions and unbound actions have no key at all and no entity to
-        // compare against. Revisiting this needs an explicit decision, not a mechanical extension;
-        // docs/etags.md states the exclusion for API consumers.
+        // compare against, so THAT half of the exclusion survives on its own reasoning. The
+        // entity-level case does not. docs/etags.md and docs/spec-compliance.md both state the
+        // deviation for API consumers and point at #566.
         foreach (var action in source.BoundActions.Where(a => a.IsEntityLevel))
         {
             var actionCapture = action;
@@ -11268,6 +13187,15 @@ internal static class OhDataEndpointFactory
                 {
                     try
                     {
+                        // #359: the sigil gate, before parameter binding and before the handler
+                        // delegate runs — so a refused invocation of an ACTION provably mutates
+                        // nothing, the same placement CheckETagAsync uses. See
+                        // s_boundOperationImplementedOptions for why $top/$skip are listed
+                        // unconditionally.
+                        IResult? opUnsupported = CheckUnsupportedSystemQueryOptions(
+                            ctx, s_boundOperationImplementedOptions);
+                        if (opUnsupported is not null) return opUnsupported;
+
                         var s = ResolveHandlers(ctx);
                         var requestAction = s.BoundActions.First(a => a.Name == actionCapture.Name && a.IsEntityLevel);
                         object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
@@ -11327,15 +13255,16 @@ internal static class OhDataEndpointFactory
                         object? result = await requestAction.Invoke(args, ct);
                         if (result is null) return Results.NoContent();
                         // Gap 1: @odata.context on entity-level action results
-                        return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s);
+                        return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s, startupSource: source, actionCapture.Name, continuable: false);
                     }
-                    catch (FormatException ex)
+                    catch (ODataKeyFormatException ex)
                     {
                         return BadKeyError(logger, ex, key, name);
                     }
                 })
                 .WithTags(name).Produces(400).Produces(415);
             AddBoundOperationProduces<TModel>(rb, actionCapture);
+            AddBoundOperationPagingMetadata<TModel>(rb, actionCapture, source);
             // Leg 2 / #184: entity-level Parameters[0] is the route key (see BoundOperationDefinition's
             // XML doc), so only Parameters[1..] are body parameters — synthesize the POCO body schema
             // from those, excluding the leading key.
@@ -11344,8 +13273,10 @@ internal static class OhDataEndpointFactory
                 ParameterInfo[] bodyParams = actionCapture.Parameters.Skip(1).ToArray();
                 rb.WithMetadata(new OhDataRequestBodyMetadata
                 {
+                    // #499/#547: same registration-identity scoping as the collection-level bound
+                    // action above.
                     BodyType = ActionBodySchemaTypeFactory.GetOrCreate(
-                        $"{name}.{actionCapture.Name}.Entity", bodyParams),
+                        registration, $"{name}.{actionCapture.Name}.Entity", bodyParams),
                     Description = "JSON object with the action's parameters: " +
                         string.Join(", ", bodyParams.Select(p => $"{p.Name} ({p.ParameterType.Name})")) + "."
                 });
@@ -11359,13 +13290,206 @@ internal static class OhDataEndpointFactory
     // For collection results (IEnumerable<TModel>): context = {root}/$metadata#{EntitySet}
     // For single results (TModel): context = {root}/$metadata#{EntitySet}/$entity
     // For primitives/other types: return Results.Ok directly (no wrapping needed).
+    // #357: the operation-result twin of the GetAll route's ApplyGetAllPaging, kept deliberately
+    // equivalent to it -- same precedence between an explicit $top and the default cap, same
+    // Prefer: maxpagesize interaction, same "nextLink only when the default cap was applied AND
+    // rows remain" condition, same $skip continuation shape via BuildNextPageLinkWithSkip. It is a
+    // second implementation rather than a shared call because that one is a local function closing
+    // over the route's ODataQueryOptions, which a bound-operation route does not build.
+    //
+    // $top/$skip are read the way the NAVIGATION-collection route reads them -- int.TryParse
+    // against the raw query string, with that route's existing "is invalid. It must be a
+    // non-negative integer." wording -- rather than through ODataQueryOptions. Both reasons matter.
+    // (1) Precedent: the nav route is the other place in this file that pages a fully materialized
+    // collection with no IQueryable and no ODataQueryOptions behind it, and inventing a third
+    // vocabulary for one client error is how error surfaces drift. (2) Building the whole
+    // ODataQueryOptions here would additionally start rejecting malformed values of options this
+    // route still ignores ($filter=, $skiptoken=), which is a wire change #357 does not ask for and
+    // whose surface is set by somebody else's constructors; and Microsoft's individual
+    // TopQueryOption/SkipQueryOption both require an ODataQueryOptionParser, which needs an
+    // ODataPath a bound-operation route never parses.
+    //
+    // The MaxTop rejection below is OhData's own message and IS shared with the collection routes
+    // verbatim: the same condition must not produce two different envelopes depending on which
+    // route the client reached the same entity set through.
+    //
+    // #543: `continuable` is the function/action split, and it changes exactly one branch -- what
+    // happens when NO $top was sent and the result is larger than the ceiling.
+    //
+    //   continuable: true  (bound FUNCTION) -- cap to MaxTop (or a smaller Prefer: maxpagesize) and
+    //                                          emit a $skip @odata.nextLink for the remainder.
+    //   continuable: false (bound ACTION)   -- THROW. See the block below for why refusing is the
+    //                                          only shape left once truncation and continuation are
+    //                                          both off the table.
+    //
+    // Everything else is shared verbatim and deliberately so: an explicit $top is applied and
+    // validated against MaxTop with the same message, $skip is applied, a malformed value is the
+    // same 400. The same condition must not produce two different envelopes depending on which
+    // route the client reached the same entity set through, and #543 was in part exactly that --
+    // `$top=999` was a 400 on the collection GET and on the bound function, and a silent 200 with
+    // the full result on the bound action.
+    //
+    // Returns false with `error` set when the request cannot be served; true otherwise, with `page`
+    // and `nextLink` set. Throws when an action's result cannot be served within the ceiling.
+    private static bool TryApplyOperationCollectionPaging(
+        HttpContext ctx, IEntitySetEndpointSource startupSource, bool continuable, object[] items,
+        string entitySetName, string operationName,
+        out object[] page, out string? nextLink, out IResult? error)
+    {
+        page = items;
+        nextLink = null;
+        error = null;
+
+        int skip = 0;
+        if (ctx.Request.Query.TryGetValue("$skip", out var skipStr))
+        {
+            if (!int.TryParse(skipStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out skip) || skip < 0)
+            {
+                error = ODataError(400, "InvalidQueryOption",
+                    $"The value of '$skip' ('{skipStr}') is invalid. It must be a non-negative integer.");
+                return false;
+            }
+        }
+
+        int? top = null;
+        if (ctx.Request.Query.TryGetValue("$top", out var topStr))
+        {
+            if (!int.TryParse(topStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out int topVal) || topVal < 0)
+            {
+                error = ODataError(400, "InvalidQueryOption",
+                    $"The value of '$top' ('{topStr}') is invalid. It must be a non-negative integer.");
+                return false;
+            }
+            top = topVal;
+
+            // MaxTop caps an EXPLICIT $top exactly as the three collection read paths do, with the
+            // identical message.
+            if (startupSource.MaxTop.HasValue && topVal > startupSource.MaxTop.Value)
+            {
+                error = ODataError(400, "InvalidQueryOption",
+                    $"The value of '$top' ({topVal}) exceeds the maximum allowed value ({startupSource.MaxTop.Value}).");
+                return false;
+            }
+        }
+
+        long preTotal = items.Length;
+        IEnumerable<object> seq = items;
+        if (skip > 0) seq = seq.Skip(skip);
+
+        int? appliedPageSize = null;
+        if (top is int t)
+        {
+            // An explicit $top bounds the response at the CLIENT's request, so there is nothing
+            // silent about the truncation and nothing to continue -- true on the collection GET and
+            // the bound function too, both of which also omit the nextLink in this branch. This is
+            // therefore the one branch an action needs no special treatment in, and it is also the
+            // remedy a client has for the refusal below.
+            seq = seq.Take(t);
+        }
+        else if (continuable)
+        {
+            int? preferredPageSize = ParseMaxPageSize(ctx);
+            appliedPageSize = preferredPageSize.HasValue
+                ? (startupSource.MaxTop.HasValue
+                    ? Math.Min(preferredPageSize.Value, startupSource.MaxTop.Value)
+                    : preferredPageSize.Value)
+                : startupSource.MaxTop;
+            if (appliedPageSize.HasValue) seq = seq.Take(appliedPageSize.Value);
+            if (preferredPageSize.HasValue)
+                ctx.Response.Headers["Preference-Applied"] = $"maxpagesize={appliedPageSize!.Value}";
+        }
+        else if (startupSource.MaxTop is int cap && preTotal - skip > cap)
+        {
+            // ── #543: a bound ACTION whose result does not fit under the ceiling ──────────────
+            //
+            // Measured on the pre-fix tree, MaxTop = 10 over a 25-row store: the bound FUNCTION
+            // answered `len=10` with `nextLink=…/DumpFn?%24skip=10` and 400'd `$top=999`, while the
+            // bound ACTION answered `200 len=25 nextLink=<none>` for every one of `$top=999`,
+            // `$top=5`, `$skip=20` and `$top=abc`. #357 closed that hole for functions and left
+            // actions with `pagingSource: null`; the CHANGELOG defended the exclusion as "moot in
+            // practice" because a BindAction could not declare the type -- refuted twice over, by
+            // `Task<object>` (which registered and served all 25 rows) and now by #539, which makes
+            // `Task<IEnumerable<TModel>>` the ordinary spelling.
+            //
+            // Three shapes were available and two are unavailable HERE, which is what leaves this
+            // one:
+            //   * Cap and emit @odata.nextLink -- what a function does, and INVALID for an action.
+            //     §11.2.5.7 defines a next link as one that "allows RETRIEVING the next partial
+            //     set of items", i.e. a URL the client GETs; POST /Set/Action is not GET-addressable,
+            //     so the link would answer 405, and re-POSTing a side-effecting action to collect
+            //     page 2 is not a continuation in any case. (This is NOT the withdrawn §11.5.4 "no
+            //     representation" claim — see #566 and the If-Match comment on the entity-level
+            //     action route.)
+            //   * Cap silently -- forbidden by the framework's own M1 rule: no configuration leaves
+            //     a bound in place without either a continuation link or a 400, never silent
+            //     truncation.
+            //   * Refuse. What is left, and what this does.
+            //
+            // It is a 500, not a 400, and #496 settled that distinction in this same release: a
+            // `Post` handler returning null went from "400 blaming the client" to a logged 500
+            // because the condition is decided entirely by server-side state. So is this one -- the
+            // profile declared the ceiling and the handler returned more than fits under it, for
+            // every client and every request identically, and the only party who can fix it is the
+            // operator reading the log. Throwing routes it through the group-level filter: the real
+            // message below is logged, the client gets the generic 500 + OData error envelope.
+            //
+            // Remedies, in the message because it is the operator who reads it. Note that a client
+            // CAN still get a served response by sending an explicit `$top` (<= MaxTop), which is
+            // why the branch above is not also refused.
+            throw new InvalidOperationException(
+                $"Entity set '{entitySetName}': bound action '{operationName}' returned " +
+                $"{preTotal - skip} entities, which exceeds this entity set's MaxTop of {cap}. A " +
+                "bound action's result cannot carry an @odata.nextLink -- a next link is a URL " +
+                "the client GETs (OData Protocol 11.2.5.7) and POST is not a continuation -- so the " +
+                "framework will not silently truncate it either. Return no more than MaxTop " +
+                "entities from the handler, set MaxTop = null on the profile or in " +
+                "EntitySetDefaults to opt this entity set out of the ceiling, or expose the " +
+                "operation as a bound FUNCTION (BindFunction), which is pageable.");
+        }
+
+        page = ReferenceEquals(seq, items) ? items : seq.ToArray();
+
+        // nextLink only when the DEFAULT cap was applied (omitted $top) and more rows remain beyond
+        // this page -- the pre-paging total decides it exactly, so an exactly-full final page does
+        // not walk a client into an empty trailing one.
+        if (appliedPageSize is int ps && ps > 0 && skip + page.Length < preTotal)
+            nextLink = BuildNextPageLinkWithSkip(ctx, skip + page.Length);
+
+        return true;
+    }
+
     private static IResult WrapBoundOpResult(
         HttpContext ctx, string prefix, string entitySetName, object result, Type modelType,
         JsonSerializerOptions? jsonOptions, IEdmEntityType? rootEdmType, IEdmModel? edmModel,
-        IEntitySetEndpointSource source)
+        IEntitySetEndpointSource source, IEntitySetEndpointSource startupSource,
+        string operationName, bool continuable)
     {
         var resultType = result.GetType();
 
+        // #497 (the #462 defect class, fourth site — it predates InheritedTypeConfig's consolidation
+        // and was not swept in): the element test used to be `== modelType`, i.e. EXACT CLR-type
+        // equality, while the SINGLE-entity branch below already accepted a derived instance via
+        // IsAssignableFrom. A handler declared `Task<IEnumerable<TModel>>` that returns a
+        // `List<TDerived>` — the ordinary EF Core TPH shape — lists only IEnumerable<TDerived> in
+        // GetInterfaces(), so it missed this branch, missed the single-entity branch (IsAssignableFrom
+        // fails on a List), missed the Edm-primitive map, and fell into the final raw-graph
+        // PreRenderedJson. MEASURED on the pre-fix tree:
+        //     [{"Special":"x","Id":1,"Name":"derived","Parts":[{"Id":9,"Label":"PART-LEAK"}]}]
+        // — no @odata.context, no `value` envelope, the declared navigation `Parts` served INLINE
+        // (§4.5.1 / §11.2.4.2 and #179 both bypassed), and no @odata.etag injected — while the
+        // identical handler returning List<TModel> got the full envelope with navigations stripped. A
+        // cyclic derived graph turned the same request into a 500, since nothing suppressed the
+        // navigations before serialization.
+        //
+        // Assignability, not equality. It cannot over-match: modelType is the entity set's own TModel
+        // (never `object`), and every arm this could steal from — the single-entity branch and the Edm
+        // primitive map — is tested for an element type assignable to TModel, which no primitive and
+        // no non-TModel DTO is. The string guard stays because string is IEnumerable<char>.
+        //
+        // AddBoundOperationProduces' collection arm carries the SAME predicate over the DECLARED
+        // return type, so the OpenAPI document and the wire cannot disagree about which shape a bound
+        // operation produces; changing one without the other is what #497 calls the advertise-vs-serve
+        // half of the defect.
         bool isCollectionOfModel = false;
         if (resultType != typeof(string))
         {
@@ -11373,7 +13497,7 @@ internal static class OhDataEndpointFactory
             {
                 if (iface.IsGenericType
                     && iface.GetGenericTypeDefinition() == typeof(IEnumerable<>)
-                    && iface.GetGenericArguments()[0] == modelType)
+                    && modelType.IsAssignableFrom(iface.GetGenericArguments()[0]))
                 {
                     isCollectionOfModel = true;
                     break;
@@ -11388,6 +13512,56 @@ internal static class OhDataEndpointFactory
             // not IEnumerable<object>.
             object[] coll = ((IEnumerable)result).Cast<object>().ToArray();
             string baseUrl = BuildBaseUrl(ctx, prefix);
+
+            // #357: bound the collection exactly as #201 bounds GetAll. Before this, an operation
+            // returning a collection of the entity set's own type bypassed MaxTop, the client's
+            // $top/$skip and server-driven paging entirely -- so the DoS ceiling the framework
+            // advertises and enforces on every ordinary collection route was fully bypassable
+            // through any such operation, and a $top sent against one was neither applied nor
+            // rejected (measured: 77 entities returned for `?$top=2`).
+            //
+            // The situation is identical to GetAll's, which is why the semantics are identical
+            // rather than merely similar: the framework is holding a fully materialized array and
+            // owns the whole pipeline from here on, so an offset continuation is one it can always
+            // honour. An omitted $top caps to MaxTop (or a smaller Prefer: maxpagesize) with a
+            // $skip @odata.nextLink for the remainder; an explicit $top is applied and validated
+            // against MaxTop; $skip is applied. MaxTop = null opts out, as it does on GetAll.
+            //
+            // Parsed HERE, in the runtime collection branch, rather than in the route: a handler
+            // declared Task<object> that returns a List<TModel> must not be a way around the
+            // ceiling, and a function whose result is NOT a collection must keep ignoring $top/$skip
+            // exactly as it did. The OpenAPI metadata is attached from the DECLARED return type, so
+            // the only possible divergence is serving a bound the document did not promise -- the
+            // safe direction of #467's advertise-vs-serve rule.
+            //
+            // #543: that "parsed HERE, not in the route" claim was correct and #357's *conclusion*
+            // from it was not -- the route-level exclusion of ACTIONS put the bypass back on the
+            // one operation kind that never reached this parse at all. Measured: `Task<object>`
+            // returning a List<TModel> from a BindAction served all 25 rows against MaxTop = 10 and
+            // ignored `$top` entirely, which is the exact wire shape this comment says #357 closed.
+            // Actions reach the parse now; the only thing they cannot do is emit a nextLink.
+            //
+            // `startupSource` is the STARTUP endpoint source, and the distinction from `source` is
+            // load-bearing, not cosmetic: `source` here is the REQUEST-scoped instance, whose MaxTop
+            // is null -- profiles are registered AddScoped and _resolvedMaxTop is assigned in
+            // VisitModelBuilder, which only ever runs on the startup instance. Reading the ceiling
+            // off the request instance silently disables the whole bound (measured: 25 rows returned
+            // and $top=1000 accepted, on a profile with MaxTop = 10). This is the two-sources rule
+            // CLAUDE.md states for every route closure -- startup source for structural queries,
+            // request source for Invoke* -- and MaxTop is named in it.
+            //
+            // #543: it used to be nullable and to double as the "is this route pageable" flag, null
+            // for every bound ACTION, so an action skipped the bound entirely. The flag is now
+            // `continuable`, a separate parameter, and every caller passes the startup source: an
+            // action IS bounded, it just cannot be CONTINUED. Conflating "no continuation available"
+            // with "no ceiling applies" is precisely how the ceiling became bypassable.
+            string? opNextLink = null;
+            if (!TryApplyOperationCollectionPaging(
+                    ctx, startupSource, continuable, coll, entitySetName, operationName,
+                    out coll, out opNextLink, out IResult? pagingError))
+            {
+                return pagingError!;
+            }
 
             // #179: route the collection through the same serialize → ETag → omit-navs stages the
             // normal collection GET uses (ApplyCollectionPipelineAsync). A bound op returns the
@@ -11416,11 +13590,15 @@ internal static class OhDataEndpointFactory
             // after the filter chain unwound. Rendering with the registration's owned options keeps
             // the envelope keys contractual while the payload inside the array still honours the
             // host's converters/encoder exactly as it did (#252) -- those already ran, above.
-            return PreRenderedJson(new Dictionary<string, object?>
+            var opEnvelope = new Dictionary<string, object?>
             {
                 ["@odata.context"] = $"{baseUrl}/$metadata#{entitySetName}",
-                ["value"] = json
-            }, EnvelopeOptions(serializerOptions));
+            };
+            // #357: between @odata.context and value, matching every other collection envelope in
+            // this file (JSON Format §4.5 -- annotations precede what they describe).
+            if (opNextLink is not null) opEnvelope["@odata.nextLink"] = opNextLink;
+            opEnvelope["value"] = json;
+            return PreRenderedJson(opEnvelope, EnvelopeOptions(serializerOptions));
         }
 
         if (resultType == modelType || modelType.IsAssignableFrom(resultType))

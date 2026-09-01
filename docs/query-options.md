@@ -6,7 +6,7 @@ OhData supports the OData 4.0 system query options. Which ones are applied depen
 
 By default OhData serializes response property names in **PascalCase** — the CLR property names,
 which are exactly the identifiers declared in `$metadata` (the EDM). Payload casing therefore
-matches `$metadata` casing, satisfying OData §4.4 and letting case-sensitive OData-native clients
+matches `$metadata` casing, which is what lets case-sensitive OData-native clients
 (e.g. `Microsoft.OData.Client`) bind properties out of the box.
 
 This default is **owned by OhData**, not inherited from the host's
@@ -34,12 +34,17 @@ output, `$value`, and bound/unbound function/action results.
 > property names (the EDM has no naming policy). Opting into camelCase therefore desyncs your
 > payload casing from `$metadata` — a case-sensitive OData-native client that reads `$metadata` to
 > learn property names will not match the camelCase keys on the wire. The PascalCase default keeps
-> payloads and `$metadata` in agreement (OData §4.4); opt into camelCase only when your clients bind
+> payloads and `$metadata` in agreement; opt into camelCase only when your clients bind
 > case-insensitively.
 
 > Note: this affects **response** casing only. OData query-option property references
-> (`$select=Name`, `$filter=…`, `$orderby=…`, `$expand=…`) and request bodies are matched
-> case-insensitively against the EDM, so a client may use either casing on the way in.
+> (`$select=Name`, `$filter=…`, `$orderby=…`, `$expand=…`) are matched case-insensitively against
+> the EDM, so a client may use either casing on the way in. Request **bodies** are matched against
+> the serializer contract the deserializer itself resolves — i.e. the policy-converted name — with
+> the EDM and CLR names accepted as case-insensitive aliases. With the PascalCase default and with
+> camelCase those are the same set; with a non-case-preserving policy (`SnakeCaseLower`,
+> `KebabCaseLower`) a body may name a property in either its policy spelling or its EDM/CLR
+> spelling. Before #536 `PATCH` accepted only the latter and silently discarded the former.
 
 The OpenAPI/Swagger companion packages (`OhData.AspNetCore.OpenApi`, `.NSwag`, `.Swashbuckle`)
 follow this same policy: generated schema property names match the wire casing exactly — PascalCase
@@ -62,7 +67,7 @@ Returns all items. The framework does **not** apply `$filter` or `$orderby` to t
 
 `MaxTop` caps an **explicit** `$top` on this path exactly like it does on `GetQueryable`: a `$top` value greater than `MaxTop` returns `400 Bad Request` (`InvalidQueryOption`). As of #201, an **omitted** `$top` is also capped to `MaxTop` (or a smaller `Prefer: maxpagesize`), and the response carries a `@odata.nextLink` for the remainder - so `GetAll` is safe-by-default and can no longer be coerced into returning an unbounded result set. This became possible because `GetAll` re-enumerates its source on each request and applies `$skip` itself, so an offset `$skip` link is a valid continuation story - the framework only ever emits a link it also honors (note it is `$skip`, not the opaque `$skiptoken` `GetQueryable` emits, nor the framework-private token the Priority-1 path uses). **To opt out** - return the full set in one response, however large - set `MaxTop = null` on the profile; an omitted `$top` then applies no cap and emits no `@odata.nextLink`. `Preference-Applied` echoes the honored page size, clamped so `maxpagesize` can never lift the `MaxTop` ceiling.
 
-`@odata.count` (`$count=true`) reflects the **pre-paging** total on this path too, per §11.2.6.5 - it is computed from the full materialized array before `$skip`/`$top` are applied, not from the length of the returned page.
+`@odata.count` (`$count=true`) reflects the **pre-paging** total on this path too, per §11.2.5.5 - it is computed from the full materialized array before `$skip`/`$top` are applied, not from the length of the returned page.
 
 Use `GetAll` when your data source is small and in-memory, or when you want complete control over what is returned.
 
@@ -342,6 +347,17 @@ The two paths differ only in the shape of the continuation link. `GetQueryable` 
 
 **A page that is exactly `MaxTop`/`maxpagesize` long is not assumed to have more behind it (#360).** On `GetQueryable` and Priority-1 the framework fetches one row *past* the page and emits `@odata.nextLink` only if that probe row actually came back, then discards it. This costs no extra round-trip (it is the same single query, one row wider) and leaves `@odata.count` untouched - that is computed separately, pre-paging. Previously a collection whose row count was an exact multiple of the page size ended every walk with one spurious empty page. `GetAll` never had the problem: it already materializes its source and compares against the pre-paging total.
 
+**A collection-returning bound FUNCTION is bounded the same way (#357).** A bound (or entity-bound)
+function whose result is a collection of the entity set's own type used to bypass `MaxTop`, the
+client's `$top`/`$skip` and server-driven paging entirely - so the ceiling enforced on every route
+above was fully bypassable through any such operation, and a `$top` sent against one was neither
+applied nor rejected. It now follows the `GetAll` rules exactly (in-memory `Skip()`/`Take()` over the
+materialized result, `$skip` continuation, `MaxTop` capping an explicit `$top` with the same message,
+`Prefer: maxpagesize` honoured, `MaxTop = null` to opt out). **Breaking** for a function returning
+more than `MaxTop` entities. Bound and unbound **actions** are excluded - see
+[Bound operations](bound-operations.md#a-collection-returning-function-is-paged-like-any-other-collection-357).
+No other system query option is applied to an operation result.
+
 **`GetAll` now mirrors the "omitted `$top`" behavior above (#201).** An omitted `$top` is capped to `MaxTop` (or a smaller `Prefer: maxpagesize`) with a `@odata.nextLink` for the remainder, so this path is safe-by-default like the others. The one difference from `GetQueryable` is the continuation shape: `GetAll` emits a `$skip` link (which it re-applies against its re-enumerated source) rather than the opaque `$skiptoken`. Because it has the pre-paging total in hand, it emits a link only when rows actually remain. Set `MaxTop = null` on the profile to opt out and return the full set in one response, however large - see the `GetAll` section above.
 
 ---
@@ -375,6 +391,42 @@ Gating: the **inline** form (`$count=true`) is gated by `CountEnabled`. The **st
 `/$count` route is always registered when a collection handler exists (it is an addressable
 resource, not a query option) - on that route only `$filter` is gated, by `FilterEnabled`
 (and the `FilterProperties` allowlist).
+
+> **§11.2.9 decides what this segment implements, and it splits the options in two.** Verbatim:
+>
+> > "On success, the response body MUST contain the count of items matching the request after
+> > applying any `$filter` or `$search` system query options … **The returned count MUST NOT be
+> > affected by `$top`, `$skip`, `$orderby`, or `$expand`.**"
+>
+> | Option | On `GET /{Set}/$count` | Why |
+> |---|---|---|
+> | `$filter` | **Applied** | §11.2.9: the count is taken after applying it |
+> | `$top` `$skip` `$orderby` `$expand` | **Accepted and ignored** | §11.2.9 names these four and says the count MUST NOT be affected by them |
+> | `$select` | **Accepted and ignored** | not named by that sentence, but it changes an item's *shape*, never its membership, and the body is a bare scalar |
+> | `$format` | **Accepted and ignored** | §11.2.9 disallows content negotiation here; the body is `text/plain` regardless |
+> | `$search` | **`501`** | §11.2.9 requires the count to be taken *after applying* it, and this route has no `$search` leg — ignoring it would return a **wrong number** under a `200` |
+> | `$apply` `$compute` `$count`, any unrecognized `$`-name | **`501`** | outside the clause, and implemented nowhere here |
+>
+> **`$search` is `501` and that is #353 (`GET /odata/Products/$count?$search=alpha`).** Until 1.7.0
+> it returned the **unfiltered** total under a `200`, which §11.2.9 forbids and which no client
+> could detect. Ask for the searched count inline instead - `GET /odata/Products?$search=alpha&$count=true`
+> and read `@odata.count`, which does honour it.
+>
+> **The four §11.2.9 names, and `$select`, are accepted and ignored — the same behaviour as
+> 1.0.0 through 1.6.0.** Ignoring them is what the clause specifies, so under Minimal item 7's
+> *"either follow the specification or return 501 … for any unsupported functionality"* it is the
+> follow arm; a `501` there would claim non-implementation of something this route has done
+> correctly since 1.0.0. This also matches `Microsoft.AspNetCore.OData`, whose
+> `ODataQueryOptions.ApplyTo` returns early on `Request.IsCountRequest()` before reaching the
+> `$orderby`/`$skip`/`$top` block, and it is what `Microsoft.OData.Client` requires: it translates
+> `LongCount()` by appending `/$count` to the query it has **already** built and strips nothing, so
+> `q.OrderBy(…).LongCount()`, `q.Take(n).LongCount()` and `q.Skip(n).LongCount()` all send the
+> option along.
+>
+> `Accept: application/xml` on this segment still answers `406` — §11.2.9 forbids the *client* to
+> negotiate, which is not a licence for the server to ship a media type the client refused.
+>
+> See [Unsupported system query options are rejected](#unsupported-system-query-options-are-rejected-359-380-353).
 
 Behaviour depends on the handler path:
 
@@ -558,7 +610,7 @@ A pushed (delegate-less) `$expand` honors the nested options of the expanded col
 | `$filter` — `Children($filter=active eq true)` | ✅ | filtered `Include` (SQL `WHERE` in the JOIN) |
 | `$orderby` — `Children($orderby=name desc)` | ✅ | ordered `Include` (SQL `ORDER BY` in the JOIN) |
 | `$top` / `$skip` — `Children($orderby=name;$top=5)` | ✅ | paged `Include` (SQL `ROW_NUMBER` window); `$top` is capped by [`MaxExpandTop`](#complexity-limits-202) when that is set (it defaults to no ceiling) |
-| `$count` — `Children($count=true)` | ✅ | inline `Children@odata.count` = full filtered count (paging is applied after counting, per §11.2.4.2); bounded by [`MaxExpandTop`](#complexity-limits-202) when that is set (it defaults to no ceiling) |
+| `$count` — `Children($count=true)` | ✅ | inline `Children@odata.count` = full filtered count (paging is applied after counting, per §11.2.5.5); bounded by [`MaxExpandTop`](#complexity-limits-202) when that is set (it defaults to no ceiling) |
 | **nested `$expand`** — `Children($expand=Grandkids)` | ✅ | multi-level pushdown: folded into the same query as an `Include`→`ThenInclude` JOIN when every level is delegate-less (see [Multi-level `$expand`](#multi-level-expand-and-levels-206) below) |
 | `$levels` — `Children($levels=2)` / `Children($levels=max)` | ✅ | recursive self-referential expand, bounded by `MaxExpansionDepth`; may carry `$filter`/`$orderby`/`$skip`/`$top`/`$count`/`$select`, applied at **every** level (see below) |
 | `$search` / `$compute` / `$apply` | ❌ (deferred) | not implemented on the pushdown path |
@@ -684,7 +736,7 @@ two no-ops survive the parser, and both count as bare —
 | `$expand=Books()` | `400` | rejected by the OData URI parser before OhData sees it — *"Missing expand option on navigation property 'Books'"* |
 | `$expand=Books($filter=…)` / `($orderby=…)` / `($select=…)` | `400` | a `$skip`-only link cannot carry a nested option, so hop 2 could not reproduce hop 1 |
 | `$expand=Books($skip=N)`, `N > 0` | `400` | same: the offset is already in play and the link carries only `$skip` |
-| `$expand=Books($count=true)` | `400` | §11.2.4.2 requires `Nav@odata.count` to be the **full filtered** count; a paged collection cannot report one. `Nav@odata.count` and `Nav@odata.nextLink` therefore never coexist |
+| `$expand=Books($count=true)` | `400` | §11.2.5.5 requires a count to be *"the total count of results across all pages"*, i.e. the **full filtered** count; a paged collection cannot report one. `Nav@odata.count` and `Nav@odata.nextLink` therefore never coexist |
 | `$expand=Books($expand=Chapters)` | `400` | a level with children is not SQL-bounded at all (`APPLY`/`LATERAL`); the rows were already fully materialized, so a link would advertise a bound that does not exist |
 | `$expand=Nav($levels=N)` | `400` | same, at every level |
 | a nav whose element type has a composite or unresolvable key | `400` | no single key ⇒ no total order ⇒ no sound `$skip` walk |
@@ -740,8 +792,10 @@ Four properties of that route worth knowing:
   *delegate-backed* [navigation route](navigation-routing.md) on the same URL shape does accept.
   There is nothing to carry: the link is only ever emitted for an expand that had no nested options at all. Rejection is
   by the `$` sigil rather than a name allowlist, so a future OData system option this build has never
-  heard of is refused rather than silently ignored.
-- **`$format` is the one exemption, and it is not a data option.** §11.2.12 content negotiation is
+  heard of is refused rather than silently ignored. This route's sigil check was the precedent
+  [#359 generalised to every read route](#unsupported-system-query-options-are-rejected-359-380-353),
+  and it now shares that matcher rather than carrying its own copy.
+- **`$format` is the one exemption, and it is not a data option.** §11.2.10 content negotiation is
   implemented once, on the group filter that wraps the whole OData surface, so `$format` never
   reaches this handler and cannot change a single row. Refusing it would make this the only route in
   the surface that `400`s a conformant, already-supported option, and would break the common client
@@ -1067,3 +1121,178 @@ allowlist produces `InvalidQueryOption`:
 ```json
 { "error": { "code": "InvalidQueryOption", "message": "The property 'Id' cannot be used in the $filter query option." } }
 ```
+
+---
+
+## Unsupported system query options are rejected (#359, #380, #353)
+
+OData Part 1 §11.2.5: *"If a data service does not support a system query option, it MUST fail any
+request that contains the unsupported option."* Every read route enforces that, and enforces it by
+the **`$` sigil** rather than by a list of names it happens to know about.
+
+Concretely, a request is refused with **`501 Not Implemented`** (`UnsupportedQueryOption`) when it
+carries a query key that begins with `$` and is not in the route's own implemented set:
+
+```
+GET /odata/Products?$unknown=1        -> 501  "The query option '$unknown' is not supported."
+GET /odata/Products?$slect=Name       -> 501
+GET /odata/Products?$levels=2         -> 501   ($levels is a real option, but only inside $expand)
+GET /odata/Products(1)?$filter=…      -> 501   (a single entity has nothing to filter)
+GET /odata/Products/$count?$search=x  -> 501
+GET /odata/Products?$apply=…          -> 501   (was 400 from 1.0.0 through 1.6.0)
+```
+
+Until 1.7.0 each of these returned `200` with the option parsed and thrown away - and on the
+collection routes the discarded option was echoed back into the `@odata.nextLink` the server
+generated. A `200` from `?$filter=…` reasonably tells a client that the filter was applied.
+
+### `501` or `400`: which, and why
+
+Both statuses are correct, for different conditions, and OData decides between them.
+
+- **§9.3.1** (a MUST): *"If the client requests functionality not implemented by the OData Service,
+  the service MUST respond with 501 Not Implemented and the response body SHOULD describe the
+  functionality not implemented."*
+- **§13.1.1 item 7**, inside the Minimal Conformance MUST list: *"MUST successfully parse the
+  request according to [OData-ABNF] for any supported system query string options and either follow
+  the specification or return 501 Not Implemented (section 9.3.1) for any unsupported
+  functionality"*.
+- **§11.2.5**'s own status advice is only a SHOULD, but it points the same way.
+
+OhData claims Minimal conformance, so the `501` is not optional. In five words:
+
+> **`501` is "can't". `400` is "won't".**
+
+The test for which side a refusal falls on is mechanical: **could any setting on the profile make
+this same request succeed on this same route?** Yes -> `400`. No -> `501`.
+
+| Condition | Status | Code |
+|---|---|---|
+| An unrecognized `$`-name, or an option this build implements nowhere (`$apply` `$compute` `$index` `$deltatoken`) | `501` | `UnsupportedQueryOption` |
+| An option the addressed **route** does not implement (`$filter` on `GET /Set({key})`, `$search` on a `/$count`, `$select` on a single-valued navigation) | `501` | `UnsupportedQueryOption` |
+| `$filter`/`$orderby` on the `GetAll` path, and `$filter` on the `GetAll`-backed `/$count` | `501` | `UnsupportedQueryOption` |
+| A capability flag left `false` (`FilterEnabled`, `OrderByEnabled`, `SelectEnabled`, `ExpandEnabled`, `CountEnabled`) | `400` | `UnsupportedQueryOption` |
+| A property allowlist rejection (`FilterProperties` and friends) | `400` | `InvalidQueryOption` |
+| `$search` with no `Search` handler, on a route that has a `$search` leg | `400` | `UnsupportedQueryOption` |
+| A malformed or empty option **value** on a route that implements the option (`$top=abc`, `$skiptoken=`) | `400` | `InvalidQueryOption` |
+| A value outside a configured bound (`MaxTop`, `MaxExpandTop`) | `400` | `InvalidQueryOption` |
+
+`$search` shows both sides of the line for one option: with no `Search` handler it is a `400` on the
+collection `GET`s, which really do invoke one when configured, and a `501` on `/$count` and
+`GET /Set({key})`, which have no `$search` leg at all.
+
+`$filter`/`$orderby` on `GetAll` is "can't". Its message names a configuration change
+(*"Configure GetQueryable…"*), which reads like the `400` side, but the refusal is
+flag-**independent**: there is no `IQueryable` on that path and therefore no filter code, so
+`FilterEnabled = true` changes nothing, and the remedy supplies a **different handler** — it has the
+request served by a different route implementation rather than switching this one on. That is
+§9.3.1's *"functionality not implemented"*, and the existing message is already what its `SHOULD`
+asks the body to do: it describes the unimplemented functionality.
+
+> **The same option can be `501` on one entity set and `400` on another**, decided by which read
+> handler the profile supplies. `$filter` on a `GetAll`-backed set is `501` — the framework *can't*
+> filter it, under any configuration. `$filter` on a `GetQueryable`-backed set with
+> `FilterEnabled = false` is `400` — it *can*, and you chose not to expose it. That is correct, not
+> an inconsistency: conformance is per-**resource**, and the two answers tell a client genuinely
+> different things — *"no configuration of this endpoint will ever do that"* versus *"this endpoint
+> could, and is not offering it"*.
+
+> **⚠ BREAKING for `$apply`/`$compute`/`$index`/`$deltatoken`.** Those four have answered
+> `400 UnsupportedQueryOption` since 1.0.0 and now answer `501`. The error **code** and the message
+> **bytes** are unchanged, so a client matching on the envelope keeps working; code branching on
+> `StatusCode == 400` for this condition must add `501`.
+
+### What is *not* touched
+
+- **Custom query options.** Part 2 §5.2 requires a custom query option to *not* begin with `$`, so
+  any key without the sigil is passed through untouched: `?myTenant=acme` is your business, and the
+  framework's own `ohdata-skiptoken` continuation offset is deliberately spelled without a `$` for
+  the same reason.
+- **Parameter aliases** (§5.3) begin with `@`, not `$`, and are likewise untouched.
+- **Mixed-case spellings of real options.** `$Select` and `$TOP` are honoured, as they always have
+  been. `Microsoft.AspNetCore.OData` lowercases an option name before matching it whenever the URI
+  resolver enables case-insensitivity - the default - so this is alignment with the stack OhData
+  sits on, not leniency. The inconsistency #359 reported (`$Select` applied, `$slect` ignored,
+  neither rejected) is resolved by rejecting `$slect`.
+- **`$format`.** Accepted on every route: §11.2.10 content negotiation is implemented once, on the
+  group filter that wraps the whole OData surface, so it never reaches a route handler and cannot
+  change a row. An unsupported `$format` *value* is still rejected there.
+- **Three routes outside the table, which still ignore every query option.** Read the table as a
+  list of what *is* gated, not as the whole URL surface. The structural-property reads and writes
+  (`GET|PUT|PATCH|DELETE /{Set}({key})/{Prop}` and `GET /{Set}({key})/{Prop}/$value`), the service
+  document (`GET /{prefix}`) and `GET /{prefix}/$metadata` are ungated: `GET /odata?$unknown=1`
+  answers `200` with the service document, and the property routes answer `200` with the property.
+  None of them builds a link, so none can echo an option back the way #359 reported; closing them
+  is a separate change.
+
+### The per-route sets
+
+The sets differ, and that is the point - `$filter` is implemented on a collection GET and
+meaningless on a single entity.
+
+| Route | Accepted |
+|---|---|
+| `GET /{Set}` (`GetQueryable`, `GetODataQueryable`) | `$filter` `$orderby` `$top` `$skip` `$select` `$expand` `$count` `$search` `$skiptoken` `$format` |
+| `GET /{Set}` (`GetAll`) | the same, **minus `$skiptoken`** - this path continues with `$skip` and never read a `$skiptoken` |
+| `GET /{Set}/$count` | `$filter` `$top` `$skip` `$orderby` `$expand` `$select` `$format` - only `$filter` is applied; §11.2.9 requires the rest to be ignored |
+| `GET /{Set}({key})` | `$select` `$expand` `$format` |
+| `GET /{Set}({key})/{Nav}` — **collection**-valued (`HasMany`) | `$select` `$orderby` `$skip` `$top` `$count` `$format` |
+| `GET /{Set}({key})/{Nav}` — **single**-valued (`HasOptional`/`HasRequired`) | `$format` only |
+| `GET /{Set}({key})/{Nav}/$count` | `$top` `$skip` `$orderby` `$expand` `$select` `$format` - it applies **none** of them, and refuses `$filter` as well as `$search` |
+| `GET /{Set}({key})/{Nav}?$skip=N` (the #313 `$expand` continuation) | `$skip` `$format` |
+| `GET\|POST /{Set}/{Op}` and `GET\|POST /{Set}({key})/{Op}` (bound operations) | `$top` `$skip` `$format` |
+| `GET\|POST /{Op}` (unbound operations) | `$format` only |
+
+Being in a set means *the route implements the option*, not that this profile permits it: a
+`$filter` on a set with `FilterEnabled = false` is still a `400`, with the capability flag's own
+message naming the flag. A recognized-but-not-implemented-here option and a completely unrecognized
+one share one code, because the client's remedy is identical.
+
+Two things in that table are worth reading twice.
+
+**The two navigation rows are one URL shape with two handlers.** `GET /{Set}({key})/{Nav}` is
+mapped once, and which branch runs is decided by whether the navigation was declared with
+`HasMany` or with `HasOptional`/`HasRequired`. Only the collection branch applies query options:
+the single-valued branch serializes the related entity and reads nothing off the query string,
+not even `$select`. It therefore accepts `$format` and refuses everything else — including
+`$select`, which its collection sibling really does implement. If you need a projection of a
+single related entity, read it from its own entity set (`GET /{ChildSet}({childKey})?$select=…`).
+
+**Bound operations honour `$top`/`$skip`, unbound ones do not.** A bound function or action that
+returns a collection of the profile's model type is bounded by `MaxTop` and pages with a
+`$skip` continuation (#357 for a function, #543 for an action), so `$top`/`$skip` are real
+there and are listed unconditionally — the server can emit a `$skip` link on any of those routes, and refusing the option would mean
+refusing a link the server itself issued. Unbound operations have no such pipeline. An
+operation's **own parameters** are query-string keys without a `$` (functions) or JSON body
+members (actions), so the sigil rule never examines them.
+
+**The two `/$count` rows are governed by §11.2.9 rather than by this feature's general rule, and
+they are the one place an accepted option is deliberately ignored.** That clause partitions the
+system query options for a count segment: the count is taken *after applying any `$filter` or
+`$search`*, and it *MUST NOT be affected by `$top`, `$skip`, `$orderby`, or `$expand`*. So the
+options in the first class are **applied where the route can and refused where it cannot** —
+ignoring one would answer a wrong number under a `200` — and the options in the second class are
+**accepted and ignored**, because that is the behaviour the clause specifies rather than a
+shortfall to confess with a `501`.
+
+The two rows differ only in how much the route can apply. The entity-set segment applies `$filter`
+and refuses `$search`; the navigation segment invokes the navigation delegate and counts what comes
+back, so it can apply neither and refuses both. `$select` is not named by §11.2.9 but is ignored on
+the same reasoning as the four that are: it changes an item's shape, never its membership, and the
+response is a bare scalar. `$format` is accepted-and-ignored too — §11.2.9 disallows content
+negotiation on this segment, so unlike every other row in the table it does not mean "negotiated
+here". See the [`/$count` table](#count) above.
+
+### Why `501`, and what it costs
+
+§11.2.5's status advice is a SHOULD, and an earlier revision of this feature leaned on that to
+answer `400` throughout. Two other clauses settle it the other way: **§9.3.1** makes `501` a MUST
+for *"functionality not implemented by the OData Service"*, and **§13.1.1 item 7** puts that same
+`501` inside the Minimal Conformance MUST list, which this project claims. See the table above for
+the `501`/`400` split.
+
+The cost is a wire break on `$apply`/`$compute`/`$index`/`$deltatoken`, which had answered `400`
+since 1.0.0. It was accepted because the alternative is failing a MUST in the conformance level the
+project advertises. What is preserved instead is the **envelope**: the error `code`
+(`UnsupportedQueryOption`) and the message bytes are identical to the `400` they replace, on every
+route, so one condition still produces one body and only the status line moves.

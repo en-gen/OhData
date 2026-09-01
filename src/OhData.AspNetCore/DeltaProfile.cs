@@ -91,6 +91,9 @@ public sealed class DeltaMapping<TModel, TEntity> : IDeltaMappingSource
     /// </summary>
     /// <param name="from">Model property selector, e.g. <c>d =&gt; d.DisplayName</c>.</param>
     /// <param name="to">Entity property selector, e.g. <c>e =&gt; e.Name</c>.</param>
+    /// <exception cref="InvalidOperationException">
+    /// This model property already has a <c>Rename()</c> declaration (#488).
+    /// </exception>
     public DeltaMapping<TModel, TEntity> Rename(
         Expression<Func<TModel, object?>> from,
         Expression<Func<TEntity, object?>> to)
@@ -99,6 +102,17 @@ public sealed class DeltaMapping<TModel, TEntity> : IDeltaMappingSource
         if (to is null) throw new ArgumentNullException(nameof(to));
         string fromName = DeltaExpressionHelper.GetMemberName(from, nameof(from));
         string toName = DeltaExpressionHelper.GetMemberName(to, nameof(to));
+        // #488 item 5(b): the compiler rejects every OTHER ambiguity in this declaration surface
+        // (Rename+Convert, Ignore+Rename, two-into-one targets, duplicate (model, entity) pairs),
+        // but a second Rename of the same source used to overwrite the first with no signal at all.
+        // Thrown here, at the call site, for the reason #468 gives in OhDataBuilder: the
+        // developer's own code is on the stack and the remedy is unambiguous.
+        if (_renames.TryGetValue(fromName, out string? existing))
+        {
+            throw new InvalidOperationException(
+                $"OhData: model property '{fromName}' already has a Rename() target ('{existing}'); " +
+                $"a second Rename() to '{toName}' would silently replace it. Declare it once.");
+        }
         _renames[fromName] = toName;
         return this;
     }
@@ -126,7 +140,18 @@ public sealed class DeltaMapping<TModel, TEntity> : IDeltaMappingSource
     /// <typeparam name="TTo">The entity property's type.</typeparam>
     /// <param name="from">Model property selector, e.g. <c>d =&gt; d.Status</c>.</param>
     /// <param name="to">Entity property selector, e.g. <c>e =&gt; e.StatusCode</c>.</param>
-    /// <param name="converter">Pure function converting the model value to the entity value.</param>
+    /// <param name="converter">
+    /// Pure function converting the model value to the entity value. It must capture nothing —
+    /// declare it as a <c>static</c> lambda or a static method. The compiled mapping is held for
+    /// the process lifetime while this profile is resolved in a scope that is disposed immediately
+    /// after startup, so captured state (an injected dependency, a constructor parameter, a local)
+    /// would be stale or disposed on every later call. A capturing converter is refused here with
+    /// <see cref="InvalidOperationException"/> rather than failing at request time (#488).
+    /// </param>
+    /// <exception cref="InvalidOperationException">
+    /// <paramref name="converter"/> captures state, or this model property already has a
+    /// <c>Convert()</c> declaration.
+    /// </exception>
     public DeltaMapping<TModel, TEntity> Convert<TFrom, TTo>(
         Expression<Func<TModel, TFrom>> from,
         Expression<Func<TEntity, TTo>> to,
@@ -137,20 +162,54 @@ public sealed class DeltaMapping<TModel, TEntity> : IDeltaMappingSource
         if (converter is null) throw new ArgumentNullException(nameof(converter));
         string fromName = DeltaExpressionHelper.GetMemberName(from, nameof(from));
         string toName = DeltaExpressionHelper.GetMemberName(to, nameof(to));
+        // #488 item 1: the converter is hoisted VERBATIM into the compiled plan, which is a
+        // process-lifetime singleton, while the profile that supplied it was resolved in a scope
+        // DeltaFactory.Build disposes on the next line. Delta profiles are registered AddScoped --
+        // the same lifetime as entity profiles, whose scoped injection is an advertised feature --
+        // so `_db` in a converter body is a natural thing to write and was measured producing
+        // ObjectDisposedException on EVERY Create. A non-disposable dependency is worse: silent
+        // stale-instance reuse across threads with no signal at all.
+        //
+        // The converter is an opaque delegate, so there is no seam through which the framework can
+        // re-resolve it per request the way the #483 caches simply stop caching. Refusing the
+        // shape is the only guarantee available, and the remedy is one keyword. Non-capturing
+        // lambdas -- with or without `static` -- and static method groups all pass.
+        if (CapturedState.IsCapturedByDelegate(converter))
+        {
+            throw new InvalidOperationException(
+                $"OhData: the Convert() converter for model property '{fromName}' captures state " +
+                "from its enclosing scope. Delta mappings are compiled once at startup and held " +
+                "for the process lifetime, but the DeltaProfile that declared them is resolved in " +
+                "a scope that is disposed immediately afterwards — so anything the converter " +
+                "captured (an injected DbContext, a constructor parameter, a local) is stale or " +
+                "disposed on every later call. Declare it as a static lambda " +
+                "(static v => ...) or a static method; delta mapping is dependency-free by design.");
+        }
         // Box/unbox at the type-erased boundary. A non-nullable value-typed TFrom can never be
         // null here (its delta value is always present), and a nullable/reference TFrom casts
         // from null cleanly — so the unchecked cast is safe for every reachable value.
         Func<object?, object?> wrapped = v => (object?)converter((TFrom)v!);
+        // #488 item 5(b): see Rename — a second Convert() of one source silently replaced the first.
+        if (_converters.TryGetValue(fromName, out DeltaConverterRule? existing))
+        {
+            throw new InvalidOperationException(
+                $"OhData: model property '{fromName}' already has a Convert() target " +
+                $"('{existing.EntityName}'); a second Convert() to '{toName}' would silently " +
+                "replace it. Declare it once.");
+        }
         _converters[fromName] = new DeltaConverterRule(toName, typeof(TFrom), typeof(TTo), wrapped);
         return this;
     }
 
-    // The compiler is type-erased; TEntity is closed here, so this is where the Delta<TEntity>
-    // probe (#479) can be handed over without reflection.
+    // The compiler is type-erased; TModel and TEntity are closed here, so this is where every
+    // Delta<T> probe (#479, #488 item 4) can be handed over without reflection.
     DeltaMappingPlan IDeltaMappingSource.Compile() =>
         DeltaMappingCompiler.Compile(
             typeof(TModel), typeof(TEntity), _renames, _ignored, _converters,
-            static () => DeltaMappingCompiler.TrackedEntityProperties<TEntity>());
+            new DeltaTypeProbes(
+                static () => DeltaMappingCompiler.TrackedEntityProperties<TEntity>(),
+                static name => DeltaMappingCompiler.CanApplySetterlessWrite<TEntity>(name),
+                static () => DeltaMappingCompiler.TrackedEntityProperties<TModel>()));
 }
 
 /// <summary>

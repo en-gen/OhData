@@ -84,7 +84,7 @@ public class QueryOptionsMetadataFidelityTests
     // ── $filter on /$count follows the SOURCE, not the flag ───────────────────
 
     /// <summary>
-    /// #467 (F3): the GetAll fallback branch of the /$count handler answers 400
+    /// #467 (F3): the GetAll fallback branch of the /$count handler answers 501
     /// UnsupportedQueryOption for any $filter regardless of <c>FilterEnabled</c> -- there is no
     /// IQueryable to apply one to. The advertisement must follow the source. The live request is
     /// asserted alongside the metadata so the two can never drift apart again.
@@ -98,7 +98,7 @@ public class QueryOptionsMetadataFidelityTests
         Assert.False(meta.FilterEnabled);
 
         using var response = await fx.Client.GetAsync("/odata/QomGetAllWidgets/$count?$filter=Name eq 'Cog'");
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(HttpStatusCode.NotImplemented, response.StatusCode);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

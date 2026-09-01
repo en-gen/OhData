@@ -26,7 +26,8 @@ public sealed class OhDataBuilder
     private readonly string _name;
     private readonly EntitySetDefaults _defaults = new();
     // #252: OhData owns its response casing independently of the host's HttpJsonOptions.
-    // null = PascalCase (the CLR names $metadata declares, OData §4.4). This is the source of
+    // null = PascalCase (the CLR names $metadata declares -- OData JSON Format; Part 1 has no
+    // §4.4, so no section number is cited). This is the source of
     // truth for every OhData response path; the host's PropertyNamingPolicy is not inherited.
     private JsonNamingPolicy? _jsonPropertyNamingPolicy;
     // #389: OData open complex types. ON by default -- a complex type with a dictionary member IS an
@@ -101,7 +102,7 @@ public sealed class OhDataBuilder
     /// </summary>
     /// <remarks>
     /// Defaults to <c>null</c> — <b>PascalCase</b>, the CLR property names OhData's <c>$metadata</c>
-    /// declares — so payload casing matches the EDM (OData §4.4). OhData owns this default
+    /// declares — so payload casing matches the EDM. OhData owns this default
     /// independently of the host's <c>HttpJsonOptions.SerializerOptions.PropertyNamingPolicy</c>,
     /// which is intentionally not inherited. Pass <see cref="JsonNamingPolicy.CamelCase"/> to emit
     /// camelCase payloads instead; an explicit value here always wins.
@@ -109,7 +110,7 @@ public sealed class OhDataBuilder
     /// <b>Warning — this policy shapes payloads and OpenAPI schemas, NOT <c>$metadata</c>.</b> Opting
     /// into camelCase makes response bodies and the generated OpenAPI schema camelCase, but
     /// <c>$metadata</c> continues to advertise the EDM property names — PascalCase, or the
-    /// <c>[System.Text.Json.Serialization.JsonPropertyName]</c> value where one is present (§4.4).
+    /// <c>[System.Text.Json.Serialization.JsonPropertyName]</c> value where one is present.
     /// The <c>$select</c>/<c>$filter</c>/<c>$orderby</c> parser resolves those EDM names
     /// case-insensitively, so a camelCase query option still binds; but a strict OData-native client
     /// that binds by the exact <c>$metadata</c> name will not match a camelCase payload key under this
@@ -196,10 +197,28 @@ public sealed class OhDataBuilder
     /// </summary>
     public OhDataBuilder AddEntitySetProfile<TProfile>() where TProfile : class, IEntitySetProfile
     {
-        if (_profileTypes.Contains(typeof(TProfile)))
+        RegisterProfileType(typeof(TProfile), explicitCall: true);
+        return this;
+    }
+
+    // #424: the single guard behind both AddEntitySetProfile<T>() (explicitCall: true) and the
+    // AddProfilesFrom* scanner path (explicitCall: false, via AddProfileType below). Before this
+    // fix only the explicit path consulted GlobalProfileRegistry, so scanning the same assembly
+    // into two named registrations silently allowed exactly what AddEntitySetProfile<T>() rejects
+    // -- a profile type belongs to exactly one registration (it is resolved per-registration and
+    // its EDM contribution is registration-scoped), and bypassing the guard didn't make sharing
+    // work, it just made the failure silent and deferred. One method, not a second parallel check
+    // that could drift from this one.
+    private void RegisterProfileType(Type type, bool explicitCall)
+    {
+        if (_profileTypes.Contains(type))
         {
-            throw new InvalidOperationException(
-                $"OhData: profile type '{typeof(TProfile).Name}' is already registered. Remove the duplicate AddEntitySetProfile call.");
+            if (explicitCall)
+            {
+                throw new InvalidOperationException(
+                    $"OhData: profile type '{type.Name}' is already registered. Remove the duplicate AddEntitySetProfile call.");
+            }
+            return; // scanner re-discovery within THIS registration -- already tracked, no-op
         }
 
         // Detect the same profile type being registered in a different OhData registration.
@@ -207,17 +226,16 @@ public sealed class OhDataBuilder
         var registryDescriptor = _services.FirstOrDefault(s => s.ServiceType == typeof(GlobalProfileRegistry));
         if (registryDescriptor?.ImplementationInstance is GlobalProfileRegistry registry)
         {
-            if (!registry.RegisteredTypes.Add(typeof(TProfile)))
+            if (!registry.RegisteredTypes.Add(type))
             {
                 throw new InvalidOperationException(
-                    $"Profile type '{typeof(TProfile).Name}' has already been registered in a different " +
+                    $"Profile type '{type.Name}' has already been registered in a different " +
                     "OhData registration. A profile type cannot be shared across registrations.");
             }
         }
 
-        _services.AddScoped<TProfile>();
-        _profileTypes.Add(typeof(TProfile));
-        return this;
+        _services.AddScoped(type);
+        _profileTypes.Add(type);
     }
 
     /// <summary>
@@ -241,19 +259,31 @@ public sealed class OhDataBuilder
         var registry = (DeltaProfileRegistry)registryDescriptor!.ImplementationInstance!;
         if (registry.Types.Contains(type))
         {
-            if (explicitCall)
+            // #488 item 5(c): the message may only be used when a duplicate AddDeltaProfile call is
+            // what actually happened. A scan that already discovered the type and then ONE explicit
+            // call is not a duplicate call -- and the reverse order (explicit, then a scan that
+            // re-discovers it) was already a silent no-op, so throwing here made the outcome depend
+            // on declaration order and blamed the user's single explicit call.
+            if (explicitCall && _explicitlyRegisteredDeltaProfiles.Contains(type))
             {
                 throw new InvalidOperationException(
                     $"OhData: delta profile type '{type.Name}' is already registered. " +
                     "Remove the duplicate AddDeltaProfile call.");
             }
-            return; // scan re-discovery of an already-registered type — skip idempotently
+            if (explicitCall) _explicitlyRegisteredDeltaProfiles.Add(type);
+            return; // scan re-discovery, or an explicit call confirming a scanned type — no-op
         }
 
         if (!_services.Any(s => s.ServiceType == type))
             _services.AddScoped(type);
         registry.Types.Add(type);
+        if (explicitCall) _explicitlyRegisteredDeltaProfiles.Add(type);
     }
+
+    // #488 item 5(c): registry.Types alone cannot tell a scan-discovered type from an explicitly
+    // registered one -- the DeltaProfileRegistry is shared across registrations and records only
+    // membership -- so the explicit calls are tracked per builder alongside it.
+    private readonly HashSet<Type> _explicitlyRegisteredDeltaProfiles = new();
 
     /// <summary>
     /// Scans the specified assemblies for <see cref="EntitySetProfile{TKey,TModel}"/> subclasses
@@ -306,15 +336,10 @@ public sealed class OhDataBuilder
     public OhDataBuilder AddProfilesFromAssembly(params Assembly[] assemblies) =>
         AddProfilesFrom(s => s.In(assemblies));
 
-    private void AddProfileType(Type type)
-    {
-        if (_profileTypes.Contains(type)) return;
-        // If another OhData registration already registered this profile type as a singleton,
-        // skip re-registering it in DI but still track it for this builder's route mapping.
-        if (!_services.Any(s => s.ServiceType == type))
-            _services.AddScoped(type);
-        _profileTypes.Add(type);
-    }
+    // #424: routes through the SAME guard AddEntitySetProfile<T>() uses (explicitCall: false, so a
+    // type this registration already tracks is a silent no-op -- ordinary scan re-discovery -- but
+    // a type another registration already claimed still throws).
+    private void AddProfileType(Type type) => RegisterProfileType(type, explicitCall: false);
 
     /// <summary>
     /// Registers an unbound function at the service root: <c>GET /prefix/{name}</c>.
@@ -332,17 +357,31 @@ public sealed class OhDataBuilder
     /// The resolved name is not a valid OData identifier (CSDL 4.0 section 4.1,
     /// <c>odataIdentifier</c>).
     /// </exception>
-    public OhDataBuilder AddFunction(Delegate handler, string? name = null)
-    {
-        if (handler is null) throw new ArgumentNullException(nameof(handler));
-        var op = UnboundOperationDefinition.From(handler, isAction: false);
-        if (name is not null) op = op with { Name = name };
-        ValidateUnboundOperationName(
-            op.Name, isAction: false, explicitName: name is not null,
-            paramName: name is not null ? nameof(name) : nameof(handler));
-        _unboundOps.Add(op);
-        return this;
-    }
+    public OhDataBuilder AddFunction(Delegate handler, string? name = null) =>
+        AddUnboundOperation(handler, isAction: false, name, authorize: null, authorizeParamName: null);
+
+    /// <summary>
+    /// #487: registers an unbound function with its own authorization requirement.
+    /// <para>
+    /// Unbound operations are not scoped to an entity set, so <c>ConfigureAuthorization</c> in a
+    /// profile cannot reach them: before this overload existed, a registration in which
+    /// <i>every</i> profile required authorization still served every unbound function and action
+    /// anonymously, and the only remedy was a group-level requirement covering the whole surface
+    /// including <c>$metadata</c>. <paramref name="authorize"/> takes the same per-category builder
+    /// <c>ConfigureAuthorization(auth =&gt; auth.Invoke(...))</c> uses.
+    /// </para>
+    /// </summary>
+    /// <param name="handler">The function delegate.</param>
+    /// <param name="authorize">
+    /// Configures this operation's requirements. <c>AllowAnonymous()</c> is accepted and is the way
+    /// to state that an anonymous unbound operation is intended - it silences the startup warning
+    /// that names unstated anonymous operations. <c>RequireResource()</c> is refused: there is no
+    /// entity to evaluate it against.
+    /// </param>
+    /// <param name="name">Optional explicit route/<c>$metadata</c> name - see the other overload.</param>
+    public OhDataBuilder AddFunction(
+        Delegate handler, Action<ICategoryAuthorizationBuilder> authorize, string? name = null) =>
+        AddUnboundOperation(handler, isAction: false, name, authorize, nameof(authorize));
 
     /// <summary>
     /// Registers an unbound action at the service root: <c>POST /prefix/{name}</c>.
@@ -360,14 +399,77 @@ public sealed class OhDataBuilder
     /// The resolved name is not a valid OData identifier (CSDL 4.0 section 4.1,
     /// <c>odataIdentifier</c>).
     /// </exception>
-    public OhDataBuilder AddAction(Delegate handler, string? name = null)
+    public OhDataBuilder AddAction(Delegate handler, string? name = null) =>
+        AddUnboundOperation(handler, isAction: true, name, authorize: null, authorizeParamName: null);
+
+    /// <summary>
+    /// #487: registers an unbound action with its own authorization requirement - the same
+    /// capability as the <c>authorize</c> overload of <see cref="AddFunction(Delegate, Action{ICategoryAuthorizationBuilder}, string)"/>
+    /// for the <c>POST</c> half, and it is the half that mattered: an unstated anonymous unbound
+    /// action is a mutation endpoint.
+    /// </summary>
+    /// <param name="handler">The action delegate.</param>
+    /// <param name="authorize">Configures this operation's requirements; <c>RequireResource()</c> is refused.</param>
+    /// <param name="name">Optional explicit route/<c>$metadata</c> name - see the other overload.</param>
+    public OhDataBuilder AddAction(
+        Delegate handler, Action<ICategoryAuthorizationBuilder> authorize, string? name = null) =>
+        AddUnboundOperation(handler, isAction: true, name, authorize, nameof(authorize));
+
+    // The one body behind all four AddFunction/AddAction overloads. Kept single so the #468 name
+    // check and the #498 signature check cannot drift between the authorized and unauthorized
+    // spellings of the same registration.
+    private OhDataBuilder AddUnboundOperation(
+        Delegate handler,
+        bool isAction,
+        string? name,
+        Action<ICategoryAuthorizationBuilder>? authorize,
+        string? authorizeParamName)
     {
         if (handler is null) throw new ArgumentNullException(nameof(handler));
-        var op = UnboundOperationDefinition.From(handler, isAction: true);
+        if (authorize is null && authorizeParamName is not null)
+            throw new ArgumentNullException(authorizeParamName);
+
+        string method = isAction ? "AddAction" : "AddFunction";
+        var op = UnboundOperationDefinition.From(handler, isAction);
         if (name is not null) op = op with { Name = name };
         ValidateUnboundOperationName(
-            op.Name, isAction: true, explicitName: name is not null,
+            op.Name, isAction, explicitName: name is not null,
             paramName: name is not null ? nameof(name) : nameof(handler));
+        // #498: same three signature rules as the profile's Bind* methods, through the same
+        // validator. Checked here, at registration, for the reason #468's name check gives below:
+        // it fires at the call site that caused it, with the developer's own code on the stack.
+        // (A void return is legal for an action - it produces 204 No Content - so on that half only
+        // the IResult and CancellationToken rules can fire.)
+        OperationSignatureValidation.Validate(
+            handler.Method, op.Name, isAction, $"{method}('{op.Name}')", nameof(AddAction));
+
+        if (authorize is not null)
+        {
+            var category = new CategoryAuthorizationBuilder();
+            authorize(category);
+            OperationAuthRule rule = category.Build(OhDataOperation.Invoke, boundOperationName: null);
+
+            // #487: refused at the call site rather than at MapOhData(). Resource-based
+            // authorization is defined as "evaluate the requirement against the {key} entity"
+            // (#199 Layer B) and is implemented by loading that entity through GetById. An unbound
+            // operation has no key segment and no entity set, so there is nothing to load and
+            // nothing to hand a handler - the rule could only ever be a silent no-op, which is the
+            // fail-open shape this whole overload exists to remove.
+            if (rule.Requirements.Any(r => r.Kind == AuthRequirementKind.Resource))
+            {
+                throw new ArgumentException(
+                    $"OhData: {method}('{op.Name}') declares RequireResource(), which is not " +
+                    "supported for an unbound operation. Resource-based authorization evaluates the " +
+                    "requirement against the entity loaded from the route's key segment, and an " +
+                    "unbound operation has neither a key nor an entity set. Use the coarse " +
+                    "requirements (RequireAuthenticatedUser/RequireRole/RequireClaim/RequirePolicy), " +
+                    "or model the operation as a bound operation on an entity set.",
+                    authorizeParamName);
+            }
+
+            op = op with { Authorization = rule };
+        }
+
         _unboundOps.Add(op);
         return this;
     }
@@ -510,9 +612,16 @@ public sealed class OhDataBuilder
 
             foreach (var op in capturedUnbound)
             {
+                // #492 §1: HasCollectionGet, not `HasGetAll || HasGetQueryable`. The old test
+                // enumerated two of the THREE collection-read paths, so a Priority-1 profile
+                // (ODataEntitySetProfile with only GetODataQueryable) reported both false while
+                // MapEntitySet registered its collection GET anyway -- and the colliding unbound
+                // function sailed through startup to become an AmbiguousMatchException on every
+                // collection read of that set. Asking the single "does a collection GET get
+                // registered" question is what stops a fourth read path repeating it.
                 var collidingProfile = profiles.FirstOrDefault(p =>
                     string.Equals(p.EntitySetName, op.Name, StringComparison.OrdinalIgnoreCase)
-                    && (op.IsAction ? p.HasPost : (p.HasGetAll || p.HasGetQueryable)));
+                    && (op.IsAction ? p.HasPost : p.HasCollectionGet));
                 if (collidingProfile is not null)
                 {
                     string opKind = op.IsAction ? "action" : "function";
@@ -612,7 +721,11 @@ public sealed class OhDataBuilder
                 capturedPrefix);
 
             var reg = new OhDataRegistration(
-                capturedPrefix, edmModel, profiles, capturedUnbound, capturedNamingPolicy, capturedOpenTypes);
+                capturedName, capturedPrefix, edmModel, profiles, capturedUnbound, capturedNamingPolicy, capturedOpenTypes,
+                // #474: the server-wide write-body ceiling, carried onto the registration so the
+                // group filter can apply it to the routes that belong to no entity set (the unbound
+                // actions), which have no profile to resolve a limit from.
+                defaults.MaxRequestBodyBytes);
             // Also register in the collection for named access
             sp.GetRequiredService<OhDataRegistrationCollection>().Add(capturedName, reg);
             return reg;

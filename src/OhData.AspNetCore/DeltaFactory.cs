@@ -69,6 +69,31 @@ internal sealed class DeltaMappingPlan
 }
 
 /// <summary>
+/// The questions the compiler asks <c>Delta&lt;T&gt;</c> itself rather than answering from a copy
+/// of its rules. Supplied by <see cref="DeltaMapping{TModel,TEntity}"/>, where both type arguments
+/// are closed, because the compiler is type-erased.
+/// </summary>
+/// <param name="TrackedEntityProperties">
+/// #479: the names <c>Delta&lt;TEntity&gt;</c> will track. A target outside this set is absent from
+/// its property surface and the write vanishes.
+/// </param>
+/// <param name="CanApplySetterlessEntityWrite">
+/// #488 item 4: whether a write to a TRACKED but setter-less entity property actually lands.
+/// Tracking is necessary but not sufficient — <c>Delta&lt;T&gt;</c> admits a setter-less collection
+/// and applies it by clearing and refilling the existing instance, which throws
+/// <c>SerializationException</c> for a collection with no <c>Clear</c> method (measured:
+/// <c>byte[]</c>, and every other array). So the write is probed, not predicted.
+/// </param>
+/// <param name="TrackedModelProperties">
+/// #488 item 4: the names <c>Delta&lt;TModel&gt;</c> will track, i.e. what can actually reach
+/// <c>Create(Delta&lt;TModel&gt;)</c> as a changed property.
+/// </param>
+internal sealed record DeltaTypeProbes(
+    Func<IReadOnlyCollection<string>> TrackedEntityProperties,
+    Func<string, bool> CanApplySetterlessEntityWrite,
+    Func<IReadOnlyCollection<string>> TrackedModelProperties);
+
+/// <summary>
 /// Resolves conventions and validates every rule for one <c>(model, entity)</c> mapping, failing
 /// fast at startup on anything unmapped, unwritable, or type-incompatible.
 /// </summary>
@@ -79,12 +104,12 @@ internal static class DeltaMappingCompiler
     /// <param name="renames">Model property name → entity property name.</param>
     /// <param name="ignored">Model property names excluded from the mapping.</param>
     /// <param name="converters">Model property name → explicit converter rule.</param>
-    /// <param name="trackedEntityProperties">
-    /// Reads the property names <c>Delta&lt;TEntity&gt;</c> will actually track, off a real
-    /// <c>Delta&lt;TEntity&gt;</c> (see <see cref="TrackedEntityProperties{TEntity}"/>). Supplied
-    /// as a delegate because the compiler is type-erased while the probe needs the closed generic.
-    /// Invoked only after <see cref="DescribeUnconstructableEntity"/> has cleared the entity type —
-    /// constructing the probe runs the entity's parameterless constructor.
+    /// <param name="probes">
+    /// The <c>Delta&lt;T&gt;</c> questions this compiler is not allowed to answer for itself; see
+    /// <see cref="DeltaTypeProbes"/>. Each probe constructs a real delta, so it runs the type's
+    /// parameterless constructor — the entity probes are invoked only after
+    /// <see cref="DescribeUnconstructableEntity"/> has cleared the entity type, and the model probe
+    /// guards itself the same way.
     /// </param>
     public static DeltaMappingPlan Compile(
         Type modelType,
@@ -92,15 +117,27 @@ internal static class DeltaMappingCompiler
         IReadOnlyDictionary<string, string> renames,
         IReadOnlyCollection<string> ignored,
         IReadOnlyDictionary<string, DeltaConverterRule> converters,
-        Func<IReadOnlyCollection<string>> trackedEntityProperties)
+        DeltaTypeProbes probes)
     {
-        // All public instance properties (for existence checks); the "in-scope" model surface is
-        // the subset with both a public getter and a public setter — a get-only computed property
-        // can never appear in a Delta<TModel> and needs no mapping.
+        // All public instance properties, for existence checks.
         var allModelPropNames = new HashSet<string>(
             PublicInstanceProperties(modelType).Select(p => p.Name), StringComparer.Ordinal);
-        var writableModelProps = ByName(PublicInstanceProperties(modelType)
-            .Where(p => p.GetMethod is { IsPublic: true } && p.SetMethod is { IsPublic: true }));
+
+        // #488 item 4: the "in-scope" model surface used to be "public getter AND public setter",
+        // on the stated premise that a get-only property can never appear in a Delta<TModel>.
+        // Measured false for collections: Delta<T> admits a setter-less collection
+        // (DeltaOfT.cs:703), so `List<int> Tags { get; }` entered the changed set, found no rule,
+        // and Create dropped it -- the client PATCHed it, got 200, and nothing persisted. The
+        // surface is therefore the public-getter properties that are settable OR that
+        // Delta<TModel> really tracks, read off a real Delta<TModel> rather than transcribed.
+        // Union, not replacement: the Create(TModel) overload reads the model directly, so a
+        // property Delta<TModel> refuses ([NotMapped], say) is still mappable there and stays
+        // in scope.
+        HashSet<string>? trackedModel = TryProbeTracked(modelType, probes.TrackedModelProperties);
+        var mappableModelProps = ByName(PublicInstanceProperties(modelType)
+            .Where(p => p.GetMethod is { IsPublic: true } &&
+                        (p.SetMethod is { IsPublic: true } ||
+                         (trackedModel is not null && trackedModel.Contains(p.Name)))));
         var entityProps = ByName(PublicInstanceProperties(entityType));
 
         var errors = new List<string>();
@@ -123,7 +160,7 @@ internal static class DeltaMappingCompiler
         {
             try
             {
-                tracked = new HashSet<string>(trackedEntityProperties(), StringComparer.Ordinal);
+                tracked = new HashSet<string>(probes.TrackedEntityProperties(), StringComparer.Ordinal);
             }
             catch (Exception ex)
             {
@@ -142,7 +179,7 @@ internal static class DeltaMappingCompiler
         }
         foreach (string renameSource in renames.Keys)
         {
-            if (!writableModelProps.ContainsKey(renameSource))
+            if (!mappableModelProps.ContainsKey(renameSource))
                 errors.Add($"Rename() source '{renameSource}' is not a writable property of {modelType.Name}.");
             // A property declared in both maps is contradictory: the compile loop skips ignored
             // properties before any rename runs, so Ignore() silently wins and the Rename() is
@@ -152,7 +189,7 @@ internal static class DeltaMappingCompiler
         }
         foreach (string convertSource in converters.Keys)
         {
-            if (!writableModelProps.ContainsKey(convertSource))
+            if (!mappableModelProps.ContainsKey(convertSource))
                 errors.Add($"Convert() source '{convertSource}' is not a writable property of {modelType.Name}.");
             // A property declared in both maps is ambiguous: Convert already renames+converts, so a
             // co-declared Rename would be silently dropped. Reject rather than guess.
@@ -167,14 +204,14 @@ internal static class DeltaMappingCompiler
         // Two model properties targeting one entity property is an ambiguous last-writer-wins map.
         var entityTargets = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (var modelProp in writableModelProps.Values)
+        foreach (var modelProp in mappableModelProps.Values)
         {
             if (ignored.Contains(modelProp.Name)) continue;
 
             if (converters.TryGetValue(modelProp.Name, out DeltaConverterRule? conv))
             {
                 EntityPropResolution res = ResolveEntityProp(
-                    entityProps, tracked, entityType, conv.EntityName, out PropertyInfo? ep, out string? convReason);
+                    entityProps, tracked, probes, entityType, conv.EntityName, out PropertyInfo? ep, out string? convReason);
                 if (res == EntityPropResolution.Missing)
                 {
                     errors.Add($"Convert() target '{conv.EntityName}' (from model property '{modelProp.Name}') does not exist on {entityType.Name}.");
@@ -240,7 +277,7 @@ internal static class DeltaMappingCompiler
             string entityName = renames.TryGetValue(modelProp.Name, out string? renamed) ? renamed : modelProp.Name;
             bool wasRenamed = renamed is not null;
             EntityPropResolution cres = ResolveEntityProp(
-                entityProps, tracked, entityType, entityName, out PropertyInfo? entityProp, out string? untrackedReason);
+                entityProps, tracked, probes, entityType, entityName, out PropertyInfo? entityProp, out string? untrackedReason);
             if (cres == EntityPropResolution.Missing)
             {
                 errors.Add(wasRenamed
@@ -299,6 +336,7 @@ internal static class DeltaMappingCompiler
     private static EntityPropResolution ResolveEntityProp(
         Dictionary<string, PropertyInfo> entityProps,
         HashSet<string>? tracked,
+        DeltaTypeProbes probes,
         Type entityType,
         string entityName,
         out PropertyInfo? entityProp,
@@ -308,24 +346,45 @@ internal static class DeltaMappingCompiler
         if (!entityProps.TryGetValue(entityName, out entityProp))
             return EntityPropResolution.Missing;
 
-        // OhData's own, deliberately STRICTER rule, kept ahead of the Delta<T> check so its
-        // clearer message wins. Delta<T> also admits a setter-less COLLECTION property (it
-        // clears-and-refills the existing instance); OhData does not auto-write those and says
-        // so at startup instead of at runtime. Widening to match is tracked as #488 item 4 — the
-        // divergence below is the one that loses data, and it is only ever narrowing.
-        if (entityProp.SetMethod is not { IsPublic: true })
+        bool hasPublicSetter = entityProp.SetMethod is { IsPublic: true };
+
+        // The entity type is not constructable, so nothing could be probed and the mapping is
+        // already failing. Fall back to OhData's own rule so the remaining errors stay useful.
+        if (tracked is null)
         {
+            if (hasPublicSetter) return EntityPropResolution.Ok;
             entityProp = null;
             return EntityPropResolution.NotWritable;
         }
 
         // #479: everything Delta<T> refuses to track. Decided by the set read off Delta<T>
-        // itself, never by a transcription of its predicate.
-        if (tracked is not null && !tracked.Contains(entityName))
+        // itself, never by a transcription of its predicate. The setter check below only picks
+        // the clearer of the two messages for a property it already refused.
+        if (!tracked.Contains(entityName))
         {
+            if (!hasPublicSetter)
+            {
+                entityProp = null;
+                return EntityPropResolution.NotWritable;
+            }
             untrackedReason = DescribeWhyDeltaSkips(entityType, entityProp);
             entityProp = null;
             return EntityPropResolution.NotTracked;
+        }
+
+        // #488 item 4: OhData used to require a public setter OUTRIGHT, ahead of the Delta<T>
+        // check. That was a narrowing divergence and mostly harmless, but it rejected a target
+        // that is writable in fact: Delta<T> admits a setter-less collection and applies it by
+        // clearing and refilling the existing instance. Tracking alone is NOT enough to adopt the
+        // widening, though — measured on .NET 10.0.11, a tracked setter-less `byte[]` throws
+        // SerializationException ("does not have a Clear method") from TrySetPropertyValue, so
+        // trusting the tracked set here would have converted a startup rejection into a
+        // guaranteed per-request 500. The write is therefore probed on a throwaway delta, and
+        // anything the probe cannot land on stays NotWritable — the fail-closed direction.
+        if (!hasPublicSetter && !probes.CanApplySetterlessEntityWrite(entityName))
+        {
+            entityProp = null;
+            return EntityPropResolution.NotWritable;
         }
 
         return EntityPropResolution.Ok;
@@ -343,6 +402,68 @@ internal static class DeltaMappingCompiler
     /// <typeparam name="TEntity">The backing entity type.</typeparam>
     internal static IReadOnlyCollection<string> TrackedEntityProperties<TEntity>() where TEntity : class =>
         new Delta<TEntity>(typeof(TEntity)).UpdatableProperties.ToArray();
+
+    /// <summary>
+    /// #488 item 4: whether <c>Delta&lt;TEntity&gt;</c> can actually APPLY a write to a tracked but
+    /// setter-less property, asked by performing one on a throwaway delta rather than by predicting
+    /// the answer.
+    /// </summary>
+    /// <remarks>
+    /// <c>Delta&lt;T&gt;</c> admits a setter-less property when it is a collection
+    /// (<c>DeltaOfT.cs:703</c>) and applies it by clearing and refilling the instance already there,
+    /// which requires that instance to expose a <c>Clear</c> method. Measured on .NET 10.0.11: a
+    /// setter-less <c>byte[]</c> is tracked and then throws
+    /// <c>SerializationException: … does not have a Clear method</c> from
+    /// <c>TrySetPropertyValue</c> — so the tracked set alone would have converted a startup
+    /// rejection into a guaranteed per-request 500. The seed value is the property's own value on a
+    /// fresh instance, so nothing is invented and nothing outside the throwaway is touched; a null
+    /// seed (an uninitialised collection, which clear-and-refill could never fill either) and any
+    /// throw both answer <c>false</c>, which is the fail-closed direction.
+    /// </remarks>
+    /// <typeparam name="TEntity">The backing entity type.</typeparam>
+    /// <param name="propertyName">The tracked, setter-less entity property.</param>
+    internal static bool CanApplySetterlessWrite<TEntity>(string propertyName) where TEntity : class
+    {
+        try
+        {
+            PropertyInfo? prop = typeof(TEntity).GetProperty(
+                propertyName, BindingFlags.Public | BindingFlags.Instance);
+            if (prop is null) return false;
+            object? seed = prop.GetValue(Activator.CreateInstance<TEntity>());
+            if (seed is null) return false;
+            return new Delta<TEntity>(typeof(TEntity)).TrySetPropertyValue(propertyName, seed);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Runs a tracked-property probe defensively: <c>null</c> when the type cannot be constructed
+    /// (so no probe is possible) or the probe throws.
+    /// </summary>
+    /// <remarks>
+    /// Used for the MODEL side, where a failure must stay silent: the <c>Create(TModel)</c> overload
+    /// never constructs a <c>Delta&lt;TModel&gt;</c>, so a model type this cannot probe is not an
+    /// error — the in-scope surface simply falls back to the settable properties, which is exactly
+    /// what shipped before #488. The ENTITY side deliberately does not use this; there a probe
+    /// failure IS the error (#479/#480) and is reported.
+    /// </remarks>
+    /// <param name="type">The type to probe.</param>
+    /// <param name="probe">The closed-generic probe supplied by <see cref="DeltaTypeProbes"/>.</param>
+    private static HashSet<string>? TryProbeTracked(Type type, Func<IReadOnlyCollection<string>> probe)
+    {
+        if (DescribeUnconstructableEntity(type) is not null) return null;
+        try
+        {
+            return new HashSet<string>(probe(), StringComparer.Ordinal);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
 
     /// <summary>
     /// #480: <c>Delta&lt;T&gt;.Reset</c> instantiates the entity with
@@ -401,6 +522,13 @@ internal static class DeltaMappingCompiler
     /// reference-assignable (<c>target.IsAssignableFrom(source)</c>), and nullable-wrap
     /// (<c>T → T?</c>). Notably <c>T? → T</c> is excluded (null has no target) and value-type
     /// widening such as <c>int → long</c> is excluded — both require an explicit converter.
+    /// <para>
+    /// The nullable-wrap line below is in fact UNREACHABLE and is kept for legibility:
+    /// <c>typeof(int?).IsAssignableFrom(typeof(int))</c> is already <c>true</c> (measured, and
+    /// pinned by <c>NullableWrap_IsAlreadyCoveredByIsAssignableFrom</c>). Do not read its presence
+    /// as evidence that <c>IsAssignableFrom</c> misses the case, nor its removal as making the
+    /// nullable case unhandled.
+    /// </para>
     /// </summary>
     internal static bool IsAutomaticallyCompatible(Type source, Type target)
     {

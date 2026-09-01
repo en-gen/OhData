@@ -213,6 +213,23 @@ checking entirely on property-write routes, same as entity-level writes — see
 
 All error responses use the standard OData error envelope: `{"error":{"code":...,"message":...,"target":...}}`.
 
+**"Not nullable" means what `$metadata` says, not what the CLR type permits**
+([#355](https://github.com/en-gen/OhData/issues/355)). Both rows above used to ask the CLR type,
+for which *every* reference type is nullable — so an ordinary non-nullable `string`, which the
+framework's own CSDL publishes as `Nullable="false"`, passed the check, the `null` reached the
+handler, and the persistence layer's rejection came back as a `500`. The check now reads the EDM,
+which is the same authority the entity-level write routes use. A property the EDM does not declare
+(possible under an `AdvancedConfigure` model) still falls back to the CLR answer, and setting
+`RequestBodyNullabilityValidationEnabled = false` on the profile restores the CLR-only behaviour for that
+entity set.
+
+These two routes were always **withholding-based** — they check the one property the request
+addresses, and `PUT .../{Property} {"value":null}` / `DELETE .../{Property}` both *name* it — so
+[#544](https://github.com/en-gen/OhData/issues/544), which restricted the entity-level `POST`/`PUT`
+check to a property the body names with an explicit `null` and deleted its omitted-property leg,
+changed nothing here. `PATCH /{EntitySet}({key})` is withholding-based for the same reason and is
+likewise unchanged.
+
 Every response is `204 No Content` on success — property-write routes do not honor
 `Prefer: return=representation` (unlike entity-level `PUT`/`PATCH`); they always return an empty
 body.
