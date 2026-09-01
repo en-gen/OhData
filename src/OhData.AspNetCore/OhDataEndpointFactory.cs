@@ -8968,11 +8968,10 @@ internal static class OhDataEndpointFactory
                 Remedy: $"Add .{selector}({param} => …) with the requirement you intended. If these " +
                         $"routes are meant to be public, say so with " +
                         $".{selector}({param} => {param}.AllowAnonymous()) and this warning stops -- " +
-                        $"but note that on a CATEGORY that emits AllowAnonymousAttribute, which also " +
-                        $"overrides a host-applied app.MapOhData().RequireAuthorization(). If you " +
-                        $"only mean 'no extra requirement here', name the requirement you intended " +
-                        $"instead; the same call on an UNBOUND operation does not remove a host " +
-                        $"requirement. See #572.");
+                        $"but on a category that emits AllowAnonymousAttribute, which overrides a " +
+                        $"host-applied app.MapOhData().RequireAuthorization(). If you only mean " +
+                        $"'no requirement of its own', name the requirement you intended instead. " +
+                        $"See #572.");
             categoryAudits[category] = audit;
             return audit;
         }
