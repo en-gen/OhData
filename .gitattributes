@@ -12,3 +12,18 @@
 *.pdf binary
 *.zip binary
 *.nupkg binary
+
+# Cross-client conformance harnesses — real code we wrote, but not part of the shipped
+# product and not built by any CI workflow. Marking them undetectable keeps GitHub's
+# language detection (and everything downstream of it) on the C# this repository actually
+# ships, instead of inferring Java/Python/JavaScript from 8 files of manual test scaffolding.
+#
+# EXPERIMENT, and the PR that introduces this is the test: GitHub's Code Quality scan runs
+# `Analyze (java-kotlin)`, `Analyze (python)` and `Analyze (javascript-typescript)` on every
+# push here — ~2m20s of runner time — solely because these three directories exist. If those
+# jobs disappear from this PR's checks, the attribute is doing the job. If they do not,
+# revert this block: Code Quality does not read linguist attributes and the languages have
+# to be turned off in repository settings instead.
+tests/olingo/**   linguist-detectable=false
+tests/pyodata/**  linguist-detectable=false
+tests/k6/**       linguist-detectable=false
