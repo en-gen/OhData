@@ -1126,6 +1126,16 @@ status will catch them.
 
 ### Added
 
+- **`RequestBodyNullabilityValidationEnabled` — a per-entity-set and server-wide opt-out for the new
+  EDM nullability gate (#355, renamed by #570).** Declared on `EntitySetProfile<TKey, TModel>` and on
+  `EntitySetDefaults` (which a profile inherits it from), defaulting to `true`. Set it `false` for a
+  resource whose handler legitimately supplies a value the client is not expected to send. The gate
+  itself — and what it rejects after #544/#545 narrowed it to a property the body **named** with an
+  explicit `null` — is described under **Breaking** above. The property was called
+  `ValidateRequestBodyNullability` earlier in this release cycle and never shipped under that name,
+  so there is nothing to migrate; #570 renamed it before release to match every other capability flag
+  on those two types (`FilterEnabled`, `PropertyAccessEnabled`, `ExpandPagingEnabled`, …).
+
 - **Startup warning when a navigation's target entity set is protected more strictly than the set
   declaring it (#481, closes #368).** Authorization in OhData is per-profile and does **not** compose
   across a navigation: every navigation-family route, and every `$expand` call site, runs under the
