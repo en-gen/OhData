@@ -1589,11 +1589,17 @@ status will catch them.
   nothing pointing at it. **Majors are not grouped either** (`update-types: [minor, patch]`), so a
   major lands alone; `xunit.runner.visualstudio` went `3.1.5` → `4.0.0` during this cycle.
 
-- **`.gitattributes` marks the three cross-client conformance harnesses `linguist-detectable=false`.**
-  `tests/olingo/` (Java), `tests/pyodata/` (Python) and `tests/k6/` (JavaScript) are real code, but
-  they ship in nothing and **no workflow builds or runs the first two**. GitHub's Code Quality scan
-  was nonetheless spending ~2m20s per push analysing those 8 files. Checked before changing
-  anything: no linter, formatter or CI job covers any of them, so nothing is lost.
+- **Negative result, recorded so nobody retries it: `linguist-detectable=false` does not turn off
+  GitHub's Code Quality language jobs.** Code Quality runs `Analyze (java-kotlin)`,
+  `Analyze (python)` and `Analyze (javascript-typescript)` on every push — ~2m20s — solely because
+  `tests/olingo/` (2 `.java`), `tests/pyodata/` (2 `.py`) and `tests/k6/` (4 `.js`) exist. Those are
+  manual cross-client conformance harnesses: they ship in nothing, **no workflow builds or runs the
+  first two**, and no linter or formatter covers any of them, so the analysis buys nothing. Marking
+  all three `linguist-detectable=false` in `.gitattributes` was tried and **measured on PR #585:
+  all three jobs still ran**, so Code Quality does not select languages from linguist attributes.
+  The change was reverted rather than kept for its cosmetic effect on the repository language bar.
+  The only remaining lever is a repository setting (Settings → Advanced Security → Code quality),
+  which no file in this repository controls.
 
 - **Verified rather than assumed: CI's `Pack (dry run)` really is an API-compatibility gate.** It
   runs `dotnet pack --no-build`, and package validation is semaphore-gated, so "the step is green"
