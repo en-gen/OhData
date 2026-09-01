@@ -778,15 +778,18 @@ public class ConcurrencyTests
     }
 
     [Fact]
-    public async Task EntityBoundAction_IgnoresIfMatch_DocumentedExclusion()
+    public async Task EntityBoundAction_StaleIfMatch_Returns412_AndDoesNotInvokeTheAction()
     {
-        // CHARACTERIZATION of a KNOWN DEVIATION (#566), not an endorsement. #478 left bound and
-        // unbound actions outside the precondition gate on the reasoning that an action-invocation
-        // resource "has no representation and therefore no entity tag" (§11.5.4) — a phrase that
-        // appears nowhere in Part 1, and §11.4.1.1 is a MUST that names "Action Request" outright.
-        // So the 204 asserted below is a spec violation this release ships knowingly.
-        // If this test ever starts failing with a 412, #566 was FIXED — update it to assert the
-        // 412 and add the breaking-change note; do not restore the withdrawn justification.
+        // #566. §11.4.1.1 is a MUST whose subject is "a Data Modification Request OR ACTION
+        // REQUEST", and §11.5.4.1 tells the client to send If-Match for exactly this case. Until
+        // 1.8.0 this route answered 204 and RAN the action — #478 excluded it, defended by the
+        // assertion that an action-invocation resource "has no representation and therefore no
+        // entity tag" (§11.5.4), a phrase that appears nowhere in Part 1.
+        //
+        // Assert.Empty(store.Ran) is the load-bearing half, not the status code: the gate is
+        // placed before the parameter body is read and before the handler delegate runs, so a
+        // refused invocation must provably mutate nothing. A status-only assertion would pass
+        // even if the action ran and the 412 were written afterwards.
         var (fx, store, stale) = await BuildLinkFixtureWithStaleETagAsync();
         await using var _ = fx;
 
@@ -794,8 +797,71 @@ public class ConcurrencyTests
             ifMatch: stale, body: new Dictionary<string, string>());
         using var resp = await fx.Client.SendAsync(req);
 
+        Assert.Equal(HttpStatusCode.PreconditionFailed, resp.StatusCode);
+        Assert.Empty(store.Ran);
+    }
+
+    [Fact]
+    public async Task EntityBoundAction_CurrentIfMatch_Succeeds_AndInvokesTheAction()
+    {
+        // #566's positive control, and the reason the fix is a precondition check rather than a
+        // blanket refusal of conditional requests on the action route. Without this, the test
+        // above would also pass if the route simply started rejecting every If-Match it saw.
+        var store = new EtagLinkStore();
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<EtagLinkProfile>(),
+            configureServices: s => s.AddSingleton(store));
+
+        using var getResp = await fx.Client.GetAsync("/odata/EtagLinkParents(1)");
+        string current = getResp.Headers.ETag!.Tag;
+
+        using var req = Conditional(HttpMethod.Post, "/odata/EtagLinkParents(1)/Touch",
+            ifMatch: current, body: new Dictionary<string, string>());
+        using var resp = await fx.Client.SendAsync(req);
+
         Assert.Equal(HttpStatusCode.NoContent, resp.StatusCode);
         Assert.Equal(new[] { "action:1" }, store.Ran);
+    }
+
+    [Fact]
+    public async Task EntityBoundAction_NoConditionalHeader_IsUnaffected()
+    {
+        // The no-header path must not change: CheckETagAsync returns null before touching
+        // GetById when neither If-Match nor If-None-Match is present, so an ordinary invocation
+        // costs nothing new and behaves exactly as it did in 1.7.0.
+        var store = new EtagLinkStore();
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<EtagLinkProfile>(),
+            configureServices: s => s.AddSingleton(store));
+
+        using var resp = await fx.Client.PostAsJsonAsync(
+            "/odata/EtagLinkParents(1)/Touch", new Dictionary<string, string>());
+
+        Assert.Equal(HttpStatusCode.NoContent, resp.StatusCode);
+        Assert.Equal(new[] { "action:1" }, store.Ran);
+    }
+
+    [Fact]
+    public async Task EntityBoundAction_IfNoneMatchOfCurrentETag_Returns412_AndDoesNotInvoke()
+    {
+        // §11.4.1.1's MUST names If-None-Match alongside If-Match, and RFC 9110 §13.2.2 makes
+        // If-None-Match the one evaluated when If-Match is absent. Comparison there is WEAK
+        // (§13.1.2), which is why CheckETagAsync reads the two headers with different parsers;
+        // this pins that the action route inherits both halves rather than only the If-Match one.
+        var store = new EtagLinkStore();
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<EtagLinkProfile>(),
+            configureServices: s => s.AddSingleton(store));
+
+        using var getResp = await fx.Client.GetAsync("/odata/EtagLinkParents(1)");
+        string current = getResp.Headers.ETag!.Tag;
+
+        using var req = Conditional(HttpMethod.Post, "/odata/EtagLinkParents(1)/Touch",
+            ifNoneMatch: current, body: new Dictionary<string, string>());
+        using var resp = await fx.Client.SendAsync(req);
+
+        Assert.Equal(HttpStatusCode.PreconditionFailed, resp.StatusCode);
+        Assert.Empty(store.Ran);
     }
 
     // ── 7. #478: strong comparison for If-Match, weak comparison for If-None-Match ────────
