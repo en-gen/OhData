@@ -1569,6 +1569,47 @@ status will catch them.
 
 ### Build
 
+- **Dependabot updates are grouped, and the PR limits now match this repo's own five-in-flight
+  rule.** Measured on a single push to a PR: `build-and-test` 4m25s + `Analyze (csharp)` 5m09s +
+  `k6` 1m03s, plus GitHub's own Code Quality (4 jobs, 5m11s) and dependency submission (52s) —
+  **≈17 minutes of runner time per push**. Ungrouped, at the previous `10` + `5` limits, a quiet
+  week could open fifteen bump PRs and spend roughly **four hours** of that moving test-package
+  version numbers. The routine half now collapses into one PR per ecosystem.
+
+  The split is **not** "important versus unimportant" — it is *does this change what an adopter
+  resolves*. Six ids are excluded from the group because they are `PackageReference`s of the five
+  packable projects, so a bump there moves a dependency **range** in the published `.nuspec`:
+  `Microsoft.AspNetCore.OData`, `Microsoft.AspNetCore.OpenApi`, `Microsoft.OData.ModelBuilder`,
+  `Microsoft.OpenApi`, `NSwag.Generation.AspNetCore`, `Swashbuckle.AspNetCore.SwaggerGen`. This
+  very release shipped exactly such a change (`Microsoft.OpenApi`'s minimum, `2.12.0` → `2.12.2`),
+  and it needs its own PR and its own CHANGELOG line. `Microsoft.OData.Client` is excluded for a
+  different reason: it is dev-only, but it is the **compatibility target** of
+  `OhData.MicrosoftODataClient.Tests`, and claims in `CLAUDE.md` and this file are measured
+  against a specific version of it — a silent batch bump would invalidate a measured claim with
+  nothing pointing at it. **Majors are not grouped either** (`update-types: [minor, patch]`), so a
+  major lands alone; `xunit.runner.visualstudio` went `3.1.5` → `4.0.0` during this cycle.
+
+- **Negative result, recorded so nobody retries it: `linguist-detectable=false` does not turn off
+  GitHub's Code Quality language jobs.** Code Quality runs `Analyze (java-kotlin)`,
+  `Analyze (python)` and `Analyze (javascript-typescript)` on every push — ~2m20s — solely because
+  `tests/olingo/` (2 `.java`), `tests/pyodata/` (2 `.py`) and `tests/k6/` (4 `.js`) exist. Those are
+  manual cross-client conformance harnesses: they ship in nothing, **no workflow builds or runs the
+  first two**, and no linter or formatter covers any of them, so the analysis buys nothing. Marking
+  all three `linguist-detectable=false` in `.gitattributes` was tried and **measured on PR #585:
+  all three jobs still ran**, so Code Quality does not select languages from linguist attributes.
+  The change was reverted rather than kept for its cosmetic effect on the repository language bar.
+  The only remaining lever is a repository setting (Settings → Advanced Security → Code quality),
+  which no file in this repository controls.
+
+- **Verified rather than assumed: CI's `Pack (dry run)` really is an API-compatibility gate.** It
+  runs `dotnet pack --no-build`, and package validation is semaphore-gated, so "the step is green"
+  and "the step compared anything" are different claims. Ablation — flipping
+  `OhDataRegistration.EntitySetNames` from `public` to `internal` and running CI's exact command —
+  fails with `error CP0002` against the real `1.6.0` baseline package **on both target
+  frameworks**. Two things that were *not* optimized, and why: a NuGet cache saves ~8s (restore is
+  already **11s** of a 4m25s job, so a lock-file regime buys nothing), and matrixing the seven test
+  steps would cut ~45s of wall-clock while paying the 76s restore-and-build six more times.
+
 - **`feature/`, `bug/` and `hotfix/` branch names resolve their version label again (#520).**
   `GitVersion.yml`'s `feature:`, `bugfix:` and `hotfix:` configs set `label: '{BranchName}'` without
   the `(?<BranchName>.+)` capture group the placeholder resolves from. Same class as #518: a
