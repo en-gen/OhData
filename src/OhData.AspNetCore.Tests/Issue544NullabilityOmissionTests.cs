@@ -30,11 +30,14 @@ namespace OhData.AspNetCore.Tests;
 /// <item><term><c>int Year</c></term><description>omit → 201, null → 400 (deserializer-worded)</description></item>
 /// </list>
 /// <para>
-/// The omission leg was <b>§11.4.3, PUT-only</b>, and conditioned on <i>"no service-generated or
-/// default value"</i> — a condition the framework provably cannot evaluate (the convention builder
-/// emits no <c>Core.Computed</c>, and a CLR initializer is invisible to the EDM). §11.4.2, which
-/// the shipped XML doc cited, requires nothing of the kind, and
-/// <c>Microsoft.AspNetCore.OData</c> accepts omission while rejecting an explicit <c>null</c>.
+/// <b>No clause in Part 1 mandates a <c>400</c> for an omitted property.</b> §11.4.2, which the
+/// shipped XML doc cited, requires nothing of the kind — its only MUST-fail is about values
+/// <i>"specified in the request"</i>. The nearest clause about a <i>missing</i> property is
+/// §11.4.3, is PUT-only, and prescribes the opposite remedy: <i>"Missing non-key, updatable
+/// structural properties not defined as dependent properties within a referential constraint
+/// MUST be set to their default values."</i> That is a statement about what the service stores,
+/// which OhData leaves to the handler. <c>Microsoft.AspNetCore.OData</c> accepts omission while
+/// rejecting an explicit <c>null</c>.
 /// </para>
 /// </summary>
 public class Issue544NullabilityOmissionTests

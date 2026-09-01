@@ -363,9 +363,10 @@ public class WriteBodyContractTests
 
     /// <summary>
     /// #544 REVERSED THIS. Omission is not a violation on any verb, whatever the CLR declaration
-    /// left behind: the omission-<c>400</c> clause is §11.4.3, is PUT-only, and is conditioned on
-    /// <i>"no service-generated or default value"</i> — which the framework cannot evaluate — while
-    /// §11.4.2, cited by the shipped doc, requires nothing of the kind.
+    /// left behind: no clause in Part 1 mandates a <c>400</c> for an omitted property. §11.4.2,
+    /// cited by the shipped doc, requires nothing of the kind, and §11.4.3 — the nearest clause,
+    /// PUT-only — asks for a missing property to be <i>"set to [its] default value"</i> rather
+    /// than for the request to be refused.
     /// <para>
     /// Both shapes are asserted here together, because the whole point is that they AGREE: a
     /// required property declared <c>= null!</c> (the ordinary EF-entity shape) and one declared

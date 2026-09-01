@@ -230,8 +230,9 @@ public class BoundActionEntityReturnTests
 
     /// <summary>
     /// The headline. 25 rows, <c>MaxTop = 10</c>, no <c>$top</c>: the framework cannot truncate
-    /// silently (M1) and cannot offer a <c>@odata.nextLink</c> (§11.5.4 — an action-invocation
-    /// resource has no representation to GET), so it refuses. A handler whose result cannot be
+    /// silently (M1) and cannot offer a <c>@odata.nextLink</c> (a nextLink is a URL the client
+    /// GETs, §11.2.5.7, while an action is invoked by POST to its action URL, §11.5.4.1 — there
+    /// is no GET-addressable continuation of an action invocation), so it refuses. A handler whose result cannot be
     /// served within the ceiling the profile itself declared is a server-side contract violation,
     /// which #496 already settled is a logged <c>500</c> and not a <c>400</c> blaming the client.
     /// </summary>

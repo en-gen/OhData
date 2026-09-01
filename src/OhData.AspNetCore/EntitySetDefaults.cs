@@ -25,19 +25,19 @@ public sealed class EntitySetDefaults
     public bool ExpandEnabled { get; set; }
 
     /// <summary>
-    /// Whether <c>$filter</c> is enabled by default on all entity sets (OData §11.2.6.1).
+    /// Whether <c>$filter</c> is enabled by default on all entity sets (OData §11.2.5.1).
     /// Profile-level <c>FilterEnabled</c> overrides this value.
     /// </summary>
     public bool FilterEnabled { get; set; }
 
     /// <summary>
-    /// Whether <c>$orderby</c> is enabled by default on all entity sets (OData §11.2.6.2).
+    /// Whether <c>$orderby</c> is enabled by default on all entity sets (OData §11.2.5.2).
     /// Profile-level <c>OrderByEnabled</c> overrides this value.
     /// </summary>
     public bool OrderByEnabled { get; set; }
 
     /// <summary>
-    /// Whether <c>$count</c> is enabled by default on all entity sets (OData §11.2.6.5).
+    /// Whether <c>$count</c> is enabled by default on all entity sets (OData §11.2.5.5).
     /// Profile-level <c>CountEnabled</c> overrides this value.
     /// </summary>
     public bool CountEnabled { get; set; }
@@ -45,7 +45,7 @@ public sealed class EntitySetDefaults
     private int? _maxTop = 1000;
 
     /// <summary>
-    /// Default maximum value for <c>$top</c> across all entity sets (OData §11.2.6.3).
+    /// Default maximum value for <c>$top</c> across all entity sets (OData §11.2.5.3).
     /// Defaults to <c>1000</c>. Profile-level <c>MaxTop</c> overrides this value.
     /// Must be a positive integer or <c>null</c> (no limit).
     /// </summary>
@@ -73,7 +73,7 @@ public sealed class EntitySetDefaults
     /// A nested <c>$top</c> greater than the ceiling is rejected with <c>400 Bad Request</c>
     /// (<c>InvalidQueryOption</c>) before any handler runs, at any depth and on any read path.
     /// A nested <c>$count</c> whose related collection exceeds the ceiling is also rejected with
-    /// <c>400</c> rather than silently truncated, because OData §11.2.4.2 requires
+    /// <c>400</c> rather than silently truncated, because OData §11.2.5.5 requires
     /// <c>Nav@odata.count</c> to report the FULL filtered collection, not the returned page.
     /// #313 widened what the value covers once it is set: it now bounds <b>every</b> collection
     /// <c>$expand</c> level — including a bare <c>?$expand=Children</c>, one carrying only

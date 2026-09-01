@@ -20,7 +20,8 @@ namespace OhData;
 /// The EDM name is deliberately NOT run through the response naming policy
 /// (<c>OhDataBuilder.WithJsonPropertyNamingPolicy</c>): <c>$metadata</c> always advertises the
 /// PascalCase/CLR (or <c>[JsonPropertyName]</c>) identifier regardless of whether payloads are emitted
-/// camelCase, matching OData §4.4.
+/// camelCase. Payload property names are the identifiers the EDM declares (OData JSON
+/// Format); the number is deliberately not cited, since Part 1 has no §4.4.
 /// </remarks>
 internal static class ODataPropertyNaming
 {

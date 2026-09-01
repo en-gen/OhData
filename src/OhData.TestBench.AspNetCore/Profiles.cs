@@ -200,7 +200,7 @@ public class MovieProfile : EntitySetProfile<int, Movie>
 
         // ── ETag teaching comment (also see MovieProfileV2) ──────────────────
         // UpdatedAt is bumped on every write (MovieHandlers.Put/Patch/Rate). UseETag hashes it
-        // together with Id into the ETag response header on GET/POST/PUT/PATCH (OData §8.2.6),
+        // together with Id into the ETag response header on GET/POST/PUT/PATCH (OData §8.3.1),
         // and the framework checks If-Match on PUT/PATCH/DELETE: read a movie, note its ETag,
         // then PUT/PATCH it with that value as If-Match -- if something else updated the movie
         // in between (another PATCH, or a Rate() call), the ETag has moved on and the request

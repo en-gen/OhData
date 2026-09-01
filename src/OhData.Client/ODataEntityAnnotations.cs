@@ -99,7 +99,7 @@ public sealed class ODataEntityAnnotations
 
     /// <summary>
     /// The <c>{navigationProperty}@odata.count</c> for an expanded collection — the size of the
-    /// <em>full</em> related collection (OData §11.2.4.2), independent of how many entities this
+    /// <em>full</em> related collection (OData §11.2.5.5), independent of how many entities this
     /// response actually carried — or <see langword="null"/> when the server did not emit it.
     /// </summary>
     /// <param name="navigationProperty">

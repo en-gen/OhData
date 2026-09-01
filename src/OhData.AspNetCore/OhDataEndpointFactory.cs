@@ -557,17 +557,20 @@ internal static class OhDataEndpointFactory
     /// <remarks>
     /// <para>
     /// <b>#544 — why the omitted-property leg is gone.</b> It shipped citing §11.4.2, which
-    /// requires nothing of the kind: its only MUST-fail is about values the request
-    /// <i>specified</i>, and it says in terms that properties with a default, nullable properties
-    /// and service-computed
-    /// properties MAY be omitted. The clause that does mandate a <c>400</c> for an omission is
-    /// §11.4.3, is <b>PUT-only</b>, and is conditioned on the property having <i>"no
-    /// service-generated or default value"</i> — a condition this framework provably cannot
-    /// evaluate: <c>ODataConventionModelBuilder</c> emits no <c>Core.Computed</c> annotation, and a
-    /// CLR initializer is invisible to the EDM. Honouring it blindly is what made the answer depend
-    /// on something no client can see. <c>Microsoft.AspNetCore.OData</c> lands in the same place —
-    /// <c>ApplyStructuralProperties</c> loops over payload properties only and has no reverse pass,
-    /// while <c>ValidateNullValueAllowed</c> rejects an explicit <c>null</c>.
+    /// requires nothing of the kind: its only MUST-fail is <i>"The service MUST fail if unable to
+    /// persist all property values <b>specified in the request</b>"</i> — about values that were
+    /// sent. §11.4.2 also permits omission outright, though for exactly two categories rather than
+    /// the broad set once claimed here: <i>"Properties computed by the service (annotated with the
+    /// term Core.Computed …) and properties that are tied to properties of the principal entity by
+    /// a referential constraint, can be omitted and MUST ignored if included in the request."</i>
+    /// <b>No clause anywhere in Part 1 mandates a <c>400</c> for an omitted property.</b> The
+    /// nearest one is §11.4.3, is <b>PUT-only</b>, and prescribes the opposite remedy:
+    /// <i>"Missing non-key, updatable structural properties not defined as dependent properties
+    /// within a referential constraint MUST be set to their default values."</i> That is a
+    /// statement about what the service stores, not about refusing the request, and OhData leaves
+    /// it to the handler, which owns persistence. <c>Microsoft.AspNetCore.OData</c> lands in the
+    /// same place — <c>ApplyStructuralProperties</c> loops over payload properties only and has no
+    /// reverse pass, while <c>ValidateNullValueAllowed</c> rejects an explicit <c>null</c>.
     /// </para>
     /// <para>
     /// <b>Why that also RESOLVES the incoherence #545 recorded.</b> Three properties the
@@ -1378,7 +1381,7 @@ internal static class OhDataEndpointFactory
         return Expression.Lambda<Func<TModel, TKey>>(body, param);
     }
 
-    // #241: guarantees the deterministic total order server paging requires (OData §11.2.6.2).
+    // #241: guarantees the deterministic total order server paging requires (OData §11.2.5.2).
     // - Client supplied $orderby: append the entity key as a final tiebreaker so paging is stable
     //   even when the client sorts on a non-unique column.
     // - No client $orderby and the result order is not already established: order by the entity key
@@ -1708,7 +1711,7 @@ internal static class OhDataEndpointFactory
 
         // Gap 1: Add OData-Version: 4.0 header to all responses (§8.2.6).
         // Batch 4: Return 406 Not Acceptable when the client cannot accept application/json (§8.2.3).
-        // Batch 5: Validate $format query option (§11.2.12); it overrides the Accept header.
+        // Batch 5: Validate $format query option (§11.2.10); it overrides the Accept header.
         // $metadata returns application/xml, so it is exempted from the JSON-only checks.
         group.AddEndpointFilter(async (ctx, next) =>
         {
@@ -1719,7 +1722,7 @@ internal static class OhDataEndpointFactory
             bool isMetadata = path.EndsWith("/$metadata", StringComparison.OrdinalIgnoreCase);
             if (!isMetadata)
             {
-                // §11.2.12: $format overrides Accept. Only application/json (and the shorthand
+                // §11.2.10: $format overrides Accept. Only application/json (and the shorthand
                 // "json") are supported; any other value is rejected with 400.
                 bool formatAccepted = false;
                 if (ctx.HttpContext.Request.Query.TryGetValue("$format", out var formatParam))
@@ -1740,12 +1743,12 @@ internal static class OhDataEndpointFactory
 
                 if (!formatAccepted)
                 {
-                    // §8.2.3 / RFC 7231 §5.3.2 (issue #182): reject Accept headers that don't include
+                    // §8.2.1 / RFC 7231 §5.3.2 (issue #182): reject Accept headers that don't include
                     // a media range this route can satisfy. Most routes produce application/json, but
                     // the raw-value routes are exceptions (like $metadata's application/xml above):
-                    // /$count returns the count as text/plain (§11.2.6.5), and /{property}/$value
+                    // /$count returns the count as text/plain (§11.2.9), and /{property}/$value
                     // returns the raw value as text/plain for scalars or application/octet-stream for
-                    // byte[] (§11.2.4.3), so those segments can satisfy the corresponding types too.
+                    // byte[] (§11.2.3.1), so those segments can satisfy the corresponding types too.
                     // A client (e.g. Swagger UI, reading the content types those routes advertise in
                     // the OpenAPI document) that asks for text/plain on /$count is making a valid
                     // request and must not get a 406. Negotiation goes through AcceptHeaderPermits,
@@ -3199,7 +3202,7 @@ internal static class OhDataEndpointFactory
     // for the same reason $unknown is, by the sigil, and it is named in the list above only because
     // 4.01 §11.2.5 defines it and a reader will look for it.
     //
-    // $format is in every set below and must stay there. It is not a data option: §11.2.12
+    // $format is in every set below and must stay there. It is not a data option: §11.2.10
     // content negotiation is implemented once, on the group filter that wraps the whole OData
     // surface, so it never reaches these handlers and cannot change a single row. An unsupported
     // $format VALUE is still rejected there, unchanged.
@@ -3356,7 +3359,7 @@ internal static class OhDataEndpointFactory
     // entry canNOT mean "negotiated here", which is what FormatOption means in every other array
     // in this file. It means "not refused", for three reasons. (1) The clause constrains the
     // CLIENT and prescribes no server response; §9.3.1's 501 is for functionality not
-    // implemented, and $format IS implemented service-wide (§11.2.12, on the group filter), so
+    // implemented, and $format IS implemented service-wide (§11.2.10, on the group filter), so
     // 501 would be a false statement -- while the 400 arm of the taxonomy needs a capability flag,
     // of which this condition has none. (2) The response is text/plain whatever $format says, so
     // accepting it cannot make the response wrong: it is a no-op in exactly the sense the four
@@ -3532,7 +3535,7 @@ internal static class OhDataEndpointFactory
     // one route template and used to share one set; see s_navSingleImplementedOptions.
     //
     // NEITHER message names $format, which both branches accept. Deliberate, and the two are
-    // consistent about it: $format is not a DATA query option — §11.2.12 negotiation is handled
+    // consistent about it: $format is not a DATA query option — §11.2.10 negotiation is handled
     // once on the group filter and never reaches a route handler — which is the framing the
     // single-valued line states outright and the collection line inherits. The collection line's
     // bytes are additionally pinned as unchanged by the generalisation
@@ -10292,7 +10295,7 @@ internal static class OhDataEndpointFactory
 
                     // Post-materialization paging for GetAll, applied AFTER the handler call (GetAll
                     // or Search) fills the array and BEFORE $select/$expand serialization.
-                    // @odata.count reflects the PRE-paging total (§11.2.6.5 — unaffected by
+                    // @odata.count reflects the PRE-paging total (§11.2.5.5 — unaffected by
                     // $top/$skip), captured from the array length before paging.
                     //
                     // #201: an OMITTED $top is now capped to MaxTop (or a smaller Prefer:
@@ -10361,7 +10364,7 @@ internal static class OhDataEndpointFactory
                         var searchEnvelope = new Dictionary<string, object?>();
                         searchEnvelope["@odata.context"] = $"{searchBaseUrl}/$metadata#{AppendSelectSuffix(name, searchSelectedProps)}";
                         // Batch 5: include @odata.count for search results when $count=true is
-                        // requested. Leg 1: reflects the pre-paging total, per §11.2.6.5.
+                        // requested. Leg 1: reflects the pre-paging total, per §11.2.5.5.
                         if (options.Count?.Value == true)
                             searchEnvelope["@odata.count"] = searchPreTotal;
                         if (searchNextLink is not null)
@@ -10380,7 +10383,7 @@ internal static class OhDataEndpointFactory
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
                     envelope["@odata.context"] = $"{baseUrl}/$metadata#{AppendSelectSuffix(name, selectedProps)}";
-                    // Batch 5 / Leg 1: §11.2.6.5 — include @odata.count when $count=true is
+                    // Batch 5 / Leg 1: §11.2.5.5 — include @odata.count when $count=true is
                     // requested on the GetAll path, reflecting the pre-paging total.
                     if (options.Count?.Value == true)
                         envelope["@odata.count"] = preTotal;
@@ -11087,9 +11090,14 @@ internal static class OhDataEndpointFactory
                         // with a generic message. Same shape as DeltaFactory's TrySetPropertyValue
                         // assertion -- after the framework's own checks a null here means the
                         // handler broke its contract, so it is an invariant assertion rather than
-                        // an error path. A profile that wants to REJECT a create deliberately
-                        // returns an ODataError result from the handler, which every deliberate
-                        // error path in this file already does.
+                        // an error path.
+                        //
+                        // A profile that wants to REJECT a create deliberately has to do it BEFORE
+                        // the handler: Post is typed Task<TModel?> -- as is every other entity-set
+                        // handler delegate -- so it cannot return an IResult, and there is no
+                        // "return an ODataError from the handler" idiom available here. Use a
+                        // Create authorization rule, RequestBodyNullabilityValidationEnabled, or
+                        // throw, which is this same 500.
                         throw new InvalidOperationException(
                             $"The Post handler for entity set '{name}' returned null. Post must " +
                             "return the created entity.");
@@ -11289,10 +11297,11 @@ internal static class OhDataEndpointFactory
                     }
 
                     // #355/#544: an explicit null for a Nullable="false" property is refused here
-                    // too. PUT is the ONE verb whose omission leg had a spec clause behind it
-                    // (§11.4.3), and that clause is conditioned on "no service-generated or default
-                    // value" — which the framework cannot evaluate, so it is not honoured; see
-                    // ValidateEdmRequiredProperties. Grouped with the key-mismatch check below
+                    // too. PUT is the ONE verb with a clause about omitted properties at all
+                    // (§11.4.3), and that clause does not ask for a 400: it says a missing non-key,
+                    // updatable structural property "MUST be set to [its] default value", which is
+                    // the handler's business, not the boundary's. See ValidateEdmRequiredProperties.
+                    // Grouped with the key-mismatch check below
                     // rather than after the precondition gate, following this route's existing
                     // ordering (body shape first, then If-Match).
                     IResult? putNullabilityFail =
