@@ -13440,7 +13440,7 @@ internal static class OhDataEndpointFactory
                 $"Entity set '{entitySetName}': bound action '{operationName}' returned " +
                 $"{preTotal - skip} entities, which exceeds this entity set's MaxTop of {cap}. A " +
                 "bound action's result cannot carry an @odata.nextLink -- a next link is a URL " +
-                "the client GETs (OData Protocol 11.2.5.7) and POST is not a continuation -- so " +
+                "the client GETs (OData Protocol 11.2.5.7) and POST is not a continuation -- so the " +
                 "framework will not silently truncate it either. Return no more than MaxTop " +
                 "entities from the handler, set MaxTop = null on the profile or in " +
                 "EntitySetDefaults to opt this entity set out of the ceiling, or expose the " +
