@@ -9,6 +9,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+---
+
+## [1.7.0] - 2026-08-31
+
 ### Upgrading from 1.6.0
 
 A checklist, not an explanation. Every line links to the entry below, which carries the
@@ -1187,6 +1191,52 @@ status will catch them.
   tells the developer to write. What holds unconditionally is the `$metadata` disclosure of the
   property's name and type. No request-path behaviour changed.
 
+
+- **Unbound functions and actions can now carry their own authorization requirement (#487).**
+  `AddFunction`/`AddAction` take an optional `authorize` lambda using the same
+  `ICategoryAuthorizationBuilder` as `ConfigureAuthorization`:
+
+  ```csharp
+  builder.AddAction(ResetAll, a => a.RequireRole("admin"));
+  builder.AddFunction(Ping,   a => a.AllowAnonymous());   // deliberately public, and says so
+  ```
+
+  This closes an API-shape gap `docs/authorization.md` has named since 1.0. An unbound operation is
+  not scoped to an entity set, so no profile's `RequireAuthorization()`/`RequireRoles()`/
+  `ConfigureAuthorization(...)` reached it, and the only mitigation was a group-level requirement
+  covering the entire surface including `$metadata`. **Measured on the pre-fix tree**, on a
+  registration whose only profile declares `RequireAuthorization()`: `GET /odata/{Set}` → `401`,
+  `POST /odata/Mutate` → `204` **with the handler executed**, `GET /odata/Peek` → `200` with the body.
+
+  `RequireResource()` is refused at the call site — resource-based authorization evaluates the
+  requirement against the entity loaded from a `{key}` segment, and an unbound operation has neither
+  a key nor an entity set, so the rule could only ever be a silent no-op. `AllowAnonymous()` on an
+  unbound operation states intent and silences the warning below; it deliberately does **not** emit
+  `AllowAnonymousAttribute`, so it cannot tunnel the operation out from under a host-applied group
+  requirement.
+
+- **A startup `Warning` names every route that is anonymous in a registration that requires
+  authorization somewhere else (#487).** Two configurations reach it, both previously silent:
+
+  - an unbound function/action with no requirement of its own, and
+  - a `ConfigureAuthorization` profile that leaves an operation **category** rule-less while routes
+    exist in it — most consequentially `Invoke`. A profile migrated from `RequireAuthorization()`
+    (which covers *all* operations) to `.Read(...).Writes(...)` reads as a refinement and is a
+    **widening**: measured pre-fix, that profile answered `401` on its collection `GET` and `204`
+    with the handler executed on both `POST /{Set}/{Action}` and `POST /{Set}({key})/{Action}`.
+
+  Each warning names what is anonymous, the configuration that produced it, and two remedies — the
+  requirement to add, and the explicit `AllowAnonymous()` that states the opposite intent and stops
+  the warning. **Nothing is warned about when the host applies a group-level requirement**, which is
+  the mitigation the docs recommend: the diagnostic runs from an `IEndpointConventionBuilder.Finally`
+  convention rather than inside `MapOhData()`, because the host applies its requirement to the group
+  *after* `MapOhData()` returns and warning earlier would fire on the correct configuration. A
+  registration that requires authorization nowhere is a public service, not a service with a hole,
+  and is never reported.
+
+  **No request-path behaviour changes.** Every route answers exactly as before; the fix is a
+  diagnostic plus the opt-in capability above.
+
 ### Fixed
 
 - **The `413` from the `MaxRequestBodyBytes` fast-reject carries `OData-Version` (#496).** The
@@ -1365,53 +1415,6 @@ status will catch them.
   same release; see its `⚠ BREAKING CHANGE` callout above for the before/after table. What #547 adds
   on top of that rename is nothing: it changes the cache *key*, not the label.
 
-### Added
-
-- **Unbound functions and actions can now carry their own authorization requirement (#487).**
-  `AddFunction`/`AddAction` take an optional `authorize` lambda using the same
-  `ICategoryAuthorizationBuilder` as `ConfigureAuthorization`:
-
-  ```csharp
-  builder.AddAction(ResetAll, a => a.RequireRole("admin"));
-  builder.AddFunction(Ping,   a => a.AllowAnonymous());   // deliberately public, and says so
-  ```
-
-  This closes an API-shape gap `docs/authorization.md` has named since 1.0. An unbound operation is
-  not scoped to an entity set, so no profile's `RequireAuthorization()`/`RequireRoles()`/
-  `ConfigureAuthorization(...)` reached it, and the only mitigation was a group-level requirement
-  covering the entire surface including `$metadata`. **Measured on the pre-fix tree**, on a
-  registration whose only profile declares `RequireAuthorization()`: `GET /odata/{Set}` → `401`,
-  `POST /odata/Mutate` → `204` **with the handler executed**, `GET /odata/Peek` → `200` with the body.
-
-  `RequireResource()` is refused at the call site — resource-based authorization evaluates the
-  requirement against the entity loaded from a `{key}` segment, and an unbound operation has neither
-  a key nor an entity set, so the rule could only ever be a silent no-op. `AllowAnonymous()` on an
-  unbound operation states intent and silences the warning below; it deliberately does **not** emit
-  `AllowAnonymousAttribute`, so it cannot tunnel the operation out from under a host-applied group
-  requirement.
-
-- **A startup `Warning` names every route that is anonymous in a registration that requires
-  authorization somewhere else (#487).** Two configurations reach it, both previously silent:
-
-  - an unbound function/action with no requirement of its own, and
-  - a `ConfigureAuthorization` profile that leaves an operation **category** rule-less while routes
-    exist in it — most consequentially `Invoke`. A profile migrated from `RequireAuthorization()`
-    (which covers *all* operations) to `.Read(...).Writes(...)` reads as a refinement and is a
-    **widening**: measured pre-fix, that profile answered `401` on its collection `GET` and `204`
-    with the handler executed on both `POST /{Set}/{Action}` and `POST /{Set}({key})/{Action}`.
-
-  Each warning names what is anonymous, the configuration that produced it, and two remedies — the
-  requirement to add, and the explicit `AllowAnonymous()` that states the opposite intent and stops
-  the warning. **Nothing is warned about when the host applies a group-level requirement**, which is
-  the mitigation the docs recommend: the diagnostic runs from an `IEndpointConventionBuilder.Finally`
-  convention rather than inside `MapOhData()`, because the host applies its requirement to the group
-  *after* `MapOhData()` returns and warning earlier would fire on the correct configuration. A
-  registration that requires authorization nowhere is a public service, not a service with a hole,
-  and is never reported.
-
-  **No request-path behaviour changes.** Every route answers exactly as before; the fix is a
-  diagnostic plus the opt-in capability above.
-
 ### Documentation
 
 - **`docs/authorization.md` gains "The composition: securing everything you can name" (#487).** Three
@@ -1435,6 +1438,51 @@ status will catch them.
   *not* done — it would move the filter's `LogError` outside the request's `Activity` and lose trace
   correlation on the single most important log line the framework emits, a worse trade for
   framework-only code that does no I/O and runs no user code.
+
+- **Every spec citation in the tree was checked against the OASIS Part 1 text, and the ones that did
+  not resolve were corrected (#578).** Fifteen sites cited **§11.2.12**, a section that does not
+  exist — Part 1 §11.2 ends at §11.2.10 (`$format`). The whole compliance table used **4.01**
+  numbering (`$filter` as §11.2.6.1 … `$skiptoken` as §11.2.6.7) in a document declaring 4.0, where
+  those clauses are §11.2.5.1–.7. Several wrong-section cites shipped in the **public XML docs**
+  inside the NuGet `.xml` (the `ETag` response header as §8.2.6 — it is §8.3.1; `If-Match` as §8.2.5
+  — it is §8.2.4; `Content-Type` as §8.2.1 — it is §8.1.1). A citation with no line number is not
+  checkable, so each corrected site now carries one.
+
+- **A fabricated OData quotation is withdrawn from the documentation *and* from the source (#578,
+  #566).** Ten sites justified excluding bound actions from the `If-Match` precondition gate by
+  asserting that an action-invocation resource *"has no representation and therefore no entity
+  tag"*, citing Protocol §11.5.4. **That phrase appears nowhere in Part 1** — `grep -ic
+  "no representation"` over the specification returns `0` — and four clauses say the opposite:
+  §11.4.1.1 is a MUST covering *"a Data Modification Request **or Action Request**"*, §8.2.4 and
+  §8.3.1 name Action Requests explicitly, and §11.5.4.1 instructs the **client** to send `If-Match`
+  for exactly this case. The behaviour is unchanged and now ships labelled as a **known deviation**
+  tracked by [#566](https://github.com/en-gen/OhData/issues/566) — in `docs/etags.md`,
+  `docs/spec-compliance.md`, `CLAUDE.md`, the two comment sites in `OhDataEndpointFactory` and the
+  two test fixtures that had been asserting the exclusion as correct behaviour. The separate
+  *no-continuation* argument for a bound action survives on its own footing and is re-grounded in
+  §11.2.5.7 — a next link is one that *"allows retrieving the next partial set of items"*, and
+  `POST /{Set}/{Action}` is not GET-addressable — including in the runtime exception message the
+  ceiling throws, which had been carrying the fabricated citation to operators.
+
+- **`README.md` no longer asserts a security claim this release withdrew (#578).** It said the
+  resource check *"covers property/navigation/`$ref` routes too … so there's no bypass"* — the exact
+  claim #481 measured false, having found `$ref` `POST`/`PUT`/`DELETE` and the navigation-`POST`
+  route **executing writes anonymously** against an admin-gated child set. `docs/authorization.md`
+  was corrected during the release; the README was untouched by all 25 preceding commits.
+
+- **Two documents prescribed remedies that now throw (#578).** `docs/deep-insert.md` promised a
+  `400` carrying `"Post handler returned null."` — a string #496 removed from the assembly — and
+  `docs/bound-operations.md` told developers to return `Results.BadRequest(...)` from an operation
+  handler, which #498 §3 refuses at **bind time**, so following the documented advice crashed the
+  app at startup.
+
+- **An "Upgrading from 1.6.0" checklist opens the release notes (#578).** The breaking-change prose
+  below it is honest and nearly unusable as a migration list; the checklist separates what stops the
+  app starting, what changes status on the wire, and the silent behaviour changes.
+
+- **The #487 *"46 emissions / 24 distinct subjects"* figure is withdrawn (#578).** It is not
+  reproducible from source and no test pinned it — this repo's own measurement-provenance rule. It
+  may be restored only alongside a test that pins it.
 
 ### Tests
 
@@ -1480,6 +1528,55 @@ status will catch them.
   and `IgnProductCaptureRegistrationTests` pins that a host skipping the registration throws
   `InvalidOperationException` naming `IgnProductWriteCaptures` out of `MapOhData()`, i.e. at host
   build, before any request.
+
+- **The k6 layer grew from one 410-line smoke script into a smoke suite plus a conformance suite.**
+  Test infrastructure only; no shipped code changed. k6 is the only place this repo exercises the
+  **real containerized TestBench over real HTTP** — all 3,459 xUnit tests use
+  `WebApplicationFactory`/TestServer, which is in-process and bypasses the HTTP stack, which is why
+  `RequestBodySizeFeatureTests` has to install a fake `IHttpMaxRequestBodySizeFeature` through an
+  `IStartupFilter` to test anything about request-body limits at all. Before this change `smoke.js`
+  never touched `$expand`, navigation routes, `$ref`, bound operations, `If-Match`, `Prefer`,
+  `@odata.bind`, `$search`, `$apply` or an unrecognized `$`-option, and **asserted no response header
+  anywhere** — it would not have caught a single defect this release found. Now `smoke.js` covers
+  every route family at 230 checks / 75 requests, `conformance.js` carries the matrices at 998
+  checks / 287 requests, and `OData-Version` is asserted on **every** request in both (§8.1.5
+  requires it universally and it was checked nowhere; the one unmapped-route exemption is *pinned*
+  rather than granted). The conformance suite mirrors the `s_*ImplementedOptions` arrays one-for-one
+  across 16 options with everything absent from an array **derived** as `501`, asserts the three
+  distinct refusal wordings, §11.2.9's `/$count` contract on the **number** rather than the status,
+  the error envelope across `400`/`404`/`406`/`412`/`413`/`415`/`500`/`501`, and
+  `If-Match: W/"<live>"` → `412` beside `If-None-Match: W/"<live>"` → `304` — the strong-vs-weak
+  rule, invisible without both halves.
+
+- **Three pre-existing k6 harness defects fixed.** `.gitignore`'s `/k6/reports/*` rule is
+  root-anchored and matched nothing (the real path is `tests/k6/reports`), so every run left
+  untracked files behind; `handleSummary` replaced k6's default summary, so `smoke.js` printed
+  **nothing** to the CI console; and the `checks` threshold was `rate>0.99`, which at ~1,200
+  deterministic assertions lets a real regression ship green — a failing `check()` does not by
+  itself fail a k6 run, the threshold is the only gate. It is `rate==1.00` in both scripts now.
+
+### Build
+
+- **`feature/`, `bug/` and `hotfix/` branch names resolve their version label again (#520).**
+  `GitVersion.yml`'s `feature:`, `bugfix:` and `hotfix:` configs set `label: '{BranchName}'` without
+  the `(?<BranchName>.+)` capture group the placeholder resolves from. Same class as #518: a
+  GitVersion regex serves two jobs at once, and a pattern satisfying one silently breaks the other.
+
+- **CI: Codecov Test Analytics added; superseded PR runs are now cancelled; the format check's
+  duplicated half is dropped.** No effect on the shipped packages.
+
+- **`Microsoft.OpenApi`'s minimum rises to `2.12.2`** (was `2.12.0`) in
+  `EnGen.OhData.AspNetCore.OpenApi`. The range is still `[2.12.2, 3.0.0)`.
+
+- **`PackageValidationBaselineVersion` moves to `1.6.0`** on all five packable projects, so this
+  release's API surface is diffed against the previous *shipped* one. No `CompatibilitySuppressions.xml`
+  exists in the repository and none was needed. Note what ApiCompat does **not** cover: it compares
+  API *shape* only — a changed default, a changed status code, or any other behavioural break passes
+  it silently, so a green pack is not evidence that this release is non-breaking. The `### Breaking`
+  section above is.
+
+- **The `[1.6.0]` CHANGELOG link definition was missing and `[Unreleased]` still compared against
+  `v1.5.0`.** Both are repaired; `## [1.6.0]` had been rendering as literal text since it shipped.
 
 ---
 
@@ -1669,7 +1766,7 @@ status will catch them.
   is `MaxExpandTop`, for the first page and every continuation alike; it is never `MaxTop`, which is
   an independent knob with its own default.
 
-  **`$format` is the one exemption, and it is not a data option.** §11.2.12 content negotiation is
+  **`$format` is the one exemption, and it is not a data option.** §11.2.10 content negotiation is
   implemented once, on the group filter that wraps the entire OData surface — it never reaches this
   handler and cannot change a single row. Refusing it would have made this the only route in the
   surface that `400`s a conformant, already-supported option, and would have broken the common client
@@ -4623,7 +4720,9 @@ post-release-prep audit fix wave (below) found before the tag was actually cut.
 
 ---
 
-[Unreleased]: https://github.com/en-gen/OhData/compare/v1.5.0...develop
+[Unreleased]: https://github.com/en-gen/OhData/compare/v1.7.0...develop
+[1.7.0]: https://github.com/en-gen/OhData/releases/tag/v1.7.0
+[1.6.0]: https://github.com/en-gen/OhData/releases/tag/v1.6.0
 [1.5.0]: https://github.com/en-gen/OhData/releases/tag/v1.5.0
 [1.4.0]: https://github.com/en-gen/OhData/releases/tag/v1.4.0
 [1.3.0]: https://github.com/en-gen/OhData/releases/tag/v1.3.0

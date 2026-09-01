@@ -118,10 +118,10 @@ internal sealed class OpTinyProfile : EntitySetProfile<int, OpPagedItem>
 /// <c>MaxTop = null</c> opts out.</para>
 ///
 /// <para><b>Continuations are functions-only, but the CEILING is not — see #543.</b> A
-/// <c>@odata.nextLink</c> is a URL the client GETs (§11.2.5.7); a bound ACTION's result is not a
-/// re-addressable resource — the action-invocation resource has no representation (§11.5.4), which
-/// is the same reason #478 excludes actions from the ETag gate — so a continuation link there would
-/// be a URL that answers 405. #357 read that as "actions are excluded" and left the ceiling
+/// <c>@odata.nextLink</c> is a URL the client GETs — §11.2.5.7 defines it as a link that "allows
+/// retrieving the next partial set of items" — and <c>POST /Set/Action</c> is not GET-addressable,
+/// so a continuation link there would be a URL that answers 405. (This is NOT the withdrawn §11.5.4
+/// "no representation" claim that #478 leaned on for the ETag gate; see #566.) #357 read that as "actions are excluded" and left the ceiling
 /// bypassable through them entirely; #543 separated the two, so an action honours
 /// <c>$top</c>/<c>$skip</c> and <c>MaxTop</c> and refuses a result it cannot serve within the
 /// ceiling rather than truncating it silently. <c>BoundActionEntityReturnTests</c> owns that half.

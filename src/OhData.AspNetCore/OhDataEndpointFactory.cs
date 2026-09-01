@@ -2453,8 +2453,8 @@ internal static class OhDataEndpointFactory
     //
     // #543: bound ACTIONS are attached too, and the rename off "…FunctionPaging…" is the point.
     // They were excluded on the reasoning that a @odata.nextLink is a URL the client GETs
-    // (§11.2.5.7) while an action-invocation resource has no representation to continue (§11.5.4) —
-    // the same identity argument #478 uses for the ETag gate — which is sound about the
+    // (§11.2.5.7) and POST /Set/Action is not GET-addressable as a continuation — which is
+    // sound about the
     // CONTINUATION and was wrongly taken to be about the CEILING as well. An action now honours
     // $top/$skip and validates them against MaxTop exactly as a function does; the only thing it
     // does not do is emit a nextLink (see TryApplyOperationCollectionPaging, which refuses instead).
@@ -13151,27 +13151,34 @@ internal static class OhDataEndpointFactory
 
         // Gap 7: Entity-level bound actions — POST /{name}({key})/{action.Name}
         //
-        // #478 -- DELIBERATE If-Match EXCLUSION, and the one place in this file where a
-        // state-changing keyed route does NOT call CheckETagAsync. The $ref and navigation-POST
-        // routes above were brought under the precondition gate; actions were not, and the reason
-        // is the identity of the *target resource*, not convenience:
+        // #478/#566 -- If-Match is NOT checked here, and this is the one place in this file where
+        // a state-changing keyed route does not call CheckETagAsync. It is a KNOWN DEVIATION,
+        // tracked by #566 -- not a design choice, and not spec-sanctioned:
         //
-        //   RFC 9110 §13.1.1 evaluates If-Match against "the current representation of the target
-        //   resource". The target resource of POST /Set(key)/Action is the ACTION-INVOCATION
-        //   resource (OData Protocol §11.5.4), which has no representation and therefore no
-        //   entity tag of its own. `Set(key)` is the action's binding parameter, not the request
-        //   target. A $ref write is different in kind: OData §11.4.6 defines it as a modification
-        //   of the addressed entity's own relationship state, so the entity IS the target.
+        //   §11.4.1.1 is a MUST -- "If an ETag value is specified in an If-Match or If-None-Match
+        //   header of a Data Modification Request OR ACTION REQUEST, the operation MUST only be
+        //   invoked if the if-match or if-none-match condition is satisfied." §8.2.4 and §8.3.1
+        //   name Action Requests just as explicitly, and §11.5.4.1 instructs the CLIENT to send
+        //   If-Match for exactly this case.
         //
-        // Consequences the exclusion accepts: an action that mutates its binding entity ignores a
+        // An earlier revision of this comment defended the exclusion by asserting that the
+        // action-invocation resource "has no representation and therefore no entity tag", citing
+        // Protocol §11.5.4. That phrase appears NOWHERE in Part 1 (`grep -ic "no representation"`
+        // over the specification returns 0) and the clauses above contradict the conclusion it was
+        // used to reach. The claim is withdrawn; do not restore it. A $ref write is a different
+        // case that still holds on its own: OData §11.4.6 defines it as a modification of the
+        // addressed entity's own relationship state, so the entity IS unambiguously the target.
+        //
+        // What the deviation costs today: an action that mutates its binding entity ignores a
         // received If-Match, and the only way to honour it is for the profile to inject
         // IHttpContextAccessor and hand-implement the comparison. That escape hatch exists for
         // EVERY handler on a scoped profile, $ref delegates included -- so "the author cannot do
         // it" is NOT the reason the $ref routes above are gated; the reason is that the addressed
         // entity is unambiguously their target and the server should do it once, correctly.
         // Collection-level bound actions and unbound actions have no key at all and no entity to
-        // compare against. Revisiting this needs an explicit decision, not a mechanical extension;
-        // docs/etags.md states the exclusion for API consumers.
+        // compare against, so THAT half of the exclusion survives on its own reasoning. The
+        // entity-level case does not. docs/etags.md and docs/spec-compliance.md both state the
+        // deviation for API consumers and point at #566.
         foreach (var action in source.BoundActions.Where(a => a.IsEntityLevel))
         {
             var actionCapture = action;
@@ -13407,11 +13414,12 @@ internal static class OhDataEndpointFactory
             // Three shapes were available and two are unavailable HERE, which is what leaves this
             // one:
             //   * Cap and emit @odata.nextLink -- what a function does, and INVALID for an action.
-            //     A nextLink is a URL the client GETs (§11.2.5.7); the target of
-            //     POST /Set/Action is the action-invocation resource, which has no representation
-            //     to continue (§11.5.4) -- the same identity argument #478 uses to keep actions out
-            //     of the ETag precondition gate. The link would answer 405, and re-POSTing a
-            //     side-effecting action to collect page 2 is not a continuation in any case.
+            //     §11.2.5.7 defines a next link as one that "allows RETRIEVING the next partial
+            //     set of items", i.e. a URL the client GETs; POST /Set/Action is not GET-addressable,
+            //     so the link would answer 405, and re-POSTing a side-effecting action to collect
+            //     page 2 is not a continuation in any case. (This is NOT the withdrawn §11.5.4 "no
+            //     representation" claim — see #566 and the If-Match comment on the entity-level
+            //     action route.)
             //   * Cap silently -- forbidden by the framework's own M1 rule: no configuration leaves
             //     a bound in place without either a continuation link or a 400, never silent
             //     truncation.
@@ -13431,8 +13439,8 @@ internal static class OhDataEndpointFactory
             throw new InvalidOperationException(
                 $"Entity set '{entitySetName}': bound action '{operationName}' returned " +
                 $"{preTotal - skip} entities, which exceeds this entity set's MaxTop of {cap}. A " +
-                "bound action's result cannot carry an @odata.nextLink -- an action-invocation " +
-                "resource has no representation to continue (OData Protocol 11.5.4) -- so the " +
+                "bound action's result cannot carry an @odata.nextLink -- a next link is a URL " +
+                "the client GETs (OData Protocol 11.2.5.7) and POST is not a continuation -- so " +
                 "framework will not silently truncate it either. Return no more than MaxTop " +
                 "entities from the handler, set MaxTop = null on the profile or in " +
                 "EntitySetDefaults to opt this entity set out of the ceiling, or expose the " +

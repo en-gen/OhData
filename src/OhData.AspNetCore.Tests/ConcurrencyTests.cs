@@ -780,11 +780,13 @@ public class ConcurrencyTests
     [Fact]
     public async Task EntityBoundAction_IgnoresIfMatch_DocumentedExclusion()
     {
-        // CHARACTERIZATION, not an endorsement. #478 deliberately left bound/unbound actions
-        // outside the precondition gate: the target resource of POST /Set(key)/Action is the
-        // action-invocation resource, which has no representation and therefore no entity tag.
-        // If this test ever starts failing with a 412, that exclusion was changed — which needs a
-        // decision, an entry in docs/etags.md and a breaking-change note, not just a green diff.
+        // CHARACTERIZATION of a KNOWN DEVIATION (#566), not an endorsement. #478 left bound and
+        // unbound actions outside the precondition gate on the reasoning that an action-invocation
+        // resource "has no representation and therefore no entity tag" (§11.5.4) — a phrase that
+        // appears nowhere in Part 1, and §11.4.1.1 is a MUST that names "Action Request" outright.
+        // So the 204 asserted below is a spec violation this release ships knowingly.
+        // If this test ever starts failing with a 412, #566 was FIXED — update it to assert the
+        // 412 and add the breaking-change note; do not restore the withdrawn justification.
         var (fx, store, stale) = await BuildLinkFixtureWithStaleETagAsync();
         await using var _ = fx;
 
