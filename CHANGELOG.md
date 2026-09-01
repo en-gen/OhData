@@ -9,6 +9,41 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **⚠ BREAKING CHANGE — an entity-bound action now honours `If-Match`/`If-None-Match` (#566).**
+  `POST /{EntitySet}({key})/{Action}` was the one state-changing keyed route that did not call
+  `CheckETagAsync`. A conditional header was discarded and the action ran, which is a flat
+  violation of **§11.4.1.1** — a MUST whose subject is *"a Data Modification Request **or Action
+  Request**"*. §8.2.4 and §8.3.1 name Action Requests as explicitly, and **§11.5.4.1 instructs the
+  client to send `If-Match`** for exactly this case: *"To request processing of the action only if
+  the binding parameter value … is unmodified, the client includes the `If-Match` header."*
+
+  **Measured on the shipped TestBench before the fix**: `POST /v1/Movies(3)/Rate` carrying a stale
+  `If-Match` answered `200` and **mutated the entity**, while `PATCH /v1/Movies(3)` carrying the
+  *same* header answered `412`. A client using `If-Match` to guard a read-modify-write loop was
+  silently unprotected on precisely the route that exists to encapsulate such a loop.
+
+  Breaking in the safe direction: a request that previously succeeded now answers `412` **only if
+  it carried a conditional header that does not match**. A request with no conditional header is
+  unaffected, and `CheckETagAsync` returns before touching `GetById` when neither header is
+  present, so the ordinary invocation path costs nothing new.
+
+  The gate is placed after the key parses and **before the parameter body is read**, so a refused
+  invocation provably runs no user code — the ordering invariant #478 established, which is why
+  the tests assert delegate **non-execution** rather than only the status code.
+
+  **Collection-bound and unbound actions stay excluded**, and that half survives on its own
+  reasoning: neither has a `{key}` segment or an addressed entity, so there is nothing to load an
+  entity tag from, and §11.5.4.1's *"or collection of entities"* half would need a **collection**
+  ETag this framework does not compute.
+
+  #478 excluded actions on the reasoning that an action-invocation resource *"has no representation
+  and therefore no entity tag"*, citing Protocol §11.5.4. **That phrase appears nowhere in Part 1**
+  — `grep -ic "no representation"` over the specification returns `0`. 1.7.0 withdrew the claim
+  across all twelve sites carrying it and shipped the behaviour labelled as a known deviation;
+  this closes the deviation itself.
+
 ---
 
 ## [1.7.0] - 2026-08-31

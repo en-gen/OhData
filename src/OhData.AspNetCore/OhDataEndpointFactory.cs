@@ -13151,34 +13151,25 @@ internal static class OhDataEndpointFactory
 
         // Gap 7: Entity-level bound actions — POST /{name}({key})/{action.Name}
         //
-        // #478/#566 -- If-Match is NOT checked here, and this is the one place in this file where
-        // a state-changing keyed route does not call CheckETagAsync. It is a KNOWN DEVIATION,
-        // tracked by #566 -- not a design choice, and not spec-sanctioned:
+        // Gap 7a: #566 -- this route IS under the precondition gate. §11.4.1.1 is a MUST whose
+        // subject is "a Data Modification Request OR ACTION REQUEST", §8.2.4 and §8.3.1 name
+        // Action Requests as explicitly, and §11.5.4.1 instructs the CLIENT to send If-Match for
+        // exactly this case. The call itself is in the handler below, before the body is read.
         //
-        //   §11.4.1.1 is a MUST -- "If an ETag value is specified in an If-Match or If-None-Match
-        //   header of a Data Modification Request OR ACTION REQUEST, the operation MUST only be
-        //   invoked if the if-match or if-none-match condition is satisfied." §8.2.4 and §8.3.1
-        //   name Action Requests just as explicitly, and §11.5.4.1 instructs the CLIENT to send
-        //   If-Match for exactly this case.
+        // History, so the exclusion is not reinstated: #478 left actions out, defended by the
+        // assertion that an action-invocation resource "has no representation and therefore no
+        // entity tag", citing Protocol §11.5.4. That phrase appears NOWHERE in Part 1
+        // (`grep -ic "no representation"` over the specification returns 0), and the clauses above
+        // contradict the conclusion it was used to reach. Measured on the shipped TestBench before
+        // this fix: POST /v1/Movies(3)/Rate with a stale If-Match answered 200 and MUTATED the
+        // entity, while PATCH /v1/Movies(3) with the SAME header answered 412 -- the precondition
+        // honoured on one route and ignored on the route that exists to encapsulate exactly that
+        // read-modify-write loop.
         //
-        // An earlier revision of this comment defended the exclusion by asserting that the
-        // action-invocation resource "has no representation and therefore no entity tag", citing
-        // Protocol §11.5.4. That phrase appears NOWHERE in Part 1 (`grep -ic "no representation"`
-        // over the specification returns 0) and the clauses above contradict the conclusion it was
-        // used to reach. The claim is withdrawn; do not restore it. A $ref write is a different
-        // case that still holds on its own: OData §11.4.6 defines it as a modification of the
-        // addressed entity's own relationship state, so the entity IS unambiguously the target.
-        //
-        // What the deviation costs today: an action that mutates its binding entity ignores a
-        // received If-Match, and the only way to honour it is for the profile to inject
-        // IHttpContextAccessor and hand-implement the comparison. That escape hatch exists for
-        // EVERY handler on a scoped profile, $ref delegates included -- so "the author cannot do
-        // it" is NOT the reason the $ref routes above are gated; the reason is that the addressed
-        // entity is unambiguously their target and the server should do it once, correctly.
-        // Collection-level bound actions and unbound actions have no key at all and no entity to
-        // compare against, so THAT half of the exclusion survives on its own reasoning. The
-        // entity-level case does not. docs/etags.md and docs/spec-compliance.md both state the
-        // deviation for API consumers and point at #566.
+        // Still excluded, and this half survives on its own reasoning: COLLECTION-bound and
+        // UNBOUND actions. Neither has a {key} segment or an addressed entity, so there is nothing
+        // to load an ETag from. §11.5.4.1's "or collection of entities" half would need a
+        // collection ETag, which this framework does not compute.
         foreach (var action in source.BoundActions.Where(a => a.IsEntityLevel))
         {
             var actionCapture = action;
@@ -13199,6 +13190,27 @@ internal static class OhDataEndpointFactory
                         var s = ResolveHandlers(ctx);
                         var requestAction = s.BoundActions.First(a => a.Name == actionCapture.Name && a.IsEntityLevel);
                         object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
+
+                        // #566: an entity-bound action is an ACTION REQUEST under §11.4.1.1, whose
+                        // MUST covers "a Data Modification Request OR ACTION REQUEST" -- so a
+                        // received If-Match/If-None-Match gates the invocation exactly as it gates
+                        // PUT/PATCH/DELETE, the three $ref routes and the navigation-POST route.
+                        // §11.5.4.1 tells the client to send it for precisely this case, and
+                        // §8.2.4 and §8.3.1 name Action Requests too.
+                        //
+                        // Placed after the key parses and BEFORE the parameter body is read, so a
+                        // refused invocation provably runs no user code -- the same ordering
+                        // invariant #478 established for the other five families, and the reason
+                        // ConcurrencyTests asserts delegate NON-EXECUTION rather than only status.
+                        //
+                        // Only the ENTITY-level route gets this. Collection-bound and unbound
+                        // actions have no {key} segment and no addressed entity, so there is
+                        // nothing to load an ETag from; §11.5.4.1's "or collection of entities"
+                        // half needs a collection ETag the framework does not compute. That half
+                        // of #478's exclusion survives on its own reasoning.
+                        var actionEtagCheck = await CheckETagAsync(source, s, ctx, parsedKey!, ct);
+                        if (actionEtagCheck is not null) return actionEtagCheck;
+
                         object?[] args = new object?[actionCapture.Parameters.Length];
                         args[0] = parsedKey;
                         if (actionCapture.Parameters.Length > 1)

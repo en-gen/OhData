@@ -144,12 +144,16 @@ Every state-changing route the framework owns **and can key** evaluates the prec
 | `PUT /{EntitySet}({key})/{Nav}/$ref` | set a single-valued navigation's link |
 | `DELETE /{EntitySet}({key})/{Nav}/$ref` | remove a link |
 | `POST /{EntitySet}({key})/{Nav}` | create a related entity |
+| `POST /{EntitySet}({key})/{Action}` | invoke an entity-bound action |
 
 The four `$ref` / navigation-`POST` rows are new; before that, those routes silently **discarded**
 a received `If-Match` and performed the write with a `204`/`201`. That was a lost update on
 relationship state which the handler could not prevent - the `addRef`/`setRef`/`removeRef`/`post`
 delegates receive only the key and the payload, so there was nowhere to check the header.
-See [the exclusion below](#actions-do-not-honor-if-match) for the one family that still does not.
+
+The entity-bound **action** row is newer still (#566) and closed a MUST violation; see
+[the remaining exclusion below](#collection-bound-and-unbound-actions-are-still-excluded) for the
+two families that genuinely cannot be keyed.
 
 ### How the check works
 
@@ -208,39 +212,40 @@ header is absent, and is independent of the `If-Match` handling above. Unlike th
 `If-None-Match` handling, this guard does not require `UseETag` - it only asks whether a
 representation exists.
 
-### Actions do not honor `If-Match`
+### Collection-bound and unbound actions are still excluded
 
-Bound and unbound **actions** (`POST /{EntitySet}/{Action}`, `POST /{EntitySet}({key})/{Action}`,
-`POST /{Action}`) are outside the precondition gate. A conditional header sent to an action is
-ignored, and the action runs.
+An **entity-bound** action (`POST /{EntitySet}({key})/{Action}`) honours `If-Match` and
+`If-None-Match` like every other keyed write. **Collection-bound** actions
+(`POST /{EntitySet}/{Action}`) and **unbound** actions (`POST /{Action}`) do not, and cannot: there
+is no `{key}` segment and no addressed entity, so there is nothing to load an entity tag from.
+§11.5.4.1's *"or collection of entities"* half would need a **collection** ETag, which this
+framework does not compute.
 
-> **⚠ This is a known deviation from OData 4.0, not a design choice.** It is tracked as
-> [#566](https://github.com/en-gen/OhData/issues/566) and is expected to be fixed.
+For those two families, a conditional header is ignored and the action runs.
 
-Three clauses put action requests inside the gate, and Part 1 says so in as many words:
+> **History, recorded so the exclusion is not reinstated.** Until 1.8.0, *entity-bound* actions
+> were excluded too, defended by the claim that an action-invocation resource *"has no
+> representation and therefore no entity tag"*, citing Protocol §11.5.4. **That phrase does not
+> appear anywhere in Part 1** — `grep -ic "no representation"` over the specification returns `0` —
+> and four clauses say the opposite:
+>
+> - **§11.4.1.1** (a MUST): *"If an ETag value is specified in an `If-Match` or `If-None-Match`
+>   header of a Data Modification Request **or Action Request**, the operation MUST only be invoked
+>   if the if-match or if-none-match condition is satisfied."*
+> - **§8.2.4**: a mismatched `If-Match` *"for a Data Modification Request **or Action Request**"*
+>   MUST answer `412` and MUST ensure no observable change occurs.
+> - **§8.3.1**: the `ETag` value may be used *"in updating, deleting, **or invoking the action
+>   bound to the entity**."*
+> - **§11.5.4.1** instructs the client to send it: *"To request processing of the action only if
+>   the binding parameter value … is unmodified, the client includes the `If-Match` header."*
+>
+> Measured on the TestBench before the fix: `POST /v1/Movies(3)/Rate` with a stale `If-Match`
+> answered `200` and mutated the entity, while `PATCH /v1/Movies(3)` carrying the **same header**
+> answered `412`.
 
-- **§11.4.1.1** (a MUST): *"If an ETag value is specified in an `If-Match` or `If-None-Match`
-  header of a Data Modification Request **or Action Request**, the operation MUST only be invoked
-  if the if-match or if-none-match condition is satisfied."*
-- **§8.2.4**: a mismatched `If-Match` *"for a Data Modification Request **or Action Request**"*
-  MUST answer `412` and MUST ensure no observable change occurs.
-- **§8.3.1**: the `ETag` header value may be used *"in updating, deleting, **or invoking the action
-  bound to the entity**."*
-- **§11.5.4.1** even instructs the client to do it: *"To request processing of the action only if
-  the binding parameter value … is unmodified, the client includes the `If-Match` header."*
-
-Earlier revisions of this page defended the exclusion by saying the action-invocation resource
-*"has no representation and therefore no entity tag"*, citing Protocol §11.5.4. **That phrase does
-not appear anywhere in Part 1** - `grep -ic "no representation"` over the specification returns
-`0` - and the clauses above contradict the conclusion it was used to reach. The claim has been
-withdrawn.
-
-Collection-level and unbound actions genuinely have no key to load by, so they are outside the
-gate for a reason that survives; the entity-bound case is not.
-
-If your action mutates its binding entity and you want it to be conditional, you have to implement
-that yourself. An action handler does not receive `HttpContext` - its parameters are bound from the
-request body and query string - so reaching the header means injecting `IHttpContextAccessor` into
+If you need a collection-bound or unbound action to be conditional, you have to implement it
+yourself. An action handler does not receive `HttpContext` — its parameters are bound from the
+request body and query string — so reaching the header means injecting `IHttpContextAccessor` into
 the profile (profiles are registered scoped, so this works once the app calls
 `AddHttpContextAccessor()`):
 
@@ -252,22 +257,16 @@ public class ProductProfile : EntitySetProfile<int, Product>
     public ProductProfile(IHttpContextAccessor http) : base(x => x.Id)
     {
         _http = http;
-        BindEntityAction(Reorder);
+        BindAction(ReorderAll);       // collection-bound: no {key}, so no server-side gate
     }
 
-    private async Task Reorder(int key, int quantity, CancellationToken ct)
+    private async Task ReorderAll(int quantity, CancellationToken ct)
     {
         var ifMatch = _http.HttpContext?.Request.Headers.IfMatch;
-        // ... compare against the entity's current ETag yourself, and fail with your own 412.
+        // ... compare against whatever your own concurrency token is, and fail with your own 412.
     }
 }
 ```
-
-Note that this escape hatch is available to *any* handler, including the `$ref` and navigation-`POST`
-delegates. The framework enforces the precondition on those routes anyway, because requiring every
-adopter to wire up an accessor and hand-reimplement RFC 9110 comparison semantics per delegate is
-not a substitute for the server doing it once, correctly, on the routes where the addressed entity
-is unambiguously the target.
 
 ```http
 PUT /odata/Products(1)
