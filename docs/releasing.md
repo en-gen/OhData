@@ -30,8 +30,17 @@ embedded in every package via `Directory.Build.props`. A non-zero exit fails the
 Also gated on `EnablePackageValidation=true` (set on every packable csproj): MSBuild's own API/ABI compat
 checks. Every published package also sets `PackageValidationBaselineVersion` — always the **previous**
 published release — so every pack is diffed against that shipped API surface and unintended breaking
-changes fail the build. **Bump the baseline on all packable csproj files as part of each release** (the
-release-prep PR), and add one to newly published packages after their first release.
+changes fail the build. Add one to newly published packages after their first release.
+
+> **Bump the baseline in the CLOSE-OUT step (step 8), not in release prep — #590.** This instruction
+> used to say "as part of each release (the release-prep PR)", and that is the wrong end of the cycle.
+> Release prep is the last few commits before the branch is cut, so bumping there leaves the baseline
+> correct for a handful of commits and **stale for every commit of the following release**, which is
+> exactly when the API is changing. Measured: the baseline sat at `1.5.0` through the *entire* 1.7.0
+> cycle — all 30 commits — so ApiCompat could not have caught a break introduced in 1.6.0 at any point.
+> It was bumped to `1.6.0` in the 1.7.0 prep PR, where it validated nothing that had not already
+> merged. Bump it as part of the back-merge instead: that PR is already mandatory, already a merge
+> commit, and is the moment "the previous published release" changes meaning.
 
 **Re-evaluate `CompatibilitySuppressions.xml` in the same PR as the baseline bump.** A suppression
 exists to bridge *one* release — it records a diff against the old baseline. Once the baseline moves
@@ -142,6 +151,11 @@ reject the release.
      happened on both the 1.1.0 and 1.2.0 release PRs) and GitVersion loses the merge lineage it uses
      to compute versions.
    - (c) Delete the release branch (local and remote).
+   - (d) **Bump `PackageValidationBaselineVersion` to the version just published**, on all five
+     packable csproj files, and re-evaluate `CompatibilitySuppressions.xml` in the same PR (see the
+     package-quality-gate section above for why a suppression is dead once the baseline moves past
+     the release that shipped its diff). This is deliberately here rather than in release prep, so
+     the *next* cycle develops against the release that just shipped — #590.
    Release PRs (`release/X.Y.Z` → `main`) must likewise be merged with a merge commit, never
    squashed. Squash remains the right choice for ordinary feature PRs only.
 
