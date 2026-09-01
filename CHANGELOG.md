@@ -9,6 +9,20 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Build
+
+- **`PackageValidationBaselineVersion` moves to `1.7.0`, and the instruction moves to the other end
+  of the release cycle (#590).** `docs/releasing.md` told you to bump the baseline in the
+  release-**prep** PR — the last few commits before the branch is cut — which leaves it correct for a
+  handful of commits and **stale for every commit of the following release**, i.e. exactly when the
+  API is changing. Measured: the baseline sat at `1.5.0` through the *entire* 1.7.0 cycle, all 30
+  commits, so ApiCompat could not have caught a break introduced in 1.6.0 at any point; it was bumped
+  to `1.6.0` during 1.7.0 prep, where it validated nothing that had not already merged. The
+  instruction now lives in the close-out step, so the bump rides the back-merge and the next cycle
+  develops against the release that just shipped. Verified this pack really used the new baseline
+  rather than skipping: all five semaphores deleted first and regenerated, zero `CP####`, and the
+  five `1.7.0` baseline packages appeared in the NuGet cache for the first time.
+
 ### Fixed
 
 - **⚠ BREAKING CHANGE — an entity-bound action now honours `If-Match`/`If-None-Match` (#566).**
