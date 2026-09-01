@@ -2835,10 +2835,14 @@ internal static class OhDataEndpointFactory
             Remedy: op.IsAction
                 ? $"Declare a requirement on the operation itself - AddAction({op.Name}, a => a.RequireAuthenticatedUser()) - " +
                   "or apply one to the whole surface with app.MapOhData().RequireAuthorization(). " +
-                  $"If it is meant to be public, say so with AddAction({op.Name}, a => a.AllowAnonymous()) and this warning stops."
+                  $"If it is meant to be public, say so with AddAction({op.Name}, a => a.AllowAnonymous()) and this warning stops; " +
+                  "on an UNBOUND operation that means 'I am not adding a requirement' and does NOT " +
+                  "remove a host group requirement, unlike the same call on an entity-set category. See #572."
                 : $"Declare a requirement on the operation itself - AddFunction({op.Name}, a => a.RequireAuthenticatedUser()) - " +
                   "or apply one to the whole surface with app.MapOhData().RequireAuthorization(). " +
-                  $"If it is meant to be public, say so with AddFunction({op.Name}, a => a.AllowAnonymous()) and this warning stops."));
+                  $"If it is meant to be public, say so with AddFunction({op.Name}, a => a.AllowAnonymous()) and this warning stops; " +
+                  "on an UNBOUND operation that means 'I am not adding a requirement' and does NOT " +
+                  "remove a host group requirement, unlike the same call on an entity-set category. See #572."));
     }
 
     // #495: the options for envelopes whose ENTIRE content is framework-generated -- every OData
@@ -8963,7 +8967,12 @@ internal static class OhDataEndpointFactory
                         $"{category} category, and a category with no rule emits no requirement.",
                 Remedy: $"Add .{selector}({param} => …) with the requirement you intended. If these " +
                         $"routes are meant to be public, say so with " +
-                        $".{selector}({param} => {param}.AllowAnonymous()) and this warning stops.");
+                        $".{selector}({param} => {param}.AllowAnonymous()) and this warning stops -- " +
+                        $"but note that on a CATEGORY that emits AllowAnonymousAttribute, which also " +
+                        $"overrides a host-applied app.MapOhData().RequireAuthorization(). If you " +
+                        $"only mean 'no extra requirement here', name the requirement you intended " +
+                        $"instead; the same call on an UNBOUND operation does not remove a host " +
+                        $"requirement. See #572.");
             categoryAudits[category] = audit;
             return audit;
         }

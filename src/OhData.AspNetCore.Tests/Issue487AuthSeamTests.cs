@@ -283,6 +283,14 @@ public sealed class Issue487AuthSeamTests
         Assert.Contains("AddAction(Mutate, a => a.RequireAuthenticatedUser())", mutate, StringComparison.Ordinal);
         Assert.Contains("AddAction(Mutate, a => a.AllowAnonymous())", mutate, StringComparison.Ordinal);
 
+        // #572: the remedy must say WHICH AllowAnonymous() this is. On an unbound operation the
+        // call deliberately does not emit AllowAnonymousAttribute, so it cannot tunnel out from
+        // under a later app.MapOhData().RequireAuthorization(). The category warning prescribes
+        // the identically spelled fix and gets the opposite behaviour; before #572 neither message
+        // said so, and a developer could not tell them apart.
+        Assert.Contains("does NOT", mutate, StringComparison.Ordinal);
+        Assert.Contains("remove a host group requirement", mutate, StringComparison.Ordinal);
+
         string peek = Assert.Single(warnings, w => w.Contains("'Peek'", StringComparison.Ordinal));
         Assert.Contains("the unbound function 'Peek' (GET /{prefix}/Peek) is ANONYMOUS.", peek, StringComparison.Ordinal);
     }
@@ -475,6 +483,52 @@ public sealed class Issue487AuthSeamTests
         Assert.Contains("names no rule for the Invoke category", invoke, StringComparison.Ordinal);
         Assert.Contains(".Invoke(i => …)", invoke, StringComparison.Ordinal);
         Assert.Contains(".Invoke(i => i.AllowAnonymous())", invoke, StringComparison.Ordinal);
+
+        // #572: the category remedy prescribes AllowAnonymous(), which HERE emits
+        // AllowAnonymousAttribute and therefore overrides a host-applied
+        // app.MapOhData().RequireAuthorization() — #487's own seam 3, the one it deliberately did
+        // not change. The message must say so, and must point at the alternative, or the framework
+        // is advising a fail-open in the very configuration docs/authorization.md recommends.
+        Assert.Contains("AllowAnonymousAttribute", invoke, StringComparison.Ordinal);
+        Assert.Contains("overrides a host-applied", invoke, StringComparison.Ordinal);
+        Assert.Contains("name the requirement you intended", invoke, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #572's central assertion: the two warnings must no longer be interchangeable. Both prescribe
+    /// a call spelled <c>AllowAnonymous()</c>, and the two calls do OPPOSITE things — one emits
+    /// <c>AllowAnonymousAttribute</c> and escapes a host group requirement, the other deliberately
+    /// does not. This asserts each message carries the half that applies to it and NOT the other's,
+    /// so a future edit cannot quietly re-converge them.
+    /// </summary>
+    [Fact]
+    public async Task Issue572_TheTwoAnonymousWarnings_DescribeOppositeBehaviours()
+    {
+        var capture = new WarningCapture();
+        await using var fx = await BuildAsync(capture, o =>
+        {
+            o.AddEntitySetProfile<S487MigratedProfile>();
+            o.AddAction(S487UnboundOps.Mutate);
+        });
+
+        string[] warnings = SeamWarnings(capture);
+        foreach (string w in warnings) _out.WriteLine("WARNING " + w);
+
+        string unbound = Assert.Single(warnings, w => w.Contains("unbound action", StringComparison.Ordinal));
+        string category = Assert.Single(warnings, w => w.Contains("routes of entity set", StringComparison.Ordinal));
+
+        // The category half says the attribute is emitted and the host requirement is overridden.
+        Assert.Contains("AllowAnonymousAttribute", category, StringComparison.Ordinal);
+        Assert.Contains("overrides a host-applied", category, StringComparison.Ordinal);
+
+        // The unbound half says the opposite, and must not claim the attribute is emitted.
+        Assert.Contains("does NOT", unbound, StringComparison.Ordinal);
+        Assert.Contains("remove a host group requirement", unbound, StringComparison.Ordinal);
+        Assert.DoesNotContain("AllowAnonymousAttribute", unbound, StringComparison.Ordinal);
+
+        // And each points at #572 so the asymmetry is findable from a log line.
+        Assert.Contains("#572", category, StringComparison.Ordinal);
+        Assert.Contains("#572", unbound, StringComparison.Ordinal);
     }
 
     /// <summary>

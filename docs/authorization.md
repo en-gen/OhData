@@ -139,6 +139,16 @@ operation.
   standard `AllowAnonymousAttribute`). This is deliberate and it is how you punch a public hole in an
   otherwise-gated surface - but read the composition section below before relying on group-level auth
   as a floor, because it is not one.
+
+  > **The same call means something different on an unbound operation, and that is deliberate (#572).**
+  > `AddFunction(op, a => a.AllowAnonymous())` does **not** emit `AllowAnonymousAttribute`; there it
+  > means *"I am not adding a requirement"*, never *"I am removing yours"*, so a host-applied
+  > `app.MapOhData().RequireAuthorization()` still covers it. One interface,
+  > `ICategoryAuthorizationBuilder`, is used in both places, so the spelling is identical and the
+  > behaviour is opposite. Both startup warnings now say which one you are getting. If you only mean
+  > *"this category needs no requirement of its own"*, name the requirement you intended instead -
+  > on a category this call is the stronger statement. See
+  > [unbound operations](#unbound-functions-and-actions) for the other half.
 - `$metadata` and the service document are **not** entity-set-scoped, so `ConfigureAuthorization` does
   not reach them; protect them with group-level auth (see below), same as the legacy model. Unbound
   functions and actions are not entity-set-scoped either, but they now have their **own**

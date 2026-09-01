@@ -11,6 +11,32 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **#487's two startup warnings prescribed the same `AllowAnonymous()` fix, where that call does
+  OPPOSITE things (#572).** Both audits told the developer to silence them with a lambda spelled
+  `a => a.AllowAnonymous()`, over the same `ICategoryAuthorizationBuilder` interface. On an
+  entity-set **category** that emits ASP.NET Core's `AllowAnonymousAttribute`, which **overrides a
+  host-applied** `app.MapOhData().RequireAuthorization()` — #487's own seam 3, the one it
+  deliberately chose not to change. On an **unbound operation** it deliberately does *not* emit the
+  attribute, because doing so would let the operation tunnel out from under a host requirement the
+  host cannot see. Neither message said which you were getting, and the shared interface member
+  documented neither.
+
+  Latent rather than immediate: the category audit returns early when `IAuthorizeData` is already
+  present, so it only fires on hosts with **no** group auth, where the attribute has nothing to
+  override. It lands later, when the host adds `MapOhData().RequireAuthorization()` — which is
+  precisely the mitigation `docs/authorization.md` recommends for these routes. At that point the
+  category silenced months earlier tunnels out of the new requirement while the unbound operation
+  beside it does not. **A fail-open produced by following the framework's own advice, in the exact
+  configuration the framework's own docs recommend.**
+
+  No behaviour changes. Both warning messages now state which `AllowAnonymous()` they mean and what
+  it does to a host requirement; the category remedy additionally points at naming the requirement
+  you intended, which is the right answer when you only mean "no rule needed here".
+  `ICategoryAuthorizationBuilder.AllowAnonymous` documents the asymmetry on the member itself, and
+  `docs/authorization.md` — which already described both halves 240 lines apart — now states them
+  side by side. `Issue572_TheTwoAnonymousWarnings_DescribeOppositeBehaviours` asserts each message
+  carries its own half and **not** the other's, so a future edit cannot quietly re-converge them.
+
 - **⚠ BREAKING CHANGE — an entity-bound action now honours `If-Match`/`If-None-Match` (#566).**
   `POST /{EntitySet}({key})/{Action}` was the one state-changing keyed route that did not call
   `CheckETagAsync`. A conditional header was discarded and the action ran, which is a flat

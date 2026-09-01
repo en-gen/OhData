@@ -159,6 +159,27 @@ public interface ICategoryAuthorizationBuilder
     /// </summary>
     ICategoryAuthorizationBuilder RequireResource(string policyName);
 
-    /// <summary>Explicitly allow anonymous access. Exclusive — cannot be combined with any <c>Require*</c>.</summary>
+    /// <summary>
+    /// Explicitly allow anonymous access. Exclusive — cannot be combined with any <c>Require*</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para><b>This method does two different things depending on where the rule is applied, and the
+    /// difference is deliberate (#487, documented by #572).</b></para>
+    /// <para>On an <b>entity-set category</b> — <c>ConfigureAuthorization(a =&gt; a.Read(r =&gt;
+    /// r.AllowAnonymous()))</c> — it emits ASP.NET Core's <c>AllowAnonymousAttribute</c> onto every
+    /// route in that category. That attribute <b>overrides a host-applied</b>
+    /// <c>app.MapOhData().RequireAuthorization()</c>: the routes stay anonymous even after the host
+    /// gates the whole surface. This is the only way to express a deliberate public hole in an
+    /// otherwise-gated surface, which is why it behaves this way — but it means the call is a
+    /// statement about the host's configuration, not only about your own.</para>
+    /// <para>On an <b>unbound operation</b> — <c>AddFunction(op, a =&gt; a.AllowAnonymous())</c> or
+    /// <c>AddAction(...)</c> — it does <b>not</b> emit the attribute. There it means "I am not adding
+    /// a requirement", never "I am removing yours", so a later
+    /// <c>app.MapOhData().RequireAuthorization()</c> still covers the operation. Emitting the
+    /// attribute there would let an unbound operation tunnel out from under a host requirement the
+    /// host cannot see and did not ask for.</para>
+    /// <para>If you only mean "this category needs no requirement of its own", name the requirement
+    /// you intended rather than reaching for this — on a category, this is the stronger statement.</para>
+    /// </remarks>
     void AllowAnonymous();
 }
