@@ -1304,49 +1304,24 @@ internal static class OhDataEndpointFactory
         var loggerFactory = routes.ServiceProvider.GetService<ILoggerFactory>();
         var groupLogger = loggerFactory?.CreateLogger("OhData");
 
-        // #389: OData open COMPLEX types, ON BY DEFAULT; AddOhData(o => o.WithOpenTypes(false)) is
-        // the escape hatch. Every complex type the EDM marks OpenType="true" carries a
-        // DynamicPropertyDictionaryAnnotation naming the CLR member that backs its dynamic
-        // properties; this layers one more resolver modifier that marks that member as
-        // System.Text.Json extension data, so the bag serialises and binds FLAT (dynamic keys as
-        // siblings of the declared properties) with no attribute on the consumer's model.
+        // #389: open COMPLEX types, ON BY DEFAULT; WithOpenTypes(false) is the escape hatch. Marks the
+        // DynamicPropertyDictionaryAnnotation's member as STJ extension data, so the bag serialises and
+        // binds FLAT with no attribute on the consumer's model.
         //
-        // Default-ON because a complex type with a dictionary member IS an open type: this same
-        // builder has always emitted OpenType="true" for it and always omitted the member from the
-        // declared properties, so leaving the wire nested made $metadata and the payload disagree
-        // and made conformance something the developer had to know the spec to ask for. It is also
-        // what Microsoft.AspNetCore.OData does -- its ODataResourceSerializer.AppendDynamicProperties
-        // reads the SAME annotation and appends dynamic properties flat, with no opt-in flag
-        // anywhere in that path.
+        // Default-on because a complex type with a dictionary member IS an open type -- this builder
+        // has always emitted OpenType="true" for it -- and because MS's AppendDynamicProperties reads
+        // the SAME annotation with no opt-in flag. Flattening RE-BINDS a body an adopter already
+        // sends, and the echo is byte-identical to the correct one, so WarnWireShapeIsFlat is the only
+        // available signal before the stored data is wrong.
         //
-        // Flattening still RE-BINDS a body an existing adopter already sends -- the container stops
-        // being a declared property, so {"Meta":{"Bag":{...}}} becomes a dynamic key named "Bag" --
-        // and the echo of that mis-bound value is byte-identical to the correct one, so it is not
-        // detectable by diffing responses. WarnWireShapeIsFlat below names every affected type once
-        // at startup, which is the only signal available before the stored data is already wrong.
-        // With the escape hatch taken, the map is not even built and effectiveJsonOptions is threaded
-        // through reference-unchanged.
-        //
-        // Ordering: added AFTER the ignored-property modifier and BEFORE the per-request
-        // nav-suppression modifier, which derives from these options. The three never contend for a
-        // member -- nav suppression only removes EDM navigations (an open complex type has none),
-        // and the ignored-property map is keyed by profile.ModelType (an ENTITY type), which a
-        // container's declaring complex type can never be, so those two modifiers never see the
-        // same JsonTypeInfo.
-        //
-        // THAT ORDERING IS AN INVARIANT, NOT AN INCIDENT, and OpenTypeModifierOrderingTests asserts
-        // it. Two properties depend on it. (1) The open-type modifier snapshots its declared-name
-        // collision set from typeInfo.Properties, so it must run while every EDM NAVIGATION is still
-        // on the contract -- deriving nav suppression from startupJsonOptions instead of from these
-        // options would put the removal first and silently convert a bag key that shadows a
-        // navigation from a hard 500 into a navigation-shadowing leak. (2) Conversely it must run
-        // AFTER the ignored-property modifier, whose removals are what make Ignore()d names invisible
-        // to it -- which is why those names are threaded in separately below rather than read off the
+        // ORDERING IS AN INVARIANT -- after the ignored-property modifier, before nav suppression --
+        // and OpenTypeModifierOrderingTests asserts it. (1) This modifier snapshots its declared-name
+        // collision set from typeInfo.Properties, so it must run while EDM navigations are still on
+        // the contract; deriving nav suppression from startupJsonOptions would put the removal first
+        // and turn a bag key shadowing a navigation from a hard 500 into a leak. (2) It must run AFTER
+        // the ignored-property modifier, whose removals are what make Ignore()d names invisible to it
+        // -- which is why those names are threaded in separately as DATA rather than read off the
         // contract.
-        //
-        // Note what the ignored-name argument does NOT do: it does not make the two modifiers meet.
-        // They still never touch the same JsonTypeInfo. The withheld names cross as DATA, so the
-        // open-type modifier can refuse a bag key spelled like a member the profile withholds.
         var openTypeContainers = registration.OpenTypesEnabled
             ? OpenTypeJsonOptions.BuildOpenComplexTypeContainerMap(registration.EdmModel)
             : OpenTypeJsonOptions.OpenComplexTypeContainers.Empty;
@@ -1831,50 +1806,20 @@ internal static class OhDataEndpointFactory
         }
     }
 
-    // #313: the startup diagnostic that stands in for the ceiling that MaxExpandTop no longer defaults to.
+    // #313: the startup diagnostic standing in for the ceiling MaxExpandTop no longer defaults to.
+    // A bare ?$expand=Children materializes the whole child collection and answers 200, so nothing
+    // else points at it. Deliberately prescribes no number -- picking one is the mistake stage 1 undid.
     //
-    // Stage 1 removed an invented 1000 because the framework cannot know how large a child collection
-    // is. That leaves a real exposure — a bare ?$expand=Children materializes the WHOLE child
-    // collection — and nothing to point at it, since with no ceiling the shape answers 200 and looks
-    // healthy. This names each affected navigation once at startup so the decision is made by someone
-    // who knows the data, and it deliberately stops at informing: it prescribes no number, because
-    // picking one is exactly the mistake stage 1 undid.
+    // The conditions are ALL of the conditions under which the exposure is live, which is what keeps
+    // it from being noise: ExpandEnabled (false by default, and the load-bearing one),
+    // HasGetQueryable, ExpandPushdownEnabled (with it off no EngagedExpand is built, so there is no
+    // materialization to bound), collection-valued, ServeRaw, and MaxExpandTop null.
     //
-    // The conditions are ALL of the conditions under which the exposure is live, which is what
-    // keeps this from being noise:
-    //   - ExpandEnabled  — false by DEFAULT, and by itself enough to silence the whole diagnostic for
-    //                      a registration that never opts into $expand. This is the load-bearing one.
-    //   - HasGetQueryable— the pushdown path is the only one that materializes a raw child collection
-    //                      from the database; GetAll/Priority-1/GetById are out of scope (G11).
-    //   - ExpandPushdownEnabled — NOT one of the five conditions #313's design lists, and it belongs.
-    //                      MEASURED: with it false, /BeAuthors?$expand=Books over a seeded 5-book author
-    //                      returns "Books":[] and issues no child query at all — no EngagedExpand is
-    //                      built (see the gate at the ApplyIncludeFallback site), so the delegate path's
-    //                      ServeRaw case no-ops over a graph nothing ever loaded. There is no
-    //                      materialization to bound, so warning about it would name a knob that changes
-    //                      nothing for that registration. It defaults to TRUE, so this narrows almost
-    //                      nothing in practice — it just keeps the rule "all of the conditions under
-    //                      which the exposure is live" honest rather than approximately true.
-    //   - collection-valued — a single-valued navigation is one row and cannot be the DoS.
-    //   - ServeRaw       — a delegate-backed navigation is never in the engaged tree. Resolved through
-    //                      the SAME ResolveNavTreatment stage 5's route registration uses
-    //                      (ResolveExpandPagingNavigations), over the SAME candidate set, so the
-    //                      warning and the routes cannot drift — rather than through a per-profile
-    //                      "owns no NavigationRouteDefinition" test. #415: this clause used to add
-    //                      "and a BLANKED one (a sibling profile over the same EDM type disagrees) is
-    //                      not served at all" — MEASURED FALSE at the ROOT, which is the only level
-    //                      this diagnostic describes. Model B gives the URL-named set authority over
-    //                      its own navigations, so a nav the old union-based check called Blank is
-    //                      still served RAW and unbounded by /{Set}?$expand={Nav}, and the warning
-    //                      went SILENT for exactly the profile that needed it whenever ANY sibling
-    //                      over the same EDM type delegated the nav. #421 fixed that by resolving the
-    //                      candidate set the way the root read path does — `new[] { profile }`. A
-    //                      navigation THIS profile delegates still yields RunDelegate and is still
-    //                      silent, which is the clause's actual point.
-    //   - MaxExpandTop is null — with a ceiling set there is a bound, and #313 stage 2 already turns
-    //                      the over-ceiling shape into a 400. Nothing to warn about.
-    //
-    // Emitted once per registration at startup, never per request.
+    // ServeRaw is resolved through the SAME ResolveNavTreatment and the SAME candidate set the route
+    // registration uses, so the warning and the routes cannot drift. #415/#421: that set is
+    // `new[] { profile }`, not the sibling union -- under Model B the URL-named set has authority
+    // over its own navigations, so a union-based check went SILENT for exactly the profile that
+    // needed the warning whenever any sibling delegated the nav.
     private static void WarnUnboundedBareExpand(OhDataRegistration registration, ILogger? logger)
     {
         if (logger is null) return;
@@ -3481,50 +3426,22 @@ internal static class OhDataEndpointFactory
         var serializerOptions = jsonOptions ?? _pascalCaseSerializerOptions;
         SelectExpandClause? rootClauseForSerialize = options.SelectExpand?.SelectExpandClause;
 
-        // #466: the RAW substrate's own $levels budget, unioned onto the PUSHED one.
+        // #466: the RAW substrate's own $levels budget, unioned onto the PUSHED one. BuildExpandLookup
+        // seeds a budget only for a name in this set, and the pushed set is null on GetAll, GetById,
+        // Priority-1 and non-EF GetQueryable -- so `$levels=N` served ONE level there while the
+        // explicit nested spelling served all N. Nothing needs loading: the rows are already in the
+        // graph the handler returned.
         //
-        // Before this, `levelsNavNames` was exactly CollectPushedLevelsNavNames' answer — the
-        // navigations the EF projection recursed with BuildLevelsNavAccess — and it is null on
-        // GetAll, GetById, Priority-1 and a non-EF GetQueryable. BuildExpandLookup seeds a levels
-        // budget ONLY for a name in this set, so on those four paths TryKeepNav dropped the
-        // self-navigation below level 1 and `$levels=N` served ONE level, silently, while the
-        // explicit nested spelling of the same request served all N. Two spellings of one request
-        // must not give different answers.
+        // Membership is `ServeRaw AND some candidate has an opinion`, per level, through the same
+        // ResolveNavTreatment every other site uses. RunDelegate/Blank are excluded because the raw
+        // graph is not their answer; a no-opinion navigation because nothing loaded it.
         //
-        // Nothing needs to LOAD anything for the raw substrate: the related rows are already in the
-        // CLR graph the handler returned (an EF fixup-populated tree, an in-memory object graph),
-        // and SerializeBounded reads them by reflection. Seeding the budget is therefore the whole
-        // fix — the same walker/keep-rule the explicit spelling already rides.
-        //
-        // MEMBERSHIP IS `ServeRaw AND some candidate has an opinion`, resolved through the SAME
-        // ResolveNavTreatment every other site uses, PER LEVEL: RunDelegate/Blank are excluded
-        // because the raw graph is NOT their answer (a delegate-backed $levels takes
-        // ExpandLevelAsync's own path, which rejects a multi-level one outright rather than
-        // truncating it — see LevelsOnDelegateRejection), and a navigation no candidate has an
-        // opinion on is excluded because nothing ever loaded it. Depth >= 2 uses the exact-EDM-type
-        // union and the walk descends only through ServeRaw parents — the raw substrate is exactly
-        // what a ServeRaw parent leaves behind (#293 Model B).
-        //
-        // THE UNION FEEDS THE TWO SERIALIZATION STAGES ONLY, NEVER ExpandLevelAsync — and that
-        // restriction is load-bearing, not tidiness. An earlier revision of this branch passed the
-        // union to all three stages, reasoning that "AnyCandidateHasOpinion keeps it inert for #440,
-        // because #440's omission arm fires only when NO candidate has an opinion". That reasoning
-        // is correct PER NAME PER LEVEL and false for a FLAT set: membership is decided at the level
-        // the name was found, while the omission arm tests the same set against a name at a
-        // DIFFERENT level. A navigation called `Children` that is ServeRaw-with-opinion at depth 2
-        // (so it enters the set) and UNDECLARED at the root therefore bypassed the omission arm
-        // there, and `?$expand=Children,Other($expand=Children($levels=2))` emitted `"Children": []`
-        // on the root entity — the exact "expanded, and empty" statement about a relationship the
-        // server never evaluated that #440 exists to prevent, under a 200, on a DEFAULT
-        // configuration (this union is built whenever the clause carries a $levels anywhere,
-        // independently of MaxExpandTop). MEASURED on that revision; base e3a7bd3 omits the member.
-        //
-        // Stage 3 therefore keeps the PUSHED set, which is the set #440's exclusion was written
-        // against: BuildLevelsNavBinding does not consult NavigationPropertyNames, so an undeclared
-        // self-referential navigation genuinely can be pushed and loaded, and only that case needs
-        // the bypass. The raw set never needs it — a raw name enters only where some candidate has
-        // an opinion at its OWN level, and a navigation with an opinion never reaches the
-        // no-opinion arm at all. Issue466NavOmissionRegressionTests is the tripwire.
+        // THE UNION FEEDS THE TWO SERIALIZATION STAGES ONLY, NEVER ExpandLevelAsync, and that is
+        // load-bearing. Membership is decided at the level a name was found, while #440's omission arm
+        // tests the same FLAT set against that name at a DIFFERENT level -- so a `Children` that is
+        // ServeRaw-with-opinion at depth 2 and UNDECLARED at the root bypassed the omission arm and
+        // emitted `"Children": []` on the root entity, under a 200, on a default configuration.
+        // Measured. Issue466NavOmissionRegressionTests is the tripwire.
         HashSet<string>? levelsNavNames = pushedLevelsNavNames;
         if (rootClauseForSerialize is not null && ClauseHasLevels((SelectExpandClause)rootClauseForSerialize) &&
             CollectRawServedLevelsNavNames(
@@ -3814,50 +3731,26 @@ internal static class OhDataEndpointFactory
 
             if (treatment.Treatment == NavTreatment.ServeRaw)
             {
-                // #440 symptom 1: ServeRaw has TWO populations and only one of them has an answer.
+                // #440 symptom 1: ServeRaw has TWO populations and only one has an answer. Where a
+                // candidate DECLARED the navigation, the declaration is what put it in
+                // pushdownExpandNavs and the value is loaded data. Where NO candidate declares or
+                // routes it (#293's "no opinion"), nothing ever chose to load it, so what survives
+                // serialization is an unpopulated CLR member and emitting it means `"Customer": null`
+                // under a 200.
                 //
-                // The frozen reading — "DB(X) = ∅, so whatever is already sitting at
-                // jsonItems[i][expandKey] IS the raw, authoritative answer" — holds when some
-                // candidate DECLARED the navigation: the declaration is what puts it in
-                // pushdownExpandNavs, so an EF-backed read really did JOIN it in and the value is
-                // loaded data. It does NOT hold for a navigation the OData convention builder
-                // discovered and NO candidate at this level declares or routes (#293's "has no
-                // opinion" category, reported by ResolveNavTreatment as AnyCandidateHasOpinion =
-                // false). Nothing ever chose to load that one — it is absent from
-                // pushdownExpandNavs, has no delegate, and is not in the engaged tree — so what
-                // survives serialization is an unpopulated CLR member, and emitting it means
-                // emitting `"Customer": null` (or `[]`) under a 200.
+                // So the member is REMOVED. JSON Format §8.3 makes an inline single-valued
+                // navigation whose value is null the positive statement that the relationship is
+                // empty, which the server never determined; §8.1 says an unexpanded navigation is
+                // represented by its link, not inline. Removing asserts only "not expanded".
                 //
-                // That is the one answer that is definitely wrong. OData JSON Format v4.01 §8.3
-                // defines the inline representation of a navigation property as the representation
-                // of an EXPANDED one, and a single-valued expanded navigation whose value is null
-                // is the positive statement that the relationship is empty. The server never
-                // determined that. §8.1 covers the other case: a navigation that was not expanded
-                // is represented by its (computed, and in metadata=minimal omitted) navigation
-                // link, not inline — which is exactly what OmitUnexpandedNavigations already does
-                // for every navigation this request did not expand. So the member is REMOVED: the
-                // payload then asserts only "not expanded", which is true, instead of "expanded,
-                // and empty", which is not.
+                // NOT a 400: the request is valid against the published $metadata and the gap is the
+                // SERVER's configuration, so a 400 would charge the client for the developer's
+                // omission on the ordinary `public Customer? Customer { get; set; }` shape. The loud
+                // channel is startup -- WarnUndeclaredConventionNavigations.
                 //
-                // NOT a 400, deliberately. The framework's fail-loud convention (#294, #402, #405)
-                // rejects an option the CLIENT got wrong or that the server parsed and could not
-                // honour. This is neither: the request is valid against the $metadata the server
-                // published, and the gap is the SERVER's configuration — a navigation the profile
-                // never declared. A 400 would charge the client for the developer's omission, on
-                // the ordinary `public Customer? Customer { get; set; }` shape, turning a currently
-                // succeeding request into an error across every adopter who has one. The loud
-                // channel for a configuration defect is startup, and that is where it is:
-                // WarnUndeclaredConventionNavigations names this exact condition once per
-                // (entity set, navigation) at MapOhData().
-                //
-                // THE ONE EXCLUSION: a $levels expand. The root pushdown loop resolves a $levels
-                // navigation through BuildLevelsNavBinding, which does NOT consult
-                // NavigationPropertyNames — so `?$expand=Self($levels=2)` over an undeclared
-                // self-referential navigation IS pushed and IS loaded. pushedLevelsNavNames is the
-                // set that was actually pushed that way, so those keep their loaded value. Nested
-                // levels reached from here are never pushed (a ServeRaw parent returns below
-                // without recursing, so this method only ever descends through a delegate), which
-                // is why the recursive call passes none.
+                // ONE EXCLUSION: BuildLevelsNavBinding does not consult NavigationPropertyNames, so
+                // an undeclared self-referential navigation under $levels IS pushed and loaded.
+                // pushedLevelsNavNames is that set, and those keep their value.
                 if (!treatment.AnyCandidateHasOpinion &&
                     !(pushedLevelsNavNames?.Contains(propName) ?? false))
                 {
@@ -4781,51 +4674,23 @@ internal static class OhDataEndpointFactory
         }
     }
 
-    // Perf fix (measured regression vs. develop, BenchmarkDotNet: GetAllPage +40%, Filter +38%,
-    // OrderBy +35%, CountTrue +34%, Select +28%, TopSkip +26% allocated bytes): SerializeBounded
-    // above is invoked once PER ENTITY on the collection GET path, so its
-    // JsonSerializer.SerializeToNode call — one call per entity — replaced develop's ONE call for
-    // the whole page. That is pure overhead whenever nothing is actually expanded (no $expand, or
-    // — like the benchmark's BenchWidget model — an entity type with zero EDM navigations at all):
-    // the per-entity walker buys cycle-safety (#325/#326) that never pays for itself because there
-    // is nothing to walk.
+    // The collection-aware entry point: ONE SerializeToNode over the whole page under nav-suppressed
+    // options, then kept navigations spliced in per element -- and the splice pass is skipped
+    // entirely when the clause keeps none. SerializeBounded is per ENTITY, which measured +26-40%
+    // allocated bytes across the read benchmarks when nothing was expanded.
     //
-    // This is the collection-aware entry point used by ApplyCollectionPipelineAsync's Stage 1: ONE
-    // JsonSerializer.SerializeToNode call over the WHOLE page (using nav-suppressed options, so the
-    // cycle-safety guarantee is unchanged — no navigation is ever handed to System.Text.Json unless
-    // the clause asks for it), producing a JsonArray in one shot exactly like develop's original
-    // single Stage-1 call. Kept navigations are then spliced in per element via
-    // SpliceKeptNavigations — but ONLY for navigations the clause actually keeps, and the whole
-    // per-element splice pass is skipped entirely (FAST PATH) when the clause keeps none at all.
+    // #337: this is also SerializeBounded's nested-collection branch, so each homogeneous sibling set
+    // is one call too -- measured 1 batched call over ~1 KB against 1,000 calls over ~82 KB.
     //
-    // #337: this is ALSO SerializeBounded's nested-collection branch. The fast path above is gated
-    // on "the clause keeps NO navigation", which an $expand request never satisfies by definition —
-    // so before #337 batching only ever paid off for a request that expanded nothing (or a model
-    // with zero EDM navigations), and every entity BELOW the root was still serialized one
-    // SerializeToNode call at a time. Routing the nested level here batches each homogeneous
-    // sibling set into a single call as well, which is where the overwhelming majority of an
-    // $expand payload's bytes actually live (measured: 1 batched call over ~1 KB vs. 1,000
-    // individual calls over ~82 KB on the ExpandCollection benchmark shape). <paramref
-    // name="activeLevels"/> is the $levels budget inherited from the parent level — always null at
-    // the root call site (mirroring Stage 1's original per-entity call, which never passed one),
-    // threaded through by the nested caller so the batched path's keep/recurse decision is the
-    // SAME one the per-entity path made.
+    // Uses the SAME BuildExpandLookup/TryKeepNav table and the SAME SpliceKeptNavigations as the
+    // per-entity path, so the two cannot disagree about what "kept" means. The keep/recurse decision
+    // is computed once for the batch, which is valid only because every element is a sibling at one
+    // level under one clause and one activeLevels budget.
     //
-    // Correctness: uses the SAME BuildExpandLookup/TryKeepNav decision table and the SAME
-    // SpliceKeptNavigations splice SerializeBounded itself uses (single source, see its remarks),
-    // so the two can never disagree on what "kept" means or how a kept nav gets spliced. The
-    // keep/recurse decision (expanded/levelsRemaining) is computed ONCE for the whole batch — valid
-    // because every element here is a SIBLING at the same level, serialized under the SAME clause
-    // and the SAME inherited activeLevels budget, exactly as the per-entity loop this replaces
-    // passed the identical (clause, activeLevels) pair to every element in turn.
-    //
-    // Array element order MUST match <paramref name="values"/>' source order exactly: STJ's
-    // SerializeToNode over an IEnumerable preserves enumeration order (the same guarantee develop's
-    // original single-call Stage 1 already relied on), and the splice loop below pairs
-    // batched[i]/values[i] by that same index — see SerializeBoundedWalkerTests for an explicit
-    // index-pairing assertion (a heterogeneous per-entity nav value pattern, e.g. entity N's nav
-    // populated and its neighbours' not, would surface a misaligned splice as wrong data on the
-    // wrong entity rather than passing by coincidence).
+    // Array element order MUST match values' source order: the splice pairs batched[i]/values[i] by
+    // index. SerializeBoundedWalkerTests asserts that pairing explicitly, because a heterogeneous nav
+    // pattern is what turns a misaligned splice into wrong data on the wrong entity rather than a
+    // coincidental pass.
     private static JsonArray SerializeBoundedCollection(
         IReadOnlyList<object?> values,
         IEdmEntityType? edmType,
