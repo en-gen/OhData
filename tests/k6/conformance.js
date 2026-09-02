@@ -813,13 +813,16 @@ function preferHeader(writeId) {
 // ── 13. The real Kestrel body limit (#203 / #474 / #496) ────────────────────
 function bodySizeLimit() {
   group('request body size limit', () => {
-    // THE case TestServer structurally cannot exercise: Microsoft.AspNetCore.TestHost supplies
-    // no IHttpMaxRequestBodySizeFeature at all, which is why RequestBodySizeFeatureTests has to
-    // install a fake through an IStartupFilter. Here the limit is real Kestrel's.
+    // Runs under real Kestrel, which TestServer cannot stand in for: it supplies no
+    // IHttpMaxRequestBodySizeFeature at all (RequestBodySizeFeatureTests fakes one).
     //
-    // EntitySetDefaults.DefaultMaxRequestBodyBytes is 30,000,000 -- Kestrel's own default, so a
-    // default host sees no behaviour change and only the layer that reports it moves.
-    const LIMIT = 30000000;
+    // MovieProfile's 64 KB MaxRequestBodyBytes is BELOW the framework default, so it is applied
+    // unconditionally -- #474's Math.Min clamp engages only for the default itself.
+    //
+    // #598: a 30 MB body here matched the default AND Kestrel's own limit, so the 413 was written
+    // while k6 was still uploading -- an early response over an undrained body, which reset the
+    // connection about half the time.
+    const LIMIT = 65536;
     const oversized = `{"title":"${'a'.repeat(LIMIT)}","year":2025}`;
     const res = post(`${BASE_URL}/v1/Movies`, oversized, { params: jsonParams() });
     expectError(res, 413, 'RequestEntityTooLarge', 'a body over the limit');

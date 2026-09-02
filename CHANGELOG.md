@@ -182,6 +182,27 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   across all twelve sites carrying it and shipped the behaviour labelled as a known deviation;
   this closes the deviation itself.
 
+### Tests
+
+- **The k6 413 case no longer uploads 30 MB, and stops flaking (#598).** `bodySizeLimit` built a body
+  from `'a'.repeat(30000000)` — exactly `EntitySetDefaults.DefaultMaxRequestBodyBytes` **and**
+  Kestrel's own default — so the server wrote its 413 while k6 was still uploading megabytes the
+  server would never read. An early response over an undrained request body resets the connection,
+  and the group failed about half the time: six checks red, including the `413` itself, with the
+  measurement `814c4ce` green → `ff637a3` red → `854da55` green across a one-line `.Where` refactor
+  that cannot affect it. Two PRs (#596, #597) hit it on unrelated work.
+
+  `MovieProfile` now declares `MaxRequestBodyBytes = 64 * 1024` and the case sends ~64 KB. The body
+  stays far below Kestrel's limit, so only OhData rejects it and the undrained remainder is small
+  enough to drain. Six consecutive local runs clean — three cold-start (CI's shape) and three warm —
+  at 998/998 checks, plus 230/230 on `smoke.js`.
+
+  An earlier draft of this entry, and issue #598 itself, claimed the change also added coverage for
+  the profile-override direction. **That is false and is withdrawn**: `RequestBodySizeLimitTests`
+  already drives a profile-level limit (`BodyLimitProfile.MaxRequestBodyBytes = 200`) to a 413 on
+  POST/PUT/PATCH and over a global default, and `RequestBodySizeFeatureTests` covers the feature arm
+  in both directions. The justification is cost and determinism alone.
+
 ### Build
 
 - **`PackageValidationBaselineVersion` moves to `1.7.0`, and the instruction moves to the other end
