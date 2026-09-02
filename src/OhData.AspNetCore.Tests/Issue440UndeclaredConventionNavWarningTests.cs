@@ -17,35 +17,21 @@ using Xunit.Abstractions;
 namespace OhData.AspNetCore.Tests;
 
 // #440: a convention-discovered navigation the profile never declared produced WRONG DATA UNDER 200
-// on $expand, and registered structural-PROPERTY routes (reads, and writes when Patch is configured)
-// over a navigation. Both share #322's root cause — the profile's navigation set and the EDM's
-// disagree — which #322's fix reconciled for the QUERY PLAN only.
+// on $expand, and registered structural-property routes over a navigation. Both share #322's root
+// cause -- the profile's navigation set and the EDM's disagree -- which #322 reconciled for the query
+// plan only.
 //
-// BOTH SYMPTOMS ARE FIXED HERE.
-//   Symptom 2 — route registration now subtracts the EDM's own navigation names from the set it
-//   iterates, exactly as #322 already did for the projection's member set, so no property route is
-//   registered over a navigation.
-//   Symptom 1 — ExpandLevelAsync's ServeRaw branch separates its two populations. A navigation some
-//   candidate DECLARED keeps its raw value (that value is loaded data). One no candidate declares or
-//   routes is REMOVED, because nothing ever chose to load it: OData JSON Format v4.01 §8.3 makes an
-//   inline navigation value the representation of an EXPANDED navigation, so `"Customer": null`
-//   asserts the relationship is empty — which the server never determined. §8.1's non-expanded
-//   representation (the navigation link, omitted under metadata=minimal) is the honest one.
-// NavigationPropertyNames is untouched by both (see the fix sites for why).
+// Both symptoms are fixed. Route registration subtracts the EDM's navigation names. ExpandLevelAsync's
+// ServeRaw branch separates its two populations: a DECLARED navigation keeps its raw value (that value
+// is loaded data), an undeclared one is REMOVED, because §8.3 makes an inline value the representation
+// of an EXPANDED navigation, so `"Customer": null` asserts an emptiness the server never determined.
 //
-// The warning stays, because the disagreement outlives the symptoms and only the developer can close
-// it — $metadata still advertises a navigation this entity set will never serve. But it states ONLY
-// what is still true, and each retired consequence came out in the same commit as its fix. The
-// content test carries an explicit guard against every one of them.
+// The warning stays because the disagreement outlives the symptoms -- $metadata still advertises a
+// navigation this set will never serve -- but it states only what is still true, and the content test
+// guards against every retired consequence.
 //
-// This suite pins three things:
-//   1. the SYMPTOMS, now as fixes — with bounding assertions on both, so neither can pass vacuously:
-//      a real structural property (and the navigation's own FK) still has its routes, and a $levels
-//      expand of an undeclared self-referential navigation — the one shape that IS pushed and loaded
-//      — still serves its data,
-//   2. the warning's exact CONTENT, and
-//   3. its TARGETING: a profile with no undeclared navigation, and a profile on which the remaining
-//      consequence is not reachable, stay silent.
+// Pins three things: the symptoms as fixes, with bounding assertions so neither passes vacuously; the
+// warning's exact content; and its targeting.
 
 #region fixtures
 

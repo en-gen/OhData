@@ -206,28 +206,17 @@ internal static class OpenTypeJsonOptions
             if (!TryFindContainer(byDeclaringType, typeInfo.Type, out PropertyInfo? container)) return;
             foreach (JsonPropertyInfo property in typeInfo.Properties)
             {
-                // Identity match on the CLR member the EDM designated, via
-                // HasSameMetadataDefinitionAs (module + metadata token) rather than `==`:
-                // PropertyInfo equality also compares ReflectedType, and the two PropertyInfo
-                // instances here come from independent reflection walks that disagree on it. The
-                // model builder discovers a complex type's DERIVED types too, and the annotation it
-                // stores can carry the derived type as ReflectedType while declaring the member on
-                // the base — measured, not assumed: with `ExternalReferenceMetadataV2 :
-                // ExternalReferenceMetadata` present in the assembly, the annotation's
-                // ReflectedType is V2 while System.Text.Json's AttributeProvider for the base
-                // contract reports the base. Same DeclaringType, same token, `==` false.
+                // HasSameMetadataDefinitionAs, never ==: PropertyInfo equality compares
+                // ReflectedType, and these two instances come from independent reflection walks that
+                // disagree about it -- measured, the annotation can report a DERIVED type while STJ's
+                // AttributeProvider reports the base, same DeclaringType and token.
                 //
-                // HasSameMetadataDefinitionAs is NOT a whole-member identity check: it also
-                // returns true across different instantiations of the same generic type — measured,
-                // `typeof(GBag<int>).GetProperty("Bag").HasSameMetadataDefinitionAs(
-                // typeof(GBag<string>).GetProperty("Bag"))` is true. The invariant that makes it
-                // safe here is the lookup, not the comparison: `container` is whatever
-                // TryFindContainer resolved by walking typeInfo.Type's own CLR BASE chain against a
-                // map keyed by DeclaringType, so the candidate and the container are always members
-                // of the same closed type or of one of its base types — never of a generic sibling.
-                // A refactor that flattened this map, keyed it by anything other than the declaring
-                // type, or resolved the container by any route other than that base walk would
-                // silently start converting a DECLARED property into an extension-data bag.
+                // It is NOT whole-member identity -- it also matches across generic instantiations.
+                // What makes it safe is the LOOKUP, not the comparison: `container` came from
+                // TryFindContainer walking typeInfo.Type's own base chain against a map keyed by
+                // DeclaringType, so both are members of the same closed type or its bases. Flattening
+                // that map, or keying it by anything else, would silently start converting a DECLARED
+                // property into an extension-data bag.
                 if (property.AttributeProvider is not PropertyInfo candidate ||
                     !candidate.HasSameMetadataDefinitionAs(container))
                 {
@@ -430,31 +419,18 @@ internal static class OpenTypeJsonOptions
     /// request path). The copy shares the same resolver, so it exercises the same modifier chain.
     /// </para>
     /// </remarks>
-    // THE FOUR CATCH CLAUSES BELOW ARE THE MEASURED SURFACE OF GetTypeInfo, not a guess and not a
-    // catch-all. Each was reproduced against System.Text.Json on .NET 10 with the same modifier
-    // chain Build() installs, and each has a test:
-    //   - InvalidOperationException — every contract STJ itself rejects. Duplicate JSON property
-    //     names (including two names that collide only under PropertyNameCaseInsensitive), a
-    //     [JsonConverter] incompatible with the member it decorates, more than one
-    //     [JsonConstructor], and an extension-data member whose type STJ will not accept.
-    //   - NotSupportedException — the resolver has no metadata for the type. Reachable whenever the
-    //     consumer supplies their own TypeInfoResolver (a source-generated JsonSerializerContext,
-    //     typically) that does not know the open complex type.
-    //   - TargetInvocationException — a [JsonConverter]'s own constructor threw; STJ instantiates it
-    //     reflectively, so whatever it threw arrives wrapped.
-    //   - ArgumentException — GetTypeInfo's own guard on a Type it cannot serialize at all (pointer,
-    //     by-ref, open generic, void). Not reachable from the EDM, whose open complex types are
-    //     closed classes; caught so a future caller that reaches it still gets the explanatory
-    //     message rather than a bare argument error.
+    // The four catch clauses are the MEASURED surface of GetTypeInfo against STJ on .NET 10 with the
+    // modifier chain Build() installs, each with a test: InvalidOperationException for every contract
+    // STJ rejects (duplicate JSON names, an incompatible [JsonConverter], multiple [JsonConstructor],
+    // an unacceptable extension-data member); NotSupportedException when the resolver has no metadata
+    // for the type, reachable via a consumer's source-generated context; TargetInvocationException
+    // when a [JsonConverter]'s constructor threw; ArgumentException for a Type that cannot be
+    // serialized at all, kept defensively.
     //
-    // What is deliberately NOT caught is an arbitrary exception out of consumer-supplied resolver or
-    // modifier code, which is a fault in that code rather than a contract System.Text.Json rejected;
-    // it still fails MapOhData() loudly, with its own type and stack intact and this frame on it.
-    //
-    // The old clause here was `catch (Exception)`, justified by a NotSupportedException read-only
-    // case it was said to cover. Measured, it did not: a container PRE-INITIALISED with a read-only
-    // dictionary resolves a perfectly valid JsonTypeInfo (see the remark above), so GetTypeInfo never
-    // threw for it and nothing about that case was ever caught here.
+    // Deliberately NOT catch(Exception): a throw out of consumer-supplied resolver or modifier code
+    // is a fault in that code and should fail MapOhData() with its own type and stack. The old clause
+    // WAS catch(Exception), justified by a read-only case that measurement showed it never caught --
+    // a pre-initialised read-only dictionary resolves a valid JsonTypeInfo.
     internal static void ValidateOrThrow(
         JsonSerializerOptions options,
         OpenComplexTypeContainers containers)
@@ -572,44 +548,21 @@ internal static class OpenTypeJsonOptions
             $"container is '{containerName}', but System.Text.Json rejected that contract: {detail}", inner);
     }
 
-    // System.Text.Json's own requirements for an extension-data member (JsonPropertyInfo.
-    // IsExtensionData): the member must be assignable to IDictionary<string, object> or
-    // IDictionary<string, JsonElement>, and must be both readable and writable (it is populated
-    // on read and enumerated on write).
+    // STJ's own requirements for an extension-data member: assignable to IDictionary<string, object>
+    // or IDictionary<string, JsonElement>, and both readable and writable.
     //
-    // Both halves fail loudly rather than skipping the type, because every silent outcome is worse
-    // (see the remarks on BuildOpenComplexTypeContainerMap) and the throw names the member and the
-    // fix. Their reachability differs:
-    //   - The writability half is the idiomatic `public IDictionary<string, object?> Bag { get; }
-    //     = new();`, which ODataConventionModelBuilder happily infers as a container. Measured: the
-    //     CSDL says OpenType="true" with no Bag property, and the wire nests Bag anyway.
-    //   - The type half is UNREACHABLE today, and is a defensive guard rather than a user-facing
-    //     error. ODataConventionModelBuilder only ever infers a container from an
-    //     IDictionary<string, object>-assignable member (measured: an IDictionary<string, string> or
-    //     IDictionary<string, JsonElement> member is mapped as an ordinary Collection(KeyValuePair)
-    //     property and its type is not marked open at all).
+    // Both halves throw rather than skipping the type -- every silent outcome is worse, and the throw
+    // names the member and the fix. Reachability differs. The WRITABILITY half is the idiomatic
+    // `public IDictionary<string, object?> Bag { get; } = new();`, which the convention builder infers
+    // as a container: measured, the CSDL says OpenType="true" with no Bag property and the wire nests
+    // Bag anyway.
     //
-    //     This comment used to add "and no consumer can write the annotation by hand --
-    //     EdmAnnotationExtensions exposes only a GETTER for it, and DynamicPropertyDictionaryAnnotation
-    //     itself is internal". BOTH halves of that were false (#389 L3, measured by reflection):
-    //     DynamicPropertyDictionaryAnnotation is an EXPORTED PUBLIC type with a public
-    //     ctor(PropertyInfo), and StructuralTypeConfiguration.AddDynamicPropertyDictionary(PropertyInfo),
-    //     StructuralTypeConfiguration.ModelBuilder and ODataModelBuilder.AddComplexType(Type) are all
-    //     public. The raw builder is reachable from what AdvancedConfigure is handed, too: the chain
-    //     EntitySetConfiguration<T>.EntityType -> EntityTypeConfiguration<T>.BaseType (the NON-generic
-    //     EntityTypeConfiguration, which IS a StructuralTypeConfiguration) -> .ModelBuilder COMPILES
-    //     and returns the very instance OhData is building with -- measured, ReferenceEquals true,
-    //     whenever the entity type has an EDM base type.
-    //
-    //     The branch is unreachable for a simpler and verifiable reason: the ONLY public API that
-    //     records the annotation validates this exact condition itself. AddDynamicPropertyDictionary
-    //     throws ArgumentException("The argument must be of type 'IDictionary<string, object>'") for
-    //     any other member type -- measured on the reachable route above. So a wrong-typed container
-    //     cannot enter the model through the builder at all, by hand or by convention, and there is
-    //     no test for this branch: it exists so a future widening of the builder's inference (or of
-    //     that argument check) fails loudly at startup instead of throwing out of the modifier
-    //     mid-request. (IDictionary<string, JsonElement> is accepted for the same reason -- it is
-    //     half of what System.Text.Json actually allows, even though the builder never produces it.)
+    // The TYPE half is unreachable and is a defensive guard: AddDynamicPropertyDictionary -- the only
+    // public API that records the annotation -- validates the same condition itself. (Do not restore
+    // the older claim that the annotation cannot be written by hand; #389 L3 measured that false, the
+    // type and the builder chain are both public and reachable from what AdvancedConfigure is handed.)
+    // It exists so a future widening of the builder's inference fails at startup rather than out of
+    // the modifier mid-request.
     private static void ThrowIfUnusableAsExtensionData(PropertyInfo container, IEdmComplexType complexType)
     {
         Type type = container.PropertyType;
