@@ -159,6 +159,15 @@ public interface ICategoryAuthorizationBuilder
     /// </summary>
     ICategoryAuthorizationBuilder RequireResource(string policyName);
 
-    /// <summary>Explicitly allow anonymous access. Exclusive — cannot be combined with any <c>Require*</c>.</summary>
+    /// <summary>
+    /// Explicitly allow anonymous access. Exclusive - cannot be combined with any <c>Require*</c>.
+    /// </summary>
+    /// <remarks>
+    /// Means two different things by design (#487/#572). On an entity-set <b>category</b> this emits
+    /// <c>AllowAnonymousAttribute</c>, which overrides a host-applied
+    /// <c>app.MapOhData().RequireAuthorization()</c> - that is how a public hole is punched in a gated
+    /// surface. On an <b>unbound operation</b> it does not, so a host requirement still covers it. If you
+    /// only mean "no requirement of its own", name the requirement you intended instead.
+    /// </remarks>
     void AllowAnonymous();
 }
