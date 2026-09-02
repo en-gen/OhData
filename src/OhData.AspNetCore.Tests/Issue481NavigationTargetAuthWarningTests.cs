@@ -9,28 +9,22 @@ using Xunit;
 
 namespace OhData.AspNetCore.Tests;
 
-// #481 / #368: authorization in OhData is PER PROFILE and does not compose across a navigation.
-// A navigation declared on an unprotected parent serves the target entity set's rows — and, with
-// $ref/nav-POST handlers, WRITES them — under the DECLARING profile's rule, never the target
-// profile's. Measured across 19 route shapes on the issue; every navigation-family route and every
-// $expand call site behaves this way, and Microsoft.AspNetCore.OData does the same (it contains no
-// authorization code at all).
+// #481 / #368: authorization is PER PROFILE and does not compose across a navigation. A navigation
+// declared on an unprotected parent serves the target set's rows -- and, with $ref/nav-POST handlers,
+// WRITES them -- under the DECLARING profile's rule. Measured across 19 route shapes; MS OData does
+// the same, containing no authorization code at all.
 //
-// The OWNER'S RULING is a startup Warning plus documentation. NO request-path behaviour change:
-// nothing here asserts a status code, and nothing in the fix consults a target profile's
-// authorization at request time.
+// The owner's ruling is a startup Warning plus documentation. NO request-path behaviour change:
+// nothing here asserts a status code.
 //
-// This suite pins the warning's TARGETING as hard as its content, because a warning that fires on
-// the ordinary scoped-navigation pattern would be ignored, which defeats the whole point:
-//   POSITIVE — a stricter target through each of the three declaration families, through the
-//              route-less declaration (probe B-1, which leaks via $expand with no route at all),
-//              through the batchGetAll overload (probe case 7 — it never sets ChildEntitySetName),
-//              and through the ambiguous two-sets-over-one-type EDM shape (case B, where
-//              FindNavigationTarget returns a placeholder and the binding is DELETED).
-//   NEGATIVE — equal authorization, a LESS strict target, no authorization anywhere, an undeclared
-//              convention-discovered navigation (probe B-2 measured it as genuinely not exposed),
-//              a target with no profile at all, and a target whose extra requirement lives on a
-//              CATEGORY this navigation does not expose.
+// This suite pins the warning's TARGETING as hard as its content, because one that fires on the
+// ordinary scoped-navigation pattern would be ignored:
+//   POSITIVE -- a stricter target through each of the three declaration families, the route-less
+//     declaration (leaks via $expand with no route at all), the batchGetAll overload (which never
+//     sets ChildEntitySetName), and the ambiguous two-sets-over-one-type shape.
+//   NEGATIVE -- equal authorization, a LESS strict target, none anywhere, an undeclared
+//     convention-discovered navigation, a target with no profile, and a target whose extra
+//     requirement lives on a CATEGORY this navigation does not expose.
 
 #region fixtures
 

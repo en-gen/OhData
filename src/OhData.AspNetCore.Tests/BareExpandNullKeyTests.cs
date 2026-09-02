@@ -12,26 +12,22 @@ using Xunit;
 
 namespace OhData.AspNetCore.Tests;
 
-// #313 review finding 4: WriteNestedNextLink used to TRIM the expanded array before checking whether
-// it could actually build a link, and returned early on failure — leaving a silently truncated
-// collection carrying neither `Nav@odata.nextLink` nor a 400. That is the single outcome #313's M1
-// rule ("no bound without either a link or a 400") forbids outright.
+// #313 review finding 4: WriteNestedNextLink TRIMMED the expanded array before checking whether it
+// could build a link, and returned early on failure -- leaving a truncated collection carrying
+// neither Nav@odata.nextLink nor a 400, the single outcome M1 forbids.
 //
-// Two bail-outs existed. The index guard is genuinely UNREACHABLE through the sole call site, which
-// builds ParentItems index-parallel with the JsonObject list it iterates; it is an assertion, and no
-// test here pretends to cover it. The NULL-KEY guard is reachable, and this file reaches it: TKey is
-// unconstrained, so the OData key may be a nullable string, and ODataEntityKeyUrlFormatter.Format
-// throws on null — so a row whose key value is null has no addressable continuation.
+// Two bail-outs. The index guard is genuinely unreachable through the sole call site and is an
+// assertion; nothing here pretends to cover it. The NULL-KEY guard is reachable and this file reaches
+// it: TKey is unconstrained, so the OData key may be a nullable string, and
+// ODataEntityKeyUrlFormatter.Format throws on null -- a row whose key is null has no addressable
+// continuation.
 //
-// The fix makes trim-and-link one step: both guards run first, the array is left untouched when
-// either fires, and the method reports failure so the caller applies the ceiling's 400 instead. So
-// the expected answer below is 400 — the same answer any other non-pageable over-ceiling shape gets —
-// and NOT a 200 carrying a quietly clipped array.
+// The fix makes trim-and-link one step: both guards run first, the array is untouched when either
+// fires, and the caller applies the ceiling's 400. Hence 400 below, not a 200 with a clipped array.
 //
-// FIXTURE NOTE. The OData key here is `Code`, a nullable string, while EF's primary key is `Id`. That
-// split is what makes a null key value representable at all: a SQL primary key cannot be null, so a
-// model whose OData key IS the EF PK can never reach this path. The navigation is otherwise the same
-// delegate-less, pushable shape every other #313 test uses.
+// FIXTURE NOTE: the OData key is `Code`, a nullable string, while EF's PK is `Id`. That split is what
+// makes a null key representable -- a SQL PK cannot be null, so a model whose OData key IS the EF PK
+// can never reach this path.
 
 public sealed class NkAuthor
 {

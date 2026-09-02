@@ -14,34 +14,20 @@ using Xunit;
 
 namespace OhData.AspNetCore.Tests;
 
-// ── #489: Ignore() loses its EDM half under AdvancedConfigure ────────────────────────────────
+// #489: Ignore() loses its EDM half under AdvancedConfigure. The EDM removal rides the _configurators
+// pipeline; VisitModelBuilder returns before that pipeline when the override is present, while the
+// runtime suppression still applies. That much is the stated contract of the eject hatch.
 //
-// Ignore() withholds a property on TWO levels: the EDM removal rides the _configurators pipeline,
-// and runtime suppression (routes, wire, PATCH binding) is applied separately. Overriding
-// AdvancedConfigure returns from VisitModelBuilder BEFORE the configurator pipeline runs, so the EDM
-// half is auto-ejected while the runtime half still applies. That is the stated contract of the
-// eject hatch and it is correct — the developer has taken full EDM ownership.
+// The CONSEQUENCE is not derivable from either half: the property is back in $metadata and
+// query-addressable while the wire omits it, so $filter over it is a VALUE ORACLE -- never served,
+// still probable one predicate at a time. Without the hatch the EDM removal makes it indistinguishable
+// from a property that never existed, so the 400 cannot confirm existence.
 //
-// The consequence is not one a reader derives from either half. With both in play the property is
-// back in $metadata and query-addressable while the wire still omits it, so $filter over it is a
-// VALUE ORACLE: the value is never served, but it can be probed one predicate at a time. In the
-// ordinary case the EDM removal makes the property indistinguishable from one that never existed —
-// $filter naming it dies at ODL parse with the same "could not find a property named…" a genuinely
-// nonexistent property produces, so the 400 cannot confirm existence.
+// Deliberately NOT fixed: re-imposing Ignore() would defeat the hatch, and singling out its
+// configurator would be arbitrary when HasMany/HasOptional/HasRequired ride the same pipeline and stay
+// ejected. Mitigated the way WarnWireShapeIsFlat handles the same shape -- one startup warning.
 //
-// This is deliberately NOT fixed: re-imposing OhData's Ignore() on top of AdvancedConfigure would
-// defeat the hatch, and it would be arbitrary — HasMany/HasOptional/HasRequired ride the SAME
-// pipeline and stay ejected, so there is no principle that singles out Ignore()'s configurator. The
-// mitigation is the one WarnWireShapeIsFlat established for exactly this shape: a legitimate
-// configuration whose consequence is not predictable from either half gets one startup Warning
-// naming it, plus explicit documentation.
-//
-// This suite pins THREE things:
-//   1. the oracle itself, as characterization on both sides, so a future change cannot quietly move
-//      the behaviour the docs now describe;
-//   2. the warning's content;
-//   3. its targeting — silent when Ignore() is used without the hatch, and silent when the hatch is
-//      taken and the developer re-applies the EDM removal by hand.
+// Pins the oracle as characterization on both sides, the warning's content, and its targeting.
 public class Issue489IgnoreUnderAdvancedConfigureTests
 {
     private static IEnumerable<string> IgnoreEjectWarnings(WarningCapture capture) =>

@@ -8,35 +8,22 @@ using Xunit;
 
 namespace OhData.AspNetCore.Tests;
 
-// #318 — $levels SERVES a self-referential descent that the EXPLICIT nested spelling of the same
-// descent comes back EMPTY for, when the node type is exposed by several entity sets that disagree
-// about the self-navigation.
+// #318 — $levels SERVES a self-referential descent that the EXPLICIT nested spelling comes back
+// EMPTY for, when the node type is exposed by several sets that disagree about the self-navigation.
 //
-// THIS IS A CHARACTERIZATION PIN, NOT A FIX. Both halves of the asymmetry are owner-settled on the
-// FROZEN Model B spec (issue #293) and neither is a defect:
+// A CHARACTERIZATION PIN, NOT A FIX. Both halves are owner-settled on the frozen Model B spec (#293):
+// micro-decision (A) ships the fail-closed blank for the explicit form, (B) defers parity on the extra
+// parent level, and the $levels suite is listed under tests that stay green -- so making $levels blank
+// to match is explicitly not the resolution.
 //
-//   - micro-decision (A): "explicit nested self-expand through a multi-set-exposed self-nav — ship
-//     the fail-closed BLANK now (literal candidate-disagreement rule), document the $levels-vs-
-//     explicit-nested difference; provenance-threading to serve raw = separate follow-up" (= #318).
-//   - micro-decision (B): "delegate-less pushable parent empties whole branch vs delegate-backed
-//     parent blanks only child: both leak-safe; DEFER PARITY (out of scope)" — that is the extra,
-//     PARENT level this shape loses on top of the blanked grandchild.
-//   - the same spec lists the entire $levels suite (LvNodes / LvShallowNodes / LvSecureNodes
-//     resolving from the URL-named set alone) under "tests that STAY GREEN (confirm, don't gut)",
-//     so making $levels blank to match is explicitly NOT the resolution.
+// What was NOT true is the recorded symptom. Both the issue and the in-source comment said the
+// GRANDCHILD blanks; measured, the PARENT level is lost as well, because a non-ServeRaw child defers
+// the whole branch off pushdown. That understates the data loss by a level, which is how a real
+// inconsistency gets under-prioritised.
 //
-// What was NOT true, and is why this file exists, is the recorded description of the symptom. Both
-// the issue body and the in-source comment said the GRANDCHILD blanks. Measured, the PARENT level is
-// lost as well: a non-ServeRaw child makes TryBuildEngagedExpand defer the whole branch off
-// pushdown, so the parent navigation is never loaded either and ExpandLevelAsync's ServeRaw branch
-// is a no-op over it. That understates the data loss by a whole level, which is exactly the kind of
-// error that gets a real inconsistency under-prioritised. Pinning it here means the next person to
-// take #318 seriously starts from the measurement rather than the description, and any future
-// provenance-threading work has to change these assertions deliberately.
-//
-// Fixture: LvNode is exposed by LvNodes (Children delegate-LESS), LvShallowNodes (delegate-LESS) and
-// LvSecureNodes (Children delegate-BACKED). At the root the URL-named set alone is authoritative, so
-// Children is ServeRaw; one level down the candidate set is all three sets, which disagree -> Blank.
+// Fixture: LvNode is exposed by three sets, two delegate-less and one delegate-backed. At the root the
+// URL-named set is authoritative so Children is ServeRaw; one level down all three are candidates,
+// they disagree, and it blanks.
 
 public sealed class Issue318LevelsVsExplicitNestedSelfExpandTests : IAsyncLifetime
 {

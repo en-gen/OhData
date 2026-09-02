@@ -832,26 +832,17 @@ public class OpenTypeJsonOptionsTests
     public void IsValidDynamicPropertyName_RejectsAnUnpairedSurrogate() =>
         Assert.False(OpenTypeJsonOptions.IsValidDynamicPropertyName("a\uD800b"));
 
-    // ── The ASCII fast path is an accelerator, never a second opinion ────────────────────────────
+    // The ASCII fast path is an accelerator, never a second opinion. It re-derives the length cap and
+    // the leading rule from the ASCII subset instead of reading the Unicode tables, and a wrong
+    // SearchValues membership (adding '-', missing '_') would silently change the accept/reject set
+    // rather than fail to compile -- so the two are held against a SHARED CORPUS and required to agree
+    // key by key. The corpus unions everything the theories above cover: Devanagari, Thai, NFC and NFD,
+    // Nl, astral-plane, ZWNJ, leading marks, unpaired surrogates, both sides of the 128 cap, emoji.
     //
-    // IsValidDynamicPropertyName decides an all-[A-Za-z0-9_] name with one vectorized
-    // ContainsAnyExcept pass plus a length and a leading-digit test, and only falls back to
-    // IsValidDynamicPropertyNameByRuneWalk — the normative rune-enumeration implementation, unchanged
-    // — when a character outside that set is present. That is a real risk of divergence: the fast
-    // path re-derives the length cap and the leading rule from the ASCII subset instead of reading
-    // them from the Unicode tables, and a wrong SearchValues membership (adding '-', or missing '_')
-    // would silently change the accept/reject set rather than fail to compile.
-    //
-    // So the two are held against a SHARED CORPUS and required to agree exactly, key by key. The
-    // corpus is the union of everything the theories above cover — Devanagari, Thai, both NFC and NFD
-    // spellings, Nl, astral-plane, ZWNJ, leading-mark rejection, unpaired surrogates, the 128-cap
-    // boundary from both sides, '@' '.' '-' space tab newline NUL, emoji.
-    //
-    // The exhaustive sweeps — every ASCII code point, and the lone surrogates — live in
-    // AgreeOnEveryAsciiCodePointAndLoneSurrogate below rather than in this corpus. As theory rows
-    // they would add ~512 near-identical cases to the suite, and two of them (a lone high surrogate
-    // and a lone low one) collide on xUnit's test ID, which SKIPS one of the pair silently rather
-    // than failing — the worst possible outcome for a test whose whole job is to be exhaustive.
+    // The exhaustive sweeps live in AgreeOnEveryAsciiCodePointAndLoneSurrogate rather than here: as
+    // theory rows they would add ~512 near-identical cases, and two of them collide on xUnit's test
+    // ID, which SKIPS one silently rather than failing -- the worst outcome for a test whose job is to
+    // be exhaustive.
 
     public static TheoryData<string> EquivalenceCorpus()
     {
@@ -1397,26 +1388,17 @@ public class OpenTypeJsonOptionsTests
         Assert.Contains("\"Region\":\"fine\"", json, StringComparison.Ordinal);
     }
 
-    // ── #398 review HIGH-1: the containment follows the BINDER's comparer, not Ordinal ────────────
+    // #398 review HIGH-1: the containment follows the BINDER's comparer, not Ordinal. The withheld
+    // sets were built and tested ORDINAL while the binder matches case-INSENSITIVELY, so a
+    // case-differing spelling missed `declared` (the member is gone from the contract), missed the
+    // withheld set, and was bagged on the way in and echoed on the way out under a name that reads as
+    // the withheld field.
     //
-    // The bug, in one line: the withheld sets were built and tested ORDINAL while the binder matches
-    // body keys case-INSENSITIVELY, so a case-differing spelling missed `declared` (the member is no
-    // longer in the contract), missed the withheld set, and was classified as an ordinary dynamic key
-    // — bagged on the way in, echoed on the way out, under a name that reads as the withheld field.
-    //
-    // REVERT-SENSITIVITY, per site, all four measured:
-    //   - IgnoredPropertyJsonOptions.cs BuildIgnoredJsonNameMap comparer -> Ordinal:
-    //       BuildIgnoredJsonNameMap_BuildsWithTheBindersComparer fails (that is the producer).
-    //   - OpenTypeJsonOptions FindInvalidDynamicKey withheld test (the walk): every case-differing
-    //       row of ScanWriteBody_AWithheldNameIsDroppedInEveryCasingTheBinderWouldMatch fails on
-    //       Assert.True(CarriesUnbindableKeys).
-    //   - RewriteWithoutUnbindableKeys withheld test (the rewriter): the same rows fail on
-    //       Assert.False(bag has the key) instead — the scan flags the body and the strip leaves it.
-    //   - ThrowOnKeysThatCannotBeEmitted / ThrowIfAnyKeyCannotBeEmitted (the read side): re-merging
-    //       withheldNames into the ORDINAL declaredNames makes
-    //       Serialize_ThrowsWhenABagKeyIsAWithheldNameInAnyCasing fail on every casing but the exact
-    //       one. The write-side and read-side tests fail independently, which is the point — fixing
-    //       only the walk would have left server-side data serializing a withheld name out.
+    // Four sites, each independently revert-sensitive -- which is the point, since fixing only the
+    // walk would still have let server-side data serialize a withheld name OUT: the producer
+    // (BuildIgnoredJsonNameMap's comparer), the scan (FindInvalidDynamicKey), the rewriter
+    // (RewriteWithoutUnbindableKeys), and the read side (re-merging withheldNames into the ORDINAL
+    // declaredNames).
 
     [Theory]
     [InlineData("Region")]

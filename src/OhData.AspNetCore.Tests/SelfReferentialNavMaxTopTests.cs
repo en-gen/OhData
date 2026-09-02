@@ -8,34 +8,20 @@ using Xunit;
 
 namespace OhData.AspNetCore.Tests;
 
-// #296: a nested $top inside $expand against a SELF-REFERENTIAL navigation (the navigation's target
-// type is ALSO its own root entity set) used to be rejected outright by Microsoft's
-// SelectExpandQueryValidator (model-bound MaxTop defaulted to 0 for such a type), before OhData's own
-// logic -- including its MaxExpandTop ceiling -- ever got a chance to run. Fixed in
-// OhDataBuilder.MarkNavigationTargetTypesFullyQueryable, which now clears the model-bound MaxTop on a
-// root+nav-target type too (previously only pure nav-target-only types got this treatment).
+// #296: a nested $top against a SELF-REFERENTIAL navigation was rejected by MS's
+// SelectExpandQueryValidator (model-bound MaxTop defaults to 0 for such a type) before any of OhData's
+// own logic ran. Fixed in MarkNavigationTargetTypesFullyQueryable, which now clears model-bound MaxTop
+// on root+nav-target types too.
 //
-// SrnNodeProfile's Children navigation is DELEGATE-BACKED (HasMany(..., getAll:)). #294 (owner
-// decision, filed against the silent-wrong-data this exact combination produced during #296's review:
-// $top=2 silently returning all 3 children under an unsuspicious 200) means a delegate-backed
-// navigation now REJECTS any nested $top/$skip with 400 InvalidQueryOption instead of silently
-// ignoring it -- the delegate owns its own query shape and nothing downstream re-windows its answer.
-// So on THIS delegate-backed shape, lifting #296's model-bound pre-rejection does NOT make an in-range
-// nested $top succeed; it only lets OhData's OWN checks run instead of Microsoft's model-bound one --
-// and #294's reject is one of those checks. See SharedNavTargetTypePushdownTests.cs for the
-// delegate-LESS (pushdown) shared-type case, where #296 alone is sufficient and the nested $top IS
-// honored/windowed with a real 200.
+// SrnNodeProfile's Children is DELEGATE-BACKED, and #294 makes a delegate-backed navigation REJECT a
+// nested $top/$skip with 400 rather than silently ignoring it -- the delegate owns its query shape.
+// So on THIS shape lifting #296's pre-rejection does not make an in-range $top succeed; it lets
+// OhData's own checks run instead of MS's, and #294's reject is one of them. See
+// SharedNavTargetTypePushdownTests for the delegate-LESS case, where #296 alone is sufficient.
 //
-// This file proves:
-//   1. an in-range nested $top against a delegate-backed self-referential nav 400s via #294's reject
-//      (InvalidQueryOption, thrown as Microsoft.OData.ODataException and caught by the route's
-//      existing handler) -- not #296's old model-bound 400, and not the silent-wrong-data 200
-//      that made #296 unshippable on its own;
-//   2. a nested $top ABOVE MaxExpandTop still 400s via the pre-existing ceiling check
-//      (ValidateNestedTopCeiling), which runs BEFORE #294's reject and takes precedence, so the
-//      over-ceiling case keeps its own "exceeds the maximum allowed value" message rather than
-//      #294's "not supported on the delegate-backed navigation" one (both now share the same
-//      InvalidQueryOption code, so the message content is what distinguishes them in the test).
+// Pins that an in-range nested $top 400s via #294 (not #296's old model-bound 400, and not the
+// silent-wrong-data 200 that made #296 unshippable alone), and that an over-ceiling one still 400s via
+// ValidateNestedTopCeiling, which runs first -- so the two keep distinct messages under one code.
 public sealed class SrnNode
 {
     public int Id { get; set; }

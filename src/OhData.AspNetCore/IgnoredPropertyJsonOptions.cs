@@ -121,31 +121,19 @@ internal static class IgnoredPropertyJsonOptions
             {
                 typeInfo = resolver.GetTypeInfo(entry.Key, probe);
             }
-            // #398 review LOW-1. This is an EAGER contract resolution at MapOhData() that did not
-            // exist before stage 1, and it is exposed to the shapes System.Text.Json rejects outright.
-            // OpenTypeJsonOptions.ValidateOrThrow wraps the same four types for its own probe, and a
-            // bare STJ exception escaping from HERE would report the identical fault with no
-            // indication that Ignore() is what forced the resolution.
+            // Ignore() forces an EAGER contract resolution at MapOhData(), so it is exposed to the
+            // shapes STJ rejects outright and a bare exception here would not say that Ignore() is
+            // what forced it.
             //
-            // MEASURED against DefaultJsonTypeInfoResolver on .NET 10 — note this is the RESOLVER's
-            // GetTypeInfo, not JsonSerializerOptions.GetTypeInfo, and the two do NOT agree:
-            //   - InvalidOperationException  — two members whose JSON names collide
-            //       ("The JSON property name for '...' collides with another property"), and a Type
-            //       that cannot be serialized at all (pointer/ref struct/open generic). The options-
-            //       level entry point reports that second case as ArgumentException instead.
-            //   - TargetInvocationException  — a [JsonConverter] whose own constructor threw; STJ
-            //       instantiates it reflectively, so whatever it threw arrives wrapped.
-            //   - NotSupportedException      — a resolver with no metadata for the type. The
-            //       source-generated resolvers return null here rather than throwing (handled just
-            //       below), but a hand-written IJsonTypeInfoResolver is free to throw it, and the
-            //       options-level entry point does.
-            //   - ArgumentException          — kept for the same defensive reason ValidateOrThrow
-            //       keeps it: not reachable through DefaultJsonTypeInfoResolver, but it is what the
-            //       options-level guard raises for the same condition, so a future caller that
-            //       reaches it still gets the explanatory message.
-            // Deliberately NOT catch(Exception): an arbitrary throw out of consumer-supplied resolver
-            // or modifier code is a fault in that code and still fails startup with its own type and
-            // stack intact.
+            // Measured against DefaultJsonTypeInfoResolver on .NET 10 -- note this is the RESOLVER's
+            // GetTypeInfo, which does NOT agree with JsonSerializerOptions.GetTypeInfo:
+            // InvalidOperationException for colliding JSON names and for an unserializable Type (the
+            // options-level entry point says ArgumentException there); TargetInvocationException for
+            // a [JsonConverter] whose constructor threw; NotSupportedException for a resolver with no
+            // metadata. ArgumentException is kept defensively, matching ValidateOrThrow.
+            //
+            // Deliberately NOT catch(Exception): a throw out of consumer-supplied resolver code is a
+            // fault in that code and should fail startup with its own type and stack.
             catch (InvalidOperationException ex) { throw ContractResolutionFailed(entry.Key, entry.Value, ex); }
             catch (NotSupportedException ex) { throw ContractResolutionFailed(entry.Key, entry.Value, ex); }
             catch (TargetInvocationException ex) { throw ContractResolutionFailed(entry.Key, entry.Value, ex); }

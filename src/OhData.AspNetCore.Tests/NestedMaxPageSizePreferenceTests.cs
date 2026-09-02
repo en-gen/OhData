@@ -11,47 +11,24 @@ using Xunit;
 
 namespace OhData.AspNetCore.Tests;
 
-// #412: `Prefer: [odata.]maxpagesize=N` on NESTED ($expand) collections.
+// #412: `Prefer: [odata.]maxpagesize=N` on NESTED ($expand) collections. Measured pre-fix: with
+// MaxExpandTop=4 and maxpagesize=2, a bare $expand returned FOUR books, and the continuation route
+// ignored the header outright.
 //
-// PRE-FIX BEHAVIOUR, MEASURED (ee85a10): the preference governed the ROOT collection only. With
-// MaxExpandTop = 4, ExpandPagingEnabled = true and `Prefer: odata.maxpagesize=2`,
-// `GET /BeAuthors?$filter=Id eq 1&$expand=Books` returned FOUR books and a link at `?$skip=4`, and
-// the continuation route `/BeAuthors(1)/Books` ignored the header outright.
+// §8.2.8.5 decides the design in three sentences: the preference applies to "each collection within
+// the response"; an over-size collection SHOULD be trimmed WITH a next link (exactly #313's shape);
+// and the client MAY send a different value with every request following a next link. That last one
+// refutes #412's stated blocker -- the page size travels on the REQUEST, so the $skip-only
+// continuation surface does not have to widen, and correctness does not depend on the client
+// resending anything.
 //
-// SPEC (Protocol §8.2.8.5, "Preference maxpagesize (odata.maxpagesize)"), three sentences that
-// decide the whole design:
+// CLAMPED DOWN, NEVER UP, and only where a link goes out: lifting MaxExpandTop would let a header
+// raise the ceiling, and clamping it would turn a 200 into a 400 and trim a non-pageable collection
+// with no link -- the silent truncation M1 forbids.
 //
-//   * "The maxpagesize preference is used to request that EACH COLLECTION WITHIN THE RESPONSE contain
-//     no more than the number of items specified" — nested collections are in scope, not out of it.
-//   * "If a collection within the result contains more than the specified maxpagesize, the collection
-//     SHOULD be a partial set of the results WITH A NEXT LINK to the next page of results" — trim
-//     plus `Nav@odata.nextLink` is the prescribed shape, which is exactly what #313 already emits.
-//   * "The client MAY specify A DIFFERENT VALUE for this preference WITH EVERY REQUEST FOLLOWING A
-//     NEXT LINK" — this is what refutes #412's stated blocker. #412 argued the nested page size could
-//     not be request-dependent because "the link carries no page size, and the continuation route
-//     resolves its own from MaxExpandTop", so hop 2 could not reproduce hop 1. The spec expects the
-//     page size to travel on the REQUEST rather than inside the link, so the $skip-only continuation
-//     surface does not have to widen at all: the continuation reads the same header. Page sizes need
-//     not be uniform across hops, and correctness does not depend on the client resending anything —
-//     $skip is an absolute offset computed from the rows each hop actually served (Walk_* below pin
-//     both the resending and the not-resending client).
-//
-// CLAMPED DOWN, NEVER UP, and only where a link goes out. MaxExpandTop stays the ceiling; a client
-// header must not lift it (mirrors how the ROOT clamps maxpagesize to MaxTop) and must not lower it
-// either, because clamping the ceiling would let a request header turn a 200 into a 400 and would
-// trim a non-pageable collection with no link — the silent truncation M1 forbids.
-//
-// PREFERENCE-APPLIED IS DELIBERATELY UNTOUCHED. §8.2.8.5 makes the echo a MAY ("the service MAY
-// include a Preference-Applied response header containing the maxpagesize preference and the maximum
-// page size applied") and gives it ONE value for the whole response, so there is no per-collection
-// echo to emit. The root route's existing header already reports a page size actually applied. This
-// change therefore adds no echo site and does not touch the 4.0-vs-4.01 token spelling, which is
-// #372's own defect (the echo says `maxpagesize`; OData 4.0 spells it `odata.maxpagesize`) and is
-// milestone 1.9.0. PreferenceApplied_* below pins that non-change so #372 cannot be closed by
-// accident here.
-//
-// FIXTURE PROVENANCE: BeAuthor / BeBook / BareExpandDbContext / BeAuthorProfile / the harness are
-// #313's, unchanged. Author 1 holds five books (Ids 1..5). Nothing is added.
+// Preference-Applied is deliberately untouched: §8.2.8.5 makes the echo a MAY with ONE value for the
+// whole response, so there is no per-collection echo. The 4.0-vs-4.01 token spelling is #372's
+// defect, and PreferenceApplied_* pins that non-change so #372 cannot be closed here by accident.
 public sealed class NestedMaxPageSizePreferenceTests
 {
     private static Task<TestFixture> BuildAsync(

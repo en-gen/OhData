@@ -57,28 +57,16 @@ public class DbContextLifetimeTests
         {
             builder.ConfigureServices(services =>
             {
-                // Point AppDbContext at a private, per-test-instance InMemory database, so tests
-                // never see each other's writes (or the app's default "TestBench" seed data
-                // mutated by a previous test run in the same process). Only
-                // DbContextOptions<AppDbContext> is removed and re-registered here -- EF Core's
-                // AddDbContext TryAdds the AppDbContext service descriptor itself, so if
-                // Program.cs already registered one (it always has, by this point in host
-                // construction), THIS call is a no-op for it and Program.cs's own registration
-                // -- and its lifetime -- passes through untouched. That is what makes
-                // AppDbContext_IsRegisteredScoped below a genuine assertion about Program.cs,
-                // not this fixture.
+                // Private per-test InMemory database so tests never see each other's writes. Only
+                // DbContextOptions<AppDbContext> is replaced -- AddDbContext TryAdds the context
+                // descriptor itself, so Program.cs's own registration and lifetime pass through
+                // untouched, which is what makes AppDbContext_IsRegisteredScoped a genuine assertion
+                // about Program.cs rather than about this fixture.
                 //
-                // #356 review R3: the options re-registration must mirror THAT lifetime, not
-                // default to Scoped. Read it BEFORE removing anything, so a Program.cs regressed
-                // back to Singleton gets a Singleton-registered DbContextOptions<AppDbContext>
-                // too. Doing this the naive way (removing the options and re-adding via the
-                // parameterless-lifetime AddDbContext overload, which defaults to Scoped) mismatches
-                // a Singleton AppDbContext against Scoped options -- ASP.NET Core's own DI scope
-                // validation then fails host construction with "cannot consume scoped service
-                // ... from singleton ..." BEFORE a single request runs, which is a real DI wiring
-                // complaint but tells a maintainer nothing about #356's actual bug (a poisoned
-                // change tracker bricking later, unrelated writes). Mirroring the lifetime lets
-                // FailedWrite_DoesNotBrickSubsequentWrites reach that real bug on a regression.
+                // #356 R3: the options must mirror THAT lifetime, read BEFORE removing anything.
+                // Re-adding via the parameterless-lifetime overload defaults to Scoped, which
+                // mismatches a Singleton context and fails host construction on DI scope validation --
+                // a real complaint that tells a maintainer nothing about #356's actual bug.
                 ServiceLifetime appLifetime = services
                     .LastOrDefault(d => d.ServiceType == typeof(AppDbContext))?.Lifetime
                     ?? ServiceLifetime.Scoped;

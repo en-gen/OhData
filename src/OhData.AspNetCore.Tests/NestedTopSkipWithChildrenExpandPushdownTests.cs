@@ -8,31 +8,16 @@ using Xunit;
 
 namespace OhData.AspNetCore.Tests;
 
-// #304 regression coverage: a nested $top/$skip on a pushed $expand level that ALSO carries a nested
-// $expand (`Books($top=1;$expand=Chapters)`), WITHOUT $count, used to compose a SQL Skip/Take at the
-// SAME level that BuildShapedNavAccess then wrapped in a further element-wise Select projecting the
-// deeper navigation — the same "window this collection AND project a further collection out of it" SQL
-// APPLY/LATERAL shape #298 fixed for the $count case and #300 fixed for $levels. Before #304 this shape
-// failed loud with a 400 (proven by the now-retired ExpandPushdownFailLoudTests.cs, folded into this
-// file). The fix: ApplyNavShape composes NO SQL Skip/Take at a level with children (gated on
-// isProjectionLeaf, mirroring #298's countBound gate); the window is instead applied in the JSON pass
-// (ShapePushedExpandsInJson → ApplyNestedWindow), bounded by the same MaxExpandTop ceiling
-// WriteNestedCountAndWindow already enforces for the $count case. Reuses the Author/Book/Chapter/Page
-// fixtures and harness from MultiLevelExpandPushdownSqliteTests.cs (MlAuthorProfile registers "Authors"
-// with a delegate-less, pushable Books → Chapters → Pages chain) — that file itself must stay
-// byte-unchanged.
+// #304: a nested $top/$skip on a pushed level that ALSO carries a nested $expand composed a SQL
+// Skip/Take at the same level BuildShapedNavAccess then wrapped in a further element-wise Select --
+// the APPLY/LATERAL shape #298 fixed for $count and #300 for $levels. It failed loud with a 400.
 //
-// Two review fold-ins also covered here:
-//  - #304 adversarial follow-up: a degenerate $skip=0 must be a no-op WINDOW (mirroring ApplyNavShape's
-//    own `sk > 0` guard) — it must never *window* anything away. #313 revisits the OTHER half of this:
-//    a "bare children" level (no $count, no $skip/$top that actually engages the window) is still fully
-//    materialized and now gets a pure ceiling check, so Skip0_WithNestedExpand_StillCeilingChecked_
-//    Returns400 below now 400s at a ceiling the true Book count exceeds, while
-//    Skip0_WithNestedExpand_AtCeilingTwo_StillDoesNotWindow_Returns200 confirms $skip=0 still windows
-//    nothing away once the ceiling is raised high enough not to trip.
-//  - #316: the SAME ceiling must also be enforced on the $levels JSON-windowing path
-//    (ShapeLevelsInJson) — see NestedTopSkipWithChildrenLevelsCeilingTests below, which reuses the
-//    $levels fixture from LevelsWithOptionsPushdownSqliteTests.cs rather than inventing a new DbContext.
+// Fix: no SQL Skip/Take at a level with children (gated on isProjectionLeaf, mirroring #298's
+// countBound gate); the window moves to the JSON pass, bounded by the same MaxExpandTop ceiling.
+//
+// Two fold-ins: a degenerate $skip=0 must be a no-op WINDOW and never trim (#313 revisits the other
+// half -- a bare children level is still fully materialized and now gets a pure ceiling check), and
+// #316 enforces the same ceiling on the $levels JSON-windowing path.
 public sealed class NestedTopSkipWithChildrenExpandPushdownTests : IAsyncLifetime
 {
     private SqliteConnection _connection = null!;

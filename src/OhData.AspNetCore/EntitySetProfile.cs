@@ -1915,25 +1915,18 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         _entityActions.Add(handler);
     }
 
-    // #492 §4: two bound operations of one kind at one binding level claim a single
-    // (template, method) pair -- GET/POST /{Set}/{Name} for a collection-bound operation,
-    // GET/POST /{Set}({key})/{Name} for an entity-bound one -- and nothing validated it. The route
-    // pair surfaced only as an AmbiguousMatchException at REQUEST time, thrown by routing before
-    // OhData's group filter, so with no OData error envelope.
+    // #492 §4: two bound operations of one kind at one binding level claim a single (template,
+    // method) pair, and nothing validated it -- it surfaced as an AmbiguousMatchException thrown by
+    // routing BEFORE the group filter, so with no OData error envelope. Dispatch is also
+    // `BoundFunctions.First(f => f.Name == …)`, so the duplicate is ambiguous there too and neither
+    // half is fixable by picking a winner.
     //
-    // It is a second-order defect too: request-time dispatch is
-    // `BoundFunctions.First(f => f.Name == … && f.IsEntityLevel)`, which would silently pick the
-    // first even if routing did not collide. So the duplicate is ambiguous in the dispatch layer as
-    // well as unrouteable, and neither half is fixable by choosing a winner.
+    // Checked at BIND time, not in MapEntitySet: ModelBuilder rejects a repeated ACTION name itself,
+    // earlier and from inside VisitModelBuilder, naming neither the profile nor the remedy -- so a
+    // downstream check would never run for actions.
     //
-    // Checked at BIND time rather than in MapEntitySet beside its sibling collision checks, because
-    // Microsoft.OData.ModelBuilder rejects a repeated ACTION name itself, earlier, from inside
-    // VisitModelBuilder -- "Found more than one action with name 'X'", naming neither the profile
-    // nor the entity set nor the remedy. A check downstream of that would never run for actions.
-    //
-    // Scoped per (kind, binding level): a function is GET and an action POST, and the two levels
-    // claim different templates -- which is why the four lists are checked separately rather than
-    // merged. Compared OrdinalIgnoreCase, since ASP.NET Core's literal segment matching is.
+    // Per (kind, binding level), since a function is GET and an action POST and the two levels claim
+    // different templates. OrdinalIgnoreCase, matching ASP.NET Core's segment matching.
     private void ValidateBoundOperationNameIsUnique(
         Delegate handler, IEnumerable<Delegate> alreadyBound, string bindMethodName, bool isAction, bool isEntityLevel)
     {
@@ -2075,36 +2068,20 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         RegisterEdmReturnType(method, operation, configType, returnType, entitySetName);
     }
 
-    // #539: which of Microsoft's four return-type declarations to call.
+    // #539: which of MS's four return-type declarations to call. Measured on ModelBuilder 2.0.0 --
+    // action.Returns<TModel>() and .ReturnsCollection<TModel>() throw AT THE CALL for a type already
+    // declared as an entity ("use ReturnsFromEntitySet"), while the FUNCTION twins accept it. So a
+    // BindAction returning TModel could not be registered at all, and MapOhData() died quoting a
+    // method OhData never calls.
     //
-    // MEASURED against Microsoft.OData.ModelBuilder 2.0.0 (ZZProbe, .NET 10.0.11):
-    //   action.Returns<TModel>()             -> InvalidOperationException, AT THE CALL: "The EDM
-    //                                           type '…' is already declared as an entity type. Use
-    //                                           the method 'ReturnsFromEntitySet' if the return type
-    //                                           is an entity."
-    //   action.ReturnsCollection<TModel>()   -> the same, naming 'ReturnsCollectionFromEntitySet'
-    //   function.Returns<TModel>()           -> OK
-    //   function.ReturnsCollection<TModel>() -> OK
+    // The FromEntitySet pair is used for BOTH kinds, not behind an is-this-an-action branch: the
+    // CSDL is byte-identical either way (pinned by
+    // BoundActionEntityReturnTests.BoundFunction_MetadataDeclarationIsUnchanged), it is what MS's own
+    // E2E fixtures do, and one unconditional rule cannot drift between kinds.
     //
-    // So a `BindAction` over TModel or IEnumerable<TModel> — `POST /Widgets/Archive` answering with
-    // the archived rows, an ordinary OData shape — could not be registered at all: MapOhData() died
-    // quoting a method OhData never called and does not expose, while the FUNCTION twin of the same
-    // signature worked. That asymmetry is the whole of #539.
-    //
-    // The fix is Microsoft's own remedy, and it is applied to FUNCTIONS TOO rather than behind an
-    // is-this-an-action branch. Two reasons, both measured. (1) The CSDL is byte-identical: a bound
-    // operation declared with ReturnsCollectionFromEntitySet emits the same `<ReturnType
-    // Type="Collection(…)"/>` — no EntitySetPath, no extra attribute — as one declared with
-    // ReturnsCollection, so nothing on the function side moves (pinned by
-    // BoundActionEntityReturnTests.BoundFunction_MetadataDeclarationIsUnchanged). (2) It is what
-    // Microsoft's own E2E fixtures do for an entity return, on both operation kinds. One
-    // unconditional rule is also less code than a conditional one, and cannot drift between kinds.
-    //
-    // The entity-set name is THIS PROFILE'S, taken from the EntitySetConfiguration the caller is
-    // already holding — never a name derived from the return type. That is load-bearing:
-    // ReturnsFromEntitySet does NOT validate that the name exists, it CREATES the set (measured: a
-    // bogus name added `EntitySet:Ghosts` to the container and $metadata, silently). Passing the set
-    // we know was registered with exactly this CLR type is the only safe call.
+    // The entity-set name is THIS profile's, never derived from the return type. ReturnsFromEntitySet
+    // does not validate that the name exists -- it CREATES the set, so a bogus name silently adds an
+    // entity set to the container and to $metadata.
     private static void RegisterEdmReturnType(
         MethodInfo method, OperationConfiguration operation, Type configType, Type returnType,
         string entitySetName)

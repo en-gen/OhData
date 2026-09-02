@@ -100,18 +100,11 @@ internal sealed class FilterTranslator : ExpressionVisitor
         }
         else
         {
-            // Detect enum comparisons where the C# compiler emits an integer constant
-            // for the enum literal (e.g. x.Status == MyEnum.Active → Status eq 1).
-            // Re-encode the integer side as an enum member name so OData servers that
-            // declare enum properties receive 'Active' rather than 1.
-            //
-            // The C# compiler may represent enum comparisons in several ways:
-            //   Equal(Status, Constant(1, int32))            ← plain int constant
-            //   Equal(Status, Constant(Active, ItemStatus))  ← enum constant (handled by FormatLiteral)
-            //   Equal(Status, Convert(Constant(1), ItemStatus)) ← Convert-wrapped int to enum
-            //
-            // We detect "one side is or resolves to an enum type, the other is a non-enum
-            // integer constant" and emit the member name.
+            // Re-encode an integer constant on one side of an enum comparison as the member name,
+            // so a server declaring an enum property receives 'Active' rather than 1. The compiler
+            // emits enum comparisons three ways -- a plain int constant, an enum constant (already
+            // handled by FormatLiteral), and a Convert-wrapped int -- so the test is "one side is or
+            // resolves to an enum, the other is a non-enum integer constant".
             Type? leftEnum = GetEnumType(node.Left);
             Type? rightEnum = GetEnumType(node.Right);
             object? rightEnumIntValue = TryGetNonEnumConstantValue(node.Right);

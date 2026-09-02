@@ -19,41 +19,25 @@ using Xunit.Abstractions;
 
 namespace OhData.AspNetCore.Tests;
 
-// #487 — three individually-documented authorization behaviours that COMPOSE into a quiet
-// fail-open. Each seam was confirmed by measurement against the pre-fix tree before anything was
-// changed; the measurements are reproduced as tests here, and the two that were fixed are pinned
-// alongside their fix.
+// #487 — three individually-documented authorization behaviours that COMPOSE into a quiet fail-open.
+// Each was measured against the pre-fix tree before anything changed, and those measurements are the
+// tests here.
 //
-//   SEAM 1 — CONFIRMED, and CLOSED by a new capability plus a warning.
-//     Unbound functions/actions are mapped on the outer group, and MapUnboundOperations took no
-//     authorization configuration at all. Measured: a registration whose ONLY profile declares
-//     RequireAuthorization() answered 401 on its collection GET while POST /odata/Mutate returned
-//     204 WITH THE HANDLER EXECUTED and GET /odata/Peek returned 200 with the body `42`.
-//     There was no way to state a requirement for one, so the seam is not merely undiagnosed — the
-//     capability did not exist. AddFunction/AddAction now take an `authorize` lambda (the same
-//     ICategoryAuthorizationBuilder ConfigureAuthorization uses), and an unbound operation left
-//     unstated in a registration that requires authorization elsewhere is named at startup.
+//   SEAM 1 — unbound operations took no authorization configuration at all. Measured: a registration
+//     whose only profile declares RequireAuthorization() answered 401 on its collection GET while
+//     POST /odata/Mutate returned 204 WITH THE HANDLER EXECUTED. There was no way to state a
+//     requirement, so the capability did not exist. CLOSED: AddFunction/AddAction take an `authorize`
+//     lambda, and an unstated operation is named at startup.
 //
-//   SEAM 2 — CONFIRMED, and made loud (no behaviour change).
-//     ConfigureAuthorization categories fail OPEN when omitted. Measured on the migration shape
-//     `.Read(r => r.RequireAuthenticatedUser()).Writes(w => w.RequireAuthenticatedUser())`, which
-//     reads as a refinement of RequireAuthorization() and is a WIDENING: the collection GET
-//     answered 401 while POST /odata/{Set}/Stamp and POST /odata/{Set}(1)/Touch both answered 204
-//     with the handler executed. The identical surface under the legacy RequireAuthorization()
-//     answered 401. A rule-less category is now named at startup, once per category.
+//   SEAM 2 — a ConfigureAuthorization category with no rule fails OPEN. Measured on
+//     `.Read(…).Writes(…)`, which reads as a refinement and is a WIDENING: the collection GET answered
+//     401 while both action routes answered 204 with the handler executed. Made loud, not changed.
 //
-//   SEAM 3 — CONFIRMED, and DELIBERATELY UNCHANGED AND UNWARNED.
-//     A category-level .AllowAnonymous() defeats a host-applied group requirement. This is
-//     ASP.NET Core's own AllowAnonymousAttribute semantics, not OhData's, and the framework
-//     control test below proves it with no OhData in the picture: a plain MapGroup carrying
-//     RequireAuthorization() serves an endpoint marked .AllowAnonymous() with 200 while its
-//     sibling answers 401. It is not warned about because .AllowAnonymous() is the ONLY way to
-//     express a deliberate public hole in an otherwise-gated surface, so a warning would fire on
-//     correct configuration with no way to silence it — the failure mode #440 and #481 both
-//     established as worse than no warning. docs/authorization.md owns it instead.
-//
-// The whole change is diagnostic plus one opt-in capability: no request answered differently
-// anywhere in the suite, and no test outside this file changed.
+//   SEAM 3 — a category-level .AllowAnonymous() defeats a host-applied group requirement.
+//     DELIBERATELY UNCHANGED AND UNWARNED: it is ASP.NET Core's own AllowAnonymousAttribute
+//     semantics, proven by the framework control test below with no OhData in the picture, and it is
+//     the only way to express a deliberate public hole. A warning would fire on correct configuration
+//     with no silencer. (#572 later made both warnings say WHICH AllowAnonymous they mean.)
 
 #region fixtures
 

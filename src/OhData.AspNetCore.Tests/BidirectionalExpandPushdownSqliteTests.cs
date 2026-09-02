@@ -946,47 +946,22 @@ public sealed class NonEfBidirectionalExpandTests
     }
 }
 
-// ── T23-T27: shape-coverage regression pins, PLUS P1/P2: the actual cycle-load-bearing proof ────────
+// T23-T27 are shape-coverage regression pins. P1/P2 below are the cycle proof.
 //
-// CORRECTED MECHANISM (adversarial review, #323 fold-in — supersedes a prior "EMPIRICAL FINDING" here
-// that claimed Change A was NOT load-bearing for cycle prevention on this path; that claim was FALSE
-// and has been removed). A reference cycle forms on the member-init projection path if and only if TWO
-// mutually-referencing instances are BOTH materialized bare (untransformed) at leaf positions in the
-// SAME serialized graph. The root being independently re-projected into a fresh POCO only forecloses a
-// cycle whose OTHER end is the root itself — every T23-T27 shape below happens to have exactly that
-// shape (the back-reference always points at the root or an ancestor already re-projected), which is
-// why none of them 500 with Change A reverted; it does NOT mean Change A is inert. Two proven
-// counter-examples, where the cycle's other end is NOT the root:
-//   - P1 (sibling cross-reference): CyInvoice expands Customer and Orders as two independent leaves;
-//     Customer.Orders <-> Order.Customer cycles WITHOUT ever referencing CyInvoice. Neither leaf's
-//     guard check (BuildExpandNavBinding, evaluated against the OWNER = CyInvoice) sees this cycle at
-//     all, because it only checks each leaf against its immediate owner, never against sibling leaves.
-//   - P2 (self-referential leaf element type): CyOrg expands Employees as one leaf; CyEmployee.Manager
-//     <-> CyEmployee.Reports is self-referential and never references CyOrg either.
-// Both shapes below are VERIFIED (see LeafCycleRegressionTests) to return `500` (JsonException, cyclic
-// reference detected) with ONLY Change A reverted, and `200` with correct data with Change A restored —
-// Change A is load-bearing for this disjoint class of cycle. Change B (the narrowed static guard,
-// TypeHasNavigationTo via BuildExpandNavBinding) is separately load-bearing for pushdown ELIGIBILITY
-// (back-reference to the immediate owner) — the two are not redundant, and both remain belt-and-
-// suspenders for cycle safety alongside #325/#326's SerializeBounded walker (below) as of this fix.
+// A cycle forms on the member-init projection path iff TWO mutually-referencing instances are both
+// materialized bare at leaf positions in the same graph. Re-projecting the root only forecloses a
+// cycle whose other end IS the root -- which every T23-T27 shape happens to have, which is why they
+// do not 500 with Change A reverted. That does NOT make Change A inert, and a prior note here
+// claiming so was false. Two counter-examples where the other end is not the root:
+//   P1 sibling cross-reference: Customer.Orders <-> Order.Customer, never touching CyInvoice.
+//   P2 self-referential leaf: CyEmployee.Manager <-> CyEmployee.Reports, never touching CyOrg.
+// Both are verified in LeafCycleRegressionTests to 500 with only Change A reverted and 200 with it.
+// Change B (the static guard) is separately load-bearing for pushdown ELIGIBILITY; they are not
+// redundant.
 //
-// The #305 Include-fallback path (Change C, not Change A) used to have its OWN, separate cycle
-// exposure: Include populates TRACKED entities with no re-projection safety net at all, so a leaf's
-// back-reference to the ROOT could get fixed up to the same tracked root instance being serialized —
-// verified empirically (pre-#325/#326) by TEMPORARILY disabling the Change C guard in the #305 Path A
-// block: BOTH IncludeFallbackCyclicLeafTests methods (tracking AND AsNoTracking) failed with a 500
-// (InternalServerError) instead of the then-expected 400 — confirming AsNoTracking was NOT a
-// mitigation. Change C's own guard (FindCyclicLeafExpand) only checked a leaf's element type against
-// the ROOT model too (same root-only blind spot as Change B) — a P1/P2-shaped cycle (neither end is
-// the root) was NOT caught by it either and could still 500 on the Include-fallback path; that gap was
-// #326. #325/#326 (Option B) REMOVED Change C's guard entirely rather than widen it: SerializeBounded
-// makes the tracked, cyclic Include-fallback graph safe to serialize regardless of which two instances
-// the cycle closes between, so all three shapes (root back-reference, P1, P2) now serve real data with
-// `200` instead of rejecting with `400`. See IncludeFallbackSqliteTests.cs's IncludeFallbackCyclicLeafTests.
-//
-// T23-T27 below stay as general shape-coverage regression pins (collapsed into a Theory) — useful for
-// catching an unrelated regression in these specific shapes, but they prove nothing about Change A's
-// necessity; that proof is LeafCycleRegressionTests (P1/P2) below.
+// #325/#326 REMOVED Change C's guard rather than widening it -- SerializeBounded makes the tracked,
+// cyclic Include-fallback graph safe whichever two instances close the cycle, so all three shapes
+// now serve real data with 200 instead of a 400.
 
 public sealed class CycleRegressionPinTests : IAsyncLifetime
 {

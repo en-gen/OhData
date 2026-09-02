@@ -13,31 +13,16 @@ using Xunit;
 
 namespace OhData.AspNetCore.Tests;
 
-// #464: MaxExpandTop's XML doc said it bounds "every collection $expand level" once set. It bounded
-// one — the EF-pushed one.
+// #464: MaxExpandTop's XML doc said it bounds "every collection $expand level". It bounded one -- the
+// EF-pushed one. The ceiling and the #313 link both live behind ShapePushedExpandsInJson, which runs
+// only when ResolveEfCoreAssembly found EF Core, so on a non-EF IQueryable, on GetAll and on
+// Priority-1 the configured DoS bound silently did not exist.
 //
-// MECHANISM. The collection-route ceiling and its #313 continuation link both live behind
-// ShapePushedExpandsInJson, and that pass runs only when `engagedExpandNavs` is non-empty, which
-// requires `ResolveEfCoreAssembly(filtered)` to have found EF Core. On a non-EF IQueryable, on
-// GetAll, and on Priority-1 it returns null, so the pass never ran and the configured DoS bound
-// silently did not exist. Measured on the pre-fix tree, cap = 2 with five books:
+// Measured pre-fix at cap=2 with five books: all three paths served all five, and an in-ceiling
+// nested $top was accepted and then not applied either (#413's confirmation cell).
 //
-//   GET /BeAuthorsMem?$expand=Books          -> 200, all five   (the ceiling was never applied)
-//   GET /BeAuthorsMem?$expand=Books($top=1)  -> 200, all five   (#413's confirmation cell: the
-//                                                                in-ceiling $top is accepted and
-//                                                                then not applied either)
-//   GET /BeAuthorsAll?$expand=Books          -> 200, all five
-//   GET /BeAuthorsP1?$expand=Books           -> 200, all five
-//
-// A knob whose whole purpose is to bound an unbounded fetch, absent on three of the five read paths,
-// with a doc claiming otherwise. Now bounded by EnforceRawExpandCeiling — a 400, for the same reason
-// #418 gave the single-entity read a 400: the framework composed neither side of the order here, so
-// a $skip continuation link over these rows would silently skip and duplicate across the boundary.
-//
-// FIXTURE PROVENANCE: BeAuthor / BeBook / BeChapter / BareExpandDbContext / BareExpandSqliteHarness
-// are #313 stage 2's, seeded exactly as they always were (author 1, five books). What is new is
-// three profiles over the same model exposing the three unbounded paths, added through the harness's
-// existing `configureExtraProfiles` hook.
+// Now a 400, for #418's reason: the framework composed neither side of the order here, so a $skip
+// continuation over these rows would silently skip and duplicate across the boundary.
 
 /// <summary>#464: a GetQueryable whose IQueryable is NOT EF-backed — the pushdown planner is skipped.</summary>
 public sealed class BeAuthorMemoryProfile : EntitySetProfile<int, BeAuthor>

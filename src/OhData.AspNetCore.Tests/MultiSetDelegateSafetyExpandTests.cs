@@ -492,29 +492,19 @@ public sealed class MultiSetDelegateSafetyExpandTests
         Assert.Contains("\"tag1\"", body);
     }
 
-    // Model B flip (was: SoleRouteResolvesAndConflictBlanks, Books-half honored FeaturedBooks'
-    // delegate): under Model B, Books' candidate set for the exact MsBook EDM type is
-    // {Books (delegate-less), FeaturedBooks (delegate-backed)} — DB(Reviews) = {FeaturedBooks} and
-    // DL(Reviews) = {Books} DISAGREE (one set says raw, the other delegates), so Reviews now BLANKS
-    // for the Books half too, exactly like Books2's already-conflicting two-routes case. Both navs
-    // live on the same Shelves entity set and Stage 3 resolves each independently, so one request
-    // per registration order still exercises both without losing coverage.
+    // Model B flip: Books' candidate set for the exact MsBook EDM type is {Books (delegate-less),
+    // FeaturedBooks (delegate-backed)}, so DB and DL DISAGREE and Reviews BLANKS for the Books half
+    // too. Both navigations live on the same entity set and Stage 3 resolves each independently, so
+    // one request per registration order still covers both.
     //
-    // Books is delegate-backed on MsShelfProfile (unlike Library.Books above), so it goes through
-    // Stage 3 (ExpandLevelAsync) directly rather than pushdown. Its nested Reviews expand resolves
-    // against the ambiguous MsBook candidate set {Books, FeaturedBooks} — DB/DL disagree — so it
-    // must BLANK rather than run FeaturedBooks' delegate OR let the Shelf handler's own incidental
-    // `Include(b => b.Reviews)` leak "raw-review" straight through via Stage 3.5
-    // (OmitUnexpandedNavigations, which only strips UN-expanded navigations and would otherwise
-    // keep it untouched).
+    // Books is delegate-backed here, so it goes through ExpandLevelAsync rather than pushdown. Its
+    // nested Reviews must BLANK rather than run FeaturedBooks' delegate OR let the Shelf handler's own
+    // incidental Include(b => b.Reviews) leak through Stage 3.5, which only strips UN-expanded
+    // navigations.
     //
-    // Books2 targets the DOUBLY-ambiguous MsBook2 type, where TWO DIFFERENT profiles (BookAlphas,
-    // BookBetas) both route-back Reviews with distinct delegates — DB has 2+ routes, a conflict
-    // with no way to legitimately choose between them (owner micro-decision C: keep BLANK even
-    // when it's "just" 2+ routes agreeing on nothing else). Neither may be picked arbitrarily; the
-    // Shelf handler's own incidental `Include(b => b.Reviews)` must not leak raw "book2-raw-review"
-    // data through, and neither delegate may run. Must hold in BOTH registration orders — the
-    // candidate-set/disagreement computation never reads registration order.
+    // Books2 targets the DOUBLY-ambiguous MsBook2, where two profiles route Reviews with distinct
+    // delegates -- 2+ routes agreeing on nothing, kept BLANK by owner micro-decision C. Must hold in
+    // BOTH registration orders; the disagreement computation never reads order.
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

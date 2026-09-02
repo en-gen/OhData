@@ -9,32 +9,18 @@ using Xunit;
 
 namespace OhData.AspNetCore.Tests;
 
-// #300 regression coverage: inside the $levels recursion, ApplyNavShape used to compose SQL Skip/Take
-// for a nested $skip/$top exactly like the non-$levels path — but every $levels level ALSO projects a
-// further (self-referential) collection out of the SAME windowed collection (BuildLevelsNavAccess's own
-// .Select(...) one level deeper), which is the same "window this collection AND project a further
-// collection out of it" shape #298 hit for $count — SQL APPLY/LATERAL, which SQLite (and not every
-// provider) can translate. The untranslatable query threw inside pushedQuery.ToArray(), which the old
-// catch swallowed and quietly re-fetched WITHOUT the folded $levels projection — so the whole
-// self-referential expand came back empty under a 200, never a 400.
+// #300: inside the $levels recursion ApplyNavShape composed SQL Skip/Take like the non-$levels path,
+// but every $levels level ALSO projects a further self-referential collection out of the SAME windowed
+// collection -- the APPLY/LATERAL shape SQLite cannot translate, and #298 hit for $count. The
+// untranslatable query threw inside ToArray(), the old catch swallowed it and re-fetched WITHOUT the
+// folded projection, so the whole expand came back empty under a 200.
 //
-// The fix: BuildLevelsNavAccess's call to ApplyNavShape now defers ALL SQL-side Skip/Take for the
-// $levels path (deferPagingToJson: true) — mirroring how the #254 count bound already deferred to the
-// JSON pass for this same reason. $skip/$top are applied instead in ShapeLevelsInJson (now unconditional
-// on $skip/$top presence, not just when $count also rides along) via the shared ApplyNestedWindow helper.
+// Fix: BuildLevelsNavAccess defers all SQL-side Skip/Take (deferPagingToJson) and ShapeLevelsInJson
+// applies the window instead, via the shared ApplyNestedWindow.
 //
-// NOTE on $top: per the PRE-EXISTING, out-of-scope #296 limitation (pinned in
-// LevelsWithOptionsPushdownSqliteTests.NestedTop_OnSelfReferentialNav_RejectedByModelBoundValidator_
-// WithAndWithoutLevels — that file must stay byte-unchanged), Microsoft's own SelectExpandQueryValidator
-// rejects ANY nested $top on a self-referential navigation before OhData's pushdown code ever runs — the
-// navigation's target type is necessarily its own entity set (that is what makes $levels legal on it at
-// all), whose model-bound MaxTop therefore always defaults to 0. This is unrelated to $orderby and is
-// NOT lifted by this fix (#296 is explicitly out of scope here), so $top under $levels stays a 400
-// regardless of what else the nested clause carries. $skip has no such model-bound ceiling and reaches
-// OhData's code, which is exactly what #300 is about — the tests below use $skip only.
-//
-// Reuses the LvNode/LvNodeProfile fixtures and harness from LevelsWithOptionsPushdownSqliteTests.cs
-// (that file itself must stay byte-unchanged).
+// $top is untouched here: per #296, MS's validator rejects ANY nested $top on a self-referential
+// navigation before OhData's code runs, because the target type is necessarily its own entity set and
+// its model-bound MaxTop defaults to 0. $skip has no such ceiling, which is why these tests use it.
 public sealed class LevelsSkipTopPushdownTests : IAsyncLifetime
 {
     private SqliteConnection _connection = null!;

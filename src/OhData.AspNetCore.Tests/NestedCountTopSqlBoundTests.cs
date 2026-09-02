@@ -11,38 +11,22 @@ using Xunit;
 
 namespace OhData.AspNetCore.Tests;
 
-// #334: a nested `$count=true` used to DISCARD the nested `$top` SQL bound. Under the
-// #254/#298/#304 "count defers paging to JSON" design the count was the materialized array's
-// length, so the whole filtered collection had to come back and the window was applied afterwards
-// in the JSON pass. `ApplyNavShape` therefore composed the MaxExpandTop count bound *instead of*
-// the client's `$top` — correct for the count, but it threw away a bound that was often orders of
-// magnitude tighter.
+// #334: a nested `$count=true` used to DISCARD the nested `$top` SQL bound. Under the "count defers
+// paging to JSON" design the count was the materialized array's length, so ApplyNavShape composed the
+// MaxExpandTop count bound INSTEAD of the client's $top -- correct for the count, but throwing away a
+// far tighter bound.
 //
-// The fix gives the projection somewhere to put a count (ExpandCountCarrier) and takes it as an
-// INDEPENDENT correlated scalar subquery rooted at the same navigation node, exactly as
-// Microsoft.AspNetCore.OData's SelectExpandBinder splits CreateTotalCountExpression from
-// ProjectAsWrapper. The two chains never read each other, so `$count=true` no longer perturbs the
-// `$top` translation.
+// The fix gives the projection an ExpandCountCarrier and takes the count as an INDEPENDENT correlated
+// scalar subquery, as MS's SelectExpandBinder splits CreateTotalCountExpression from ProjectAsWrapper.
+// The two chains never read each other.
 //
-// MEASURED PRE-FIX BEHAVIOUR ON THIS FIXTURE (the issue's own five shapes, captured SQL):
+// Measured pre-fix, the issue's own shapes: `$top=10` alone bounded at 10; `$top=10;$count=true`
+// bounded at 1001 with cap=1000 and NOT AT ALL with cap=null. Note that second column -- the issue
+// text describes only the 1001-row over-fetch, but #313 made MaxExpandTop default to null, so on the
+// SHIPPING DEFAULT the symptom was a completely unbounded fetch.
 //
-//   clause                                       cap=null   cap=1000    fixed
-//   $top=10                                      row <= 10  row <= 10   row <= 10
-//   $top=10;$orderby=id                          row <= 10  row <= 10   row <= 10
-//   $top=10;$select=Id,Name                      row <= 10  row <= 10   row <= 10
-//   $top=10;$count=true                          (none)     row <= 1001 row <= 10
-//   $top=10;$orderby=id;$count=true;$select=…    (none)     row <= 1001 row <= 10
-//
-// NOTE the `cap=null` column, which the issue text does NOT describe: #313 stage 1 changed the
-// MaxExpandTop default from 1000 to null, and `countBound` is null when `maxExpandTop` is null —
-// so on the SHIPPING DEFAULT the pre-fix symptom was not a 1001-row over-fetch but a completely
-// UNBOUNDED one. The issue's `WHERE "row" <= 1001` only ever described an explicitly-capped
-// registration.
-//
-// Fixture: 2 parents; P1 has 25 children, P2 has 3. A nested `$top=10` therefore has a bound that
-// is (a) smaller than the collection, (b) smaller than any ceiling used here, and (c) different
-// from the count — so the emitted SQL row bound, the returned page and `Nav@odata.count` are three
-// independently observable facts.
+// Fixture: P1 has 25 children, P2 has 3, so a nested $top=10 is smaller than the collection, smaller
+// than any ceiling used here, and different from the count -- three independently observable facts.
 
 public sealed class NcParent
 {

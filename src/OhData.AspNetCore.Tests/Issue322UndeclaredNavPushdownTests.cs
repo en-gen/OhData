@@ -522,29 +522,21 @@ public sealed class Issue322UndeclaredNavPushdownTests : IAsyncLifetime
     }
 }
 
-// #322, the ONE payload difference in the change — pinned here because it is invisible to every
-// other test in the suite and, without a pin, the next person to touch this path cannot tell
-// whether flipping it back is a fix or a regression.
+// #322's ONE payload difference, pinned because it is invisible to every other test here and the next
+// person cannot otherwise tell whether flipping it back is a fix or a regression.
 //
-// The shape: a NON-EF GetQueryable (a plain in-memory IQueryable) whose materialized graph already
-// HOLDS the related object, plus a $select that names the navigation and a $expand of it.
-// $expand pushdown is EF-gated (ResolveEfCoreAssembly), so nothing loads the navigation here — the
-// value on the wire was only ever whatever the profile's own in-memory graph happened to carry.
+// A NON-EF GetQueryable whose materialized graph already holds the related object, plus $select naming
+// the navigation and $expand of it. Pushdown is EF-gated, so nothing loads it and the wire value was
+// only ever what the in-memory graph happened to carry:
+//   ?$select=note,cust&$expand=Cust   before {"Cust":{"Id":5,…}}   after {"Cust":null}
 //
-//   ?$select=note,cust&$expand=Cust      before: {"Note":"N","Cust":{"Id":5,"Name":"IN-MEMORY"}}
-//                                        after:  {"Note":"N","Cust":null}
+// A UNIFICATION, not a regression, and the declared control below is what makes that visible: a
+// DECLARED delegate-less navigation on the same model and request already returned null on BOTH trees,
+// because it was never in StructuralProperties. The undeclared one survived only because
+// BuildStructuralProperties failed to recognise it as a navigation -- the defect #322 fixes.
 //
-// This is a UNIFICATION, not a regression, and the declared control in the test below is what makes
-// that visible rather than merely asserted: a DECLARED delegate-less navigation on the same model,
-// same source and same request already returned null on BOTH trees, because a declared navigation
-// was never in StructuralProperties and so was never bound into the member-init projection either.
-// The undeclared one was surviving the projection only because BuildStructuralProperties had failed
-// to recognise it as a navigation at all — the exact defect #322 fixes. After the fix the two
-// provenances are indistinguishable on this path, which is the whole point.
-//
-// Note what does NOT change, and why this is narrow: without the $select there is no projection to
-// drop the value (bare ?$expand=Cust still serves the in-memory object), and on an EF-backed source
-// the navigation is un-Included and therefore null before and after.
+// Narrow: without the $select there is no projection to drop the value, and on an EF source it is null
+// before and after.
 
 #region non-EF fixtures
 

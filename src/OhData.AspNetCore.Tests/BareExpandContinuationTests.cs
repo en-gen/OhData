@@ -831,40 +831,22 @@ public sealed class BareExpandContinuationDelegateSafetyTests
         Assert.Empty(BareExpandContinuation.AllNextLinkKeys(root));
     }
 
-    // ── #415: the ROOT level's candidate set is the URL-named set ALONE, and that is CORRECT ──────
+    // #415: the ROOT candidate set is the URL-named set ALONE, and that is correct, not drift from
+    // the #292 union used at depth >= 2. The frozen Model B spec (#293) says so in as many words --
+    // "Root (depth 1): KEEP as-is" -- and lists the whole $levels suite under tests that stay green.
     //
-    // #415 proposed that ApplyCollectionPipelineAsync's depth-1 `ExpandLevelAsync(..., new[] {
-    // requestSource }, ...)` was DRIFT from the #292 union used at depth >= 2, and should be changed
-    // to ResolveRequestSourcesForEdmType. It is not drift. The FROZEN Model B implementation spec
-    // (owner decision 2026-07-26, recorded on issue #293) settles it in as many words:
+    // The union at depth >= 2 is AMBIGUITY RESOLUTION, not delegate contagion: with 2+ sets exposing
+    // a target type the EDM has no binding to say which one the path resolves to, so it fails closed.
+    // At the root the URL names the set, so there is nothing to disambiguate.
     //
-    //     "Root (depth 1): KEEP as-is — already reads only the URL-named set (correct under Model B)."
+    // Measured blast radius of applying the union at the root anyway: 32 of 2,125 tests fail, mostly
+    // the $levels suite, whose harness always registers a delegate-backed sibling over the same EDM
+    // type -- every one stops exercising anything because the expand blanks. It also deletes the
+    // dual-exposure pattern outright: a public unfiltered set would be permanently blanked by the
+    // mere existence of a secured sibling.
     //
-    // and lists among the tests that must STAY GREEN:
-    //
-    //     "the entire $levels suite (LvNodes/LvShallowNodes/LvSecureNodes resolve from the URL-named
-    //      set only ...)"
-    //
-    // The union at depth >= 2 is AMBIGUITY RESOLUTION, not delegate contagion. It exists because when
-    // 2+ entity sets expose a navigation's target type the EDM has NO binding to say which set the
-    // path resolves to (measured cases (B)/(C) in ResolveRequestSourcesForEdmType's remarks), so the
-    // framework cannot tell whose declaration governs and fails closed. At the root there is nothing
-    // to disambiguate: the URL names the entity set. Model B's declaring-set authority then applies
-    // in full — "a delegate on a sibling/derived set never retroactively poisons a nav that ANOTHER
-    // set legitimately serves raw".
-    //
-    // MEASURED blast radius of making the root use the union anyway (the #415 proposal, implemented
-    // and reverted): 32 of 2125 tests in this project fail. The bulk is the $levels suite the frozen
-    // spec named — LevelsWithOptionsPushdownSqliteTests, BareLevelsCeilingTests,
-    // LevelsSkipTopPushdownTests, LevelsWithCountCeilingTests — whose harness ALWAYS registers
-    // LvSecureNodeProfile (delegate-backed Children) beside LvNodeProfile (delegate-less Children)
-    // over the same LvNode EDM type. Every one of those tests stops exercising anything, because
-    // /LvNodes?$expand=Children($levels=N) blanks. It also deletes the dual-exposure pattern outright
-    // (MultiSetDelegateSafetyExpandTests.RootExpand_DualExposure_DelegatelessServesRaw_DelegateBackedRuns):
-    // a public unfiltered set would be permanently blanked by the mere existence of a secured sibling.
-    //
-    // The three tests below pin that root semantics directly, on #415's own reproduction, so the
-    // proposal cannot be re-applied silently.
+    // The three tests below pin that on #415's own reproduction, so the proposal cannot be silently
+    // re-applied.
 
     /// <summary>
     /// #415, half 1. With the delegate-backed sibling registered, the delegate-LESS set still serves

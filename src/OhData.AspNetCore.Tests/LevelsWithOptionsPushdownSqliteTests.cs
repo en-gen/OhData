@@ -388,28 +388,16 @@ public sealed class LevelsWithOptionsPushdownSqliteTests : IAsyncLifetime
             LevelsOptionsSqliteHarness.Names(level1[1].GetProperty("Children")));
     }
 
-    // #296: a nested $top/$skip on a SELF-REFERENTIAL navigation used to be rejected by Microsoft's
-    // SelectExpandQueryValidator before OhData ever saw it ("The limit of '0' for Top query has been
-    // exceeded"): the model-bound MaxTop on the navigation's target type defaulted to 0 as soon as that
-    // type carried any model-bound settings, which it always does when it is its own entity set. Fixed
-    // by OhDataBuilder.MarkNavigationTargetTypesFullyQueryable clearing model-bound MaxTop on every type
-    // that is a navigation target -- root-and-nav-target ("shared"/self-referential) types included --
-    // not just pure nav-target-only types. OhData's own MaxExpandTop ceiling (ValidateNestedTopCeiling)
-    // still governs the nested $top at request time; see SelfReferentialNavMaxTopTests.cs for that half
-    // of the behavior. This test now asserts the nested $top is no longer rejected, with and without
-    // $levels, instead of pinning the old 400.
+    // #296: a nested $top/$skip on a SELF-REFERENTIAL navigation was rejected by MS's validator before
+    // OhData saw it -- the model-bound MaxTop on the target type defaults to 0 as soon as that type
+    // carries any model-bound settings, which it always does when it is its own entity set. Fixed by
+    // MarkNavigationTargetTypesFullyQueryable clearing it on root-and-nav-target types too. OhData's
+    // own ceiling still governs at request time; SelfReferentialNavMaxTopTests owns that half.
     //
-    // WithLevels ($levels=2;$top=1) flows through EF pushdown via BuildLevelsNavBinding (a bounded,
-    // cycle-free recursion), so the actual windowed data is asserted below.
-    //
-    // WithoutLevels ($top=1, no $levels) used to be a PRE-EXISTING, orthogonal limitation of the plain
-    // (non-$levels) expand path: a self-referential related type was treated as unconditionally cyclic,
-    // so BuildExpandNavBinding excluded it from pushdownExpandNavs regardless of $top, and only the
-    // status code (400 -> 200) could be asserted — the $top itself silently went unapplied.
-    // **RESOLVED by #323** (T19): a self-referential type is still member-init-projectable (a public
-    // parameterless constructor plus settable scalar structural properties — cyclicity is orthogonal to
-    // that), so the narrowed guard now admits it and the plain expand genuinely pushes down and windows
-    // in SQL too, exactly like any other leaf. The actual windowed data is now asserted for BOTH shapes.
+    // WithLevels flows through BuildLevelsNavBinding. WithoutLevels used to be a separate limitation --
+    // a self-referential type was treated as unconditionally cyclic and excluded from pushdown, so only
+    // the status code could be asserted -- RESOLVED by #323: cyclicity is orthogonal to member-init
+    // projectability, so the narrowed guard admits it and both shapes now window in SQL.
     [Fact]
     public async Task NestedTop_OnSelfReferentialNav_IsHonored_WithAndWithoutLevels()
     {

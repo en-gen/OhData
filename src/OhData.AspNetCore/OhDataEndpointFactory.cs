@@ -192,28 +192,23 @@ internal static class OhDataEndpointFactory
         return $"{req.Scheme}://{req.Host}{req.PathBase}{req.Path}?{query}";
     }
 
-    // #360: the Priority-1 continuation offset, carried as a CUSTOM (non-"$"-prefixed) query option.
+    // #360: the Priority-1 continuation offset, carried as a CUSTOM (non-'$') query option.
     //
-    // On the Priority-1 path the profile owns query application: it calls ODataQueryOptions.ApplyTo
-    // itself and the framework only layers its MaxTop cap on top. That makes a "$skip=N" continuation
-    // unhonourable by the framework — it emits the link but never applies the skip, so a profile that
-    // does NOT re-apply the incoming options serves the identical first page forever and a client
-    // walking @odata.nextLink never terminates.
+    // On that path the profile owns query application, so a `$skip=N` continuation is unhonourable by
+    // the framework -- it emits the link but never applies the skip, and a profile that does not
+    // re-apply the incoming options serves the identical first page forever, so a client walking
+    // nextLink never terminates.
     //
-    // Whether the profile applied $skip is not reliably observable (ODataQueryOptions.ApplyTo is
-    // virtual, but options.Skip.ApplyTo(q) bypasses any override, and expression-tree probing for a
-    // Queryable.Skip node false-negatives on the very common "materialize, then .AsQueryable()"
-    // profile shape). So instead of detecting, the framework carries its OWN offset and applies it
-    // itself: correct whether or not the profile honours the standard options, and no detection
-    // required. The incoming $skip is left verbatim on every hop, so a profile that DOES apply it
-    // re-establishes the same base page each time and the framework offset accumulates on top —
-    // no double-skip either way.
+    // Whether the profile applied $skip is not reliably observable (ApplyTo is virtual, but
+    // options.Skip.ApplyTo bypasses any override, and expression probing false-negatives on the very
+    // common "materialize then AsQueryable()" shape). So the framework carries its OWN offset and
+    // applies it itself. The incoming $skip is left verbatim on every hop, so a profile that DOES
+    // apply it re-establishes the same base page and the framework offset accumulates on top -- no
+    // double-skip either way.
     //
-    // It cannot be $skiptoken: ODataQueryOptions.ApplyTo THROWS on a $skiptoken it has no handler
-    // for ("Unable to parse the skiptoken value '...'. Skiptoken value should always be server
-    // generated."), which would break every profile that calls ApplyTo. A custom query option is
-    // ignored by ApplyTo (verified) and by OhData's own option gating, and @odata.nextLink is
-    // opaque to clients by spec (§11.2.5.7), so the name is a framework-private detail.
+    // It cannot be $skiptoken: ApplyTo THROWS on one it has no handler for, which would break every
+    // profile that calls it. A custom option is ignored by ApplyTo and by OhData's own gating, and a
+    // nextLink is opaque to clients by spec (§11.2.5.7).
     private const string FrameworkSkipOption = "ohdata-skiptoken";
 
     private static string BuildFrameworkSkipLink(HttpContext ctx, int skip)
@@ -373,87 +368,11 @@ internal static class OhDataEndpointFactory
             (byte)'.', (byte)'b', (byte)'i', (byte)'n', (byte)'d',
         };
 
-    // #456: the same question as the JsonElement overload above, asked of RAW UTF-8 -- for the two
-    // write routes that do NOT otherwise materialise the body. PUT and the navigation-POST create
-    // route stream ctx.Request.Body straight into JsonSerializer.DeserializeAsync unless the
-    // registration has an open complex type, so there is no JsonElement to walk and no
-    // PrepareWriteBody call to piggy-back on. (Every other write route -- PATCH, the
-    // structural-property writes, and each bound/unbound action parameter -- already deserializes
-    // into a JsonElement unconditionally, so those get the fix for free from PrepareWriteBody.)
-    //
-    // A Utf8JsonReader rather than a second JsonDocument.Parse, for two reasons. It allocates only
-    // for an escaped property name, and -- the load-bearing one -- a malformed body must NOT be
-    // reported from here. JsonSerializer.DeserializeAsync words a malformed body differently from
-    // JsonDocument (it appends "Path: $"), and OpenTypeDefaultOnIsByteIdenticalTests exists because
-    // that difference is observable; so the reader's own JsonException is swallowed, the scan simply
-    // stops where the reader does, and the request proceeds to the deserializer, which stays the
-    // sole author of that message. Anything the reader could not reach is by definition inside a
-    // fragment the deserializer is about to reject anyway -- WHICH IS TRUE ONLY BECAUSE THE TWO
-    // READERS ACCEPT THE SAME BODIES. #511: that premise was false for a UTF-8 BOM and for any
-    // host-relaxed JSON option, and each falsehood turned this scan into a silent "no annotation
-    // here" on a body the binder went on to bind. CreateBinderParityReader is what restores it; the
-    // swallow itself is unchanged and must stay.
-    //
-    // Semantics match the JsonElement walk exactly: any property name, at any depth, in an object or
-    // inside an array, whose name ENDS WITH "@odata.bind". The unescaped comparison is a raw span
-    // suffix test; a name carrying JSON escapes ('category@odata.bind' is the same member name)
-    // falls back to the unescaped string, because JsonElement's own prop.Name is unescaped and the
-    // two overloads must not disagree about what a body contains.
-    // #511: THE ONE PLACE EITHER SPAN SCANNER GETS A READER, and the reason it exists is that a
-    // scanner which reads the body differently from the binder is a FAIL-OPEN, not a mismatch.
-    //
-    // Both span scanners swallow their JsonException — deliberately and correctly, so that
-    // JsonSerializer.DeserializeAsync stays the sole author of the malformed-body message (#389 L1;
-    // see the notes on each scanner). The swallow's safety argument was "a body this reader cannot
-    // finish is a body the deserializer is about to reject", and that argument holds only while the
-    // two readers accept the SAME bodies. Where they diverge the scanner throws on a body the binder
-    // then binds perfectly well, the throw is swallowed, and the scan reports "nothing found":
-    // the deep-write strip does not fire and '@odata.bind' is discarded under a 200/201.
-    //
-    // Three divergences were measured on the pre-fix tree, one of them needing no configuration:
-    //
-    //   1. A LEADING UTF-8 BOM. Utf8JsonReader throws at its first byte; DeserializeAsync skips it
-    //      (as does JsonDocument.ParseAsync, which is why the collection POST was unaffected and PUT
-    //      answered 200 to bytes POST answered 501 to). Skipping it here CLOSES a divergence rather
-    //      than widening acceptance — every reader on the write path already accepted it except
-    //      these two. BOMs are routine in bodies sourced from Windows tooling and from files.
-    //
-    //   2. RELAXED HOST JSON OPTIONS. startupJsonOptions copies the host's Http.Json
-    //      SerializerOptions, so the binder honours ReadCommentHandling.Skip, AllowTrailingCommas and
-    //      a raised MaxDepth. A default reader throws at the first such token, and — because the
-    //      throw is swallowed — the scan STOPS THERE, so every navigation and every annotation named
-    //      after that point is invisible while the binder reads on.
-    //
-    // The three members below are exactly what JsonSerializerOptions.GetReaderOptions() derives
-    // internally for DeserializeAsync, which is what makes this parity rather than a second guess.
-    // MaxDepth needs no translation: 0 means "the 64 default" on both types.
-    //
-    // Deliberately NOT derived: .NET 10's AllowDuplicateProperties. This assembly multi-targets
-    // net8.0, where neither JsonSerializerOptions nor JsonReaderOptions has the member, and the
-    // divergence it would leave runs the SAFE way — a host that turns duplicate-rejection on makes
-    // the binder stricter than the scanner, so the scanner sees MORE and the request the binder
-    // would have rejected is rejected anyway.
-    // #511: the contract the WRITE path's binder resolves for a model type, which is where the
-    // deep-write gate's body-name table takes its keys from.
-    //
-    // A probe COPY of the registration's options, not the instance itself, mirroring
-    // OpenTypeJsonOptions.ValidateOrThrow: resolving a JsonTypeInfo calls MakeReadOnly() on the
-    // options, and startup must stay free to keep configuring the real instance (PrimeNavSuppression
-    // states as an invariant that it resolves no contract, and OpenTypeModifierOrderingTests exists
-    // because the modifier chain's ordering is load-bearing). A copy carries the TypeInfoResolver,
-    // every modifier on it and the PropertyNamingPolicy, so it answers the property-name question
-    // identically; it costs one options object and one contract resolution per entity set at startup.
-    //
-    // Null on failure rather than throwing, and the caller then falls back to the EDM/CLR aliases —
-    // i.e. degrades to exactly the pre-#511 table rather than to no table. A model whose contract
-    // cannot be built cannot be deserialized either, so the write routes are already dead in that
-    // case and a startup exception thrown from HERE would blame the wrong thing.
-    //
-    // ONE probe per options instance, not one per entity set: MapEntitySet runs per entity set and a
-    // fresh copy each time would resolve every model's contract into its own throwaway cache. Keyed
-    // weakly on the source instance so the probe dies with the registration, matching
-    // s_navSuppressedOptionsCache's shape. GetValue may run the factory more than once under a race
-    // and still returns one shared instance, which is all this needs.
+    // #511: the contract the write path's binder resolves, which is where the body-name tables take
+    // their keys from. A probe COPY, not the real instance: resolving a JsonTypeInfo calls
+    // MakeReadOnly(), and startup must stay free to keep configuring the registration's options.
+    // Null on failure falls back to the EDM/CLR aliases -- a model whose contract cannot be built
+    // cannot be deserialized either. One probe per options instance, held weakly.
     private static readonly ConditionalWeakTable<JsonSerializerOptions, JsonSerializerOptions>
         s_writeContractProbeCache = new();
 
@@ -477,45 +396,25 @@ internal static class OhDataEndpointFactory
     // bound instance carries it on.
     private sealed record EdmRequiredProperty(string EdmName, PropertyInfo Clr);
 
-    // #355: "which properties does the framework's OWN $metadata say cannot be null?" — asked of the
-    // EDM, once per type at startup.
+    // #355: "which properties does the framework's OWN $metadata say cannot be null?", asked of the
+    // EDM once per type at startup. #544 scopes what is done with the answer: a property is checked
+    // only where the request BODY NAMED it, and this set is just the vocabulary of that question.
     //
-    // #544 SCOPES WHAT IS DONE WITH THE ANSWER: a property is checked only where the request BODY
-    // NAMED it. Every consumer below — POST, PUT, the navigation-POST create route, PATCH and the
-    // structural-property writes — now asks the same question, and the set built here is only the
-    // vocabulary those questions are asked in.
+    // THE EDM AND NOTHING ELSE. Deriving "required" from the CLR type, [Required] or NRT annotations
+    // is the second-independently-derived-model hazard (#454/#458/#511), and it was not hypothetical:
+    // the structural-property write route had its own check built on IsNullableClrType, for which
+    // EVERY reference type is nullable, so a Nullable="false" string sailed through. Before #355 a
+    // null for such a property reached the handler and surfaced as EF's 500.
     //
-    // WHY THE EDM AND NOTHING ELSE. The framework publishes the nullability of every structural
-    // property in the CSDL it generates, and before #355 nothing enforced it: a null for a property
-    // declared Nullable="false" reached the handler, and the persistence layer's rejection surfaced
-    // as a generic 500 (measured on the shipped TestBench: POST /Movies {"Title":null} ->
-    // 500 InternalServerError, from EF's "Required properties '{'Title'}' are missing"). A violation
-    // the framework could see at its own boundary, reported as a server fault.
+    // FOUR DELIBERATE EXCLUSIONS, each of which would otherwise reject a legal request: the KEY
+    // (every EDM key is non-nullable and a server-generated one is routinely omitted; taken from
+    // edmType.Key() so entity and navigation-child types answer alike); a non-nullable VALUE type (a
+    // JSON null is already a JsonException, and checking costs a boxing read to answer a question
+    // with one possible answer); a member no readable CLR property backs; and anything the EDM does
+    // not declare, which is what makes Ignore()d properties exempt for free.
     //
-    // The alternative — deriving "required" from the CLR type, from [Required], or from nullable
-    // reference-type annotations — is the second-independently-derived-model hazard this codebase
-    // records over and over (#454, #458, #511). It is not hypothetical here: the structural-property
-    // write route already had a nullability check built on IsNullableClrType, for which EVERY
-    // reference type is nullable, so a Nullable="false" string sailed straight through it. That
-    // route now asks the same question of the same authority (see propIsNullable), so there is one
-    // answer rather than two.
-    //
-    // FOUR DELIBERATE EXCLUSIONS, each of which would otherwise reject a legal request:
-    //   - the KEY. Every EDM key is Nullable="false", and §11.4.2 explicitly permits omitting a
-    //     property with a service-generated value, which a key routinely has. Taken from
-    //     edmType.Key() rather than from the profile's selector so entity and navigation-child
-    //     types are answered the same way. Since #544 this exclusion only governs an EXPLICIT null
-    //     for the key; omitting it was never a violation on any route.
-    //   - a non-nullable VALUE type. `int Year` cannot hold null, so a JSON null for it is already
-    //     a JsonException -> 400 from the binder, worded by the deserializer. Checking it would cost
-    //     a boxing read per request to answer a question with one possible answer.
-    //   - a member the EDM declares but no readable CLR property backs. Nothing to read.
-    //   - anything the EDM does not declare at all. Ignore()d properties are removed from the EDM,
-    //     and a property withheld from the published contract cannot be required by it.
-    //
-    // TOP LEVEL ONLY, and stated rather than assumed: a null inside a nested complex value is not
-    // checked. Widening to the complex graph is a separate decision with its own recursion and
-    // cycle questions; #355 is about the root body the handler is handed.
+    // TOP LEVEL ONLY: a null inside a nested complex value is not checked. Widening has its own
+    // recursion and cycle decisions.
     private static EdmRequiredProperty[] BuildEdmRequiredProperties(
         IEdmStructuredType? edmType, Type clrType)
     {
@@ -632,6 +531,15 @@ internal static class OhDataEndpointFactory
 
     private static ReadOnlySpan<byte> Utf8Bom => new byte[] { 0xEF, 0xBB, 0xBF };
 
+    // #511: the one place either span scanner gets a reader. A scanner that reads the body
+    // differently from the binder is a FAIL-OPEN, not a mismatch: both swallow their JsonException
+    // so DeserializeAsync stays the sole author of the malformed-body message (#389 L1), and that
+    // swallow is only safe while the two accept the same bodies. Measured divergences: a leading
+    // UTF-8 BOM, and any host-relaxed ReadCommentHandling/AllowTrailingCommas/MaxDepth -- in each
+    // case the scan stopped early and silently reported "nothing found". These three members are
+    // what JsonSerializerOptions.GetReaderOptions() derives for DeserializeAsync. .NET 10's
+    // AllowDuplicateProperties is deliberately not derived: net8.0 lacks it and the residual runs
+    // the safe way.
     private static Utf8JsonReader CreateBinderParityReader(
         ReadOnlySpan<byte> utf8Json, JsonSerializerOptions? jsonOptions)
     {
@@ -702,64 +610,21 @@ internal static class OhDataEndpointFactory
         return false;
     }
 
-    // #506/#511/#544: "which spelling would the BINDER have matched this member against?" — the
-    // lookup table every top-level body-presence question below is asked in. Built once per entity
-    // set at startup from a (EDM name, CLR property) list, so "is this body key one of MY members"
-    // has exactly one answer on the write path.
+    // #506/#511/#544: "which spelling would the BINDER have matched this member against?" -- the
+    // one table every top-level body-presence question on the write path is asked in.
     //
-    // ONE BUILDER FOR THE THREE CALLERS (the deep-write strip's navigation table, and the
-    // required-property tables for TModel and for the navigation-POST child type), not three copies
-    // of this algorithm. The lists differ, the derivation does not, and a second transcription of it
-    // is precisely the independently-derived-second-model hazard #454/#458/#511 each record — a
-    // hazard this very site has already realised once, since #536 exists only because #511 rebuilt
-    // one of these tables and not the other.
+    // ONE builder for its three callers (the deep-write strip's navigation table, and the required-
+    // property tables for TModel and the navigation-POST child type). A second transcription is the
+    // independently-derived-second-model hazard #454/#458/#511 record -- and this site has already
+    // realised it once: #536 exists only because #511 rebuilt one of these tables and not the other.
     //
-    // #511 REPLACED THE PRIMARY KEY WITH THE BINDER'S OWN ANSWER, and the reason is the defect class
-    // rather than the one policy that exposed it. The table used to be keyed by
-    // ODataPropertyNaming.ResolveEdmName (= [JsonPropertyName] ?? CLR name — deliberately
-    // POLICY-FREE, because $metadata advertises the CLR identifier whatever casing payloads use,
-    // OData §4.4) plus the CLR name. The binder matches the [JsonPropertyName] ?? POLICY-CONVERTED
-    // name. camelCase differs from the CLR name only by case, so an OrdinalIgnoreCase comparer hides
-    // the divergence for the only policy anyone had configured; SnakeCaseLower and KebabCaseLower do
-    // not. Measured: with SnakeCaseLower and a `BackOrders` navigation, a body naming `back_orders`
-    // was BOUND by the deserializer and MISSED by this table, so the strip never fired — #504's
-    // hazard, reopened by a spelling.
+    // #511: the primary key is JsonTypeInfo.Properties[].Name, the string STJ itself matches against.
+    // It used to be the policy-FREE EDM name plus the CLR name, while the binder matches the
+    // POLICY-CONVERTED name -- camelCase differs from the CLR name only by case, so OrdinalIgnoreCase
+    // hid it for the one policy anyone configured. Measured: under SnakeCaseLower a body naming
+    // `back_orders` was bound by the deserializer and missed here, so the strip never fired.
     //
-    // Adding PropertyNamingPolicy?.ConvertName(...) as a third key would have closed that one policy.
-    // It would not have closed the CLASS, which is "two things that must agree, derived
-    // independently" — #454's exact shape. So the primary key is read OFF THE CONTRACT the binder
-    // resolves: JsonTypeInfo.Properties[].Name is, by construction, the string System.Text.Json
-    // matches a body key against, whatever produced it — a naming policy, a [JsonPropertyName], a
-    // custom TypeInfoResolver modifier, or a source-generated contract. There is no second
-    // derivation left to drift.
-    //
-    // HasSameMetadataDefinitionAs, never == / ReferenceEquals, to pair a JsonPropertyInfo back to
-    // its PropertyInfo. PropertyInfo equality also compares ReflectedType, and for an INHERITED
-    // member the two reflection walks disagree about it — the looked-up type's own GetProperties()
-    // reports that type while STJ's AttributeProvider reports the declaring base. That exact
-    // comparison bug is #462's third defect (IsNavVisibleInBaseOptions), measured on .NET 10.0.11;
-    // it would show up here as an inherited member silently losing its contract key.
-    //
-    // The comparer FOLLOWS THE BINDER too, the way IgnoredPropertyJsonOptions.WithheldNameComparer
-    // does: OrdinalIgnoreCase whenever PropertyNameCaseInsensitive is set — which is always in
-    // practice (the fallback options set it explicitly and a host's come from
-    // JsonSerializerDefaults.Web), but it is READ rather than assumed. Both directions matter and
-    // they point opposite ways: for the deep-write strip a table WIDER than the binder strips a
-    // navigation the binder never bound (#506's destruction case), while for #355's gate a table
-    // NARROWER than the binder lets {"uninitialized":null} bind to null and slip past a table that
-    // only knows "Uninitialized" (fail-OPEN). Following the binder is what makes both safe at once.
-    //
-    // The EDM name and the CLR name STAY, demoted to non-overwriting aliases. They are what
-    // FindClrPropertyByEdmName resolves through, which is what the PATCH loop uses, so dropping them
-    // would make a [JsonPropertyName]-renamed member named by its CLR name behave differently on
-    // PATCH than on POST/PUT — a per-verb divergence to fix a per-host one — and a registration
-    // whose contract cannot be resolved at all still gets the pre-#511 spellings. On a default host
-    // every alias collapses onto the contract key under the comparer, so nothing shipped moves.
-    //
-    // NOTE this deliberately does NOT serve patchPropByBodyName, whose comparer is unconditionally
-    // OrdinalIgnoreCase. That table IS the matcher for the root object rather than a shadow of a
-    // separate reader, so following the binder there would change what PATCH binds; see its own
-    // comment at the call site.
+    // Adding ConvertName() as a third key would close that policy, not the CLASS.
     private static Dictionary<string, PropertyInfo> BuildBinderBodyNameTable(
         (string EdmName, PropertyInfo Clr)[] members,
         Type clrType,
@@ -793,36 +658,22 @@ internal static class OhDataEndpointFactory
         return table;
     }
 
-    // #506/#544: "which of these members did the root object actually NAME?" — asked of the
-    // deep-write strip's table before it nulls anything (#506), and of the required-property
-    // table before #355's gate reports anything (#544). One implementation for both, deliberately:
-    // the two tables differ, the question does not, and a second transcription of this walk is
-    // exactly the independently-derived-second-model hazard #454/#458/#511 each record.
+    // #506/#544: "which of these members did the root object actually NAME?" -- asked by the
+    // deep-write strip before it nulls anything, and by #355's required-property gate before it
+    // reports anything. One implementation for both: the two tables differ, the question does not.
     //
-    // WHY THE DEEP-WRITE STRIP HAS TO ASK IT. The strip exists to stop a handler that does not
-    // expect a graph from silently persisting part of one. If the body sent no graph there is
-    // nothing to prevent, and nulling anyway DESTROYS state: a
-    // `List<Child> Kids { get; private set; } = new()` — plain EF encapsulation, and a navigation
-    // the convention model builder discovers — went to the
-    // handler as `null` rather than as the empty list the constructor put there, on a PUT whose body
-    // was `{"id":1,"title":"t"}`. A handler diff-syncing that collection against the loaded entity
-    // then sees null: an NRE in `.Count`, or a "null means clear the relationship" misread.
+    // The STRIP needs it because nulling a navigation the body never mentioned DESTROYS state -- a
+    // `List<Child> Kids { get; private set; } = new()` reached the handler as null rather than the
+    // constructor's empty list on a PUT naming no navigation, and a handler diff-syncing it reads
+    // that as "clear the relationship" or throws.
     //
-    // WHY #355's GATE HAS TO ASK IT. Before #544 the required-property check read the BOUND
-    // INSTANCE alone, so "the body named this property with a null" and "the body said nothing and
-    // the CLR declaration left it null" were the same observation. They are not the same request,
-    // and answering them alike made the wire behaviour depend on a CLR initializer that appears
-    // nowhere in $metadata. This is the seam that separates them.
+    // #355's GATE needs it because reading the BOUND INSTANCE alone made "the body sent null" and
+    // "the body said nothing and the CLR declaration left it null" the same observation -- which made
+    // the wire behaviour depend on a CLR initializer that appears nowhere in $metadata.
     //
-    // TOP LEVEL ONLY, and that is not a shortcut. Both tables hold properties of the ROOT type; a
-    // member named inside a nested object belongs to some other type and is answered (or not) by
-    // whatever handles that type — for the strip it is already inside a subtree the root
-    // navigation's own presence accounts for, and for #355's gate the nested value is out of scope
-    // by the same top-level-only rule BuildEdmRequiredProperties states.
-    //
-    // The returned set holds CLR property names (ordinal, like deepWriteNavClrNames) rather than the
-    // body's spelling, so a caller can test `PropertyInfo.Name` directly and two spellings of one
-    // member collapse to one entry.
+    // TOP LEVEL ONLY: both tables hold properties of the ROOT type, so a member named inside a nested
+    // object belongs to another type. Returns CLR property names (ordinal), so a caller can test
+    // PropertyInfo.Name directly and two spellings of one member collapse to one entry.
     private static HashSet<string> CollectPresentBodyMemberClrNames(
         JsonElement body, Dictionary<string, PropertyInfo> byBodyName)
     {
@@ -843,32 +694,24 @@ internal static class OhDataEndpointFactory
         return present;
     }
 
-    // #506/#544: the same question asked of RAW UTF-8, for the two write paths that have neither a
-    // JsonDocument nor a JsonElement on their default branch (PUT and the navigation-POST create
-    // route), only the buffer #456 already made for the '@odata.bind' scan.
+    // #506/#544: the same question asked of RAW UTF-8, for the two write paths with neither a
+    // JsonDocument nor a JsonElement on their default branch (PUT and the nav-POST create route),
+    // only the buffer #456 already made.
     //
-    // Same discipline as ContainsODataBindAnnotation(ReadOnlySpan<byte>) and for the same reason:
-    // the reader's own JsonException is SWALLOWED, because JsonSerializer.DeserializeAsync must stay
-    // the sole author of the malformed-body message (it appends "Path: $"; JsonDocument does not,
-    // and #389 L1 measured that difference as observable — DeepInsertTests
-    // .WritesWithoutTheAnnotation_StillSucceed_AndPutStillWordsAMalformedBodyItself and
-    // OpenTypeDefaultOnIsByteIdenticalTests pin both halves). A body this reader cannot finish is a
-    // body the deserializer is about to reject, so a partial answer here is never acted on.
+    // The reader's JsonException is SWALLOWED so DeserializeAsync stays the sole author of the
+    // malformed-body message (#389 L1 -- it appends "Path: $", JsonDocument does not). A body this
+    // reader cannot finish is one the deserializer is about to reject.
     //
-    // CurrentDepth == 1 is exactly "a member of the root object": Utf8JsonReader reports the root
-    // StartObject at depth 0 and its property names at depth 1, so a nested object's members (depth
-    // 2+) and the members of objects inside a root-level ARRAY are skipped without a state machine.
+    // CurrentDepth == 1 is exactly "a member of the root object": the root StartObject is depth 0 and
+    // its property names depth 1, so nested members and objects inside a root-level array are skipped
+    // without a state machine.
     //
     // GetString() rather than ValueTextEquals: matching is case-INSENSITIVE whenever the binder's
-    // PropertyNameCaseInsensitive is set (always, in practice) and ValueTextEquals is ordinal, so the
-    // no-allocation comparison cannot answer this question. The allocation is one string per
-    // top-level member, which is what JsonDocument would have cost on the other branch anyway.
+    // PropertyNameCaseInsensitive is set, and ValueTextEquals is ordinal.
     //
-    // #511: the reader comes from CreateBinderParityReader, so it accepts exactly what the binder
-    // accepts. Constructing a DEFAULT one here made every reader-configuration divergence a silent
-    // "this body names nothing" — see that method for the three measured ones. For #544's caller
-    // that silence is the SAFE direction (nothing named ⇒ nothing reported), which is the opposite
-    // of what it is for the strip; the parity is what makes both true at once.
+    // #511: the reader comes from CreateBinderParityReader, so it accepts what the binder accepts. A
+    // DEFAULT one made every configuration divergence a silent "this body names nothing" -- which is
+    // the SAFE direction for #544's caller and the opposite for the strip. Parity makes both true.
     private static HashSet<string> CollectPresentBodyMemberClrNames(
         ReadOnlySpan<byte> utf8Json, Dictionary<string, PropertyInfo> byBodyName,
         JsonSerializerOptions? jsonOptions)
@@ -893,69 +736,24 @@ internal static class OhDataEndpointFactory
         return present;
     }
 
-    // #456: a rewindable copy of the request body, so the '@odata.bind' scan and the deserializer can
-    // both read it. Only PUT and the navigation-POST create route need this, and only on the path
-    // where they were streaming.
+    // #456: a rewindable copy so the '@odata.bind' scan and the deserializer can both read the body.
+    // The deserializer keeps the SAME DeserializeAsync(Stream) overload, which is what holds every
+    // malformed-body message byte-identical (#389 L1). GetBuffer() at the call sites, not ToArray().
     //
-    // The deserializer is handed a Stream, through the SAME JsonSerializer.DeserializeAsync overload
-    // it used before, rather than a JsonElement or a ReadOnlySpan<byte>: that is what keeps every
-    // malformed-body, wrong-type and depth-limit message byte-identical to the streaming path. Going
-    // through JsonDocument here instead is exactly the regression #389 L1 measured.
+    // PipeReader/ReadOnlySequence was considered and does not win: it avoids a copy, not the
+    // materialisation, and feeding it to the deserializer means a different overload. A pass-through
+    // scanning stream WOULD keep streaming and is rejected on correctness -- it makes the answer
+    // depend on where in the body the annotation sits, which is the per-verb divergence #456 removes.
     //
-    // GetBuffer() (not ToArray()) at the call sites, so the scan reads the copy already made rather
-    // than making a second one; MemoryStream's public constructors leave the buffer publicly visible.
+    // THE CAPACITY HINT IS CLAMPED, and that is the point of the line. Content-Length is a client
+    // claim that arrives before any body byte: pre-sizing from it hands an unauthenticated caller a
+    // remote allocation primitive. 81,920 is Stream.CopyTo's default buffer size AND under the
+    // 85,000-byte LOH threshold, so an honest body lands in one right-sized allocation and a bogus
+    // hint costs a collectable gen0 array.
     //
-    // WHY A MemoryStream AND NOT PipeReader/ReadOnlySequence<byte>. Considered, and it does not win:
-    //   - It would avoid a COPY, not the MATERIALISATION. Reading the request PipeReader to
-    //     completion holds every byte in the pipe's pooled segments, so the resident-bytes exposure
-    //     the clamp above is about is identical. The accumulate-everything shape is
-    //     ReadAsync + AdvanceTo(buffer.Start, buffer.End) in a loop — the documented UNBOUNDED
-    //     buffering pattern, with the writer-pause flow control to reason about on top. It improves
-    //     no bound.
-    //   - Feeding those bytes to the deserializer would cost the invariant that forced the buffer in
-    //     the first place. Utf8JsonReader takes a ReadOnlySequence<byte> happily, but
-    //     JsonSerializer.Deserialize<T>(ref Utf8JsonReader) is a DIFFERENT overload from the
-    //     DeserializeAsync(Stream) these routes used before, and "the deserializer words a malformed
-    //     body exactly as it did" (the 'Path: $' pin) is the thing that must not move. Keeping the
-    //     overload would mean hand-writing a Stream over a ReadOnlySequence — more code, same bytes
-    //     resident, for no gain.
-    // A pass-through Stream that scans as the deserializer pulls WOULD preserve streaming, and is
-    // rejected for a correctness reason rather than a cost one: it makes the answer depend on where
-    // in the body the annotation sits. '{"Id":"notanint","x@odata.bind":1}' would 400 on PUT while
-    // the collection POST — which scans the whole body before binding anything — answers 501 for the
-    // same bytes. Per-verb divergence on @odata.bind is precisely what #456 exists to remove.
-    //
-    // THE CAPACITY HINT IS CLAMPED, AND THAT IS THE WHOLE POINT OF THE LINE. Content-Length is a
-    // CLIENT CLAIM, not a measurement: it arrives in the request head, before a single body byte
-    // has. Pre-sizing the buffer from it hands any unauthenticated caller a remote allocation
-    // primitive — declare 30 MB, send one byte, never finish, repeat across N connections, and the
-    // server has committed N x 30 MB against N bytes of actual traffic. The streaming path this
-    // replaces allocated in proportion to bytes RECEIVED, so honouring the header here would have
-    // been a real regression rather than a wash.
-    //
-    // 81,920 is two facts at once: it is Stream.CopyTo's own default buffer size (so an honest small
-    // body still lands in a single right-sized allocation and the first copied chunk fits exactly),
-    // and it is under the 85,000-byte large-object-heap threshold (so a bogus hint costs a
-    // collectable gen0 array rather than LOH pressure that survives until a gen2 compaction). Beyond
-    // it the stream just doubles, which costs a few reallocations on genuinely large bodies — the
-    // right trade against removing the primitive.
-    //
-    // WHAT ACTUALLY BOUNDS THE COPY — and since #474 the answer is finally "OhData does". It used
-    // not to be, and the #203 commentary above read as more protective than the code was: #203's
-    // filter does BOTH of its jobs — the Content-Length fast-reject AND setting Kestrel's
-    // per-request MaxRequestBodySize — only when OhDataBodyLimitMetadata is attached, and that
-    // metadata existed only when the profile or EntitySetDefaults set MaxRequestBodyBytes, which
-    // DEFAULTED TO NULL at both levels. So on a default configuration neither half ran and the only
-    // ceiling was the HOST's Kestrel MaxRequestBodySize — which an app that also accepts uploads
-    // routinely raises or disables, leaving nothing at all. EntitySetDefaults.MaxRequestBodyBytes
-    // now defaults to EntitySetDefaults.DefaultMaxRequestBodyBytes (30,000,000 — Kestrel's own
-    // number, chosen so a DEFAULT host sees no behaviour change), and the group filter falls back to
-    // the registration's copy of it for the routes that belong to no entity set. Setting it to null
-    // server-wide restores the old "the host's limit is the only limit" behaviour.
-    //
-    // (Note the collection POST is NOT a precedent for the capacity hint, only for the
-    // materialisation: JsonDocument.ParseAsync grows incrementally from pooled buffers and never
-    // reads Content-Length. Hence the clamp — this must not be the one place that trusts it.)
+    // What bounds the copy is #474: EntitySetDefaults.MaxRequestBodyBytes now defaults to 30,000,000
+    // (Kestrel's own number, so a default host sees no change). Before it, #203's filter only ran
+    // when the metadata existed, which required a profile to have set the limit.
     private const int BufferedBodyCapacityHintCap = 81_920;
 
     private static async Task<MemoryStream> BufferRequestBodyAsync(HttpContext ctx, CancellationToken ct)
@@ -982,38 +780,24 @@ internal static class OhDataEndpointFactory
             "'@odata.bind' is not supported. Use the $ref endpoints to link an existing entity " +
             "(OData §11.4.2.2).");
 
-    // #389: policing dynamic-property names on the way in. Only a registration whose EDM actually
-    // declares an open complex type pays anything here (OpenTypesActive, not OpenTypesEnabled --
-    // #389 L1; and now that the flag defaults to true, that EDM half is effectively the whole gate)
-    // -- for everyone else this is one bool test and the body is never walked. See
-    // OpenTypeJsonOptions.FindInvalidDynamicKey for why the check rides the raw JSON
-    // against JsonTypeInfo rather than the bound CLR graph.
+    // #389: policing dynamic-property names on the way in. Gated on OpenTypesActive, not
+    // OpenTypesEnabled (#389 L1) -- with the flag now defaulting to true, the EDM half is the whole
+    // gate, and everyone else pays one bool test.
     //
-    // Called from every route that binds a body which can reach a dynamic bag: POST/PUT/PATCH on the
-    // entity, the structural-property write route, the navigation-POST create route, and each
-    // parameter of a bound or unbound ACTION. The action routes pass the individual PARAMETER value
-    // and its declared parameter type, never the {"paramName": value} envelope -- the envelope's own
-    // keys are parameter names matched by the operation's signature, so they are not dynamic keys
-    // and must not be policed as such.
+    // Called from every route binding a body that can reach a bag. The action routes pass the
+    // individual PARAMETER value and its declared type, never the {"paramName": value} envelope --
+    // those keys are parameter names, not dynamic keys.
     //
-    // #398 stages 1-2 widened this from "reject a bad key" to "prepare the body". It answers two
-    // things from ONE walk, and the caller has to honour both:
-    //   - a key the odataIdentifier grammar rejects  -> 400, exactly as before;
-    //   - a key that must not become a dynamic property but is NOT a client error -- control
-    //     information ('@'), or a name the profile withholds with Ignore(...) -> the body is
-    //     re-emitted without it and the request proceeds. Silently, in both cases: an annotation is
-    //     not a property value, and a withheld name gets the same treatment an unknown member on a
-    //     closed type already gets. Dropping is not enough on its own -- System.Text.Json would bag
-    //     either one -- so the drop has to be a real edit to the body the binder sees.
+    // #398 widened this from "reject a bad key" to "prepare the body": one walk answers both a
+    // grammar rejection (400) and a key that must not become a dynamic property but is NOT a client
+    // error -- control information, or a name Ignore() withholds -- which is re-emitted out of the
+    // body silently. Dropping is not enough on its own, since STJ would bag either one, so it has to
+    // be a real edit to the body the binder sees.
     //
-    // The returned JsonDocument, when non-null, MUST be disposed by the caller; PreparedWriteBody
-    // exists so `using` at the call site covers it without an extra block. On the common path it is
-    // null and Body is the caller's own element, so nothing is copied.
-    //
-    // (Disposal is right; the reason once stated for it was not. JsonDocument.Parse over a
-    // ReadOnlyMemory<byte> — which is what RewriteWithoutUnbindableKeys hands it — does NOT pool the
-    // payload: it wraps the caller's memory and only the metadata database is rented from the shared
-    // array pool. Disposing still returns that database, so the `using` earns its keep either way.)
+    // A non-null returned JsonDocument MUST be disposed; PreparedWriteBody makes `using` at the call
+    // site cover it. On the common path it is null and Body is the caller's own element. (Disposal is
+    // right, but not for the reason once given: Parse over a ReadOnlyMemory wraps the caller's memory
+    // and pools only the metadata database.)
     private readonly record struct PreparedWriteBody(
         IResult? Error, JsonElement Body, JsonDocument? Rewritten) : IDisposable
     {
@@ -1024,36 +808,23 @@ internal static class OhDataEndpointFactory
         OhDataRegistration registration, JsonElement body, Type declaredType,
         JsonSerializerOptions? jsonOptions)
     {
-        // #456: ABOVE the OpenTypesActive gate, and that placement is the whole fix. This check was
-        // added by #398 review MEDIUM-1 and put BELOW the gate, so on any registration without an
-        // open complex type -- the majority -- PrepareWriteBody returned before reaching it and
-        // 'prop@odata.bind' on PUT, PATCH, the nav-POST create route or a structural-property write
-        // was accepted with 200/201 and the annotation silently discarded. The client asked to bind
-        // a relationship, got a success, and nothing happened.
+        // #456: ABOVE the OpenTypesActive gate, and that placement is the whole fix. Added below it by
+        // #398 review MEDIUM-1, so on any registration without an open complex type -- the majority --
+        // PrepareWriteBody returned first and '@odata.bind' on PUT, PATCH, nav-POST or a property
+        // write was accepted with 200/201 and silently discarded.
         //
-        // It is safe above the gate because it needs nothing the gate protects: it is a pure
-        // JsonElement walk over a body the caller has ALREADY materialised, whereas everything below
-        // the gate needs `jsonOptions` and the open-type contract. The one thing the gate really was
-        // buying -- PUT and nav-POST streaming straight into the deserializer instead of buffering --
-        // is not obtained by skipping the check, because those two routes never call PrepareWriteBody
-        // at all on the non-open path; they now do their own buffered scan (see
-        // ContainsODataBindAnnotation(ReadOnlySpan<byte>) and its two call sites), which keeps
-        // JsonSerializer.DeserializeAsync as the component that words a malformed body.
+        // Safe above the gate because it needs nothing the gate protects: a pure JsonElement walk over
+        // an already-materialised body. What the gate really bought -- PUT and nav-POST streaming
+        // instead of buffering -- is not obtained by skipping the check, since those two never call
+        // PrepareWriteBody on the non-open path and now do their own buffered scan.
         //
-        // #398 stage 2's ordering constraint still holds and is why this cannot move DOWN either:
-        // stage 2 classifies any key containing '@' as control information and STRIPS it, and
-        // 'Thing@odata.bind' contains one, so a bind annotation reaching ScanWriteBody would be
-        // silently dropped rather than reported.
+        // It cannot move DOWN either: #398 stage 2 classifies any key containing '@' as control
+        // information and STRIPS it, so a bind annotation reaching ScanWriteBody would be dropped
+        // rather than reported.
         //
         // 501, not 400, and the same 501 the collection POST gives: deep insert by reference is
-        // UNIMPLEMENTED, not malformed, and it is unimplemented on every verb. The old 400 some of
-        // these routes gave was incidental anyway -- it came from '@' failing the odataIdentifier
-        // grammar, not from anything that knew what @odata.bind meant.
-        //
-        // The collection POST keeps its own earlier check: it has always been unconditional, and its
-        // message is richer (it names the entity set, and it mentions AllowDeepWrites for the
-        // adjacent case — a client that meant to CREATE the related entity inline rather than link
-        // an existing one, which on POST is deep insert).
+        // UNIMPLEMENTED on every verb. The old 400 was incidental -- it came from '@' failing the
+        // odataIdentifier grammar, not from anything that knew what @odata.bind meant.
         if (ContainsODataBindAnnotation(body))
             return new PreparedWriteBody(ODataBindNotImplementedError(), body, null);
 
@@ -1459,49 +1230,24 @@ internal static class OhDataEndpointFactory
         var loggerFactory = routes.ServiceProvider.GetService<ILoggerFactory>();
         var groupLogger = loggerFactory?.CreateLogger("OhData");
 
-        // #389: OData open COMPLEX types, ON BY DEFAULT; AddOhData(o => o.WithOpenTypes(false)) is
-        // the escape hatch. Every complex type the EDM marks OpenType="true" carries a
-        // DynamicPropertyDictionaryAnnotation naming the CLR member that backs its dynamic
-        // properties; this layers one more resolver modifier that marks that member as
-        // System.Text.Json extension data, so the bag serialises and binds FLAT (dynamic keys as
-        // siblings of the declared properties) with no attribute on the consumer's model.
+        // #389: open COMPLEX types, ON BY DEFAULT; WithOpenTypes(false) is the escape hatch. Marks the
+        // DynamicPropertyDictionaryAnnotation's member as STJ extension data, so the bag serialises and
+        // binds FLAT with no attribute on the consumer's model.
         //
-        // Default-ON because a complex type with a dictionary member IS an open type: this same
-        // builder has always emitted OpenType="true" for it and always omitted the member from the
-        // declared properties, so leaving the wire nested made $metadata and the payload disagree
-        // and made conformance something the developer had to know the spec to ask for. It is also
-        // what Microsoft.AspNetCore.OData does -- its ODataResourceSerializer.AppendDynamicProperties
-        // reads the SAME annotation and appends dynamic properties flat, with no opt-in flag
-        // anywhere in that path.
+        // Default-on because a complex type with a dictionary member IS an open type -- this builder
+        // has always emitted OpenType="true" for it -- and because MS's AppendDynamicProperties reads
+        // the SAME annotation with no opt-in flag. Flattening RE-BINDS a body an adopter already
+        // sends, and the echo is byte-identical to the correct one, so WarnWireShapeIsFlat is the only
+        // available signal before the stored data is wrong.
         //
-        // Flattening still RE-BINDS a body an existing adopter already sends -- the container stops
-        // being a declared property, so {"Meta":{"Bag":{...}}} becomes a dynamic key named "Bag" --
-        // and the echo of that mis-bound value is byte-identical to the correct one, so it is not
-        // detectable by diffing responses. WarnWireShapeIsFlat below names every affected type once
-        // at startup, which is the only signal available before the stored data is already wrong.
-        // With the escape hatch taken, the map is not even built and effectiveJsonOptions is threaded
-        // through reference-unchanged.
-        //
-        // Ordering: added AFTER the ignored-property modifier and BEFORE the per-request
-        // nav-suppression modifier, which derives from these options. The three never contend for a
-        // member -- nav suppression only removes EDM navigations (an open complex type has none),
-        // and the ignored-property map is keyed by profile.ModelType (an ENTITY type), which a
-        // container's declaring complex type can never be, so those two modifiers never see the
-        // same JsonTypeInfo.
-        //
-        // THAT ORDERING IS AN INVARIANT, NOT AN INCIDENT, and OpenTypeModifierOrderingTests asserts
-        // it. Two properties depend on it. (1) The open-type modifier snapshots its declared-name
-        // collision set from typeInfo.Properties, so it must run while every EDM NAVIGATION is still
-        // on the contract -- deriving nav suppression from startupJsonOptions instead of from these
-        // options would put the removal first and silently convert a bag key that shadows a
-        // navigation from a hard 500 into a navigation-shadowing leak. (2) Conversely it must run
-        // AFTER the ignored-property modifier, whose removals are what make Ignore()d names invisible
-        // to it -- which is why those names are threaded in separately below rather than read off the
+        // ORDERING IS AN INVARIANT -- after the ignored-property modifier, before nav suppression --
+        // and OpenTypeModifierOrderingTests asserts it. (1) This modifier snapshots its declared-name
+        // collision set from typeInfo.Properties, so it must run while EDM navigations are still on
+        // the contract; deriving nav suppression from startupJsonOptions would put the removal first
+        // and turn a bag key shadowing a navigation from a hard 500 into a leak. (2) It must run AFTER
+        // the ignored-property modifier, whose removals are what make Ignore()d names invisible to it
+        // -- which is why those names are threaded in separately as DATA rather than read off the
         // contract.
-        //
-        // Note what the ignored-name argument does NOT do: it does not make the two modifiers meet.
-        // They still never touch the same JsonTypeInfo. The withheld names cross as DATA, so the
-        // open-type modifier can refuse a bag key spelled like a member the profile withholds.
         var openTypeContainers = registration.OpenTypesEnabled
             ? OpenTypeJsonOptions.BuildOpenComplexTypeContainerMap(registration.EdmModel)
             : OpenTypeJsonOptions.OpenComplexTypeContainers.Empty;
@@ -1594,41 +1340,19 @@ internal static class OhDataEndpointFactory
             return await next(ctx);
         });
 
-        // S7: a handler that throws (as opposed to returning an ODataError IResult, which every
-        // deliberate error path in this file does) previously escaped as an empty, envelope-less
-        // 500 -- no body, no logging, and the most common production failure mode (e.g. the
-        // database is down) shipped with unspecified, §9.4-violating behavior. This is the
-        // last-resort safety net: convert any exception that reaches here into the same OData
-        // error envelope every other error response uses, with a generic message -- never
-        // ex.Message or the stack trace, which could leak internal details (connection strings,
-        // type names, file paths) to the client -- and log the real exception so operators can
-        // actually diagnose the failure. It covers every route handler and every filter registered
-        // AFTER it -- the #203 body-limit filter, the $format/Accept filter and the
-        // OData-MaxVersion filter -- because an endpoint filter's try wraps everything reached
-        // through next().
+        // S7: the last-resort net. A handler that THROWS (as opposed to returning an ODataError,
+        // which every deliberate error path here does) used to escape as an empty, envelope-less 500
+        // with no logging -- the most common production failure there is. Converts it to the same
+        // OData envelope with a GENERIC message, never ex.Message or the stack (which could leak
+        // connection strings, type names, paths), and logs the real exception.
         //
-        // #496 finding 3: it is NOT the outermost group filter, and this comment used to claim it
-        // was ("Registered as the outermost group filter (added first)"). The #200 observability
-        // filter is added first and therefore wraps THIS one. The consequence, stated plainly
-        // rather than left implied: an exception thrown in the observability filter's own body
-        // (DescribeOhDataEndpoint, activity/tag setup, the instrument calls) or in its
-        // Response.OnCompleted callback escapes this envelope. That is accepted, not overlooked --
-        // reordering the two would move the LogError below outside the request's Activity and lose
-        // trace correlation on the single most important log line the framework emits, which is a
-        // worse trade for framework-only code that does no I/O and no user work.
+        // Covers every route handler and every filter registered AFTER it. #496 finding 3: it is NOT
+        // the outermost group filter, though this comment used to say so -- the #200 observability
+        // filter is added first and wraps it, so an exception in that filter's own body or its
+        // Response.OnCompleted callback escapes this envelope. Accepted, not overlooked: reordering
+        // would move the LogError outside the request's Activity and lose trace correlation on the
+        // single most important log line the framework emits.
         //
-        // #493: the one exception it declines to catch is a cancellation raised BECAUSE THE CLIENT
-        // WENT AWAY -- there is no response left to write, so it is left to ASP.NET Core's own
-        // cancellation handling. That is a statement about the REQUEST, not about the exception
-        // type, and the filter used to test the type alone (`ex is not OperationCanceledException`).
-        // The whole OCE family escaped, aborted or not -- and TaskCanceledException is what
-        // HttpClient throws on ITS OWN timeout, i.e. a server-side dependency fault wearing
-        // cancellation's clothes. Measured on the pre-fix tree with a handler that threw
-        // TaskCanceledException on a request that was never aborted: HTTP 500 with an EMPTY body,
-        // no envelope, and nothing logged by OhData at all -- precisely the failure mode this
-        // filter exists to eliminate, on what is arguably the most common outbound-dependency
-        // failure there is. The condition therefore now asks RequestAborted as well: an OCE on a
-        // live request is an ordinary unhandled exception and is logged and enveloped like one.
         group.AddEndpointFilter(async (ctx, next) =>
         {
             try
@@ -1897,42 +1621,23 @@ internal static class OhDataEndpointFactory
     }
 
     // #489: Ignore() loses its EDM half under AdvancedConfigure, and the consequence is a value
-    // oracle no reader derives from either half on its own.
+    // oracle no reader derives from either half alone. The EDM removal rides the _configurators
+    // pipeline; the override returns from VisitModelBuilder before that pipeline runs, while runtime
+    // suppression still applies. That is the stated contract of the hatch and is deliberately not
+    // "fixed": re-imposing Ignore() would defeat it, and singling out that configurator would be
+    // arbitrary when HasOptional/HasRequired/HasMany ride the same pipeline and stay ejected.
     //
-    // Ignore() withholds a property on TWO levels. The EDM removal rides the _configurators pipeline
-    // in EntitySetProfile.VisitModelBuilder; runtime suppression (routes, wire, PATCH binding) is
-    // applied separately from IgnoredPropertyNames. Overriding AdvancedConfigure returns from
-    // VisitModelBuilder BEFORE the configurator pipeline runs, so the EDM half is ejected while the
-    // runtime half still applies. That is the stated contract of the eject hatch and it is CORRECT --
-    // the developer has taken full EDM ownership, and this is deliberately not "fixed":
+    // What was missing is the SIGNAL. With both in play the property is back in $metadata and
+    // query-addressable while the wire omits it, so $filter over it answers truthfully one predicate
+    // at a time. Without the hatch the EDM removal makes it indistinguishable from a property that
+    // never existed, so the 400 cannot confirm existence.
     //
-    //   * re-imposing OhData's Ignore() on top of the override would defeat the hatch outright, and
-    //   * it would be arbitrary. HasOptional/HasRequired/HasMany ride the SAME pipeline and stay
-    //     ejected; nothing distinguishes Ignore()'s configurator from theirs except that its
-    //     consequence is a disclosure rather than a missing navigation. A half-ejected pipeline whose
-    //     membership is decided by severity is a worse contract than the one it replaces.
+    // GATED ON THE EDM AS BUILT, not on the presence of the override: re-applying
+    // `configuration.EntityType.Ignore(...)` by hand is exactly what the docs prescribe, and warning
+    // on the correct configuration teaches developers to tune the warning out.
     //
-    // What is missing is the SIGNAL, so this is the WarnWireShapeIsFlat shape: a legitimate
-    // configuration whose consequence is not predictable from either half gets one startup warning
-    // naming it. With both features in play the property is back in $metadata and query-addressable
-    // while the wire still omits it, so $filter over it answers truthfully one predicate at a time --
-    // the value is never served and is still discoverable. In the ordinary case the EDM removal makes
-    // the property indistinguishable from one that never existed (ODL fails the same "could not find
-    // a property named…" it produces for a genuinely nonexistent name), so the 400 cannot confirm
-    // existence.
-    //
-    // GATED ON THE EDM AS BUILT, not on the mere presence of the override. Re-applying
-    // `configuration.EntityType.Ignore(...)` by hand inside the override is exactly what the
-    // documentation prescribes, and it really does remove the property -- warning on that
-    // configuration would fire on the correct one and teach developers to tune the warning out.
-    // Silent, therefore, whenever the property is genuinely gone from the EDM.
-    //
-    // The query-capability half is deliberately NOT part of the gate. Whether $filter is live depends
-    // on what the override re-enabled (taking the hatch also drops OhData's automatic
-    // Filter()/OrderBy()/Select() calls), but $metadata advertises the property's name and type
-    // regardless, and a capability the override adds later must not silently un-warn the profile.
-    //
-    // Emitted once per affected property per registration at startup, never per request.
+    // The query-capability half is deliberately not in the gate -- $metadata discloses the name and
+    // type regardless, and a capability added later must not silently un-warn.
     private static void WarnIgnoredPropertiesStillInEdm(OhDataRegistration registration, ILogger? logger)
     {
         if (logger is null) return;
@@ -1986,50 +1691,20 @@ internal static class OhDataEndpointFactory
         }
     }
 
-    // #313: the startup diagnostic that stands in for the ceiling that MaxExpandTop no longer defaults to.
+    // #313: the startup diagnostic standing in for the ceiling MaxExpandTop no longer defaults to.
+    // A bare ?$expand=Children materializes the whole child collection and answers 200, so nothing
+    // else points at it. Deliberately prescribes no number -- picking one is the mistake stage 1 undid.
     //
-    // Stage 1 removed an invented 1000 because the framework cannot know how large a child collection
-    // is. That leaves a real exposure — a bare ?$expand=Children materializes the WHOLE child
-    // collection — and nothing to point at it, since with no ceiling the shape answers 200 and looks
-    // healthy. This names each affected navigation once at startup so the decision is made by someone
-    // who knows the data, and it deliberately stops at informing: it prescribes no number, because
-    // picking one is exactly the mistake stage 1 undid.
+    // The conditions are ALL of the conditions under which the exposure is live, which is what keeps
+    // it from being noise: ExpandEnabled (false by default, and the load-bearing one),
+    // HasGetQueryable, ExpandPushdownEnabled (with it off no EngagedExpand is built, so there is no
+    // materialization to bound), collection-valued, ServeRaw, and MaxExpandTop null.
     //
-    // The conditions are ALL of the conditions under which the exposure is live, which is what
-    // keeps this from being noise:
-    //   - ExpandEnabled  — false by DEFAULT, and by itself enough to silence the whole diagnostic for
-    //                      a registration that never opts into $expand. This is the load-bearing one.
-    //   - HasGetQueryable— the pushdown path is the only one that materializes a raw child collection
-    //                      from the database; GetAll/Priority-1/GetById are out of scope (G11).
-    //   - ExpandPushdownEnabled — NOT one of the five conditions #313's design lists, and it belongs.
-    //                      MEASURED: with it false, /BeAuthors?$expand=Books over a seeded 5-book author
-    //                      returns "Books":[] and issues no child query at all — no EngagedExpand is
-    //                      built (see the gate at the ApplyIncludeFallback site), so the delegate path's
-    //                      ServeRaw case no-ops over a graph nothing ever loaded. There is no
-    //                      materialization to bound, so warning about it would name a knob that changes
-    //                      nothing for that registration. It defaults to TRUE, so this narrows almost
-    //                      nothing in practice — it just keeps the rule "all of the conditions under
-    //                      which the exposure is live" honest rather than approximately true.
-    //   - collection-valued — a single-valued navigation is one row and cannot be the DoS.
-    //   - ServeRaw       — a delegate-backed navigation is never in the engaged tree. Resolved through
-    //                      the SAME ResolveNavTreatment stage 5's route registration uses
-    //                      (ResolveExpandPagingNavigations), over the SAME candidate set, so the
-    //                      warning and the routes cannot drift — rather than through a per-profile
-    //                      "owns no NavigationRouteDefinition" test. #415: this clause used to add
-    //                      "and a BLANKED one (a sibling profile over the same EDM type disagrees) is
-    //                      not served at all" — MEASURED FALSE at the ROOT, which is the only level
-    //                      this diagnostic describes. Model B gives the URL-named set authority over
-    //                      its own navigations, so a nav the old union-based check called Blank is
-    //                      still served RAW and unbounded by /{Set}?$expand={Nav}, and the warning
-    //                      went SILENT for exactly the profile that needed it whenever ANY sibling
-    //                      over the same EDM type delegated the nav. #421 fixed that by resolving the
-    //                      candidate set the way the root read path does — `new[] { profile }`. A
-    //                      navigation THIS profile delegates still yields RunDelegate and is still
-    //                      silent, which is the clause's actual point.
-    //   - MaxExpandTop is null — with a ceiling set there is a bound, and #313 stage 2 already turns
-    //                      the over-ceiling shape into a 400. Nothing to warn about.
-    //
-    // Emitted once per registration at startup, never per request.
+    // ServeRaw is resolved through the SAME ResolveNavTreatment and the SAME candidate set the route
+    // registration uses, so the warning and the routes cannot drift. #415/#421: that set is
+    // `new[] { profile }`, not the sibling union -- under Model B the URL-named set has authority
+    // over its own navigations, so a union-based check went SILENT for exactly the profile that
+    // needed the warning whenever any sibling delegated the nav.
     private static void WarnUnboundedBareExpand(OhDataRegistration registration, ILogger? logger)
     {
         if (logger is null) return;
@@ -2080,64 +1755,20 @@ internal static class OhDataEndpointFactory
         }
     }
 
-    // #440: the startup diagnostic for the OTHER half of #322's root cause — the profile's
-    // navigation set and the EDM's disagree, and #322's projection fix reconciled them for the
-    // QUERY PLAN only.
+    // #440: the profile's navigation set and the EDM's disagree -- the ordinary
+    // `public Publisher? Publisher { get; set; }` with no declaration. A WARNING, not a throw:
+    // throwing would break startup for every adopter who has one, with no migration.
     //
-    // A WARNING, not a throw. The shape that triggers this is `public Publisher? Publisher { get; set; }`
-    // beside an `int? PublisherId` — the ordinary EF Core reference navigation on a profiled entity,
-    // with no attributes and no fluent declaration. Throwing would break startup for every adopter
-    // who has one, with no migration but editing every profile.
+    // It reports the disagreement, not a defect: $metadata advertises a navigation this set will
+    // never serve and never accept, so a generated client asks for data it cannot receive.
     //
-    // WHY IT STILL EARNS ITS PLACE NOW THAT BOTH #440 SYMPTOMS ARE FIXED. It no longer reports a
-    // DEFECT — it reports the disagreement itself, which the fixes do not remove and cannot: the
-    // framework must not decide whether an undeclared navigation was meant to be exposed. $metadata
-    // still advertises a navigation that this entity set will never serve by any means — $expand
-    // omits it, and no navigation route stands behind it — so a client generated from $metadata
-    // asks for related data it can never receive, with nothing in any response saying why. That is
-    // a true, actionable, startup-time statement about a configuration gap, and it is the only
-    // channel that reaches the person who can close it.
+    // KEEP THE MESSAGE AND THE BEHAVIOUR IN STEP. Every time a consequence is closed, the sentence
+    // naming it comes out in the same commit -- already gone: pushdown disqualification (#322),
+    // the structural-property routes (#440 symptom 2), and "answers 200 with null", which is now
+    // "omitted". A test asserts the message never says "pushdown", "$filter" or "Include".
     //
-    // #461 WIDENED IT TO THE WRITE PATH, and that is a correction, not an addition. The message said
-    // "will never serve it", which speaks only of reads — and it was incomplete in BOTH directions at
-    // once. Before #461 the write path did not merely fail to serve the navigation, it QUIETLY
-    // ACCEPTED it: the deep-insert strip set was built from the profile-declared navigation names, so
-    // a nested value for an undeclared one was bound and handed to the Post handler with
-    // AllowDeepWrites at its default of false. The strip set now subtracts the same EDM navigation
-    // set #446 established as the authority, so the write path agrees with the read path — and the
-    // sentence naming that is added here, in the commit that made it true, rather than left for a
-    // reader to infer from "serve".
-    //
-    // #457 WIDENED THE SAME SENTENCE FROM "a POST body" TO "a write body". Deep update (§11.4.3.1)
-    // was documented out of scope but not enforced, so PUT forwarded the nested value and PATCH
-    // bound it into the Delta<TModel>; naming POST alone would now understate the (correct)
-    // behaviour on exactly the two verbs that used to get it wrong.
-    //
-    // WHAT IS NOT LISTED, deliberately, AND WHY THE LIST KEEPS SHRINKING. This message states only
-    // what is still true at the moment it is emitted, and every time the framework closes one of the
-    // consequences the sentence naming it comes out in the SAME commit. Already removed:
-    //   - pushdown disqualification (#322): an undeclared navigation used to abandon $select/$expand
-    //     pushdown for the whole entity set. Fixed; never named here. A test asserts the message
-    //     never contains "pushdown", "$filter" or "Include".
-    //   - structural-property routes (#440 symptom 2): GET /{Set}({key})/{Nav}, its /$value, and
-    //     PUT/PATCH/DELETE alongside a Patch handler used to register over the navigation. Route
-    //     registration now subtracts the EDM's navigation names, so those templates do not exist.
-    //   - "$expand answers 200 with null" (#440 symptom 1): it answers 200 with the navigation
-    //     OMITTED now, which is a different and much smaller claim — the payload no longer asserts
-    //     that the relationship is empty. The message says "omitted", and must keep saying whatever
-    //     is actually emitted.
-    // #313 stage 3 shipped a diagnostic that outlived the behaviour it described and needed a
-    // follow-up to correct; this comment exists so the next person to fix a consequence edits the
-    // sentence rather than leaving it.
-    //
-    // The gate is "the remaining consequence is REACHABLE on this profile": ExpandEnabled. With
-    // $expand off, the entity set expands nothing at all, so an undeclared navigation is no more
-    // unreachable than a declared delegate-less one and there is nothing to distinguish. It is also
-    // the load-bearing half of the targeting, exactly as in WarnUnboundedBareExpand: ExpandEnabled
-    // is false by default. PropertyAccessEnabled/HasGetById/HasPatch are no longer part of the gate
-    // — they gated the property-route consequence, which no longer exists.
-    //
-    // Emitted once per registration at startup, never per request.
+    // Gated on ExpandEnabled: the remaining consequence has to be reachable, and that flag is false
+    // by default.
     private static void WarnUndeclaredConventionNavigations(OhDataRegistration registration, ILogger? logger)
     {
         if (logger is null) return;
@@ -2189,77 +1820,27 @@ internal static class OhDataEndpointFactory
         }
     }
 
-    // #481/#368: authorization is PER PROFILE and does not compose across a navigation. Every
-    // navigation-family route, and every $expand call site, runs under the DECLARING entity set's
-    // rule; the target set's own rule is never consulted — the only two authorization-state reads
-    // in this file are `source.Authorization` and `source.OperationAuthorization`, both on the
-    // profile currently being mapped. Measured across 19 route shapes on #481: with an admin-gated
-    // child set and an anonymous parent declaring a navigation into it, the nav GET, its /$count,
-    // all four $ref shapes, the nav-POST create route and $expand (delegate, batch and pushdown)
-    // all succeeded anonymously — and $ref POST/PUT/DELETE and nav-POST *executed the write*.
+    // #481/#368: authorization is PER PROFILE and does not compose across a navigation -- every
+    // navigation-family route and every $expand call site runs under the DECLARING set's rule.
     //
-    // A WARNING, and NOTHING ELSE. The owner's ruling on #481 rejected consulting the target
-    // profile at request time, for three reasons worth keeping here because they are the reasons a
-    // future reader would otherwise "fix" this into an enforcement pass:
-    //   - It is what Microsoft.AspNetCore.OData does. Verified against its source: the library
-    //     contains no authorization code at all (0 files each for IAuthorizationService,
-    //     AuthorizationPolicy, RequireAuthorization, IAllowAnonymous, AuthorizeAttribute,
-    //     ClaimsPrincipal, Microsoft.AspNetCore.Authorization), and its navigation action lives on
-    //     the PARENT controller, so [Authorize] on the child's controller is never consulted
-    //     either. Enforcing would be a divergence from OData norms, not a correction toward them.
-    //   - It would break the most idiomatic OData shape there is — a scoped `Orders` navigation off
-    //     `Customers` beside a separately-registered, admin-gated `Orders` set — turning correct
-    //     code into 403s, with no opt-out flag to point at.
-    //   - It is not well-defined where sibling sets share one EDM type (#458), and it collides head
-    //     on with #293's frozen Model B rule that "a delegate on a sibling/derived set never
-    //     retroactively poisons a nav that ANOTHER set legitimately serves raw" — fail-closed is
-    //     exactly that poisoning, one concern over.
-    // So the navigation declaration IS the opt-in, and this makes that configuration decision loud
-    // at the moment it is introduced. docs/authorization.md carries the same statement for readers
-    // who never see a startup log.
+    // A WARNING ONLY, by owner ruling: MS OData contains no authorization code at all and routes the
+    // navigation onto the parent's controller, enforcing would break the idiomatic scoped-navigation
+    // shape with no opt-out, and it collides with #293's frozen Model B. The declaration IS the
+    // opt-in; this makes it loud.
     //
-    // THREE TARGETING RULES, each measured rather than reasoned (#481's probe):
+    // Three targeting rules, each a probe result -- change any and it goes silently wrong:
+    //   1. target = the EDM navigation's own target type via ResolveProfilesForEdmType. NOT
+    //      ChildEntitySetName (unset by the batchGetAll overload) and NOT NavItemType (unset by
+    //      HasOptional/HasRequired).
+    //   2. fires on the DECLARED navigation, not the routed one -- a bare HasMany with no handler
+    //      still leaks via $expand. An UNDECLARED convention navigation is deliberately silent;
+    //      WarnUndeclaredConventionNavigations already names it.
+    //   3. the union, never the binding -- two or more exposing sets yield an EdmUnknownEntitySet
+    //      placeholder, so a binding-only check breaks when an unrelated second set is registered.
     //
-    //   1. The target is resolved through the EDM navigation property's OWN target type, then
-    //      through ResolveProfilesForEdmType — the same union the two $expand call sites resolve
-    //      candidates with. NOT through NavigationRouteDefinition.ChildEntitySetName (never set by
-    //      the HasMany(nav, batchGetAll) overload — probe case 7 leaked through exactly that) and
-    //      NOT through NavItemType (never set by HasOptional/HasRequired).
-    //
-    //   2. It fires on the DECLARED navigation, not the routed one. Probe B-1: a bare
-    //      HasMany(x => x.Children) with no handler and no route still serves the protected rows
-    //      through $expand, so gating on route presence would miss the case with the weakest
-    //      opt-in argument. The converse — an UNDECLARED, convention-discovered navigation (probe
-    //      B-2) — is deliberately silent: #440/#446 already made it served by nothing at all, and
-    //      WarnUndeclaredConventionNavigations above already names it, saying something different.
-    //
-    //   3. The union, never the EDM's navigation-source binding. Per the decision recorded at
-    //      ResolveProfilesForEdmType: (A) exactly one entity set exposes the target type → a REAL
-    //      IEdmEntitySet binding exists, and the union is that one set, so the two agree; (B) two
-    //      or more → NavigationPropertyBindings is EMPTY and FindNavigationTarget returns an
-    //      EdmUnknownEntitySet placeholder; (C) none → the same placeholder. A binding-only check
-    //      therefore stops working the moment someone registers an unrelated second entity set
-    //      over the child type, silently. Warning if ANY candidate is stricter is the fail-loud
-    //      direction, and case (C)'s empty union warns about nothing, correctly.
-    //
-    // WHY THE COMPARISON IS PER CATEGORY rather than one union of everything the target requires.
-    // A warning that fires on a correct configuration gets ignored, which costs more than the
-    // warning is worth. `ConfigureAuthorization(auth => auth.Read(r => r.AllowAnonymous())
-    // .Writes(w => w.RequireRole("admin")))` on the target is an ordinary shape, and a read-only
-    // navigation into it loses NOTHING — so the categories are compared separately, and each is
-    // considered only where this navigation really exposes it:
-    //   Read   — always, because $expand needs no route (rule 2), and because a NavigationRoute-
-    //            Definition always registers a nav GET (the loop over source.NavigationRoutes maps
-    //            one for every entry, even a post/addRef-only navigation whose GET 404s).
-    //   Create — only with a `post` handler (the nav-POST create route).
-    //   Update — only with addRef/setRef/removeRef (the three $ref write routes).
-    // Delete and Invoke are excluded because no navigation route is ever mapped in either category
-    // — see the ApplyOperationAuth call sites on the nav routes.
-    //
-    // Emitted once per (declaring set, navigation, stricter target set) at startup, never per
-    // request. Placed after every route has mapped, for the same reason WarnUnboundedBareExpand and
-    // WarnUndeclaredConventionNavigations are: a registration whose startup validation is about to
-    // throw should not first emit advice about a surface it will never serve.
+    // Compared per category, because a target with Read(AllowAnonymous) + Writes(RequireRole) is an
+    // ordinary shape a read-only navigation loses nothing to. Read always; Create only with a post
+    // handler; Update only with $ref handlers; Delete/Invoke never map a nav route.
     private static void WarnNavigationTargetAuthorization(OhDataRegistration registration, ILogger? logger)
     {
         if (logger is null) return;
@@ -2441,27 +2022,19 @@ internal static class OhDataEndpointFactory
             .Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IEnumerable<>)
                       && modelType.IsAssignableFrom(i.GetGenericArguments()[0]));
 
-    // #357/#467: a bound operation whose declared return type is a collection of the entity set's
-    // own type honours $top and $skip and caps at MaxTop, so — and only so — its route documents
-    // them. Every other field is false: a bound operation applies no $filter/$orderby/$select/
-    // $expand/$count/$search, and #467's rule is that each field means "this route honours this
-    // option", never "this route is of kind X".
+    // #357/#467: a bound operation whose DECLARED return type is a collection of the set's own type
+    // honours $top/$skip and caps at MaxTop, so -- and only so -- its route documents them. Every
+    // other field is false: #467's rule is that a field means "this route honours this option", never
+    // "this route is of kind X".
     //
-    // Attached at the ONE metadata site, in this factory, exactly as #467 requires: all three
-    // OpenAPI companion packages read this record, and a rule transcribed into them separately is
-    // how the same wrong document appeared in all three before.
+    // Attached at the ONE metadata site, as #467 requires: all three OpenAPI companion packages read
+    // this record, and a rule transcribed into them separately is how the same wrong document
+    // appeared in all three before.
     //
-    // #543: bound ACTIONS are attached too, and the rename off "…FunctionPaging…" is the point.
-    // They were excluded on the reasoning that a @odata.nextLink is a URL the client GETs
-    // (§11.2.5.7) and POST /Set/Action is not GET-addressable as a continuation — which is
-    // sound about the
-    // CONTINUATION and was wrongly taken to be about the CEILING as well. An action now honours
-    // $top/$skip and validates them against MaxTop exactly as a function does; the only thing it
-    // does not do is emit a nextLink (see TryApplyOperationCollectionPaging, which refuses instead).
-    // So "this route honours $top/$skip" is now true of both kinds, and #467's rule says document
-    // it on both. The dangling "see AddBoundFunctionPagingMetadata for why actions are excluded"
-    // cross-reference in WrapBoundOpResult, which pointed at a rationale this method never
-    // contained, is gone with the exclusion it described.
+    // #543: bound ACTIONS are attached too. They were excluded on reasoning that is sound about the
+    // CONTINUATION -- a nextLink is GET-addressable and POST is not -- and was wrongly taken to be
+    // about the CEILING as well. An action now honours $top/$skip and validates against MaxTop; the
+    // only thing it cannot do is emit a nextLink.
     private static void AddBoundOperationPagingMetadata<TModel>(
         RouteHandlerBuilder rb, BoundOperationDefinition op, IEntitySetEndpointSource source)
         where TModel : class
@@ -2845,42 +2418,22 @@ internal static class OhDataEndpointFactory
                   "remove a host group requirement, unlike the same call on an entity-set category. See #572."));
     }
 
-    // #495: the options for envelopes whose ENTIRE content is framework-generated -- every OData
-    // error envelope, and the service document. Deliberately a standalone, host-free instance
-    // rather than the registration's own `jsonOptions` (which derives from the host's and so
-    // carries its converters, encoder and key policy by design, #252).
+    // #495: options for envelopes whose ENTIRE content is framework-generated -- the OData error
+    // envelope and the service document. Deliberately host-free rather than the registration's
+    // jsonOptions, which carries the host's converters and key policy by design (#252).
     //
-    // An error envelope's members are `error`/`code`/`message`/`target`, the service document's are
-    // `@odata.context`/`value`: contractual identifiers from the OData formats, not names any
-    // policy may rewrite. Their values are strings this framework generated -- no user model data
-    // anywhere -- so there is nothing here for a host converter or naming policy to have an opinion
-    // about, and two things for it to break:
+    // Their members are contractual identifiers, not names a policy may rewrite, and there is no user
+    // model data anywhere -- so nothing for a host to have an opinion about, and two things to break.
+    // SHAPE: these are Dictionary<string,...>, so a host DictionaryKeyPolicy applies to the keys --
+    // measured under SnakeCaseUpper, {"ERROR":{"CODE":...}} on every error response. FAULT: a host
+    // converter that THROWS took the envelope with it, at IResult-execute time (the #396 hazard), so
+    // the group filter could neither catch nor log it -- including for its OWN 500 envelope, the one
+    // response that must never fail.
     //
-    //  * SHAPE. These envelopes are Dictionary<string, ...>, so a host DictionaryKeyPolicy applies
-    //    to the keys. Measured on the pre-fix tree with the host's HttpJsonOptions set to
-    //    SnakeCaseUpper: {"ERROR":{"CODE":"NotFound","MESSAGE":...}} -- every error response the
-    //    framework produces, on every route, loses the shape a client switches on.
-    //  * FAULT. A host converter that THROWS took the envelope with it: the dictionary was handed
-    //    to Results.BadRequest/NotFound/Json and serialized at IResult-execute time, i.e. after the
-    //    endpoint-filter chain unwound (the #396 hazard), so the group filter could neither catch
-    //    it nor log it. Measured: an empty 500 with no OhData log -- including for the group
-    //    filter's OWN 500 envelope, which is the one response that must never fail.
-    //
-    // Both are closed by rendering here, inside the pipeline, with options this framework owns.
-    //
-    // The Encoder is set EXPLICITLY and is not decoration. ASP.NET Core's own
-    // Microsoft.AspNetCore.Http.Json.JsonOptions overrides the Web default with
-    // UnsafeRelaxedJsonEscaping, on the stated grounds that its output goes straight to a response
-    // body rather than into an HTML page -- which is equally true here. A bare
-    // `new JsonSerializerOptions()` leaves Encoder null, i.e. JavaScriptEncoder.Default, and that
-    // is NOT the same bytes: measured on a default host, a 404 whose message quotes the requested
-    // key emitted each apostrophe as a six-character unicode escape rather than literally
-    // (78 -> 88 bytes), and every angle bracket, ampersand and non-ASCII character would go the
-    // same way. Everything else about
-    // ASP.NET Core's defaults that could reach these envelopes already matches -- DictionaryKeyPolicy
-    // and WriteIndented are unset there too, and PropertyNamingPolicy cannot apply (dictionary keys
-    // are not property names, and ServiceDocumentEntry pins its own with [JsonPropertyName]).
-    // ErrorEnvelopeFidelityTests pins the exact bytes rather than the reasoning.
+    // The Encoder is set EXPLICITLY. ASP.NET Core's own Http.Json.JsonOptions overrides the Web
+    // default with UnsafeRelaxedJsonEscaping, and a bare `new JsonSerializerOptions()` is NOT the
+    // same bytes -- measured, a 404 quoting the requested key went 78 -> 88 bytes with every
+    // apostrophe escaped. ErrorEnvelopeFidelityTests pins the bytes rather than the reasoning.
     private static readonly JsonSerializerOptions _frameworkEnvelopeSerializerOptions = new()
     {
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
@@ -2897,73 +2450,42 @@ internal static class OhDataEndpointFactory
         return PreRenderedJson(body, _frameworkEnvelopeSerializerOptions, status);
     }
 
-    // #396: serialize NOW, inside the endpoint-filter pipeline, and return the bytes.
+    // #396: serialize NOW, inside the filter pipeline, and return the bytes. RequestDelegateFactory
+    // executes an IResult AFTER the filter chain unwinds, so a fault during result execution is
+    // outside the group filter's try and the status line is already on the wire -- measured, a bound
+    // function faulting during serialization logged "Request finished ... - 200" and shipped a
+    // truncated body. A success status with a malformed body is worse than an envelope-less 500.
     //
-    // An IResult returned from a minimal-API handler is executed by RequestDelegateFactory AFTER
-    // the whole endpoint-filter chain has unwound, so anything that throws while the result
-    // executes is outside the group-level exception filter's try -- and by that point the status
-    // line and headers are already on the wire. Measured on the pre-fix tree: a bound function
-    // whose return value faults during serialization logs "Request finished ... - 200" and the
-    // client gets HTTP 200 with a truncated body. That is strictly worse than the envelope-less
-    // 500 the S7 filter was written to eliminate: a success status with a malformed body defeats
-    // client-side error handling completely, where a 500 at least fails loudly.
+    // Most routes are already immune because they build a JsonNode inside the handler, so user code
+    // runs where the filter can see it. The routes that handed a RAW CLR object to Results.Json had no
+    // such stage; this gives them one.
     //
-    // Most routes are already immune, and for a reason worth stating: they build their response as
-    // a JsonNode inside the handler (SerializeBounded / ODataEntityNode /
-    // ApplyCollectionPipelineAsync), so every user-supplied converter, getter and ToString runs
-    // where the filter can still see it, and executing a materialized JsonNode afterwards cannot
-    // re-enter user code. The routes that handed a RAW CLR object to Results.Json -- the bound and
-    // unbound function/action results, and the structural-property read envelope -- had no such
-    // stage. This gives them one.
+    // Byte-identical by construction: same declared TValue, so the same JsonTypeInfo resolves -- do
+    // NOT "simplify" the call sites to pass object. Content-Length is now explicit.
     //
-    // Byte-identical to Results.Json by construction: same declared TValue (so JsonSerializer
-    // resolves the same JsonTypeInfo -- do NOT "simplify" the call sites to pass object), same
-    // options instance, same "application/json; charset=utf-8". The one header difference is that
-    // Content-Length is now written explicitly instead of being inferred by the server from a
-    // fully-buffered response body.
-    //
-    // Cancellation is unaffected: SerializeToUtf8Bytes is synchronous and takes no token, so it
-    // cannot manufacture an OperationCanceledException, and the S7 filter still declines to catch
-    // one raised by a user converter.
-    //
-    // Cost, measured (OperationResultBufferingBenchmarks, BenchmarkDotNet, against a Stream.Null
-    // write so the baseline is as cheap as it can possibly be): a small DTO -- the shape a bound
-    // function actually returns -- gets FASTER, 0.74x, because SerializeAsync's async state machine
-    // and flush cost dominate a payload of tens of bytes. A 189 KB result costs +18% and a 9.4 MB
-    // result +74%, both entirely the extra full-payload byte[] (and, past 85 KB, its LOH traffic).
-    // That is accepted rather than optimised away: driving a pooled Utf8JsonWriter directly is
-    // faster still at every size (measured, kept as an arm in that class) but requires transcribing
-    // the JsonSerializerOptions -> JsonWriterOptions mapping by hand, and getting one member of it
-    // wrong or missing one a future runtime adds would change the response bytes -- against a fix
-    // whose whole non-faulting requirement is byte-identity. Worth revisiting only behind
-    // byte-for-byte differential tests. For scale: the entity and collection routes already
-    // materialise a whole JsonNode tree for payloads of this size, which allocates far more than a
-    // byte[] does, so this is nowhere near the framework's buffering ceiling.
+    // Cost (OperationResultBufferingBenchmarks): a small DTO gets FASTER (0.74x -- the async state
+    // machine dominates a tiny payload); 189 KB costs +18%, 9.4 MB +74%, all of it the extra byte[].
+    // A pooled Utf8JsonWriter beats every arm and is deliberately not shipped: it needs the
+    // JsonSerializerOptions -> JsonWriterOptions mapping transcribed by hand, and one wrong member
+    // changes the response bytes, against a fix whose whole requirement is byte-identity.
     private static IResult PreRenderedJson<TValue>(
         TValue value, JsonSerializerOptions options, int statusCode = StatusCodes.Status200OK)
         => new Utf8JsonHttpResult(JsonSerializer.SerializeToUtf8Bytes(value, options), statusCode);
 
     // #495: the owned options, with the OData envelope's contractual dictionary keys protected.
     //
-    // Every OData success envelope this framework emits is a Dictionary<string, ...> whose keys --
-    // `@odata.context`, `value`, `@odata.count`, `@odata.nextLink` -- are identifiers the format
-    // defines, not names a policy may rewrite. System.Text.Json applies DictionaryKeyPolicy to
-    // them, so a host that set one reshaped every such response: measured with the host's
-    // HttpJsonOptions DictionaryKeyPolicy at SnakeCaseUpper, a plain collection GET came back as
-    // {"@ODATA.CONTEXT":...,"VALUE":[...]} -- parseable JSON that no OData client can read. (The
-    // entity routes were never affected: they emit a JsonObject, whose member names STJ writes
-    // verbatim.) The registration's own options inherit the policy from the host's by construction
-    // (#252 copies the host instance and overrides only PropertyNamingPolicy), so clearing it has
-    // to happen here.
+    // Every success envelope here is a Dictionary<string,...> whose keys are identifiers the format
+    // defines, and STJ applies DictionaryKeyPolicy to them -- measured under SnakeCaseUpper, a plain
+    // collection GET came back as {"@ODATA.CONTEXT":...,"VALUE":[...]}, parseable JSON no OData
+    // client can read. (The entity routes emit a JsonObject, whose member names STJ writes verbatim.)
+    // The registration's options inherit the policy from the host by construction (#252), so clearing
+    // it has to happen here.
     //
-    // Everything else is left exactly as the host configured it -- converters, encoder,
-    // PropertyNamingPolicy -- because the values in these envelopes ARE payload, and #252's
-    // division is that OhData owns the names and the host owns value formatting.
+    // Everything else is left as the host configured it, because the VALUES in these envelopes are
+    // payload -- #252's division is that OhData owns the names and the host owns value formatting.
     //
-    // Costs nothing on a host that set no policy, which is every default configuration: the source
-    // instance is returned by reference, so no options are copied and no second JsonTypeInfo cache
-    // is created. Only a host that really set one pays for the derived instance, once per source
-    // instance (the sources here are per-registration, built at startup).
+    // Free on a host that set no policy: the source instance is returned by reference, so nothing is
+    // copied and no second JsonTypeInfo cache is created.
     private static readonly ConditionalWeakTable<JsonSerializerOptions, JsonSerializerOptions>
         _envelopeOptionsCache = new();
 
@@ -3007,30 +2529,21 @@ internal static class OhDataEndpointFactory
         }
     }
 
-    // Every keyed route peels off the ODataKeyFormatException that ODataKeyParser.Parse throws on
-    // an unparseable key and maps it to the same 400 envelope. `withTarget` preserves the existing
-    // split: entity-addressed routes point `target` at "key"; navigation routes omit it.
+    // Peels off the ODataKeyFormatException ODataKeyParser.Parse throws and maps it to the 400
+    // envelope. `withTarget` preserves the split: entity-addressed routes point target at "key",
+    // navigation routes omit it.
     //
-    // #496 finding 4: the clause used to catch a bare FormatException, and the routes' try covers
-    // the WHOLE handler body -- so a profile handler throwing FormatException from its own code
-    // (a downstream parse, a decimal.Parse on a CSV column) was answered with this 400, asserting
-    // the client's key was malformed for a request whose key had parsed one line earlier. The
-    // dedicated type makes the clause exactly as wide as the condition its message describes; see
-    // ODataKeyFormatException.
-    // #496 finding 4: mark a profile handler's fault so a read route's narrow, framework-facing
-    // catches cannot claim it. See HandlerFaultException for why the marker sits on USER code
-    // rather than on the framework's own option-touching calls. The synchronous seams (the ETag
-    // selector on GetById and the collection pipeline's whole ETag stage) use an inline try with
-    // the same `when` clause instead -- a Func overload would allocate a closure per request or per
-    // page for a fault this rare.
+    // #496 finding 4: this used to catch a bare FormatException, and the routes' try covers the WHOLE
+    // handler body -- so a profile handler throwing FormatException from its own code was answered
+    // with this 400, asserting the client's key was malformed for a request whose key had parsed one
+    // line earlier. The dedicated type makes the clause exactly as wide as its message.
     //
-    // Takes the already-started Task rather than a Func, so no closure is allocated on the hottest
-    // routes in the framework. That is safe because every Invoke* member of
-    // IEntitySetEndpointSource / IODataEntitySetEndpointSource is an `async` method: a profile
-    // delegate that throws SYNCHRONOUSLY (the ordinary `GetAll = ct => throw ...` lambda shape,
-    // which is not an async lambda) has its exception captured into the returned Task rather than
-    // raised at the call site, so it still lands in the try below. Issue496ErrorHandlingTests uses
-    // exactly that fixture shape, so this invariant is pinned rather than assumed.
+    // AsHandlerFault marks a profile handler's fault so a read route's narrow catches cannot claim
+    // it -- the marker sits on USER code, not on the framework's own option-touching calls. It takes
+    // the already-started Task rather than a Func, so no closure is allocated on the hottest routes.
+    // Safe because every Invoke* member is an `async` method: a delegate that throws SYNCHRONOUSLY
+    // has its exception captured into the returned Task. Issue496ErrorHandlingTests uses exactly that
+    // fixture shape, so the invariant is pinned rather than assumed.
     private static async Task<T> AsHandlerFault<T>(Task<T> handlerCall)
     {
         try
@@ -3163,141 +2676,35 @@ internal static class OhDataEndpointFactory
         return sr;
     }
 
-    // ── Unsupported system query options: one matcher, one rule, every read route ──────────
+    // ── Unsupported system query options: one matcher, every read route ──────────────────
     //
-    // #359/#380/#353 (Minimal-conformance item 7 / Part 1 §11.2.5 — "If a data service does not
-    // support a system query option, it MUST fail any request that contains the unsupported
-    // option"). This replaced three separate mechanisms that between them left most of the
-    // surface unexamined: a closed four-name allowlist on the collection routes
-    // ($apply/$compute/$index/$deltatoken), a closed seven-name list on the navigation route, and
-    // NOTHING at all on GetById, on /{Set}/$count, or on the navigation /$count. So $unknown,
-    // $slect, $fliter, $expandx and a top-level $levels were all accepted and discarded under a
-    // 200 — and on the collection routes echoed verbatim into the generated @odata.nextLink —
-    // while GetById accepted and discarded $filter/$orderby/$count/$top/$apply and /$count
-    // accepted and discarded $search, returning the unfiltered total.
+    // #359/#380/#353. The rule is the '$' SIGIL, not a name allowlist: a non-'$' key is a custom
+    // option (Part 2 §5.2) and passes through, a '$' key the route does not implement is refused
+    // whether or not any OData version defines it. Sets are PER ROUTE and deliberately differ.
     //
-    // THE RULE IS THE '$' SIGIL, not a name allowlist. Part 2 §5.2 reserves the '$' prefix for
-    // system query options, so a key that does NOT start with '$' is a custom query option and is
-    // passed through untouched (as is a '@'-prefixed parameter alias, §5.3, and the framework's
-    // own 'ohdata-skiptoken' continuation offset). A '$'-prefixed key the route does not
-    // implement is refused, whether or not any OData version has ever defined it — the same
-    // fail-closed reasoning the #313 continuation route has always used, generalised: an option
-    // this build has never heard of must be refused rather than silently ignored, and a future
-    // system option cannot quietly start being dropped on the floor.
+    // 501 IS "CAN'T", 400 IS "WON'T". 501 where no profile setting could make this request work on
+    // this route (§9.3.1 and §13.1.1 item 7, both MUSTs); 400 where it could and the adopter
+    // declined -- a capability flag, an allowlist, a malformed value (#402). So the same option can
+    // be 501 on one entity set and 400 on another; that is per-resource conformance, not a bug.
     //
-    // The set is PER ROUTE, and that is the point: $filter is implemented on the collection GETs
-    // and not on GetById. A name that is recognized-but-not-implemented-here and a name that is
-    // unrecognized anywhere get the SAME 501 UnsupportedQueryOption — the client's remedy is
-    // identical ("stop sending it"), so a second code would distinguish nothing actionable.
+    // OrdinalIgnoreCase matches MS (ODataQueryOptions.IsSystemQueryOption lowercases by default), so
+    // $Select stays honoured. $format is in every set: it is handled once on the group filter.
     //
-    // Matching is OrdinalIgnoreCase, which is ALIGNMENT with Microsoft.AspNetCore.OData rather
-    // than a leniency: ODataQueryOptions.IsSystemQueryOption(string) lowercases the name before
-    // comparing whenever the URI resolver enables case-insensitivity, which is the default
-    // (ODataQueryOptions.cs:283 for the comment, :284-287 for the branch it guards, :289-290 for
-    // the lowercasing itself). So $Select and
-    // $TOP are honoured exactly as they are today; #359's complaint that "$Select is applied
-    // while $slect is ignored and neither is rejected" is answered by rejecting $slect, never by
-    // starting to reject $Select. This is a deliberate divergence from MS in the OTHER direction:
-    // its own BuildQueryOptions carries `default: // we don't throw if we can't recognize the
-    // query` (ODataQueryOptions.cs:1061), i.e. it silently ignores. §11.2.5's MUST wins.
-    //
-    // Note that MS's own IsSystemQueryOption (:172-198) recognizes THIRTEEN names and $index is not
-    // among them, so "$index is a system option MS knows about" would be wrong: it is refused here
-    // for the same reason $unknown is, by the sigil, and it is named in the list above only because
-    // 4.01 §11.2.5 defines it and a reader will look for it.
-    //
-    // $format is in every set below and must stay there. It is not a data option: §11.2.10
-    // content negotiation is implemented once, on the group filter that wraps the whole OData
-    // surface, so it never reaches these handlers and cannot change a single row. An unsupported
-    // $format VALUE is still rejected there, unchanged.
-    //
-    // 501 OR 400: THE TAXONOMY. State it as five words and the rest follows —
-    //
-    //                        *** 501 IS "CAN'T". 400 IS "WON'T". ***
-    //
-    // Both statuses are correct, for different conditions, and the line between them is "can this
-    // service perform the functionality on this resource at all", not "is the client going to be
-    // annoyed". Three clauses of OData v4.0 Part 1 set it, quoted verbatim:
-    //
-    //   §9.3.1  "If the client requests functionality not implemented by the OData Service, the
-    //           service MUST respond with 501 Not Implemented and the response body SHOULD
-    //           describe the functionality not implemented."
-    //   §13.1.1 item 7, inside the Minimal Conformance MUST list: "MUST successfully parse the
-    //           request according to [OData-ABNF] for any supported system query string options and
-    //           either follow the specification or return 501 Not Implemented (section 9.3.1) for
-    //           any unsupported functionality (section 11.2.1)"
-    //   §11.2.5 "If a data service does not support a system query option, it MUST fail any
-    //           request that contains the unsupported option and SHOULD return 501 Not Implemented."
-    //
-    // §11.2.5 alone is a SHOULD and an earlier revision of this file leaned on that to justify a
-    // uniform 400. That reading does not survive the other two: §9.3.1 is a MUST, and §13.1.1 item 7
-    // puts the same 501 inside the MUST list a service has to satisfy to claim Minimal conformance
-    // — which this project claims. So:
-    //
-    //   501 — THE SERVICE DOES NOT IMPLEMENT IT. Every refusal driven by this sigil rule: an
-    //         unrecognized $-name ($unknown, $slect, a top-level $levels), a real OData option this
-    //         build implements nowhere ($apply, $compute, $index, $deltatoken), and a real option
-    //         this build implements on OTHER routes but not on the one addressed ($filter on
-    //         GetById, $search on a /$count, $select on a single-valued navigation). Also the two
-    //         FLAG-INDEPENDENT structural refusals below — GetAll's $filter/$orderby and the
-    //         /$count GetAll fallback's $filter — which no configuration of that profile can turn
-    //         on, because that route has no IQueryable and therefore no filter code at all.
-    //   400 — IMPLEMENTED, SWITCHED OFF HERE. A capability flag the adopter left false
-    //         (CheckDisabledQueryOption: FilterEnabled/OrderByEnabled/SelectEnabled/ExpandEnabled/
-    //         CountEnabled), a property allowlist rejection, and $search on a route that HAS a
-    //         $search leg but whose profile supplied no Search handler. The service implements the
-    //         functionality; this resource declines to offer it, which is not what §9.3.1 describes.
-    //         Everything #402 owns stays 400 too — a malformed or empty option VALUE ($top=abc,
-    //         $skiptoken=, $filter=) is a bad request about a supported option, not unimplemented
-    //         functionality — as does an out-of-range value (MaxTop, MaxExpandTop).
-    //
-    // The test for which side a refusal falls on is therefore mechanical: could any setting on the
-    // profile make this same request succeed on this same route? Yes -> 400 ("won't"). No -> 501
-    // ("can't"). That is why $search splits: no Search handler is a 400 on the collection GETs (the
-    // route invokes one when configured) and a 501 on /$count and GetById (no $search leg exists
-    // there at all).
-    //
-    // A CONSEQUENCE WORTH STATING SO NOBODY "FIXES" IT: the SAME option can be 501 on one entity
-    // set and 400 on another, decided by which read handler the profile supplies. $filter on a
-    // GetAll-backed set is 501 — no IQueryable exists, so the framework CANNOT apply it there under
-    // any configuration — while $filter on a GetQueryable-backed set with FilterEnabled = false is
-    // 400: it can, and the adopter chose not to expose it. That is not an inconsistency to be
-    // smoothed over. Conformance is per-RESOURCE (§13.1.1 is a statement about what a service does
-    // when asked, not a global constant), and the two answers describe genuinely different
-    // conditions: one tells the client "no configuration of this endpoint will ever do that", the
-    // other "this endpoint could, and is not offering it".
-    //
-    // BREAKING, and it is the largest wire change on this branch. $apply/$compute/$index/
-    // $deltatoken have answered 400 UnsupportedQueryOption with this exact message since 1.0.0 and
-    // now answer 501 with the same code and the same message. The error CODE and the message bytes
-    // are deliberately unchanged — §9.3.1's "body SHOULD describe the functionality not
-    // implemented" is satisfied by the text that already named the option — so a client matching on
-    // the envelope keeps working and only status-code branching moves. One condition still produces
-    // one envelope: every sigil refusal on every route is 501 with code UnsupportedQueryOption.
+    // Full derivation, the measured before/after and the rejected uniform-400 reading: #359.
 
     private const string FormatOption = "$format";
 
-    // The two collection GET routes over an IQueryable — GetQueryable (Priority-2) and
-    // Priority-1 (GetODataQueryable). The third collection GET, GetAll, has its own array below.
-    // $filter/$orderby/$select/$expand/$count are listed here
-    // because the route DOES implement them; whether this profile permits them is the separate
-    // question CheckDisabledQueryOption answers, with its own message. Not listed, and so refused:
-    // $apply/$compute (unimplemented aggregation), $index (4.01 ordered insert), $deltatoken
-    // (change tracking), and every unrecognized name.
+    // The two collection GET routes over an IQueryable -- GetQueryable (Priority-2) and Priority-1.
+    // GetAll has its own array below. The listed options are the ones the ROUTE implements; whether
+    // this profile permits them is CheckDisabledQueryOption's separate question.
     //
-    // $search is the one entry this array's two consumers do NOT agree about, and it is listed
-    // because of the Priority-2 consumer. There, $search is implemented: the route invokes the
-    // Search handler and answers with its own "Configure the Search handler" message when the
-    // profile has none. On the PRIORITY-1 consumer there is no $search leg in the route body at
-    // all — the metadata it attaches declares SearchEnabled: false, #465 refuses GetODataQueryable
-    // + Search at startup, and $search there is the profile's own business via options.Search — so
-    // listing it means Priority-1 accepts and ignores one option ($skiptoken is the same shape: the
-    // profile owns it, the framework never reads it). Splitting the array would express that
-    // honestly, and is deliberately NOT done: the Priority-1 contract hands the whole
-    // ODataQueryOptions to the profile, so "the framework does not read it" is not the same
-    // statement as "the request does not honour it", and refusing $search on the one path whose
-    // entire point is that the profile applies the options itself would break the documented
-    // options.Search remedy #465 prescribes.
+    // $search is the one entry the two consumers do NOT agree about, and it is listed for the
+    // Priority-2 one, where the route invokes the Search handler. Priority-1 has no $search leg at
+    // all -- #465 refuses GetODataQueryable + Search at startup and $search there is the profile's
+    // own business via options.Search -- so listing it means Priority-1 accepts and ignores one
+    // option. Splitting the array is deliberately NOT done: the Priority-1 contract hands the whole
+    // ODataQueryOptions to the profile, so "the framework does not read it" is not "the request does
+    // not honour it", and refusing it would break the options.Search remedy #465 prescribes.
     private static readonly string[] s_collectionImplementedOptions =
     {
         "$filter", "$orderby", "$top", "$skip", "$select", "$expand", "$count",
@@ -3316,77 +2723,18 @@ internal static class OhDataEndpointFactory
         "$search", FormatOption,
     };
 
-    // GET /{Set}/$count. §11.2.9 GOVERNS THIS ROUTE'S IMPLEMENTED SET, AND IT PARTITIONS THE
-    // SYSTEM QUERY OPTIONS INTO EXACTLY TWO CLASSES. Verbatim:
-    //
-    //   "On success, the response body MUST contain the count of items matching the request after
-    //    applying any $filter or $search system query options, formatted as a simple scalar
-    //    integer value with media type text/plain. The returned count MUST NOT be affected by
-    //    $top, $skip, $orderby, or $expand."
-    //
-    // So:
-    //
-    //   AFFECTS THE COUNT ($filter, $search) -- a route that cannot apply one MUST refuse it.
-    //         Ignoring it returns a WRONG NUMBER under a 200, which is the defect #353 reported.
-    //         This route applies $filter on its two IQueryable-backed branches and refuses it with
-    //         its own message on the GetAll fallback (no IQueryable exists there, so no
-    //         configuration turns one on -- flag-independent, hence 501). $search has no leg here
-    //         at all and is refused unconditionally: that is #353's headline and it STANDS.
-    //   MUST NOT AFFECT THE COUNT ($top, $skip, $orderby, $expand) -- accepted and IGNORED, because
-    //         ignoring them is not a shortfall the service is confessing to, it is the behaviour
-    //         the clause specifies. Under §13.1.1 item 7's disjunction -- "either follow the
-    //         specification or return 501 Not Implemented ... for any unsupported functionality" --
-    //         ignoring these IS following the specification, so 501 would claim non-implementation
-    //         of something this route has implemented correctly since 1.0.0.
-    //   NEITHER (everything else: $apply, $compute, $index, $deltatoken, $skiptoken, and every
-    //         unrecognized $-name) -- outside the clause, unimplemented here, refused under
-    //         §9.3.1 and §13.1.1 item 7 exactly as on every other route.
-    //
-    // An earlier revision of this comment asserted that "§11.2.9 mandates nothing either way" and
-    // refused all of $top/$skip/$orderby/$select/$expand on the strength of it. The clause had not
-    // been consulted; it names four of those five and specifies their behaviour.
-    //
-    // $select IS ACCEPTED AND IGNORED, AND IT IS A RULING RATHER THAN AN OVERSIGHT. §11.2.9's
-    // MUST-NOT sentence does not name it -- it names the four options that change WHICH ITEMS, or
-    // in what ORDER, a collection page carries, which are the four a naive implementation would
-    // have applied. The clause's POSITIVE half settles $select anyway, and it is exhaustive: the
-    // count is of "items MATCHING THE REQUEST after applying any $filter or $search". $select
-    // changes an item's SHAPE, never its membership, so it cannot move that number; and the
-    // response is a bare text/plain scalar, so there is no representation left to project out of.
-    // Refusing it alone among the five options a grid URL carries would reinstate exactly the
-    // unprincipled split this comment's previous revision was written to remove -- $expand ignored
-    // beside $select refused, one line apart, for no statable reason. MS ignores it too (below).
-    //
-    // $format IS ACCEPTED AND IGNORED, AND THAT IS THE OPPOSITE ERROR FROM THE ONE ABOVE, SO STATE
-    // IT. §11.2.9's closing sentence -- "Content negotiation using the Accept request header or
-    // the $format system query option is not allowed with the path segment /$count" -- means this
-    // entry canNOT mean "negotiated here", which is what FormatOption means in every other array
-    // in this file. It means "not refused", for three reasons. (1) The clause constrains the
-    // CLIENT and prescribes no server response; §9.3.1's 501 is for functionality not
-    // implemented, and $format IS implemented service-wide (§11.2.10, on the group filter), so
-    // 501 would be a false statement -- while the 400 arm of the taxonomy needs a capability flag,
-    // of which this condition has none. (2) The response is text/plain whatever $format says, so
-    // accepting it cannot make the response wrong: it is a no-op in exactly the sense the four
-    // named options are. (3) Refusing it would produce TWO envelopes for one disallowed option,
-    // because the group filter already answers 400 UnsupportedFormat for a non-JSON $format BEFORE
-    // this route runs -- $format=xml would 400 from the filter and $format=json would 501 from
-    // here. One condition, one envelope, is the rule this file is built on.
-    //
-    // Accept: application/xml still answers 406, unchanged and deliberately. §11.2.9 forbids the
-    // CLIENT to negotiate on this segment; it does not licence the SERVER to ship a media type the
-    // client said it will not take, and RFC 9110 §12.5.1 makes 406 the right answer to that.
-    //
-    // THIS ROUTE AGREES WITH Microsoft.AspNetCore.OData, which matters because a divergence here
-    // is not theoretical. Verified against the vendored source at a05e1ad0 (9.5.0-7):
-    // ODataQueryOptions' constructor synthesises Count = "true" for any request whose path ends in
-    // /$count (ODataQueryOptions.cs:1072-1084), so ApplyTo's Request.IsCountRequest() early return
-    // (:425-429) always fires -- before the $orderby/$skip/$top block and before SelectExpand --
-    // and MS silently ignores all five. Microsoft.OData.Client relies on it: it translates
-    // LongCount() by appending /$count to the query string it has ALREADY built and stripping
-    // nothing, so .OrderBy(...).LongCount(), .Take(n).LongCount() and .Skip(n).LongCount() all
-    // send the option along. Refusing them broke standard pagination for the industry-standard
-    // OData client, not merely a hand-built grid URL; MsODataClientIntegrationTests' Count_* cases
-    // pin every shape through the real client so a future narrowing fails there first.
+    // GET /{Set}/$count. §11.2.9 partitions the options and specifies each class:
+    //   affects the count ($filter, $search) -- applied where this route can, refused where it
+    //     cannot, because ignoring one returns a wrong number under a 200 (#353);
+    //   "MUST NOT be affected by $top, $skip, $orderby, or $expand" -- accepted and IGNORED, since
+    //     under §13.1.1 item 7 ignoring them IS following the specification;
+    //   everything else -- refused like any other route.
+    // $select and $format are accepted-and-ignored by ruling: $select changes an item's shape, never
+    // its membership, and $format is already answered by the group filter, so refusing it would give
+    // one option two envelopes. Accept: application/xml still 406s. MS behaves the same way, and
+    // Microsoft.OData.Client depends on it -- it appends /$count to a query string it has already
+    // built, so LongCount() after OrderBy/Take/Skip sends those along. Do not narrow this set; #579
+    // reverted exactly that.
     private static readonly string[] s_countRouteImplementedOptions =
     {
         "$filter", "$top", "$skip", "$orderby", "$expand", "$select", FormatOption,
@@ -3451,29 +2799,20 @@ internal static class OhDataEndpointFactory
         "$skip", FormatOption,
     };
 
-    // The four BOUND operation routes — GET|POST /{Set}/{Op} and GET|POST /{Set}({key})/{Op}.
-    // A bound operation's own parameters are non-'$' keys (a query string for a function, a JSON
-    // body for an action), so the sigil rule never examines them; what it examines is the system
-    // options, of which #357 (function) and #543 (action) made $top/$skip real on these routes.
+    // The four BOUND operation routes. An operation's own parameters are non-'$' keys, so the sigil
+    // rule never examines them; what it examines is the system options, of which #357 and #543 made
+    // $top/$skip real here.
     //
-    // #359's SECOND half lands here and nowhere else. TryApplyOperationCollectionPaging emits
-    // BuildNextPageLinkWithSkip, which copies the WHOLE incoming query string, so on an ungated
-    // route an unrecognized option came back inside the server's own @odata.nextLink under a 200 —
-    // byte for byte the wire shape #359's evidence block reports:
-    //   GET /odata/SqOps/TopRated?$unknown=evil -> 200
-    //     "@odata.nextLink": ".../TopRated?%24unknown=evil&%24skip=2"
+    // #359's SECOND half lands here and nowhere else: BuildNextPageLinkWithSkip copies the WHOLE
+    // incoming query string, so on an ungated route an unrecognized option came back inside the
+    // server's own nextLink under a 200 -- `?$unknown=evil` -> `"@odata.nextLink":
+    // ".../TopRated?%24unknown=evil&%24skip=2"`.
     //
-    // $top/$skip are listed UNCONDITIONALLY, not off BoundOperationDefinition.ReturnType the way
-    // AddBoundOperationPagingMetadata's TopSkipSupported is, and that asymmetry is deliberate: the
-    // bound is applied in the RUNTIME collection branch (#357 decision 2 — a handler declared
-    // Task<object> returning a List<TModel> must not be a way around the ceiling), so such a route
-    // really can emit a "$skip=N" continuation. Deriving the set from the declared type would make
+    // $top/$skip are listed UNCONDITIONALLY, not off ReturnType the way TopSkipSupported is, and the
+    // asymmetry is deliberate: the bound is applied in the RUNTIME collection branch, so such a route
+    // really can emit a $skip continuation, and deriving the set from the declared type would make
     // the server refuse a link it had just issued. Where the result is not a collection they are
-    // accepted no-ops -- the same answer s_countRouteImplementedOptions gives them, reached by a
-    // different route: there §11.2.9 requires $top/$skip to be present and ignored, while here
-    // they are real on the collection shape and the route cannot know at startup which shape a
-    // handler declared Task<object> will return, so refusing them would refuse a link the server
-    // itself had just issued.
+    // accepted no-ops -- the same answer the /$count routes give, reached by a different road.
     private static readonly string[] s_boundOperationImplementedOptions =
     {
         "$top", "$skip", FormatOption,
@@ -3579,27 +2918,16 @@ internal static class OhDataEndpointFactory
         MaxOrderByNodeCount = source.MaxOrderByNodeCount,
     };
 
-    // B1 fix (property allowlists): FilterProperties/OrderByProperties/SelectProperties/
-    // ExpandProperties are wired into the EDM at startup via EntityTypeConfiguration.Filter/
-    // .OrderBy/.Select/.Expand (EntitySetProfile.cs), which mark the non-allowlisted properties
-    // NotFilterable/NotSortable/NotSelectable/NotExpandable in the model. Those restrictions are
-    // only enforced when something calls ODataQueryOptions.Validate(...) — ApplyTo alone ignores
-    // them. The coarse per-category enable/disable is handled separately by
-    // CheckCollectionQueryOptionCapabilities with its own "UnsupportedQueryOption" code and
-    // message; this only needs to surface *a* 400 (via the existing ODataException catch
-    // clauses), so Microsoft's default validator wording is fine.
+    // Property allowlists: FilterProperties/OrderByProperties/SelectProperties/ExpandProperties are
+    // wired into the EDM at startup as NotFilterable/NotSortable/NotSelectable/NotExpandable, and
+    // those are enforced only when something calls Validate -- ApplyTo alone ignores them. The coarse
+    // per-category gate is CheckCollectionQueryOptionCapabilities' job, with its own code and message;
+    // this only needs to surface A 400, so MS's default wording is fine.
     //
-    // Runs only the per-option validators that enforce the property allowlists
-    // (NotFilterable/NotSortable/NotSelectable/NotExpandable model-bound annotations written by
-    // FilterProperties/OrderByProperties/SelectProperties/ExpandProperties at EDM-build time).
-    // Deliberately NOT ODataQueryOptions.Validate(settings): the whole-options validator also
-    // runs the Top validator, and the mere presence of model-bound settings on the entity type
-    // (created as a side effect of entityType.Filter(...)/.Select(...) etc.) makes the
-    // model-bound MaxTop default to 0, which would reject every $top outright. $top/$skip/$count
-    // have their own dedicated enforcement in this file (source.MaxTop clamp, m8 negative-value
-    // 400s, CountEnabled gate), so only the three property-scoped validators run here. Throws
-    // Microsoft.OData.ODataException on violation, which each route's existing catch clause maps
-    // to a 400 OData error.
+    // Runs ONLY the three property-scoped validators, deliberately NOT ODataQueryOptions.Validate:
+    // the whole-options validator also runs the Top validator, and the mere presence of model-bound
+    // settings makes model-bound MaxTop default to 0, which would reject every $top outright.
+    // $top/$skip/$count have their own enforcement in this file.
     private static void ValidatePropertyAllowlists<TModel>(ODataQueryOptions<TModel> options, ODataValidationSettings settings)
     {
         options.Filter?.Validate(settings);
@@ -3607,74 +2935,24 @@ internal static class OhDataEndpointFactory
         options.SelectExpand?.Validate(settings);
     }
 
-    // #402: construct ODataQueryOptions inside a try whose scope is EXACTLY the construction, and
-    // whose catch is deliberately broad.
+    // #402: the try scope is EXACTLY the construction and the catch is deliberately broad. Every
+    // failure inside it is a statement about the request URL, so 400 is right for the whole set --
+    // and the scope had to be tightened first, because the old whole-handler try also contains
+    // InvokeGetQueryableAsync, where a broad catch would relabel a database outage as a 400.
     //
-    // Every route that reads query options used to build them inline inside the handler's
-    // whole-body `try`, whose only mapped catch is `catch (ODataException)`. That is wrong on both
-    // axes. Measured (see QueryOptionConstructionFaultTests, which probes every system query option
-    // this framework accepts with empty, malformed and hostile values):
+    // Do NOT replace this with a type list. `$skiptoken=` throws ArgumentException from
+    // SkipTokenQueryOption's ctor, not ODataException, and the throw set of somebody else's
+    // constructors is not ours to enumerate. ODataException keeps its message pass-through so the
+    // empty-value cases stay byte-identical; anything else is generic + logged at Warning.
     //
-    //   * Microsoft.OData.ODataException  — empty value for $filter/$orderby/$top/$skip/$count/
-    //                                       $search/$apply/$compute, thrown from the constructor.
-    //   * System.ArgumentException        — `$skiptoken=` (or a bare `$skiptoken`), thrown by
-    //                                       SkipTokenQueryOption's ctor via BuildQueryOptions.
-    //                                       NOT an ODataException, so it escaped to the group
-    //                                       filter as a 500 on a request any client can send.
+    // #426: the ODataQueryContext is built HERE, per request, and this takes the IEdmModel rather
+    // than a context so no caller can hand it a shared one. ODataQueryOptions' constructor WRITES
+    // context.RequestContainer/Request and Initialize reads Request back off that field, so a shared
+    // context races and a valid request intermittently 400s. Measured 16-89 failures per 32,000
+    // constructions across 16 threads sharing one; 0 with a fresh one.
     //
-    // The tempting fix — add ArgumentException to the catch list — repeats a mistake this file has
-    // already made twice (ValidateOrThrow, the continuation-token readers): the throw set of
-    // somebody else's constructor is not ours to enumerate. ODataQueryOptions.BuildQueryOptions
-    // news up one option object per recognized $-option, each with its own argument validation, and
-    // nothing in Microsoft.AspNetCore.OData's contract says those are ODataException-only — the
-    // $skiptoken case proves they are not, and a package bump can add another tomorrow.
-    //
-    // So: catch everything. That is defensible HERE and only here, because the try contains nothing
-    // but option parsing — no handler, no data source, no serialization. Any failure inside it is by
-    // definition a statement about the request URL, which makes 400 the right answer for the whole
-    // set, known and unknown. That is precisely why the scope had to be tightened first: the old
-    // whole-handler try also contains InvokeGetQueryableAsync, so broadening the catch THERE would
-    // have turned a genuine handler fault (database down) into a 400 and destroyed the S7 guarantee
-    // from the other direction.
-    //
-    // ODataException keeps its existing message pass-through, so the eight empty-value cases above
-    // stay byte-identical. Anything else gets a generic message (an unrecognized exception type's
-    // Message is not vetted for client exposure — same reasoning as the S7 filter) and the real
-    // exception is logged at Warning so an operator can see what actually happened.
-    //
-    // True on success (options set); false on failure (error set to the 400 result to return).
-    //
-    // #426: the ODataQueryContext is built HERE, per request, and this method takes the IEdmModel
-    // rather than a context so that no caller is able to hand it a shared one. It used to be built
-    // once per entity set at startup and captured by all five read-route closures, which is a
-    // documented contract violation, not merely a risky optimisation: ODataQueryOptions' own
-    // constructor WRITES to the context it is given —
-    //
-    //     Contract.Assert(context.RequestContainer == null);      // ODataQueryOptions.cs:76
-    //     context.RequestContainer = request.GetRouteServices();
-    //     context.Request = request;
-    //
-    // — and Initialize then reads `context.Request` back off that shared field (:1165,
-    // IsNoDollarQueryEnable) rather than using the constructor's own `request` parameter. Two
-    // requests in flight against one context therefore race on Request: the second write lands
-    // between the first request's write and its read, so the first request dereferences a DIFFERENT
-    // request's HttpContext — concurrently with that request's own owner, and in production
-    // possibly after it has completed and been recycled (DefaultHttpContext.Uninitialize nulls
-    // _features). Either way the FeatureReferences read tears and throws NullReferenceException out
-    // of DefaultHttpContext.get_RequestServices — swallowed by the broad catch below and relabelled
-    // 400, which is why #384 was first reported as a 500 and presents as a 400 today. Measured on
-    // the pre-fix tree: 16-89 failures (four runs: 43/31/16/89) in 32,000 constructions over 16
-    // threads sharing one context, every one of them a NullReferenceException thrown from
-    // DefaultHttpContext.get_RequestServices; 0 in 32,000 with a fresh context each, and 0 across
-    // 55 repeats of the full solution suite (QueryContextPerRequestTests). MS's Contract.Assert is
-    // the library stating outright that the type is per-request, and every construction site in
-    // Microsoft.AspNetCore.OData itself builds one per request.
-    //
-    // The (IEdmModel, IEdmType, ODataPath) overload does NOT work as the cheap path here, despite
-    // being the obvious candidate: it leaves ElementClrType null, and ODataQueryOptions<TEntity>'s
-    // constructor throws ArgumentException ("ElementClrTypeNull") unless
-    // Context.ElementClrType == typeof(TEntity). FilterQueryOption.ApplyTo throws on a null
-    // ElementClrType too. The CLR-type overload is the only usable one, and it is what MS uses.
+    // The (IEdmModel, IEdmType, ODataPath) overload is not a cheap alternative -- it leaves
+    // ElementClrType null, which ODataQueryOptions<TEntity> throws on.
     private static bool TryBuildQueryOptions<TModel>(
         IEdmModel model, HttpContext ctx, ILogger? logger,
         [NotNullWhen(true)] out ODataQueryOptions<TModel>? options,
@@ -3748,26 +3026,20 @@ internal static class OhDataEndpointFactory
         return null;
     }
 
-    // #429 (#202's unshipped breadth guard): reject a $expand tree containing more navigation
-    // expansions than the resolved MaxExpandBreadth, before any handler or query runs.
+    // #429: reject a $expand tree with more expansions than the resolved MaxExpandBreadth, before any
+    // handler or query runs.
     //
-    // WHY THIS EXISTS ALONGSIDE MaxExpansionDepth. Depth is one axis. Translation cost for a pushed
-    // nested projection multiplies by ~3 per level AND by the number of navigations expanded at each
-    // level, so capping depth alone leaves the other factor free. Measured at the DEFAULT depth of 3
-    // on a six-navigation model, with no breadth guard: 4.1 s of single-core CPU for a 1,952-byte
-    // response. The EF compiled-query cache is no defence — each distinct navigation SUBSET is a
-    // distinct cache key, so cycling subsets never warms it.
+    // Depth is one axis. Translation cost multiplies by ~3 per level AND by the navigations expanded
+    // at each level, so capping depth alone leaves the other factor free -- measured at the DEFAULT
+    // depth of 3 on a six-navigation model, 4.1 s of single-core CPU for a 1,952-byte response. EF's
+    // compiled-query cache is no defence: each distinct navigation SUBSET is a distinct key.
     //
-    // WHY THE COUNT SPANS THE WHOLE TREE. A per-level cap of B under a depth ceiling of D still
-    // admits B^D expansions (6^6 = 55,986 at the shipped ceiling). Counting every node bounds the
-    // two axes together. Counting DISTINCT NAMES would be weaker still — the most expensive shapes
-    // measured reuse six names over six levels.
+    // The count spans the WHOLE TREE because a per-level cap of B under depth D still admits B^D
+    // (6^6 = 55,986 at the shipped ceiling). Counting DISTINCT NAMES would be weaker still -- the
+    // most expensive shapes measured reuse six names over six levels.
     //
-    // Deliberately pushdown-independent, like ValidateNestedTopCeiling: a delegate-backed expansion
-    // at this breadth is N+1-per-level expensive rather than 3^n expensive, but it is still a
-    // statement about what the client may ASK for, not about how the server would have served it.
-    //
-    // Returns the 400 OData error to return, or null when the request is within the limit.
+    // Deliberately pushdown-independent, like ValidateNestedTopCeiling: it is a statement about what
+    // the client may ASK for, not about how the server would have served it.
     private static IResult? ValidateExpandBreadth(SelectExpandClause? clause, int cap, int maxExpansionDepth)
     {
         if (clause is null) return null;
@@ -3935,50 +3207,22 @@ internal static class OhDataEndpointFactory
         var serializerOptions = jsonOptions ?? _pascalCaseSerializerOptions;
         SelectExpandClause? rootClauseForSerialize = options.SelectExpand?.SelectExpandClause;
 
-        // #466: the RAW substrate's own $levels budget, unioned onto the PUSHED one.
+        // #466: the RAW substrate's own $levels budget, unioned onto the PUSHED one. BuildExpandLookup
+        // seeds a budget only for a name in this set, and the pushed set is null on GetAll, GetById,
+        // Priority-1 and non-EF GetQueryable -- so `$levels=N` served ONE level there while the
+        // explicit nested spelling served all N. Nothing needs loading: the rows are already in the
+        // graph the handler returned.
         //
-        // Before this, `levelsNavNames` was exactly CollectPushedLevelsNavNames' answer — the
-        // navigations the EF projection recursed with BuildLevelsNavAccess — and it is null on
-        // GetAll, GetById, Priority-1 and a non-EF GetQueryable. BuildExpandLookup seeds a levels
-        // budget ONLY for a name in this set, so on those four paths TryKeepNav dropped the
-        // self-navigation below level 1 and `$levels=N` served ONE level, silently, while the
-        // explicit nested spelling of the same request served all N. Two spellings of one request
-        // must not give different answers.
+        // Membership is `ServeRaw AND some candidate has an opinion`, per level, through the same
+        // ResolveNavTreatment every other site uses. RunDelegate/Blank are excluded because the raw
+        // graph is not their answer; a no-opinion navigation because nothing loaded it.
         //
-        // Nothing needs to LOAD anything for the raw substrate: the related rows are already in the
-        // CLR graph the handler returned (an EF fixup-populated tree, an in-memory object graph),
-        // and SerializeBounded reads them by reflection. Seeding the budget is therefore the whole
-        // fix — the same walker/keep-rule the explicit spelling already rides.
-        //
-        // MEMBERSHIP IS `ServeRaw AND some candidate has an opinion`, resolved through the SAME
-        // ResolveNavTreatment every other site uses, PER LEVEL: RunDelegate/Blank are excluded
-        // because the raw graph is NOT their answer (a delegate-backed $levels takes
-        // ExpandLevelAsync's own path, which rejects a multi-level one outright rather than
-        // truncating it — see LevelsOnDelegateRejection), and a navigation no candidate has an
-        // opinion on is excluded because nothing ever loaded it. Depth >= 2 uses the exact-EDM-type
-        // union and the walk descends only through ServeRaw parents — the raw substrate is exactly
-        // what a ServeRaw parent leaves behind (#293 Model B).
-        //
-        // THE UNION FEEDS THE TWO SERIALIZATION STAGES ONLY, NEVER ExpandLevelAsync — and that
-        // restriction is load-bearing, not tidiness. An earlier revision of this branch passed the
-        // union to all three stages, reasoning that "AnyCandidateHasOpinion keeps it inert for #440,
-        // because #440's omission arm fires only when NO candidate has an opinion". That reasoning
-        // is correct PER NAME PER LEVEL and false for a FLAT set: membership is decided at the level
-        // the name was found, while the omission arm tests the same set against a name at a
-        // DIFFERENT level. A navigation called `Children` that is ServeRaw-with-opinion at depth 2
-        // (so it enters the set) and UNDECLARED at the root therefore bypassed the omission arm
-        // there, and `?$expand=Children,Other($expand=Children($levels=2))` emitted `"Children": []`
-        // on the root entity — the exact "expanded, and empty" statement about a relationship the
-        // server never evaluated that #440 exists to prevent, under a 200, on a DEFAULT
-        // configuration (this union is built whenever the clause carries a $levels anywhere,
-        // independently of MaxExpandTop). MEASURED on that revision; base e3a7bd3 omits the member.
-        //
-        // Stage 3 therefore keeps the PUSHED set, which is the set #440's exclusion was written
-        // against: BuildLevelsNavBinding does not consult NavigationPropertyNames, so an undeclared
-        // self-referential navigation genuinely can be pushed and loaded, and only that case needs
-        // the bypass. The raw set never needs it — a raw name enters only where some candidate has
-        // an opinion at its OWN level, and a navigation with an opinion never reaches the
-        // no-opinion arm at all. Issue466NavOmissionRegressionTests is the tripwire.
+        // THE UNION FEEDS THE TWO SERIALIZATION STAGES ONLY, NEVER ExpandLevelAsync, and that is
+        // load-bearing. Membership is decided at the level a name was found, while #440's omission arm
+        // tests the same FLAT set against that name at a DIFFERENT level -- so a `Children` that is
+        // ServeRaw-with-opinion at depth 2 and UNDECLARED at the root bypassed the omission arm and
+        // emitted `"Children": []` on the root entity, under a 200, on a default configuration.
+        // Measured. Issue466NavOmissionRegressionTests is the tripwire.
         HashSet<string>? levelsNavNames = pushedLevelsNavNames;
         if (rootClauseForSerialize is not null && ClauseHasLevels((SelectExpandClause)rootClauseForSerialize) &&
             CollectRawServedLevelsNavNames(
@@ -4166,27 +3410,19 @@ internal static class OhDataEndpointFactory
     // ExpandDepthCeilingTieTests is the tripwire.
     internal const int MaxNestedExpandDepth = EntitySetDefaults.MaxExpansionDepthCeiling;
 
-    // #428: the ONE place `$levels` is turned into a number of levels to load. Both substrates call
-    // it — the pushdown projection builder (TryBuildEngagedExpand) and the JSON keep/strip pass
-    // (BuildExpandLookup) — because they used to be independent transcriptions of the same rule and
-    // they disagreed about `$levels=max`.
+    // #428: the ONE place $levels becomes a number of levels to load. Both substrates call it -- the
+    // pushdown projection builder and the JSON keep/strip pass -- because they were independent
+    // transcriptions of the same rule and disagreed about `$levels=max`.
     //
-    // The bug: `$levels=max` was resolved against <paramref name="remainingDepth"/> ALONE (the
-    // profile's resolved MaxExpansionDepth), while a NUMERIC `$levels=N` is validated by Microsoft's
-    // SelectExpandQueryValidator against min(MaxExpansionDepth, modelBoundMaxDepth) — and for the
-    // IsMaxLevel case that validator only requires the minimum to be non-zero, it does not clamp. So
-    // a profile at MaxExpansionDepth = 15 with a model-bound cap of 12 rejected `$levels=13/14/15`
-    // with 400 and served `$levels=max` at depth 15. The more expensive spelling was the one that got
-    // through, and at ~3x per level (#328) that is a cost multiplier, not a cosmetic inconsistency:
-    // 3^16 translation units, extrapolated at ~2.2 hours of single-core CPU for one request.
+    // `max` was resolved against remainingDepth ALONE, while a NUMERIC N is validated against
+    // min(MaxExpansionDepth, modelBoundCap) and the IsMaxLevel case only requires that minimum to be
+    // non-zero. So a profile at depth 15 with a cap of 12 rejected $levels=13..15 and served `max` at
+    // 15 -- the more expensive spelling was the one that got through, at ~3x per level (#328).
     //
-    // <paramref name="modelBoundCap"/> is that model-bound cap. Since #328 it is DERIVED from the
-    // MaxExpansionDepth ceiling, so on a shipped build it can no longer be lower than
-    // remainingDepth and this clamp cannot fire — which is the point: the divergence is now
-    // unrepresentable rather than merely fixed. The parameter stays explicit so the rule is a
-    // testable function of its inputs (ExpandLevelsResolutionTests drives it with a cap BELOW
-    // remainingDepth, the configuration that used to be reachable) and so re-widening the ceiling
-    // cannot silently re-open #428.
+    // Since #328 the cap is DERIVED from the MaxExpansionDepth ceiling, so on a shipped build it
+    // cannot be lower and this clamp cannot fire -- the divergence is unrepresentable rather than
+    // merely fixed. The parameter stays explicit so the rule is a testable function of its inputs and
+    // so re-widening the ceiling cannot silently reopen #428.
     internal static int ResolveLevelsBudget(bool isMaxLevel, long requestedLevel, int remainingDepth, int modelBoundCap)
     {
         int cap = Math.Min(remainingDepth, modelBoundCap);
@@ -4268,50 +3504,13 @@ internal static class OhDataEndpointFactory
 
             if (treatment.Treatment == NavTreatment.ServeRaw)
             {
-                // #440 symptom 1: ServeRaw has TWO populations and only one of them has an answer.
-                //
-                // The frozen reading — "DB(X) = ∅, so whatever is already sitting at
-                // jsonItems[i][expandKey] IS the raw, authoritative answer" — holds when some
-                // candidate DECLARED the navigation: the declaration is what puts it in
-                // pushdownExpandNavs, so an EF-backed read really did JOIN it in and the value is
-                // loaded data. It does NOT hold for a navigation the OData convention builder
-                // discovered and NO candidate at this level declares or routes (#293's "has no
-                // opinion" category, reported by ResolveNavTreatment as AnyCandidateHasOpinion =
-                // false). Nothing ever chose to load that one — it is absent from
-                // pushdownExpandNavs, has no delegate, and is not in the engaged tree — so what
-                // survives serialization is an unpopulated CLR member, and emitting it means
-                // emitting `"Customer": null` (or `[]`) under a 200.
-                //
-                // That is the one answer that is definitely wrong. OData JSON Format v4.01 §8.3
-                // defines the inline representation of a navigation property as the representation
-                // of an EXPANDED one, and a single-valued expanded navigation whose value is null
-                // is the positive statement that the relationship is empty. The server never
-                // determined that. §8.1 covers the other case: a navigation that was not expanded
-                // is represented by its (computed, and in metadata=minimal omitted) navigation
-                // link, not inline — which is exactly what OmitUnexpandedNavigations already does
-                // for every navigation this request did not expand. So the member is REMOVED: the
-                // payload then asserts only "not expanded", which is true, instead of "expanded,
-                // and empty", which is not.
-                //
-                // NOT a 400, deliberately. The framework's fail-loud convention (#294, #402, #405)
-                // rejects an option the CLIENT got wrong or that the server parsed and could not
-                // honour. This is neither: the request is valid against the $metadata the server
-                // published, and the gap is the SERVER's configuration — a navigation the profile
-                // never declared. A 400 would charge the client for the developer's omission, on
-                // the ordinary `public Customer? Customer { get; set; }` shape, turning a currently
-                // succeeding request into an error across every adopter who has one. The loud
-                // channel for a configuration defect is startup, and that is where it is:
-                // WarnUndeclaredConventionNavigations names this exact condition once per
-                // (entity set, navigation) at MapOhData().
-                //
-                // THE ONE EXCLUSION: a $levels expand. The root pushdown loop resolves a $levels
-                // navigation through BuildLevelsNavBinding, which does NOT consult
-                // NavigationPropertyNames — so `?$expand=Self($levels=2)` over an undeclared
-                // self-referential navigation IS pushed and IS loaded. pushedLevelsNavNames is the
-                // set that was actually pushed that way, so those keep their loaded value. Nested
-                // levels reached from here are never pushed (a ServeRaw parent returns below
-                // without recursing, so this method only ever descends through a delegate), which
-                // is why the recursive call passes none.
+                // Model B declaring-set authority (owner decision, FROZEN on #293): resolve this
+                // navigation's treatment from levelSources, the exact-EDM-type candidate set for this
+                // level. ResolveNavTreatment is the SAME dispatch the pushdown gate uses, so the gate and
+                // this delegate path can never disagree -- the gate only pushes ServeRaw, so
+                // RunDelegate/Blank always arrive here needing action, and this path runs the sole route or
+                // blanks. Since #440 it also OMITS a ServeRaw navigation no candidate declares or routes:
+                // that sub-case is not a delegate decision, it is "nothing ever loaded this".
                 if (!treatment.AnyCandidateHasOpinion &&
                     !(pushedLevelsNavNames?.Contains(propName) ?? false))
                 {
@@ -4381,31 +3580,19 @@ internal static class OhDataEndpointFactory
             }
 
             // #466: a MULTI-LEVEL $levels on a delegate-backed navigation is REJECTED, not truncated.
+            // The delegate loads ONE level and nothing recurses, so `Nav($levels=3)` answered 200 with
+            // one level while `Nav($expand=Nav($expand=Nav))` -- the same request spelled out --
+            // answered 200 with three. Silent truncation, which M1 rules out.
             //
-            // The delegate loads ONE level: this branch calls Handler/BatchHandler once for this
-            // level's parents, and the $levels item's nested clause carries no expand item of its
-            // own, so `hasNestedExpand` is false and nothing recurses. The deeper self-references are
-            // then stripped by OmitUnexpandedNavigations (a delegate-backed nav is never in
-            // levelsNavNames, deliberately — see ApplyCollectionPipelineAsync's union). So
-            // `Nav($levels=3)` answered 200 with ONE level while `Nav($expand=Nav($expand=Nav))` —
-            // the same request, spelled out — answered 200 with three. Silent truncation of the
-            // requested shape, and the M1 rule ("no bound without either a continuation or a 400")
-            // rules that out.
+            // 400 rather than an implementation because WHICH delegate to run at depth 2 is not
+            // settled for this substrate: Model B resolves depth >= 2 from the exact-EDM-type union
+            // (Blank for a self-referential nav with a disagreeing sibling), while the PUSHDOWN path's
+            // $levels deliberately never re-resolves and stays on the URL-named set (#318,
+            // owner-settled). Implementing would mean making that decision here. Follows #294's
+            // precedent exactly, a few lines above.
             //
-            // WHY 400 AND NOT AN IMPLEMENTATION. Loading level 2 means running a delegate at depth 2,
-            // and WHICH delegate is not settled for this substrate: Model B resolves depth >= 2 from
-            // the exact-EDM-type union (#293, FROZEN), which for a self-referential navigation over a
-            // type exposed by a disagreeing sibling set is Blank — while the PUSHDOWN path's $levels
-            // deliberately never re-resolves and stays on the URL-named set all the way down (#318,
-            // owner-settled). Implementing here would have to pick one of those, i.e. make an owner
-            // decision about gate resolution on a substrate that has never had one. The 400 needs no
-            // such decision, and it follows this file's own precedent exactly: #294 rejects a nested
-            // $top/$skip on a delegate-backed navigation for the very same reason (the option cannot
-            // be applied to a delegate's answer), a few lines above.
-            //
-            // $levels=1 is NOT rejected: it is a spec-equivalent restatement of a bare $expand, which
-            // this path serves correctly. The budget is resolved through the SAME ResolveLevelsBudget
-            // both loaders use, so this guard cannot disagree with them about what a $levels means.
+            // $levels=1 is NOT rejected -- it restates a bare $expand, which this path serves. The
+            // budget comes from the SAME ResolveLevelsBudget both loaders use.
             if (expandItem.LevelsOption is { } delegateLevels &&
                 ResolveLevelsBudget(
                     delegateLevels.IsMaxLevel, delegateLevels.Level, maxExpansionDepth, MaxNestedExpandDepth) > 1)
@@ -4586,31 +3773,20 @@ internal static class OhDataEndpointFactory
             "be silently dropped. Spell the depth out with nested $expand, or declare the navigation " +
             "delegate-less (no Handler/BatchHandler) to enable the server-side $levels recursion.");
 
-    // #320: true when <paramref name="clause"/> carries a $top or $skip on ANY navigation at any depth
-    // below it. A pure clause walk — no EDM lookup, no candidate resolution, no profile instantiation —
-    // so ExpandLevelAsync's ServeRaw branch pays nothing for the overwhelmingly common expand that
-    // carries no nested window at all. Unbounded recursion, like its siblings ValidateNestedTopCeiling
-    // and CountExpandNodes: the depth and breadth ceilings (#328/#429) have already rejected an
-    // oversized tree before any of the three runs.
+    // #320: true when the clause carries a $top or $skip on ANY navigation at any depth below it. A
+    // pure clause walk -- no EDM lookup, no candidate resolution -- so the common expand with no
+    // nested window pays nothing. Unbounded recursion like its siblings; the depth and breadth
+    // ceilings have already rejected an oversized tree.
     //
-    // SCOPE NOTE (deliberate, measured, NOT fixed here). "Not applicable" is resolved from the Model B
-    // treatment (RunDelegate/Blank), not from whether the option was in fact applied. A ServeRaw
-    // navigation whose branch was never SQL-pushdown-windowed — an in-memory GetAll source, a
-    // non-EF IQueryable, or a branch TryBuildEngagedExpand deferred for a structural reason — still
-    // ignores its nested $top/$skip silently. Rejecting THAT would make the answer depend on whether
-    // pushdown happened to engage, which is an internal optimization decision invisible to the client,
-    // and would turn requests that are honored today into 400s. It needs its own owner decision
-    // (reject vs. apply in memory) alongside #352's retirement of this rejection.
+    // SCOPE, deliberate and not fixed here: "not applicable" is resolved from the Model B treatment,
+    // not from whether the option was in fact applied. A ServeRaw navigation whose branch was never
+    // pushdown-windowed still ignores its nested $top/$skip silently. Rejecting that would make the
+    // answer depend on whether pushdown happened to engage -- an internal decision invisible to the
+    // client -- and would turn requests honoured today into 400s. #352 owns it.
     //
-    // #464 AMENDMENT TO THAT NOTE. It described only the nested-$top/$skip half of the off-pushdown
-    // gap. The MaxExpandTop CEILING had the same reach hole and it is no longer open: a ServeRaw
-    // collection expansion that pushdown did not engage — a GetAll source, a Priority-1 source, a
-    // non-EF IQueryable ($search's in-memory swap included), a branch TryBuildEngagedExpand deferred,
-    // or any level of a single-entity read — is now bounded by EnforceRawExpandCeiling, which 400s
-    // rather than serving an unbounded collection. What is still true of the paragraph above is
-    // narrower than it reads: the nested $top/$skip WINDOW is still silently ignored on those paths
-    // (the client's option is not applied; the response is simply the whole, now ceiling-bounded,
-    // collection). That residue is what #352 owns.
+    // #464 narrowed that note: the MaxExpandTop CEILING no longer has the same reach hole, since
+    // EnforceRawExpandCeiling now bounds every raw collection expansion. What remains true is only
+    // that the nested WINDOW is still silently ignored on those paths.
     private static bool ClauseHasNestedTopOrSkip(SelectExpandClause clause)
     {
         foreach (ExpandedNavigationSelectItem item in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
@@ -4686,33 +3862,25 @@ internal static class OhDataEndpointFactory
         return names;
     }
 
-    // #320: walks the $expand subtree hanging off a ServeRaw navigation and throws the same 400 the
-    // direct path throws for a nested $top/$skip on any navigation whose treatment is not ServeRaw.
+    // #320: walks the $expand subtree under a ServeRaw navigation and throws the same 400 the direct
+    // path throws for a nested $top/$skip on a non-ServeRaw navigation.
     //
-    // WHY THIS IS NEEDED AT ALL. ExpandLevelAsync's ServeRaw branch `continue`s without recursing —
-    // correctly, since the raw materialized value IS the answer — so a delegate-backed grandchild
-    // reached ONLY through a delegate-less parent's graph was never resolved, and its nested
-    // $top/$skip was accepted, never applied, and answered 200 with every related row.
+    // Needed because ExpandLevelAsync's ServeRaw branch `continue`s without recursing -- correctly,
+    // the raw value IS the answer -- so a delegate-backed grandchild reached only through a
+    // delegate-less parent's graph was never resolved, and its nested $top/$skip was accepted, never
+    // applied, and answered 200 with every related row.
     //
-    // WHY IT CANNOT TURN A HONORED REQUEST INTO A 400. A nested $top/$skip is honored only when the
-    // whole branch was pushed down, and TryBuildEngagedExpand pushes a branch only when EVERY level of
-    // it is ServeRaw (a RunDelegate or Blank child defers the whole parent). So whenever this scan
-    // finds a non-ServeRaw navigation, that branch was certainly not pushed and the option was
-    // certainly not applied.
+    // It cannot turn a honoured request into a 400: a nested window is honoured only when the whole
+    // branch was pushed, and a branch is pushed only when EVERY level is ServeRaw -- so whenever this
+    // scan finds a non-ServeRaw navigation, the option was certainly not applied.
     //
-    // Candidates are resolved through the SAME ResolveRequestSourcesForEdmType the real descent uses,
-    // and the treatment through the SAME ResolveNavTreatment, so the scan cannot disagree with the
-    // descent it stands in for. Mirrors ExpandLevelAsync's own guards: bounded by MaxNestedExpandDepth,
-    // and silent when no profile exposes the level's type (nothing there could have applied the option
-    // either, and nothing else in the pipeline treats that as an error).
+    // Resolved through the SAME helpers the real descent uses, so the scan cannot disagree with what
+    // it stands in for.
     //
-    // #440 interaction: an UNDECLARED convention-discovered navigation has no opinion from any
-    // candidate, so ResolveNavTreatment reports it ServeRaw and this scan does not reject it. That is
-    // the intended pairing — #440 REMOVES such a navigation from the payload rather than emitting an
-    // unpopulated value, so its subtree is not served at all and there is nothing for a window to
-    // apply to. Rejecting there would also charge the client a 400 for the developer's missing
-    // declaration, which #440 deliberately declined to do; the loud channel for that is the startup
-    // warning. The call site likewise runs this scan only AFTER #440's omission branch.
+    // #440 pairing: an undeclared navigation has no opinion, so ResolveNavTreatment reports it
+    // ServeRaw and this scan does not reject it. That is intended -- #440 REMOVES it from the payload,
+    // so there is nothing for a window to apply to, and rejecting would charge the client a 400 for
+    // the developer's missing declaration.
     private static void EnsureNestedWindowIsApplicable(
         SelectExpandClause clause,
         IEdmEntityType? levelEdmType,
@@ -4748,61 +3916,23 @@ internal static class OhDataEndpointFactory
         }
     }
 
-    // #292: finds the request-scoped endpoint source(s) that legitimately serve a navigation
-    // target EDM entity type, replacing a plain FirstOrDefault-by-CLR-type that was registration-
-    // order dependent whenever the SAME type was exposed by 2+ entity sets (structurally the same
-    // shape of bug the #293 delegate-backed-nav union fixes on the pushdown path, but here on the
-    // Stage-3 delegate expansion path).
+    // #292: the request-scoped sources that legitimately serve a navigation's target EDM type,
+    // replacing a FirstOrDefault-by-CLR-type that was registration-order dependent.
     //
-    // Always the union: every profile whose entity set's EDM type is <paramref name="targetEdmType"/>.
-    // This CAN legitimately return 2+ candidates — the caller (ExpandLevelAsync) resolves
-    // per-navigation-name ambiguity from the full candidate list rather than this method picking
-    // one, so a genuine conflict (two candidates routing the same nav name differently) fails
-    // closed instead of being silently decided here.
+    // Always the UNION, and it can legitimately return 2+ -- the caller resolves per-navigation
+    // ambiguity from the full list, so a genuine conflict fails closed instead of being decided here.
     //
-    // No branch preferring the EDM's own navigation-source binding (originally proposed in #292
-    // item 1, i.e. <c>expandItem.NavigationSource</c> at the call site). The DECISION stands; the
-    // reason originally written here did not, and was corrected by #313 (design finding B5).
+    // Deliberately does not prefer the EDM's navigation-source binding. Measured, the three cases
+    // are: exactly one exposing set gives a REAL binding (and a one-element union, so they agree);
+    // two or more gives an EdmUnknownEntitySet placeholder and an EMPTY binding list; none gives the
+    // same placeholder. So the binding is redundant where it exists and absent where it would matter.
     //
-    // WHAT THIS COMMENT USED TO CLAIM, AND WHY IT WAS WRONG. It said the convention builder "never
-    // produces a real <see cref="IEdmEntitySet"/> binding for a navigation, only either no binding
-    // or an <see cref="IEdmUnknownEntitySet"/> placeholder". MEASURED FALSE on this tree, both
-    // arms, by walking <c>IEdmEntitySet.NavigationPropertyBindings</c> and
-    // <c>FindNavigationTarget</c> over a registration's own <c>OhDataRegistration.EdmModel</c>:
+    // DO NOT restore it as load-bearing: registering an unrelated second set over the child type
+    // moves the model from one case to the next and DELETES the binding, silently. Anything built on
+    // it must test `is IEdmEntitySet and not IEdmUnknownEntitySet` and treat absence as a real
+    // outcome.
     //
-    //   (A) EXACTLY ONE entity set exposes the navigation's target type → a REAL binding exists.
-    //       The parent set's NavigationPropertyBindings contains `<navName> -> <thatSet>`, and
-    //       FindNavigationTarget(nav) returns that same EdmEntitySet.
-    //   (B) TWO OR MORE entity sets expose it → NavigationPropertyBindings is EMPTY, and
-    //       FindNavigationTarget(nav) returns an EdmUnknownEntitySet whose Name is the navigation
-    //       PROPERTY's own name, never an entity set's.
-    //   (C) NO entity set exposes it → the same EdmUnknownEntitySet placeholder as (B).
-    //
-    // So the placeholder half of the old claim was right and the "never a real binding" half was
-    // not. The binding is produced by the convention builder itself, not by any profile-facing API —
-    // that part is unchanged: there is still no reachable way for a profile to DECLARE a
-    // cross-entity-set binding.
-    //
-    // WHY THE DECISION SURVIVES THE CORRECTION. The binding branch is redundant rather than
-    // unreachable, and it is redundant in exactly the cases above: in (A) a real binding exists but
-    // there is by construction exactly ONE candidate, so the union below resolves identically; in
-    // (B) and (C) — the only cases where the union could be ambiguous — there is no binding to
-    // prefer. Intentional, reviewed deviation from #292's written step 1, now for a reason that is
-    // true.
-    //
-    // DO NOT "RESTORE" THE BINDING AS LOAD-BEARING. #313 O5 restricts nested-$expand continuation
-    // links to depth 1, where the URL already names the parent set and there is no child set to
-    // disambiguate — which is precisely what took this finding OFF the critical path. A real
-    // binding is only the correct source of a child SET NAME at depth >= 2, and the hazard there is
-    // that adding a second, unrelated entity set over the child type moves the model from
-    // (A) to (B) and DELETES the binding — silently changing behaviour with no change to the
-    // navigation itself. Anything built on it must test
-    // `set.FindNavigationTarget(nav) is IEdmEntitySet and not IEdmUnknownEntitySet` and must treat
-    // the absent case as a first-class outcome, not an error.
-    //
-    // Returns an empty list when targetEdmType is null or no profile exposes it at all — e.g. a
-    // navigation whose target type is present in the model but never registered as its own entity
-    // set — in which case nested expansion of that navigation is not possible from any source.
+    // Empty list when no profile exposes the type at all.
     private static IReadOnlyList<IEntitySetEndpointSource> ResolveRequestSourcesForEdmType(
         IEdmEntityType? targetEdmType, OhDataRegistration registration, IServiceProvider requestServices)
     {
@@ -4864,31 +3994,23 @@ internal static class OhDataEndpointFactory
         return ResolveProfilesForEdmType(edmType, registration);
     }
 
-    // Model B navigation treatment (declaring-set authority — OWNER DECISION 2026-07-26, FROZEN spec
-    // on issue #293). Each candidate set's OWN declaration is authoritative for its OWN navigations; a
-    // delegate on a sibling/derived set never retroactively poisons a nav that ANOTHER set legitimately
-    // serves raw. Fail-closed BLANKING happens only on genuine disagreement between candidates.
+    // Model B navigation treatment (owner decision 2026-07-26, FROZEN on #293). Each candidate set's
+    // OWN declaration is authoritative for its OWN navigations; a delegate on a sibling never
+    // retroactively poisons a nav another set legitimately serves raw. Fail-closed blanking happens
+    // only on genuine disagreement.
     //
-    // Partitions <paramref name="candidates"/> — the exact-EDM-type candidate set for one level, from
-    // ResolveProfilesForEdmType / ResolveProfilesForClrType / ResolveRequestSourcesForEdmType — into:
-    //   DB(navName) = candidates that route this nav back (NavigationRoutes has a matching entry)
-    //   DL(navName) = candidates that DECLARE this nav (NavigationPropertyNames) but have NO route
-    // A candidate that neither routes nor declares the nav has no opinion on it and is ignored.
+    // Partitions the exact-EDM-type candidate set for one level:
+    //   DB(nav) = candidates that ROUTE it back;  DL(nav) = candidates that DECLARE it with no route.
+    //   A candidate that does neither has no opinion and is ignored.
+    //     DB empty                -> ServeRaw     (nobody delegates)
+    //     DB one route, DL empty  -> RunDelegate  (sole unambiguous authority)
+    //     DB and DL both non-empty-> Blank        (delegate-backed vs delegate-less disagree)
+    //     DB 2+                   -> Blank        (distinct delegate routes disagree)
+    // Deterministic: only set membership is read, never registration order.
     //
-    //   DB empty                          -> ServeRaw     (nobody delegates; raw survives as-is)
-    //   DB has exactly one route, DL empty -> RunDelegate  (sole, unambiguous authority — run it)
-    //   DB non-empty AND DL non-empty      -> Blank        (delegate-backed vs delegate-less disagree)
-    //   DB has 2+ candidates                -> Blank        (2+ distinct delegate routes disagree)
-    // Deterministic: only set membership over `candidates` is read, never registration/iteration order.
-    //
-    // Used by BOTH the pushdown gate (candidates = startup profiles for the child element type) and the
-    // delegate expansion path (candidates = levelSources, the same profiles re-resolved through the
-    // request scope) — see the two call sites — so they can never diverge: the gate only ever pushes
-    // down a ServeRaw navigation (RunDelegate/Blank always defer to the delegate path), and the delegate
-    // path's ServeRaw case is a no-op (the pushed/serialized raw value already present is correct)
-    // WHENEVER some candidate declared the navigation. #440 split off the other half of ServeRaw —
-    // nobody declares OR routes it, so nothing ever loaded it — which the delegate path OMITS rather
-    // than emitting as null; see AnyCandidateHasOpinion below and the ServeRaw branch that reads it.
+    // Used by BOTH the pushdown gate and the delegate expansion path, so they cannot diverge. #440
+    // split off the other half of ServeRaw -- nobody declares OR routes it, so nothing ever loaded it
+    // -- which the delegate path OMITS rather than emitting as null; see AnyCandidateHasOpinion.
     private enum NavTreatment { ServeRaw, RunDelegate, Blank }
 
     // #440: AnyCandidateHasOpinion is "DB(navName) ∪ DL(navName) is non-empty" — i.e. at least one
@@ -4934,26 +4056,18 @@ internal static class OhDataEndpointFactory
         return new NavTreatmentResult(NavTreatment.Blank, null, anyOpinion); // disagreement, or 2+ distinct routes
     }
 
-    // OData JSON Format v4.01 §4.5.1 / §11.2.4.2: a navigation property that was not requested
-    // via $expand MUST NOT appear in the payload — it is never serialised inline as an empty
-    // array or null. System.Text.Json has no notion of $expand and serialises the whole CLR
-    // graph, so this pass walks the serialised JSON against the EDM model and removes every
-    // navigation member that was not expanded at its own level, recursing into the expanded ones
-    // (following their nested $expand context) so a related entity never carries its own
-    // un-expanded navigations. It only OMITS; the actual data for each expanded navigation —
-    // including nested ones — is injected beforehand by ExpandLevelAsync (Stage 3, issue #183),
-    // so by the time this runs an expanded navigation already holds its loaded related entities.
-    // Only members that the EDM declares as navigation properties are touched, so structural
-    // properties and @odata.* annotations are left untouched by construction.
+    // JSON Format §4.5.1 / §11.2.4.2: a navigation not requested via $expand MUST NOT appear in the
+    // payload -- never inline as an empty array or null. STJ has no notion of $expand, so this pass
+    // walks the serialized JSON against the EDM and removes every navigation not expanded at its own
+    // level, recursing into the expanded ones. It only OMITS; the data is injected beforehand by
+    // ExpandLevelAsync. Only EDM-declared navigations are touched, so structural properties and
+    // @odata.* annotations are safe by construction.
     //
-    // Post-#325/#326 role (Option B): SerializeBounded (below) now makes this pass a PRACTICAL
-    // no-op at every one of its five call sites — it never writes an un-expanded navigation in the
-    // first place, so there is nothing left here to strip. It stays wired in at every call site as
-    // defence-in-depth against a CALLER-level mistake (a future call site that forgets to invoke
-    // SerializeBounded, or invokes it with the wrong clause), never against a decision-table bug:
-    // BuildExpandLookup/TryKeepNav below are the single shared source of the keep/recurse rules, so
-    // the two methods cannot independently drift on what "kept" means the way they did before this
-    // fold-in (see #325/#326 fold-in review — the maxLevels asymmetry that motivated the extraction).
+    // Post-#325/#326 this is a PRACTICAL no-op at all five call sites -- SerializeBounded never writes
+    // an un-expanded navigation in the first place. It stays wired in as defence against a
+    // CALLER-level mistake (a future site that forgets SerializeBounded, or passes the wrong clause),
+    // never against a decision-table bug: BuildExpandLookup/TryKeepNav are the single shared source of
+    // the keep/recurse rules, so the two cannot drift on what "kept" means.
     private static void OmitUnexpandedNavigations(
         JsonNode? node,
         IEdmEntityType? edmType,
@@ -5112,73 +4226,28 @@ internal static class OhDataEndpointFactory
         return new NavKeepDecision(true, nestedClause, childActive);
     }
 
-    // #325/#326 (OWNER DECISIONS, FROZEN spec — Option B, "clause-bounded, level-wise
-    // serialization"): the walker that replaces "serialize the whole CLR graph, then strip"
-    // (OmitUnexpandedNavigations' job) with "serialize only what was asked for" at the point of
-    // serialization itself. Root cause of #325/#326: whole-graph serialization is bounded by the
-    // OBJECT GRAPH, but omission is bounded by the $expand CLAUSE, and omission runs strictly
-    // AFTER serialization (Stage 3.5) — so any graph deeper/wider than the clause gets walked by
-    // System.Text.Json first, and a bidirectional/self-referential EF model's relationship fixup
-    // makes that graph cyclic, which SerializeToNode throws on.
+    // #325/#326 (owner decision, frozen): serialize only what the clause asked for, instead of
+    // serializing the whole CLR graph and stripping afterwards. Whole-graph serialization is bounded
+    // by the OBJECT graph while omission is bounded by the $expand CLAUSE, so EF relationship fixup
+    // made SerializeToNode throw on a cycle before omission ever ran.
     //
-    // Mechanism: serialize <paramref name="value"/> with EVERY one of its EDM type's navigation
-    // properties suppressed at the JsonTypeInfo level (GetNavSuppressedOptions — the same
-    // TypeInfoResolver-modifier mechanism IgnoredPropertyJsonOptions.Build uses for Ignore()'d
-    // properties), then for each navigation the $expand <paramref name="clause"/> keeps (or an
-    // active $levels budget keeps — mirrors OmitUnexpandedNavigations' own keep/recurse decision
-    // table exactly, including $levels bookkeeping, because that logic IS the spec), read the CLR
-    // value via reflection and recurse into THIS method, splicing the result back onto the
-    // suppressed JsonObject. Recursion is therefore bounded by the clause tree (finite: it is
-    // exactly as deep as the client's own $expand/$levels request), never by the object graph, so
-    // a reference cycle in the underlying CLR graph is structurally unreachable — the walker never
-    // asks System.Text.Json to serialize a navigation property at all.
+    // Recursion is bounded by the clause tree, so a CLR reference cycle is structurally unreachable:
+    // navigations are suppressed at the JsonTypeInfo level and spliced back per kept navigation.
     //
-    // Correctness for EVERY caller, including ones that later overwrite what this method wrote:
-    // for a ServeRaw navigation (see ResolveNavTreatment/NavTreatment) nothing downstream touches
-    // this key again, so the CLR value read here — whatever a member-init projection, an EF
-    // Include, or the plain tracked graph already populated — is the answer this method commits to.
-    // (Adjacent, pre-existing gap, #320: a ServeRaw nav's own CHILDREN may themselves be
-    // delegate-backed — this method has no way to run a delegate, so a nested delegate-backed
-    // navigation reached only through a ServeRaw parent is not resolved here. Not new to #325/#326;
-    // tracked under #320, not fixed by this change.)
-    // For a RunDelegate/Blank navigation this method may splice a stale or empty guess (the CLR
-    // property is typically unpopulated before the delegate runs), but ExpandLevelAsync's
-    // RunDelegate/Blank branches unconditionally overwrite jsonItems[i][expandKey] AFTER this
-    // walker runs (see ApplyCollectionPipelineAsync Stage 1 and the Stage 3 delegate-injection
-    // splice below) — a hard ordering requirement carried over from Model B (#292/#293) delegate
-    // safety. This method never inspects NavTreatment/ResolveNavTreatment itself; it only decides
-    // WHAT the $expand clause asked to see, never WHO is authoritative for the answer.
+    // For a ServeRaw navigation the CLR value read here is final. For RunDelegate/Blank this may
+    // splice a stale guess, which ExpandLevelAsync unconditionally overwrites afterwards -- a hard
+    // ordering requirement from Model B (#292/#293). This method never consults NavTreatment.
     //
-    // <paramref name="edmType"/> null is the deliberate whole-graph fallback for ODataEntityNode's
-    // deep-insert opt-out (§11.4.2.2): that caller passes no EDM type specifically so the freshly
-    // deserialized POST/PUT/PATCH body graph stays inline, unbounded, exactly as before this fix —
-    // do not "fix" that case here.
+    // A null edmType is the deliberate whole-graph fallback for ODataEntityNode's deep-insert
+    // opt-out (§11.4.2.2); do not "fix" it.
     //
-    // Keys off value.GetType() (the RUNTIME type) rather than a statically-threaded CLR type for
-    // both the suppression-options lookup and FindClrPropertyByEdmName, so a derived/polymorphic
-    // entity instance's own (possibly inherited) navigation properties are found and suppressed
-    // correctly even when reached through a base-typed navigation property.
+    // Keys off value.GetType(), and #343: the navigation NAMES must come from the RUNTIME type's EDM
+    // type too, not the declared one -- a navigation declared only on a derived type escaped
+    // suppression and 500'd on a plain GET. `model` is threaded because Microsoft.OData.Edm gives an
+    // IEdmEntityType no back-reference to its model.
     //
-    // #343 CORRECTION TO THE PARAGRAPH ABOVE. Keying the CLR side off the runtime type was only
-    // ever HALF of it: the navigation NAMES were still enumerated from the DECLARED
-    // <paramref name="edmType"/>, so a navigation declared only on a DERIVED EDM type was never in
-    // the suppression set and went straight to System.Text.Json — emitting unrequested data, and
-    // 500ing outright when two derived instances referenced each other through one (measured on a
-    // plain GET with NO query string). <paramref name="model"/> is what closes that: it lets
-    // GetNavSuppressedOptions resolve the RUNTIME type's own EDM type and union in its navigations.
-    // It is threaded rather than looked up ambiently because Microsoft.OData.Edm gives an
-    // IEdmEntityType no back-reference to the model that owns it.
-    //
-    // <paramref name="isCollectionValue"/> (fold-in #2, 200→500 regression guard): whether
-    // <paramref name="value"/> represents a COLLECTION of entities of <paramref name="edmType"/>
-    // rather than a single entity. This is decided by the CALLER from EDM cardinality
-    // (navRoute.IsCollection / navProp.Type.IsCollection()) — NEVER sniffed from value's own CLR
-    // shape (the pre-fold-in code tested `value is IEnumerable`). Shape-sniffing misfires for an
-    // entity model whose CLR class itself happens to implement IEnumerable (e.g. it wraps or
-    // derives from a collection type for unrelated domain reasons): such an entity would be walked
-    // element-by-element as if it WERE a collection of its own EDM type, instead of being serialized
-    // as the single object it is — corrupting the response shape (or throwing, depending on what
-    // its elements are) instead of a correct 200.
+    // isCollectionValue comes from EDM cardinality, NEVER from `value is IEnumerable`: an entity
+    // whose CLR class implements IEnumerable would be walked element-wise and corrupt the response.
     private static JsonNode? SerializeBounded(
         object? value,
         IEdmEntityType? edmType,
@@ -5202,33 +4271,22 @@ internal static class OhDataEndpointFactory
 
         if (isCollectionValue)
         {
-            // Perf (#337): the NESTED collection level is batched exactly like the root level —
-            // ONE SerializeToNode call for the whole homogeneous sibling set instead of one per
-            // element. Before this, SerializeBoundedCollection's batching only ever fired for the
-            // root page, and its fast path ("the clause keeps NO navigation") was unreachable for
-            // any $expand by construction, so ~99% of an $expand payload's bytes were still
-            // serialized one entity at a time — the exact shape batching was introduced to remove.
+            // #337: the NESTED level is batched like the root -- one SerializeToNode for the whole
+            // homogeneous sibling set. Batching used to fire only for the root page, and its fast path
+            // ("the clause keeps no navigation") is unreachable for any $expand by construction, so
+            // ~99% of an $expand payload was still serialized one entity at a time.
             //
-            // Materialized into a List<object?> by ENUMERATION (never handed to System.Text.Json as
-            // the concrete collection) for two reasons, both load-bearing:
-            //   1. Member dispatch. The element declared type is `object`, so STJ resolves each
-            //      element's RUNTIME type and a DERIVED entity sitting in a base-typed collection
-            //      still emits its own members (in STJ's derived-first property order). Handing STJ
-            //      the concrete List<TBase> instead would serialize every element by its DECLARED
-            //      type and silently drop those members.
-            //   2. Index alignment. SerializeBoundedCollection pairs batched[i] with values[i], and
-            //      is contractually index-preserving (see its remarks). Building the list by the
-            //      same enumeration STJ will then walk keeps that true even for a collection whose
-            //      indexer order disagrees with its enumeration order.
+            // Materialized into a List<object?> by ENUMERATION, never handed to STJ as the concrete
+            // collection, for two load-bearing reasons: (1) an `object` element declared type makes STJ
+            // resolve each element's RUNTIME type, so a DERIVED entity in a base-typed collection still
+            // emits its own members -- the concrete List<TBase> would serialize by declared type and
+            // silently drop them; (2) index alignment, since SerializeBoundedCollection pairs
+            // batched[i] with values[i] and building the list by the same enumeration STJ walks keeps
+            // that true even when a collection's indexer order disagrees with its enumeration order.
             //
-            // `object`-declared dispatch is NOT, however, equivalent to runtime-TYPED dispatch:
-            // supplying `object` as the declared type is exactly what triggers STJ's POLYMORPHIC
-            // RE-ENTRY, which emits the type discriminator of the nearest [JsonPolymorphic] ancestor
-            // ("$kind": "a", ...). The per-element SerializeToNode(element, element.GetType(), ...)
-            // call this replaces passes declared type == runtime type, so STJ resolves that type's
-            // own JsonTypeInfo and writes no discriminator at all. suppressPolymorphicMetadata: true
-            // therefore makes SerializeBoundedCollection fall back to that exact per-element call for
-            // the collections where the difference is observable — see its remarks.
+            // `object`-declared is NOT the same as runtime-TYPED dispatch: it triggers STJ's
+            // POLYMORPHIC RE-ENTRY and emits the nearest [JsonPolymorphic] ancestor's discriminator,
+            // which the per-element call it replaces never did. Hence suppressPolymorphicMetadata.
             var elements = ((IEnumerable)value).Cast<object?>().ToList();
             return SerializeBoundedCollection(elements, edmType, model, clause, opts, maxLevels, levelsNavNames,
                 activeLevels, suppressPolymorphicMetadata: true);
@@ -5318,51 +4376,23 @@ internal static class OhDataEndpointFactory
         }
     }
 
-    // Perf fix (measured regression vs. develop, BenchmarkDotNet: GetAllPage +40%, Filter +38%,
-    // OrderBy +35%, CountTrue +34%, Select +28%, TopSkip +26% allocated bytes): SerializeBounded
-    // above is invoked once PER ENTITY on the collection GET path, so its
-    // JsonSerializer.SerializeToNode call — one call per entity — replaced develop's ONE call for
-    // the whole page. That is pure overhead whenever nothing is actually expanded (no $expand, or
-    // — like the benchmark's BenchWidget model — an entity type with zero EDM navigations at all):
-    // the per-entity walker buys cycle-safety (#325/#326) that never pays for itself because there
-    // is nothing to walk.
+    // The collection-aware entry point: ONE SerializeToNode over the whole page under nav-suppressed
+    // options, then kept navigations spliced in per element -- and the splice pass is skipped
+    // entirely when the clause keeps none. SerializeBounded is per ENTITY, which measured +26-40%
+    // allocated bytes across the read benchmarks when nothing was expanded.
     //
-    // This is the collection-aware entry point used by ApplyCollectionPipelineAsync's Stage 1: ONE
-    // JsonSerializer.SerializeToNode call over the WHOLE page (using nav-suppressed options, so the
-    // cycle-safety guarantee is unchanged — no navigation is ever handed to System.Text.Json unless
-    // the clause asks for it), producing a JsonArray in one shot exactly like develop's original
-    // single Stage-1 call. Kept navigations are then spliced in per element via
-    // SpliceKeptNavigations — but ONLY for navigations the clause actually keeps, and the whole
-    // per-element splice pass is skipped entirely (FAST PATH) when the clause keeps none at all.
+    // #337: this is also SerializeBounded's nested-collection branch, so each homogeneous sibling set
+    // is one call too -- measured 1 batched call over ~1 KB against 1,000 calls over ~82 KB.
     //
-    // #337: this is ALSO SerializeBounded's nested-collection branch. The fast path above is gated
-    // on "the clause keeps NO navigation", which an $expand request never satisfies by definition —
-    // so before #337 batching only ever paid off for a request that expanded nothing (or a model
-    // with zero EDM navigations), and every entity BELOW the root was still serialized one
-    // SerializeToNode call at a time. Routing the nested level here batches each homogeneous
-    // sibling set into a single call as well, which is where the overwhelming majority of an
-    // $expand payload's bytes actually live (measured: 1 batched call over ~1 KB vs. 1,000
-    // individual calls over ~82 KB on the ExpandCollection benchmark shape). <paramref
-    // name="activeLevels"/> is the $levels budget inherited from the parent level — always null at
-    // the root call site (mirroring Stage 1's original per-entity call, which never passed one),
-    // threaded through by the nested caller so the batched path's keep/recurse decision is the
-    // SAME one the per-entity path made.
+    // Uses the SAME BuildExpandLookup/TryKeepNav table and the SAME SpliceKeptNavigations as the
+    // per-entity path, so the two cannot disagree about what "kept" means. The keep/recurse decision
+    // is computed once for the batch, which is valid only because every element is a sibling at one
+    // level under one clause and one activeLevels budget.
     //
-    // Correctness: uses the SAME BuildExpandLookup/TryKeepNav decision table and the SAME
-    // SpliceKeptNavigations splice SerializeBounded itself uses (single source, see its remarks),
-    // so the two can never disagree on what "kept" means or how a kept nav gets spliced. The
-    // keep/recurse decision (expanded/levelsRemaining) is computed ONCE for the whole batch — valid
-    // because every element here is a SIBLING at the same level, serialized under the SAME clause
-    // and the SAME inherited activeLevels budget, exactly as the per-entity loop this replaces
-    // passed the identical (clause, activeLevels) pair to every element in turn.
-    //
-    // Array element order MUST match <paramref name="values"/>' source order exactly: STJ's
-    // SerializeToNode over an IEnumerable preserves enumeration order (the same guarantee develop's
-    // original single-call Stage 1 already relied on), and the splice loop below pairs
-    // batched[i]/values[i] by that same index — see SerializeBoundedWalkerTests for an explicit
-    // index-pairing assertion (a heterogeneous per-entity nav value pattern, e.g. entity N's nav
-    // populated and its neighbours' not, would surface a misaligned splice as wrong data on the
-    // wrong entity rather than passing by coincidence).
+    // Array element order MUST match values' source order: the splice pairs batched[i]/values[i] by
+    // index. SerializeBoundedWalkerTests asserts that pairing explicitly, because a heterogeneous nav
+    // pattern is what turns a misaligned splice into wrong data on the wrong entity rather than a
+    // coincidental pass.
     private static JsonArray SerializeBoundedCollection(
         IReadOnlyList<object?> values,
         IEdmEntityType? edmType,
@@ -5507,45 +4537,27 @@ internal static class OhDataEndpointFactory
         return batched;
     }
 
-    // Fold-in #1 (#325/#326 regression, data exposure): true when the BASE (pre-nav-suppression)
-    // JsonTypeInfo for clrType — resolved through the SAME resolver GetNavSuppressedOptions itself
-    // falls back to (never `opts.GetTypeInfo` directly: an `opts` instance that has never actually
-    // been handed to `JsonSerializer.Serialize`/`SerializeToNode` and carries no explicit
-    // `TypeInfoResolver` throws `NotSupportedException` from `GetTypeInfo`, even though
-    // `SerializeToNode` itself tolerates that exact options shape via its own implicit reflection
-    // fallback — `_pascalCaseSerializerOptions`, this file's own defensive fallback, is exactly such
-    // an instance) — would itself emit clrNavProp for this entity instance.
+    // True when the BASE (pre-suppression) JsonTypeInfo would itself emit clrNavProp for this
+    // instance. Resolved through the SAME resolver GetNavSuppressedOptions falls back to, never
+    // opts.GetTypeInfo directly: an options instance that has never been handed to Serialize and
+    // carries no explicit TypeInfoResolver throws NotSupportedException from GetTypeInfo even though
+    // SerializeToNode tolerates it -- and _pascalCaseSerializerOptions is exactly such an instance.
     //
-    // BOTH [JsonIgnore] SPELLINGS ARE DECIDED BY ShouldSerialize, NOT BY ABSENCE. This comment used
-    // to say that a plain [JsonIgnore] "removes the member from typeInfo.Properties entirely", with
-    // the presence check below as the mechanism. That is FALSE on .NET 10 — measured against
-    // DefaultJsonTypeInfoResolver on 10.0.11:
+    // BOTH [JsonIgnore] SPELLINGS ARE DECIDED BY ShouldSerialize, NOT BY ABSENCE. Measured on .NET
+    // 10.0.11, an unconditionally ignored member STAYS in Properties with Get/Set nulled and a
+    // ShouldSerialize returning false -- so the `return` inside the loop answers for it, not the
+    // trailing `return false`. (A previous comment here claimed the member was removed entirely.)
     //
-    //   Hidden   get=null set=null shouldSer=fn   <- [JsonIgnore], STILL IN Properties
+    // That is load-bearing, not cosmetic: OpenTypeJsonOptions.Build snapshots its declared-name set
+    // from this same collection, so a navigation carrying [JsonIgnore] still collides with a bag key
+    // and still hard-fails instead of being quietly shadowed.
     //
-    // i.e. an unconditionally ignored member stays in JsonTypeInfo.Properties with Get and Set
-    // nulled out and a ShouldSerialize delegate that returns false (verified by invoking it). So
-    // the loop below DOES find it, and the `return` inside the loop — not the `return false` after
-    // it — is what answers "not visible" for it. The method's outcome was always right; only the
-    // stated reason was wrong. JsonIgnoreCondition.WhenWritingNull/WhenWritingDefault land in the
-    // same place by the same route: present, gated at serialize time by ShouldSerialize (invoked
-    // here with the SAME (owner, value) pair System.Text.Json itself would use).
+    // The trailing `return false` covers only members genuinely absent from the base contract --
+    // above all one an earlier modifier REMOVED, which is how Ignore() works and is the real
+    // difference from [JsonIgnore]: a removed member is why extension data can capture it.
     //
-    // Getting this right is load-bearing rather than cosmetic, because the open-type modifier
-    // (OpenTypeJsonOptions.Build) snapshots its declared-name set from exactly this collection: a
-    // navigation carrying [JsonIgnore] is still in Properties, so a dynamic bag key spelled like it
-    // still collides and still hard-fails, instead of quietly shadowing the navigation. A reader who
-    // believed the old comment would conclude the opposite.
-    //
-    // The trailing `return false` therefore covers only members genuinely absent from the base
-    // contract — most importantly one an earlier TypeInfoResolver modifier REMOVED, which is how
-    // Ignore() (#226) works and is a real difference from [JsonIgnore]: a removed member is not in
-    // Properties at all, which is precisely why extension data can capture it (see
-    // OpenTypeJsonOptions' remarks on Ignore() containment).
-    //
-    // A custom [JsonConverter] on the property changes its wire shape in a way SerializeBounded's own
-    // recursive splice cannot reproduce, so that case is treated as not natively-visible too —
-    // omitted rather than corrupted with the wrong shape.
+    // A custom [JsonConverter] on the property is treated as not natively visible too -- its wire
+    // shape cannot be reproduced by the recursive splice, so it is omitted rather than corrupted.
     private static bool IsNavVisibleInBaseOptions(
         JsonSerializerOptions opts, Type clrType, PropertyInfo clrNavProp, object entityValue, object? navValue)
     {
@@ -5555,29 +4567,20 @@ internal static class OhDataEndpointFactory
         if (typeInfo is null) return false;
         foreach (JsonPropertyInfo p in typeInfo.Properties)
         {
-            // #462/#343 FOLLOW-ON, A FIFTH INSTANCE OF THE SAME DEFECT CLASS — found by the shared
-            // fixture, not by the issues. `pi != clrNavProp` is PropertyInfo equality, which also
-            // compares ReflectedType, and for an INHERITED navigation on a DERIVED runtime instance
-            // the two sides come from reflection walks that disagree about it. MEASURED on .NET
-            // 10.0.11 for `RtDerived : RtBase` with `Items` declared on the base:
-            //     clrNavProp.ReflectedType = RtDerived   (FindClrPropertyByEdmName does
-            //                                             RtDerived.GetProperties())
-            //     pi.ReflectedType         = RtBase      (System.Text.Json's AttributeProvider)
-            //     pi == clrNavProp -> false ; pi.HasSameMetadataDefinitionAs(clrNavProp) -> true
-            // So the loop never matched, the trailing `return false` answered "not visible", and
-            // SpliceKeptNavigations SKIPPED the navigation — a declared navigation the client
-            // explicitly $expand'ed was silently DROPPED from every derived instance, while the base
-            // instances in the same page kept theirs. That is the exact mirror of #343 (which emits
-            // what nobody asked for); fixing only one of the two would leave a derived entity unable
-            // to serve any expanded navigation at all.
+            // #462/#343, a fifth instance of the same defect class, found by the shared fixture rather
+            // than by the issues. `pi != clrNavProp` is PropertyInfo equality, which compares
+            // ReflectedType, and for an INHERITED navigation on a DERIVED instance the two reflection
+            // walks disagree -- measured on .NET 10.0.11, FindClrPropertyByEdmName reports the derived
+            // type while STJ's AttributeProvider reports the base, so `==` is false where
+            // HasSameMetadataDefinitionAs is true.
             //
-            // HasSameMetadataDefinitionAs is the same comparison, for the same reason, that
-            // OpenTypeJsonOptions.Build already uses against its own AttributeProvider — see the long
-            // comment there. It is NOT whole-member identity (it matches across generic
-            // instantiations); what makes it safe here is the same thing that makes it safe there:
-            // both sides are members of `clrType` or of one of its base types, and a single type's
-            // member list cannot contain two instantiations of one generic definition. Non-derived
-            // instances are unaffected — their two PropertyInfos already compared equal.
+            // The loop therefore never matched, the trailing `return false` answered "not visible",
+            // and a navigation the client explicitly $expand'ed was silently DROPPED from every derived
+            // instance while base instances in the same page kept theirs -- the exact mirror of #343.
+            //
+            // Safe for the same reason it is in OpenTypeJsonOptions.Build: both sides are members of
+            // clrType or one of its bases, and one type's member list cannot hold two instantiations of
+            // a single generic definition.
             if (p.AttributeProvider is not PropertyInfo pi || !pi.HasSameMetadataDefinitionAs(clrNavProp)) continue;
             return p.ShouldSerialize is null || p.ShouldSerialize(entityValue, navValue);
         }
@@ -5588,111 +4591,21 @@ internal static class OhDataEndpointFactory
         return false;
     }
 
-    // Fold-in #7 (perf hygiene): ONE derived JsonSerializerOptions per baseOptions (not one per
-    // (baseOptions, ClrType) pair as before) — mirrors IgnoredPropertyJsonOptions.Build's own
-    // pattern (see its remarks): a single TypeInfoResolver modifier consults a type-keyed lookup
-    // built INSIDE this cache entry, so N entity types sharing a registration's baseOptions share
-    // ONE derived JsonSerializerOptions and therefore one JsonTypeInfo cache, instead of each type
-    // paying for (and duplicating work across) its own independent derived-options instance.
+    // One derived JsonSerializerOptions per baseOptions -- N entity types share one instance and
+    // therefore one JsonTypeInfo cache.
     //
-    // #482 — THE PRE-POPULATION "GUARANTEE" THAT USED TO BE ASSERTED HERE WAS FALSE, AND ITS
-    // FALSENESS WAS A 500-FOREVER. This comment used to read: "The per-type nav-name set is
-    // populated via GetOrAdd BEFORE returning Derived, which guarantees it is present the first time
-    // `clrType` is ever handed to Derived for serialization." That held only for types handed to
-    // GetNavSuppressedOptions *directly*. It said nothing about a type System.Text.Json reaches on
-    // its OWN, transitively, while walking a graph — and STJ resolves and permanently caches a
-    // type's JsonTypeInfo on FIRST use per options instance, so such a type froze UN-SUPPRESSED for
-    // the process lifetime. Measured at e3a7bd3 through the shipped code: serialize one entity whose
-    // open-type dynamic bag holds a live instance of ANOTHER entity type (bag values are stored
-    // verbatim and serialized by runtime type), and the NEXT read of that other entity set throws
-    // `JsonException: A possible object cycle was detected` on an ordinary parent/child fixup graph —
-    // rendered by the group filter as 500 on a plain GET with no query string, on every request,
-    // forever. #343 resurrected, permanently, by nothing but serialization ORDER.
+    // #482: the modifier computes the suppression set ITSELF from (typeInfo.Type, the EDM) at
+    // contract-resolution time. Do not reintroduce pre-population keyed on which route reached the
+    // type: STJ caches a JsonTypeInfo on first use, so a type reached transitively (an open-type bag
+    // value, an object-declared member) froze un-suppressed for the process lifetime -- a 500 on
+    // every subsequent plain GET of that set.
     //
-    // THE ORDER DEPENDENCE IS NOW GONE BY CONSTRUCTION, not patched edge by edge. The modifier below
-    // computes the suppression set ITSELF, as a pure function of (typeInfo.Type, the EDM), at the
-    // moment STJ resolves the contract — so it cannot matter which route reached the type, or
-    // whether any route reached it at all. `EdmTypeByClrType` is what makes that function
-    // total: one walk of the schema (SeedNavSuppressionModel) maps EVERY EDM-declared entity type to
-    // its CLR type up front, before any contract can be resolved on Derived. Nothing about the
-    // caller, the call order, or the reachability path is consulted.
+    // #508: the map is keyed off ClrTypeAnnotation, NOT model.FindDeclaredType(clrType.FullName),
+    // which misses every type on a renamed schema. #507: keyed by IEdmStructuredType, not entity
+    // types -- a complex type's entity-typed member is a navigation ON THE COMPLEX TYPE.
     //
-    // The map is keyed CLR->EDM via ODataConventionModelBuilder's own ClrTypeAnnotation, NOT via
-    // model.FindDeclaredType(clrType.FullName) as the #343 union did. That was not a style choice:
-    // FindDeclaredType matches on the EDM type's FULL NAME, so a registration that sets
-    // `ODataConventionModelBuilder.Namespace` (or otherwise renames the schema) makes every lookup
-    // miss — measured: with `mb.Namespace = "Custom.Ns"`, `FindDeclaredType(typeof(Beta).FullName)`
-    // returns null while the annotation resolves Beta correctly. #343's runtime-type union was
-    // therefore a silent no-op on any custom-namespace model; it is not any more.
-    //
-    // Coverage this buys, beyond the measured dynamic-bag edge: an `object`-declared CLR member
-    // holding an entity, a COMPLEX type carrying an entity-typed member, an EF Core lazy-loading
-    // proxy or any other CLR subclass the EDM does not declare (the base-chain walk in
-    // BuildNavClrNames resolves it to its nearest EDM-known ancestor), and any future edge nobody
-    // has thought of — because none of them is an edge any more.
-    //
-    // #507 — THE "COMPLEX TYPE CARRYING AN ENTITY-TYPED MEMBER" CLAIM ABOVE WAS FALSE WHEN #491
-    // MADE IT, AND IS TRUE ONLY NOW. The seed walked model.SchemaElements.OfType<IEdmEntityType>()
-    // alone, and AddNavClrNames read navigations off entity types alone. But
-    // ODataConventionModelBuilder models an entity-typed member of a COMPLEX type as a navigation
-    // ON THE COMPLEX TYPE (measured: `class PxMeta { string Note; PxEntity Owner; }` yields
-    // `<ComplexType Name="PxMeta"><NavigationProperty Name="Owner" .../>`), so BuildNavClrNames'
-    // base-chain lookup into an entity-only map computed an EMPTY set for every complex CLR type and
-    // the modifier removed nothing. What #491's own measurement covered was the entity reached
-    // THROUGH the member — `Owner.Children` really was suppressed — which is exactly why the gap
-    // looked closed. Measured on the pre-fix tree, both consequences on a PLAIN GET with no query
-    // string: `"Meta":{"Note":"y","Owner":{...}}` — navigation data inline with no $expand naming it
-    // (§4.5.1) — and `E.Meta.Owner = E` throwing `JsonException: A possible object cycle was
-    // detected`, i.e. the group filter's 500, on every request. Neither is order-dependent and
-    // neither needs open types, unlike #482's poisoning step.
-    //
-    // The map is therefore keyed by IEdmStructuredType now, and the invariant test that could not
-    // see this (RuntimeTypeConfigResolutionTests.EveryEdmEntityType_ResolvesSuppressed_*, a universal
-    // statement that quantified over ENTITY types only) has a complex-type twin.
-    //
-    // SUPPRESSED, NOT SERVED, for the same reason a derived-declared navigation is (see
-    // GetNavSuppressedOptions' remarks): §4.5.1/§11.2.4.2 require a non-expanded navigation to be
-    // omitted, and SpliceKeptNavigations iterates the ENTITY type's navigations, so a complex type's
-    // navigation has no route into `expanded` and no splice would ever put it back. "Serve it" would
-    // mean serving it unconditionally, which is the defect. `$expand=Meta/Owner` — a complex-type
-    // path segment the OData parser does accept — is consequently omitted rather than expanded; that
-    // is a pre-existing feature gap (the splice never handled it), not a regression, and it now fails
-    // the same way an unexpanded navigation does instead of leaking the whole graph.
-    //
-    // The review's third reasoned edge — a navigation FindClrPropertyByEdmName cannot resolve — is
-    // REAL and is closed at AddNavClrNames instead, by reading the model builder's own
-    // ClrPropertyInfoAnnotation alongside the name lookup. See that method: an EDM-level rename
-    // (reachable through AdvancedConfigure) produced a navigation the name lookup could not see at
-    // all, so it was never suppressed on ANY route — order-independently broken rather than
-    // order-dependently broken.
-    //
-    // NOT closed, and deliberately so: a CLR type that is not an EDM entity type in ANY seeded model
-    // and holds a reference to itself. Suppression is defined by the EDM; a member the EDM does not
-    // call a navigation is data, and removing it would be a silent data loss rather than a fix.
-    // That residue is #440's territory (a CLR type absent from the EDM), not this one's.
-    //
-    // Also caches the BASE (un-suppressed) JsonTypeInfo per clrType — fold-in #1's
-    // IsNavVisibleInBaseOptions needs it, resolved through the SAME captured BaseResolver fallback
-    // (never `opts.GetTypeInfo`, which requires the caller's options to already carry an explicit
-    // resolver — see IsNavVisibleInBaseOptions' remarks) — so that lookup is O(1) after first use
-    // too, instead of re-resolving/re-walking clrType's properties on every kept navigation.
-    //
-    // Keyed via ConditionalWeakTable (not the previous ConcurrentDictionary<(Options,Type),...>) so
-    // an options instance's cache entry is collected along with the options itself — the previous
-    // strong-keyed dictionary leaked one entry per distinct JsonSerializerOptions for the life of
-    // the process, which matters for test suites (e.g. WebApplicationFactory) that construct a fresh
-    // host — and therefore fresh options — per test class.
-    //
-    // EdmTypeByClrType (#482, widened to complex types by #507): every EDM-declared STRUCTURED type
-    // — entity AND complex — of every model seeded onto this options instance, keyed by its CLR type.
-    // Filled by SeedNavSuppressionModel BEFORE any contract can be resolved on Derived; read — never
-    // written — by the resolver modifier. Together with the type it is handed, it is the WHOLE of the
-    // modifier's input.
-    //
-    // SeededModels/SeedGate (#482): which IEdmModel instances have already been walked into
-    // EdmTypeByClrType, and the gate that publishes that flag LAST so a second thread which
-    // observes "seeded" also observes a COMPLETE map. See SeedNavSuppressionModel for why a bare
-    // ConcurrentDictionary flag would not be enough.
+    // Suppressed, never served: §4.5.1 omits a non-expanded navigation, and SpliceKeptNavigations
+    // only walks the entity type's own, so nothing could put it back.
     private sealed record NavSuppressionState(
         JsonSerializerOptions Derived,
         IJsonTypeInfoResolver BaseResolver,
@@ -5742,27 +4655,20 @@ internal static class OhDataEndpointFactory
             edmTypeByClrType, new ConcurrentDictionary<IEdmModel, bool>(), new object());
     }
 
-    // #482: the modifier's pure function. The CLR property names on <paramref name="clrType"/> that
-    // back a navigation of ANY EDM entity type on <paramref name="clrType"/>'s own CLR base chain.
+    // #482: the modifier's pure function -- the CLR property names on clrType backing a navigation of
+    // ANY EDM entity type on clrType's own base chain.
     //
-    // The base walk (rather than an exact-type lookup) is what covers a runtime type the EDM does not
-    // declare at all: an EF Core lazy-loading proxy, a Castle/DynamicProxy subclass, or any derived
-    // CLR type a handler returns through a base-typed entity set. Its nearest EDM-known ancestor's
-    // navigations are resolved AGAINST THE RUNTIME TYPE — FindClrPropertyByEdmName is given
-    // <paramref name="clrType"/>, never the ancestor — so a shadowed or overridden member resolves to
-    // the member System.Text.Json will actually put on the contract.
+    // The base walk covers a runtime type the EDM does not declare at all: an EF lazy-loading proxy, a
+    // DynamicProxy subclass, any derived type returned through a base-typed set. Its nearest EDM-known
+    // ancestor's navigations are resolved AGAINST THE RUNTIME TYPE, never the ancestor, so a shadowed
+    // member resolves to the one STJ will actually put on the contract.
     //
-    // UNION over the chain, not nearest-wins, and that is not interchangeable: EDM navigation sets
-    // are a suppression boundary (#325/#326's premise is that NO navigation reaches STJ unspoken
-    // for), so a derived type's set must never shadow its base's. Same policy, same reason, as
-    // InheritedNameSets.Resolve — interfaces deliberately not walked, since an EDM entity type is
-    // always a class.
+    // UNION over the chain, not nearest-wins, and not interchangeable: navigation sets are a
+    // suppression boundary, so a derived type's set must never shadow its base's. Same policy as
+    // InheritedNameSets.Resolve; interfaces deliberately not walked.
     //
-    // Cost: one HashSet, plus one FindClrPropertyByEdmName and one annotation lookup per navigation,
-    // per DISTINCT runtime type per options instance — memoized in NavClrNamesByType, and
-    // FindClrPropertyByEdmName is itself process-wide memoized. Nothing per request, nothing per
-    // entity. The schema walk that feeds it is measured at ~0.9 us per EDM entity type (0.44 ms for a
-    // 400-entity-type model), paid once at MapOhData().
+    // Cost: memoized per distinct runtime type per options instance, nothing per request. The schema
+    // walk that feeds it measures ~0.9 us per EDM entity type, paid once at MapOhData().
     private static HashSet<string> BuildNavClrNames(
         Type clrType, ConcurrentDictionary<Type, NavSourceBinding> edmTypeByClrType)
     {
@@ -5775,29 +4681,19 @@ internal static class OhDataEndpointFactory
         return navClrNames;
     }
 
-    // #482: one walk of <paramref name="model"/>'s schema, mapping every EDM entity type to its CLR
-    // type, so BuildNavClrNames above is TOTAL rather than dependent on who called first.
+    // #482: one walk of the model's schema mapping every EDM type to its CLR type, so BuildNavClrNames
+    // is TOTAL rather than dependent on who called first. Called from MapAll before any request, and
+    // defensively from GetNavSuppressedOptions, since the SerializeBounded family is reachable from
+    // the _pascalCaseSerializerOptions fallback without going through MapAll.
     //
-    // Called from MapAll (PrimeNavSuppression — before a single request is served) and, defensively,
-    // from GetNavSuppressedOptions on every call, since the SerializeBounded family is reachable in
-    // tests and from the `_pascalCaseSerializerOptions` fallback without going through MapAll.
+    // CONCURRENCY: whichever thread resolves a JsonTypeInfo first decides that type's behaviour for
+    // the process lifetime, so "seeded" must never be observable before the map is complete. A bare
+    // TryAdd guard would do exactly that -- the loser concludes "already seeded" and serializes
+    // against a half-filled map. The flag is written INSIDE the lock and LAST.
     //
-    // CONCURRENCY. The whole point of #482 is that whichever thread resolves a JsonTypeInfo first
-    // decides that type's behaviour for the process lifetime, so "seeded" must never be observable
-    // before the map it promises is complete. A bare `SeededModels.TryAdd(model, true)` guard would
-    // do exactly that: thread A wins the TryAdd and starts filling the map, thread B loses it,
-    // concludes "already seeded", and serializes against a half-filled map — re-creating the defect
-    // under a different trigger. Hence the gate: the flag is written INSIDE the lock and LAST, so a
-    // lock-free reader that sees `true` is guaranteed (by ConcurrentDictionary's volatile publish and
-    // the lock's release) to see every map entry written before it. B's fast-path miss costs it the
-    // lock, where it waits for A and then returns.
-    //
-    // Idempotent per model, and additive across models: two registrations that share one
-    // JsonSerializerOptions instance (only reachable via the `_pascalCaseSerializerOptions` fallback —
-    // MapAll threads a per-registration `effectiveJsonOptions`) union their schemas rather than
-    // first-one-wins. Union is the safe direction here; the residue is a CLR type declared by BOTH
-    // models with DIFFERENT navigations, whose first-resolved contract still wins, and which #458
-    // already refuses within a registration.
+    // Additive across models: two registrations sharing one options instance union their schemas.
+    // The residue is a CLR type declared by BOTH with DIFFERENT navigations, whose first-resolved
+    // contract wins -- which #458 already refuses within a registration.
     private static void SeedNavSuppressionModel(NavSuppressionState state, IEdmModel? model)
     {
         if (model is null || state.SeededModels.ContainsKey((IEdmModel)model)) return;
@@ -5833,58 +4729,22 @@ internal static class OhDataEndpointFactory
             s_navSuppressedOptionsCache.GetValue(baseOptions, CreateNavSuppressionState), model);
     }
 
-    // #343: THE SUPPRESSION SET IS BUILT FROM THE RUNTIME TYPE, NOT THE DECLARED EDM TYPE ALONE.
+    // #343: the suppression set comes from the RUNTIME type, not the declared EDM type alone.
+    // #325/#326 rest on the premise that no navigation reaches STJ unless the clause asked for it;
+    // enumerating only edmType.NavigationProperties() broke that for a navigation declared on a
+    // DERIVED type, which then emitted inline and 500'd on a cycle -- on a plain GET, no query string.
     //
-    // #325/#326 ("Option B", clause-bounded serialization) rest on one structural premise: NO
-    // navigation ever reaches System.Text.Json unless the $expand clause asked for it. That is what
-    // makes a reference cycle structurally unreachable rather than merely unlikely. Enumerating only
-    // `edmType.NavigationProperties()` broke the premise for a navigation declared on a DERIVED
-    // entity type: it was never in the set, so it was never removed from the runtime type's
-    // JsonTypeInfo, so STJ walked into it. Measured on the pre-fix tree, both consequences the issue
-    // reports, on a PLAIN GET with no query string at all: a derived-declared collection navigation
-    // emitted inline (`"Notes":[...]` with no $expand=Notes anywhere), and two derived instances
-    // referencing each other through a derived-declared single navigation 500ing on the collection
-    // route and on GetById alike.
+    // Suppressed, NOT served: §4.5.1 omits a non-expanded navigation, and the clause binds against
+    // the DECLARED type, so a derived-declared nav has no route into `expanded` and "serve it" would
+    // mean serving it unconditionally.
     //
-    // SUPPRESSED, NOT SERVED — and the alternative is not a close call. (a) OData JSON Format 4.01
-    // §4.5.1 / §11.2.4.2 require a non-expanded navigation to be OMITTED, never emitted inline; a
-    // derived-declared navigation is a navigation. (b) It cannot be asked for: the $expand clause is
-    // bound against the entity set's DECLARED type, and SpliceKeptNavigations likewise iterates the
-    // declared type's navigations, so a derived-declared nav has no route into `expanded` and no
-    // splice would ever put it back. "Serve it" would therefore mean serving it UNCONDITIONALLY,
-    // which is the defect. (c) It is consistent with #293's frozen Model B spec rather than in
-    // tension with it: Model B decides WHO is authoritative for a navigation the clause kept at a
-    // level whose EDM type is known (ResolveProfilesForEdmType matches the EXACT EDM type, never CLR
-    // assignability), and it never has an opinion about a navigation no clause can name. #440's
-    // ServeRaw split points the same way — a navigation no candidate declares or routes is OMITTED,
-    // not emitted as null.
+    // #482 moved the mechanism, not the decision: the resolver modifier computes the set itself at
+    // contract-resolution time, so all this method does is seed the CLR->EDM map before the caller's
+    // SerializeToNode. #508: that seeding goes through EdmClrTypeMap, never
+    // FindDeclaredType(clrType.FullName), which silently returns null on a renamed schema.
     //
-    // #482 SUPERSEDES THE MECHANISM, NOT THE DECISION. Everything above still holds; what changed is
-    // WHERE the runtime type's EDM type comes from and WHEN it is consulted. This method no longer
-    // computes any suppression set — the resolver modifier does, from the seeded CLR->EDM map, at
-    // contract-resolution time (see CreateNavSuppressionState). All this method contributes is the
-    // seeding, which must happen before the SerializeToNode call the caller is about to make.
-    //
-    // model.FindDeclaredType(clrType.FullName) is gone from the lookup path: it matches on the EDM
-    // type's full name, so it silently returned null — and #343's union silently did nothing — for
-    // any model whose schema namespace was renamed. The ClrTypeAnnotation route SeedNavSuppressionModel
-    // uses has no such failure mode.
-    //
-    // The two TryAdds are the residue guard for a model carrying no ClrTypeAnnotation (a hand-built
-    // IEdmModel; OhData itself always builds through ODataConventionModelBuilder, which writes the
-    // annotation). Precedence is deliberate and matches what the seed would have produced: the
-    // runtime type's OWN declared EDM type first, the caller's DECLARED base type second, and both
-    // lose to whatever the seed already put there — TryAdd never overwrites.
-    //
-    // Guarded by ContainsKey because this method runs ONCE PER ENTITY on the single-entity path. In
-    // steady state the whole method is two dictionary probes — the same order of cost as the single
-    // GetOrAdd it replaced.
-    //
-    // #508: the residue guard's first TryAdd used model.FindDeclaredType(clrType.FullName), the last
-    // read-path survivor of that convention. It is EdmClrTypeMap now — which, on a model built by
-    // ODataConventionModelBuilder, is exactly what the seed above already put in the map, so this
-    // branch is reached only for a hand-built IEdmModel with no ClrTypeAnnotation at all. There the
-    // second TryAdd (the CALLER's declared EDM type) is the whole of the residue guard, unchanged.
+    // The two TryAdds are the residue guard for a hand-built IEdmModel carrying no ClrTypeAnnotation;
+    // TryAdd never overwrites what the seed already placed.
     private static JsonSerializerOptions GetNavSuppressedOptions(
         JsonSerializerOptions baseOptions, IEdmModel? model, IEdmEntityType edmType, Type clrType)
     {
@@ -5899,40 +4759,23 @@ internal static class OhDataEndpointFactory
         return state.Derived;
     }
 
-    // The CLR property names on <paramref name="clrType"/> that back <paramref name="edmType"/>'s
-    // navigations (NavigationProperties() is inherited-inclusive, so a base type's navigations come
-    // along with a derived one's).
+    // The CLR property names on clrType backing edmType's navigations (NavigationProperties() is
+    // inherited-inclusive). #507: edmType is an IEdmStructuredType, because a COMPLEX type carries
+    // navigations too -- one per entity-typed member.
     //
-    // #507: edmType is an IEdmStructuredType, not an IEdmEntityType. NavigationProperties() is
-    // declared on IEdmStructuredType precisely because a COMPLEX type can carry them, and
-    // ODataConventionModelBuilder puts one there for every entity-typed member of a complex type.
+    // TWO routes, UNIONED, because either alone has a blind spot (#482):
+    //   (1) FindClrPropertyByEdmName -- the same lookup the splice uses, so suppression and splice
+    //       cannot disagree about which member is meant.
+    //   (2) the builder's own ClrPropertyInfoAnnotation -- authoritative. Route (1) matches on the
+    //       EDM NAME, so an EDM-level rename defeats it: measured, `HasMany(b => b.Children).Name =
+    //       "Kids"` leaves the annotation reporting `Children` while the lookup for `Kids` returns
+    //       null, so that navigation was NEVER suppressed on any route.
+    // (2) is absent for a hand-built IEdmModel and (1) covers members (2) never recorded.
+    // Over-suppression is not a risk: a name not on the contract removes nothing.
     //
-    // TWO routes, UNIONED, because either one alone has a blind spot (#482, the third edge the review
-    // reasoned about).
-    //
-    // (1) FindClrPropertyByEdmName - the same lookup the splice uses, so for every navigation it can
-    //     resolve, suppression and splice cannot disagree about which member is meant.
-    //
-    // (2) The model builder's own ClrPropertyInfoAnnotation on the navigation - the AUTHORITATIVE
-    //     record of the backing member, written when the navigation was built. Route (1) matches on
-    //     the EDM NAME (via [JsonPropertyName] or the CLR name, case-insensitively), so an
-    //     EDM-LEVEL rename defeats it outright: measured against the referenced package,
-    //     `mb.EntityType<Beta>().HasMany(b => b.Children).Name = "Kids"` yields an EDM navigation
-    //     named `Kids` whose annotation still reports `Children`, and `FindClrPropertyByEdmName(
-    //     typeof(Beta), "Kids")` returns null. Pre-#482 that navigation was therefore NEVER
-    //     suppressed on any route - the #343 leak and the cycle-500 both, reachable through
-    //     AdvancedConfigure's full EDM control. The annotation closes it.
-    //
-    // Union rather than either/or: (2) is absent for a hand-built IEdmModel, and (1) is what covers a
-    // member (2) never recorded. Over-suppression is not a risk from adding (2) - it names the very
-    // member the builder mapped to this navigation, and a name that is not on the contract removes
-    // nothing.
-    //
-    // KNOWN, OUT OF SCOPE, and NOT made worse here: SpliceKeptNavigations still reads the value
-    // through route (1) alone, so an EDM-renamed navigation that the clause DOES $expand is spliced
-    // as an empty array rather than its data. That is a data-plumbing defect of its own; before this
-    // change the same request ALSO emitted the whole un-suppressed CLR graph under the wrong key, so
-    // suppression strictly improves it.
+    // KNOWN and out of scope: SpliceKeptNavigations still reads through route (1) alone, so an
+    // EDM-renamed navigation that IS $expanded splices as an empty array. Strictly better than
+    // before, when the same request emitted the whole un-suppressed graph under the wrong key.
     private static void AddNavClrNames(
         HashSet<string> into, IEdmModel? model, IEdmStructuredType edmType, Type clrType)
     {
@@ -6373,30 +5216,18 @@ internal static class OhDataEndpointFactory
             catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException
                 or Microsoft.OData.ODataException)
             {
-                // FAIL LOUD (owner directive, post-#298/#300 review): a nested expand option
-                // Microsoft's own binder cannot translate into an expression must not silently
-                // degrade the response to EDM-only under a 200 — that is exactly the class of bug
-                // #298/#300 reported (the parent collection itself came back wrong/empty because a
-                // downstream shape could not be translated). The client asked for a $expand nested
-                // option this server cannot honor against this model; that is a 400, not a
-                // silently-wrong 200. Logged at Debug (same diagnostic detail as before) so the
-                // operator can still see which clause tripped it; the client-facing message stays
-                // generic (never ex.Message/stack trace, which could leak internal details) per this
-                // file's existing InternalServerError convention (S7).
+                // FAIL LOUD (owner directive): a nested expand option MS's binder cannot translate
+                // must not degrade the response to EDM-only under a 200 -- that is #298/#300's class
+                // of bug. Message stays generic per S7; logged at Debug so the operator sees which
+                // clause tripped it.
                 //
-                // Narrowed (adversarial review, post-branch): this step is pure in-memory expression
-                // construction via Microsoft's FilterBinder/OrderByBinder (see BindNavShape) — no
-                // database I/O happens here, so there is no transient/provider fault class to worry
-                // about. The filter is narrowed so a genuine framework bug (e.g. a
-                // NullReferenceException from a binder defect) surfaces as a 500 for investigation
-                // rather than being mislabeled a 400 "your query is bad" response.
+                // The type list is narrow so a genuine framework bug (an NRE from a binder defect)
+                // surfaces as a 500 rather than a 400 "your query is bad".
                 //
-                // #494 deliberately left this one alone. The execution-time catches it used to be
-                // "consistent with" were classifying by exception TYPE around a call that really
-                // does touch the database, which is what made their type list wrong; this call
-                // touches nothing, so the same list is sound here. In TranslateThenMaterialize's
-                // terms, everything below is translation and there is no materialization phase to
-                // separate it from.
+                // #494 deliberately left this one alone: it classifies by exception TYPE, which was
+                // wrong at the execution-time catches because those wrap a call that touches the
+                // database. This one is pure in-memory expression construction -- all translation, no
+                // materialization phase to separate it from.
                 logger?.LogDebug(ex,
                     "OhData: $expand pushdown failed for {EntitySet}: a nested expand option could not be bound.",
                     source.EntitySetName);
@@ -6640,52 +5471,20 @@ internal static class OhDataEndpointFactory
             return false; // $search/$compute/$apply inside an expand — not implemented on the pushdown path
         }
 
-        // $levels: bounded self-referential recursion (the caller resolved the self-referential binding
-        // via BuildLevelsNavBinding).
+        // $levels: bounded self-referential recursion over the binding BuildLevelsNavBinding
+        // resolved. #254: the recursion carries the item's other nested options at every level, as
+        // ODL's own ProcessLevels does. Still deferred: a $levels item carrying its own nested
+        // $expand, where depth accounting against MaxExpansionDepth is ambiguous.
         //
-        // #254 (item 2): the recursion now carries the item's other nested options —
-        // $filter/$orderby/$skip/$top/$count/$select — applied at EVERY level, matching what ODL itself
-        // does (SelectExpandQueryOption.ProcessLevels rewrites $levels=N into N nested expand items each
-        // holding the SAME Filter/OrderBy/Top/Skip/Count and the same nested $select clause).
+        // #293 micro-decision (A), FROZEN: this branch never calls ResolveNavTreatment -- it recurses
+        // the SAME already-resolved binding at every level, so $levels resolves entirely from the
+        // URL-named set and serves raw even when another set exposes the type with disagreeing
+        // config. The explicit nested form re-resolves per level and blanks on disagreement.
         //
-        // STILL DEFERRED: a $levels item that also carries its own nested $expand. Depth accounting
-        // between the $levels budget and the nested branch's own remainingDepth is ambiguous against
-        // MaxExpansionDepth, so the whole branch stays EDM-only (graceful, never a 500).
-        //
-        // Micro-decision (A) (owner-settled, FROZEN spec on issue #293): this $levels branch NEVER
-        // calls ResolveNavTreatment / ResolveProfilesForClrType — it recurses the SAME already-resolved
-        // `binding` (the URL-named root set's own self-referential nav) at every level, exactly as
-        // BuildLevelsNavBinding produced it. So `GET /Base?$expand=Children($levels=2)` through a
-        // self-referential nav resolves ENTIRELY from the URL-named set and serves raw at every level,
-        // even when the same CLR/EDM type is ALSO exposed (with disagreeing nav config) by another
-        // entity set. By contrast, the explicit nested form below — `$expand=Children($expand=Children)`
-        // — descends one real ExpandedNavigationSelectItem per level, so EACH level re-resolves its own
-        // candidate set via ResolveProfilesForClrType/ResolveNavTreatment; if that type is exposed by
-        // MULTIPLE disagreeing sets, the grandchild's treatment is Blank (candidate disagreement) even
-        // though $levels would have served it raw.
-        //
-        // #318, CORRECTED: this comment used to stop at "the grandchild BLANKS", which UNDERSTATES the
-        // outcome by a whole level and is measurably wrong. A non-ServeRaw child makes the childItems
-        // loop below `return false`, which defers the WHOLE PARENT BRANCH off pushdown; the parent
-        // level is then never loaded, and ExpandLevelAsync's ServeRaw branch is a no-op over it, so the
-        // PARENT navigation comes back empty too. MEASURED against the LvNodes/LvSecureNodes fixture
-        // (one LvNode type, two entity sets disagreeing on Children):
-        //
-        //   ?$expand=Children             -> 200  Children:[A, B]                 (root serves)
-        //   ?$expand=Children($levels=2)  -> 200  Children:[A[A1,A2,A3], B[B1]]   (both levels serve)
-        //   ?$expand=Children($expand=Children)
-        //                                 -> 200  Children:[]                     (BOTH levels lost)
-        //
-        // Both halves of that asymmetry are individually owner-settled on #293 and neither is a bug:
-        // micro-decision (A) ships the fail-closed Blank for the explicit nested form, and
-        // micro-decision (B) ("delegate-less pushable parent empties whole branch vs delegate-backed
-        // parent blanks only child: both leak-safe, DEFER PARITY") is exactly the extra level lost
-        // here. #318 tracks the optional parent-set provenance threading that would unify the explicit
-        // form with $levels under "serve raw"; it is a widening on a delegate-safety boundary, so it
-        // must not be done as a drive-by. Do NOT "fix" the inconsistency in the other direction by
-        // making $levels blank — the FROZEN spec lists the whole $levels suite under "tests that STAY
-        // GREEN (confirm, don't gut)", and $levels resolving from the URL-named set alone is the
-        // decision, not an oversight. Pinned end-to-end by Issue318LevelsVsExplicitNestedSelfExpandTests.
+        // #318: a non-ServeRaw child defers the WHOLE PARENT branch off pushdown, so the parent comes
+        // back empty too -- measured, `$expand=Children($expand=Children)` loses BOTH levels while
+        // `$levels=2` serves both. Do NOT "fix" the asymmetry by making $levels blank; the frozen
+        // spec lists the $levels suite under tests that stay green.
         if (item.LevelsOption is not null)
         {
             SelectExpandClause? lc = item.SelectAndExpand;
@@ -7037,26 +5836,14 @@ internal static class OhDataEndpointFactory
             ? (int)Math.Min((long)defaultCap + 1, int.MaxValue)
             : null;
 
-        // Whenever paging is in play — pushed to SQL now (no $count) OR deferred to the JSON window
-        // (with $count, or under #300's deferPagingToJson) — stabilize the order so WHICH rows land in
-        // the page is deterministic. Mirrors the root path's EnsureStableOrder (#241): append the nav
-        // element's single key as a FINAL tiebreaker (a ThenBy after an explicit nested $orderby so a
-        // non-unique sort column still pages stably, or the sole OrderBy when none was given). Applied
-        // even when Skip/Take/countBound end up NOT composed to SQL (deferPagingToJson, or a
-        // countBound-suppressing children level) so the deferred JSON window (ShapePushedExpandsInJson /
-        // ShapeLevelsInJson) still pages over a deterministic SQL order. A composite/unresolvable key is
-        // left to the provider (best-effort, never throws).
+        // Whenever paging is in play -- pushed to SQL now, or deferred to the JSON window -- stabilize
+        // the order so WHICH rows land in the page is deterministic. Mirrors the root path's
+        // EnsureStableOrder (#241): the nav element's single key as a FINAL tiebreaker, a ThenBy after
+        // an explicit nested $orderby so a non-unique sort column still pages stably.
         //
-        // #313 note on that best-effort miss: when TryGetKeyClrProperty returns null the Skip/Take below
-        // is STILL composed, so EF sees a row-limiting operator with no OrderBy and logs
-        // RowLimitingOperationWithoutOrderByWarning — which an app that opted into
-        // ConfigureWarnings(w => w.Throw(...)) turns into an exception. That is pre-existing for the
-        // explicit-$top/$skip and $count arms; defaultLeafBound only widens WHICH requests reach it.
-        // Deliberately left as-is rather than substituting some arbitrary non-key OrderBy: the shape is
-        // not reachable through ODataConventionModelBuilder at all (it rejects a composite-key
-        // navigation target outright), only through an AdvancedConfigure-built EDM, and inventing an
-        // order for a type whose key we could not resolve would change the wire order of exactly the
-        // cases we cannot reason about.
+        // Applied even when Skip/Take/countBound end up NOT composed to SQL, so the deferred JSON
+        // window still pages over a deterministic order. A composite or unresolvable key is left to
+        // the provider -- best-effort, never throws.
         bool paging = (engaged.Skip is int s && s > 0) || engaged.Top is int || countBound is not null
             || defaultLeafBound is not null;
         if (paging && TryGetKeyClrProperty(model, elem) is { } keyProp)
@@ -7279,75 +6066,24 @@ internal static class OhDataEndpointFactory
         // the navigation non-pageable outright rather than silently unordered.
         PropertyInfo ChildKeyProperty);
 
-    // THE SHARED PAGEABILITY PREDICATE. Two call sites — continuation-route registration
-    // (MapEntitySet) and link emission (ShapePushedExpandsInJson) — and they must be the same set or
-    // the feature is broken in one of two directions: a link with no route behind it is a 404 on the
-    // continuation, and a route with no link in front of it is a delegate-safety hole.
+    // The shared pageability predicate. Two call sites -- continuation-route registration and link
+    // emission -- and they must agree: a link with no route is a 404, a route with no link is a
+    // delegate-safety hole.
     //
-    // The condition that most needs to be shared: <b>ServeRaw is resolved through ResolveNavTreatment</b>,
-    // not through "this profile owns no NavigationRouteDefinition for it". That is what keeps a
-    // navigation THIS profile routes through a delegate from ever getting a raw continuation route —
-    // its own candidate set puts it in DB, so the treatment is RunDelegate, never ServeRaw. Same rule,
-    // same helper, and now the same CANDIDATE SET as the stage 3 startup diagnostic
-    // (WarnUnboundedBareExpand).
+    // ServeRaw is resolved through ResolveNavTreatment, not through "this profile routes it", which
+    // is what keeps a delegate-backed navigation from getting a raw continuation route.
     //
-    // #421: THE CANDIDATE SET IS `new[] { profile }` — the URL-named set ALONE. It used to be
-    // ResolveProfilesForEdmType, the sibling union, which is what the root read path beside it does
-    // NOT do; the two disagreed about which profile's declaration governs a navigation at depth 1 —
-    // the only depth this predicate governs, since #313 O5 restricts continuation links to the root.
+    // #421: the candidate set is `new[] { profile }`, the URL-named set ALONE -- byte-for-byte what
+    // the root read path uses, so this route can expose no row that path does not already expose to
+    // the same caller. The sibling union it used to use disagreed with the read path at depth 1, and
+    // withholding the route withheld the LINK too, leaving an over-ceiling bare $expand 400ing
+    // forever with ExpandPagingEnabled silently inert.
     //
-    // WHAT THE UNION WAS JUSTIFIED WITH, AND WHY BOTH HALVES ARE FALSE (#415, #421). It claimed "a
-    // Blank navigation is emptied by ExpandLevelAsync before ShapePushedExpandsInJson ever sees it,
-    // so no link is emitted for it", and that a per-profile predicate would therefore "serve those
-    // rows RAW, bypassing the delegate".
-    //
-    //   (1) ExpandLevelAsync does NOT empty it at the root. ApplyCollectionPipelineAsync passes
-    //       `new[] { requestSource }` — the URL-named profile ALONE — so ResolveNavTreatment never
-    //       sees the sibling and answers ServeRaw. MEASURED:
-    //       `/BeAuthors?$filter=Id eq 1&$expand=Books` with the delegate-backed sibling registered
-    //       serves the five raw books (BareExpandContinuationDelegateSafetyTests
-    //       .RootExpand_WithASiblingDelegate_StillServesTheDeclaringSetsOwnRawRows), and over a
-    //       ceiling it returns the stage-2 400 — a status only reachable once the rows have been
-    //       materialized and counted.
-    //   (2) That is not a delegate bypass, so serving those rows raw is not one either. Under Model B
-    //       declaring-set authority (FROZEN, owner decision 2026-07-26 on #293, which says in terms
-    //       "Root (depth 1): KEEP as-is — already reads only the URL-named set"), BeAuthors declares
-    //       Books delegate-less and is authoritative for its OWN navigation; the sibling's delegate
-    //       governs the sibling's set. The union at depth >= 2 is ambiguity resolution — the EDM has
-    //       no binding to say which set a nested path resolves to — and the root has nothing to
-    //       disambiguate because the URL names the set.
-    //
-    // WHY THE ALIGNED PREDICATE IS NOT A DELEGATE-SAFETY HOLE, which is the whole question #421 turns
-    // on. The continuation route reads the PARENT PROFILE'S OWN GetQueryable (step 4 of the handler),
-    // pins one parent by key and SelectManys the navigation — the same queryable, the same entity
-    // set, the same `entityAuthGroup` authorization as the root read. And the aligned candidate set is
-    // BYTE-FOR-BYTE the array the root read path uses, so the navigations this predicate now returns
-    // are exactly {navigations `GET /{Set}?$expand={Nav}` already serves RAW} ∩ {pageable}. The route
-    // can therefore expose no row the read path beside it does not already expose to the same caller;
-    // it exposes a strictly narrower window on one of them. Nothing crosses an entity-set boundary:
-    // the sibling's delegate still governs the sibling's own routes, which are untouched.
-    //
-    // The direction of the old error was also not the harmless one it looks like. Withholding the
-    // route withheld the LINK too (both call sites read this one predicate), so an over-ceiling bare
-    // $expand on a set that declares the navigation delegate-less 400'd forever with no paging escape
-    // hatch — ExpandPagingEnabled inert for that entity set, silently, on a navigation the profile
-    // itself declared delegate-less. Fail-closed against a hazard that does not exist is not free.
-    //
-    // The remaining conditions are the ones under which a link could be emitted at all:
-    //   - ExpandPagingEnabled   the opt-in knob (default false)
-    //   - MaxExpandTop is int   the page size, for page 1 and every continuation alike. NEVER MaxTop:
-    //                           they are independent knobs, so paging the continuation at MaxTop would
-    //                           serve N rows on page 1 and MaxTop on page 2+ — and with MaxTop null,
-    //                           page 2 would be unbounded and #313's DoS would return on the link.
-    //   - ExpandEnabled         no $expand, no bare expand to page
-    //   - HasGetQueryable       the pushdown path is the only one that composes the SQL bound (G11:
-    //                           GetById/$expand of a delegate-less nav serves [] and is out of scope)
-    //   - ExpandPushdownEnabled with pushdown off no EngagedExpand is built, so nothing materializes
-    //   - collection-valued     a single-valued nav is one row; there is nothing to continue
-    //   - resolvable single key see ChildKeyProperty above
-    //
-    // Returns an empty list — the shipping default — whenever the knob is off, which is what keeps a
-    // default registration's route table byte-identical.
+    // Page size is MaxExpandTop, never MaxTop: they are independent knobs, and with MaxTop null the
+    // continuation would be unbounded. Remaining conditions are the ones under which a link could
+    // exist at all -- ExpandPagingEnabled, ExpandEnabled, HasGetQueryable, ExpandPushdownEnabled,
+    // collection-valued, resolvable single key. Empty list on the default registration, which is
+    // what keeps its route table byte-identical.
     private static IReadOnlyList<ExpandPagingNav> ResolveExpandPagingNavigations(
         IEntitySetEndpointSource profile, Type modelType, OhDataRegistration registration)
     {
@@ -7701,35 +6437,23 @@ internal static class OhDataEndpointFactory
     }
 
     // #313 stage 5: trim one over-ceiling bare leaf to the ceiling and annotate it with
-    // <c>Nav@odata.nextLink</c>. The counterpart of EnsureWithinExpandCeiling for the one shape a
-    // $skip-only continuation can faithfully serve.
+    // Nav@odata.nextLink -- the one shape a $skip-only continuation can faithfully serve.
     //
-    // TRIM AND LINK ARE ONE STEP, OR NEITHER HAPPENS. Both bail-outs below are checked BEFORE the
-    // array is touched, and the method reports whether it linked so the caller can fall back to the
-    // ceiling's 400. An earlier revision trimmed first and returned early on a bail-out, which left a
-    // silently truncated array carrying neither a link nor an error — the one outcome #313's M1 rule
-    // forbids outright. (The comment that justified it, "a page that is complete-as-far-as-it-goes",
-    // was wrong on its own terms: the probe row and every row above the cap were already gone.)
+    // TRIM AND LINK ARE ONE STEP, OR NEITHER HAPPENS. Both bail-outs are checked BEFORE the array is
+    // touched, and the method reports whether it linked so the caller can fall back to the 400. An
+    // earlier revision trimmed first and returned early, leaving a silently truncated array with
+    // neither a link nor an error -- the one outcome M1 forbids outright.
     //
-    // Trimming is by "while > cap" rather than removing a single assumed probe row: the caller only
-    // reaches this for arr.Count > cap and ApplyNavShape bounded the SQL to cap + 1 rows, so today the
-    // excess is exactly one row, but the loop stays correct if that bound ever widens.
+    // Trims by "while > cap" rather than removing one assumed probe row, so it stays correct if
+    // ApplyNavShape's cap + 1 bound ever widens.
     //
-    // ANNOTATION NAME: `Nav@odata.nextLink`, the 4.0 long form. The 4.01 short form is a SHOULD and
-    // this framework emits OData-Version: 4.0 with @odata.-prefixed control information everywhere.
-    // The prefix is the payload key (naming policy + [JsonPropertyName]), so the annotation is a
-    // sibling of the property it annotates under the same spelling; the URL segment is the EDM name,
-    // which is what $metadata declares and what $expand accepts.
+    // The 4.0 long-form annotation name: the short form is a SHOULD and this framework emits
+    // OData-Version: 4.0 throughout. Placement after the array is fine -- §20.2 exempts nextLink from
+    // the "immediately prior" rule.
     //
-    // PLACEMENT: after the array. JSON Format §20.2 exempts nextLink from the "immediately prior"
-    // rule, and JsonObject insertion order gives this for free.
-    //
-    // THE KEY COMES FROM THE CLR ENTITY, NEVER THE PAYLOAD. A root $select strips the key property
-    // and this pass runs after the strip, so `parent["Id"]` is absent for exactly the requests that
-    // most need a working link. paging.ParentItems is the index-parallel CLR page threaded in for
-    // this one purpose.
-    // Returns true when the array was trimmed AND annotated; false when no link could be built, in
-    // which case the array is left EXACTLY as it was and the caller applies the ceiling's 400 instead.
+    // THE KEY COMES FROM THE CLR ENTITY, NEVER THE PAYLOAD: a root $select strips the key property and
+    // this pass runs after the strip, so parent["Id"] is absent for exactly the requests that most
+    // need a working link. paging.ParentItems is threaded in for this one purpose.
     private static bool WriteNestedNextLink(
         JsonObject parent, string key, JsonArray arr, int cap,
         in ExpandPagingNav nav, ExpandPagingContext paging, int parentIndex)
@@ -7758,106 +6482,20 @@ internal static class OhDataEndpointFactory
         return true;
     }
 
-    // #418/#463/#464: the MaxExpandTop ceiling over every RAW-SERVED collection expansion in a
-    // response — at EVERY level of the $expand tree, on EVERY read path.
+    // #418/#463/#464: the MaxExpandTop ceiling over RAW-SERVED collection expansions -- rows the
+    // framework never composed (an Include inside a delegate, a tracked graph, a non-EF IQueryable,
+    // a branch pushdown declined). No nested window is applied to those, so this is their only
+    // bound. Enforced per level, from ApplyCollectionPipelineAsync, where all five read routes meet.
     //
-    // "RAW-SERVED" means: the rows were never loaded by anything the framework composed. They are
-    // whatever the handler's own graph already held — an EF Include inside a GetById delegate, a
-    // fixup-populated tracked graph behind GetAll, an in-memory object graph behind a non-EF
-    // IQueryable or a Priority-1 source, or a branch the $expand pushdown declined to engage. The
-    // framework applies NO nested $filter/$orderby/$top window to any of it (measured: all six
-    // nested options are silently ignored there while the collection pushdown honours every one),
-    // so the configured ceiling is the ONLY bound such a collection has.
+    // Depth 1 classifies via ResolveNavTreatment (#293, frozen) and skips RunDelegate -- a delegate's
+    // rows are the developer's answer (#313 O6). BELOW depth 1 there is no classification test:
+    // ExpandLevelAsync's ServeRaw branch does not recurse, so everything down there is raw whatever
+    // the navigation says. Applying the depth-1 test at every level served five chapters through a
+    // delegate that ran zero times.
     //
-    // WHAT THIS REPLACED, AND WHY THE SHAPE CHANGED TWICE.
-    //   #418 shipped this as a depth-1 pass over the single-entity read, driven by a nav set resolved
-    //   ONCE at startup from the root profile. Both of those turned out to be holes:
-    //   - #463 (depth): the walk never recursed into item.SelectAndExpand and the startup set held
-    //     only the ROOT profile's navigations, so with cap = 2 `?$expand=Books($expand=Chapters)`
-    //     served every chapter. That is #454's pattern again — a validation and its enforcement
-    //     consulting different sets: ValidateNestedTopCeiling walks the WHOLE tree (an explicit
-    //     $top=1000 at depth 2 is rejected) while the ceiling that bounds SERVED data checked depth 1.
-    //     The option that would have bounded the fetch was rejected; the shape that fetched
-    //     everything passed. It closed the option axis (#418's own note) and not the depth axis.
-    //   - #464 (path): the collection route's ceiling and its continuation link both live behind
-    //     ShapePushedExpandsInJson, which runs ONLY when ResolveEfCoreAssembly found EF Core. So on a
-    //     non-EF GetQueryable ($search's in-memory swap included), on GetAll and on Priority-1 the
-    //     configured DoS bound silently did not exist — `?$expand=Children` at cap 1 served all three
-    //     children, and `?$expand=Children($top=1)` accepted the in-ceiling $top and served all three
-    //     as well. MaxExpandTop's own XML doc claimed it bounded "every collection $expand level".
-    //   Both are the same defect — a bound whose enforcement was sited on ONE substrate at ONE depth —
-    //   so they get one mechanism, resolved PER LEVEL, called from ApplyCollectionPipelineAsync where
-    //   all five read routes already converge.
-    //
-    // MODEL B GOVERNS WHICH ROOT BRANCHES ARE RAW — AT DEPTH 1, AND ONLY THERE. Through the shared
-    // ResolveNavTreatment (#293, FROZEN), over the URL-named profile alone, which is exactly what
-    // ApplyCollectionPipelineAsync passes ExpandLevelAsync as the root candidate set:
-    //   - ServeRaw is bounded, and descended into. A ServeRaw nav with NO opinion from any candidate
-    //     is bounded too — nothing can delegate it (no candidate routes it).
-    //   - RunDelegate is NOT bounded and NOT descended into: ExpandLevelAsync really did run the
-    //     delegate, so those rows are the developer's own answer and #313 O6 settled that the
-    //     framework does not truncate them. A 400 would be the same weakening by another route.
-    //   - Blank is NOT bounded — but it is also UNREACHABLE here, and that is structural rather than
-    //     incidental: the root candidate set is the single requesting profile, and over ONE candidate
-    //     ResolveNavTreatment can only answer ServeRaw or RunDelegate (a candidate either routes a
-    //     navigation or declares it, never both, so DB and DL can never both be non-empty and DB can
-    //     never hold two). The depth-1 gate is therefore "skip RunDelegate" in practice; it is
-    //     written as `!= ServeRaw` so that it stays correct if the root set ever widens, not because
-    //     a Blank root branch is a case the tests can reach.
-    //
-    // BELOW DEPTH 1 THERE IS NO CLASSIFICATION TEST AT ALL, and that is the correction #464-one-
-    // level-down needed. Everything this walk reaches below depth 1 sits under a ServeRaw parent by
-    // construction, and ExpandLevelAsync's ServeRaw branch DOES NOT RECURSE — so no delegate ran
-    // down there, nothing was blanked, and every value present is the root handler's own raw graph
-    // regardless of how the navigation naming it is classified. An earlier revision of this pass
-    // applied the depth-1 test at every level and cited #313 O6 for the exemption; MEASURED, cap = 2,
-    // GetAll, Author -Books(delegate-less)-> Book -Chapters(DELEGATE)->,
-    // `?$expand=Books($expand=Chapters)` served five chapters with the Chapters delegate invoked ZERO
-    // times. The exemption was citing a delegate that never ran, over rows the ceiling exists to
-    // bound. So below depth 1: check and descend, classification-blind.
-    //
-    // THE DESCENT STILL STOPS AT A NON-ServeRaw PARENT AT DEPTH 1, and that is the collection route's
-    // own rule, not a new one: TryBuildEngagedExpand pushes a branch only when it is delegate-less
-    // end-to-end, so the pushed ceiling likewise never reaches into a delegate-backed parent's
-    // subtree. Keeping the two the same is what stops this pass from bounding a delegate's answer —
-    // and it is a strictly narrower exemption than "any navigation a profile declares with a
-    // delegate", which is what made the earlier revision wrong.
-    //
-    // AN ENGAGED NAVIGATION IS SKIPPED WHOLESALE. ShapePushedExpandsInJson/ShapeLevelsInJson enforce
-    // the ceiling for those (and, for the one shape #313 allows, trim-and-link instead of 400) AFTER
-    // this pass runs. Checking them here as well would 400 exactly the requests that were about to be
-    // served a continuation link.
-    //
-    // A 400, NEVER A TRIM-AND-LINK -- and that asymmetry with the collection route is the whole M1
-    // analysis, so it is recorded here rather than in a commit message.
-    //
-    // M1 ("no bound without either a continuation link or a 400") permits both outcomes. The link is
-    // the better one wherever it can be built, and two of the three things it needs ARE available
-    // here: the parent key is in the URL (so no ExpandPagingContext threading is required at all),
-    // and the continuation route GET /{Set}({key})/{Nav}?$skip=N is already registered whenever
-    // ResolveExpandPagingNavigations returned that navigation. The third is not, and it is decisive:
-    //
-    //   PAGE 1 AND THE CONTINUATION CANNOT BE PROVEN TO AGREE ON AN ORDER. On the PUSHED collection
-    //   expansion the framework composes BOTH sides -- ApplyNavShape appends OrderBy(child key) to
-    //   page 1's SQL and the continuation composes the same OrderBy over the same column, so the two
-    //   agree by construction (#313 s4.5). On a raw-served expansion the framework composes NEITHER:
-    //   the child rows arrive already materialized inside whatever the developer's own handler
-    //   returned, in whatever order that handler produced (measured on this tree: a plain
-    //   `LEFT JOIN "Books"` with no ORDER BY over the child at all, and an in-memory GetAll graph has
-    //   no defined order at all). Re-sorting the serialized JsonArray to compensate does not close the
-    //   gap -- it would compare the child key as a JSON value, while the continuation compares it in
-    //   the DATABASE, and those two orders genuinely differ for the ordinary key types (SQL Server
-    //   orders `uniqueidentifier` by a byte permutation no JSON sort reproduces; string keys order by
-    //   the column's collation, not by ordinal).
-    //
-    // A link over a disagreeing order silently SKIPS and DUPLICATES rows across the page boundary,
-    // which is worse than the 400 and is undetectable by the client. So this site takes the 400,
-    // exactly as #418's own note recommends for the case where the ceiling is straightforward and the
-    // link is not. ExpandPagingEnabled therefore buys nothing on a raw-served expansion, and neither
-    // message below pretends otherwise.
-    //
-    // Throws Microsoft.OData.ODataException, which all five read routes already catch and surface as
-    // 400 InvalidQueryOption -- no IResult threading through this void recursive walk.
+    // 400, never trim-and-link: page 1 and the continuation cannot be shown to agree on an order
+    // here (the framework composes neither side), and a link over a disagreeing order silently skips
+    // and duplicates rows. Engaged navigations are skipped -- ShapePushedExpandsInJson handles those.
     private static void EnforceRawExpandCeiling(
         IReadOnlyList<JsonObject> levelObjects,
         SelectExpandClause? clause,
@@ -8356,31 +6994,22 @@ internal static class OhDataEndpointFactory
     // See IncludeFallbackSqliteTests.cs's IncludeFallbackCyclicLeafTests for the coverage (flipped
     // from asserting 400 to asserting real served data).
 
-    // #305 Path A: populate the request's engaged $expand navigations via EF Core's own Include when
-    // the root TModel projection is ineligible for a member-init Select (TryApplySelectProjection
-    // returned <paramref name="query"/> unchanged — no parameterless ctor / unknowable ETag / complex-or-
-    // unsettable structural member). Before #305 this dropped the navigations to EDM-only under a 200
-    // (the nav then serialized whatever the CLR property's default value was — typically an empty
-    // collection — silently wrong data). Resolved by reflection off the SAME EF Core assembly
-    // ResolveEfCoreAssembly already confirmed the query runs against.
+    // #305 Path A: populate the engaged $expand navigations via EF's own Include when the root
+    // projection is ineligible for a member-init Select. Before #305 those dropped to EDM-only under a
+    // 200, serializing the CLR default -- typically an empty collection -- as silently wrong data.
+    // Resolved by reflection off the SAME EF assembly ResolveEfCoreAssembly already confirmed.
     //
-    // MaxExpandTop bounds materialization exactly like the member-init path: ApplyNavShape composes the
-    // same Skip/Take/count-bound (Take(cap+1)) windowing with the same deterministic tiebreak ordering —
-    // reused as-is here, never a "load all then trim".
+    // MaxExpandTop bounds materialization exactly as on the member-init path: the same ApplyNavShape
+    // windowing, never "load all then trim".
     //
-    // SCOPE (documented deviation from the fully general settled design — see the PR/report): only LEAF
-    // engaged expands (no nested $expand children, no $levels) are served this way; the caller has
-    // already rejected any nested $filter/$orderby (HasNestedFilterOrOrderBy) and any nested $expand/
-    // $levels (FindNestedExpandOrLevels) before calling this method, so no such item reaches the loop
-    // below. A nested $expand or $levels fails loud rather than risk an unverified reflection-built
-    // ThenInclude/self-referential Include chain — untested by this fix's settled-design test list, and
-    // materially riskier than the member-init path: EF's automatic navigation-fixup can wire up a
-    // tracked self-referential navigation beyond the requested depth even when it was never explicitly
-    // Include'd, which the member-init projection (fresh POCOs, not EF-tracked) never risks.
-    // #325/#326 (Option B): a bidirectional/cyclic back-reference (what #323's Change C used to reject
-    // here) is now served — SerializeBounded makes the Include fallback's tracked-entity graph safe to
-    // serialize regardless of which two instances a cycle closes between (see the removal note just
-    // above this method, where Change C's guard used to live).
+    // SCOPE, a documented deviation from the settled design: LEAF engaged expands only. The caller has
+    // already rejected nested $filter/$orderby and nested $expand/$levels before calling. Those fail
+    // loud rather than risk a reflection-built ThenInclude chain, which is materially riskier here than
+    // on the member-init path: EF's navigation fixup can wire up a tracked self-referential navigation
+    // beyond the requested depth even when it was never Include'd, which fresh POCOs never risk.
+    //
+    // #325/#326: a cyclic back-reference is now SERVED rather than rejected -- SerializeBounded makes
+    // the tracked graph safe whichever two instances close the cycle.
     private static IQueryable<TModel> ApplyIncludeFallback<TModel>(
         IQueryable<TModel> query, IReadOnlyList<EngagedExpand> engaged, MethodInfo includeMethod,
         IEdmModel model, int? maxExpandTop)
@@ -8764,36 +7393,21 @@ internal static class OhDataEndpointFactory
         // a profile is pushdown-ineligible outright rather than crashing the dictionary build.
         bool pushdownCtorOk = typeof(TModel).GetConstructor(Type.EmptyTypes) is not null;
         // #322: the projection's structural member set is EDM-AWARE, and this is the ONLY place the
-        // two navigation name spaces are reconciled.
+        // two navigation name spaces are reconciled. StructuralProperties subtracts only
+        // PROFILE-DECLARED navigations, so a convention-discovered one survives carrying
+        // IsComplex = true -- and TryBuildProjectionInit's complex-member bail then abandoned $select
+        // pruning AND $expand pushdown for the whole entity set, on every bare $expand.
         //
-        // source.StructuralProperties is "every public readable CLR property MINUS every
-        // PROFILE-DECLARED navigation" — BuildStructuralProperties subtracts only
-        // _navigationPropertyNames (HasOptional/HasRequired/HasMany). A navigation the
-        // ODataConventionModelBuilder discovered on its own but the profile never declared therefore
-        // SURVIVES as a structural property, and carries IsComplex = true because its CLR type is not
-        // an OData primitive. TryBuildProjectionInit's complex-member bail then fires for every
-        // request whose projection member set contains it — which is every bare $expand (no narrowing
-        // $select projects EVERY structural name) and every $select that names the navigation — so
-        // $select column pruning AND $expand JOIN pushdown are abandoned for the whole entity set,
-        // and a nested $filter/$orderby/$expand becomes the #305 400. The EDM is the authority on
-        // what is a navigation; a navigation is not a projectable column, so it is subtracted here.
+        // Scope is deliberately THIS dictionary. NavigationPropertyNames is NOT re-sourced from the
+        // EDM: it feeds Model B's DB/DL partitioning, whose frozen "a candidate that neither routes
+        // nor declares the nav has no opinion" category would empty under convention sourcing,
+        // collapsing the honored-sole-route case from RunDelegate to Blank -- a delegate that no
+        // longer runs, data silently replaced by null. Issue322ModelBClassificationTests pins it.
         //
-        // Scope is deliberately THIS dictionary and nothing else. source.NavigationPropertyNames is
-        // NOT re-sourced from the EDM: it feeds Model B's DB/DL partitioning (ResolveNavTreatment,
-        // #292/#293), whose FROZEN spec has "a candidate that neither routes nor declares the nav has
-        // no opinion on it and is ignored" as a load-bearing category. Convention-sourcing it would
-        // make every candidate declare every EDM navigation of its type, emptying that category and
-        // collapsing the honored-sole-route case (RunDelegate) to Blank — a delegate that no longer
-        // runs and data silently replaced by null. The two sets are separable and stay separate;
-        // Issue322ModelBClassificationTests pins the classification for the multi-candidate shapes.
-        //
-        // Both name spaces are EDM names, so the match is exact rather than approximate:
-        // StructuralPropertyInfo.Name is ODataPropertyNaming.ResolveEdmName(prop), and
-        // OhDataBuilder.ApplyJsonPropertyNameRenames gives every EDM navigation that same
-        // [JsonPropertyName]-resolved name (#253). OrdinalIgnoreCase because that is how OData
-        // resolves identifiers, matching the dictionary this feeds. NavigationProperties() (not
-        // DeclaredNavigationProperties()) so an inherited navigation on a derived entity type is
-        // subtracted too — the same enumeration WarnUnboundedBareExpand walks.
+        // Both name spaces are EDM names, so the match is exact: #253 gives every EDM navigation the
+        // same [JsonPropertyName]-resolved name StructuralPropertyInfo.Name carries.
+        // OrdinalIgnoreCase, as OData resolves identifiers. NavigationProperties(), not
+        // DeclaredNavigationProperties(), so an inherited navigation is subtracted too.
         var edmNavigationNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (rootEdmType is not null)
         {
@@ -8809,43 +7423,24 @@ internal static class OhDataEndpointFactory
             .Where(g => g.Count() == 1)
             .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
-        // #440 symptom 2: THE SAME SUBTRACTION, applied to the set that drives STRUCTURAL-PROPERTY
-        // ROUTE REGISTRATION. source.StructuralProperties is "every public readable CLR property
-        // MINUS every PROFILE-DECLARED navigation", so a navigation the ODataConventionModelBuilder
-        // discovered but the profile never declared survives in it — and the property-route block
-        // far below reads it directly, registering GET /{Set}({key})/{Nav} and its /$value over a
-        // NAVIGATION, plus PUT/PATCH/DELETE when a Patch handler is configured. Those writes build a
-        // one-property Delta<TModel> over a navigation member; nobody opted into that, and the
-        // declared control has no such routes at all (it 404s), so two profiles over the SAME CLR
-        // member expose different route tables purely by declaration provenance. The EDM is the
-        // authority on what is a navigation, and a navigation is not a structural property.
+        // #440 symptom 2: the same subtraction, applied to the set driving STRUCTURAL-PROPERTY route
+        // registration. source.StructuralProperties is "public readable CLR properties MINUS
+        // PROFILE-DECLARED navigations", so a convention-discovered navigation survived it and the
+        // block below registered GET /{Set}({key})/{Nav}, its /$value, and PUT/PATCH/DELETE over a
+        // NAVIGATION -- building a one-property Delta over a navigation member. Two profiles over the
+        // same CLR member exposed different route tables purely by declaration provenance.
         //
-        // WHY HERE AND NOT IN BuildStructuralProperties:
-        //   (a) It cannot go there. BuildStructuralProperties runs from
-        //       IVisitModelBuilder.VisitModelBuilder — i.e. WHILE the EDM is being built — so
-        //       registration.EdmModel does not exist yet and the EDM's navigation set is not merely
-        //       awkward to reach, it has not been computed. EntitySetProfile also deliberately
-        //       carries no dependency on a built IEdmModel.
-        //   (b) It should not go there even if it could. StructuralProperties is the profile-level
-        //       answer to "which CLR members did this profile not declare as navigations", and
-        //       narrowing it at the source moves every consumer at once for one route-table defect.
-        //       Both remaining production consumers are handled explicitly instead: the projection
-        //       member set (#322, subtracted above) and this route block. #313's continuation-route
-        //       collision check reads NavigationPropertyNames, not this set, and the companion
-        //       OpenAPI/NSwag/Swashbuckle packages do not read StructuralProperties at all — they
-        //       read IgnoredPropertyNames through IgnoredPropertyDocsMap plus SchemaPropertyCasing
-        //       (verified across all three packages, not assumed), so no generated schema moves.
-        //   (c) NavigationPropertyNames is still NOT touched. It feeds Model B's DB/DL partitioning
-        //       (ResolveNavTreatment, #292/#293), whose frozen "a candidate that neither routes nor
-        //       declares the nav has no opinion" category empties under convention sourcing —
-        //       measured collapsing the honored-sole-route case from RunDelegate to Blank.
-        //       Issue322ModelBClassificationTests pins that and must stay green.
+        // Applied HERE, not in BuildStructuralProperties, for two reasons. (a) It cannot go there:
+        // that runs from VisitModelBuilder, while the EDM is being built, so registration.EdmModel
+        // does not exist yet -- and EntitySetProfile deliberately carries no dependency on a built
+        // model. (b) It should not: narrowing at the source moves every consumer for one route-table
+        // defect, so the two production consumers are handled explicitly instead.
         //
-        // The bound-function collision check below iterates this SAME narrowed set deliberately:
-        // with no property route registered for an undeclared navigation there is no (template, GET)
-        // pair left to collide with, so throwing at startup would be a validation error describing a
-        // route that no longer exists. The declared case is unaffected — a declared navigation was
-        // never in StructuralProperties in the first place.
+        // NavigationPropertyNames is still NOT touched -- it feeds Model B's DB/DL partitioning, whose
+        // "declares nothing" category empties under convention sourcing (Issue322ModelBClassificationTests).
+        //
+        // The bound-function collision check below iterates this SAME narrowed set deliberately: with
+        // no property route registered there is no (template, GET) pair left to collide with.
         IReadOnlyList<StructuralPropertyInfo> structuralRouteProperties =
             edmNavigationNames.Count == 0
                 ? source.StructuralProperties
@@ -9107,44 +7702,25 @@ internal static class OhDataEndpointFactory
             });
         }
 
-        // #525: a named Invoke rule must name a bound operation this profile really declares.
+        // #525: a named Invoke rule must name a bound operation this profile really declares. The
+        // comparer fix closes the MISCASED spelling; it cannot close the class, because a misspelled
+        // name resolves to nothing under any comparer with the same silent consequence -- the rule is
+        // discarded and the route falls back to the generic rule or to no requirement at all.
+        // Refused rather than warned: an authorization rule that does not apply is not a diagnostic.
         //
-        // The comparer fix above closes the MISCASED spelling, which is the shape that was reported.
-        // It cannot close the class: a misspelled name -- the far likelier typo -- still resolves to
-        // nothing under any comparer, and the consequence is identical and identically silent (the
-        // rule is discarded, the route falls back to the generic Invoke rule or to no requirement at
-        // all, and the developer believes the operation is protected). There is no legitimate
-        // configuration in which a rule targets an operation that does not exist, so this is refused
-        // rather than warned about: an authorization rule that does not apply is not a diagnostic
-        // matter.
+        // Matched with the SAME comparer ResolveOperationRule uses -- a stricter check here would
+        // reject exactly the miscased rules the fix just made work. Placed BEFORE the #486 GetById
+        // guard so a typo is reported as a typo.
         //
-        // Matched with the SAME comparer ResolveOperationRule uses, and it has to be -- a stricter
-        // check here would reject exactly the miscased rules the fix above just made work, which
-        // would be this very bug re-introduced one layer up and wearing an exception. Placed BEFORE
-        // the #486 GetById guard below (which itself resolves rules by name) so a typo is reported
-        // as a typo rather than as a missing GetById handler.
+        // #546: and no two named rules may resolve to the SAME operation. That hazard was INTRODUCED
+        // by the comparer, and #525's check cannot see it -- it asks only whether a name resolves, and
+        // both members of a colliding pair do. ResolveOperationRule is last-write-wins, so declaration
+        // ORDER decides authorization: measured, `.Invoke("Stamp", RequireRole).Invoke("stamp",
+        // AllowAnonymous)` served an anonymous invocation 200, where the pre-#525 Ordinal comparer had
+        // made that same configuration deterministically PROTECTED.
         //
-        // #546: …and no two named rules may resolve to the SAME declared operation.
-        //
-        // That is the hazard the OrdinalIgnoreCase comparer INTRODUCED, and #525's check could not
-        // see it: it asks only "does this name resolve to a declared operation?", and both members
-        // of a colliding pair do. ResolveOperationRule keeps last-write-wins (`named = rule`), so
-        // two rules that collapse onto one operation make DECLARATION ORDER decide authorization --
-        // measured, `.Invoke("Stamp", RequireRole("admin")).Invoke("stamp", AllowAnonymous())`
-        // served an anonymous invocation 200, where the pre-#525 Ordinal comparer had made that
-        // exact configuration deterministically PROTECTED. Same fail-open direction as #525, same
-        // silence, arrived at from the other side.
-        //
-        // Refused rather than resolved by precedence for the same reason as above: there is no
-        // configuration in which two rules for one operation are meaningful, so picking a winner
-        // would only make the loser's disappearance quieter. It applies to identically-spelled
-        // duplicates too -- the mechanism and the consequence are the same, and the only thing case
-        // changes is how easy the pair is to spot by eye.
-        //
-        // Grouped by the DECLARED operation each rule resolves to, under the same comparer, which
-        // is literally the question ResolveOperationRule answers per route. GENERIC Invoke rules are
-        // deliberately out of scope: `generic = rule` is last-write-wins BY DESIGN there, as it is
-        // for every category selector (All(…) then Invoke(…) is a documented refinement idiom).
+        // Applies to identically-spelled duplicates too. GENERIC Invoke rules are deliberately out of
+        // scope: last-write-wins is BY DESIGN there, as for every category selector.
         if (operationAuthRules is not null)
         {
             string[] declaredOperationNames = source.BoundFunctions
@@ -9327,31 +7903,22 @@ internal static class OhDataEndpointFactory
                         ? typedQ
                         : odataResult.Items.Cast<TModel>().AsQueryable();
 
-                    // #195: framework-side safety cap. The profile owns query application, but if it
-                    // does not page the result itself (no NextLink) and the client did not cap with
-                    // $top, bound the materialized set to MaxTop (or a smaller Prefer: maxpagesize)
-                    // and emit a continuation nextLink — so a Priority-1 profile can never be coerced
-                    // into returning an unbounded result set. When the profile supplies its own
-                    // NextLink it is trusted to have paged; when $top is present the client has capped
-                    // explicitly; neither case caps again.
+                    // #195: framework-side safety cap. A Priority-1 profile owns query application,
+                    // but if it does not page itself (no NextLink) and the client sent no $top, bound
+                    // the materialized set to MaxTop and emit a continuation -- so it can never be
+                    // coerced into an unbounded result. Neither case caps twice.
                     //
-                    // #360: the continuation offset is carried in the framework-private
-                    // FrameworkSkipOption custom query option and applied HERE, by the framework, on
-                    // top of whatever the profile's own ApplyTo did — it is neither $skip (which the
-                    // framework emitted but never applied, so a profile that ignores the incoming
-                    // options served the same page forever and a nextLink walk never terminated) nor
-                    // $skiptoken (which ApplyTo throws on). See BuildFrameworkSkipLink.
+                    // #360: the continuation offset rides the framework-private FrameworkSkipOption and
+                    // is applied HERE, on top of the profile's ApplyTo. Not $skip (which the framework
+                    // emitted but never applied, so a profile ignoring the options served the same page
+                    // forever) and not $skiptoken (which ApplyTo throws on).
                     //
-                    // #244: the framework deliberately does NOT inject a stabilizing order before this
-                    // cap Take — unlike the Priority-2 path, where the framework owns skip/take and can
-                    // order every page consistently. Here the profile owns its whole pipeline via
-                    // ApplyTo, including any $skip, so the framework can't order safely: ordering after
-                    // the profile's own Skip would sort a sliced subset, and ordering only the first
-                    // (unskipped) page would misalign the continuation offset. Deterministic
-                    // @odata.nextLink paging on this path is therefore the profile's responsibility — it
-                    // must establish a stable order (a terminal OrderBy, or applying the client's
-                    // $orderby). EF Core already surfaces the omission: warning 10102 fires when a query
-                    // is skip/take'd without an ORDER BY. See docs/query-options.md.
+                    // #244: no stabilizing order is injected before the cap Take, unlike Priority-2
+                    // where the framework owns skip/take. Here the profile owns the pipeline including
+                    // any $skip, so ordering after it would sort a sliced subset and ordering only the
+                    // first page would misalign the continuation offset. Deterministic nextLink paging
+                    // is the profile's responsibility; EF Core's warning 10102 already surfaces the
+                    // omission.
                     string? frameworkNextLink = null;
                     int? appliedPageSize = null;
                     int frameworkSkip = 0;
@@ -9671,35 +8238,20 @@ internal static class OhDataEndpointFactory
                             ? TryApplySelectProjection(q, selNames, source, pushdownCtorOk, pushdownStructuralByName, logger)
                             : q;
 
-                    // #206 phase 2: $expand Include pushdown, now MULTI-LEVEL. Fold the eligible top-level
-                    // $expand navigations of this request — those declared WITHOUT a delegate
-                    // (pushdownExpandNavs), so there is no delegate to bypass — into the SAME member-init
-                    // projection so a single EF Core query loads the related rows via a JOIN, recursing
-                    // into each nested $expand as an element-wise projection (EF ThenInclude) when the
-                    // deeper navigations are ALSO delegate-less and pushable at that level. Nested options
-                    // at every level ($filter/$orderby/$top/$skip/$count/$select) are honored:
-                    // filter/orderby/paging push to SQL (BuildShapedNavAccess), count/select apply on the
-                    // serialized JSON (ShapePushedExpandsInJson). $levels=N / $levels=max on a
-                    // self-referential nav recurse a BOUNDED (cycle-free) projection N deep, capped at the
-                    // resolved MaxExpansionDepth. A navigation declared WITH a delegate is never in
-                    // pushdownExpandNavs and is skipped for $levels too (routeBackedNavNames), so it always
-                    // takes the delegate expansion path (Stage 3) — the delegate-safety invariant holds at
-                    // EVERY depth: a branch is pushed only when it is delegate-less end-to-end, otherwise
-                    // TryBuildEngagedExpand defers the whole branch off pushdown. Gated to EF Core-backed
-                    // sources (a projection reading un-populated navigations would be wrong elsewhere).
-                    // Anything deferred (non-EF, a delegate-backed/cyclic level, $search/$compute/$apply,
-                    // a $levels carrying extra options) or that fails (projection/translation/serialization
-                    // cycle, unbindable clause) falls back: the navigation then stays EDM-only for this
-                    // request, exactly as before pushdown existed.
+                    // #206 phase 2: multi-level $expand Include pushdown. Folds the delegate-less
+                    // ($expand) navigations into the same member-init projection so one EF query loads
+                    // them by JOIN, recursing per level while the deeper navigations are also
+                    // delegate-less. Nested options are honoured at every level -- filter/orderby/paging
+                    // to SQL, count/select on the serialized JSON.
                     //
-                    // #305: deliberately NOT gated on pushdownCtorOk (unlike ApplySelectPushdown above).
-                    // Before #305, a root TModel without a parameterless ctor never even reached this
-                    // point — the projection would be ineligible anyway, so computing engagedExpandNavs
-                    // was pure waste. Now it feeds the Path A Include fallback below (ApplyIncludeFallback)
-                    // when TryApplySelectProjection turns out ineligible, so it must be computed
-                    // regardless of ctor eligibility; TryApplySelectProjection itself still bails
-                    // immediately on !hasParameterlessCtor (see its own hasParameterlessCtor check), so
-                    // this costs nothing extra for the ctor-eligible case.
+                    // The delegate-safety invariant holds at EVERY depth: a branch is pushed only when
+                    // it is delegate-less end-to-end, otherwise TryBuildEngagedExpand defers the whole
+                    // branch. Gated to EF Core sources. Anything deferred or failing falls back to
+                    // EDM-only for that request, exactly as before pushdown existed.
+                    //
+                    // #305: deliberately NOT gated on pushdownCtorOk, unlike ApplySelectPushdown -- this
+                    // now feeds the Path A Include fallback when TryApplySelectProjection is ineligible,
+                    // so it must be computed regardless of ctor eligibility.
                     List<EngagedExpand>? engagedExpandNavs = null;
                     // #305 fold-in: resolve the EF Core assembly ONCE here (short-circuited exactly like
                     // the old bool-returning IsEfCoreBacked gate it replaces) and reuse it below at the
@@ -9753,26 +8305,15 @@ internal static class OhDataEndpointFactory
                         }
                     }
 
-                    // #334: which top-level engaged expands get their Nav@odata.count carried as an
-                    // independent correlated scalar subquery, so the nested $skip/$top can bound the
-                    // SQL fetch instead of being deferred to the JSON pass?
-                    //
+                    // #334: which top-level engaged expands carry their Nav@odata.count as an
+                    // independent correlated scalar subquery, so the nested $skip/$top can bound the SQL
+                    // fetch instead of deferring to the JSON pass:
                     //  - a COLLECTION nav (a reference has no count),
                     //  - carrying $count,
-                    //  - a projection LEAF (no nested $expand children of its own) — a level with
-                    //    children is projected element-wise further down, and windowing it while
-                    //    also projecting a collection out of each element is the APPLY/LATERAL shape
-                    //    #298/#304 established SQLite cannot translate,
-                    //  - not a $levels recursion (same reason, per #300),
-                    //  - and carrying an actual nested $skip/$top WINDOW. Without one there is
-                    //    nothing to bound: the pre-#334 path already fetched exactly what the
-                    //    ceiling allowed, so engaging the carrier would add a count subquery for no
-                    //    benefit. Gating on the window is what keeps every un-windowed counted
-                    //    request byte-identical AND cost-identical to before.
-                    //
-                    // A counted nav at depth >= 2 is excluded by construction, not by a check here:
-                    // countViaCarrier is only ever passed to the TOP-level BuildShapedNavAccess call
-                    // (TryBuildProjectionInit), never into a nested BuildMemberInit.
+                    //  - a projection LEAF -- a level with children is projected element-wise further
+                    //    down, and windowing it while also projecting a collection out of each element
+                    //    is the APPLY/LATERAL shape SQLite cannot translate (#298/#304),
+                    //  - not a $levels recursion (same reason, #300),
                     List<EngagedExpand>? carrierCounted = null;
                     if (engagedExpandNavs is { Count: > 0 })
                     {
@@ -9995,39 +8536,24 @@ internal static class OhDataEndpointFactory
                             }
                             catch (QueryTranslationFailedException ex)
                             {
-                                // FAIL LOUD (owner directive, post-#298/#300 review): a folded $expand
-                                // projection that fails to translate at the provider must not silently
-                                // degrade to 200 with the affected navigations quietly empty — that was
-                                // the exact root cause of #298 ($count + nested $expand) and #300
-                                // ($levels + $skip/$top), both now fixed at the source (ApplyNavShape no
-                                // longer composes the untranslatable SQL shape for those two cases). Any
-                                // OTHER combination this provider still cannot translate is a genuine
-                                // capability gap, not something to paper over with missing data — 400,
-                                // not a silently-wrong 200. The client-facing message stays generic
-                                // (never ex.Message/stack trace, which could leak provider/schema
-                                // details) per this file's existing InternalServerError convention (S7).
+                                // FAIL LOUD (owner directive): a folded $expand projection that fails
+                                // to translate must not degrade to 200 with the affected navigations
+                                // quietly empty -- that was #298's and #300's root cause, both now
+                                // fixed at the source. Any other untranslatable combination is a real
+                                // capability gap. Message stays generic per S7.
                                 //
                                 // #494: what reaches this catch is decided by WHEN the provider threw,
-                                // not by what it threw. An earlier revision allowlisted
-                                // InvalidOperationException / NotSupportedException / ODataException
-                                // around the whole materialization, on the premise that a real
-                                // infrastructure fault could only arrive as a DbException subclass or a
-                                // TimeoutException. It cannot: SqlClient reports pool exhaustion as a
-                                // plain InvalidOperationException from SqlConnection.Open, at
-                                // enumeration, inside this exact try; ObjectDisposedException derives
-                                // from InvalidOperationException; and EF's "a second operation was
-                                // started on this context instance" is one as well. Every one of those
-                                // came back as 400 "simplify your query", telling client retry logic not
-                                // to retry a fault that is entirely retryable — while the SAME request
-                                // without $expand correctly 500'd. TranslateThenMaterialize now splits
-                                // the two phases at GetEnumerator/MoveNext, so only a genuine
-                                // translation failure lands here and everything else propagates to the
-                                // group-level exception filter as a logged 500.
+                                // not what it threw. The earlier type allowlist rested on the premise
+                                // that a real infrastructure fault could only be a DbException or
+                                // TimeoutException -- false: SqlClient reports pool exhaustion as a
+                                // plain InvalidOperationException at enumeration, ObjectDisposedException
+                                // derives from it, and so does EF's "a second operation was started".
+                                // Each came back as 400 "simplify your query", telling client retry
+                                // logic not to retry a retryable fault, while the same request without
+                                // $expand correctly 500'd. TranslateThenMaterialize splits the phases
+                                // at GetEnumerator/MoveNext.
                                 //
-                                // Logged at Warning (was Debug, invisible at production log levels): a
-                                // request this server cannot translate is something the operator wants
-                                // to see, and it is the same level TryBuildQueryOptions and BadKeyError
-                                // already use for the 400s they raise.
+                                // Warning, not Debug (which was invisible at production log levels).
                                 logger?.LogWarning(ex.InnerException,
                                     "OhData: $expand pushdown query failed to translate for {EntitySet}.",
                                     source.EntitySetName);
@@ -10242,26 +8768,15 @@ internal static class OhDataEndpointFactory
                         return optionsError;
                     }
 
-                    // Leg 1 (docs-fidelity): $filter/$orderby remain structurally unsupported on
-                    // this path — GetAll has no ApplyTo/IQueryable pipeline to push them down to.
-                    // $top/$skip, by contrast, are pure post-materialization Skip()/Take() — the
-                    // same class of operation as the already-live $select/$expand/$count below —
-                    // so they are implemented rather than rejected. See docs/query-options.md.
+                    // Leg 1: $filter/$orderby are structurally unsupported on this path -- GetAll has
+                    // no ApplyTo/IQueryable pipeline to push them to. $top/$skip are pure
+                    // post-materialization Skip()/Take(), the same class as $select/$expand/$count
+                    // below, so they are implemented rather than rejected.
                     //
-                    // 501, not 400 — CAN'T, not WON'T (see the taxonomy above
-                    // s_collectionImplementedOptions). This path has no IQueryable, so the
-                    // framework cannot apply $filter to this resource under ANY configuration of
-                    // this handler: the refusal is flag-INDEPENDENT, which is exactly why
-                    // CheckCollectionQueryOptionCapabilities is called with checkFilterOrderBy:
-                    // false here — FilterEnabled = true changes nothing on this path. It READS
-                    // like the 400 side because the message names a configuration change
-                    // ("Configure GetQueryable"), but that change supplies a DIFFERENT HANDLER and
-                    // so has the request served by a different route implementation; it does not
-                    // switch this one on. §9.3.1's "functionality not implemented by the OData
-                    // Service", and the existing message is already what its SHOULD asks the body
-                    // to do — it describes the unimplemented functionality. The corollary is that
-                    // $filter is 501 on a GetAll-backed set and 400 on a GetQueryable-backed set
-                    // with FilterEnabled = false; that is correct, not an inconsistency.
+                    // 501, not 400 -- CAN'T, not WON'T. With no IQueryable the framework cannot apply
+                    // $filter under ANY configuration of this handler, so the refusal is
+                    // flag-INDEPENDENT, which is why CheckCollectionQueryOptionCapabilities is called
+                    // with checkFilterOrderBy:
                     if (options.Filter is not null || options.OrderBy is not null)
                     {
                         return ODataError(501, "UnsupportedQueryOption",
@@ -10721,72 +9236,24 @@ internal static class OhDataEndpointFactory
             ApplyOperationAuth(rb, OhDataOperation.Read);
         }
 
-        // Nested-graph handling (§32/§11.4.2.2 deep insert, §11.4.3.1 deep update): precomputed
-        // once at startup (not per-request) — the set of TModel navigation properties that must
-        // not reach a write handler when AllowDeepWrites is disabled (the default). System.Text.Json
-        // already binds nested navigation values into these properties during deserialization;
-        // withholding them here is what keeps a handler that doesn't expect a graph from silently
-        // persisting only part of one.
+        // The TModel navigations withheld from a write handler when AllowDeepWrites is off (the
+        // default). Computed once at startup. §11.4.2.2 deep insert / §11.4.3.1 deep update.
         //
-        // WHAT THE `SetMethod is not null` FILTER ACTUALLY DOES (#506). It excludes a property with
-        // NO setter of any kind. It does NOT exclude a non-public one — PropertyInfo.SetMethod
-        // returns a private/protected/init accessor happily — so `{ get; private set; }`, the
-        // standard EF-encapsulation shape, IS in this set even though System.Text.Json cannot bind
-        // into it. The comment that stood here claimed the opposite ("properties without a public
-        // setter can't be deserialized into by STJ in the first place, so they're excluded"), and
-        // the strip below was written trusting it: it ran unconditionally, so a PUT that mentioned
-        // no navigation at all still handed the handler `null` where the model's constructor had
-        // put an empty list.
+        // #506: `SetMethod is not null` does NOT mean "public setter" -- it admits
+        // `{ get; private set; }`, the standard EF shape. Keep it wide anyway: narrowing to a public
+        // setter would exempt `[JsonInclude] { get; private set; }`, which STJ binds, and that OPENS
+        // a hole. What makes the over-reach harmless is that the strip is GATED on the navigation
+        // being named in the body, so it never fires for a member the client did not send.
         //
-        // Keeping the filter wide is deliberate. Narrowing it to a PUBLIC setter would exempt a
-        // `[JsonInclude] { get; private set; }` navigation, which STJ binds perfectly well — that
-        // OPENS a deep-write hole rather than closing one. What changed instead is that the strip is
-        // GATED on the navigation being NAMED IN THE REQUEST BODY (deepWriteNavByBodyName and
-        // CollectPresentBodyMemberClrNames, below), which makes the filter's over-reach harmless:
-        // the gate never fires for a member the client did not send, whatever its accessors look
-        // like.
+        // #457 hoisted this out of `if (source.HasPost)` -- it applied on the collection POST alone,
+        // so deep UPDATE was documented out of scope but never enforced. One set, three routes:
+        // re-deriving it at the PUT/PATCH sites is how the two would drift.
         //
-        // The follow-on claim about PATCH is true on its own terms and is kept: Delta<T>'s
-        // InitializeProperties requires a public getter AND setter, so a setter-less navigation
-        // could not enter a delta either. It was simply stated as a consequence of a false premise.
-        //
-        // #253 completion: NavigationPropertyNames is the EDM (JSON) navigation name set, so resolve
-        // each CLR property to its EDM name before testing membership (a renamed nav's CLR name is
-        // not in the set — its JSON name is).
-        //
-        // #457 HOISTED THIS OUT OF `if (source.HasPost)`. It was declared inside that block and
-        // applied on the collection POST alone, so deep UPDATE — a nested graph in PUT or PATCH,
-        // OData 4.01 §11.4.3.1, a SEPARATE named feature from deep insert and one that
-        // docs/deep-insert.md has declared out of scope since 1.0.0 — was documented-out but never
-        // enforced: STJ bound the nested values and PUT forwarded them to the handler while PATCH
-        // bound them into the Delta<TModel>. One set, three routes, deliberately: re-deriving a
-        // second set at the PUT/PATCH sites is how the two would drift, and the #461 union below is
-        // exactly the kind of correction a second copy would miss.
-        //
-        // #461: UNION with edmNavigationNames — the write-side twin of #446, and the same
-        // subtraction argument pointed at a set the read side already fixed. NavigationPropertyNames
-        // is the profile-DECLARED set, so a navigation the ODataConventionModelBuilder discovered
-        // but the profile never declared with HasOptional/HasRequired/HasMany was not in the strip
-        // set at all — System.Text.Json bound it during deserialization and it reached the Post
-        // handler intact, WITH AllowDeepWrites at its default of false. A handler doing
-        // `db.Add(model); SaveChanges();` then persists nested rows nobody opted into, which is the
-        // silent-partial-graph hazard the strip exists to prevent. The shape that hits it is the
-        // most ordinary one there is: a profile that declares no navigations at all, over
-        // `public Customer? Customer { get; set; }`.
-        //
-        // The EDM is the authority on what is a navigation (#446), and a navigation is not
-        // deep-write-exempt because the profile forgot to name it. As with #446 the subtraction is
-        // applied HERE, at the consumer, not in BuildStructuralProperties or
-        // NavigationPropertyNames: the former cannot see a built EDM (it runs from
-        // VisitModelBuilder), and the latter feeds Model B's DB/DL partitioning, whose "a candidate
-        // that neither routes nor declares the nav has no opinion" category empties under
-        // convention sourcing (Issue322ModelBClassificationTests pins it).
-        //
-        // Union, not replacement: NavigationPropertyNames stays in the test because a declared
-        // navigation is the case that already worked and must keep working byte-for-byte, and
-        // because the two sets are separately sourced (declaration versus convention discovery) and
-        // neither is a superset of the other by construction. edmNavigationNames is
-        // OrdinalIgnoreCase and holds EDM names, which is exactly what ResolveEdmName produces.
+        // #461: UNION with the EDM's navigation names. NavigationPropertyNames is the profile-
+        // DECLARED set, so a convention-discovered navigation was not in the strip set at all and
+        // reached the Post handler intact with AllowDeepWrites false. Union, not replacement --
+        // NavigationPropertyNames also feeds Model B's DB/DL partitioning, whose "declares nothing"
+        // category empties under convention sourcing.
         PropertyInfo[] deepWriteNavPropsToStrip = typeof(TModel)
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
             .Where(p => p.SetMethod is not null)
@@ -10833,86 +9300,19 @@ internal static class OhDataEndpointFactory
         JsonDocumentOptions binderParityDocumentOptions =
             CreateBinderParityDocumentOptions(jsonOptions);
 
-        // #510: PATCH's own body-name lookup table — the same move #506 made for the deep-write gate
-        // on POST/PUT, now applied to the one route that was left calling the memoizing helper with
-        // client-supplied strings.
+        // PATCH's body-name table. #510: bounded by the MODEL, because the memoizing
+        // FindClrPropertyByEdmName caches on the caller's exact string in a process-wide dictionary,
+        // so calling it per body key let a caller grow that dictionary without bound.
         //
-        // ODataPropertyNaming.FindClrPropertyByEdmName memoizes on (Type, string) in a PROCESS-WIDE
-        // ConcurrentDictionary keyed by the caller's exact string, and the PATCH delta loop called it
-        // once per BODY PROPERTY NAME. The lookup is what caches, not the result, so a caller could
-        // grow that dictionary without bound by sending bodies full of distinct unmatched keys —
-        // each one a permanent entry for the life of the process. No single request costs anything
-        // worth measuring; the growth is cumulative and never reclaimed. That is out of line with the
-        // posture the rest of the framework takes (OpenTypeJsonOptions' ValidatedKeys cache is capped
-        // at 1024 entries and memoises non-ASCII keys only, with the reasoning written out).
+        // #536: the primary key is JsonTypeInfo.Properties[].Name -- the string STJ itself matches a
+        // body key against -- so the table cannot drift from the binder under a naming policy. Pair
+        // JsonPropertyInfo back to PropertyInfo with HasSameMetadataDefinitionAs, never ==, which
+        // compares ReflectedType and fails for inherited members (#462).
         //
-        // Option 3 of the three the issue lists, and the one the write path was already heading
-        // toward: the names PATCH can encounter are now bounded by the MODEL rather than by the
-        // request. Nothing else changes — capping the shared cache or refusing to cache misses would
-        // both have made a hot READ-path helper slower to close a WRITE-path hole.
-        //
-        // #510 built the table from the same reflection walk (public instance, non-indexer), keyed
-        // EDM name first and CLR name second as non-overwriting aliases — which is exactly
-        // FindClrPropertyByEdmName's two-stage FirstOrDefault, since insertion follows
-        // GetProperties() order and TryAdd keeps the first writer. That was deliberately behaviour-
-        // preserving, and it preserved a defect along with the behaviour.
-        //
-        // #536 GAVE IT THE BINDER'S OWN ANSWER AS ITS PRIMARY KEY. ⚠ BREAKING: PATCH now binds body
-        // keys it silently dropped before. This is #511 manifestation (2) surviving on one route.
-        // The EDM name is deliberately POLICY-FREE ($metadata advertises the CLR identifier whatever
-        // casing payloads use, OData §4.4), while the VALUE this loop binds is deserialized with the
-        // registration's serializer options — so under a non-case-preserving PropertyNamingPolicy
-        // the two disagreed and PATCH answered 200 having changed nothing. camelCase differs from
-        // the CLR name only by case, so the OrdinalIgnoreCase comparer hid it for the one policy
-        // anyone had configured; SnakeCaseLower and KebabCaseLower did not. Measured: with
-        // SnakeCaseLower, PATCH {"first_name":"x"} against a `FirstName` property was a 200 no-op.
-        //
-        // Direction: fail-CLOSED on the write (the change is dropped, not applied), so it is data
-        // loss under a 200 rather than an unauthorized mutation — the mirror of #511's direction,
-        // and still a silent wrong answer.
-        //
-        // Fixed the way #511 fixed the deep-write table, and for the same reason: adding
-        // PropertyNamingPolicy?.ConvertName(...) as a third key closes one policy, not the CLASS,
-        // which is "two things that must agree, derived independently" (#454's shape). The primary
-        // key is read OFF THE CONTRACT the binder resolves. JsonTypeInfo.Properties[].Name is, by
-        // construction, the string System.Text.Json matches a body key against, whatever produced it
-        // — a naming policy, a [JsonPropertyName], a custom TypeInfoResolver modifier, or a
-        // source-generated contract — so there is no second derivation left to drift.
-        //
-        // HasSameMetadataDefinitionAs, never == / ReferenceEquals, to pair a JsonPropertyInfo back
-        // to its PropertyInfo. PropertyInfo equality also compares ReflectedType, and for an
-        // INHERITED member the two reflection walks disagree about it — typeof(TModel).GetProperties()
-        // reports TModel while STJ's AttributeProvider reports the declaring base. That is #462's
-        // third defect, measured on .NET 10.0.11; here it would show up as an inherited property
-        // silently losing its contract key, i.e. this very defect surviving on one member.
-        //
-        // The EDM name and the CLR name STAY, demoted to non-overwriting aliases, exactly as in
-        // deepWriteNavByBodyName. FindClrPropertyByEdmName is what the rest of the framework resolves
-        // through, so dropping them would trade a per-host divergence for a per-verb one. On a
-        // default host every alias collapses onto the contract key under the comparer, so nothing
-        // shipped moves.
-        //
-        // The comparer stays OrdinalIgnoreCase UNCONDITIONALLY and does NOT follow
-        // PropertyNameCaseInsensitive the way deepWriteNavByBodyName's does. The two tables answer
-        // different questions. That one shadows a separate reader (the deserializer), so a table
-        // wider than the binder strips a navigation the binder never bound — #506's destruction
-        // case. This table has no reader to shadow: PATCH enumerates the body's own members and
-        // deserializes each VALUE individually, so the table IS the matcher for the root object.
-        // Narrowing it to Ordinal on a host that cleared the flag would change what PATCH binds in a
-        // direction #536 does not ask for, and would break the FindClrPropertyByEdmName parity the
-        // aliases exist to preserve.
-        //
-        // A property the contract does not carry gets no contract key — an Ignore()d one, which
-        // IgnoredPropertyJsonOptions REMOVES from typeInfo.Properties. It keeps its EDM/CLR aliases
-        // and the loop below still skips it via IgnoredPropertyNames, so the widening cannot make a
-        // withheld property newly bindable under a policy spelling.
-        //
-        // This is a lookup TABLE and not a call to FindClrPropertyByEdmName per body key on purpose;
-        // that is #510's reason and it is unchanged. The helper memoizes on (Type, string) in a
-        // process-wide ConcurrentDictionary keyed by the exact string handed in, and the PATCH delta
-        // loop called it once per BODY PROPERTY NAME — so a caller could grow that dictionary
-        // without bound by sending bodies full of distinct unmatched keys, each a permanent entry
-        // for the life of the process. The names PATCH can encounter are bounded by the MODEL.
+        // EDM and CLR names stay as non-overwriting aliases, for FindClrPropertyByEdmName parity.
+        // The comparer is OrdinalIgnoreCase unconditionally and deliberately does NOT follow
+        // PropertyNameCaseInsensitive: this table IS the matcher for the root object, unlike
+        // deepWriteNavByBodyName, which shadows a separate reader.
         var patchPropByBodyName = new Dictionary<string, PropertyInfo>(StringComparer.OrdinalIgnoreCase);
         PropertyInfo[] patchCandidateProps = typeof(TModel)
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
@@ -11085,27 +9485,19 @@ internal static class OhDataEndpointFactory
                     if (result is null)
                     {
                         // #496 finding 1: a null return is a SERVER-side contract violation, not a
-                        // statement about the request, and this used to answer
-                        // 400 {"code":"BadRequest","message":"Post handler returned null."} --
-                        // the client blamed for the server's own bug, with the server's handler
-                        // named back to it in the message. It was also the only 4xx null policy in
-                        // the framework: GetAll -> 200 with an empty collection, GetById/PUT/PATCH
-                        // -> 404, a bound operation -> 204.
+                        // statement about the request. This used to answer 400 "Post handler returned
+                        // null." -- the client blamed for the server's bug, with the server's handler
+                        // named back to it -- and it was the only 4xx null policy in the framework
+                        // (GetAll -> 200 empty, GetById/PUT/PATCH -> 404, a bound operation -> 204).
                         //
-                        // Throwing hands it to the group-level filter, which is the single place
-                        // that decides what an unhandled server fault looks like: the real
-                        // exception logged at Error, and a 500 carrying the OData error envelope
-                        // with a generic message. Same shape as DeltaFactory's TrySetPropertyValue
-                        // assertion -- after the framework's own checks a null here means the
-                        // handler broke its contract, so it is an invariant assertion rather than
-                        // an error path.
+                        // Throwing hands it to the group filter: real exception logged at Error, 500
+                        // with the OData envelope and a generic message. Same invariant-assertion shape
+                        // as DeltaFactory's TrySetPropertyValue.
                         //
-                        // A profile that wants to REJECT a create deliberately has to do it BEFORE
-                        // the handler: Post is typed Task<TModel?> -- as is every other entity-set
-                        // handler delegate -- so it cannot return an IResult, and there is no
-                        // "return an ODataError from the handler" idiom available here. Use a
-                        // Create authorization rule, RequestBodyNullabilityValidationEnabled, or
-                        // throw, which is this same 500.
+                        // A profile that means to REJECT a create must do it BEFORE the handler: Post
+                        // is typed Task<TModel?>, as is every entity-set handler delegate, so it cannot
+                        // return an IResult and there is no "return an ODataError" idiom here. Use a
+                        // Create authorization rule, RequestBodyNullabilityValidationEnabled, or throw.
                         throw new InvalidOperationException(
                             $"The Post handler for entity set '{name}' returned null. Post must " +
                             "return the created entity.");
@@ -11142,26 +9534,15 @@ internal static class OhDataEndpointFactory
 
                         EchoReturnRepresentationPreference(ctx);
 
-                        // Gap 5: include @odata.id in POST response body
-                        // Gap 2: include @odata.etag in body
-                        // Deep insert (§32): when AllowDeepWrites is true, `result` (the handler's
-                        // return value) may carry nested navigation values populated by the
-                        // handler — SerializeToNode below serializes them inline automatically,
-                        // satisfying §11.4.2.2's "return the created entity with related entities."
-                        // #240: omit un-expanded navigations from the POST echo so it matches a read
-                        // of the same type — EXCEPT when the profile opted into deep writes, where the
-                        // 201 deliberately echoes the created graph inline (§11.4.2.2). The gate is
-                        // entity-level because OmitUnexpandedNavigations strips ALL declared navs
-                        // unconditionally (it never inspects whether a nav is populated); a per-request
-                        // choice would require a value-aware strip. Accepted residual: a deep-write
-                        // profile doing a *non-deep* POST still echoes its (null/empty) navs.
+                        // @odata.id and @odata.etag in the POST echo. Deep insert (§11.4.2.2): with
+                        // AllowDeepWrites the handler's return value may carry nested navigation
+                        // values, which SerializeToNode emits inline.
                         //
-                        // #457: PUT/PATCH still omit UNCONDITIONALLY, and that is deliberately left
-                        // alone. This issue is about what the HANDLER receives; §11.4.3.1 requires
-                        // nothing of the update response beyond what §11.4.2 already says, and
-                        // widening the echo is a separate wire-shape change with its own #240
-                        // consequences. The asymmetry is therefore: a deep-write profile's 201 echoes
-                        // the graph, its 200 on PUT/PATCH does not.
+                        // #240: un-expanded navigations are omitted from the echo so it matches a read
+                        // of the same type -- EXCEPT under deep writes, where the 201 deliberately
+                        // echoes the created graph. The gate is entity-level because
+                        // OmitUnexpandedNavigations strips ALL declared navigations unconditionally and
+                        // never inspects whether one is populated.
                         var createdNode = ODataEntityNode(ctx, prefix, $"{name}/$entity", result, jsonOptions, registration.EdmModel, odataId: odataId, etag: postEtag,
                             omitNavsForType: source.AllowDeepWrites ? null : rootEdmType);
                         return Results.Created(odataId, createdNode);
@@ -11437,32 +9818,23 @@ internal static class OhDataEndpointFactory
                     // itself about what the body contained.
                     JsonElement patchBody = patchPrepared.Body;
 
-                    // #454: the key property is immutable (§11.4.9), and the guard below must
-                    // validate EXACTLY the set the delta loop applies -- otherwise a body can pass
-                    // validation on one occurrence and be applied through another.
+                    // #454: the key is immutable (§11.4.9), and this guard must validate EXACTLY the
+                    // set the delta loop applies, or a body passes validation on one occurrence and is
+                    // applied through another.
                     //
-                    // It previously did not. `TryGetJsonProperty` returns the FIRST case-insensitive
-                    // match and stops, and it matched on the key's CLR name; the loop below resolves
-                    // EVERY body property through `FindClrPropertyByEdmName` (case-insensitive AND
-                    // [JsonPropertyName]-aware) into a last-writer-wins Delta<T>. Three bodies
-                    // therefore moved the key and returned 200: {"Id":1,"Id":999},
-                    // {"id":1,"Id":999}, and -- with a renamed key -- a single {"code":"ZZ"}, which
-                    // the CLR-name lookup could not see at all.
+                    // It did not. TryGetJsonProperty returned the FIRST case-insensitive match on the
+                    // CLR name and stopped, while the loop resolved EVERY body property through
+                    // FindClrPropertyByEdmName ([JsonPropertyName]-aware) into a last-writer-wins Delta.
+                    // Three bodies moved the key and returned 200: {"Id":1,"Id":999},
+                    // {"id":1,"Id":999}, and -- with a renamed key -- a single {"code":"ZZ"}.
                     //
-                    // Both halves now resolve through the same function against the same CLR
-                    // property: every occurrence is validated here, and the loop never writes the
-                    // key into the delta at all. A mismatch is REJECTED rather than silently
-                    // dropped, matching both the pre-existing single-occurrence 400 and the
-                    // structural-property write route's KeyImmutableError.
+                    // Both halves now resolve through the same table against the same CLR property, and
+                    // the loop never writes the key into the delta at all. A mismatch is REJECTED, not
+                    // silently dropped. An omitted key is still valid -- PATCH is partial and the URL
+                    // key is authoritative.
                     //
-                    // A body that omits the key is still valid -- PATCH is a partial update and the
-                    // URL key is authoritative.
-                    //
-                    // #510: both halves resolve through the startup table now instead of through
-                    // FindClrPropertyByEdmName, so a client-supplied name never reaches that
-                    // helper's process-wide cache. The table answers identically (see its
-                    // construction), so #454's "both halves consult the same set" property is
-                    // preserved by construction rather than restated.
+                    // #510: both halves go through the startup table, so a client-supplied name never
+                    // reaches FindClrPropertyByEdmName's process-wide cache.
                     PropertyInfo? patchKeyClrProp = ResolvePatchBodyProperty(source.KeyPropertyName);
                     string patchParsedKeyStr = string.Format(CultureInfo.InvariantCulture, "{0}", parsedKey);
                     foreach (var prop in patchBody.EnumerateObject())
@@ -11653,26 +10025,14 @@ internal static class OhDataEndpointFactory
             }
         }
 
-        // ── #416 / #492 §3: entity-level bound function vs a navigation ROUTE ────────────────
+        // #416 / #492 §3: an entity-level bound FUNCTION vs a navigation ROUTE. Every NavigationRoutes
+        // entry gets GET /{name}({key})/{nav} mapped -- including a post/addRef-only one, whose GET
+        // 404s -- and an entity-level function claims the same template and method. No check existed:
+        // the structural-property check cannot see it, because BuildStructuralProperties SUBTRACTS
+        // every declared navigation, which is exactly why this pair fell through.
         //
-        // Every entry in NavigationRoutes gets `GET /{name}({key})/{nav.PropertyName}` mapped for
-        // it below -- including one declared with only `post`/`addRef`/`removeRef`, whose GET is
-        // registered with a null-returning handler that 404s. An entity-level bound function claims
-        // `GET /{name}({key})/{fn.Name}`. Same template, same method, and NO check existed: the
-        // three pre-existing ones cover structural properties (a set from which
-        // BuildStructuralProperties SUBTRACTS every declared navigation, which is exactly why this
-        // pair fell through), the nav-POST-vs-action pair above, and the #313 continuation route.
-        //
-        // #416 raised warn-vs-throw on the grounds that an app might be "relying on whichever route
-        // wins registration order". Measured, none does: ASP.NET Core raises AmbiguousMatchException
-        // and NEITHER endpoint runs, so there is no working configuration to break -- only a raw 500
-        // on every request to that URL, moved to a named startup failure.
-        //
-        // The check keys off NavigationRoutes rather than off which particular delegate was
-        // supplied, because the GET is mapped for the whole list. A navigation declared with NO
-        // handler is absent from that list, registers no route, and stays legal (the shape #313
-        // stage 5 deliberately left alone, and which its own check governs once the continuation
-        // route exists).
+        // Throws rather than warns: AmbiguousMatchException means NEITHER endpoint runs, so there is
+        // no working configuration to preserve.
         foreach (var navRoute in source.NavigationRoutes)
         {
             foreach (var collidingFn in source.BoundFunctions.Where(f =>
@@ -13159,25 +11519,9 @@ internal static class OhDataEndpointFactory
 
         // Gap 7: Entity-level bound actions — POST /{name}({key})/{action.Name}
         //
-        // Gap 7a: #566 -- this route IS under the precondition gate. §11.4.1.1 is a MUST whose
-        // subject is "a Data Modification Request OR ACTION REQUEST", §8.2.4 and §8.3.1 name
-        // Action Requests as explicitly, and §11.5.4.1 instructs the CLIENT to send If-Match for
-        // exactly this case. The call itself is in the handler below, before the body is read.
-        //
-        // History, so the exclusion is not reinstated: #478 left actions out, defended by the
-        // assertion that an action-invocation resource "has no representation and therefore no
-        // entity tag", citing Protocol §11.5.4. That phrase appears NOWHERE in Part 1
-        // (`grep -ic "no representation"` over the specification returns 0), and the clauses above
-        // contradict the conclusion it was used to reach. Measured on the shipped TestBench before
-        // this fix: POST /v1/Movies(3)/Rate with a stale If-Match answered 200 and MUTATED the
-        // entity, while PATCH /v1/Movies(3) with the SAME header answered 412 -- the precondition
-        // honoured on one route and ignored on the route that exists to encapsulate exactly that
-        // read-modify-write loop.
-        //
-        // Still excluded, and this half survives on its own reasoning: COLLECTION-bound and
-        // UNBOUND actions. Neither has a {key} segment or an addressed entity, so there is nothing
-        // to load an ETag from. §11.5.4.1's "or collection of entities" half would need a
-        // collection ETag, which this framework does not compute.
+        // Gap 7a: entity-bound actions. Under the precondition gate since #566 -- §11.4.1.1's MUST
+        // covers "a Data Modification Request OR ACTION REQUEST". Collection-bound and unbound
+        // actions have no key to load an entity by, so they stay out.
         foreach (var action in source.BoundActions.Where(a => a.IsEntityLevel))
         {
             var actionCapture = action;
@@ -13199,23 +11543,7 @@ internal static class OhDataEndpointFactory
                         var requestAction = s.BoundActions.First(a => a.Name == actionCapture.Name && a.IsEntityLevel);
                         object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
 
-                        // #566: an entity-bound action is an ACTION REQUEST under §11.4.1.1, whose
-                        // MUST covers "a Data Modification Request OR ACTION REQUEST" -- so a
-                        // received If-Match/If-None-Match gates the invocation exactly as it gates
-                        // PUT/PATCH/DELETE, the three $ref routes and the navigation-POST route.
-                        // §11.5.4.1 tells the client to send it for precisely this case, and
-                        // §8.2.4 and §8.3.1 name Action Requests too.
-                        //
-                        // Placed after the key parses and BEFORE the parameter body is read, so a
-                        // refused invocation provably runs no user code -- the same ordering
-                        // invariant #478 established for the other five families, and the reason
-                        // ConcurrencyTests asserts delegate NON-EXECUTION rather than only status.
-                        //
-                        // Only the ENTITY-level route gets this. Collection-bound and unbound
-                        // actions have no {key} segment and no addressed entity, so there is
-                        // nothing to load an ETag from; §11.5.4.1's "or collection of entities"
-                        // half needs a collection ETag the framework does not compute. That half
-                        // of #478's exclusion survives on its own reasoning.
+                        // Must precede the body read: a refused invocation runs no user code.
                         var actionEtagCheck = await CheckETagAsync(source, s, ctx, parsedKey!, ct);
                         if (actionEtagCheck is not null) return actionEtagCheck;
 
@@ -13306,51 +11634,20 @@ internal static class OhDataEndpointFactory
 
     }
 
-    // Gap 1: Wrap bound operation result with @odata.context when return type matches TModel (§11.5.3).
-    // For collection results (IEnumerable<TModel>): context = {root}/$metadata#{EntitySet}
-    // For single results (TModel): context = {root}/$metadata#{EntitySet}/$entity
-    // For primitives/other types: return Results.Ok directly (no wrapping needed).
-    // #357: the operation-result twin of the GetAll route's ApplyGetAllPaging, kept deliberately
-    // equivalent to it -- same precedence between an explicit $top and the default cap, same
-    // Prefer: maxpagesize interaction, same "nextLink only when the default cap was applied AND
-    // rows remain" condition, same $skip continuation shape via BuildNextPageLinkWithSkip. It is a
-    // second implementation rather than a shared call because that one is a local function closing
-    // over the route's ODataQueryOptions, which a bound-operation route does not build.
+    // Wraps a bound-operation result in @odata.context when the return type matches TModel (§11.5.3);
+    // primitives and other types return directly.
     //
-    // $top/$skip are read the way the NAVIGATION-collection route reads them -- int.TryParse
-    // against the raw query string, with that route's existing "is invalid. It must be a
-    // non-negative integer." wording -- rather than through ODataQueryOptions. Both reasons matter.
-    // (1) Precedent: the nav route is the other place in this file that pages a fully materialized
-    // collection with no IQueryable and no ODataQueryOptions behind it, and inventing a third
-    // vocabulary for one client error is how error surfaces drift. (2) Building the whole
-    // ODataQueryOptions here would additionally start rejecting malformed values of options this
-    // route still ignores ($filter=, $skiptoken=), which is a wire change #357 does not ask for and
-    // whose surface is set by somebody else's constructors; and Microsoft's individual
-    // TopQueryOption/SkipQueryOption both require an ODataQueryOptionParser, which needs an
-    // ODataPath a bound-operation route never parses.
+    // #357: the operation-result twin of ApplyGetAllPaging, deliberately equivalent to it. A second
+    // implementation because that one is a local function closing over the route's ODataQueryOptions,
+    // which this route does not build. $top/$skip are read the way the NAVIGATION-collection route
+    // reads them -- int.TryParse and that route's existing wording -- because building an
+    // ODataQueryOptions here would start rejecting malformed values of options this route still
+    // ignores. The MaxTop message IS shared verbatim with the collection routes: one condition must
+    // not produce two envelopes depending on which route reached the same entity set.
     //
-    // The MaxTop rejection below is OhData's own message and IS shared with the collection routes
-    // verbatim: the same condition must not produce two different envelopes depending on which
-    // route the client reached the same entity set through.
-    //
-    // #543: `continuable` is the function/action split, and it changes exactly one branch -- what
-    // happens when NO $top was sent and the result is larger than the ceiling.
-    //
-    //   continuable: true  (bound FUNCTION) -- cap to MaxTop (or a smaller Prefer: maxpagesize) and
-    //                                          emit a $skip @odata.nextLink for the remainder.
-    //   continuable: false (bound ACTION)   -- THROW. See the block below for why refusing is the
-    //                                          only shape left once truncation and continuation are
-    //                                          both off the table.
-    //
-    // Everything else is shared verbatim and deliberately so: an explicit $top is applied and
-    // validated against MaxTop with the same message, $skip is applied, a malformed value is the
-    // same 400. The same condition must not produce two different envelopes depending on which
-    // route the client reached the same entity set through, and #543 was in part exactly that --
-    // `$top=999` was a 400 on the collection GET and on the bound function, and a silent 200 with
-    // the full result on the bound action.
-    //
-    // Returns false with `error` set when the request cannot be served; true otherwise, with `page`
-    // and `nextLink` set. Throws when an action's result cannot be served within the ceiling.
+    // #543: `continuable` changes exactly one branch -- no $top sent and the result exceeds the
+    // ceiling. A bound FUNCTION caps and emits a $skip nextLink; a bound ACTION THROWS, because
+    // truncation and continuation are both off the table (see below).
     private static bool TryApplyOperationCollectionPaging(
         HttpContext ctx, IEntitySetEndpointSource startupSource, bool continuable, object[] items,
         string entitySetName, string operationName,
@@ -13420,42 +11717,24 @@ internal static class OhDataEndpointFactory
         }
         else if (startupSource.MaxTop is int cap && preTotal - skip > cap)
         {
-            // ── #543: a bound ACTION whose result does not fit under the ceiling ──────────────
+            // #543: a bound ACTION whose result does not fit under the ceiling. Measured pre-fix,
+            // MaxTop=10 over 25 rows: the FUNCTION capped at 10 with a $skip link and 400'd $top=999,
+            // while the ACTION answered 200 len=25 with no link for every one of $top=999, $top=5,
+            // $skip=20 and $top=abc. #357's "moot in practice" defence was refuted by Task<object>,
+            // and #539 makes Task<IEnumerable<TModel>> the ordinary spelling.
             //
-            // Measured on the pre-fix tree, MaxTop = 10 over a 25-row store: the bound FUNCTION
-            // answered `len=10` with `nextLink=…/DumpFn?%24skip=10` and 400'd `$top=999`, while the
-            // bound ACTION answered `200 len=25 nextLink=<none>` for every one of `$top=999`,
-            // `$top=5`, `$skip=20` and `$top=abc`. #357 closed that hole for functions and left
-            // actions with `pagingSource: null`; the CHANGELOG defended the exclusion as "moot in
-            // practice" because a BindAction could not declare the type -- refuted twice over, by
-            // `Task<object>` (which registered and served all 25 rows) and now by #539, which makes
-            // `Task<IEnumerable<TModel>>` the ordinary spelling.
+            // Three shapes, two unavailable here:
+            //   * Cap and emit a nextLink -- INVALID. §11.2.5.7 defines a next link as one that
+            //     "allows RETRIEVING the next partial set", and POST /Set/Action is not
+            //     GET-addressable, so the link would 405. (NOT the withdrawn §11.5.4 claim; see #566.)
+            //   * Cap silently -- forbidden by M1.
+            //   * Refuse. What is left.
             //
-            // Three shapes were available and two are unavailable HERE, which is what leaves this
-            // one:
-            //   * Cap and emit @odata.nextLink -- what a function does, and INVALID for an action.
-            //     §11.2.5.7 defines a next link as one that "allows RETRIEVING the next partial
-            //     set of items", i.e. a URL the client GETs; POST /Set/Action is not GET-addressable,
-            //     so the link would answer 405, and re-POSTing a side-effecting action to collect
-            //     page 2 is not a continuation in any case. (This is NOT the withdrawn §11.5.4 "no
-            //     representation" claim — see #566 and the If-Match comment on the entity-level
-            //     action route.)
-            //   * Cap silently -- forbidden by the framework's own M1 rule: no configuration leaves
-            //     a bound in place without either a continuation link or a 400, never silent
-            //     truncation.
-            //   * Refuse. What is left, and what this does.
-            //
-            // It is a 500, not a 400, and #496 settled that distinction in this same release: a
-            // `Post` handler returning null went from "400 blaming the client" to a logged 500
-            // because the condition is decided entirely by server-side state. So is this one -- the
-            // profile declared the ceiling and the handler returned more than fits under it, for
-            // every client and every request identically, and the only party who can fix it is the
-            // operator reading the log. Throwing routes it through the group-level filter: the real
-            // message below is logged, the client gets the generic 500 + OData error envelope.
-            //
-            // Remedies, in the message because it is the operator who reads it. Note that a client
-            // CAN still get a served response by sending an explicit `$top` (<= MaxTop), which is
-            // why the branch above is not also refused.
+            // A 500, not a 400, for #496's reason: the condition is decided entirely by server-side
+            // state -- the profile declared the ceiling, the handler exceeded it, identically for
+            // every request -- so blaming the client would be the defect #496 removed one route over.
+            // A client CAN still get a served response with an explicit $top <= MaxTop, which is why
+            // the branch above is not also refused.
             throw new InvalidOperationException(
                 $"Entity set '{entitySetName}': bound action '{operationName}' returned " +
                 $"{preTotal - skip} entities, which exceeds this entity set's MaxTop of {cap}. A " +
@@ -13486,30 +11765,22 @@ internal static class OhDataEndpointFactory
     {
         var resultType = result.GetType();
 
-        // #497 (the #462 defect class, fourth site — it predates InheritedTypeConfig's consolidation
-        // and was not swept in): the element test used to be `== modelType`, i.e. EXACT CLR-type
-        // equality, while the SINGLE-entity branch below already accepted a derived instance via
-        // IsAssignableFrom. A handler declared `Task<IEnumerable<TModel>>` that returns a
-        // `List<TDerived>` — the ordinary EF Core TPH shape — lists only IEnumerable<TDerived> in
-        // GetInterfaces(), so it missed this branch, missed the single-entity branch (IsAssignableFrom
-        // fails on a List), missed the Edm-primitive map, and fell into the final raw-graph
-        // PreRenderedJson. MEASURED on the pre-fix tree:
-        //     [{"Special":"x","Id":1,"Name":"derived","Parts":[{"Id":9,"Label":"PART-LEAK"}]}]
-        // — no @odata.context, no `value` envelope, the declared navigation `Parts` served INLINE
-        // (§4.5.1 / §11.2.4.2 and #179 both bypassed), and no @odata.etag injected — while the
-        // identical handler returning List<TModel> got the full envelope with navigations stripped. A
-        // cyclic derived graph turned the same request into a 500, since nothing suppressed the
-        // navigations before serialization.
+        // #497 (the #462 defect class, fourth site): the element test used to be `== modelType`, exact
+        // CLR equality, while the single-entity branch below already accepted a derived instance via
+        // IsAssignableFrom. A handler declared Task<IEnumerable<TModel>> returning a List<TDerived> --
+        // the ordinary TPH shape -- lists only IEnumerable<TDerived>, so it missed this branch, missed
+        // the single-entity branch (IsAssignableFrom fails on a List), missed the primitive map, and
+        // fell into the raw-graph PreRenderedJson. Measured: a bare array with no @odata.context, no
+        // `value` envelope, the declared navigation served INLINE and no @odata.etag -- while the same
+        // handler returning List<TModel> got the full envelope. A cyclic derived graph 500'd.
         //
-        // Assignability, not equality. It cannot over-match: modelType is the entity set's own TModel
-        // (never `object`), and every arm this could steal from — the single-entity branch and the Edm
-        // primitive map — is tested for an element type assignable to TModel, which no primitive and
-        // no non-TModel DTO is. The string guard stays because string is IEnumerable<char>.
+        // Assignability cannot over-match: modelType is the set's own TModel, never object, and every
+        // arm this could steal from tests for an element assignable to TModel. The string guard stays
+        // because string is IEnumerable<char>.
         //
-        // AddBoundOperationProduces' collection arm carries the SAME predicate over the DECLARED
-        // return type, so the OpenAPI document and the wire cannot disagree about which shape a bound
-        // operation produces; changing one without the other is what #497 calls the advertise-vs-serve
-        // half of the defect.
+        // AddBoundOperationProduces carries the SAME predicate over the DECLARED return type, so the
+        // document and the wire cannot disagree -- changing one without the other is the
+        // advertise-vs-serve half of #497.
         bool isCollectionOfModel = false;
         if (resultType != typeof(string))
         {
@@ -13533,48 +11804,27 @@ internal static class OhDataEndpointFactory
             object[] coll = ((IEnumerable)result).Cast<object>().ToArray();
             string baseUrl = BuildBaseUrl(ctx, prefix);
 
-            // #357: bound the collection exactly as #201 bounds GetAll. Before this, an operation
-            // returning a collection of the entity set's own type bypassed MaxTop, the client's
-            // $top/$skip and server-driven paging entirely -- so the DoS ceiling the framework
-            // advertises and enforces on every ordinary collection route was fully bypassable
-            // through any such operation, and a $top sent against one was neither applied nor
-            // rejected (measured: 77 entities returned for `?$top=2`).
+            // #357: bound the collection exactly as #201 bounds GetAll -- before this, an operation
+            // returning a collection of the set's own type bypassed MaxTop, $top/$skip and paging
+            // entirely (measured: 77 entities for `?$top=2`). The situation is identical to GetAll's:
+            // a fully materialized array with the framework owning the pipeline, so an offset
+            // continuation is always honourable.
             //
-            // The situation is identical to GetAll's, which is why the semantics are identical
-            // rather than merely similar: the framework is holding a fully materialized array and
-            // owns the whole pipeline from here on, so an offset continuation is one it can always
-            // honour. An omitted $top caps to MaxTop (or a smaller Prefer: maxpagesize) with a
-            // $skip @odata.nextLink for the remainder; an explicit $top is applied and validated
-            // against MaxTop; $skip is applied. MaxTop = null opts out, as it does on GetAll.
+            // Parsed HERE, in the runtime branch, not in the route: a handler declared Task<object>
+            // returning a List<TModel> must not be a way around the ceiling. Metadata comes from the
+            // DECLARED type, so the only divergence is serving a bound the document did not promise --
+            // the safe direction.
             //
-            // Parsed HERE, in the runtime collection branch, rather than in the route: a handler
-            // declared Task<object> that returns a List<TModel> must not be a way around the
-            // ceiling, and a function whose result is NOT a collection must keep ignoring $top/$skip
-            // exactly as it did. The OpenAPI metadata is attached from the DECLARED return type, so
-            // the only possible divergence is serving a bound the document did not promise -- the
-            // safe direction of #467's advertise-vs-serve rule.
+            // #543: #357 then excluded ACTIONS at the route, which put the bypass back on the one
+            // kind that never reached this parse. Measured: a BindAction served all 25 rows against
+            // MaxTop=10 and ignored $top. Actions reach the parse now; they just cannot emit a
+            // nextLink.
             //
-            // #543: that "parsed HERE, not in the route" claim was correct and #357's *conclusion*
-            // from it was not -- the route-level exclusion of ACTIONS put the bypass back on the
-            // one operation kind that never reached this parse at all. Measured: `Task<object>`
-            // returning a List<TModel> from a BindAction served all 25 rows against MaxTop = 10 and
-            // ignored `$top` entirely, which is the exact wire shape this comment says #357 closed.
-            // Actions reach the parse now; the only thing they cannot do is emit a nextLink.
-            //
-            // `startupSource` is the STARTUP endpoint source, and the distinction from `source` is
-            // load-bearing, not cosmetic: `source` here is the REQUEST-scoped instance, whose MaxTop
-            // is null -- profiles are registered AddScoped and _resolvedMaxTop is assigned in
-            // VisitModelBuilder, which only ever runs on the startup instance. Reading the ceiling
-            // off the request instance silently disables the whole bound (measured: 25 rows returned
-            // and $top=1000 accepted, on a profile with MaxTop = 10). This is the two-sources rule
-            // CLAUDE.md states for every route closure -- startup source for structural queries,
-            // request source for Invoke* -- and MaxTop is named in it.
-            //
-            // #543: it used to be nullable and to double as the "is this route pageable" flag, null
-            // for every bound ACTION, so an action skipped the bound entirely. The flag is now
-            // `continuable`, a separate parameter, and every caller passes the startup source: an
-            // action IS bounded, it just cannot be CONTINUED. Conflating "no continuation available"
-            // with "no ceiling applies" is precisely how the ceiling became bypassable.
+            // `startupSource` is load-bearing. `source` is the REQUEST-scoped instance, whose MaxTop
+            // is null -- profiles are AddScoped and _resolvedMaxTop is assigned in VisitModelBuilder,
+            // which only runs on the startup instance. Reading the ceiling off the request instance
+            // silently disables the whole bound. `continuable` is a SEPARATE flag because conflating
+            // "no continuation available" with "no ceiling applies" is how it became bypassable.
             string? opNextLink = null;
             if (!TryApplyOperationCollectionPaging(
                     ctx, startupSource, continuable, coll, entitySetName, operationName,
