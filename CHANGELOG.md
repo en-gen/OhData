@@ -201,6 +201,58 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   across all twelve sites carrying it and shipped the behaviour labelled as a known deviation;
   this closes the deviation itself.
 
+### Fixed
+
+- **A fast-reject `413` now says it is closing the connection (#601).** The `Content-Length`
+  fast-reject answers **without reading the request body**, so the connection cannot be reused and
+  Kestrel closes it — but the response carried no `Connection: close`, leaving the client no way to
+  know. A keep-alive client reused a dead socket and its next request failed; when that request was
+  a `POST`, the client did not retry it, because POST is not idempotent. RFC 9110 §7.6.1: *"A sender
+  that intends to close a connection … MUST send a `close` connection option."*
+
+  Measured on real Kestrel with a raw socket, before the fix, in both the client-sent-everything and
+  the client-stopped-writing cases:
+
+  ```
+  resp1='HTTP/1.1 413 Payload Too Large'  conn-hdr=[]
+  resp2=<closed, no data>  /  [WinError 10053] An established connection was aborted…
+  ```
+
+  Independent of body size — it reproduced identically at 64 KB and at 30 MB — and of whether the
+  client finished writing. Both `413` sites are fixed: the fast-reject, and the
+  `BadHttpRequestException` one beside it that maps Kestrel's own limit, which is the same
+  unread-body situation reached another way.
+
+  This was the residual half of the k6 flake below. Sizing that body down fixed the `413`
+  assertions; the request *after* them kept failing about half the time, and this is why.
+
+  It is pinned in `RequestBodySizeLimitTests` (all three write verbs, plus a control asserting a
+  normal write does **not** close) rather than in k6: Go's `net/http` strips hop-by-hop headers from
+  responses, so k6 provably cannot observe the header — measured, the assertion fails there while a
+  raw socket sees it. The effect is still visible in k6, because its client honours the close and
+  reconnects.
+
+### Tests
+
+- **The k6 413 case no longer uploads 30 MB, and stops flaking (#598).** `bodySizeLimit` built a body
+  from `'a'.repeat(30000000)` — exactly `EntitySetDefaults.DefaultMaxRequestBodyBytes` **and**
+  Kestrel's own default — so the server wrote its 413 while k6 was still uploading megabytes the
+  server would never read. An early response over an undrained request body resets the connection,
+  and the group failed about half the time: six checks red, including the `413` itself, with the
+  measurement `814c4ce` green → `ff637a3` red → `854da55` green across a one-line `.Where` refactor
+  that cannot affect it. Two PRs (#596, #597) hit it on unrelated work.
+
+  `MovieProfile` now declares `MaxRequestBodyBytes = 64 * 1024` and the case sends ~64 KB. The body
+  stays far below Kestrel's limit, so only OhData rejects it and the undrained remainder is small
+  enough to drain. Six consecutive local runs clean — three cold-start (CI's shape) and three warm —
+  at 998/998 checks, plus 230/230 on `smoke.js`.
+
+  An earlier draft of this entry, and issue #598 itself, claimed the change also added coverage for
+  the profile-override direction. **That is false and is withdrawn**: `RequestBodySizeLimitTests`
+  already drives a profile-level limit (`BodyLimitProfile.MaxRequestBodyBytes = 200`) to a 413 on
+  POST/PUT/PATCH and over a global default, and `RequestBodySizeFeatureTests` covers the feature arm
+  in both directions. The justification is cost and determinism alone.
+
 ### Build
 
 - **`PackageValidationBaselineVersion` moves to `1.7.0`, and the instruction moves to the other end
