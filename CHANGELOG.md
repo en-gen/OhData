@@ -182,6 +182,17 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   across all twelve sites carrying it and shipped the behaviour labelled as a known deviation;
   this closes the deviation itself.
 
+### Documentation
+
+- **The 1.7.0 `Convert()` capture refusal is recorded, after the fact (#551).** #488/#535 made a
+  capturing `Convert()` converter throw at profile construction and shipped with no CHANGELOG entry,
+  so the first an adopter heard of it was the exception. The 1.7.0 section now carries a Breaking
+  entry and an upgrade-checklist item, with the measured five-shape table. Nothing about the
+  behaviour changed — only the record of it. `docs/delta-mapping.md` gains the same note beside
+  `Convert()`, and `Issue551ConvertCaptureShapeTests` pins all five rows — including the three
+  ACCEPTED ones, which had no coverage at all and are what stops a later tightening of the check
+  from refusing a plain non-capturing lambda.
+
 ### Build
 
 - **`PackageValidationBaselineVersion` moves to `1.7.0`, and the instruction moves to the other end
@@ -241,6 +252,11 @@ profile constructor, or `AddOhData(…)`); the rest at `MapOhData()`.
 - [ ] **Scanning one profile type into two registrations** via `AddProfilesFrom*` (#424).
 - [ ] A **get-only collection model property** in a delta mapping is now *in scope*: map, rename,
       convert or `Ignore()` it (#488). *Previously silently dropped.*
+- [ ] A **`Convert()` converter that captures anything** (#488/#535) — including two shapes most
+      developers will not expect: a **private instance helper on the profile**
+      (`.Convert(m => m.Size, e => e.Size, ParseSize)`) and a **captured local**
+      (`s => Convert.ToInt32(s, radix)`). Remedy: make it capture nothing. `static s => …`, a
+      `static` method, or a plain non-capturing lambda are all accepted.
 
 #### 2. What changes status on the wire
 
@@ -317,6 +333,36 @@ status will catch them.
       (#487). Expect new log volume, not new failures.
 
 ### Breaking
+
+- **⚠ BREAKING CHANGE — a `Convert()` converter that captures ANY state is refused at profile
+  construction (#488/#535).** This shipped in 1.7.0 with no CHANGELOG entry; recorded here after the
+  fact (#551), because the first signal an adopter got was an exception at startup.
+
+  A delta mapping is compiled once and held for the process lifetime, while the `DeltaProfile` that
+  declared it is resolved in a scope disposed immediately afterwards — so a converter holding a
+  scoped `DbContext` ran against a disposed instance on every later call, and a non-disposable
+  dependency was silently shared from the startup scope. A delegate is opaque, so *"captures
+  nothing"* is the only property checkable from outside it; the refusal is therefore deliberately
+  broader than *"captures a dependency"*.
+
+  **Measured** — the five shapes, at construction:
+
+  | converter | result |
+  |---|---|
+  | `ParseSize` — a private **instance** method on the profile | **refused** |
+  | `s => Convert.ToInt32(s, radix)` — captures a local `int` | **refused** |
+  | `s => int.Parse(s)` — non-capturing lambda | accepted |
+  | `static s => int.Parse(s)` | accepted |
+  | `ParseSize` — a **static** method | accepted |
+
+  The first two are the surprising ones: neither touches a dependency, and a private instance helper
+  is arguably the tidiest way to write a non-trivial converter. Both are refused because C# compiles
+  the receiver into the delegate exactly as it compiles a captured local, and nothing outside the
+  delegate can tell that receiver apart from a scoped service.
+
+  Remedy, one keyword: make the converter capture nothing. Note the exception text names
+  `static v => …` or a static method; a plain **non-capturing** lambda is accepted too, since Roslyn
+  compiles it to a cached fieldless singleton rather than a display class.
 
 - **⚠ BREAKING CHANGE — a bound ACTION returning a collection of the entity set's own type is now
   bounded by `MaxTop`, and a result that does not fit is refused rather than served (#543).**
