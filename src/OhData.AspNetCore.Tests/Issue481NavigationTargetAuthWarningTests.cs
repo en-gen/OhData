@@ -202,6 +202,68 @@ public sealed class W481EqualParentProfile : EntitySetProfile<int, W481Parent>
 }
 
 /// <summary>
+/// #549: a target whose extra protection is <c>RequireResource()</c> — an instance-level (Layer B)
+/// check evaluated against the entity loaded from the route's own <c>{key}</c>.
+/// </summary>
+public sealed class W549ResourceChildProfile : EntitySetProfile<int, W481Child>
+{
+    public W549ResourceChildProfile() : base(x => x.Id)
+    {
+        EntitySetName = "W549ResourceChildren";
+        ConfigureAuthorization(auth => auth.All(a => a.RequireResource()));
+        GetAll = _ => Task.FromResult<IEnumerable<W481Child>>(W481Data.Children);
+        GetById = (id, _) => Task.FromResult(W481Data.Children.FirstOrDefault(c => c.Id == id));
+    }
+}
+
+/// <summary>
+/// #549's false negative: a declaring profile carrying the IDENTICAL <c>RequireResource()</c>. The
+/// two render the same token, so the token subtraction cancelled them and the warning went silent —
+/// even though this profile's Layer B filter evaluates a <c>W481Parent</c> and never sees a child
+/// row, so the target's instance-level check genuinely is not applied.
+/// </summary>
+public sealed class W549ResourceParentProfile : EntitySetProfile<int, W481Parent>
+{
+    public W549ResourceParentProfile() : base(x => x.Id)
+    {
+        EntitySetName = "W549ResourceParents";
+        ConfigureAuthorization(auth => auth.All(a => a.RequireResource()));
+        ExpandEnabled = true;
+        HasMany<W481Child>(x => x.Children!);
+        GetAll = _ => Task.FromResult<IEnumerable<W481Parent>>(W481Data.Parents);
+        GetById = (id, _) => Task.FromResult(W481Data.Parents.FirstOrDefault(p => p.Id == id));
+    }
+}
+
+/// <summary>
+/// The control for #549: an identical ROLE requirement on both sides. A role is a statement about
+/// the CALLER, so token equality really does imply the check is applied and this must stay SILENT.
+/// Without this pair the fix could have been "never cancel anything", which would fire on every
+/// correctly-configured navigation.
+/// </summary>
+public sealed class W549RoleChildProfile : EntitySetProfile<int, W481Child>
+{
+    public W549RoleChildProfile() : base(x => x.Id)
+    {
+        EntitySetName = "W549RoleChildren";
+        ConfigureAuthorization(auth => auth.All(a => a.RequireRole("admin")));
+        GetAll = _ => Task.FromResult<IEnumerable<W481Child>>(W481Data.Children);
+    }
+}
+
+public sealed class W549RoleParentProfile : EntitySetProfile<int, W481Parent>
+{
+    public W549RoleParentProfile() : base(x => x.Id)
+    {
+        EntitySetName = "W549RoleParents";
+        ConfigureAuthorization(auth => auth.All(a => a.RequireRole("admin")));
+        ExpandEnabled = true;
+        HasMany<W481Child>(x => x.Children!);
+        GetAll = _ => Task.FromResult<IEnumerable<W481Parent>>(W481Data.Parents);
+    }
+}
+
+/// <summary>
 /// A STRICTER declaring profile over a LESS strict target. Must stay silent — the exposure runs
 /// under the stronger rule, which is the direction that is never a hazard.
 /// </summary>
@@ -456,6 +518,41 @@ public sealed class Issue481NavigationTargetAuthWarningTests
         var (capture, fx) = await BuildAsync(b => b
             .AddEntitySetProfile<W481EqualParentProfile>()
             .AddEntitySetProfile<W481AdminChildProfile>());
+        await using TestFixture _ = fx;
+
+        Assert.Empty(NavAuthWarnings(capture));
+    }
+
+    /// <summary>
+    /// #549: <c>RequireResource()</c> on BOTH sides must still warn. It is the one requirement kind
+    /// where token equality does not imply protection equality — every other kind is a statement
+    /// about the CALLER and compares soundly, while a resource requirement is a statement about the
+    /// RESOURCE, and Layer B evaluates it against the DECLARING set's entity.
+    /// </summary>
+    [Fact]
+    public async Task Issue549_IdenticalRequireResource_StillWarns()
+    {
+        var (capture, fx) = await BuildAsync(b => b
+            .AddEntitySetProfile<W549ResourceParentProfile>()
+            .AddEntitySetProfile<W549ResourceChildProfile>());
+        await using TestFixture _ = fx;
+
+        string warning = Assert.Single(NavAuthWarnings(capture));
+        Assert.Contains("W549ResourceChildren", warning, StringComparison.Ordinal);
+        Assert.Contains("resource-based authorization", warning, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The bound for the test above. An identical ROLE on both sides must stay SILENT — otherwise
+    /// the fix would be "never cancel anything", which fires on correct configuration and is the
+    /// failure mode #440/#481 both establish as worse than no warning.
+    /// </summary>
+    [Fact]
+    public async Task Issue549_IdenticalRole_IsStillSilent()
+    {
+        var (capture, fx) = await BuildAsync(b => b
+            .AddEntitySetProfile<W549RoleParentProfile>()
+            .AddEntitySetProfile<W549RoleChildProfile>());
         await using TestFixture _ = fx;
 
         Assert.Empty(NavAuthWarnings(capture));
