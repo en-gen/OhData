@@ -1380,6 +1380,7 @@ internal static class OhDataEndpointFactory
             // the write-body-size filter below. Map it to the OData 413 envelope instead of a 500.
             catch (BadHttpRequestException bhre) when (bhre.StatusCode == StatusCodes.Status413PayloadTooLarge)
             {
+                CloseConnectionAfterUnreadBody(ctx.HttpContext);
                 return ODataError(413, "RequestEntityTooLarge",
                     "The request body exceeds the maximum allowed size.");
             }
@@ -1442,6 +1443,7 @@ internal static class OhDataEndpointFactory
 
                 if (http.Request.ContentLength is long len && len > limit)
                 {
+                    CloseConnectionAfterUnreadBody(http);
                     return ODataError(413, "RequestEntityTooLarge",
                         $"The request body ({len} bytes) exceeds the maximum allowed size ({limit} bytes).");
                 }
@@ -2877,6 +2879,16 @@ internal static class OhDataEndpointFactory
             if (!ok) return key;
         }
         return null;
+    }
+
+    // #601: a 413 answered without reading the request body leaves the connection unusable, and
+    // Kestrel closes it. RFC 9110 §7.6.1 requires the sender that intends to close to say so;
+    // without the header a keep-alive client reuses a dead socket and its next request fails —
+    // never retried when it is a POST. Measured: resp1 413 with no Connection header, resp2 either
+    // no data or an aborted connection.
+    private static void CloseConnectionAfterUnreadBody(HttpContext http)
+    {
+        if (!http.Response.HasStarted) http.Response.Headers.Connection = "close";
     }
 
     // The generic envelope, shared verbatim with the four names #196 already rejected on the
