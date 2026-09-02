@@ -486,6 +486,26 @@ internal static class OhDataEndpointFactory
     /// own defect (<c>POST {"Title":null}</c> reaching EF as a <c>500</c>) closed.
     /// </para>
     /// </remarks>
+    // #569/#558: ONE envelope for one condition. Four sites used to answer it three different ways,
+    // two of them with different `code` values -- POST/PUT/nav-POST said "cannot be null",
+    // PATCH said "cannot be set to null", and the property writes said `BadRequest` with "is not
+    // nullable". A client moving from PATCH /Set(1) to PUT /Set(1)/Prop got a different code for the
+    // same rejection, against the rule #543 states.
+    //
+    // The wording has to be true of THREE arrivals at that condition, which is why it is not simply
+    // PATCH's:
+    //   * the body named the property with an explicit null;
+    //   * the body sent a value under a spelling the binder ignored, so nothing bound and the CLR
+    //     default is null -- #558, reachable under a non-case-preserving PropertyNamingPolicy,
+    //     because the body-name table carries EDM and CLR aliases the binder does not honour. Those
+    //     aliases must STAY (dropping them fails OPEN), so the message is what gets fixed;
+    //   * DELETE /Set(key)/Prop, which supplies no value at all.
+    // "did not supply a non-null value" is true of all three; "cannot be null" is false of the second.
+    private static IResult NonNullablePropertyError(string edmName) =>
+        ODataError(400, "InvalidBody",
+            $"Property '{edmName}' is declared non-nullable by the service metadata, and the " +
+            "request did not supply a non-null value for it.", target: edmName);
+
     private static IResult? ValidateEdmRequiredProperties(
         EdmRequiredProperty[] required, object instance, HashSet<string>? namedByBody)
     {
@@ -494,9 +514,7 @@ internal static class OhDataEndpointFactory
             if (namedByBody is null || !namedByBody.Contains(p.Clr.Name)) continue;
             if (p.Clr.GetValue(instance) is null)
             {
-                return ODataError(400, "InvalidBody",
-                    $"Property '{p.EdmName}' is declared non-nullable by the service metadata and " +
-                    "cannot be null.", target: p.EdmName);
+                return NonNullablePropertyError(p.EdmName);
             }
         }
         return null;
@@ -521,9 +539,7 @@ internal static class OhDataEndpointFactory
             if (!changed.Contains(p.Clr.Name)) continue;
             if (delta.TryGetPropertyValue(p.Clr.Name, out object? value) && value is null)
             {
-                return ODataError(400, "InvalidBody",
-                    $"Property '{p.EdmName}' is declared non-nullable by the service metadata and " +
-                    "cannot be set to null.", target: p.EdmName);
+                return NonNullablePropertyError(p.EdmName);
             }
         }
         return null;
@@ -11197,8 +11213,7 @@ internal static class OhDataEndpointFactory
 
                         if (newValue is null && !propIsNullable)
                         {
-                            return ODataError(400, "BadRequest",
-                                $"Property '{propName}' is not nullable and cannot be set to null.", target: propName);
+                            return NonNullablePropertyError(propName);
                         }
 
                         var delta = new Microsoft.AspNetCore.OData.Deltas.Delta<TModel>();
@@ -11251,8 +11266,7 @@ internal static class OhDataEndpointFactory
                 {
                     if (!propIsNullable)
                     {
-                        return ODataError(400, "BadRequest",
-                            $"Property '{propName}' is not nullable and cannot be set to null.", target: propName);
+                        return NonNullablePropertyError(propName);
                     }
 
                     try

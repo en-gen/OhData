@@ -11,6 +11,41 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **⚠ BREAKING CHANGE — the EDM-nullability rejection is one envelope on all five write routes
+  (#569, #558).** #355 made the EDM the single authority on nullability for every write family,
+  which made the CONDITION the same everywhere. It did not unify the ANSWER — three wordings and
+  **two `code` values** shipped:
+
+  | route | `code` | message |
+  |---|---|---|
+  | `POST`, `PUT`, nav-`POST` | `InvalidBody` | *"…and cannot be null."* |
+  | `PATCH` | `InvalidBody` | *"…and cannot be **set to** null."* |
+  | `PUT`/`PATCH`/`DELETE /{Set}({key})/{Prop}` | **`BadRequest`** | *"…is **not nullable** and cannot be set to null."* |
+
+  So a client moving from `PATCH /Movies(1) {"Title":null}` to `PUT /Movies(1)/Title
+  {"value":null}` got a different error **code** for the same rejection — against the rule #543
+  states and #357/#467 both cite. This is 1.7.0's own doing: at `v1.6.0` the property route gated on
+  **CLR** nullability, a genuinely different condition, so no divergence existed. **Nothing pinned
+  any of the three messages**, which is why they were free to drift.
+
+  All four sites now go through one `NonNullablePropertyError`, and the property writes join the
+  rest of the framework's vocabulary at `InvalidBody`. **BREAKING** for a client matching on
+  `code == "BadRequest"` or on any of the three message strings.
+
+  **The unified wording is not simply `PATCH`'s, because of #558.** Three different arrivals reach
+  this one condition, and *"cannot be null"* is false of the second: the body named the property
+  with an explicit `null`; the body sent a value under a spelling the **binder ignored**, so nothing
+  bound and the CLR default is `null`; or `DELETE /{Set}({key})/{Prop}`, which supplies no value at
+  all. The second is reachable under a non-case-preserving `PropertyNamingPolicy` — measured under
+  `SnakeCaseLower`, `POST {"CreatedBy":"x"}` against a `CreatedBy` property answered *"cannot be
+  null"* for a request that sent `"x"`, because the body-name table carries EDM and CLR aliases the
+  binder does not honour. **Those aliases must stay**: dropping them would make that body *unnamed*,
+  skip the gate entirely, and hand the handler a `null` under a `201` — #511's fail-open, strictly
+  worse. So the message is what changed. It now states that the request supplied no non-null value,
+  which is true of all three arrivals.
+
+  The new suite asserts the five families **against each other** rather than against a literal, so a
+  future reword stays green and a future fork does not.
 
 - **⚠ BREAKING CHANGE — an explicit `null` for a reference-typed KEY is now rejected before the
   handler runs (#557).** `BuildEdmRequiredProperties` excluded the entity key from the nullability
