@@ -17,27 +17,20 @@ using Xunit;
 
 namespace OhData.AspNetCore.Tests;
 
-// #325/#326 (OWNER DECISIONS, FROZEN spec — Option B, "clause-bounded, level-wise serialization"):
-// SerializeBounded (OhDataEndpointFactory.cs) replaces "serialize the whole CLR graph, then strip
-// un-expanded navigations" (Stage 3.5, OmitUnexpandedNavigations) with "serialize only what the
-// $expand clause / $levels budget asked for", at the point of serialization itself — so a reference
-// cycle in the underlying (tracked, EF-relationship-fixed-up) object graph is structurally
-// unreachable, regardless of clause depth. This suite is the named T-matrix from the architecture
-// spec:
-//   T8-T11  the IgnoreCycles disqualifying counter-example — Children($expand=Parent) must return
-//           the REAL parent object (never null), and Parent($expand=Children) must contain no null
-//           array elements. These pin Option B against a future "just use IgnoreCycles"
-//           simplification: IgnoreCycles passes the plain #325 repro too, but silently corrupts
-//           exactly this shape (verified during the architecture spike — see issue #325 comments).
-//   T16/T17 the tracked-entity read-only hazard — the walker must never mutate/corrupt a tracked
-//           graph later saved in the SAME request/DbContext scope.
-//   T24-T28 GetById, write-path (PUT/PATCH) response bodies, navigation routes, and bound
-//           operations all stay safe over a self-referential model.
-//   T30/T31 delegate-safety (Model B, #292/#293): a delegate's own answer always wins over
-//           whatever the walker guessed by reading the CLR graph, and a Blanked navigation always
-//           yields []/null, never the materialized graph.
-//   T35     the one class OWNER DECISIONS explicitly left as a loud 500: a cycle closed by an
-//           entity-typed CLR property that is NOT an EDM navigation.
+// #325/#326 (owner decisions, FROZEN -- Option B, clause-bounded serialization): SerializeBounded
+// replaces "serialize the whole CLR graph, then strip un-expanded navigations" with "serialize only
+// what the clause asked for", so a cycle in the tracked graph is structurally unreachable at any
+// clause depth. This suite is the named T-matrix from the architecture spec:
+//   T8-T11  the IgnoreCycles disqualifying counter-example -- Children($expand=Parent) must return
+//           the REAL parent, never null. IgnoreCycles passes the plain #325 repro too and silently
+//           corrupts exactly this shape, so these pin Option B against that "simplification".
+//   T16/T17 the walker must never mutate a tracked graph saved later in the same scope.
+//   T24-T28 GetById, PUT/PATCH echoes, navigation routes and bound operations over a
+//           self-referential model.
+//   T30/T31 delegate safety: a delegate's answer always wins over the walker's guess, and a Blanked
+//           navigation yields []/null, never the materialized graph.
+//   T35     the one class the owner decisions left as a loud 500: a cycle closed by an entity-typed
+//           CLR property that is NOT an EDM navigation.
 
 // ── T8-T11: EDM-only path (no $expand pushdown), the exact shape IgnoreCycles got wrong ──────────
 
@@ -896,29 +889,17 @@ public sealed class EntityCustomConverterTests
     }
 }
 
-// Corollary the reviewer inferred from the pre-fold-in `value is IEnumerable seq and not string`
-// shape-sniff: it decided "is this a COLLECTION of entities of edmType?" from the CLR VALUE's own
-// shape rather than from EDM cardinality. That misfires for a SINGLE-valued navigation (cardinality
-// 1) whose target CLR type happens to implement IEnumerable for an unrelated domain reason: the
-// pre-fold-in code would walk it element-by-element from WITHIN our own recursion, reusing the
-// WRONG edmType (the nav's, not the element's) per element.
+// The pre-fold-in `value is IEnumerable seq and not string` sniff decided "is this a COLLECTION of
+// entities of edmType?" from the CLR value's shape rather than EDM cardinality, which misfires for a
+// SINGLE-valued navigation whose target type implements IEnumerable for unrelated reasons -- walked
+// element-by-element under the WRONG edmType.
 //
-// Verification note (honesty about what this test does and doesn't isolate): with the fold-in #2
-// `.AsObject()` guard alone (verified separately above, EntityCustomConverterTests — confirmed to
-// go red without it), the former per-element crash no longer reproduces even with the OLD shape-sniff
-// reinstated, because a boxed `int` element hits the SAME non-object guard on ITS OWN recursive call
-// and returns a JSON number instead of throwing. This test therefore does NOT independently regress
-// without the isCollectionValue change for THIS fixture — confirmed while verifying fold-in #2 (the
-// old sniff + the new guard together still produce a 200, byte-identical to the fixed dispatch for
-// this specific element type). The isCollectionValue change is kept as the architecturally correct
-// fix regardless (EDM cardinality, not CLR shape, decides "is this a collection of entities" — the
-// only sound source of truth once nav-target types are unconstrained), and this test pins that the
-// scenario stays a 200 (not a regression net for a shape-sniff-specific crash that no longer exists
-// once the AsObject guard is in place). Root-level entities that merely happen to implement
-// IEnumerable hit a DIFFERENT, pre-existing System.Text.Json behavior unrelated to this fix (STJ
-// itself always treats an IEnumerable-implementing CLR type as enumerable-shaped when handed
-// directly to SerializeToNode, matching `develop`'s whole-graph serializer byte-for-byte for the
-// same CLR shape — not something #325/#326 could or should change).
+// Honesty about what this test isolates: with fold-in #2's .AsObject() guard in place the former
+// per-element crash does not reproduce even with the old sniff reinstated, because a boxed element
+// hits the same guard on its own recursion. So this does NOT independently regress without the
+// isCollectionValue change for this fixture. That change is kept as the architecturally correct one --
+// EDM cardinality, not CLR shape, is the only sound source of truth -- and this pins that the scenario
+// stays a 200.
 public sealed class ZeTarget : IEnumerable<int>
 {
     public int Id { get; set; }

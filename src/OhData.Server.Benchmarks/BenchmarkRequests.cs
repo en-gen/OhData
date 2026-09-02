@@ -22,54 +22,24 @@ internal static class BenchmarkRequests
     public const string GetByIdUrl = "BenchWidgets(500)";
     public const string EntityUrl = "BenchWidgets(500)";
 
-    // ── Navigation scenarios (BenchDepartment/BenchEmployee, EF Core Sqlite-backed) ────────────────
-    // Closes the $expand pushdown coverage gap: BenchWidget has zero EDM navigations, so none of the
-    // benchmarks above exercise OhData's "one JOIN per page" $expand pushdown, nested $expand, $levels,
-    // or a bidirectional (parent<->child) navigation pair — see BenchmarkHosts for why these five run
-    // against EF Core Sqlite rather than the List&lt;T&gt; store the widget scenarios use.
+    // Navigation scenarios (BenchDepartment/BenchEmployee, EF Core Sqlite-backed). BenchWidget has
+    // zero EDM navigations, so nothing above exercises $expand pushdown, nested $expand or $levels.
     //
-    // ── Known asymmetries the smoke gate tolerates (adversarial review fold-in) ─────────────────────
-    // These are genuine, understood differences between the two hosts' responses on these five
-    // scenarios. None distorts the fairness of the comparison (row content is identical, or the
-    // divergence is a pre-existing spec nit outside what is being measured) but none of them is
-    // caught by the smoke check either, so they are recorded here instead of being rediscovered:
-    //   1. `@odata.nextLink` presence may differ between hosts. OhData treats MaxTop as an implicit
-    //      page size and always advertises a next link when more rows exist beyond the page; whether
-    //      MS OData's client-driven $top (no PageSize set — see point 4) does the same for an explicit
-    //      $top isn't asserted by the smoke check either way. Not fairness-distorting (same row
-    //      content), just an unverified envelope difference.
-    //   2. `@odata.context` differs: `#BenchDepartments` on OhData vs
-    //      `#BenchDepartments(Employees())` on MS OData — OhData omits the expand clause from the
-    //      context URL. Pre-existing spec nit, unrelated to this branch.
-    //   3. MaxTop means different things on the two sides. OhData treats it as an implicit page
-    //      size (applied even when the client sends no $top); MS's [EnableQuery(MaxTop=...)] only
-    //      caps a client-*supplied* $top and does nothing to an unpaged request on its own. Since
-    //      BenchOrgData.DepartmentPageSize (12) is now LESS than BenchOrgData.DepartmentCount (20),
-    //      every BenchDepartments-rooted URL below sends an explicit `$top=DepartmentPageSize` so both
-    //      hosts window to the same page size — leaving any of them unpaged would make OhData return
-    //      12 rows and MS OData return all 20 for the identical request, which would silently make the
-    //      "faster" host just the one returning less data. EmployeePageSize == EmployeeCount for the
-    //      one BenchEmployees scenario ($levels), which additionally $filters down to a single root
-    //      row, so no equivalent explicit $top is needed there.
-    //   4. `[EnableQuery(PageSize=...)]` is deliberately omitted on both new MS controllers
-    //      (BenchDepartmentsController, BenchEmployeesController) — see the reasoning documented on
-    //      each: PageSize wraps every collection in the response (including expanded/nested ones) in
-    //      a TruncatedCollection, and composing that with nested $expand needs the SQL APPLY
-    //      operation, which SQLite's EF Core provider can't emit (500). Don't "fix" this later
-    //      without re-reading that reasoning.
+    // Known asymmetries the smoke gate tolerates -- recorded so they are not rediscovered. None
+    // distorts fairness (row content is identical), none is caught by the smoke check:
+    //   1. @odata.nextLink presence may differ; OhData treats MaxTop as an implicit page size.
+    //   2. @odata.context differs -- OhData omits the expand clause from the context URL.
+    //   3. MaxTop means different things: an implicit page size on OhData, a cap on a client-supplied
+    //      $top for MS. Since DepartmentPageSize (12) < DepartmentCount (20), every URL below sends an
+    //      explicit $top so both hosts window identically -- otherwise the "faster" host would just be
+    //      the one returning less data.
+    //   4. [EnableQuery(PageSize=...)] is deliberately omitted on both MS controllers: it wraps every
+    //      collection including nested ones in a TruncatedCollection, which needs SQL APPLY, which
+    //      SQLite's EF provider cannot emit (500). Do not "fix" without re-reading that.
     //
-    // ── Dataset shape (see Model/BenchOrgData.cs) ────────────────────────────────────────────────────
-    //   - Department fan-out is seeded and skewed (Zipf-like, shuffled per seed), not uniform: the
-    //     largest department holds roughly a third of all employees, the smallest a handful. This is
-    //     deliberately the regime where nested-$top windowing strategies are most likely to diverge
-    //     from "materialize everything and count" — the old uniform 50/department split hid it.
-    //   - DepartmentPageSize (12) < DepartmentCount (20), so root-collection paging is now genuinely
-    //     exercised — see the explicit `$top=DepartmentPageSize` on every URL below and asymmetry #3.
-    //   - The manager tree's branching factor is itself seed-derived (bounded, not fixed at 5) — see
-    //     BenchOrgData.MinManagerBranchingFactor/MaxManagerBranchingFactor.
-    //   - All of the above (which department is the outlier, exact department sizes, the branching
-    //     factor, every name/salary) is deterministic for a given seed — see BenchSeedResolver — so a
-    //     specific run's numbers are always reproducible via `--seed N`.
+    // Dataset (Model/BenchOrgData.cs): department fan-out is seeded and Zipf-skewed, not uniform --
+    // the regime where nested-$top windowing strategies diverge, which a uniform split hid. Everything
+    // is deterministic for a given seed, so a run is reproducible with --seed N.
 
     /// <summary>Bare <c>$expand</c> of a collection navigation — the pushdown JOIN itself. Carries an
     /// explicit root <c>$top</c> so both hosts window the root BenchDepartments page identically — see

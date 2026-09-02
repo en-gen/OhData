@@ -15,66 +15,28 @@ using Xunit;
 
 namespace OhData.AspNetCore.Tests;
 
-// Adversarial-review MEDIUM (folded into fix/expand-pushdown-fail-loud): the execution-time catch in
-// OhDataEndpointFactory (around the `pushedQuery.ToArray()` materialization of a pushed $expand) was
-// widened by this branch to `catch (Exception ex) when (ex is not OperationCanceledException)` so a
-// genuinely UNTRANSLATABLE query shape fails loud with 400 instead of silently degrading to a lying 200
-// (see ExpandPushdownFailLoudTests.cs). But that filter is too wide: it also swallowed INFRASTRUCTURE /
-// TRANSIENT provider faults — DB command timeouts, connection drops, deadlocks (DbException subclasses
-// like SqliteException/SqlException, TimeoutException) — and relabeled them 400 "simplify your query",
-// which is wrong (a transient fault is a 500, and is retryable; a 400 tells client retry logic NOT to
-// retry). The catch is now narrowed to `ex is InvalidOperationException or NotSupportedException or
-// Microsoft.OData.ODataException` — the exact family EF Core / Microsoft's OData binder throw for a
-// genuine translation failure (empirically confirmed via ExpandPushdownFailLoudTests: EF Core raises
-// System.InvalidOperationException with message "...could not be translated..." for an untranslatable
-// SQLite APPLY/LATERAL shape). Anything else — in particular a provider/transient fault — now propagates
-// past this catch to the group-level exception filter (OhDataEndpointFactory.MapAll) and comes back as
-// 500, never leaking the underlying exception's message/stack trace (S7).
+// #494: a provider fault is classified by WHEN it was raised, not by what it was.
 //
-// #494 CORRECTS THE PARAGRAPH ABOVE. The narrowing it describes was right about DbException and
-// TimeoutException and wrong about the premise it rested on: that an InvalidOperationException at
-// this call site could only be EF's translation failure. It is not, and the counterexamples are the
-// ones that matter under load —
+// The execution-time catch around the pushed-$expand materialization used to filter on
+// `InvalidOperationException or NotSupportedException or ODataException`, on the premise that an IOE
+// there could only be EF's translation failure. False, and the counterexamples matter under load:
+// SqlClient reports pool exhaustion as a plain IOE from SqlConnection.Open at ENUMERATION,
+// ObjectDisposedException DERIVES from IOE, and EF's "a second operation was started" is one too.
+// Each answered 400 "simplify your query" -- telling client retry logic not to retry -- while the
+// same request without $expand correctly 500'd.
 //
-//   * SqlClient reports connection-pool exhaustion as a plain InvalidOperationException
-//     ("Timeout expired ... max pool size was reached") from SqlConnection.Open, raised AT
-//     ENUMERATION, inside these exact try blocks;
-//   * ObjectDisposedException DERIVES from InvalidOperationException, so a disposed DbContext
-//     matched the filter;
-//   * EF's own "a second operation was started on this context instance" is an
-//     InvalidOperationException.
+// TranslateThenMaterialize splits the provider's TRANSLATION phase (the query factory and
+// GetEnumerator, where EF compiles) from MATERIALIZATION (from the first MoveNext, where the
+// connection opens). Only translation yields 400.
 //
-// Every one of those answered 400 "simplify your query" — telling client retry logic NOT to retry —
-// while the SAME request without $expand correctly answered 500. The exception TYPE cannot separate
-// the two populations, so OhData no longer tries: OhDataEndpointFactory.TranslateThenMaterialize
-// splits the provider's TRANSLATION phase (the query factory and IQueryable.GetEnumerator, which is
-// where EF compiles and where it raises "could not be translated", verified on EF Core 10 against
-// SQLite) from its MATERIALIZATION phase (from the first MoveNext, which is where the connection is
-// opened and where every fault above arrives). Only the first is a 400. See that method's remarks.
+// Three classifications, over MultiLevelExpandPushdownSqliteTests' Author->Books->Chapters fixture:
+// a genuine EF translation failure still 400s; an IOE at materialization now 500s; a transient fault
+// during materialization of a translatable shape 500s.
 //
-// This suite proves all three classifications using ONE harness/scenario reused from
-// MultiLevelExpandPushdownSqliteTests.cs (Author → Books → Chapters, a delegate-less two-level chain):
-//   1. A GENUINE EF translation failure — raised where EF really raises it — still 400s.
-//   2. An InvalidOperationException raised at MATERIALIZATION now 500s. That is the pool-exhaustion
-//      and disposed-context shape, and it is the case this file previously pinned the wrong way
-//      round (see the note on that test).
-//   3. A simulated transient provider fault during materialization of an OTHERWISE-translatable
-//      shape 500s rather than being reclassified as a lying 400 (the original bug this file fixed).
-// Reuses the MlAuthor/MlBook/MlChapter fixtures, MultiLevelDbContext, and MlAuthorProfile from
-// MultiLevelExpandPushdownSqliteTests.cs (that file itself stays untouched) — this file only adds its
-// own DbCommandInterceptor-based fault injection, and one profile whose queryable carries a predicate
-// EF cannot translate, on top.
-//
-// #304 note, retained: this suite's translation-failure coverage originally used a genuinely-
-// untranslatable REQUEST shape (Books($top=1;$expand=Chapters), a SQLite APPLY/LATERAL reproducer).
-// #304 deferred that shape's SQL composition to the JSON pass (see
-// OhDataEndpointFactory.ApplyNavShape/ShapePushedExpandsInJson), so it is genuinely translatable now
-// and there is no known-untranslatable expand shape left reachable over HTTP on SQLite. The
-// replacement at the time was an interceptor-injected InvalidOperationException — which, being
-// injected at ReaderExecuting, was injected in the WRONG PHASE and is precisely what made this file
-// assert the defect as correct behaviour. #494 moves that coverage to a real EF translation failure
-// (MlAuthorUntranslatableProfile below) and repurposes the injected InvalidOperationException as
-// what it always actually was: a materialization-time infrastructure fault.
+// The injected IOE this file used to call a translation failure was injected at ReaderExecuting --
+// the MATERIALIZATION phase -- which is exactly what made the suite assert the defect as correct
+// behaviour. It is now what it always was, and real translation coverage comes from
+// MlAuthorUntranslatableProfile.
 
 /// <summary>
 /// A minimal, constructible <see cref="DbException"/> subclass standing in for a real transient

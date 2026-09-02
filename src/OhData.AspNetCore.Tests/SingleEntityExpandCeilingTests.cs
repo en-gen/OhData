@@ -13,38 +13,20 @@ using Xunit;
 
 namespace OhData.AspNetCore.Tests;
 
-// #418: MaxExpandTop's reach on the SINGLE-ENTITY read, GET /{Set}({key})?$expand=Nav.
+// #418: MaxExpandTop's reach on GET /{Set}({key})?$expand=Nav. Measured pre-fix, MaxExpandTop=2 and
+// an author holding five books: the collection route served two plus a link, while GetById served
+// ALL FIVE with no link and no 400. The ceiling and the link both lived behind
+// ShapePushedExpandsInJson, whose only call site is the collection route.
 //
-// THE GAP THIS CLOSES, AS MEASURED ON THE PRE-FIX TREE (ee85a10, i.e. after #442 and #443):
+// WHY A 400 AND NOT TRIM-AND-LINK -- pinned by M1_* below. The link needs a shared order between page
+// 1 and the continuation, and there is none: the child rows arrive already materialized inside the
+// TModel the GetById delegate returned, in that delegate's order (a plain LEFT JOIN, no ORDER BY over
+// the child), while the continuation composes OrderBy(child key) IN THE DATABASE. A JSON re-sort is
+// not the provider's collation, so a link over a disagreeing order silently skips and duplicates rows
+// across the page boundary -- worse than the 400 and invisible to the client.
 //
-//   MaxExpandTop = 2, ExpandPagingEnabled = true, author 1 holds five books
-//   GET /BeAuthorsById?$filter=Id eq 1&$expand=Books  -> 200, two books + Books@odata.nextLink   (ok)
-//   GET /BeAuthorsById(1)?$expand=Books               -> 200, ALL FIVE, no link, no 400          (the bug)
-//
-// The bare-$expand ceiling and its continuation link both live behind ShapePushedExpandsInJson, whose
-// single call site is the GetQueryable collection route. GetById expands through
-// ApplyCollectionPipelineAsync -> ExpandLevelAsync, whose ServeRaw branch is deliberately a no-op, so
-// whatever the developer's GetById delegate already materialized went out unbounded and unannotated.
-//
-// WHY THE OUTCOME IS A 400 AND NOT A TRIM-AND-LINK — the M1 analysis, pinned by M1_* below.
-// M1 ("no bound without either a continuation link or a 400") allows both. The link needs three
-// things and only two are available on this route: the parent key (in the URL — easy) and a
-// continuation route (already registered when both knobs are set). The third is a SHARED ORDER
-// between page 1 and the continuation, and it does not exist here: the child rows arrive already
-// materialized inside the TModel the GetById delegate returned, in that delegate's own order (a plain
-// LEFT JOIN with no ORDER BY over the child, measured), while the continuation composes
-// OrderBy(child key) IN THE DATABASE. Re-sorting the serialized JsonArray cannot reconcile them — a
-// JSON sort is not the provider's collation (SQL Server's uniqueidentifier order, and any string
-// column's collation, differ from an ordinal JSON compare). A link over a disagreeing order silently
-// skips and duplicates rows across the page boundary, which is strictly worse than the 400 and is
-// invisible to the client.
-//
-// FIXTURE PROVENANCE: BeAuthor / BeBook / BeChapter / BareExpandDbContext / BareExpandSqliteHarness
-// were authored by #313 stage 2, not here. What is new is one profile that adds a GetById handler to
-// that model — GetById is the route under test and BeAuthorProfile has never had one — plus, for the
-// delegate-safety partition, one profile that declares Books WITH a delegate. Both are registered
-// through the harness's existing additive `configureExtraProfiles` hook, so every pre-existing call
-// site sees exactly the registration it did before.
+// Fixture is #313's; what is new is a profile that adds a GetById handler (the route under test) and
+// one that declares Books WITH a delegate, both through the harness's additive hook.
 
 /// <summary>
 /// #418: a second entity set over the stage-2 BeAuthor model that DOES expose GetById. Its GetById

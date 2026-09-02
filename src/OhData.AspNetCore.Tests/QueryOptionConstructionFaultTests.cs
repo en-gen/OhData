@@ -204,25 +204,18 @@ public class QueryOptionConstructionFaultTests
 
     // Every route that constructs ODataQueryOptions. GetById and /$count are included because both
     // build options of their own (GetById only when $select or $expand is present, hence the
-    // companion $select here) — the fix had to reach all five sites, not just the one in the
-    // reported stack trace.
+    // companion $select) -- the fix had to reach all five sites, not just the reported one.
     //
-    // #359/#380/#353 moved the CODE on two of the five, and the guarantee this test exists for is
-    // untouched: a client-reachable 500 became a 400 with an OData error envelope, and it still is
-    // one on all five. GetById and /{Set}/$count do not implement $skiptoken at all, so they now
-    // refuse it by name BEFORE any option object is constructed — "The query option '$skiptoken'
-    // is not supported." is a strictly better answer there than "the value cannot be empty",
-    // which implies some non-empty value would have worked. The three collection routes still
-    // reach SkipTokenQueryOption's own constructor with the empty raw value ($skiptoken is
-    // implemented on two of them, and on the GetAll path options are built before the option gate
-    // runs), so the ArgumentException-to-400 guard is still exercised end-to-end here.
+    // #359/#380/#353 moved the CODE on two of the five and the guarantee is untouched: a
+    // client-reachable 500 became a 400 with an envelope, and still is one on all five. GetById and
+    // /{Set}/$count do not implement $skiptoken, so they refuse it by name BEFORE any option object is
+    // built -- strictly better than "the value cannot be empty", which implies some non-empty value
+    // would have worked. The three collection routes still reach SkipTokenQueryOption's constructor,
+    // so the ArgumentException-to-400 guard is still exercised end-to-end.
     //
-    // The STATUS now splits with the code, and this theory is the sharpest statement of the
-    // 501/400 taxonomy anywhere in the suite: the same option, the same empty value, five routes.
-    // Where the option IS implemented the empty value is a malformed VALUE for supported
-    // functionality — 400 InvalidQueryOption, exactly what #402 exists to guarantee. Where it is
-    // not implemented at all the request never reaches a constructor and the answer is about
-    // FUNCTIONALITY — 501 UnsupportedQueryOption (§9.3.1). Nothing #402 owns moved.
+    // This theory is the sharpest statement of the 501/400 taxonomy in the suite: one option, one
+    // empty value, five routes. Where the option IS implemented an empty value is a malformed VALUE
+    // (400); where it is not implemented at all the answer is about FUNCTIONALITY (501, §9.3.1).
     public static TheoryData<string, string, HttpStatusCode> SkipTokenRoutes() => new()
     {
         { "/odata/QocQueryable?$skiptoken=", "InvalidQueryOption", HttpStatusCode.BadRequest },            // Priority-2 GetQueryable collection

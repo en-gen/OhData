@@ -13,26 +13,19 @@ using Xunit;
 namespace OhData.AspNetCore.Tests;
 
 // #466: `$levels=N` served exactly ONE level on every read path except EF pushdown, silently, while
-// the explicit nested spelling of the same request served all N.
+// the explicit nested spelling served all N.
 //
-// MECHANISM. `$levels` recursion had two implementations and both were pushdown-only:
-// BuildLevelsNavAccess (the SQL projection) and ShapeLevelsInJson (its JSON shaping). The keep/strip
-// pass that decides whether a self-navigation survives below level 1 — BuildExpandLookup/TryKeepNav,
-// shared by SerializeBounded and OmitUnexpandedNavigations — seeds a levels budget only for a name in
-// `levelsNavNames`, and that set was CollectPushedLevelsNavNames' answer, i.e. null on GetAll,
-// GetById, Priority-1 and a non-EF GetQueryable. So TryKeepNav dropped the self-navigation at level 2
-// and the response was one level deep with no indication that more had been asked for.
+// Both $levels implementations were pushdown-only, and BuildExpandLookup/TryKeepNav seeds a levels
+// budget only for a name in `levelsNavNames` -- which was CollectPushedLevelsNavNames' answer, null
+// on GetAll, GetById, Priority-1 and non-EF GetQueryable. So the self-navigation was dropped at
+// level 2 with no indication that more had been asked for.
 //
-// Nothing had to be LOADED to fix it. On these paths the related rows are already in the CLR graph
-// the handler returned — here, EF Core's own relationship fixup wires the whole LvNode tree onto the
-// tracked entities — and SerializeBounded reads them by reflection. Seeding the budget is the fix,
-// and it makes `$levels=N` ride exactly the machinery the explicit spelling already rode.
+// Nothing had to be LOADED: on these paths the rows are already in the CLR graph the handler
+// returned (here EF's own relationship fixup wires the whole tree onto the tracked entities), and
+// SerializeBounded reads them by reflection. Seeding the budget is the whole fix.
 //
-// FIXTURE PROVENANCE: LvNode / LevelsOptionsDbContext / LevelsOptionsSqliteHarness are #254's, and
-// the hierarchy (Root -> A,B -> A1,A2,A3 / B1 -> A1a) is unchanged. What is new is three profiles
-// over the SAME model exposing the three non-pushdown read paths, registered through the harness's
-// new additive `configureExtraProfiles` hook, so every pre-existing call site sees the registration
-// it always did.
+// Fixture is #254's, unchanged. What is new is three profiles over the SAME model exposing the three
+// non-pushdown read paths, through the harness's additive hook.
 
 /// <summary>
 /// #466: the GetAll path — an in-memory enumeration, no IQueryable, no pushdown of any kind. Also

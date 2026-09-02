@@ -474,25 +474,19 @@ public sealed class OhDataBuilder
         return this;
     }
 
-    // #468: an unbound operation's name is written into $metadata as the FunctionImport/
-    // ActionImport name AND used verbatim as the route segment, so it must be an OData simple
-    // identifier. Nothing checked it. The reachable failure is an anonymous lambda or local
-    // function: UnboundOperationDefinition.From falls back to method.Name, and the compiler emits
-    // an unspeakable name ("<Caller>b__2_1") that is not a valid identifier -- which shipped as
-    // invalid CSDL, because CsdlWriter does not police names and CsdlReader.TryParse accepts them,
-    // so only a consumer that VALIDATES the document ever noticed.
+    // #468: an unbound operation's name becomes the FunctionImport/ActionImport name in $metadata
+    // AND the route segment, so it must be an OData simple identifier. The reachable failure is an
+    // anonymous lambda, where From() falls back to method.Name and the compiler emits "<Caller>b__2_1"
+    // -- invalid CSDL that shipped, because CsdlWriter does not police names and CsdlReader accepts
+    // them.
     //
-    // Checked here, at registration, rather than only at MapOhData(): this fires at the call site
-    // that caused it with the developer's own code on the stack, and it can name the remedy --
-    // which is sitting in the signature as the optional 'name' parameter. EdmValidator.Validate in
-    // MapAll stays as the backstop for constructs this cannot see.
+    // Checked at registration rather than only at MapOhData() so the throw carries the developer's
+    // own call on the stack and can name the remedy, which is the optional 'name' parameter.
+    // EdmValidator stays the backstop.
     //
-    // The grammar comes from OpenTypeJsonOptions.IsValidDynamicPropertyName -- the SHIPPED
-    // validator, deliberately not a second transcription of the ABNF. It dispatches the ASCII fast
-    // path or the rune walk that is its normative oracle (see the remarks there and CLAUDE.md);
-    // the *Cached variant beside it is not used, since its 1024-entry cache exists to memoise
-    // per-request dynamic keys on the serialize path and a handful of startup-time operation names
-    // would only evict them.
+    // The grammar comes from OpenTypeJsonOptions.IsValidDynamicPropertyName -- the SHIPPED validator,
+    // never a second transcription of the ABNF. Not the *Cached variant: its cache exists for
+    // per-request dynamic keys and startup names would only evict them.
     private static void ValidateUnboundOperationName(
         string operationName, bool isAction, bool explicitName, string paramName)
     {
@@ -647,17 +641,12 @@ public sealed class OhDataBuilder
                         var p = fn.Parameter(param.ParameterType, param.Name!);
                         if (param.IsOptional) p.Optional();
                     }
-                    // #468: FunctionConfiguration defaults IncludeInServiceDocument to true, and
-                    // OhData never touched it -- so $metadata asserted an advertisement the
-                    // hand-built service document never made, and for a PARAMETERIZED import the
-                    // claim is not even legal CSDL: EdmValidator flags
-                    // FunctionImportWithParameterShouldNotBeIncludedInServiceDocument, because
-                    // CSDL 4.0 section 13.6 reserves the service document for imports that can be
-                    // invoked with nothing but their name. A parameterless import CAN be, and
-                    // Microsoft.AspNetCore.OData's own service-document serializer honours the
-                    // flag, so those keep it and MapAll now derives the service document from the
-                    // EDM container -- flag and document come from one source, and the two can no
-                    // longer disagree.
+                    // #468: FunctionConfiguration defaults IncludeInServiceDocument to true and
+                    // OhData never touched it, so $metadata asserted an advertisement the service
+                    // document never made -- and for a PARAMETERIZED import that is invalid CSDL
+                    // (§13.6 reserves the service document for imports invocable by name alone).
+                    // Parameterless imports keep the flag and ARE listed, because MapAll now derives
+                    // the service document from the EDM container.
                     fn.IncludeInServiceDocument = op.Parameters.Length == 0;
                 }
                 else
@@ -672,27 +661,15 @@ public sealed class OhDataBuilder
                 }
             }
 
-            // NEW-1 fix: navigation-target types (e.g. Tag, OrderLine) that are reached only
-            // through a HasMany/HasOptional/HasRequired navigation -- never registered as their
-            // own EntitySetProfile -- otherwise end up with no ModelBoundQuerySettings
-            // annotation at all. Microsoft's model-bound validator (EdmHelpers.IsNotFilterable /
-            // IsNotSortable / IsNotSelectable in Microsoft.AspNetCore.OData) treats every
-            // property on an un-annotated type as NotFilterable/NotSortable/NotSelectable by
-            // default, which made every nav-path $filter/$orderby/$select (e.g.
-            // `tags/any(t: t/name eq 'X')`) 400 once ValidatePropertyAllowlists started calling
-            // Validate() unconditionally (#141). Nav-target types have no allowlist surface of
-            // their own -- only EntitySetProfile exposes FilterProperties/OrderByProperties/
-            // SelectProperties/ExpandProperties, and that's only for the profile's own root
-            // type -- so "fully permissive" is the only coherent semantics for them. Root
-            // profile types are deliberately left untouched: EntitySetProfile.VisitModelBuilder
-            // already called Filter(_filterProperties) etc. on them above, possibly with an
-            // allowlist, and that must survive unmodified for the root type's own $filter.
+            // Nav-target types reached only through a navigation get no ModelBoundQuerySettings
+            // annotation, and MS's validator treats every property on an un-annotated type as
+            // NotFilterable/NotSortable/NotSelectable -- so every nav-path $filter/$orderby/$select
+            // 400'd once ValidatePropertyAllowlists started calling Validate() unconditionally
+            // (#141). They have no allowlist surface of their own, so fully permissive is the only
+            // coherent semantics. Root profile types are left untouched.
             //
-            // This must run from ODataConventionModelBuilder.OnModelCreating, which fires after
-            // MapTypes() has discovered every reachable type (including nav targets) but before
-            // the base builder writes the model-bound annotations into the IEdmModel.
-            // StructuralTypes does NOT yet contain nav-target types at the point profiles finish
-            // visiting the builder above -- they're discovered lazily inside GetEdmModel().
+            // Must run from OnModelCreating: StructuralTypes does not contain nav-target types until
+            // MapTypes() has run, which is inside GetEdmModel().
             var rootModelTypes = new HashSet<Type>(profiles.Select(p => p.ModelType));
             modelBuilder.OnModelCreating = b =>
             {
@@ -739,50 +716,18 @@ public sealed class OhDataBuilder
         }
     }
 
-    // #206/#303/#367: the single place OhData translates its runtime query-capability gates into
-    // Org.OData.Capabilities.V1 vocabulary annotations on the EDM. One pass, one term per method, so
-    // #367's wider set (FilterRestrictions / SortRestrictions / CountRestrictions / SelectSupport)
-    // is a new call here rather than a second mechanism.
+    // #206/#303/#367: the one place the runtime query-capability gates become
+    // Org.OData.Capabilities.V1 annotations. One term per method.
     //
-    // ---------------------------------------------------------------------------------------------
-    // WHAT IS AND IS NOT EXPRESSIBLE (#303). Read this before adding a numeric limit here.
+    // READ BEFORE ADDING A NUMERIC LIMIT HERE. The vocabulary has exactly ONE numeric slot,
+    // MaxLevels, and in every restriction type it means a nesting DEPTH, never a count. Verified
+    // against both Microsoft.OData.Edm 8.4.0's bundled CSDL and the OASIS source. So
+    // MaxExpansionDepth and ExpandEnabled are expressible; MaxExpandTop, MaxExpandBreadth and
+    // MaxTop are NOT, and are deliberately left unadvertised.
     //
-    // Org.OData.Capabilities.V1 contains exactly ONE numeric slot: `MaxLevels` (Edm.Int32), which
-    // appears in ExpandRestrictionsType, FilterRestrictionsType, and the Insert/Update/Delete
-    // restriction types. In every one of those it means a NESTING / TRAVERSAL DEPTH, never a count
-    // of entities. There is NO term, at entity-set scope or navigation-property scope, that
-    // expresses a maximum result count, page size, or $top ceiling.
-    //
-    // Verified two independent ways, both on 2026-08-23:
-    //   (1) the Capabilities CSDL bundled in Microsoft.OData.Edm 8.4.0 — the exact package this
-    //       repo resolves — dumped via CsdlWriter over CapabilitiesVocabularyModel.Instance;
-    //   (2) the upstream OASIS source of truth,
-    //       oasis-tcs/odata-vocabularies @ main, vocabularies/Org.OData.Capabilities.V1.xml.
-    // Both agree: grep for a numeric-typed property returns MaxLevels and nothing else.
-    //
-    // Therefore:
-    //   MaxExpansionDepth  -> EXPRESSIBLE as ExpandRestrictions/MaxLevels. Emitted below (#206).
-    //   ExpandEnabled      -> EXPRESSIBLE as ExpandRestrictions/Expandable. Emitted below (#303).
-    //   MaxExpandTop       -> NOT EXPRESSIBLE. It is a count of related entities per expanded
-    //                         navigation, not a depth. TopSupported/SkipSupported are Core.Tag
-    //                         booleans with no numeric slot, and advertising TopSupported=false
-    //                         would be a lie (a nested $top IS supported, up to the ceiling).
-    //                         Deliberately left unadvertised — see the note on inventing terms below.
-    //   MaxExpandBreadth   -> NOT EXPRESSIBLE. A count of expansions across the tree; same reason.
-    //   MaxTop (#367)      -> NOT EXPRESSIBLE, same reason as MaxExpandTop.
-    //
-    // We do NOT mint a custom `OhData.V1.*` term for the three inexpressible limits. A non-standard
-    // annotation is not discoverable by any client that does not already know OhData, so it buys no
-    // interoperability while implying some; and approximating with MaxLevels or TopSupported would
-    // publish a statement that is simply false. They stay enforced at request time (400) and
-    // documented, which is the honest outcome. Do not "fix" this by inventing a term.
-    //
-    // For reference, Microsoft.AspNetCore.OData 9.5.0 advertises NONE of these: a model built with
-    // ODataConventionModelBuilder over a type carrying [Page(MaxTop=25, PageSize=10)],
-    // [Expand(MaxDepth=2)], [Count], [Filter] and [OrderBy] emits zero vocabulary annotations — its
-    // model-bound query settings are CLR-side annotations that never reach the CSDL. OhData is
-    // already ahead of them here; matching their shape would mean emitting nothing at all.
-    // ---------------------------------------------------------------------------------------------
+    // Do not "fix" that by minting an OhData.V1.* term: a non-standard annotation is invisible to
+    // any client that does not already know OhData, and approximating with MaxLevels or
+    // TopSupported=false would publish something false. They stay enforced at request time.
     private static void AnnotateCapabilities(
         IEdmModel edmModel, IReadOnlyList<IEntitySetEndpointSource> profiles, ILogger? logger)
     {
@@ -800,26 +745,15 @@ public sealed class OhDataBuilder
         AnnotateExpandRestrictions(model, targets, logger);
     }
 
-    // #206/#303: attach an Org.OData.Capabilities.V1.ExpandRestrictions vocabulary annotation to each
-    // entity set, carrying the profile's RESOLVED (profile override falling back to
-    // EntitySetDefaults) $expand gates:
+    // #206/#303: ExpandRestrictions per entity set, carrying the RESOLVED $expand gates.
+    // Expandable is emitted only when false (true is the vocabulary default, so emitting it asserts
+    // nothing and would move existing metadata); MaxLevels is emitted unconditionally, including
+    // alongside Expandable=false, where it is moot rather than wrong.
     //
-    //   Expandable = false  — only when $expand is disabled outright. `true` is the vocabulary's own
-    //                         default, so emitting it would add bytes and assert nothing; omitting it
-    //                         keeps every set that already advertised correctly byte-identical.
-    //                         Without this an entity set with ExpandEnabled=false advertised
-    //                         `MaxLevels=3` and nothing else — actively misleading, since it read as
-    //                         "expand up to 3 levels" for a set that 400s every $expand (#367's
-    //                         headline evidence).
-    //   MaxLevels           — the resolved MaxExpansionDepth (#206). Emitted unconditionally,
-    //                         including when Expandable=false: it is not false there, merely moot,
-    //                         and keeping it unconditional is what makes this change a strict
-    //                         addition rather than a rewrite of existing metadata.
-    //
-    // Property order follows the vocabulary's own declaration order (Expandable before MaxLevels).
-    // Emitted inline (inside the EntitySet element) so a CSDL reader finds it without an
-    // out-of-line lookup. Best-effort and non-fatal: a missing term is skipped (the gates are still
-    // enforced by the request-time validator regardless).
+    // Without this a set with ExpandEnabled=false advertised MaxLevels=3 and nothing else, which
+    // reads as "expand up to 3 levels" for a set that 400s every $expand (#367). Property order
+    // follows the vocabulary's own. Best-effort: a missing term is skipped, since the gates are
+    // enforced at request time regardless.
     private static void AnnotateExpandRestrictions(
         EdmModel model,
         IReadOnlyList<(IEntitySetEndpointSource Profile, IEdmEntitySet EntitySet)> targets,
@@ -844,38 +778,16 @@ public sealed class OhDataBuilder
         logger?.LogDebug("OhData: advertised ExpandRestrictions for {Count} entity set(s).", targets.Count);
     }
 
-    // Marks every structural type the builder discovered that is NOT one of the root profiles'
-    // own entity types (i.e. reached only via navigation) as fully filterable/sortable/
-    // selectable/expandable/countable. Filter()/OrderBy()/Select()/Expand()/Count() as seen on
-    // EntitySetProfile are convenience members of the *generic* StructuralTypeConfiguration
-    // <TStructuralType> wrapper (EntityTypeConfiguration<T>/ComplexTypeConfiguration<T>), which
-    // OhData never constructs for nav-target types. builder.StructuralTypes instead yields the
-    // plain, non-generic StructuralTypeConfiguration the convention builder itself allocated for
-    // every discovered type (see ODataModelBuilder.AddEntityType/AddComplexType) -- that base
-    // type has no Filter()/OrderBy()/etc. overloads at all, only the QueryConfiguration property
-    // those generic wrapper methods delegate to, so we call it directly instead.
+    // Marks every structural type reached only via navigation as fully filterable/sortable/
+    // selectable/expandable/countable. Goes through the non-generic StructuralTypeConfiguration's
+    // QueryConfiguration directly, because the Filter()/OrderBy()/etc. convenience members live on
+    // the generic wrapper OhData never constructs for nav-target types.
     //
-    // #296: a type can be BOTH a root profile's own entity type AND some navigation's target type
-    // (the self-referential case -- e.g. LvNode.Children : List<LvNode> -- but also the more general
-    // "shared type" case where entity A's navigation targets entity B's own root type). The original
-    // `!rootModelTypes.Contains(...)` filter excluded every such type from this method entirely, on
-    // the theory that root types must keep whatever Filter/OrderBy/Select/Count/Expand allowlist their
-    // own profile configured above (true) -- but that filter ALSO skipped the `SetMaxTop(null)` call,
-    // which is the ONLY setting here that has nothing to do with the root type's own request-level
-    // MaxTop. Microsoft's SelectExpandQueryValidator.ValidateNestedTop reads the model-bound MaxTop of
-    // the NAVIGATION'S TARGET TYPE (not the root type reached via GET /Set) to police a nested $top
-    // inside $expand=Nav($top=N). For a root+nav-target type that model-bound MaxTop was left at its
-    // implicit default of 0 (created as a side effect of the root profile's own Filter()/Select()/etc.
-    // calls), so every nested $top against such a type 400'd before OhData's own MaxExpandTop ceiling
-    // (ValidateNestedTopCeiling, enforced separately in OhDataEndpointFactory) ever ran.
-    //
-    // Fix: compute the set of types that are SOMEONE's navigation target (self or cross-referenced),
-    // and clear model-bound MaxTop on every one of them -- root or not. Root types that are ALSO nav
-    // targets get ONLY the MaxTop clear; their Filter/OrderBy/Select/Count/Expand configuration (set by
-    // EntitySetProfile.VisitModelBuilder above, possibly a restrictive allowlist) is left completely
-    // untouched, so the root entity set's OWN request-level MaxTop/query-capability behavior (governed
-    // at runtime by IEntitySetEndpointSource.MaxTop, not by this model-bound setting) is unaffected.
-    // Pure nav-target-only types keep the existing "fully permissive" treatment unchanged.
+    // #296: a type can be BOTH a root profile's entity type AND a navigation target (self-
+    // referential, or a shared type). Excluding those skipped the SetMaxTop(null) call, and MS's
+    // ValidateNestedTop reads the model-bound MaxTop of the navigation's TARGET type -- left at an
+    // implicit 0 -- so every nested $top against such a type 400'd before OhData's own ceiling ran.
+    // Root+nav-target types therefore get ONLY the MaxTop clear; their own allowlists are untouched.
     private static void MarkNavigationTargetTypesFullyQueryable(
         ODataModelBuilder builder, HashSet<Type> rootModelTypes)
     {
@@ -909,29 +821,20 @@ public sealed class OhDataBuilder
                 query.SetExpand(properties: null, maxDepth: 1000, expandType: SelectExpandType.Allowed);
             }
 
-            // #206 phase 2 (optioned expand) / #296 (root+nav-target types): once ANY model-bound
-            // setting exists on a type, Microsoft's SelectExpand validator defaults its MaxTop to 0,
-            // which rejects a nested $top inside a $expand of THIS type ($expand=Children($top=N))
-            // with "limit of 0 for Top". Nav-target types (root or not) are the collection element
-            // types a nested $top pages, so clear that spurious ceiling (null = unlimited) on all of
-            // them. OhData governs $top itself: the root path clamps to source.MaxTop, and the
-            // expand-pushdown path applies the nested $top directly, bounded by source.MaxExpandTop
-            // (ValidateNestedTopCeiling) -- so clearing this model-bound MaxTop does not make nested
-            // $top unbounded, it just stops Microsoft's validator from pre-empting OhData's own check.
+            // #206/#296: once ANY model-bound setting exists on a type, MS's SelectExpand validator
+            // defaults its MaxTop to 0 and rejects $expand=Children($top=N) with "limit of 0 for
+            // Top". Clearing it does not make nested $top unbounded -- OhData governs $top itself
+            // via source.MaxTop and ValidateNestedTopCeiling -- it stops MS's validator pre-empting
+            // that check.
             query.SetMaxTop(null);
         }
     }
 
-    // #253: give every property carrying a [System.Text.Json.Serialization.JsonPropertyName] that
-    // attribute's value as its EDM name, so $metadata, $select/$filter/$orderby/$expand, the nav-path
-    // URL segments and the response payload all use one name per property. This applies UNIFORMLY to
-    // structural AND navigation properties (#253 completion — reverses #184): a renamed navigation is
-    // addressed by its JSON name on every OData surface, exactly like a renamed structural property
-    // (its JSON payload key, produced by ResolveNavigationJsonKey off the same [JsonPropertyName], then
-    // agrees with the EDM/$expand identifier). Fails fast when two properties on one type would resolve
-    // to the same EDM name (case-insensitive, the way OData resolves identifiers) — the collision check
-    // now spans navigations and structural properties together — since that ambiguity cannot be
-    // represented in the EDM or the URL space.
+    // #253: a [JsonPropertyName] value becomes the property's EDM name, so $metadata, the query
+    // options, the URL segments and the payload all use one name. Applies UNIFORMLY to structural
+    // AND navigation properties (reverses #184). Fails fast on two properties resolving to the same
+    // EDM name, case-insensitively as OData resolves identifiers, across both kinds -- that
+    // ambiguity cannot be represented in the EDM or the URL space.
     private static void ApplyJsonPropertyNameRenames(ODataModelBuilder builder)
     {
         foreach (StructuralTypeConfiguration structuralType in builder.StructuralTypes)

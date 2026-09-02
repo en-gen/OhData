@@ -12,26 +12,21 @@ using Xunit;
 
 namespace OhData.AspNetCore.Tests;
 
-// #429 (#202's unshipped breadth guard): `$expand` cost was bounded on the DEPTH axis and unbounded
-// on the BREADTH axis. There was no breadth limit of any kind.
+// #429: $expand cost was bounded on the DEPTH axis and unbounded on BREADTH -- there was no breadth
+// limit of any kind. Translation multiplies by ~3 per level AND by the navigations expanded at each
+// level, so capping depth leaves the other factor free. Measured at the DEFAULT depth of 3 on a
+// six-navigation model, before the guard:
 //
-// Translation cost for a pushed nested projection multiplies by ~3 per level AND by the number of
-// navigations expanded at each level, so capping depth alone leaves the other factor free. Measured
-// at the DEFAULT MaxExpansionDepth of 3, on a model with six collection navigations, before this
-// guard existed:
+//   navs/level=1  ->   240 ms   len=1440
+//   navs/level=4  -> 1,010 ms   len=1696
+//   navs/level=6  -> 4,084 ms   len=1952
 //
-//   navs/level=1  ->   240 ms   response len=1440
-//   navs/level=4  -> 1,010 ms   response len=1696
-//   navs/level=6  -> 4,084 ms   response len=1952
+// 4.1 s of single-core CPU for a 1,952-byte response, at defaults, unauthenticated -- and EF's
+// compiled-query cache is no defence, since each distinct navigation SUBSET is a distinct key.
 //
-// 4.1 s of single-core CPU for a 1,952-byte response, at defaults, unauthenticated — and the EF
-// compiled-query cache is no defence, because each distinct navigation SUBSET is a distinct cache
-// key, so an attacker cycling subsets never warms it.
-//
-// The count spans the WHOLE TREE, not one level. A per-level cap of B under the depth ceiling of 6
-// still admits B^6 expansions — 55,986 nodes at B=6 — which is not a bound in any useful sense.
-// Counting distinct navigation NAMES would be weaker still: the most expensive shapes measured
-// reuse six names over six levels.
+// The count spans the WHOLE TREE: a per-level cap of B under a depth ceiling of 6 still admits B^6
+// (55,986 at B=6). Counting distinct NAMES would be weaker still -- the most expensive shapes reuse
+// six names over six levels.
 public class ExpandBreadthGuardTests : IAsyncLifetime
 {
     private SqliteConnection _connection = null!;
