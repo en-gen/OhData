@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
@@ -57,6 +58,37 @@ public class RequestBodySizeLimitTests
         Assert.Equal(HttpStatusCode.RequestEntityTooLarge, resp.StatusCode); // 413
         var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("RequestEntityTooLarge", body.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [Theory]
+    [InlineData("POST")]
+    [InlineData("PUT")]
+    [InlineData("PATCH")]
+    public async Task Write_BodyOverLimit_413SaysItIsClosingTheConnection(string method)
+    {
+        // #601: the fast-reject answers before reading the body, so the connection cannot be
+        // reused and Kestrel closes it. RFC 9110 §7.6.1 requires the sender to say so. Measured on
+        // real Kestrel before the fix: 413 with no Connection header, and the client's NEXT request
+        // on that socket got either no data or an aborted connection -- never retried for a POST.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<BodyLimitProfile>());
+        string url = method == "POST" ? LimitedUrl : $"{LimitedUrl}(1)";
+        using var request = new HttpRequestMessage(new HttpMethod(method), url) { Content = Json(LargeBody()) };
+        var resp = await fx.Client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, resp.StatusCode);
+        Assert.Contains("close", resp.Headers.Connection, StringComparer.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Write_BodyUnderLimit_DoesNotCloseTheConnection()
+    {
+        // The control: only the refusal closes. A normal write must keep keep-alive, or every
+        // client would reconnect per request.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<BodyLimitProfile>());
+        var resp = await fx.Client.PostAsync(LimitedUrl, Json("{\"name\":\"ok\"}"));
+
+        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
+        Assert.DoesNotContain("close", resp.Headers.Connection, StringComparer.OrdinalIgnoreCase);
     }
 
     [Fact]

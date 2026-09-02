@@ -838,6 +838,13 @@ function bodySizeLimit() {
       // the header; this restates WHY the 413 in particular is the case that matters.
       '413 still carries OData-Version (the header must survive a short-circuit)': (r) => header(r, 'OData-Version') === '4.0',
     });
+    // #601 is NOT asserted here and cannot be: the fast-reject answers before reading the body, so
+    // Kestrel closes the connection, and RFC 9110 §7.6.1 requires the server to send
+    // `Connection: close` -- but Go's net/http strips hop-by-hop headers from the response, so k6
+    // never sees it (measured: the check fails while a raw socket sees the header). Pinned in
+    // RequestBodySizeLimitTests instead. The effect is visible here all the same: k6's client
+    // honours the close and opens a new connection, which is why the request AFTER this one now
+    // succeeds -- it used to fail about half the time, never retried because it is a POST.
 
     // A body comfortably under the limit is unaffected.
     const ok = post(`${BASE_URL}/v1/Movies`, JSON.stringify(newMovie({ title: 'a'.repeat(1000) })), { params: jsonParams() });
