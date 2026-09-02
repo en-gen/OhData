@@ -101,9 +101,10 @@ internal static class NavigationTargetAuthorization
         IReadOnlyList<OperationAuthRule>? rules = profile.OperationAuthorization;
         if (rules is null) return set;
 
-        foreach (AuthRequirement r in ResolveRuleRequirements(rules, category))
+        foreach (AuthRequirement r in ResolveRuleRequirements(rules, category)
+            .Where(r => r.Kind == AuthRequirementKind.Resource))
         {
-            if (r.Kind == AuthRequirementKind.Resource) set.Add(Describe(r));
+            set.Add(Describe(r));
         }
         return set;
     }
