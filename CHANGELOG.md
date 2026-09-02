@@ -9,21 +9,50 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Build
-
-- **`PackageValidationBaselineVersion` moves to `1.7.0`, and the instruction moves to the other end
-  of the release cycle (#590).** `docs/releasing.md` told you to bump the baseline in the
-  release-**prep** PR — the last few commits before the branch is cut — which leaves it correct for a
-  handful of commits and **stale for every commit of the following release**, i.e. exactly when the
-  API is changing. Measured: the baseline sat at `1.5.0` through the *entire* 1.7.0 cycle, all 30
-  commits, so ApiCompat could not have caught a break introduced in 1.6.0 at any point; it was bumped
-  to `1.6.0` during 1.7.0 prep, where it validated nothing that had not already merged. The
-  instruction now lives in the close-out step, so the bump rides the back-merge and the next cycle
-  develops against the release that just shipped. Verified this pack really used the new baseline
-  rather than skipping: all five semaphores deleted first and regenerated, zero `CP####`, and the
-  five `1.7.0` baseline packages appeared in the NuGet cache for the first time.
-
 ### Fixed
+
+
+- **⚠ BREAKING CHANGE — an explicit `null` for a reference-typed KEY is now rejected before the
+  handler runs (#557).** `BuildEdmRequiredProperties` excluded the entity key from the nullability
+  gate outright. The recorded justification was that a service-generated key is routinely **omitted**
+  (§11.4.2) — which was correct while #355's gate also rejected omission, and became vestigial when
+  #544 narrowed the gate to *a property the body NAMED with an explicit `null`*. What the exclusion
+  still did was hide the explicit-`null` case for a **reference-typed** key.
+
+  Two properties the framework's own `$metadata` describes **identically** answered differently:
+
+  ```xml
+  <Property Name="Code" Type="Edm.String" Nullable="false"/>
+  <Property Name="Name" Type="Edm.String" Nullable="false"/>
+  ```
+
+  **The pre-fix answer depended on the handler, which #557's report does not say.** Both measured by
+  ablation:
+
+  | body | handler supplies the key? | before | after |
+  |---|---|---|---|
+  | `{"Code":null,"Name":"x"}` | no | **`500`**, *after the handler ran* | `400 InvalidBody` |
+  | `{"Code":null,"Name":"x"}` | yes (`Code ??= …`) | **`201 Created`** | `400 InvalidBody` |
+  | `{"Code":"a","Name":null}` | — | `400 InvalidBody` | unchanged |
+  | `{"Name":"x"}` (key omitted) | — | `201 Created` | unchanged |
+
+  The `500` came from `ODataEntityKeyUrlFormatter.Format` ("OData key value must not be null") inside
+  response construction — so it arrived **with the handler already run**, meaning a `Post` that
+  persists had already persisted. That is strictly worse than #355's original symptom, where the
+  write did not happen.
+
+  **So this is not purely `500` → `400`: the second row is a request that used to succeed and now
+  does not.** That is intended. `{"Code": null}` is the client asserting the key *is* null, which has
+  no valid reading, and the way to ask the service to supply one is to **omit the property** — which
+  still works and is unchanged. Remedy: send `{"Name":"x"}` rather than `{"Code":null,"Name":"x"}`,
+  or set `RequestBodyNullabilityValidationEnabled = false` to opt the entity set out of the gate
+  entirely.
+
+  The omission exemption now comes from the gate's own `namedByBody` intersection rather than from a
+  blanket key exclusion, so it is the same mechanism every other property uses. **A value-typed key
+  needs no exclusion of its own** and never did — `int Id` cannot hold `null`, so the deserializer
+  rejects it first; that is the pre-existing value-type rule, unchanged.
+
 
 - **#487's two startup warnings prescribed the same `AllowAnonymous()` fix, where that call does
   OPPOSITE things (#572).** Both audits told the developer to silence them with a lambda spelled
@@ -83,6 +112,20 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   — `grep -ic "no representation"` over the specification returns `0`. 1.7.0 withdrew the claim
   across all twelve sites carrying it and shipped the behaviour labelled as a known deviation;
   this closes the deviation itself.
+
+### Build
+
+- **`PackageValidationBaselineVersion` moves to `1.7.0`, and the instruction moves to the other end
+  of the release cycle (#590).** `docs/releasing.md` told you to bump the baseline in the
+  release-**prep** PR — the last few commits before the branch is cut — which leaves it correct for a
+  handful of commits and **stale for every commit of the following release**, i.e. exactly when the
+  API is changing. Measured: the baseline sat at `1.5.0` through the *entire* 1.7.0 cycle, all 30
+  commits, so ApiCompat could not have caught a break introduced in 1.6.0 at any point; it was bumped
+  to `1.6.0` during 1.7.0 prep, where it validated nothing that had not already merged. The
+  instruction now lives in the close-out step, so the bump rides the back-merge and the next cycle
+  develops against the release that just shipped. Verified this pack really used the new baseline
+  rather than skipping: all five semaphores deleted first and regenerated, zero `CP####`, and the
+  five `1.7.0` baseline packages appeared in the NuGet cache for the first time.
 
 ---
 
