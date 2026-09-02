@@ -1217,13 +1217,21 @@ asks the body to do: it describes the unimplemented functionality.
 - **`$format`.** Accepted on every route: §11.2.10 content negotiation is implemented once, on the
   group filter that wraps the whole OData surface, so it never reaches a route handler and cannot
   change a row. An unsupported `$format` *value* is still rejected there.
-- **Three routes outside the table, which still ignore every query option.** Read the table as a
-  list of what *is* gated, not as the whole URL surface. The structural-property reads and writes
-  (`GET|PUT|PATCH|DELETE /{Set}({key})/{Prop}` and `GET /{Set}({key})/{Prop}/$value`), the service
-  document (`GET /{prefix}`) and `GET /{prefix}/$metadata` are ungated: `GET /odata?$unknown=1`
-  answers `200` with the service document, and the property routes answer `200` with the property.
-  None of them builds a link, so none can echo an option back the way #359 reported; closing them
-  is a separate change.
+- **Routes outside the table, which still ignore every query option.** Read the table as a list of
+  what *is* gated, not as the whole URL surface. The structural-property **writes**
+  (`PUT|PATCH|DELETE /{Set}({key})/{Prop}`), the service document (`GET /{prefix}`) and
+  `GET /{prefix}/$metadata` are ungated: `GET /odata?$unknown=1` answers `200` with the service
+  document. None of them builds a link, so none can echo an option back the way #359 reported. The
+  property writes are ungated *consistently with the entity writes* — `PUT|PATCH|DELETE
+  /{Set}({key})` are not gated either, so no two routes over one resource disagree.
+
+  The structural-property **reads** were in this list until #560 and are now gated:
+  `GET /{Set}({key})/{Prop}` and its `/$value` implement `$format` and nothing else, so every other
+  `$`-option is `501`. They were the one residual that produced the split this whole rule exists to
+  remove — `GET /Widgets(1)?$filter=…` answered `501` while `GET /Widgets(1)/Name?$filter=…`
+  answered `200` with the filter silently dropped. Note `$select` and `$expand` are refused here
+  although the sibling entity route implements them: the property handler goes straight from the
+  property accessor to the envelope and reads no option at all.
 
 ### The per-route sets
 
@@ -1240,6 +1248,7 @@ meaningless on a single entity.
 | `GET /{Set}({key})/{Nav}` — **single**-valued (`HasOptional`/`HasRequired`) | `$format` only |
 | `GET /{Set}({key})/{Nav}/$count` | `$top` `$skip` `$orderby` `$expand` `$select` `$format` - it applies **none** of them, and refuses `$filter` as well as `$search` |
 | `GET /{Set}({key})/{Nav}?$skip=N` (the #313 `$expand` continuation) | `$skip` `$format` |
+| `GET /{Set}({key})/{Prop}` and `GET /{Set}({key})/{Prop}/$value` (#560) | `$format` only |
 | `GET\|POST /{Set}/{Op}` and `GET\|POST /{Set}({key})/{Op}` (bound operations) | `$top` `$skip` `$format` |
 | `GET\|POST /{Op}` (unbound operations) | `$format` only |
 

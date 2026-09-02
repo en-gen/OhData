@@ -609,22 +609,34 @@ public class UnrecognizedSystemQueryOptionTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
     }
 
-    // -- Characterization: the three route families still OUTSIDE the rule ---------
+    // -- Characterization: the route families still OUTSIDE the rule ---------------
 
     [Theory]
     [InlineData("/odata?$unknown=1")]
     [InlineData("/odata/$metadata?$unknown=1")]
-    [InlineData("/odata/SqQueryables(1)/Name?$unknown=1")]
-    [InlineData("/odata/SqQueryables(1)/Name/$value?$unknown=1")]
     public async Task DeliberateResiduals_StillIgnoreEveryQueryOption(string url)
     {
         // Named in docs/query-options.md so its per-route table is not read as the whole URL
-        // surface. None of these generates a link, so none carries #359's echo; gating them is a
-        // separate change. Characterization, not endorsement -- this test is what makes closing
-        // them a deliberate act rather than an accident.
+        // surface. Neither generates a link, so neither carries #359's echo. Characterization, not
+        // endorsement -- this test is what makes closing one a deliberate act rather than an
+        // accident, and #560 was exactly that for the two structural-property READ routes that
+        // used to be listed here (see Issue560PropertyRouteQueryOptionTests). The property WRITE
+        // routes are still ungated, consistently with the entity PUT/PATCH/DELETE routes.
         await using TestFixture fx = await BuildAsync();
         HttpResponseMessage resp = await fx.Client.GetAsync(url);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("/odata/SqQueryables(1)/Name?$unknown=1")]
+    [InlineData("/odata/SqQueryables(1)/Name/$value?$unknown=1")]
+    public async Task PropertyReadRoutes_AreNoLongerResidual_AndRefuse(string url)
+    {
+        // Moved out of the residual list by #560, on this suite's own fixture so the change is
+        // visible where the old expectation lived rather than only in the new suite.
+        await using TestFixture fx = await BuildAsync();
+        HttpResponseMessage resp = await fx.Client.GetAsync(url);
+        await AssertUnsupportedAsync(resp, "$unknown");
     }
 
     [Theory]

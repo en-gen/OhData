@@ -11,6 +11,40 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **⚠ BREAKING CHANGE — the structural-property read routes refuse the system query options they do
+  not implement (#560).** `GET /{Set}({key})/{Prop}` and `GET /{Set}({key})/{Prop}/$value` rode
+  `GetById` and rejected **nothing**: every `$`-prefixed option, recognized or not, was accepted and
+  silently discarded under a `200`. Measured on the same fixture, `$select` `$expand` `$filter`
+  `$orderby` `$top` `$skip` `$count` `$apply` `$skiptoken` `$unknown` — all `200` on both routes,
+  while the sibling `GET /{Set}({key})` answered `501` for each.
+
+  That split is the exact thing #359/#380/#353 exist to remove, and it got worse when those issues
+  gated the sibling: one nonsense option, one resource, two answers.
+
+  ```
+  GET /Widgets(1)?$filter=Name eq 'nope'        -> 501 UnsupportedQueryOption
+  GET /Widgets(1)/Name?$filter=Name eq 'nope'   -> 200, filter silently ignored   (before)
+                                                -> 501 UnsupportedQueryOption     (now)
+  ```
+
+  Two calls to the existing shared matcher — no new mechanism, no parsing, and the zero-cost
+  short-circuit on an empty query string is preserved, so a request with no query string is
+  byte-identical. The implemented set is **`$format` alone**. `$select` and `$expand` are refused
+  here even though `GetById` implements them, because this handler goes straight from the property
+  accessor to the envelope and reads no option at all — the same reasoning that gives the
+  single-valued navigation branch its own `$format`-only set rather than sharing its collection
+  sibling's. A non-`$` key is a custom query option (Part 2 §5.2) and is untouched.
+
+  On `/$value` the gate runs **before** the complex-property `400`, so the answer does not depend on
+  which property was addressed; without an option that `400` is unchanged.
+
+  `UnrecognizedSystemQueryOptionTests.DeliberateResiduals_StillIgnoreEveryQueryOption` pinned the old
+  behaviour and said so in its own comment — *"this test is what makes closing them a deliberate act
+  rather than an accident"*. Its two property-route rows move to a new test asserting the refusal,
+  on that suite's own fixture, so the change is visible where the old expectation lived. The service
+  document and `$metadata` stay ungated. The property **writes** stay ungated too, consistently with
+  `PUT`/`PATCH`/`DELETE /{Set}({key})`, which are not gated either.
+
 - **The navigation-authorization warning had a false negative on `RequireResource()` (#549).**
   `RequirementsNotApplied` compares *rendered string tokens*, so when both the declaring and the
   target profile declare `RequireResource()` the two render `"resource-based authorization"`, cancel,
