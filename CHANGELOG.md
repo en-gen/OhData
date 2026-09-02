@@ -11,6 +11,40 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The navigation-authorization warning had a false negative on `RequireResource()` (#549).**
+  `RequirementsNotApplied` compares *rendered string tokens*, so when both the declaring and the
+  target profile declare `RequireResource()` the two render `"resource-based authorization"`, cancel,
+  and **no warning is emitted**. But Layer B evaluates the requirement against the entity loaded from
+  the **declaring** set's `{key}` — it never sees the target set's rows, so the target's
+  instance-level check genuinely is not applied.
+
+  It is the one requirement kind where token equality does not imply protection equality: roles,
+  claims, policies and authenticated-user are all statements about the **caller** and compare
+  soundly, while a resource requirement is a statement about the **resource**, which is exactly what
+  differs across a navigation. A resource token no longer cancels. The rule resolution is factored
+  out so the two projections share **one** resolution rather than a second transcription of it.
+
+  The paired control matters as much as the fix: an identical **role** on both sides must stay
+  silent, or the change would be "never cancel anything" and would fire on every correctly
+  configured navigation — the failure mode #440 and #481 both establish as worse than no warning.
+
+- **The `WarnNavigationTargetAuthorization` "partition" claim is corrected (#549).** It said the two
+  navigation warnings *"partition the EDM's navigations between them"*. They do not:
+  `WarnUndeclaredConventionNavigations` is gated on `ExpandEnabled` and this one is not, so on an
+  expand-disabled profile neither covers an undeclared navigation. Harmless in effect — per
+  #440/#446 such a navigation is served by nothing at all — but the comment asserted a property the
+  code does not have.
+
+- **#550 investigated and closed as not reproducible, with the measurement kept as a pin.** The
+  report reasoned that `InjectETagsIntoJsonArray` calls `InvokeGetETag` unwrapped while `GetById`
+  wraps it, so a `GetETag` selector throwing `ODataException` would still become a `400` carrying
+  the handler's message. The method-internal call really is unwrapped, but the collection route's
+  **caller** wraps the whole stage (`ApplyCollectionPipelineAsync`, *"one try per page, not one
+  closure per row"*), and the bound-operation routes carry no narrow `catch (ODataException)` at all
+  — only `ODataKeyFormatException` since #496. Measured on all three arrivals: `500` every time,
+  with the handler's message never in the body. The probe suite is kept, because that was an
+  argument from reading and #550's point is that the sibling routes must not disagree.
+
 - **⚠ BREAKING CHANGE — the EDM-nullability rejection is one envelope on all five write routes
   (#569, #558).** #355 made the EDM the single authority on nullability for every write family,
   which made the CONDITION the same everywhere. It did not unify the ANSWER — three wordings and

@@ -1629,9 +1629,14 @@ internal static class OhDataEndpointFactory
         AttachAnonymousRouteAudit(group, groupLogger);
 
         // #481/#368: same placement rationale again. It runs AFTER
-        // WarnUndeclaredConventionNavigations because the two partition the EDM's navigations
-        // between them — declared here, undeclared there — and reading them in that order is how
-        // a log tells you which half a navigation fell into.
+        // WarnUndeclaredConventionNavigations, which reports the complementary case, so reading them
+        // in that order is how a log tells you which one a navigation fell into.
+        //
+        // #549: they do NOT partition the EDM's navigations, and this comment used to say they did.
+        // WarnUndeclaredConventionNavigations is gated on ExpandEnabled and this one is not, so on
+        // an expand-disabled profile neither covers an undeclared navigation. Harmless in effect --
+        // per #440/#446 such a navigation is served by nothing at all, so there is no exposure to
+        // report -- but the gate asymmetry is deliberate on both sides and the claim was not true.
         WarnNavigationTargetAuthorization(registration, groupLogger);
         return group;
     }
