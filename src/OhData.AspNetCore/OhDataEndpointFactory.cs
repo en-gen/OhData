@@ -406,12 +406,19 @@ internal static class OhDataEndpointFactory
     // EVERY reference type is nullable, so a Nullable="false" string sailed through. Before #355 a
     // null for such a property reached the handler and surfaced as EF's 500.
     //
-    // FOUR DELIBERATE EXCLUSIONS, each of which would otherwise reject a legal request: the KEY
-    // (every EDM key is non-nullable and a server-generated one is routinely omitted; taken from
-    // edmType.Key() so entity and navigation-child types answer alike); a non-nullable VALUE type (a
-    // JSON null is already a JsonException, and checking costs a boxing read to answer a question
-    // with one possible answer); a member no readable CLR property backs; and anything the EDM does
-    // not declare, which is what makes Ignore()d properties exempt for free.
+    // THREE DELIBERATE EXCLUSIONS, each of which would otherwise reject a legal request: a
+    // non-nullable VALUE type (a JSON null is already a JsonException, and checking costs a boxing
+    // read to answer a question with one possible answer); a member no readable CLR property backs;
+    // and anything the EDM does not declare, which is what makes Ignore()d properties exempt for free.
+    //
+    // #557: the KEY used to be a fourth. It was excluded because a service-generated key is routinely
+    // OMITTED (§11.4.2) -- correct while the gate also rejected omission, and vestigial once #544
+    // removed that leg, since the namedByBody intersection now provides the omission exemption. What
+    // it still did was hide an explicit null: a REFERENCE-typed key sailed through, RAN THE HANDLER,
+    // and then died in ODataEntityKeyUrlFormatter.Format, so a persisting Post had already persisted
+    // when the 500 arrived. Measured, on properties $metadata describes identically:
+    // {"Code":null} -> 500 handler-reached, {"Name":null} -> 400 handler-not-reached.
+    // A value-typed key needs no exclusion of its own -- it is covered by the value-type rule below.
     //
     // TOP LEVEL ONLY: a null inside a nested complex value is not checked. Widening has its own
     // recursion and cycle decisions.
@@ -420,17 +427,10 @@ internal static class OhDataEndpointFactory
     {
         if (edmType is null) return Array.Empty<EdmRequiredProperty>();
 
-        var keyNames = new HashSet<string>(StringComparer.Ordinal);
-        if (edmType is IEdmEntityType entityType && entityType.Key() is { } keys)
-        {
-            foreach (IEdmStructuralProperty k in keys) keyNames.Add(k.Name);
-        }
-
         var required = new List<EdmRequiredProperty>();
         foreach (IEdmStructuralProperty edmProp in edmType.StructuralProperties())
         {
             if (edmProp.Type.IsNullable) continue;
-            if (keyNames.Contains(edmProp.Name)) continue;
 
             // The EDM name IS the [JsonPropertyName]-or-CLR name (#253), which is exactly what
             // FindClrPropertyByEdmName resolves. The string comes from the model, never from a
