@@ -30,6 +30,40 @@ public sealed class S378DualProfile : EntitySetProfile<int, S378Thing>
     }
 }
 
+// Priority-1 shadows BOTH lower handlers. The PR claims this; without a fixture the claim was
+// untested and codecov reported the branch as a partial.
+public sealed class S378Priority1Profile : ODataEntitySetProfile<int, S378Thing>
+{
+    public static int GetAllCalls;
+    public static int GetQueryableCalls;
+
+    public S378Priority1Profile() : base(x => x.Id)
+    {
+        EntitySetName = "S378Priority1";
+        FilterEnabled = true; CountEnabled = true;
+
+        GetODataQueryable = (options, _) =>
+        {
+            var q = new[] { new S378Thing { Id = 3, Source = "FROM-PRIORITY1" } }.AsQueryable();
+            return Task.FromResult(new ODataQueryResult<S378Thing>
+            {
+                Items = options.ApplyTo(q) as IQueryable<S378Thing> ?? q,
+            });
+        };
+        GetQueryable = (CancellationToken _) =>
+        {
+            Interlocked.Increment(ref GetQueryableCalls);
+            return Task.FromResult(new[] { new S378Thing { Id = 2, Source = "FROM-GETQUERYABLE" } }.AsQueryable());
+        };
+        GetAll = (CancellationToken _) =>
+        {
+            Interlocked.Increment(ref GetAllCalls);
+            return Task.FromResult<IEnumerable<S378Thing>>(
+                new[] { new S378Thing { Id = 1, Source = "FROM-GETALL" } });
+        };
+    }
+}
+
 public sealed class S378GetAllOnlyProfile : EntitySetProfile<int, S378Thing>
 {
     public S378GetAllOnlyProfile() : base(x => x.Id)
@@ -104,6 +138,28 @@ public sealed class Issue378ShadowedHandlerWarningTests
         }
 
         Assert.Equal(0, S378DualProfile.GetAllCalls);
+    }
+
+    [Fact]
+    public async Task Priority1_ShadowsBothLowerHandlers_AndNeitherIsInvoked()
+    {
+        // The chain is GetODataQueryable > GetQueryable > GetAll, so a Priority-1 profile setting
+        // all three has TWO dead handlers. Asserted at the handlers, not only in the message.
+        var capture = new WarningCapture();
+        await using TestFixture fx = await BuildAsync(capture, o => o.AddEntitySetProfile<S378Priority1Profile>());
+        S378Priority1Profile.GetAllCalls = 0;
+        S378Priority1Profile.GetQueryableCalls = 0;
+
+        string warning = Assert.Single(ShadowWarnings(capture));
+        Assert.Contains("S378Priority1", warning, System.StringComparison.Ordinal);
+        Assert.Contains("GetODataQueryable", warning, System.StringComparison.Ordinal);
+        Assert.Contains("GetQueryable and GetAll", warning, System.StringComparison.Ordinal);
+
+        var resp = await fx.Client.GetAsync("/odata/S378Priority1");
+        Assert.Equal(System.Net.HttpStatusCode.OK, resp.StatusCode);
+        Assert.Contains("FROM-PRIORITY1", await resp.Content.ReadAsStringAsync(), System.StringComparison.Ordinal);
+        Assert.Equal(0, S378Priority1Profile.GetAllCalls);
+        Assert.Equal(0, S378Priority1Profile.GetQueryableCalls);
     }
 
     [Theory]

@@ -29,8 +29,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   in this state works exactly as specified and merely carries configuration that does nothing —
   refusing it would break working applications to report dead code. The control that a warning must
   not fire on a correct configuration is pinned both ways, and one handler alone is silent. Across
-  the repo's own seven test projects exactly **one** profile sets more than one collection handler,
-  and it is this issue's own fixture — so there are no pre-existing emissions.
+  the repo's own seven test projects exactly **two** profiles set more than one collection handler,
+  and both are this issue's own fixtures — so there are no pre-existing emissions.
 
 ### Fixed
 
