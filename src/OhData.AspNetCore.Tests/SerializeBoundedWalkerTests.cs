@@ -17,27 +17,20 @@ using Xunit;
 
 namespace OhData.AspNetCore.Tests;
 
-// #325/#326 (OWNER DECISIONS, FROZEN spec — Option B, "clause-bounded, level-wise serialization"):
-// SerializeBounded (OhDataEndpointFactory.cs) replaces "serialize the whole CLR graph, then strip
-// un-expanded navigations" (Stage 3.5, OmitUnexpandedNavigations) with "serialize only what the
-// $expand clause / $levels budget asked for", at the point of serialization itself — so a reference
-// cycle in the underlying (tracked, EF-relationship-fixed-up) object graph is structurally
-// unreachable, regardless of clause depth. This suite is the named T-matrix from the architecture
-// spec:
-//   T8-T11  the IgnoreCycles disqualifying counter-example — Children($expand=Parent) must return
-//           the REAL parent object (never null), and Parent($expand=Children) must contain no null
-//           array elements. These pin Option B against a future "just use IgnoreCycles"
-//           simplification: IgnoreCycles passes the plain #325 repro too, but silently corrupts
-//           exactly this shape (verified during the architecture spike — see issue #325 comments).
-//   T16/T17 the tracked-entity read-only hazard — the walker must never mutate/corrupt a tracked
-//           graph later saved in the SAME request/DbContext scope.
-//   T24-T28 GetById, write-path (PUT/PATCH) response bodies, navigation routes, and bound
-//           operations all stay safe over a self-referential model.
-//   T30/T31 delegate-safety (Model B, #292/#293): a delegate's own answer always wins over
-//           whatever the walker guessed by reading the CLR graph, and a Blanked navigation always
-//           yields []/null, never the materialized graph.
-//   T35     the one class OWNER DECISIONS explicitly left as a loud 500: a cycle closed by an
-//           entity-typed CLR property that is NOT an EDM navigation.
+// #325/#326 (owner decisions, FROZEN -- Option B, clause-bounded serialization): SerializeBounded
+// replaces "serialize the whole CLR graph, then strip un-expanded navigations" with "serialize only
+// what the clause asked for", so a cycle in the tracked graph is structurally unreachable at any
+// clause depth. This suite is the named T-matrix from the architecture spec:
+//   T8-T11  the IgnoreCycles disqualifying counter-example -- Children($expand=Parent) must return
+//           the REAL parent, never null. IgnoreCycles passes the plain #325 repro too and silently
+//           corrupts exactly this shape, so these pin Option B against that "simplification".
+//   T16/T17 the walker must never mutate a tracked graph saved later in the same scope.
+//   T24-T28 GetById, PUT/PATCH echoes, navigation routes and bound operations over a
+//           self-referential model.
+//   T30/T31 delegate safety: a delegate's answer always wins over the walker's guess, and a Blanked
+//           navigation yields []/null, never the materialized graph.
+//   T35     the one class the owner decisions left as a loud 500: a cycle closed by an entity-typed
+//           CLR property that is NOT an EDM navigation.
 
 // ── T8-T11: EDM-only path (no $expand pushdown), the exact shape IgnoreCycles got wrong ──────────
 

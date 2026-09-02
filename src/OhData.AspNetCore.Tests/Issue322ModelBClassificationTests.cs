@@ -18,25 +18,19 @@ namespace OhData.AspNetCore.Tests;
 
 // #322 / #293 BOUNDARY PIN.
 //
-// #322's fix makes ONE thing EDM-aware: the structural member set the $select/$expand member-init
-// projection is built from. It deliberately does NOT re-source IEntitySetEndpointSource
-// .NavigationPropertyNames from the EDM, because THAT set is Model B's input:
-// ResolveNavTreatment partitions a level's candidate profiles into DB (routes the nav) and DL
-// (declares it with no route), and the FROZEN spec on #293 says
+// #322 makes ONE thing EDM-aware: the structural member set the projection is built from. It
+// deliberately does NOT re-source NavigationPropertyNames from the EDM, because that set is Model B's
+// input, and the frozen #293 spec says "a candidate that neither routes nor declares the nav has no
+// opinion on it and is ignored."
 //
-//     "A candidate that neither routes nor declares the nav has no opinion on it and is ignored."
+// Convention-sourcing it would make EVERY candidate declare EVERY EDM navigation of its type,
+// emptying that category: the honored-sole-route case (RunDelegate) becomes Blank, so the delegate
+// stops running and its data is replaced by null under a 200. Fail-closed, so not a security
+// weakening, but silent data loss and a break of a frozen decision table.
 //
-// Convention-sourcing NavigationPropertyNames would make EVERY candidate declare EVERY EDM
-// navigation of its type, emptying that category: the honored-sole-route case (DB = one route,
-// DL = empty -> RunDelegate) would become DB = one route, DL = {the silent sibling} -> Blank. The
-// delegate stops running and its data is replaced by null under a 200 — fail-closed, so not a
-// security weakening, but silent data loss and a break of a frozen decision table.
-//
-// These two changes look similar and have opposite verdicts, so the boundary is PINNED here rather
-// than assumed: the decision table is asserted directly (reflection onto the private
-// ResolveNavTreatment, the single shared authority for both the pushdown gate and the delegate
-// expansion path) for every multi-candidate shape, and end-to-end for the honored-sole-route case
-// that (1b) was measured to regress.
+// The two changes look similar and have opposite verdicts, so the boundary is PINNED rather than
+// assumed: the decision table is asserted directly for every multi-candidate shape, and end-to-end
+// for the honored-sole-route case that was measured to regress.
 
 #region fixtures
 

@@ -7,14 +7,12 @@ using Xunit;
 
 namespace OhData.AspNetCore.Tests;
 
-// #335: `$levels=N` used to emit N+1 join levels. The innermost was the recursion's terminating
-// leaf, expressed as `n.Children.Take(0).ToList()` — an expression that still NAMES the navigation,
-// so EF Core composed a real join for it: a full-table `ROW_NUMBER()` window whose every row was
-// then discarded by `WHERE "row" <= 0`.
+// #335: `$levels=N` emitted N+1 join levels. The innermost was the recursion's terminating leaf,
+// `n.Children.Take(0).ToList()` -- an expression that still NAMES the navigation, so EF composed a
+// real join for it: a full-table ROW_NUMBER() window whose every row was discarded by WHERE row <= 0.
 //
-// That dead level is not a constant cost. Translation of a pushed nested projection costs ~3x per
-// collection level (#328), so the extra level is a full FACTOR OF 3 on the whole request. Measured
-// end-to-end on this framework (16-node chain, SQLite in-memory, warm host):
+// Not a constant cost: translation costs ~3x per collection level (#328), so the dead level is a full
+// factor of 3 on the whole request. Measured end-to-end on a 16-node chain:
 //
 //   $levels   before    after
 //        5      309 ms    94 ms
@@ -22,11 +20,9 @@ namespace OhData.AspNetCore.Tests;
 //        7    2,404 ms   677 ms
 //        9    9,856 ms  2,196 ms
 //
-// The fix must be a PURE optimisation, so this file pins both halves:
-//   1. the join count against "LvNodes" is exactly N for $levels=N, and no ROW_NUMBER() is emitted;
-//   2. the response bytes are EXACTLY the strings below — which were captured from the PRE-fix
-//      build and are asserted unchanged against the post-fix one. Do not regenerate them from a
-//      passing run; they are the before-image, and that is the whole point.
+// A PURE optimisation, so both halves are pinned: the join count is exactly N with no ROW_NUMBER(),
+// and the response bytes below were captured from the PRE-fix build and asserted unchanged. Do not
+// regenerate them from a passing run -- they are the before-image, and that is the point.
 public sealed class LevelsJoinCountSqliteTests : IAsyncLifetime
 {
     private SqliteConnection _connection = null!;
