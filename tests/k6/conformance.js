@@ -846,13 +846,25 @@ function bodySizeLimit() {
 // ── 14. Deliberate residuals, pinned so a "fix" is a decision rather than a slip ──
 function documentedResiduals() {
   group('documented residuals', () => {
-    // The service document, $metadata and the structural-property routes ignore every query
-    // option -- deliberately, and recorded as such in docs/query-options.md. None of them
-    // generates a link, so none carries #359's echo. Pinned here so the table in that document
-    // is not read as the whole URL surface, and so a future change to it is a choice.
+    // The service document and $metadata ignore every query option -- deliberately, and recorded
+    // as such in docs/query-options.md. Neither generates a link, so neither carries #359's echo.
+    // Pinned here so the table in that document is not read as the whole URL surface, and so a
+    // future change to it is a choice.
     expectStatus(get(`${BASE_URL}/v1/$metadata?$unknown=1`), 200, '$metadata ignores query options');
     expectStatus(get(`${BASE_URL}/v1?$unknown=1`), 200, 'the service document ignores query options');
-    expectStatus(get(`${BASE_URL}/v1/Movies(${SEEDED_MOVIE_ID})/Title?$unknown=1`), 200, 'a structural-property read ignores query options');
+
+    // #560: the structural-property READS were on that list and are not any more -- they were the
+    // one residual that answered differently from the sibling entity route over the same resource.
+    // $select is refused although GET /Movies({key}) implements it: this handler reads no option.
+    expectUnsupportedOption(
+      get(`${BASE_URL}/v1/Movies(${SEEDED_MOVIE_ID})/Title?$unknown=1`), 'a property read: $unknown');
+    expectUnsupportedOption(
+      get(`${BASE_URL}/v1/Movies(${SEEDED_MOVIE_ID})/Title?$select=Title`), 'a property read: $select');
+    expectUnsupportedOption(
+      get(`${BASE_URL}/v1/Movies(${SEEDED_MOVIE_ID})/Title/$value?$unknown=1`), 'a property $value: $unknown');
+    expectStatus(
+      get(`${BASE_URL}/v1/Movies(${SEEDED_MOVIE_ID})/Title?$format=json`), 200,
+      'a property read still accepts $format');
 
     // The GetAll route answers InvalidQueryOption rather than UnsupportedQueryOption for an
     // EMPTY-valued unimplemented option, because TryBuildQueryOptions runs before the sigil gate

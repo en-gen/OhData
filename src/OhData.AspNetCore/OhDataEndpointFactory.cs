@@ -2768,6 +2768,11 @@ internal static class OhDataEndpointFactory
         "$select", "$expand", FormatOption,
     };
 
+    // GET /{Set}({key})/{Prop} and its /$value (#560). Both ride GetById and read NO query option
+    // at all — the handler goes straight from the property accessor to the envelope — so even
+    // $select, which the sibling entity route implements, is refused rather than silently dropped.
+    private static readonly string[] s_propertyRouteImplementedOptions = { FormatOption };
+
     // GET /{Set}({key})/{Nav} — the delegate-backed navigation COLLECTION route, which parses
     // $select/$orderby/$skip/$top/$count directly off the query string.
     private static readonly string[] s_navCollectionImplementedOptions =
@@ -10987,6 +10992,10 @@ internal static class OhDataEndpointFactory
                 var propGetRb = DocProp(entityAuthGroup.MapGet($"/{name}({{key}})/{propCapture.Name}",
                     async (string key, HttpContext ctx, CancellationToken ct) =>
                     {
+                        IResult? unsupportedOption =
+                            CheckUnsupportedSystemQueryOptions(ctx, s_propertyRouteImplementedOptions);
+                        if (unsupportedOption is not null) return unsupportedOption;
+
                         try
                         {
                             var s = ResolveHandlers(ctx);
@@ -11047,6 +11056,10 @@ internal static class OhDataEndpointFactory
                 var propValueRb = DocProp(entityAuthGroup.MapGet($"/{name}({{key}})/{propCapture.Name}/$value",
                     async (string key, HttpContext ctx, CancellationToken ct) =>
                     {
+                        IResult? unsupportedOption =
+                            CheckUnsupportedSystemQueryOptions(ctx, s_propertyRouteImplementedOptions);
+                        if (unsupportedOption is not null) return unsupportedOption;
+
                         // Complex-typed properties have no raw representation — a static
                         // attribute of the property, checked before touching the data source.
                         if (propIsComplex)
