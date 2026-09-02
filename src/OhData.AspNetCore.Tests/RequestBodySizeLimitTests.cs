@@ -4,6 +4,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
+using Microsoft.AspNetCore.Http;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -92,6 +93,30 @@ public class RequestBodySizeLimitTests
     }
 
     [Fact]
+    public async Task KestrelThrown413_IsMappedToTheEnvelope_AndAlsoClosesTheConnection()
+    {
+        // The OTHER 413 site: Kestrel throws BadHttpRequestException(413) when a body without a
+        // usable Content-Length (chunked) exceeds the per-request MaxRequestBodySize, which happens
+        // while the handler reads the body -- i.e. inside the group filter's try, which is what this
+        // fixture reproduces. TestServer cannot produce the real one: Microsoft.AspNetCore.TestHost
+        // supplies no IHttpMaxRequestBodySizeFeature at all (see RequestBodySizeFeatureTests), so
+        // nothing enforces a limit mid-read.
+        //
+        // That clause had NO test before this one -- #203 mapped it and nothing exercised the
+        // mapping. The body is equally unread here, so #601's Connection: close applies for the same
+        // reason it does on the fast-reject.
+        await using var fx = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<BodyLimitChunkedProfile>());
+
+        var resp = await fx.Client.GetAsync("/odata/BodyLimitChunkedWidgets");
+
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("RequestEntityTooLarge", body.GetProperty("error").GetProperty("code").GetString());
+        Assert.Contains("close", resp.Headers.Connection, StringComparer.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Post_NoLimitConfigured_LargeBodySucceeds()
     {
         // WidgetProfile sets no MaxRequestBodyBytes, so this ~400-byte body is bounded only by
@@ -123,6 +148,18 @@ public class RequestBodySizeLimitTests
         string midBody = "{\"name\":\"" + new string('x', 130) + "\"}"; // ~150 bytes
         var resp = await fx.Client.PostAsync(LimitedUrl, Json(midBody));
         Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
+    }
+}
+
+// Raises the exception Kestrel raises for an over-limit chunked body, from where Kestrel raises it:
+// inside the request pipeline, under the group filter's try.
+internal class BodyLimitChunkedProfile : EntitySetProfile<int, Widget>
+{
+    public BodyLimitChunkedProfile() : base(x => x.Id)
+    {
+        EntitySetName = "BodyLimitChunkedWidgets";
+        GetAll = ct => throw new Microsoft.AspNetCore.Http.BadHttpRequestException(
+            "Request body too large.", StatusCodes.Status413PayloadTooLarge);
     }
 }
 
