@@ -9,6 +9,29 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **A startup warning when a collection handler is shadowed by a higher-precedence one (#378).** The
+  collection `GET` dispatches `GetODataQueryable` > `GetQueryable` > `GetAll` through an unguarded
+  `else if` chain, so a lower handler set alongside a higher one is **dead** — and nothing said so
+  at any log level, `Trace` included. The precedence is documented in an XML doc comment, which the
+  developer staring at their own unreachable handler has no reason to consult.
+
+  Measured with both `GetQueryable` and `GetAll` set: `GetAll` invoked **zero** times on the
+  collection `GET`, on `/{Set}/$count`, and on that route's `$filter` fallback — the one route where
+  it plausibly might have run. `MapOhData()` now logs one `Warning` per entity set naming the winner
+  and the dead handler.
+
+  It covers every shadowed pair, not only the one reported: a Priority-1 profile shadows
+  `GetQueryable` **and** `GetAll`, and all three cases are the same defect.
+
+  A warning rather than a startup throw: the precedence is long-standing and documented, so an app
+  in this state works exactly as specified and merely carries configuration that does nothing —
+  refusing it would break working applications to report dead code. The control that a warning must
+  not fire on a correct configuration is pinned both ways, and one handler alone is silent. Across
+  the repo's own seven test projects exactly **one** profile sets more than one collection handler,
+  and it is this issue's own fixture — so there are no pre-existing emissions.
+
 ### Fixed
 
 - **The navigation-authorization warning had a false negative on `RequireResource()` (#549).**

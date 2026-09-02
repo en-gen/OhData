@@ -1638,6 +1638,8 @@ internal static class OhDataEndpointFactory
         // per #440/#446 such a navigation is served by nothing at all, so there is no exposure to
         // report -- but the gate asymmetry is deliberate on both sides and the claim was not true.
         WarnNavigationTargetAuthorization(registration, groupLogger);
+        // #378: same placement rationale as its neighbours -- after every route has mapped.
+        WarnShadowedCollectionHandlers(registration, groupLogger);
         return group;
     }
 
@@ -1790,6 +1792,43 @@ internal static class OhDataEndpointFactory
     //
     // Gated on ExpandEnabled: the remaining consequence has to be reachable, and that flag is false
     // by default.
+    // #378: the collection GET dispatches GetODataQueryable > GetQueryable > GetAll through an
+    // unguarded else-if chain, so a lower handler set alongside a higher one is DEAD -- measured,
+    // invoked zero times on the collection GET, on /$count, and on /$count's $filter fallback --
+    // and nothing said so at any log level. EntitySetProfile documents the precedence in an XML
+    // doc comment, which the developer reading their own dead handler has no reason to consult.
+    //
+    // A warning rather than a throw: the precedence is documented and long-standing, so an app in
+    // this state is working as specified, merely carrying configuration that does nothing.
+    private static void WarnShadowedCollectionHandlers(OhDataRegistration registration, ILogger? logger)
+    {
+        if (logger is null) return;
+
+        foreach (IEntitySetEndpointSource profile in registration.Profiles)
+        {
+            bool priority1 = profile is IODataEntitySetEndpointSource ods && ods.HasGetODataQueryable;
+            string winner = priority1 ? "GetODataQueryable"
+                : profile.HasGetQueryable ? "GetQueryable"
+                : null!;
+            if (winner is null) continue; // GetAll alone, or no collection handler -- nothing shadowed.
+
+            var shadowed = new List<string>();
+            if (priority1 && profile.HasGetQueryable) shadowed.Add("GetQueryable");
+            if (profile.HasGetAll) shadowed.Add("GetAll");
+            if (shadowed.Count == 0) continue;
+
+            logger.LogWarning(
+                "OhData: '{EntitySet}' sets {Shadowed} as well as {Winner}, and {Winner2} takes " +
+                "precedence -- so {Shadowed2} is never invoked, on the collection GET, on " +
+                "'/{EntitySet2}/$count', or anywhere else. This is the documented precedence, not a " +
+                "failure: the configuration simply does nothing. Remove it, or remove {Winner3} if " +
+                "the one you meant to serve is {Shadowed3}.",
+                profile.EntitySetName, string.Join(" and ", shadowed), winner, winner,
+                profile.EntitySetName, string.Join(" and ", shadowed), winner,
+                string.Join(" or ", shadowed));
+        }
+    }
+
     private static void WarnUndeclaredConventionNavigations(OhDataRegistration registration, ILogger? logger)
     {
         if (logger is null) return;
