@@ -156,6 +156,24 @@ parameter, or a local would be using stale or disposed state on every later call
 declaration; write `static v => ...` or a static method. Delta mapping is dependency-free by design,
 and a `DeltaProfile` constructor should not need injected services at all.
 
+**The refusal is broader than "captures a dependency", and two of the shapes it catches are ones you
+would not expect** (#551). A delegate is opaque, so *"captures nothing"* is the only property that
+can be checked from outside it — and C# compiles a method group's receiver into the delegate exactly
+as it compiles a captured local:
+
+| converter | |
+|---|---|
+| `ParseSize` — a private **instance** method on the profile | **refused** |
+| `s => Convert.ToInt32(s, radix)` — captures a local | **refused** |
+| `s => int.Parse(s)` — non-capturing lambda | accepted |
+| `static s => int.Parse(s)` | accepted |
+| `ParseSize` — a **static** method | accepted |
+
+Neither refused shape touches a dependency, and a private instance helper is arguably the tidiest
+way to write a non-trivial converter — so if that is what you have, make it `static`. Note also that
+a plain **non-capturing** lambda is accepted even though the exception text recommends `static`:
+Roslyn compiles one to a cached fieldless singleton rather than a display class.
+
 Each of `.Rename(...)` and `.Convert(...)` may be declared **once** per model property. A second
 declaration for the same source throws rather than silently replacing the first.
 
