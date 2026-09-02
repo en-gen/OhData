@@ -896,29 +896,17 @@ public sealed class EntityCustomConverterTests
     }
 }
 
-// Corollary the reviewer inferred from the pre-fold-in `value is IEnumerable seq and not string`
-// shape-sniff: it decided "is this a COLLECTION of entities of edmType?" from the CLR VALUE's own
-// shape rather than from EDM cardinality. That misfires for a SINGLE-valued navigation (cardinality
-// 1) whose target CLR type happens to implement IEnumerable for an unrelated domain reason: the
-// pre-fold-in code would walk it element-by-element from WITHIN our own recursion, reusing the
-// WRONG edmType (the nav's, not the element's) per element.
+// The pre-fold-in `value is IEnumerable seq and not string` sniff decided "is this a COLLECTION of
+// entities of edmType?" from the CLR value's shape rather than EDM cardinality, which misfires for a
+// SINGLE-valued navigation whose target type implements IEnumerable for unrelated reasons -- walked
+// element-by-element under the WRONG edmType.
 //
-// Verification note (honesty about what this test does and doesn't isolate): with the fold-in #2
-// `.AsObject()` guard alone (verified separately above, EntityCustomConverterTests — confirmed to
-// go red without it), the former per-element crash no longer reproduces even with the OLD shape-sniff
-// reinstated, because a boxed `int` element hits the SAME non-object guard on ITS OWN recursive call
-// and returns a JSON number instead of throwing. This test therefore does NOT independently regress
-// without the isCollectionValue change for THIS fixture — confirmed while verifying fold-in #2 (the
-// old sniff + the new guard together still produce a 200, byte-identical to the fixed dispatch for
-// this specific element type). The isCollectionValue change is kept as the architecturally correct
-// fix regardless (EDM cardinality, not CLR shape, decides "is this a collection of entities" — the
-// only sound source of truth once nav-target types are unconstrained), and this test pins that the
-// scenario stays a 200 (not a regression net for a shape-sniff-specific crash that no longer exists
-// once the AsObject guard is in place). Root-level entities that merely happen to implement
-// IEnumerable hit a DIFFERENT, pre-existing System.Text.Json behavior unrelated to this fix (STJ
-// itself always treats an IEnumerable-implementing CLR type as enumerable-shaped when handed
-// directly to SerializeToNode, matching `develop`'s whole-graph serializer byte-for-byte for the
-// same CLR shape — not something #325/#326 could or should change).
+// Honesty about what this test isolates: with fold-in #2's .AsObject() guard in place the former
+// per-element crash does not reproduce even with the old sniff reinstated, because a boxed element
+// hits the same guard on its own recursion. So this does NOT independently regress without the
+// isCollectionValue change for this fixture. That change is kept as the architecturally correct one --
+// EDM cardinality, not CLR shape, is the only sound source of truth -- and this pins that the scenario
+// stays a 200.
 public sealed class ZeTarget : IEnumerable<int>
 {
     public int Id { get; set; }

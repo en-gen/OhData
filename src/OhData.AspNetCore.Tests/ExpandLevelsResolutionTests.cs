@@ -12,31 +12,20 @@ using Xunit;
 
 namespace OhData.AspNetCore.Tests;
 
-// #428: `$levels=max` was served at depths every numeric spelling rejected with 400.
+// #428: `$levels=max` was served at depths every numeric spelling rejected with 400. MS's validator
+// rejects a NUMERIC N above min(MaxExpansionDepth, modelBoundMaxDepth) but only requires that minimum
+// to be non-zero for IsMaxLevel -- it does not clamp -- and OhData resolved `max` against
+// MaxExpansionDepth alone, in TWO independently transcribed places.
 //
-// Microsoft's SelectExpandQueryValidator rejects a NUMERIC `$levels=N` when
-// N > min(MaxExpansionDepth, modelBoundMaxDepth). For IsMaxLevel it only requires that minimum to
-// be non-zero — it does not clamp. OhData then resolved `max` against MaxExpansionDepth ALONE and
-// never consulted the model-bound cap, in TWO independently transcribed places
-// (TryBuildEngagedExpand's projection builder and BuildExpandLookup's JSON keep/strip pass).
+// Measured with the model-bound cap lowered to 5 and a profile at MaxExpansionDepth=8: $levels=5 ->
+// 200 in 609 ms, 6..9 -> 400, `max` -> 200 in 5,477 ms at depth 8. At ~3x translation cost per level
+// (#328) that is a cost multiplier -- on a stock build a profile at depth 15 extrapolates to hours of
+// CPU for one request.
 //
-// Measured on the pre-fix tree with the model-bound cap scratch-lowered to 5 and a profile at
-// MaxExpansionDepth = 8:
-//
-//   $levels=5     -> 200    609 ms   joins=6
-//   $levels=6..9  -> 400              <- rejected by the model-bound cap
-//   $levels=max   -> 200   5477 ms   joins=9   <- served at depth 8, 9x the deepest legal numeric
-//
-// At ~3x translation cost per level (#328) that is a cost multiplier, not a cosmetic inconsistency:
-// on a stock build (cap 12) a profile at MaxExpansionDepth = 15 served `max` at depth 15, ~3^16
-// translation units, extrapolated at ~2.2 hours of single-core CPU for ONE request.
-//
-// TWO THINGS SHIP. (1) The resolution rule is now one shared function that consults BOTH bounds.
-// (2) #328 derived the model-bound cap from the MaxExpansionDepth ceiling, so on a shipped build
-// the cap can no longer be BELOW the profile's depth and the clamp cannot fire — the divergence is
-// unrepresentable rather than merely fixed. That is why the behavioural half of this file asserts
-// consistency at the ceiling while the unit half drives the function with the configuration that
-// used to be reachable.
+// Two things ship: one shared resolution function consulting BOTH bounds, and #328 deriving the
+// model-bound cap from the MaxExpansionDepth ceiling so the divergence becomes unrepresentable rather
+// than merely fixed. Hence the behavioural half asserts consistency at the ceiling while the unit half
+// drives the function with the configuration that used to be reachable.
 public class ExpandLevelsResolutionTests
 {
     // ── The rule itself ─────────────────────────────────────────────────────────────────────────

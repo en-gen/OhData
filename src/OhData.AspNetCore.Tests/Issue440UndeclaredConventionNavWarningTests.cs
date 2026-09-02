@@ -792,31 +792,20 @@ public sealed class Issue440UndeclaredConventionNavWarningTests
     }
 }
 
-// #466 (PR #477 review, finding F2): the raw-$levels budget must never reach #440's omission arm.
+// #466 (PR #477 review F2): the raw-$levels budget must never reach #440's omission arm.
 //
-// THE REGRESSION THIS PINS, as it stood on the pre-fix head of the #463/#464/#466 branch.
-// #466 gave the RAW substrate its own $levels budget by unioning the navigation names it applies to
-// onto CollectPushedLevelsNavNames' set. That union was then passed to all three pipeline stages,
-// including ExpandLevelAsync — where the set has exactly ONE use: #440's omission arm, which keeps a
-// navigation nothing declares or routes ONLY when it was pushed as a $levels expand (and is
-// therefore genuinely loaded).
+// #466 unioned the raw substrate's $levels navigation names onto the pushed set and passed the union
+// to all three stages -- including ExpandLevelAsync, where the set has exactly one use: keeping an
+// undeclared navigation ONLY when it was pushed as a $levels expand and is therefore genuinely loaded.
 //
-// The union's membership is decided PER LEVEL; the set itself is FLAT, keyed by name. So a
-// navigation called Children that is ServeRaw-with-an-opinion at depth 2 — legitimately in the set —
-// also matched the UNDECLARED Children at the ROOT, bypassed the omission arm there, and emitted
-// "Children": [] on the root entity. That is the "expanded, and empty" claim about a relationship the
-// server never evaluated that #440 exists to prevent, under a 200, reachable on a DEFAULT
-// configuration: the union is built whenever the clause carries a $levels anywhere, with no
-// dependence on MaxExpandTop.
+// Membership is decided PER LEVEL; the set is FLAT and keyed by name. So a `Children` that is
+// ServeRaw-with-an-opinion at depth 2 also matched the UNDECLARED `Children` at the ROOT, bypassed the
+// omission arm and emitted "Children": [] there -- under a 200, on a default configuration, since the
+// union is built whenever the clause carries a $levels anywhere.
 //
-// The fix keeps the union for the two SERIALIZATION stages (where #466's budget is actually needed)
-// and passes the PUSHED set to ExpandLevelAsync, restoring base behaviour for the omission arm
-// exactly. The raw set never needed to reach it: a raw name enters only where some candidate has an
-// opinion at its own level, and a navigation with an opinion never reaches the no-opinion arm.
-//
-// Fixture: the #440 model above, extended with the collision shape (W440Hub/W440Branch) rather than a
-// green-field model — an undeclared Children on the root and a declared delegate-less Children one
-// level down, both reachable from one request.
+// Fixed by keeping the union for the two SERIALIZATION stages and passing the PUSHED set to
+// ExpandLevelAsync. The raw set never needed to reach it: a raw name enters only where some candidate
+// has an opinion, and a navigation with an opinion never reaches the no-opinion arm.
 public sealed class Issue466NavOmissionRegressionTests
 {
     private static void ConfigureCollision(OhDataBuilder b)

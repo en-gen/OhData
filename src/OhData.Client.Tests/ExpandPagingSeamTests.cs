@@ -17,31 +17,19 @@ using Xunit;
 
 namespace OhData.Client.Tests;
 
-// #313: the stage-4 / stage-5 SEAM — this client reading this server's nested continuation link.
+// #313: the stage-4/stage-5 SEAM -- this client reading this server's nested continuation link.
+// Neither stage's suite ran the two together (stage 4 binds canned bytes, stage 5 asserts raw HTTP),
+// so the one claim the combination makes -- that the annotation name the client looks for is the one
+// the server writes -- was untested in both directions.
 //
-// WHY THIS FILE EXISTS. Stage 5 makes the SERVER emit `Nav@odata.nextLink`; stage 4 makes the CLIENT
-// able to read one. Neither stage's suite ever ran the two together: stage 4's annotation tests bind
-// CANNED bytes, and its live-server classes point at servers with no ExpandPagingEnabled anywhere;
-// stage 5's tests assert on raw HTTP with no client involved. So the one claim the combination
-// actually makes — that the annotation name the client looks for is the one the server writes — was
-// untested in both directions until here.
+// Lives in this project because the seam is client-against-real-server, which is already its charter,
+// and it already references both assemblies. Putting it in the server suite would invert the
+// dependency direction.
 //
-// WHY THIS PROJECT. The seam is "client behaviour against a real server", which is already this
-// project's charter (see DateTimeFilterLiveServerTests, NavPathFilterLiveServerTests) and this
-// project already references BOTH OhData.Client and OhData.AspNetCore. Putting it in
-// OhData.AspNetCore.Tests instead would mean adding a ProjectReference to OhData.Client from the
-// SERVER suite — inverting the dependency direction, and making the framework's fast inner loop fail
-// to build whenever the client does.
-//
-// WHY EF. Measured, not assumed: the nested-$expand pushdown that emits the link only engages over a
-// real provider. The identical profile over List<T>.AsQueryable() returns the whole child collection
-// with no ceiling and no link, so a LINQ-to-objects fixture would make every test below vacuously
-// green. S0 asserts the fixture really pages before the client is involved, for that reason.
-//
-// FIXTURE PROVENANCE. These entities are new here — the stage-2 BeAuthor/BeBook model lives in the
-// server suite and is not referenced across projects. That is the one thing this move costs, and S0
-// is the mitigation: it pins the server side on RAW BYTES, so a fixture that silently stopped paging
-// would fail loudly rather than making S1-S6 pass for the wrong reason.
+// EF is required, measured not assumed: the pushdown that emits the link only engages over a real
+// provider, and the identical profile over List<T>.AsQueryable() returns the whole collection with no
+// link -- which would make every test below vacuously green. S0 asserts the fixture really pages, on
+// RAW BYTES, before the client is involved.
 
 // ── Fixture ──────────────────────────────────────────────────────────────────
 
