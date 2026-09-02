@@ -4294,61 +4294,23 @@ internal static class OhDataEndpointFactory
         }
     }
 
-    // #292: finds the request-scoped endpoint source(s) that legitimately serve a navigation
-    // target EDM entity type, replacing a plain FirstOrDefault-by-CLR-type that was registration-
-    // order dependent whenever the SAME type was exposed by 2+ entity sets (structurally the same
-    // shape of bug the #293 delegate-backed-nav union fixes on the pushdown path, but here on the
-    // Stage-3 delegate expansion path).
+    // #292: the request-scoped sources that legitimately serve a navigation's target EDM type,
+    // replacing a FirstOrDefault-by-CLR-type that was registration-order dependent.
     //
-    // Always the union: every profile whose entity set's EDM type is <paramref name="targetEdmType"/>.
-    // This CAN legitimately return 2+ candidates — the caller (ExpandLevelAsync) resolves
-    // per-navigation-name ambiguity from the full candidate list rather than this method picking
-    // one, so a genuine conflict (two candidates routing the same nav name differently) fails
-    // closed instead of being silently decided here.
+    // Always the UNION, and it can legitimately return 2+ -- the caller resolves per-navigation
+    // ambiguity from the full list, so a genuine conflict fails closed instead of being decided here.
     //
-    // No branch preferring the EDM's own navigation-source binding (originally proposed in #292
-    // item 1, i.e. <c>expandItem.NavigationSource</c> at the call site). The DECISION stands; the
-    // reason originally written here did not, and was corrected by #313 (design finding B5).
+    // Deliberately does not prefer the EDM's navigation-source binding. Measured, the three cases
+    // are: exactly one exposing set gives a REAL binding (and a one-element union, so they agree);
+    // two or more gives an EdmUnknownEntitySet placeholder and an EMPTY binding list; none gives the
+    // same placeholder. So the binding is redundant where it exists and absent where it would matter.
     //
-    // WHAT THIS COMMENT USED TO CLAIM, AND WHY IT WAS WRONG. It said the convention builder "never
-    // produces a real <see cref="IEdmEntitySet"/> binding for a navigation, only either no binding
-    // or an <see cref="IEdmUnknownEntitySet"/> placeholder". MEASURED FALSE on this tree, both
-    // arms, by walking <c>IEdmEntitySet.NavigationPropertyBindings</c> and
-    // <c>FindNavigationTarget</c> over a registration's own <c>OhDataRegistration.EdmModel</c>:
+    // DO NOT restore it as load-bearing: registering an unrelated second set over the child type
+    // moves the model from one case to the next and DELETES the binding, silently. Anything built on
+    // it must test `is IEdmEntitySet and not IEdmUnknownEntitySet` and treat absence as a real
+    // outcome.
     //
-    //   (A) EXACTLY ONE entity set exposes the navigation's target type → a REAL binding exists.
-    //       The parent set's NavigationPropertyBindings contains `<navName> -> <thatSet>`, and
-    //       FindNavigationTarget(nav) returns that same EdmEntitySet.
-    //   (B) TWO OR MORE entity sets expose it → NavigationPropertyBindings is EMPTY, and
-    //       FindNavigationTarget(nav) returns an EdmUnknownEntitySet whose Name is the navigation
-    //       PROPERTY's own name, never an entity set's.
-    //   (C) NO entity set exposes it → the same EdmUnknownEntitySet placeholder as (B).
-    //
-    // So the placeholder half of the old claim was right and the "never a real binding" half was
-    // not. The binding is produced by the convention builder itself, not by any profile-facing API —
-    // that part is unchanged: there is still no reachable way for a profile to DECLARE a
-    // cross-entity-set binding.
-    //
-    // WHY THE DECISION SURVIVES THE CORRECTION. The binding branch is redundant rather than
-    // unreachable, and it is redundant in exactly the cases above: in (A) a real binding exists but
-    // there is by construction exactly ONE candidate, so the union below resolves identically; in
-    // (B) and (C) — the only cases where the union could be ambiguous — there is no binding to
-    // prefer. Intentional, reviewed deviation from #292's written step 1, now for a reason that is
-    // true.
-    //
-    // DO NOT "RESTORE" THE BINDING AS LOAD-BEARING. #313 O5 restricts nested-$expand continuation
-    // links to depth 1, where the URL already names the parent set and there is no child set to
-    // disambiguate — which is precisely what took this finding OFF the critical path. A real
-    // binding is only the correct source of a child SET NAME at depth >= 2, and the hazard there is
-    // that adding a second, unrelated entity set over the child type moves the model from
-    // (A) to (B) and DELETES the binding — silently changing behaviour with no change to the
-    // navigation itself. Anything built on it must test
-    // `set.FindNavigationTarget(nav) is IEdmEntitySet and not IEdmUnknownEntitySet` and must treat
-    // the absent case as a first-class outcome, not an error.
-    //
-    // Returns an empty list when targetEdmType is null or no profile exposes it at all — e.g. a
-    // navigation whose target type is present in the model but never registered as its own entity
-    // set — in which case nested expansion of that navigation is not possible from any source.
+    // Empty list when no profile exposes the type at all.
     private static IReadOnlyList<IEntitySetEndpointSource> ResolveRequestSourcesForEdmType(
         IEdmEntityType? targetEdmType, OhDataRegistration registration, IServiceProvider requestServices)
     {
@@ -5244,58 +5206,22 @@ internal static class OhDataEndpointFactory
             s_navSuppressedOptionsCache.GetValue(baseOptions, CreateNavSuppressionState), model);
     }
 
-    // #343: THE SUPPRESSION SET IS BUILT FROM THE RUNTIME TYPE, NOT THE DECLARED EDM TYPE ALONE.
+    // #343: the suppression set comes from the RUNTIME type, not the declared EDM type alone.
+    // #325/#326 rest on the premise that no navigation reaches STJ unless the clause asked for it;
+    // enumerating only edmType.NavigationProperties() broke that for a navigation declared on a
+    // DERIVED type, which then emitted inline and 500'd on a cycle -- on a plain GET, no query string.
     //
-    // #325/#326 ("Option B", clause-bounded serialization) rest on one structural premise: NO
-    // navigation ever reaches System.Text.Json unless the $expand clause asked for it. That is what
-    // makes a reference cycle structurally unreachable rather than merely unlikely. Enumerating only
-    // `edmType.NavigationProperties()` broke the premise for a navigation declared on a DERIVED
-    // entity type: it was never in the set, so it was never removed from the runtime type's
-    // JsonTypeInfo, so STJ walked into it. Measured on the pre-fix tree, both consequences the issue
-    // reports, on a PLAIN GET with no query string at all: a derived-declared collection navigation
-    // emitted inline (`"Notes":[...]` with no $expand=Notes anywhere), and two derived instances
-    // referencing each other through a derived-declared single navigation 500ing on the collection
-    // route and on GetById alike.
+    // Suppressed, NOT served: §4.5.1 omits a non-expanded navigation, and the clause binds against
+    // the DECLARED type, so a derived-declared nav has no route into `expanded` and "serve it" would
+    // mean serving it unconditionally.
     //
-    // SUPPRESSED, NOT SERVED — and the alternative is not a close call. (a) OData JSON Format 4.01
-    // §4.5.1 / §11.2.4.2 require a non-expanded navigation to be OMITTED, never emitted inline; a
-    // derived-declared navigation is a navigation. (b) It cannot be asked for: the $expand clause is
-    // bound against the entity set's DECLARED type, and SpliceKeptNavigations likewise iterates the
-    // declared type's navigations, so a derived-declared nav has no route into `expanded` and no
-    // splice would ever put it back. "Serve it" would therefore mean serving it UNCONDITIONALLY,
-    // which is the defect. (c) It is consistent with #293's frozen Model B spec rather than in
-    // tension with it: Model B decides WHO is authoritative for a navigation the clause kept at a
-    // level whose EDM type is known (ResolveProfilesForEdmType matches the EXACT EDM type, never CLR
-    // assignability), and it never has an opinion about a navigation no clause can name. #440's
-    // ServeRaw split points the same way — a navigation no candidate declares or routes is OMITTED,
-    // not emitted as null.
+    // #482 moved the mechanism, not the decision: the resolver modifier computes the set itself at
+    // contract-resolution time, so all this method does is seed the CLR->EDM map before the caller's
+    // SerializeToNode. #508: that seeding goes through EdmClrTypeMap, never
+    // FindDeclaredType(clrType.FullName), which silently returns null on a renamed schema.
     //
-    // #482 SUPERSEDES THE MECHANISM, NOT THE DECISION. Everything above still holds; what changed is
-    // WHERE the runtime type's EDM type comes from and WHEN it is consulted. This method no longer
-    // computes any suppression set — the resolver modifier does, from the seeded CLR->EDM map, at
-    // contract-resolution time (see CreateNavSuppressionState). All this method contributes is the
-    // seeding, which must happen before the SerializeToNode call the caller is about to make.
-    //
-    // model.FindDeclaredType(clrType.FullName) is gone from the lookup path: it matches on the EDM
-    // type's full name, so it silently returned null — and #343's union silently did nothing — for
-    // any model whose schema namespace was renamed. The ClrTypeAnnotation route SeedNavSuppressionModel
-    // uses has no such failure mode.
-    //
-    // The two TryAdds are the residue guard for a model carrying no ClrTypeAnnotation (a hand-built
-    // IEdmModel; OhData itself always builds through ODataConventionModelBuilder, which writes the
-    // annotation). Precedence is deliberate and matches what the seed would have produced: the
-    // runtime type's OWN declared EDM type first, the caller's DECLARED base type second, and both
-    // lose to whatever the seed already put there — TryAdd never overwrites.
-    //
-    // Guarded by ContainsKey because this method runs ONCE PER ENTITY on the single-entity path. In
-    // steady state the whole method is two dictionary probes — the same order of cost as the single
-    // GetOrAdd it replaced.
-    //
-    // #508: the residue guard's first TryAdd used model.FindDeclaredType(clrType.FullName), the last
-    // read-path survivor of that convention. It is EdmClrTypeMap now — which, on a model built by
-    // ODataConventionModelBuilder, is exactly what the seed above already put in the map, so this
-    // branch is reached only for a hand-built IEdmModel with no ClrTypeAnnotation at all. There the
-    // second TryAdd (the CALLER's declared EDM type) is the whole of the residue guard, unchanged.
+    // The two TryAdds are the residue guard for a hand-built IEdmModel carrying no ClrTypeAnnotation;
+    // TryAdd never overwrites what the seed already placed.
     private static JsonSerializerOptions GetNavSuppressedOptions(
         JsonSerializerOptions baseOptions, IEdmModel? model, IEdmEntityType edmType, Type clrType)
     {
@@ -6051,52 +5977,20 @@ internal static class OhDataEndpointFactory
             return false; // $search/$compute/$apply inside an expand — not implemented on the pushdown path
         }
 
-        // $levels: bounded self-referential recursion (the caller resolved the self-referential binding
-        // via BuildLevelsNavBinding).
+        // $levels: bounded self-referential recursion over the binding BuildLevelsNavBinding
+        // resolved. #254: the recursion carries the item's other nested options at every level, as
+        // ODL's own ProcessLevels does. Still deferred: a $levels item carrying its own nested
+        // $expand, where depth accounting against MaxExpansionDepth is ambiguous.
         //
-        // #254 (item 2): the recursion now carries the item's other nested options —
-        // $filter/$orderby/$skip/$top/$count/$select — applied at EVERY level, matching what ODL itself
-        // does (SelectExpandQueryOption.ProcessLevels rewrites $levels=N into N nested expand items each
-        // holding the SAME Filter/OrderBy/Top/Skip/Count and the same nested $select clause).
+        // #293 micro-decision (A), FROZEN: this branch never calls ResolveNavTreatment -- it recurses
+        // the SAME already-resolved binding at every level, so $levels resolves entirely from the
+        // URL-named set and serves raw even when another set exposes the type with disagreeing
+        // config. The explicit nested form re-resolves per level and blanks on disagreement.
         //
-        // STILL DEFERRED: a $levels item that also carries its own nested $expand. Depth accounting
-        // between the $levels budget and the nested branch's own remainingDepth is ambiguous against
-        // MaxExpansionDepth, so the whole branch stays EDM-only (graceful, never a 500).
-        //
-        // Micro-decision (A) (owner-settled, FROZEN spec on issue #293): this $levels branch NEVER
-        // calls ResolveNavTreatment / ResolveProfilesForClrType — it recurses the SAME already-resolved
-        // `binding` (the URL-named root set's own self-referential nav) at every level, exactly as
-        // BuildLevelsNavBinding produced it. So `GET /Base?$expand=Children($levels=2)` through a
-        // self-referential nav resolves ENTIRELY from the URL-named set and serves raw at every level,
-        // even when the same CLR/EDM type is ALSO exposed (with disagreeing nav config) by another
-        // entity set. By contrast, the explicit nested form below — `$expand=Children($expand=Children)`
-        // — descends one real ExpandedNavigationSelectItem per level, so EACH level re-resolves its own
-        // candidate set via ResolveProfilesForClrType/ResolveNavTreatment; if that type is exposed by
-        // MULTIPLE disagreeing sets, the grandchild's treatment is Blank (candidate disagreement) even
-        // though $levels would have served it raw.
-        //
-        // #318, CORRECTED: this comment used to stop at "the grandchild BLANKS", which UNDERSTATES the
-        // outcome by a whole level and is measurably wrong. A non-ServeRaw child makes the childItems
-        // loop below `return false`, which defers the WHOLE PARENT BRANCH off pushdown; the parent
-        // level is then never loaded, and ExpandLevelAsync's ServeRaw branch is a no-op over it, so the
-        // PARENT navigation comes back empty too. MEASURED against the LvNodes/LvSecureNodes fixture
-        // (one LvNode type, two entity sets disagreeing on Children):
-        //
-        //   ?$expand=Children             -> 200  Children:[A, B]                 (root serves)
-        //   ?$expand=Children($levels=2)  -> 200  Children:[A[A1,A2,A3], B[B1]]   (both levels serve)
-        //   ?$expand=Children($expand=Children)
-        //                                 -> 200  Children:[]                     (BOTH levels lost)
-        //
-        // Both halves of that asymmetry are individually owner-settled on #293 and neither is a bug:
-        // micro-decision (A) ships the fail-closed Blank for the explicit nested form, and
-        // micro-decision (B) ("delegate-less pushable parent empties whole branch vs delegate-backed
-        // parent blanks only child: both leak-safe, DEFER PARITY") is exactly the extra level lost
-        // here. #318 tracks the optional parent-set provenance threading that would unify the explicit
-        // form with $levels under "serve raw"; it is a widening on a delegate-safety boundary, so it
-        // must not be done as a drive-by. Do NOT "fix" the inconsistency in the other direction by
-        // making $levels blank — the FROZEN spec lists the whole $levels suite under "tests that STAY
-        // GREEN (confirm, don't gut)", and $levels resolving from the URL-named set alone is the
-        // decision, not an oversight. Pinned end-to-end by Issue318LevelsVsExplicitNestedSelfExpandTests.
+        // #318: a non-ServeRaw child defers the WHOLE PARENT branch off pushdown, so the parent comes
+        // back empty too -- measured, `$expand=Children($expand=Children)` loses BOTH levels while
+        // `$levels=2` serves both. Do NOT "fix" the asymmetry by making $levels blank; the frozen
+        // spec lists the $levels suite under tests that stay green.
         if (item.LevelsOption is not null)
         {
             SelectExpandClause? lc = item.SelectAndExpand;
@@ -12433,51 +12327,20 @@ internal static class OhDataEndpointFactory
 
     }
 
-    // Gap 1: Wrap bound operation result with @odata.context when return type matches TModel (§11.5.3).
-    // For collection results (IEnumerable<TModel>): context = {root}/$metadata#{EntitySet}
-    // For single results (TModel): context = {root}/$metadata#{EntitySet}/$entity
-    // For primitives/other types: return Results.Ok directly (no wrapping needed).
-    // #357: the operation-result twin of the GetAll route's ApplyGetAllPaging, kept deliberately
-    // equivalent to it -- same precedence between an explicit $top and the default cap, same
-    // Prefer: maxpagesize interaction, same "nextLink only when the default cap was applied AND
-    // rows remain" condition, same $skip continuation shape via BuildNextPageLinkWithSkip. It is a
-    // second implementation rather than a shared call because that one is a local function closing
-    // over the route's ODataQueryOptions, which a bound-operation route does not build.
+    // Wraps a bound-operation result in @odata.context when the return type matches TModel (§11.5.3);
+    // primitives and other types return directly.
     //
-    // $top/$skip are read the way the NAVIGATION-collection route reads them -- int.TryParse
-    // against the raw query string, with that route's existing "is invalid. It must be a
-    // non-negative integer." wording -- rather than through ODataQueryOptions. Both reasons matter.
-    // (1) Precedent: the nav route is the other place in this file that pages a fully materialized
-    // collection with no IQueryable and no ODataQueryOptions behind it, and inventing a third
-    // vocabulary for one client error is how error surfaces drift. (2) Building the whole
-    // ODataQueryOptions here would additionally start rejecting malformed values of options this
-    // route still ignores ($filter=, $skiptoken=), which is a wire change #357 does not ask for and
-    // whose surface is set by somebody else's constructors; and Microsoft's individual
-    // TopQueryOption/SkipQueryOption both require an ODataQueryOptionParser, which needs an
-    // ODataPath a bound-operation route never parses.
+    // #357: the operation-result twin of ApplyGetAllPaging, deliberately equivalent to it. A second
+    // implementation because that one is a local function closing over the route's ODataQueryOptions,
+    // which this route does not build. $top/$skip are read the way the NAVIGATION-collection route
+    // reads them -- int.TryParse and that route's existing wording -- because building an
+    // ODataQueryOptions here would start rejecting malformed values of options this route still
+    // ignores. The MaxTop message IS shared verbatim with the collection routes: one condition must
+    // not produce two envelopes depending on which route reached the same entity set.
     //
-    // The MaxTop rejection below is OhData's own message and IS shared with the collection routes
-    // verbatim: the same condition must not produce two different envelopes depending on which
-    // route the client reached the same entity set through.
-    //
-    // #543: `continuable` is the function/action split, and it changes exactly one branch -- what
-    // happens when NO $top was sent and the result is larger than the ceiling.
-    //
-    //   continuable: true  (bound FUNCTION) -- cap to MaxTop (or a smaller Prefer: maxpagesize) and
-    //                                          emit a $skip @odata.nextLink for the remainder.
-    //   continuable: false (bound ACTION)   -- THROW. See the block below for why refusing is the
-    //                                          only shape left once truncation and continuation are
-    //                                          both off the table.
-    //
-    // Everything else is shared verbatim and deliberately so: an explicit $top is applied and
-    // validated against MaxTop with the same message, $skip is applied, a malformed value is the
-    // same 400. The same condition must not produce two different envelopes depending on which
-    // route the client reached the same entity set through, and #543 was in part exactly that --
-    // `$top=999` was a 400 on the collection GET and on the bound function, and a silent 200 with
-    // the full result on the bound action.
-    //
-    // Returns false with `error` set when the request cannot be served; true otherwise, with `page`
-    // and `nextLink` set. Throws when an action's result cannot be served within the ceiling.
+    // #543: `continuable` changes exactly one branch -- no $top sent and the result exceeds the
+    // ceiling. A bound FUNCTION caps and emits a $skip nextLink; a bound ACTION THROWS, because
+    // truncation and continuation are both off the table (see below).
     private static bool TryApplyOperationCollectionPaging(
         HttpContext ctx, IEntitySetEndpointSource startupSource, bool continuable, object[] items,
         string entitySetName, string operationName,
