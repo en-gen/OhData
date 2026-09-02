@@ -388,70 +388,23 @@ internal static class OpenTypeJsonOptions
         };
     }
 
-    // Throws on the FIRST offending key rather than collecting them all: a type carrying one bad key
-    // almost always carries it on every instance, so an exhaustive list buys nothing. Values are never
-    // included — this message can reach a log aggregator, and a dynamic value is arbitrary
-    // caller-supplied data.
+    // Three conditions, one pass over the bag, all with the same cause: server-side code put a key
+    // in the container the writer cannot legally emit. Throws on the first -- a type carrying one bad
+    // key carries it on every instance.
     //
-    // The identifier message below does NOT quote the offending key, though the collision message
-    // does. The asymmetry is deliberate: a colliding key is by definition equal to a DECLARED property
-    // name, so it is bounded, developer-authored text. A key rejected by the grammar is by definition
-    // NOT an identifier — it can hold newlines, control characters or arbitrary caller-derived data,
-    // which is exactly the shape that corrupts a log line.
+    // The grammar message does NOT quote the key; the collision message does. A colliding key equals
+    // a declared property name, so it is bounded developer-authored text; a key rejected by the
+    // grammar can hold control characters and reaches a log aggregator.
     //
-    // THREE conditions, one pass over the bag. All have the same cause — server-side code put a key in
-    // the container that the writer cannot legally emit — so they are checked together rather than in
-    // three walks.
+    // DELIBERATE DIVERGENCE from MS, which silently skips the empty key
+    // (ODataResourceSerializer.cs:820) and polices nothing else. Matching that skip would mean
+    // resurrecting the clone-and-substitute machinery deleted with #389 M2, to produce a silent drop.
     //
-    // The NAMELESS-KEY half is a DELIBERATE, RECORDED DIVERGENCE from Microsoft.AspNetCore.OData,
-    // which SILENTLY SKIPS the empty case: ODataResourceSerializer.cs:820,
-    // `if (string.IsNullOrEmpty(dynamicProperty.Key)) { continue; }`, immediately above the
-    // declared-name collision check this file otherwise follows exactly. Three reasons to diverge
-    // here and only here:
-    //   - Matching the skip would mean REINTRODUCING the clone-and-substitute machinery deleted in
-    //     e0edaac (TryCreateEmptyLike, DropShadowedKeys). This getter wrapper no longer produces a
-    //     filtered copy — it inspects and hands back the SAME reference, which is precisely what
-    //     removed the #389 M2 corner where a pre-seeded container silently lost every write.
-    //     Resurrecting deleted code to produce a SILENT drop is the wrong trade.
-    //   - Throwing is consistent with the house style just set for the declared-name collision
-    //     directly below, and both conditions have the identical cause and the identical fix.
-    //   - A nameless key is not an odataIdentifier (CSDL 4.01 §4.1), so emitting it produces a
-    //     payload no conforming OData reader can address — an unaddressable property is not a lesser
-    //     fault than a duplicated one.
-    //
-    // THE LINE IS THE FULL odataIdentifier GRAMMAR, and this is a widening of what used to be a mere
-    // string.IsNullOrWhiteSpace test. The two conditions the old line separated —
-    //   - a key that is null, empty or entirely whitespace, which is NOT A NAME AT ALL, and
-    //   - "has space" or "@odata.type", which ARE names that merely happen to be illegal
-    //     odataIdentifiers
-    // — have the identical cause and the identical fix, and BOTH produce a property that no
-    // conforming OData reader can address. The old line sat between them for a COST reason only:
-    // IsNullOrWhiteSpace short-circuits on the first non-whitespace character, whereas naive grammar
-    // validation is O(length) with a Unicode-category lookup per rune, which measured at ~3x the
-    // declared-name hash lookup already in this loop.
-    //
-    // That cost is what IsValidDynamicPropertyNameCached removes: an ASCII SearchValues fast path
-    // decides an ordinary key in one vectorized pass, measured at 4.6 ns/key against 16.9 for the
-    // naive rune walk and 5.5 for the declared-name hash lookup this loop already performs. So full
-    // grammar validation is now CHEAPER than the lookup it sits beside. The bounded validated-key
-    // cache handles the remaining case, non-ASCII keys, which still pay the rune walk. See
-    // IsValidDynamicPropertyNameCached for the full measurement table and for why the fast path is
-    // deliberately NOT cached.
-    //
-    // A consequence worth stating, because it reverses a documented behaviour: a key made only of
-    // FORMAT characters (U+200B ZERO WIDTH SPACE, category Cf) used to PASS here — it is not
-    // whitespace by char.IsWhiteSpace — while still failing the ABNF, whose leading rune must be L or
-    // Nl. It now fails, as do "has space" and "@odata.type". This check no longer merely rejects what
-    // is not a name; it certifies that what remains is a valid one, so the read and write paths now
-    // hold bag keys to exactly the same grammar.
-    //
-    // Still a DELIBERATE, RECORDED DIVERGENCE from Microsoft.AspNetCore.OData in the same direction
-    // and for the same three reasons — it silently skips the empty key and polices nothing else.
-    //
-    // THREE conditions now, still one pass: the identifier grammar, a collision with a DECLARED name
-    // (ordinal), and a collision with a WITHHELD name (the binder's comparer). The last two are
-    // separate parameters rather than one merged set because they are asked with different comparers
-    // — see ThrowOnKeysThatCannotBeEmitted for why, and why merging them was #398 review HIGH-1.
+    // The line is the full odataIdentifier grammar, widened from IsNullOrWhiteSpace: a key of only
+    // format characters (U+200B) used to pass while still failing the ABNF. Affordable because
+    // IsValidDynamicPropertyNameCached's ASCII fast path is cheaper than the declared-name lookup
+    // beside it. The declared and withheld sets are separate parameters because they are asked with
+    // DIFFERENT comparers -- merging them was #398 review HIGH-1.
     private static void ThrowIfAnyKeyCannotBeEmitted(
         IEnumerable<string> keys,
         HashSet<string> declaredNames,
