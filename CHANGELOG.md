@@ -34,6 +34,39 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Every route that can answer `501` now declares it, so the generated documents advertise it
+  (#576).** After #359/#380/#353 — and #560, which added two more — sixteen route shapes refuse an
+  unimplemented `$`-prefixed system query option with `501 Not Implemented`. None of them declared
+  it: each carried `.Produces(400)` and no `.Produces(501)`, so the OpenAPI, NSwag and Swashbuckle
+  documents advertised a `400` and **no `501` at all**, leaving a generated client with no branch for
+  a response it can genuinely receive. The advertise-vs-serve shape #467 exists to remove, one level
+  up from the field-level ripple that issue governs.
+
+  Nothing shipped was *wrong* — `.Produces(400)` stays accurate for capability-flag refusals,
+  property-allowlist rejections and malformed option values, which are all still `400`. The documents
+  were **incomplete**.
+
+  Added at each route's own registration, to exactly the shapes that consult
+  `FindUnsupportedSystemQueryOption`: the three collection GETs, `/{Set}/$count`, `GetById`, the
+  navigation GET (one template, both branches), the navigation `/$count`, the #313 continuation, the
+  two structural-property reads, and the six operation routes. Deliberately **not** blanket-added —
+  the write routes consult no gate, and declaring `501` there would be the same mismatch pointed the
+  other way. `POST /{Set}`'s existing `501` is unrelated (it is `@odata.bind`, #456) and is unchanged.
+
+  Verified end-to-end on the TestBench's real Swashbuckle document rather than argued from metadata:
+
+  ```
+  GET  /v1/Movies         ['200','400','501']       PUT    /v1/Movies({key})  ['200','400','404','415']
+  GET  /v1/Movies({key})  ['200','400','404','501']  PATCH  /v1/Movies({key})  ['200','400','404','415']
+  GET  /v1/Movies/$count  ['200','400','501']       DELETE /v1/Movies({key})  ['204','400','404']
+  ```
+
+  Pinned in `ApiDescriptionProviderTests` — the ApiExplorer layer all three generators are built on,
+  so one assertion makes them agree rather than three transcriptions free to drift — with a control
+  asserting a write route does **not** declare `501` and has not lost its `400`. The two property
+  reads are asserted under `PropertyRouteDocsEnabled`, the only configuration in which a generated
+  document mentions them at all (#221).
+
 - **⚠ BREAKING CHANGE — the structural-property read routes refuse the system query options they do
   not implement (#560).** `GET /{Set}({key})/{Prop}` and `GET /{Set}({key})/{Prop}/$value` rode
   `GetById` and rejected **nothing**: every `$`-prefixed option, recognized or not, was accepted and
