@@ -213,12 +213,24 @@ public sealed class OhDataBuilder
     {
         if (_profileTypes.Contains(type))
         {
-            if (explicitCall)
+            // #534: the message may only be used when a duplicate AddEntitySetProfile call is what
+            // actually happened. A scan that discovered the type and then ONE explicit call is not a
+            // duplicate call -- and the reverse order (explicit, then a scan that re-discovers it)
+            // was already a silent no-op, so throwing here made the outcome depend on DECLARATION
+            // ORDER and named a remedy that does not exist: there is no second AddEntitySetProfile
+            // to remove.
+            //
+            // Same shape and same fix as #488 item 5(c) on the delta path. It was left out of that
+            // change because this method also owns the CROSS-registration guard below, where a
+            // duplicate must keep throwing -- that half is untouched, and the distinction is the
+            // whole point: same-registration scan+explicit is benign, cross-registration is not.
+            if (explicitCall && _explicitlyRegisteredProfiles.Contains(type))
             {
                 throw new InvalidOperationException(
                     $"OhData: profile type '{type.Name}' is already registered. Remove the duplicate AddEntitySetProfile call.");
             }
-            return; // scanner re-discovery within THIS registration -- already tracked, no-op
+            if (explicitCall) _explicitlyRegisteredProfiles.Add(type);
+            return; // scan re-discovery, or an explicit call confirming a scanned type -- no-op
         }
 
         // Detect the same profile type being registered in a different OhData registration.
@@ -236,7 +248,14 @@ public sealed class OhDataBuilder
 
         _services.AddScoped(type);
         _profileTypes.Add(type);
+        if (explicitCall) _explicitlyRegisteredProfiles.Add(type);
     }
+
+    // #534: _profileTypes alone cannot tell a scan-discovered type from an explicitly registered
+    // one, and that is the distinction the throw above depends on. Per BUILDER, unlike the
+    // cross-registration GlobalProfileRegistry, because the question is "did THIS registration see
+    // two explicit calls" -- the mirror of _explicitlyRegisteredDeltaProfiles.
+    private readonly HashSet<Type> _explicitlyRegisteredProfiles = new();
 
     /// <summary>
     /// Registers a <see cref="DeltaProfile"/>. Its mappings are compiled and validated once at

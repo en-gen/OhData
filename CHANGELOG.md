@@ -45,6 +45,25 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   with the handler's message never in the body. The probe suite is kept, because that was an
   argument from reading and #550's point is that the sibling routes must not disagree.
 
+- **`AddEntitySetProfile<T>()` after an assembly scan no longer throws (#534).** Within ONE
+  registration, `RegisterProfileType` threw for a duplicate when the call was explicit and no-opped
+  when it came from the scanner, so the outcome depended on **declaration order**:
+
+  ```csharp
+  o.AddProfilesFromAssembly(asm).AddEntitySetProfile<X>();   // threw
+  o.AddEntitySetProfile<X>().AddProfilesFromAssembly(asm);   // silent no-op
+  ```
+
+  Both express the same intent — *"scan the assembly, and I also want `X` explicitly"* — and the
+  thrown message named a remedy that does not exist: there is no second `AddEntitySetProfile` call to
+  remove, there is one explicit call and one scan.
+
+  Same shape and same fix as #488 item 5(c) on the delta path, which was not extended here at the
+  time because this method also owns the **cross-registration** `GlobalProfileRegistry` guard (#424),
+  where a duplicate must keep throwing. That half is untouched, and the distinction is the point:
+  same-registration scan+explicit is benign, cross-registration is not. Two genuine explicit calls
+  still throw, and the message now applies.
+
 - **⚠ BREAKING CHANGE — the EDM-nullability rejection is one envelope on all five write routes
   (#569, #558).** #355 made the EDM the single authority on nullability for every write family,
   which made the CONDITION the same everywhere. It did not unify the ANSWER — three wordings and

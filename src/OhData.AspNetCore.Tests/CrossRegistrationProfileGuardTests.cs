@@ -69,6 +69,85 @@ public class CrossRegistrationProfileGuardTests
         Assert.Contains("cannot be shared across registrations", ex.Message, StringComparison.Ordinal);
     }
 
+    // ── #534: within ONE registration, scan + explicit is order-independent ─────────────────
+
+    /// <summary>
+    /// #534. Both orders express the same intent — "scan the assembly, and I also want this type
+    /// explicitly" — so both must behave the same way. <c>explicit → scan</c> was already a silent
+    /// no-op; <c>scan → explicit</c> threw, blaming a *"duplicate AddEntitySetProfile call"* that
+    /// does not exist. Same shape and same fix as #488 item 5(c) on the delta path.
+    /// </summary>
+    [Fact]
+    public void SameRegistration_ScanThenExplicit_DoesNotThrow()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+
+        services.AddOhData("order534A", o => o
+            .WithPrefix("/order534A")
+            .AddProfilesFrom(s => s.InAssemblyOf<ScanTargetProfile>())
+            .AddEntitySetProfile<ScanTargetProfile>());
+
+        Assert.Single(services, d => d.ServiceType == typeof(ScanTargetProfile));
+    }
+
+    /// <summary>The order that already worked, asserted beside it so the pair is the claim.</summary>
+    [Fact]
+    public void SameRegistration_ExplicitThenScan_DoesNotThrow()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+
+        services.AddOhData("order534B", o => o
+            .WithPrefix("/order534B")
+            .AddEntitySetProfile<ScanTargetProfile>()
+            .AddProfilesFrom(s => s.InAssemblyOf<ScanTargetProfile>()));
+
+        Assert.Single(services, d => d.ServiceType == typeof(ScanTargetProfile));
+    }
+
+    /// <summary>
+    /// The bound. A GENUINE duplicate — two explicit calls — must still throw, and the message names
+    /// a remedy that now actually applies. Without this the fix would be "never throw", which
+    /// removes a real diagnostic.
+    /// </summary>
+    [Fact]
+    public void SameRegistration_TwoExplicitCalls_StillThrows()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            services.AddOhData("order534C", o => o
+                .WithPrefix("/order534C")
+                .AddEntitySetProfile<ScanTargetProfile>()
+                .AddEntitySetProfile<ScanTargetProfile>()));
+
+        Assert.Contains("Remove the duplicate AddEntitySetProfile call", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The other bound, and the reason #534 was not folded into #488: this method also owns the
+    /// CROSS-registration guard, which must keep throwing. Scan in one registration, explicit in
+    /// another, is still an error — same two calls as the first test, different registrations.
+    /// </summary>
+    [Fact]
+    public void CrossRegistration_ScanThenExplicit_StillThrows()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddOhData("order534D", o => o
+            .WithPrefix("/order534D")
+            .AddProfilesFrom(s => s.InAssemblyOf<ScanTargetProfile>()));
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            services.AddOhData("order534E", o => o
+                .WithPrefix("/order534E")
+                .AddEntitySetProfile<ScanTargetProfile>()));
+
+        Assert.Contains("cannot be shared across registrations", ex.Message, StringComparison.Ordinal);
+    }
+
     /// <summary>
     /// Two SEPARATE scans (no explicit call on either side) of the same assembly into two
     /// registrations — the shape from the issue's own reproduction snippet, verbatim.
