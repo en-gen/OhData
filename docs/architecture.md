@@ -140,6 +140,12 @@ When both `GetQueryable` and `GetAll` are set, `GetQueryable` wins:
 2. **`GetQueryable`** - framework applies `$filter`/`$orderby`/`$skip`/`$top` via `ApplyTo(IQueryable)`, enabling EF Core SQL pushdown
 3. **`GetAll`** - framework returns all items; no query options applied
 
+A lower handler set alongside a higher one is **dead**: it is not a fallback, and it is not
+consulted for any route. Measured with both `GetQueryable` and `GetAll` set, `GetAll` was invoked
+zero times on the collection `GET`, on `/{Set}/$count`, and on that route's `$filter` fallback.
+Since #378 this is reported at `MapOhData()` with one `Warning` per entity set naming the winner and
+the dead handler, because nothing said so before at any log level — `Trace` included.
+
 ## `$select` - JSON post-processing
 
 When `$select` is active, the framework:
