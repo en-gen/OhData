@@ -46,6 +46,64 @@ public class ApiDescriptionProviderTests
             .First(d => string.Equals(d.HttpMethod, method, System.StringComparison.OrdinalIgnoreCase)
                         && (d.RelativePath ?? "").Contains(relativePathContains));
 
+    private static bool Declares(ApiDescription d, int status) =>
+        d.SupportedResponseTypes.Any(r => r.StatusCode == status);
+
+    /// <summary>
+    /// #576: every route that can answer <c>501</c> declares it, so the three generated documents
+    /// advertise a response a client can genuinely receive.
+    /// <para>
+    /// Asserted at the ApiExplorer layer deliberately -- all three generators are built on
+    /// <see cref="IApiDescriptionGroupCollectionProvider"/>, so one assertion here is what makes
+    /// them agree, rather than three transcriptions that could drift (#467's one-site rule).
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("GET", "Widgets")]            // collection GET
+    [InlineData("GET", "Widgets/$count")]     // /$count
+    [InlineData("GET", "Widgets({key})")]     // GetById
+    public async Task GatedReadRoutes_Declare501(string method, string path)
+    {
+        var (app, provider) = await BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
+        await using var _ = app;
+
+        Assert.True(Declares(FindDescription(provider, method, path), 501),
+            $"{method} {path} can answer 501 but does not declare it");
+    }
+
+    [Theory]
+    [InlineData("Widgets({key})/Name")]          // structural property read (#560)
+    [InlineData("Widgets({key})/Name/$value")]   // its /$value (#560)
+    public async Task GatedPropertyReadRoutes_Declare501(string path)
+    {
+        // #221: property routes are omitted from docs by default, so their .Produces(501) is only
+        // observable with PropertyRouteDocsEnabled -- which is also the only configuration in which
+        // a generated document mentions these routes at all.
+        var (app, provider) = await BuildAsync(o =>
+        {
+            o.WithDefaults(d => d.PropertyRouteDocsEnabled = true);
+            o.AddEntitySetProfile<WidgetProfile>();
+        });
+        await using var _ = app;
+
+        Assert.True(Declares(FindDescription(provider, "GET", path), 501),
+            $"GET {path} can answer 501 but does not declare it");
+    }
+
+    [Fact]
+    public async Task AWriteRouteThatCannotAnswer501_DoesNotDeclareIt()
+    {
+        // The control. 501 is declared where the sigil gate runs, not blanket-added: the write
+        // routes consult no gate, so over-declaring there would be the same advertise-vs-serve
+        // mismatch (#467) pointed the other way.
+        var (app, provider) = await BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
+        await using var _ = app;
+
+        ApiDescription put = FindDescription(provider, "PUT", "Widgets({key})");
+        Assert.False(Declares(put, 501), "PUT declares a 501 it cannot answer");
+        Assert.True(Declares(put, 400), "PUT lost its 400");
+    }
+
     [Fact]
     public async Task EntityPost_GetsBodyParameterDescription()
     {

@@ -2319,7 +2319,7 @@ internal static class OhDataEndpointFactory
                     // JsonNode stage, so it is serialized here, inside the endpoint-filter
                     // pipeline, rather than deferred to IResult execution. See PreRenderedJson.
                     return result is not null ? PreRenderedJson(result, jsonOptions ?? _pascalCaseSerializerOptions) : Results.NoContent();
-                }).Produces(400);
+                }).Produces(400).Produces(501);
                 AddUnboundOperationProduces(rb, opCapture);
                 // Issue #181: document the function's query-string parameters.
                 var unboundFnQueryParams = BuildFunctionQueryParametersMetadata(opCapture.Parameters, skipKey: false);
@@ -2393,7 +2393,7 @@ internal static class OhDataEndpointFactory
                     // JsonNode stage, so it is serialized here, inside the endpoint-filter
                     // pipeline, rather than deferred to IResult execution. See PreRenderedJson.
                     return result is not null ? PreRenderedJson(result, jsonOptions ?? _pascalCaseSerializerOptions) : Results.NoContent();
-                }).Produces(400).Produces(415);
+                }).Produces(400).Produces(415).Produces(501);
                 AddUnboundOperationProduces(rb, opCapture);
                 // Leg 2: an action's parameters are deserialized by name out of a JSON body object
                 // (see the loop above), not a single bound CLR type. #184: synthesize a POCO whose
@@ -2902,6 +2902,8 @@ internal static class OhDataEndpointFactory
     /// The check itself only reads key strings: no parsing, no options construction.
     /// </para>
     /// </summary>
+    // #576: every route that consults this can answer 501, and each one declares .Produces(501)
+    // at its own registration -- keep the two in step when adding a route to either side.
     private static string? FindUnsupportedSystemQueryOption(HttpContext ctx, string[] implemented)
     {
         IQueryCollection query = ctx.Request.Query;
@@ -8111,7 +8113,7 @@ internal static class OhDataEndpointFactory
                   (source.SelectEnabled ? ", $select" : "") +
                   (source.ExpandEnabled ? ", $expand" : "") +
                   (source.CountEnabled ? ", $count" : "") + ".")
-              .WithTags(name).Produces<ODataCollectionResponse<TModel>>(200).Produces(400)
+              .WithTags(name).Produces<ODataCollectionResponse<TModel>>(200).Produces(400).Produces(501)
               .WithMetadata(new OhDataQueryOptionsMetadata(
                   FilterEnabled: source.FilterEnabled,
                   OrderByEnabled: source.OrderByEnabled,
@@ -8817,7 +8819,7 @@ internal static class OhDataEndpointFactory
                   (source.ExpandEnabled ? ", $expand" : "") +
                   (source.CountEnabled ? ", $count" : "") +
                   (source.HasSearch ? ", $search" : "") + ".")
-              .WithTags(name).Produces<ODataCollectionResponse<TModel>>(200).Produces(400)
+              .WithTags(name).Produces<ODataCollectionResponse<TModel>>(200).Produces(400).Produces(501)
               .WithMetadata(new OhDataQueryOptionsMetadata(
                   FilterEnabled: source.FilterEnabled,
                   OrderByEnabled: source.OrderByEnabled,
@@ -9005,7 +9007,7 @@ internal static class OhDataEndpointFactory
                   "not supported on this path — configure GetQueryable to enable them. An omitted " +
                   "$top is capped to MaxTop (or a smaller Prefer: maxpagesize) with an " +
                   "@odata.nextLink for the remainder; set MaxTop=null to return the full set.")
-              .WithTags(name).Produces<ODataCollectionResponse<TModel>>(200).Produces(400)
+              .WithTags(name).Produces<ODataCollectionResponse<TModel>>(200).Produces(400).Produces(501)
               .WithMetadata(new OhDataQueryOptionsMetadata(
                   FilterEnabled: false,
                   OrderByEnabled: false,
@@ -9112,7 +9114,7 @@ internal static class OhDataEndpointFactory
                 {
                     return ODataError(400, "InvalidQueryOption", ex.Message);
                 }
-            }).WithTags(name).Produces<long>(200, "text/plain").Produces(400)
+            }).WithTags(name).Produces<long>(200, "text/plain").Produces(400).Produces(501)
               .WithMetadata(new OhDataQueryOptionsMetadata(
                   // #467 (F3): the GetAll fallback branch above returns 501 UnsupportedQueryOption
                   // for any $filter regardless of the flag -- there is no IQueryable to apply one
@@ -9294,7 +9296,7 @@ internal static class OhDataEndpointFactory
                     return ODataError(400, "InvalidQueryOption", ex.Message);
                 }
             });
-            rb.WithTags(name).Produces<TModel>(200).Produces(400).Produces(404)
+            rb.WithTags(name).Produces<TModel>(200).Produces(400).Produces(404).Produces(501)
               .WithMetadata(new OhDataQueryOptionsMetadata(
                   FilterEnabled: false,
                   OrderByEnabled: false,
@@ -10372,7 +10374,7 @@ internal static class OhDataEndpointFactory
                 .Produces(200,
                     typeof(ODataCollectionResponse<>).MakeGenericType(pagingNav.ElementType),
                     "application/json")
-                .Produces(400);
+                .Produces(400).Produces(501);
             ApplyOperationAuth(contRb, OhDataOperation.Read);
         }
 
@@ -10493,7 +10495,7 @@ internal static class OhDataEndpointFactory
                         ? typeof(ODataCollectionResponse<>).MakeGenericType(navItemType ?? typeof(object))
                         : navItemType ?? typeof(object),
                     "application/json")
-                .Produces(404);
+                .Produces(404).Produces(501);
             ApplyOperationAuth(rb, OhDataOperation.Read);
 
             // Batch 3: GET /{name}({key})/{nav}/$count — standalone count for navigation collections (§11.2.3)
@@ -10538,7 +10540,7 @@ internal static class OhDataEndpointFactory
                     })
                     .WithTags(name)
                     .Produces<long>(200, "text/plain")
-                    .Produces(404);
+                    .Produces(404).Produces(501);
                 ApplyOperationAuth(countRb, OhDataOperation.Read);
             }
 
@@ -11099,7 +11101,7 @@ internal static class OhDataEndpointFactory
                     .WithTags(name)
                     .Produces(200, typeof(ODataPropertyResponse<>).MakeGenericType(propCapture.ClrType), "application/json")
                     .Produces(204)
-                    .Produces(404));
+                    .Produces(404).Produces(501));
                 ApplyOperationAuth(propGetRb, OhDataOperation.Read);
 
                 // GET /{name}({key})/{Property}/$value — raw value (Part 2 §4.7).
@@ -11155,7 +11157,7 @@ internal static class OhDataEndpointFactory
                     // properties only) — never JSON.
                     .Produces<string>(200, "text/plain", "application/octet-stream")
                     .Produces(400)
-                    .Produces(404));
+                    .Produces(404).Produces(501));
                 ApplyOperationAuth(propValueRb, OhDataOperation.Read);
             }
         }
@@ -11420,7 +11422,7 @@ internal static class OhDataEndpointFactory
                 if (result is null) return Results.NoContent();
                 // Gap 1: @odata.context on function results when return type matches TModel
                 return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s, startupSource: source, fnCapture.Name, continuable: true);
-            }).WithTags(name).Produces(400);
+            }).WithTags(name).Produces(400).Produces(501);
             AddBoundOperationProduces<TModel>(rb, fnCapture);
             AddBoundOperationPagingMetadata<TModel>(rb, fnCapture, source);
             // Issue #181: document the function's query-string parameters.
@@ -11506,7 +11508,7 @@ internal static class OhDataEndpointFactory
                 if (result is null) return Results.NoContent();
                 // Gap 1: @odata.context on action results when return type matches TModel
                 return WrapBoundOpResult(ctx, prefix, name, result, source.ModelType, jsonOptions, rootEdmType, registration.EdmModel, s, startupSource: source, actionCapture.Name, continuable: false);
-            }).WithTags(name).Produces(400).Produces(415);
+            }).WithTags(name).Produces(400).Produces(415).Produces(501);
             AddBoundOperationProduces<TModel>(rb, actionCapture);
             AddBoundOperationPagingMetadata<TModel>(rb, actionCapture, source);
             // Leg 2 / #184: synthesize a POCO body schema from the action's parameters (see the
@@ -11590,7 +11592,7 @@ internal static class OhDataEndpointFactory
                         return BadKeyError(logger, ex, key, name);
                     }
                 })
-                .WithTags(name).Produces(400);
+                .WithTags(name).Produces(400).Produces(501);
             AddBoundOperationProduces<TModel>(rb, fnCapture);
             AddBoundOperationPagingMetadata<TModel>(rb, fnCapture, source);
             // Issue #181: document the function's query-string parameters (skip the leading key,
@@ -11693,7 +11695,7 @@ internal static class OhDataEndpointFactory
                         return BadKeyError(logger, ex, key, name);
                     }
                 })
-                .WithTags(name).Produces(400).Produces(415);
+                .WithTags(name).Produces(400).Produces(415).Produces(501);
             AddBoundOperationProduces<TModel>(rb, actionCapture);
             AddBoundOperationPagingMetadata<TModel>(rb, actionCapture, source);
             // Leg 2 / #184: entity-level Parameters[0] is the route key (see BoundOperationDefinition's
