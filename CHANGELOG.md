@@ -11,6 +11,40 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **⚠ BREAKING CHANGE — the structural-property read routes refuse the system query options they do
+  not implement (#560).** `GET /{Set}({key})/{Prop}` and `GET /{Set}({key})/{Prop}/$value` rode
+  `GetById` and rejected **nothing**: every `$`-prefixed option, recognized or not, was accepted and
+  silently discarded under a `200`. Measured on the same fixture, `$select` `$expand` `$filter`
+  `$orderby` `$top` `$skip` `$count` `$apply` `$skiptoken` `$unknown` — all `200` on both routes,
+  while the sibling `GET /{Set}({key})` answered `501` for each.
+
+  That split is the exact thing #359/#380/#353 exist to remove, and it got worse when those issues
+  gated the sibling: one nonsense option, one resource, two answers.
+
+  ```
+  GET /Widgets(1)?$filter=Name eq 'nope'        -> 501 UnsupportedQueryOption
+  GET /Widgets(1)/Name?$filter=Name eq 'nope'   -> 200, filter silently ignored   (before)
+                                                -> 501 UnsupportedQueryOption     (now)
+  ```
+
+  Two calls to the existing shared matcher — no new mechanism, no parsing, and the zero-cost
+  short-circuit on an empty query string is preserved, so a request with no query string is
+  byte-identical. The implemented set is **`$format` alone**. `$select` and `$expand` are refused
+  here even though `GetById` implements them, because this handler goes straight from the property
+  accessor to the envelope and reads no option at all — the same reasoning that gives the
+  single-valued navigation branch its own `$format`-only set rather than sharing its collection
+  sibling's. A non-`$` key is a custom query option (Part 2 §5.2) and is untouched.
+
+  On `/$value` the gate runs **before** the complex-property `400`, so the answer does not depend on
+  which property was addressed; without an option that `400` is unchanged.
+
+  `UnrecognizedSystemQueryOptionTests.DeliberateResiduals_StillIgnoreEveryQueryOption` pinned the old
+  behaviour and said so in its own comment — *"this test is what makes closing them a deliberate act
+  rather than an accident"*. Its two property-route rows move to a new test asserting the refusal,
+  on that suite's own fixture, so the change is visible where the old expectation lived. The service
+  document and `$metadata` stay ungated. The property **writes** stay ungated too, consistently with
+  `PUT`/`PATCH`/`DELETE /{Set}({key})`, which are not gated either.
+
 - **The navigation-authorization warning had a false negative on `RequireResource()` (#549).**
   `RequirementsNotApplied` compares *rendered string tokens*, so when both the declaring and the
   target profile declare `RequireResource()` the two render `"resource-based authorization"`, cancel,
@@ -44,6 +78,25 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   — only `ODataKeyFormatException` since #496. Measured on all three arrivals: `500` every time,
   with the handler's message never in the body. The probe suite is kept, because that was an
   argument from reading and #550's point is that the sibling routes must not disagree.
+
+- **`AddEntitySetProfile<T>()` after an assembly scan no longer throws (#534).** Within ONE
+  registration, `RegisterProfileType` threw for a duplicate when the call was explicit and no-opped
+  when it came from the scanner, so the outcome depended on **declaration order**:
+
+  ```csharp
+  o.AddProfilesFromAssembly(asm).AddEntitySetProfile<X>();   // threw
+  o.AddEntitySetProfile<X>().AddProfilesFromAssembly(asm);   // silent no-op
+  ```
+
+  Both express the same intent — *"scan the assembly, and I also want `X` explicitly"* — and the
+  thrown message named a remedy that does not exist: there is no second `AddEntitySetProfile` call to
+  remove, there is one explicit call and one scan.
+
+  Same shape and same fix as #488 item 5(c) on the delta path, which was not extended here at the
+  time because this method also owns the **cross-registration** `GlobalProfileRegistry` guard (#424),
+  where a duplicate must keep throwing. That half is untouched, and the distinction is the point:
+  same-registration scan+explicit is benign, cross-registration is not. Two genuine explicit calls
+  still throw, and the message now applies.
 
 - **⚠ BREAKING CHANGE — the EDM-nullability rejection is one envelope on all five write routes
   (#569, #558).** #355 made the EDM the single authority on nullability for every write family,
@@ -181,6 +234,56 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   — `grep -ic "no representation"` over the specification returns `0`. 1.7.0 withdrew the claim
   across all twelve sites carrying it and shipped the behaviour labelled as a known deviation;
   this closes the deviation itself.
+
+- **A fast-reject `413` now says it is closing the connection (#601).** The `Content-Length`
+  fast-reject answers **without reading the request body**, so the connection cannot be reused and
+  Kestrel closes it — but the response carried no `Connection: close`, leaving the client no way to
+  know. A keep-alive client reused a dead socket and its next request failed; when that request was
+  a `POST`, the client did not retry it, because POST is not idempotent. RFC 9110 §7.6.1: *"A sender
+  that intends to close a connection … MUST send a `close` connection option."*
+
+  Measured on real Kestrel with a raw socket, before the fix, in both the client-sent-everything and
+  the client-stopped-writing cases:
+
+  ```
+  resp1='HTTP/1.1 413 Payload Too Large'  conn-hdr=[]
+  resp2=<closed, no data>  /  [WinError 10053] An established connection was aborted…
+  ```
+
+  Independent of body size — it reproduced identically at 64 KB and at 30 MB — and of whether the
+  client finished writing. Both `413` sites are fixed: the fast-reject, and the
+  `BadHttpRequestException` one beside it that maps Kestrel's own limit, which is the same
+  unread-body situation reached another way.
+
+  This was the residual half of the k6 flake below. Sizing that body down fixed the `413`
+  assertions; the request *after* them kept failing about half the time, and this is why.
+
+  It is pinned in `RequestBodySizeLimitTests` (all three write verbs, plus a control asserting a
+  normal write does **not** close) rather than in k6: Go's `net/http` strips hop-by-hop headers from
+  responses, so k6 provably cannot observe the header — measured, the assertion fails there while a
+  raw socket sees it. The effect is still visible in k6, because its client honours the close and
+  reconnects.
+
+### Tests
+
+- **The k6 413 case no longer uploads 30 MB, and stops flaking (#598).** `bodySizeLimit` built a body
+  from `'a'.repeat(30000000)` — exactly `EntitySetDefaults.DefaultMaxRequestBodyBytes` **and**
+  Kestrel's own default — so the server wrote its 413 while k6 was still uploading megabytes the
+  server would never read. An early response over an undrained request body resets the connection,
+  and the group failed about half the time: six checks red, including the `413` itself, with the
+  measurement `814c4ce` green → `ff637a3` red → `854da55` green across a one-line `.Where` refactor
+  that cannot affect it. Two PRs (#596, #597) hit it on unrelated work.
+
+  `MovieProfile` now declares `MaxRequestBodyBytes = 64 * 1024` and the case sends ~64 KB. The body
+  stays far below Kestrel's limit, so only OhData rejects it and the undrained remainder is small
+  enough to drain. Six consecutive local runs clean — three cold-start (CI's shape) and three warm —
+  at 998/998 checks, plus 230/230 on `smoke.js`.
+
+  An earlier draft of this entry, and issue #598 itself, claimed the change also added coverage for
+  the profile-override direction. **That is false and is withdrawn**: `RequestBodySizeLimitTests`
+  already drives a profile-level limit (`BodyLimitProfile.MaxRequestBodyBytes = 200`) to a 413 on
+  POST/PUT/PATCH and over a global default, and `RequestBodySizeFeatureTests` covers the feature arm
+  in both directions. The justification is cost and determinism alone.
 
 ### Documentation
 

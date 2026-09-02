@@ -186,6 +186,11 @@ public class MovieProfile : EntitySetProfile<int, Movie>
         CountEnabled = true;
         MaxTop = 50;
 
+        // Below EntitySetDefaults.DefaultMaxRequestBodyBytes (30,000,000), so it is applied
+        // unconditionally -- #474's Math.Min clamp only engages for the framework's own default.
+        // A movie is a few hundred bytes; 64 KB is generous and bounds the write path.
+        MaxRequestBodyBytes = 64 * 1024;
+
         // v1 leaves AllowDeepWrites at its default (false, see EntitySetDefaults): any nested
         // "cast" array in a v1 POST body is stripped (nulled) before Post runs, so a v1 POST
         // never silently creates cast links from a partially-understood request. Compare with

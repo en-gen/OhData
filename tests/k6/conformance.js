@@ -813,13 +813,16 @@ function preferHeader(writeId) {
 // ── 13. The real Kestrel body limit (#203 / #474 / #496) ────────────────────
 function bodySizeLimit() {
   group('request body size limit', () => {
-    // THE case TestServer structurally cannot exercise: Microsoft.AspNetCore.TestHost supplies
-    // no IHttpMaxRequestBodySizeFeature at all, which is why RequestBodySizeFeatureTests has to
-    // install a fake through an IStartupFilter. Here the limit is real Kestrel's.
+    // Runs under real Kestrel, which TestServer cannot stand in for: it supplies no
+    // IHttpMaxRequestBodySizeFeature at all (RequestBodySizeFeatureTests fakes one).
     //
-    // EntitySetDefaults.DefaultMaxRequestBodyBytes is 30,000,000 -- Kestrel's own default, so a
-    // default host sees no behaviour change and only the layer that reports it moves.
-    const LIMIT = 30000000;
+    // MovieProfile's 64 KB MaxRequestBodyBytes is BELOW the framework default, so it is applied
+    // unconditionally -- #474's Math.Min clamp engages only for the default itself.
+    //
+    // #598: a 30 MB body here matched the default AND Kestrel's own limit, so the 413 was written
+    // while k6 was still uploading -- an early response over an undrained body, which reset the
+    // connection about half the time.
+    const LIMIT = 65536;
     const oversized = `{"title":"${'a'.repeat(LIMIT)}","year":2025}`;
     const res = post(`${BASE_URL}/v1/Movies`, oversized, { params: jsonParams() });
     expectError(res, 413, 'RequestEntityTooLarge', 'a body over the limit');
@@ -835,6 +838,13 @@ function bodySizeLimit() {
       // the header; this restates WHY the 413 in particular is the case that matters.
       '413 still carries OData-Version (the header must survive a short-circuit)': (r) => header(r, 'OData-Version') === '4.0',
     });
+    // #601 is NOT asserted here and cannot be: the fast-reject answers before reading the body, so
+    // Kestrel closes the connection, and RFC 9110 §7.6.1 requires the server to send
+    // `Connection: close` -- but Go's net/http strips hop-by-hop headers from the response, so k6
+    // never sees it (measured: the check fails while a raw socket sees the header). Pinned in
+    // RequestBodySizeLimitTests instead. The effect is visible here all the same: k6's client
+    // honours the close and opens a new connection, which is why the request AFTER this one now
+    // succeeds -- it used to fail about half the time, never retried because it is a POST.
 
     // A body comfortably under the limit is unaffected.
     const ok = post(`${BASE_URL}/v1/Movies`, JSON.stringify(newMovie({ title: 'a'.repeat(1000) })), { params: jsonParams() });
@@ -846,13 +856,25 @@ function bodySizeLimit() {
 // ── 14. Deliberate residuals, pinned so a "fix" is a decision rather than a slip ──
 function documentedResiduals() {
   group('documented residuals', () => {
-    // The service document, $metadata and the structural-property routes ignore every query
-    // option -- deliberately, and recorded as such in docs/query-options.md. None of them
-    // generates a link, so none carries #359's echo. Pinned here so the table in that document
-    // is not read as the whole URL surface, and so a future change to it is a choice.
+    // The service document and $metadata ignore every query option -- deliberately, and recorded
+    // as such in docs/query-options.md. Neither generates a link, so neither carries #359's echo.
+    // Pinned here so the table in that document is not read as the whole URL surface, and so a
+    // future change to it is a choice.
     expectStatus(get(`${BASE_URL}/v1/$metadata?$unknown=1`), 200, '$metadata ignores query options');
     expectStatus(get(`${BASE_URL}/v1?$unknown=1`), 200, 'the service document ignores query options');
-    expectStatus(get(`${BASE_URL}/v1/Movies(${SEEDED_MOVIE_ID})/Title?$unknown=1`), 200, 'a structural-property read ignores query options');
+
+    // #560: the structural-property READS were on that list and are not any more -- they were the
+    // one residual that answered differently from the sibling entity route over the same resource.
+    // $select is refused although GET /Movies({key}) implements it: this handler reads no option.
+    expectUnsupportedOption(
+      get(`${BASE_URL}/v1/Movies(${SEEDED_MOVIE_ID})/Title?$unknown=1`), 'a property read: $unknown');
+    expectUnsupportedOption(
+      get(`${BASE_URL}/v1/Movies(${SEEDED_MOVIE_ID})/Title?$select=Title`), 'a property read: $select');
+    expectUnsupportedOption(
+      get(`${BASE_URL}/v1/Movies(${SEEDED_MOVIE_ID})/Title/$value?$unknown=1`), 'a property $value: $unknown');
+    expectStatus(
+      get(`${BASE_URL}/v1/Movies(${SEEDED_MOVIE_ID})/Title?$format=json`), 200,
+      'a property read still accepts $format');
 
     // The GetAll route answers InvalidQueryOption rather than UnsupportedQueryOption for an
     // EMPTY-valued unimplemented option, because TryBuildQueryOptions runs before the sigil gate
