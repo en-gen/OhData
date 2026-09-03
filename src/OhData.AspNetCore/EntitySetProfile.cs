@@ -779,6 +779,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     private string? _authPolicy;
     private IReadOnlyList<string>? _authRoles;
     private List<OperationAuthRule>? _operationAuthRules;
+    private List<ExceptionMappingRule<TModel>>? _exceptionMappings;
     private bool _isAdvancedConfigureOverridden;
 
     // #458: recorded by VisitModelBuilder at the four model-bound call sites; ModelBoundAllowlists.None
@@ -2201,6 +2202,46 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     }
 
     /// <summary>
+    /// Declares how exceptions escaping this profile's handlers become client errors (#581).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Without this, a handler has two exits — return a value, or throw — and throwing is always a
+    /// logged <c>500</c>. A rejection that depends on domain state the framework cannot see ("that
+    /// SKU already exists") had no honest way to reach the client.
+    /// </para>
+    /// <para>
+    /// The framework knows nothing about any data-access library: the adopter names the exception
+    /// type. When several mappings match, the most-derived wins, whatever order they were declared
+    /// in. A mapped exception is still logged at <c>Warning</c> with its stack — converting a fault
+    /// into a 4xx removes it from error dashboards, and that line is the only thing left.
+    /// </para>
+    /// </remarks>
+    /// <example>
+    /// <code>
+    /// ConfigureExceptions(e =&gt; e
+    ///     .Map&lt;DbUpdateConcurrencyException&gt;((ctx, ex) =&gt;
+    ///         OhDataResult.Conflict("ConcurrencyConflict",
+    ///             $"{ctx.EntitySetName} {ctx.Key} was modified by another request.")));
+    /// </code>
+    /// </example>
+    protected void ConfigureExceptions(Action<IExceptionMappingBuilder<TModel>> configure)
+    {
+        ThrowIfSealed();
+        if (configure is null)
+            throw new ArgumentNullException(nameof(configure));
+        if (_exceptionMappings is not null)
+        {
+            throw new InvalidOperationException(
+                "ConfigureExceptions has already been called on this profile. Call it only once.");
+        }
+
+        var builder = new ExceptionMappingBuilder<TModel>();
+        configure(builder);
+        _exceptionMappings = builder.Rules;
+    }
+
+    /// <summary>
     /// Declares per-operation authorization (#199) using a fluent builder whose per-category lambdas
     /// mirror <c>AuthorizationPolicyBuilder</c>. Requirements within a category combine with AND;
     /// later category rules win on overlap. Cannot be combined with the profile-wide
@@ -2254,6 +2295,20 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
 
     bool IEntitySetEndpointSource.HasGetAll => GetAll is not null;
     bool IEntitySetEndpointSource.HasGetQueryable => GetQueryable is not null;
+
+    bool IEntitySetEndpointSource.HasExceptionMappings => _exceptionMappings is { Count: > 0 };
+
+    OhDataResult? IEntitySetEndpointSource.TryMapException(Exception ex, in ExceptionSeamData data)
+    {
+        if (_exceptionMappings is not { Count: > 0 } rules) return null;
+
+        ExceptionMappingRule<TModel>? rule = ExceptionMappingResolver.Resolve(rules, ex);
+        if (rule is null) return null;
+
+        OhDataExceptionContext<TModel> context =
+            ExceptionMappingResolver.BuildContext<TModel>(EntitySetName, data);
+        return rule.Map(context, ex);
+    }
 
     // #492 §1: the ONE answer to "does MapEntitySet register a collection GET for this profile",
     // mirroring the three-branch `if/else if/else if` chain there. It is implemented on the base
@@ -2390,8 +2445,13 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     async Task<object?> IEntitySetEndpointSource.InvokePatchAsync(object key, Delta delta, CancellationToken ct) =>
         (object?)await Patch!.Invoke((TKey)key, (Delta<TModel>)delta, ct);
 
-    Task<bool> IEntitySetEndpointSource.InvokeDeleteAsync(object key, CancellationToken ct) =>
-        Delete!.Invoke((TKey)key, ct);
+    // async, unlike the plain forwarder this replaced (#581). Every other Invoke* member already
+    // was, and #496 relies on it: a handler that throws SYNCHRONOUSLY must have its exception
+    // captured into the returned Task, or it escapes while the arguments are still being evaluated
+    // -- before any wrapper around the call can see it. Delete was the one member for which the
+    // invariant CLAUDE.md states was not actually true.
+    async Task<bool> IEntitySetEndpointSource.InvokeDeleteAsync(object key, CancellationToken ct) =>
+        await Delete!.Invoke((TKey)key, ct);
 }
 
 /// <summary>

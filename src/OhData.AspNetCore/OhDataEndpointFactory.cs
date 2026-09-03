@@ -1384,6 +1384,22 @@ internal static class OhDataEndpointFactory
                 return ODataError(413, "RequestEntityTooLarge",
                     "The request body exceeds the maximum allowed size.");
             }
+            // #581: a rejection a ConfigureExceptions mapping resolved at the seam. Warning rather
+            // than Error -- it is a client error, not a server fault -- but logged WITH the original
+            // exception, because turning a fault into a 4xx removes it from error dashboards and
+            // this line is the only thing left of it.
+            catch (OhDataRejectionException rejection)
+            {
+                groupLogger?.LogWarning(rejection.InnerException,
+                    "OhData: mapped {Exception} to {Status} processing {Method} {Path}",
+                    rejection.InnerException?.GetType().Name,
+                    rejection.Result.StatusCode,
+                    SanitizeLogValue(ctx.HttpContext.Request.Method),
+                    SanitizeLogValue(ctx.HttpContext.Request.Path.ToString()));
+                return ODataError(
+                    rejection.Result.StatusCode, rejection.Result.ErrorCode,
+                    rejection.Result.Message, rejection.Result.Target);
+            }
             catch (Exception ex) when (ex is not OperationCanceledException
                                        || !ctx.HttpContext.RequestAborted.IsCancellationRequested)
             {
@@ -2606,6 +2622,62 @@ internal static class OhDataEndpointFactory
     // Safe because every Invoke* member is an `async` method: a delegate that throws SYNCHRONOUSLY
     // has its exception captured into the returned Task. Issue496ErrorHandlingTests uses exactly that
     // fixture shape, so the invariant is pinned rather than assumed.
+    // #581: resolves this profile's ConfigureExceptions mappings at the SEAM, where the request
+    // state is still in scope. It cannot be done at the group filter: that catch has no idea
+    // whether the throw came from Post or from a nav batchGetAll three levels into an $expand, and
+    // HandlerFaultException is no help either -- IsMisclassifiable wraps only ODataException and
+    // FormatException, so the exceptions worth mapping reach the filter raw.
+    //
+    // Not async: a profile with no mappings -- every profile that has ever existed until now --
+    // gets its Task back untouched, with no extra state machine. The context struct is built inside
+    // the exception filter, so a request that does not throw allocates nothing.
+    private static Task<T> WithExceptionMapping<T>(
+        Task<T> handlerCall,
+        IEntitySetEndpointSource source,
+        HttpContext http,
+        OhDataOperation operation,
+        object? key = null,
+        object? model = null,
+        object? delta = null,
+        string? navigation = null)
+    {
+        if (!source.HasExceptionMappings) return handlerCall;
+        return Awaited(handlerCall, source, http, operation, key, model, delta, navigation);
+
+        static async Task<T> Awaited(
+            Task<T> call, IEntitySetEndpointSource src, HttpContext ctx, OhDataOperation op,
+            object? k, object? m, object? d, string? nav)
+        {
+            OhDataResult? mapped = null;
+            try
+            {
+                return await call.ConfigureAwait(false);
+            }
+            catch (Exception ex) when (TryMap(src, ctx, op, k, m, d, nav, ex, out mapped))
+            {
+                throw new OhDataRejectionException(mapped!, ex);
+            }
+        }
+
+        static bool TryMap(
+            IEntitySetEndpointSource src, HttpContext ctx, OhDataOperation op,
+            object? k, object? m, object? d, string? nav, Exception ex, out OhDataResult? result)
+        {
+            result = null;
+
+            // #493: a request the client actually aborted is never a client error to report -- there
+            // is no response left to write. The same condition the group filter declines on.
+            if (ex is OperationCanceledException && ctx.RequestAborted.IsCancellationRequested)
+                return false;
+
+            var data = new ExceptionSeamData(
+                op, ctx.Request.QueryString.HasValue ? ctx.Request.QueryString.Value : null,
+                k, m, d, nav);
+            result = src.TryMapException(ex, in data);
+            return result is not null;
+        }
+    }
+
     private static async Task<T> AsHandlerFault<T>(Task<T> handlerCall)
     {
         try
@@ -7977,7 +8049,7 @@ internal static class OhDataEndpointFactory
                             $"The value of '$top' ({options.Top.Value}) exceeds the maximum allowed value ({source.MaxTop.Value}).");
                     }
 
-                    var odataResult = await AsHandlerFault(odataSrc.InvokeGetODataQueryableAsync(options, ct));
+                    var odataResult = await AsHandlerFault(WithExceptionMapping(odataSrc.InvokeGetODataQueryableAsync(options, ct), source, ctx, OhDataOperation.Read));
                     var queryable = odataResult.Items is IQueryable<TModel> typedQ
                         ? typedQ
                         : odataResult.Items.Cast<TModel>().AsQueryable();
@@ -8141,7 +8213,7 @@ internal static class OhDataEndpointFactory
                     if (capabilityError is not null) return capabilityError;
 
                     var s = ResolveHandlers(ctx);
-                    var queryable = (IQueryable<TModel>)(await AsHandlerFault(s.InvokeGetQueryableAsync(ct)))
+                    var queryable = (IQueryable<TModel>)(await AsHandlerFault(WithExceptionMapping(s.InvokeGetQueryableAsync(ct), source, ctx, OhDataOperation.Read)))
                                     .Cast<TModel>();
 
                     // #402: broad-catch-to-400 around exactly the construction. See TryBuildQueryOptions.
@@ -8178,7 +8250,7 @@ internal static class OhDataEndpointFactory
                                 "This resource does not support $search. Configure the Search handler to enable it.");
                         }
 
-                        var searchResults = await AsHandlerFault(s.InvokeSearchAsync(searchTermQ.ToString(), ct));
+                        var searchResults = await AsHandlerFault(WithExceptionMapping(s.InvokeSearchAsync(searchTermQ.ToString(), ct), source, ctx, OhDataOperation.Read));
                         var searchItems = searchResults.Cast<TModel>().AsQueryable();
                         // Continue with filter/orderby/top/skip on searchItems
                         queryable = searchItems;
@@ -8957,7 +9029,7 @@ internal static class OhDataEndpointFactory
                                 "This resource does not support $search. Configure the Search handler to enable it.");
                         }
 
-                        var searchResults = await AsHandlerFault(s.InvokeSearchAsync(searchTerm.ToString(), ct));
+                        var searchResults = await AsHandlerFault(WithExceptionMapping(s.InvokeSearchAsync(searchTerm.ToString(), ct), source, ctx, OhDataOperation.Read));
                         object[] searchItems = searchResults.ToArray();
                         var (pagedSearchItems, searchPreTotal, searchNextLink) = ApplyGetAllPaging(searchItems);
 
@@ -8975,7 +9047,7 @@ internal static class OhDataEndpointFactory
                         return ODataEnvelopeResult(searchEnvelope, jsonOptions);
                     }
 
-                    object? result = await AsHandlerFault(s.InvokeGetAllAsync(ct));
+                    object? result = await AsHandlerFault(WithExceptionMapping(s.InvokeGetAllAsync(ct), source, ctx, OhDataOperation.Read));
                     var enumerable = result as IEnumerable<TModel> ?? Enumerable.Empty<TModel>();
                     var rawItems = enumerable.ToArray();
                     var (pagedItems, preTotal, nextLink) = ApplyGetAllPaging(rawItems);
@@ -9067,7 +9139,7 @@ internal static class OhDataEndpointFactory
                     if (s is IODataEntitySetEndpointSource odataCountSrc && odataCountSrc.HasGetODataQueryable)
                     {
                         // Priority 1 profiles apply query options themselves; don't re-apply $filter.
-                        var countResult = await AsHandlerFault(odataCountSrc.InvokeGetODataQueryableAsync(options, ct));
+                        var countResult = await AsHandlerFault(WithExceptionMapping(odataCountSrc.InvokeGetODataQueryableAsync(options, ct), source, ctx, OhDataOperation.Read));
                         var queryable = countResult.Items is IQueryable<TModel> tq
                             ? tq
                             : countResult.Items.Cast<TModel>().AsQueryable();
@@ -9077,7 +9149,7 @@ internal static class OhDataEndpointFactory
                     }
                     if (source.HasGetQueryable)
                     {
-                        var q = (IQueryable<TModel>)(await AsHandlerFault(s.InvokeGetQueryableAsync(ct))).Cast<TModel>();
+                        var q = (IQueryable<TModel>)(await AsHandlerFault(WithExceptionMapping(s.InvokeGetQueryableAsync(ct), source, ctx, OhDataOperation.Read))).Cast<TModel>();
                         var filtered = options.Filter is not null
                             ? (IQueryable<TModel>)options.Filter.ApplyTo(q, cachedCountSettings)
                             : q;
@@ -9096,7 +9168,7 @@ internal static class OhDataEndpointFactory
                             "$filter is not supported on this resource. Configure GetQueryable to enable server-side filtering.");
                     }
 
-                    var items = await AsHandlerFault(s.InvokeGetAllAsync(ct)) as IEnumerable<TModel> ?? Enumerable.Empty<TModel>();
+                    var items = await AsHandlerFault(WithExceptionMapping(s.InvokeGetAllAsync(ct), source, ctx, OhDataOperation.Read)) as IEnumerable<TModel> ?? Enumerable.Empty<TModel>();
                     // Fast path for ICollection (List, Array, etc.) — no enumeration needed.
                     long count = items is ICollection<TModel> coll
                         ? (long)coll.Count
@@ -9216,7 +9288,7 @@ internal static class OhDataEndpointFactory
                             : null;
                     }
 
-                    object? result = await AsHandlerFault(s.InvokeGetByIdAsync(parsedKey!, ct));
+                    object? result = await AsHandlerFault(WithExceptionMapping(s.InvokeGetByIdAsync(parsedKey!, ct), source, ctx, OhDataOperation.Read, key: parsedKey));
                     string? etagValue = null;
                     if (result is not null && source.HasETag)
                     {
@@ -9560,7 +9632,7 @@ internal static class OhDataEndpointFactory
 
                     var s = ResolveHandlers(ctx);
                     logger?.LogDebug("POST {Prefix}/{Name}", prefix, name);
-                    object? result = await s.InvokePostAsync(model, ct);
+                    object? result = await WithExceptionMapping(s.InvokePostAsync(model, ct), source, ctx, OhDataOperation.Create, model: model);
                     if (result is null)
                     {
                         // #496 finding 1: a null return is a SERVER-side contract violation, not a
@@ -9799,13 +9871,13 @@ internal static class OhDataEndpointFactory
                         }
                     }
 
-                    object? result = await s.InvokePutAsync(parsedKey!, model, ct);
+                    object? result = await WithExceptionMapping(s.InvokePutAsync(parsedKey!, model, ct), source, ctx, OhDataOperation.Update, key: parsedKey, model: model);
 
                     // Gap 3: Upsert via PUT (§11.4.4) — create entity when result is null and AllowUpsert enabled
                     bool wasCreated = false;
                     if (result is null && source.AllowUpsert && source.HasPost)
                     {
-                        result = await s.InvokePostAsync(model, ct);
+                        result = await WithExceptionMapping(s.InvokePostAsync(model, ct), source, ctx, OhDataOperation.Create, model: model);
                         wasCreated = true;
                     }
 
@@ -9996,7 +10068,7 @@ internal static class OhDataEndpointFactory
                         ValidateEdmRequiredDelta(edmRequiredProps, patchDelta);
                     if (patchNullabilityFail is not null) return patchNullabilityFail;
 
-                    object? result = await s.InvokePatchAsync(parsedKey!, patchDelta, ct);
+                    object? result = await WithExceptionMapping(s.InvokePatchAsync(parsedKey!, patchDelta, ct), source, ctx, OhDataOperation.Update, key: parsedKey, delta: patchDelta);
 
                     string? patchEtag = null;
                     if (result is not null && source.HasETag)
@@ -10057,7 +10129,7 @@ internal static class OhDataEndpointFactory
                     object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
                     var etagCheck = await CheckETagAsync(source, s, ctx, parsedKey!, ct);
                     if (etagCheck is not null) return etagCheck;
-                    bool deleted = await s.InvokeDeleteAsync(parsedKey!, ct);
+                    bool deleted = await WithExceptionMapping(s.InvokeDeleteAsync(parsedKey!, ct), source, ctx, OhDataOperation.Delete, key: parsedKey);
                     if (!deleted && !source.IdempotentDelete)
                         return ODataError(404, "NotFound", $"{name} with key '{key}' was not found.");
                     return Results.NoContent();
@@ -11294,7 +11366,7 @@ internal static class OhDataEndpointFactory
                                 $"Could not set property '{propName}' to the supplied value.", target: propName);
                         }
 
-                        object? result = await s.InvokePatchAsync(parsedKey!, delta, ct);
+                        object? result = await WithExceptionMapping(s.InvokePatchAsync(parsedKey!, delta, ct), source, ctx, OhDataOperation.Update, key: parsedKey, delta: delta);
                         if (result is null)
                             return ODataError(404, "NotFound", $"{name} with key '{key}' was not found.");
 
@@ -11350,7 +11422,7 @@ internal static class OhDataEndpointFactory
 
                         var delta = new Microsoft.AspNetCore.OData.Deltas.Delta<TModel>();
                         delta.TrySetPropertyValue(clrPropName, null);
-                        object? result = await s.InvokePatchAsync(parsedKey!, delta, ct);
+                        object? result = await WithExceptionMapping(s.InvokePatchAsync(parsedKey!, delta, ct), source, ctx, OhDataOperation.Update, key: parsedKey, delta: delta);
                         if (result is null)
                             return ODataError(404, "NotFound", $"{name} with key '{key}' was not found.");
 

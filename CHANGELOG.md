@@ -11,6 +11,54 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A handler can produce a client error: `ConfigureExceptions` (#581).** Every handler delegate
+  returns a domain type, so user code had exactly two exits — return a value, or throw — and the
+  throw exit was hard-wired to `500`. A rejection depending on domain state the framework cannot see
+  (*"that SKU already exists"*) had no honest way to reach the client: pretend it succeeded, or
+  report a server fault for a client error.
+
+  ```csharp
+  ConfigureExceptions(e => e
+      .Map<DbUpdateConcurrencyException>((ctx, ex) =>
+          OhDataResult.Conflict("ConcurrencyConflict",
+              $"{ctx.EntitySetName} {ctx.Key} was modified by another request.")));
+  ```
+
+  `OhDataResult`'s constructor is private and the factory set is closed — `BadRequest`, `Forbidden`,
+  `NotFound`, `Conflict`, `PreconditionFailed` — so a status the framework does not serve is
+  unrepresentable rather than validated. **No `Created`**: the framework already decides 201 vs 204
+  from `Prefer: return=minimal`, and a handler choosing it would be a second authority on a question
+  it cannot answer, since it never sees `Prefer`. **No `Unauthorized`**: 401 is authentication,
+  settled before a handler runs.
+
+  The framework keeps its **zero compile-time dependency on any data-access library** — the adopter
+  names the exception type. Most-derived mapping wins whatever order they were declared in.
+  `Map<Exception>` is refused at declaration: #494 established that SqlClient reports connection-pool
+  exhaustion as a plain `InvalidOperationException` and that `ObjectDisposedException` derives from
+  it, so a catch-everything mapping reports infrastructure faults as client errors.
+
+  Resolved **at the seam**, not at the group filter. That filter cannot reconstruct context — it has
+  no idea whether the throw came from `Post` or from a nav `batchGetAll` three levels into an
+  `$expand` — and `HandlerFaultException` is no help either: `IsMisclassifiable` wraps only
+  `ODataException` and `FormatException`, so the exceptions worth mapping reach it raw. The seam
+  already holds the request state as locals, so it resolves the mapping and carries only the result.
+  `OhDataExceptionContext<TModel>` is a `readonly struct` built inside the exception filter, and a
+  profile with no mappings gets its `Task` back untouched — nothing allocates on either path.
+
+  A mapped exception is still logged at `Warning` **with the original exception**: turning a fault
+  into a 4xx removes it from error dashboards, and that line is all that is left of it. Anything
+  unmapped is unchanged — a logged `500` with the generic envelope. `docs/error-handling.md` is new.
+
+- **`InvokeDeleteAsync` is now `async`, and `CLAUDE.md`'s claim about it is corrected (#581).** That
+  file states the `AsHandlerFault` design is safe "because every `Invoke*` member is an `async`
+  method and therefore captures a synchronously-throwing lambda's exception into the returned Task".
+  Measured: **`InvokeDeleteAsync` was the one member for which that was false** — a plain
+  expression-bodied forwarder, so a `Delete` handler throwing synchronously escaped while the
+  arguments were still being evaluated, before any wrapper could see it. Found because #581's
+  mapping fired on all seven other seams and not on `Delete`. No shipped defect (`AsHandlerFault` is
+  not used on that route), but the invariant is now true rather than asserted.
+
+
 - **A startup warning when a collection handler is shadowed by a higher-precedence one (#378).** The
   collection `GET` dispatches `GetODataQueryable` > `GetQueryable` > `GetAll` through an unguarded
   `else if` chain, so a lower handler set alongside a higher one is **dead** — and nothing said so
