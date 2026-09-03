@@ -60,6 +60,17 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   logged at `Debug` rather than `Warning`: a returned rejection is an ordinary outcome the handler
   chose, while a mapped fault was *reclassified* and keeps the louder line.
 
+  **The ApiCompat baseline is SUSPENDED for the 2.0.0 cycle, not suppressed.** CI packs every build
+  against the published `1.7.0` baseline, so these eight intentional breaks fail it as `CP0002` —
+  and ApiCompat can only baseline against a *published* version, so there is no 2.x package to point
+  at until 2.0.0 exists. The two ways out are a suppression file or suspending the baseline; this
+  repo has never had a `CompatibilitySuppressions.xml` and its first one should not be a permanent
+  record of a break that is deliberate and documented here. So the
+  `PackageValidationBaselineVersion` line is commented out on `OhData.AspNetCore` only —
+  `EnablePackageValidation` stays `true`, so TFM-compat and same-version checks still run, and the
+  four companion packages keep their baselines because their APIs did not change.
+  `docs/releasing.md` step 8(d) now carries the restore.
+
   Also verified: the mapping declines a request the client actually **aborted** — #493's exact
   condition — while still mapping a `TaskCanceledException` from a live request, which is what
   `HttpClient` throws on its own timeout. Both sides are pinned.
