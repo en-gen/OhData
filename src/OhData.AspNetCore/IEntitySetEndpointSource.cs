@@ -33,6 +33,17 @@ internal interface IEntitySetEndpointSource
     bool HasGetAll { get; }
     bool HasGetQueryable { get; }
 
+    /// <summary>#581: <c>true</c> when the profile declared any <c>ConfigureExceptions</c> mapping.</summary>
+    bool HasExceptionMappings { get; }
+
+    /// <summary>
+    /// #581: the rejection the profile maps <paramref name="ex"/> to, or <c>null</c> when nothing
+    /// matches. Called from a seam's exception filter, which is where the request state in
+    /// <paramref name="data"/> is still in scope; the typed context is built here so the interface
+    /// itself stays non-generic, as the <c>Invoke*Async</c> members do.
+    /// </summary>
+    OhDataResult? TryMapException(Exception ex, in ExceptionSeamData data);
+
     /// <summary>
     /// #492: <c>true</c> when this profile causes <c>MapEntitySet</c> to register a collection GET
     /// (<c>GET /{prefix}/{EntitySet}</c>) by ANY of the three read paths — Priority-1
