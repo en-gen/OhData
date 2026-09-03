@@ -223,7 +223,7 @@ framework does not compute.
 
 For those two families, a conditional header is ignored and the action runs.
 
-> **History, recorded so the exclusion is not reinstated.** Until 1.8.0, *entity-bound* actions
+> **History, recorded so the exclusion is not reinstated.** Until 2.0.0, *entity-bound* actions
 > were excluded too, defended by the claim that an action-invocation resource *"has no
 > representation and therefore no entity tag"*, citing Protocol §11.5.4. **That phrase does not
 > appear anywhere in Part 1** — `grep -ic "no representation"` over the specification returns `0` —
