@@ -97,7 +97,7 @@ public sealed class LvNodeProfile : EntitySetProfile<int, LvNode>
         FilterEnabled = true;
         OrderByEnabled = true;
         CountEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.LvNodes.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.LvNodes.AsQueryable());
         HasMany(x => x.Children); // delegate-less, self-referential → $levels-pushable
         HasMany(x => x.Tags);     // delegate-less non-self nav
     }
@@ -115,7 +115,7 @@ public sealed class LvShallowNodeProfile : EntitySetProfile<int, LvNode>
         OrderByEnabled = true;
         CountEnabled = true;
         MaxExpansionDepth = 2;
-        GetQueryable = _ => Task.FromResult(db.LvNodes.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.LvNodes.AsQueryable());
         HasMany(x => x.Children);
         HasMany(x => x.Tags);
     }
@@ -134,7 +134,7 @@ public sealed class LvSecureNodeProfile : EntitySetProfile<int, LvNode>
         FilterEnabled = true;
         OrderByEnabled = true;
         CountEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.LvNodes.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.LvNodes.AsQueryable());
         HasMany(x => x.Children,
             getAll: (nodeId, ct) =>
             {
@@ -155,7 +155,7 @@ public sealed class LvRenamedNodeProfile : EntitySetProfile<int, LvRenamedNode>
         FilterEnabled = true;
         OrderByEnabled = true;
         CountEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.LvRenamedNodes.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.LvRenamedNodes.AsQueryable());
         HasMany(x => x.Children);
     }
 }

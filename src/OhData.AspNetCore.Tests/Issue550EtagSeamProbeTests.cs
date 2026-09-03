@@ -87,8 +87,8 @@ internal class X550Profile : EntitySetProfile<int, X550Thing>
         // a 400 with the message passed through verbatim, which is the disclosure #496 4(b) closes.
         UseETag(x => Boom(x));
 
-        GetAll = _ => Task.FromResult<IEnumerable<X550Thing>>(new[] { new X550Thing { Id = 1 } });
-        GetById = (id, _) => Task.FromResult<X550Thing?>(new X550Thing { Id = id });
+        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<X550Thing>>(new[] { new X550Thing { Id = 1 } });
+        GetById = (id, _) => OhDataResult.SuccessTask<X550Thing>(new X550Thing { Id = id });
 
         BindFunction(Recent);
     }

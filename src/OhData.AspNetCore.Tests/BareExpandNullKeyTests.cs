@@ -65,7 +65,7 @@ public sealed class NkAuthorProfile : EntitySetProfile<string, NkAuthor>
         ExpandEnabled = true;
         FilterEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.Authors.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.Authors.AsQueryable());
         HasMany(x => x.Books); // delegate-less → pushable, so pageable
     }
 }

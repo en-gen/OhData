@@ -128,29 +128,29 @@ internal class AuthMatrixFullProfile : EntitySetProfile<int, AuthMatrixParent>
         EntitySetName = "AuthMatrixParents";
         RequireAuthorization();
 
-        GetAll = (ct) => Task.FromResult<IEnumerable<AuthMatrixParent>>(_parents);
-        GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(p => p.Id == id));
+        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<AuthMatrixParent>>(_parents);
+        GetById = (id, ct) => OhDataResult.SuccessTask(_parents.FirstOrDefault(p => p.Id == id));
         Post = (model, ct) =>
         {
             model.Id = _parents.Count > 0 ? _parents.Max(p => p.Id) + 1 : 1;
             _parents.Add(model);
-            return Task.FromResult<AuthMatrixParent?>(model);
+            return OhDataResult.SuccessTask<AuthMatrixParent>(model);
         };
         Put = (id, model, ct) =>
         {
             _parents.RemoveAll(p => p.Id == id);
             model.Id = id;
             _parents.Add(model);
-            return Task.FromResult(model);
+            return OhDataResult.SuccessTask(model);
         };
         Patch = (id, delta, ct) =>
         {
             var existing = _parents.FirstOrDefault(p => p.Id == id);
-            if (existing is null) return Task.FromResult<AuthMatrixParent?>(null);
+            if (existing is null) return OhDataResult.SuccessTask<AuthMatrixParent>(null);
             delta.Patch(existing);
-            return Task.FromResult<AuthMatrixParent?>(existing);
+            return OhDataResult.SuccessTask<AuthMatrixParent>(existing);
         };
-        Delete = (id, ct) => Task.FromResult(_parents.RemoveAll(p => p.Id == id) > 0);
+        Delete = (id, ct) => OhDataResult.SuccessTask(_parents.RemoveAll(p => p.Id == id) > 0);
 
         HasMany(
             navigation: x => x.Children!,
@@ -200,29 +200,29 @@ internal class RoleMatrixFullProfile : EntitySetProfile<int, RoleMatrixParent>
         EntitySetName = "RoleMatrixParents";
         RequireRoles("admin");
 
-        GetAll = (ct) => Task.FromResult<IEnumerable<RoleMatrixParent>>(_parents);
-        GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(p => p.Id == id));
+        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<RoleMatrixParent>>(_parents);
+        GetById = (id, ct) => OhDataResult.SuccessTask(_parents.FirstOrDefault(p => p.Id == id));
         Post = (model, ct) =>
         {
             model.Id = _parents.Count > 0 ? _parents.Max(p => p.Id) + 1 : 1;
             _parents.Add(model);
-            return Task.FromResult<RoleMatrixParent?>(model);
+            return OhDataResult.SuccessTask<RoleMatrixParent>(model);
         };
         Put = (id, model, ct) =>
         {
             _parents.RemoveAll(p => p.Id == id);
             model.Id = id;
             _parents.Add(model);
-            return Task.FromResult(model);
+            return OhDataResult.SuccessTask(model);
         };
         Patch = (id, delta, ct) =>
         {
             var existing = _parents.FirstOrDefault(p => p.Id == id);
-            if (existing is null) return Task.FromResult<RoleMatrixParent?>(null);
+            if (existing is null) return OhDataResult.SuccessTask<RoleMatrixParent>(null);
             delta.Patch(existing);
-            return Task.FromResult<RoleMatrixParent?>(existing);
+            return OhDataResult.SuccessTask<RoleMatrixParent>(existing);
         };
-        Delete = (id, ct) => Task.FromResult(_parents.RemoveAll(p => p.Id == id) > 0);
+        Delete = (id, ct) => OhDataResult.SuccessTask(_parents.RemoveAll(p => p.Id == id) > 0);
 
         HasMany(
             navigation: x => x.Children!,

@@ -156,6 +156,16 @@ reject the release.
      package-quality-gate section above for why a suppression is dead once the baseline moves past
      the release that shipped its diff). This is deliberately here rather than in release prep, so
      the *next* cycle develops against the release that just shipped — #590.
+
+     **On a MAJOR, the baseline is SUSPENDED during the cycle and this step RESTORES it.** An
+     intentional API break cannot be diffed against the previous major without reporting it on every
+     build, and there is no new-major package to baseline against until the release exists. So the
+     `PackageValidationBaselineVersion` line is commented out for the duration (see
+     `src/OhData.AspNetCore/OhData.AspNetCore.csproj`; `EnablePackageValidation` stays `true`, so
+     only the cross-version diff is off) and **uncommented here, pointing at the major just
+     published**. Suspending rather than suppressing keeps the repo free of a
+     `CompatibilitySuppressions.xml` whose entries would permanently record a break that is
+     deliberate and already in the CHANGELOG. First applied for 2.0.0 (#581).
    Release PRs (`release/X.Y.Z` → `main`) must likewise be merged with a merge commit, never
    squashed. Squash remains the right choice for ordinary feature PRs only.
 

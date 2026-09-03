@@ -38,7 +38,7 @@ public class ETagSelectorValidationTests
     {
         protected DocProfileBase() : base(x => x.Id)
         {
-            GetById = (id, ct) => Task.FromResult<Doc?>(new Doc { Id = id });
+            GetById = (id, ct) => OhDataResult.SuccessTask<Doc>(new Doc { Id = id });
         }
     }
 

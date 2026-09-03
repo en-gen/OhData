@@ -274,7 +274,7 @@ public sealed class AspNetCoreOpenApiDocumentGeneratorSettingsExtensionsTests
             EntitySetName = "IgnoreWidgets";
             FilterEnabled = true;
             Ignore(w => w.Secret);
-            GetQueryable = (ct) => Task.FromResult(Store.AsQueryable());
+            GetQueryable = (ct) => OhDataResult.SuccessTask(Store.AsQueryable());
         }
     }
 
@@ -284,8 +284,8 @@ public sealed class AspNetCoreOpenApiDocumentGeneratorSettingsExtensionsTests
         {
             EntitySetName = "SecuredWidgets";
             ConfigureAuthorization(a => a.Read(r => r.RequireRole("readers")));
-            GetQueryable = (ct) => Task.FromResult(Store.AsQueryable());
-            GetById = (id, ct) => Task.FromResult(Store.FirstOrDefault(w => w.Id == id));
+            GetQueryable = (ct) => OhDataResult.SuccessTask(Store.AsQueryable());
+            GetById = (id, ct) => OhDataResult.SuccessTask(Store.FirstOrDefault(w => w.Id == id));
         }
     }
 }

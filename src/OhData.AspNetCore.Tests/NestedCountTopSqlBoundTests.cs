@@ -64,7 +64,7 @@ public sealed class NcParentProfile : EntitySetProfile<int, NcParent>
         OrderByEnabled = true;
         FilterEnabled = true;
         CountEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.NcParents.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.NcParents.AsQueryable());
         HasMany(x => x.Children); // delegate-less → pushed
     }
 }

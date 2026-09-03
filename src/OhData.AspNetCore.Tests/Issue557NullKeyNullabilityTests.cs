@@ -253,20 +253,20 @@ internal class K557Profile : EntitySetProfile<string, K557Thing>
     {
         EntitySetName = "K557Things";
 
-        GetById = (code, _) => Task.FromResult<K557Thing?>(new K557Thing { Code = code, Name = "n" });
+        GetById = (code, _) => OhDataResult.SuccessTask<K557Thing>(new K557Thing { Code = code, Name = "n" });
 
         Post = (thing, _) =>
         {
             PostReached = true;
             thing.Code ??= "generated";
-            return Task.FromResult<K557Thing?>(thing);
+            return OhDataResult.SuccessTask<K557Thing>(thing);
         };
 
         Put = (code, thing, _) =>
         {
             PutReached = true;
             thing.Code = code;
-            return Task.FromResult(thing);
+            return OhDataResult.SuccessTask(thing);
         };
     }
 }
@@ -290,7 +290,7 @@ internal class K557IntKeyProfile : EntitySetProfile<int, K557IntThing>
         Post = (thing, _) =>
         {
             PostReached = true;
-            return Task.FromResult<K557IntThing?>(thing);
+            return OhDataResult.SuccessTask<K557IntThing>(thing);
         };
     }
 }
@@ -315,7 +315,7 @@ internal class K557OptedOutProfile : EntitySetProfile<string, K557OptedOutThing>
         Post = (thing, _) =>
         {
             PostReached = true;
-            return Task.FromResult<K557OptedOutThing?>(thing);
+            return OhDataResult.SuccessTask<K557OptedOutThing>(thing);
         };
     }
 }

@@ -55,12 +55,12 @@ public class ETagPrecisionTests
         public ReadingProfile(ReadingStore store) : base(x => x.Id)
         {
             EntitySetName = "Readings";
-            GetById = (id, ct) => Task.FromResult(store.Items.TryGetValue(id, out var r) ? r : null);
+            GetById = (id, ct) => OhDataResult.SuccessTask(store.Items.TryGetValue(id, out var r) ? r : null);
             Put = (id, reading, ct) =>
             {
                 reading.Id = id;
                 store.Items[id] = reading;
-                return Task.FromResult(reading);
+                return OhDataResult.SuccessTask(reading);
             };
             UseETag(x => x.Id, x => x.UpdatedAt);
         }

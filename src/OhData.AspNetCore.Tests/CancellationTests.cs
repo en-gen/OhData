@@ -61,7 +61,7 @@ public class CancellationTests
                     coord.ObservedCancelGetAll.TrySetResult(true);
                     throw;
                 }
-                return Array.Empty<Widget>();
+                return OhDataResult.Success<IEnumerable<Widget>>(Array.Empty<Widget>());
             };
 
             GetById = async (id, ct) =>
@@ -76,7 +76,7 @@ public class CancellationTests
                     coord.ObservedCancelGetById.TrySetResult(true);
                     throw;
                 }
-                return (Widget?)null;
+                return OhDataResult.Success<Widget>(null);
             };
 
             Post = async (widget, ct) =>
@@ -93,7 +93,7 @@ public class CancellationTests
                 }
                 // Only reached if cancellation was NOT observed — proves a "committed" write.
                 coord.PostCommitted = true;
-                return widget;
+                return OhDataResult.Success(widget);
             };
         }
     }

@@ -24,8 +24,8 @@ internal sealed class NullPostProfile : EntitySetProfile<int, Widget>
     public NullPostProfile() : base(x => x.Id)
     {
         EntitySetName = "NullPostWidgets";
-        GetById = (id, ct) => Task.FromResult<Widget?>(null);
-        Post = (widget, ct) => Task.FromResult<Widget?>(null);
+        GetById = (id, ct) => OhDataResult.SuccessTask<Widget>(null);
+        Post = (widget, ct) => OhDataResult.SuccessTask<Widget>(null);
     }
 }
 
@@ -54,7 +54,7 @@ internal sealed class HandlerFormatFaultProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "HandlerFormatFaultWidgets";
         GetById = (id, ct) => throw new FormatException(Marker);
-        GetAll = ct => Task.FromResult<IEnumerable<Widget>>(Array.Empty<Widget>());
+        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<Widget>>(Array.Empty<Widget>());
     }
 }
 
@@ -85,8 +85,8 @@ internal sealed class NavDelegateODataFaultProfile : EntitySetProfile<int, NavFa
         EntitySetName = "NavFaultOrders";
         ExpandEnabled = true;
 
-        GetAll = ct => Task.FromResult<IEnumerable<NavFaultOrder>>(_orders);
-        GetById = (id, ct) => Task.FromResult(_orders.FirstOrDefault(o => o.Id == id));
+        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<NavFaultOrder>>(_orders);
+        GetById = (id, ct) => OhDataResult.SuccessTask(_orders.FirstOrDefault(o => o.Id == id));
 
         HasMany(x => x.Lines!, getAll: (orderId, ct) =>
             throw new Microsoft.OData.ODataException(Marker));

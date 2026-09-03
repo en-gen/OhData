@@ -595,20 +595,20 @@ internal class WbContactProfile : EntitySetProfile<int, WbContact>
                 return Task.FromResult<WbNote?>(note);
             });
 
-        GetAll = _ => Task.FromResult<IEnumerable<WbContact>>(Array.Empty<WbContact>());
-        GetById = (id, _) => Task.FromResult<WbContact?>(new WbContact { Id = id, Name = "Existing" });
+        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<WbContact>>(Array.Empty<WbContact>());
+        GetById = (id, _) => OhDataResult.SuccessTask<WbContact>(new WbContact { Id = id, Name = "Existing" });
 
         Post = (contact, _) =>
         {
             LastPosted = contact;
-            return Task.FromResult<WbContact?>(contact);
+            return OhDataResult.SuccessTask<WbContact>(contact);
         };
 
         Put = (id, contact, _) =>
         {
             LastPut = contact;
             contact.Id = id;
-            return Task.FromResult(contact);
+            return OhDataResult.SuccessTask(contact);
         };
 
         Patch = (id, delta, _) =>
@@ -616,7 +616,7 @@ internal class WbContactProfile : EntitySetProfile<int, WbContact>
             LastPatchChangedProperties = delta.GetChangedPropertyNames().ToArray();
             var contact = new WbContact { Id = id, Name = "Existing" };
             delta.Patch(contact);
-            return Task.FromResult<WbContact?>(contact);
+            return OhDataResult.SuccessTask<WbContact>(contact);
         };
     }
 }
@@ -629,8 +629,8 @@ internal class WbGenerousProfile : EntitySetProfile<int, WbContact>
         EntitySetName = "WbGenerousContacts";
         MaxRequestBodyBytes = EntitySetDefaults.DefaultMaxRequestBodyBytes * 4;
 
-        GetAll = _ => Task.FromResult<IEnumerable<WbContact>>(Array.Empty<WbContact>());
-        Post = (contact, _) => Task.FromResult<WbContact?>(contact);
+        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<WbContact>>(Array.Empty<WbContact>());
+        Post = (contact, _) => OhDataResult.SuccessTask<WbContact>(contact);
     }
 }
 
@@ -644,11 +644,11 @@ internal class WbUnvalidatedProfile : EntitySetProfile<int, WbContact>
         EntitySetName = "WbUnvalidatedContacts";
         RequestBodyNullabilityValidationEnabled = false;
 
-        GetAll = _ => Task.FromResult<IEnumerable<WbContact>>(Array.Empty<WbContact>());
+        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<WbContact>>(Array.Empty<WbContact>());
         Post = (contact, _) =>
         {
             LastPosted = contact;
-            return Task.FromResult<WbContact?>(contact);
+            return OhDataResult.SuccessTask<WbContact>(contact);
         };
     }
 }
@@ -671,11 +671,11 @@ internal class WbStampedProfile : EntitySetProfile<int, WbStamped>
     {
         EntitySetName = "WbStamps";
 
-        GetAll = _ => Task.FromResult<IEnumerable<WbStamped>>(Array.Empty<WbStamped>());
+        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<WbStamped>>(Array.Empty<WbStamped>());
         Post = (stamped, _) =>
         {
             LastPosted = stamped;
-            return Task.FromResult<WbStamped?>(stamped);
+            return OhDataResult.SuccessTask<WbStamped>(stamped);
         };
     }
 }
@@ -693,11 +693,11 @@ internal class WbStringKeyProfile : EntitySetProfile<string, WbTicket>
     {
         EntitySetName = "WbTickets";
 
-        GetAll = _ => Task.FromResult<IEnumerable<WbTicket>>(Array.Empty<WbTicket>());
+        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<WbTicket>>(Array.Empty<WbTicket>());
         Post = (ticket, _) =>
         {
             ticket.Code = "T-1";
-            return Task.FromResult<WbTicket?>(ticket);
+            return OhDataResult.SuccessTask<WbTicket>(ticket);
         };
     }
 }
@@ -728,12 +728,12 @@ internal class WbOpenProfile : EntitySetProfile<int, WbOpenThing>
             getAll: (_, _) => Task.FromResult<IEnumerable<WbNote>>(Array.Empty<WbNote>()),
             post: (_, note, _) => Task.FromResult<WbNote?>(note));
 
-        GetAll = _ => Task.FromResult<IEnumerable<WbOpenThing>>(Array.Empty<WbOpenThing>());
-        GetById = (id, _) => Task.FromResult<WbOpenThing?>(new WbOpenThing { Id = id, Label = "L" });
+        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<WbOpenThing>>(Array.Empty<WbOpenThing>());
+        GetById = (id, _) => OhDataResult.SuccessTask<WbOpenThing>(new WbOpenThing { Id = id, Label = "L" });
         Put = (id, thing, _) =>
         {
             thing.Id = id;
-            return Task.FromResult(thing);
+            return OhDataResult.SuccessTask(thing);
         };
     }
 }

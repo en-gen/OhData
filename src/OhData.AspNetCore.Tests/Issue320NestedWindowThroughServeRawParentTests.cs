@@ -71,7 +71,7 @@ public sealed class NwAProfile : EntitySetProfile<int, NwA>
         EntitySetName = "NwAs";
         ExpandEnabled = true;
         SelectEnabled = true;
-        GetAll = _ => Task.FromResult<IEnumerable<NwA>>(NwData.Graph());
+        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<NwA>>(NwData.Graph());
         HasMany(x => x.Bs); // delegate-less -> ServeRaw
     }
 }
@@ -85,7 +85,7 @@ public sealed class NwBProfile : EntitySetProfile<int, NwB>
         EntitySetName = "NwBs";
         ExpandEnabled = true;
         SelectEnabled = true;
-        GetAll = _ => Task.FromResult<IEnumerable<NwB>>(NwData.Bs());
+        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<NwB>>(NwData.Bs());
         HasMany(x => x.Cs, getAll: (bId, ct) =>
         {
             counter.CountCCall();

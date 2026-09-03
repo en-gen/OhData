@@ -242,17 +242,17 @@ public sealed class OhDataRequestBodyAndResponseTests
             // documented property-write body schema, so opt them into the generated document.
             PropertyRouteDocsEnabled = true;
 
-            GetAll = (ct) => Task.FromResult<IEnumerable<Parent>>(_parents);
-            GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(p => p.Id == id));
+            GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<Parent>>(_parents);
+            GetById = (id, ct) => OhDataResult.SuccessTask(_parents.FirstOrDefault(p => p.Id == id));
 
-            Post = (p, ct) => { _parents.Add(p); return Task.FromResult<Parent?>(p); };
-            Put = (id, p, ct) => { p.Id = id; return Task.FromResult(p); };
+            Post = (p, ct) => { _parents.Add(p); return OhDataResult.SuccessTask<Parent>(p); };
+            Put = (id, p, ct) => { p.Id = id; return OhDataResult.SuccessTask(p); };
             Patch = (id, delta, ct) =>
             {
                 Parent? existing = _parents.FirstOrDefault(x => x.Id == id);
-                if (existing is null) return Task.FromResult<Parent?>(null);
+                if (existing is null) return OhDataResult.SuccessTask<Parent>(null);
                 delta.Patch(existing);
-                return Task.FromResult<Parent?>(existing);
+                return OhDataResult.SuccessTask<Parent>(existing);
             };
 
             HasMany(
@@ -287,7 +287,7 @@ public sealed class OhDataRequestBodyAndResponseTests
         public WriteSurfaceQueryableProfile() : base(x => x.Id)
         {
             EntitySetName = "WriteSurfaceQueryableWidgets";
-            GetQueryable = (ct) => Task.FromResult(_parents.AsQueryable());
+            GetQueryable = (ct) => OhDataResult.SuccessTask(_parents.AsQueryable());
         }
     }
 }

@@ -295,7 +295,7 @@ internal sealed class RcvCaseCollidingContinuationProfile : EntitySetProfile<int
     {
         EntitySetName = "RcvCaseContinuation";
         ExpandEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.Authors.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.Authors.AsQueryable());
         HasMany(x => x.Books);
         BindEntityFunction(books);
     }
@@ -323,7 +323,7 @@ internal class RcvCasePropertyCollisionProfile : EntitySetProfile<int, RcvParent
     public RcvCasePropertyCollisionProfile() : base(x => x.Id)
     {
         EntitySetName = "RcvCaseProperty";
-        GetById = (id, ct) => Task.FromResult<RcvParent?>(new RcvParent { Id = id });
+        GetById = (id, ct) => OhDataResult.SuccessTask<RcvParent>(new RcvParent { Id = id });
         BindEntityFunction(name);
     }
 
@@ -337,7 +337,7 @@ internal class RcvCaseNavPostCollisionProfile : EntitySetProfile<int, RcvParent>
     public RcvCaseNavPostCollisionProfile() : base(x => x.Id)
     {
         EntitySetName = "RcvCaseNavPost";
-        GetById = (id, ct) => Task.FromResult<RcvParent?>(new RcvParent { Id = id });
+        GetById = (id, ct) => OhDataResult.SuccessTask<RcvParent>(new RcvParent { Id = id });
         HasMany(x => x.Kids,
             getAll: (key, ct) => Task.FromResult<IEnumerable<RcvChild>>(Array.Empty<RcvChild>()),
             post: (key, child, ct) => Task.FromResult<RcvChild?>(child));
@@ -354,7 +354,7 @@ internal class RcvNavFunctionCollisionProfile : EntitySetProfile<int, RcvParent>
     public RcvNavFunctionCollisionProfile() : base(x => x.Id)
     {
         EntitySetName = "RcvNavFunction";
-        GetById = (id, ct) => Task.FromResult<RcvParent?>(new RcvParent { Id = id });
+        GetById = (id, ct) => OhDataResult.SuccessTask<RcvParent>(new RcvParent { Id = id });
         HasMany(x => x.Kids,
             getAll: (key, ct) => Task.FromResult<IEnumerable<RcvChild>>(Array.Empty<RcvChild>()));
         BindEntityFunction(Kids);
@@ -369,7 +369,7 @@ internal class RcvCaseNavFunctionCollisionProfile : EntitySetProfile<int, RcvPar
     public RcvCaseNavFunctionCollisionProfile() : base(x => x.Id)
     {
         EntitySetName = "RcvCaseNavFunction";
-        GetById = (id, ct) => Task.FromResult<RcvParent?>(new RcvParent { Id = id });
+        GetById = (id, ct) => OhDataResult.SuccessTask<RcvParent>(new RcvParent { Id = id });
         HasMany(x => x.Kids,
             getAll: (key, ct) => Task.FromResult<IEnumerable<RcvChild>>(Array.Empty<RcvChild>()));
         BindEntityFunction(kids);
@@ -385,7 +385,7 @@ internal class RcvPostOnlyNavFunctionCollisionProfile : EntitySetProfile<int, Rc
     public RcvPostOnlyNavFunctionCollisionProfile() : base(x => x.Id)
     {
         EntitySetName = "RcvPostOnlyNav";
-        GetById = (id, ct) => Task.FromResult<RcvParent?>(new RcvParent { Id = id });
+        GetById = (id, ct) => OhDataResult.SuccessTask<RcvParent>(new RcvParent { Id = id });
         HasMany(x => x.Kids,
             getAll: null,
             post: (key, child, ct) => Task.FromResult<RcvChild?>(child));
@@ -402,7 +402,7 @@ internal class RcvDelegatelessNavProfile : EntitySetProfile<int, RcvParent>
     public RcvDelegatelessNavProfile() : base(x => x.Id)
     {
         EntitySetName = "RcvDelegatelessNavs";
-        GetById = (id, ct) => Task.FromResult<RcvParent?>(new RcvParent { Id = id });
+        GetById = (id, ct) => OhDataResult.SuccessTask<RcvParent>(new RcvParent { Id = id });
         HasMany(x => x.Kids);
         BindEntityFunction(Kids);
     }
@@ -416,7 +416,7 @@ internal class RcvDuplicateEntityFunctionProfile : EntitySetProfile<int, RcvPare
     public RcvDuplicateEntityFunctionProfile() : base(x => x.Id)
     {
         EntitySetName = "RcvDupEntityFn";
-        GetById = (id, ct) => Task.FromResult<RcvParent?>(new RcvParent { Id = id });
+        GetById = (id, ct) => OhDataResult.SuccessTask<RcvParent>(new RcvParent { Id = id });
         BindEntityFunction((Func<int, Task<int>>)Tally);
         BindEntityFunction((Func<int, int, Task<int>>)Tally);
     }
@@ -431,7 +431,7 @@ internal class RcvDuplicateEntityFunctionCaseProfile : EntitySetProfile<int, Rcv
     public RcvDuplicateEntityFunctionCaseProfile() : base(x => x.Id)
     {
         EntitySetName = "RcvDupEntityFnCase";
-        GetById = (id, ct) => Task.FromResult<RcvParent?>(new RcvParent { Id = id });
+        GetById = (id, ct) => OhDataResult.SuccessTask<RcvParent>(new RcvParent { Id = id });
         BindEntityFunction(Tally);
         BindEntityFunction(tally);
     }
@@ -475,7 +475,7 @@ internal class RcvDuplicateEntityActionProfile : EntitySetProfile<int, RcvParent
     public RcvDuplicateEntityActionProfile() : base(x => x.Id)
     {
         EntitySetName = "RcvDupEntityAction";
-        GetById = (id, ct) => Task.FromResult<RcvParent?>(new RcvParent { Id = id });
+        GetById = (id, ct) => OhDataResult.SuccessTask<RcvParent>(new RcvParent { Id = id });
         BindEntityAction((Func<int, Task<int>>)Stamp);
         BindEntityAction((Func<int, int, Task<int>>)Stamp);
     }
@@ -490,7 +490,7 @@ internal class RcvCrossLevelSameNameProfile : EntitySetProfile<int, RcvParent>
     public RcvCrossLevelSameNameProfile() : base(x => x.Id)
     {
         EntitySetName = "RcvCrossLevels";
-        GetById = (id, ct) => Task.FromResult<RcvParent?>(new RcvParent { Id = id });
+        GetById = (id, ct) => OhDataResult.SuccessTask<RcvParent>(new RcvParent { Id = id });
         BindFunction((Func<Task<int>>)Stats);
         BindEntityFunction((Func<int, Task<int>>)Stats);
     }

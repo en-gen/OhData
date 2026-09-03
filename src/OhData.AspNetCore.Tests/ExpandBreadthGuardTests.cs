@@ -227,8 +227,8 @@ public sealed class BrdNodeProfile : EntitySetProfile<int, BrdNode>
         ExpandEnabled = true; SelectEnabled = true; FilterEnabled = true;
         OrderByEnabled = true; CountEnabled = true;
         MaxExpandBreadth = 5;
-        GetQueryable = _ => Task.FromResult(db.BrdNodes.AsQueryable());
-        GetById = (id, ct) => Task.FromResult(db.BrdNodes.FirstOrDefault(n => n.Id == id));
+        GetQueryable = _ => OhDataResult.SuccessTask(db.BrdNodes.AsQueryable());
+        GetById = (id, ct) => OhDataResult.SuccessTask(db.BrdNodes.FirstOrDefault(n => n.Id == id));
         HasMany(x => x.A); HasMany(x => x.B); HasMany(x => x.C);
     }
 }
@@ -241,7 +241,7 @@ public sealed class BrdEnumerableProfile : EntitySetProfile<int, BrdNode>
         EntitySetName = "BrdEnumerables";
         ExpandEnabled = true; SelectEnabled = true; CountEnabled = true;
         MaxExpandBreadth = 5;
-        GetAll = ct => Task.FromResult<IEnumerable<BrdNode>>(db.BrdNodes.ToList());
+        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<BrdNode>>(db.BrdNodes.ToList());
         HasMany(x => x.A, getAll: (id, ct) => Task.FromResult<IEnumerable<BrdNode>>(Array.Empty<BrdNode>()));
         HasMany(x => x.B, getAll: (id, ct) => Task.FromResult<IEnumerable<BrdNode>>(Array.Empty<BrdNode>()));
         HasMany(x => x.C, getAll: (id, ct) => Task.FromResult<IEnumerable<BrdNode>>(Array.Empty<BrdNode>()));
@@ -255,7 +255,7 @@ public sealed class BrdInheritingProfile : EntitySetProfile<int, BrdNode>
     {
         EntitySetName = "BrdInheriting";
         ExpandEnabled = true; SelectEnabled = true; CountEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.BrdNodes.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.BrdNodes.AsQueryable());
         HasMany(x => x.A); HasMany(x => x.B); HasMany(x => x.C);
     }
 }
