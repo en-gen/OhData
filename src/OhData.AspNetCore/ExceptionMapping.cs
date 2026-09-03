@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Microsoft.AspNetCore.OData.Deltas;
 
 namespace OhData;
@@ -68,14 +69,11 @@ internal sealed class ExceptionMappingBuilder<TModel> : IExceptionMappingBuilder
                 "exception type the handler raises.");
         }
 
-        foreach (ExceptionMappingRule<TModel> existing in Rules)
+        if (Rules.Any(existing => existing.ExceptionType == exceptionType))
         {
-            if (existing.ExceptionType == exceptionType)
-            {
-                throw new InvalidOperationException(
-                    $"OhData: an exception mapping for '{exceptionType.Name}' is already declared on " +
-                    "this profile. Declare it once.");
-            }
+            throw new InvalidOperationException(
+                $"OhData: an exception mapping for '{exceptionType.Name}' is already declared on " +
+                "this profile. Declare it once.");
         }
 
         Rules.Add(new ExceptionMappingRule<TModel>(exceptionType, map));
@@ -150,13 +148,12 @@ internal static class ExceptionMappingResolver
         IReadOnlyList<ExceptionMappingRule<TModel>> rules, Exception ex)
         where TModel : class
     {
-        ExceptionMappingRule<TModel>? best = null;
-        foreach (ExceptionMappingRule<TModel> rule in rules)
-        {
-            if (!rule.ExceptionType.IsInstanceOfType(ex)) continue;
-            if (best is null || rule.Depth > best.Depth) best = rule;
-        }
-        return best;
+        // MaxBy keeps the FIRST of equal-depth matches, as the hand-rolled loop this replaced did.
+        // Two rules cannot have the same type (refused at declaration), so a tie means two unrelated
+        // branches of the hierarchy both matched -- declaration order is as good an answer as any.
+        return rules
+            .Where(rule => rule.ExceptionType.IsInstanceOfType(ex))
+            .MaxBy(rule => rule.Depth);
     }
 
     internal static OhDataExceptionContext<TModel> BuildContext<TModel>(

@@ -290,3 +290,46 @@ public sealed class X581TwiceProfile : EntitySetProfile<int, X581Thing>
         ConfigureExceptions(e => e.Map<NotSupportedException>(_ => OhDataResult.Conflict("B", "b")));
     }
 }
+
+/// <summary>
+/// #581 — the factory set itself: each factory's status, and the two argument guards. Unit-level
+/// because the closed set is the design (an unrepresentable status rather than a validated one), so
+/// it is worth pinning independently of any route.
+/// </summary>
+public sealed class Issue581OhDataResultFactoryTests
+{
+    public static TheoryData<OhDataResult, int> Factories() => new()
+    {
+        { OhDataResult.BadRequest("c", "m"), 400 },
+        { OhDataResult.Forbidden("c", "m"), 403 },
+        { OhDataResult.NotFound("c", "m"), 404 },
+        { OhDataResult.Conflict("c", "m"), 409 },
+        { OhDataResult.PreconditionFailed("c", "m"), 412 },
+    };
+
+    [Theory]
+    [MemberData(nameof(Factories))]
+    public void EachFactory_CarriesItsStatusAndEnvelope(OhDataResult result, int expected)
+    {
+        Assert.Equal(expected, result.StatusCode);
+        Assert.Equal("c", result.ErrorCode);
+        Assert.Equal("m", result.Message);
+        Assert.Null(result.Target);
+    }
+
+    [Fact]
+    public void TargetIsCarriedWhenGiven() =>
+        Assert.Equal("Name", OhDataResult.Conflict("c", "m", target: "Name").Target);
+
+    [Theory]
+    [InlineData("", "message")]
+    [InlineData("   ", "message")]
+    [InlineData("code", "")]
+    [InlineData("code", "   ")]
+    public void AnEmptyCodeOrMessage_IsRefused(string errorCode, string message)
+    {
+        // The envelope's code and message are contractual; a blank one would ship a valid-looking
+        // OData error that says nothing.
+        Assert.Throws<ArgumentException>(() => OhDataResult.Conflict(errorCode, message));
+    }
+}
