@@ -69,8 +69,8 @@ internal class QueryOptionProfile : EntitySetProfile<int, QueryOptionItem>
         SelectEnabled = true;
         CountEnabled = true;
 
-        GetQueryable = (ct) => Task.FromResult(QueryOptionData.Items.AsQueryable());
-        GetById = (id, ct) => Task.FromResult(QueryOptionData.Items.FirstOrDefault(x => x.Id == id));
+        GetQueryable = (ct) => OhDataResult.SuccessTask(QueryOptionData.Items.AsQueryable());
+        GetById = (id, ct) => OhDataResult.SuccessTask(QueryOptionData.Items.FirstOrDefault(x => x.Id == id));
     }
 }
 
@@ -116,8 +116,8 @@ internal class QueryOptionExpandProfile : EntitySetProfile<int, QueryOptionParen
         ExpandEnabled = true;
         CountEnabled = true;
 
-        GetQueryable = (ct) => Task.FromResult(_parents.AsQueryable());
-        GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(p => p.Id == id));
+        GetQueryable = (ct) => OhDataResult.SuccessTask(_parents.AsQueryable());
+        GetById = (id, ct) => OhDataResult.SuccessTask(_parents.FirstOrDefault(p => p.Id == id));
 
         HasMany(x => x.Children!,
             getAll: (parentId, ct) =>
@@ -164,8 +164,8 @@ internal class RoundingModeProfile : EntitySetProfile<int, RoundingModeItem>
         FilterEnabled = true;
         // RoundingMode left null -> inherits EntitySetDefaults.RoundingMode (SpecCompliant).
 
-        GetQueryable = (ct) => Task.FromResult(RoundingModeData.Items.AsQueryable());
-        GetById = (id, ct) => Task.FromResult(RoundingModeData.Items.FirstOrDefault(x => x.Id == id));
+        GetQueryable = (ct) => OhDataResult.SuccessTask(RoundingModeData.Items.AsQueryable());
+        GetById = (id, ct) => OhDataResult.SuccessTask(RoundingModeData.Items.FirstOrDefault(x => x.Id == id));
     }
 }
 
@@ -177,7 +177,7 @@ internal class RoundingModeBankersProfile : EntitySetProfile<int, RoundingModeIt
         FilterEnabled = true;
         RoundingMode = OhData.RoundingMode.BankersRounding;
 
-        GetQueryable = (ct) => Task.FromResult(RoundingModeData.Items.AsQueryable());
-        GetById = (id, ct) => Task.FromResult(RoundingModeData.Items.FirstOrDefault(x => x.Id == id));
+        GetQueryable = (ct) => OhDataResult.SuccessTask(RoundingModeData.Items.AsQueryable());
+        GetById = (id, ct) => OhDataResult.SuccessTask(RoundingModeData.Items.FirstOrDefault(x => x.Id == id));
     }
 }

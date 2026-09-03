@@ -664,21 +664,21 @@ internal class N544ThingProfile : EntitySetProfile<int, N544Thing>
                 return Task.FromResult<N544Part?>(part);
             });
 
-        GetAll = _ => Task.FromResult<IEnumerable<N544Thing>>(Array.Empty<N544Thing>());
-        GetById = (id, _) => Task.FromResult<N544Thing?>(
+        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<N544Thing>>(Array.Empty<N544Thing>());
+        GetById = (id, _) => OhDataResult.SuccessTask<N544Thing>(
             new N544Thing { Id = id, Initialized = "e", Uninitialized = "e", Tag = "t" });
 
         Post = (thing, _) =>
         {
             LastPosted = thing;
-            return Task.FromResult<N544Thing?>(thing);
+            return OhDataResult.SuccessTask<N544Thing>(thing);
         };
 
         Put = (id, thing, _) =>
         {
             LastPut = thing;
             thing.Id = id;
-            return Task.FromResult(thing);
+            return OhDataResult.SuccessTask(thing);
         };
 
         Patch = (id, delta, _) =>
@@ -692,7 +692,7 @@ internal class N544ThingProfile : EntitySetProfile<int, N544Thing>
                 Tag = "t",
             };
             delta.Patch(thing);
-            return Task.FromResult<N544Thing?>(thing);
+            return OhDataResult.SuccessTask<N544Thing>(thing);
         };
     }
 }
@@ -725,21 +725,21 @@ internal class N544OpenProfile : EntitySetProfile<int, N544OpenThing>
     {
         EntitySetName = "N544OpenThings";
 
-        GetAll = _ => Task.FromResult<IEnumerable<N544OpenThing>>(Array.Empty<N544OpenThing>());
-        GetById = (id, _) => Task.FromResult<N544OpenThing?>(
+        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<N544OpenThing>>(Array.Empty<N544OpenThing>());
+        GetById = (id, _) => OhDataResult.SuccessTask<N544OpenThing>(
             new N544OpenThing { Id = id, Uninitialized = "e" });
 
         Post = (thing, _) =>
         {
             LastPosted = thing;
-            return Task.FromResult<N544OpenThing?>(thing);
+            return OhDataResult.SuccessTask<N544OpenThing>(thing);
         };
 
         Put = (id, thing, _) =>
         {
             LastPut = thing;
             thing.Id = id;
-            return Task.FromResult(thing);
+            return OhDataResult.SuccessTask(thing);
         };
     }
 }
@@ -759,11 +759,11 @@ internal class N544UnvalidatedProfile : EntitySetProfile<int, N544Unvalidated>
         EntitySetName = "N544Unvalidated";
         RequestBodyNullabilityValidationEnabled = false;
 
-        GetAll = _ => Task.FromResult<IEnumerable<N544Unvalidated>>(Array.Empty<N544Unvalidated>());
+        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<N544Unvalidated>>(Array.Empty<N544Unvalidated>());
         Post = (thing, _) =>
         {
             LastPosted = thing;
-            return Task.FromResult<N544Unvalidated?>(thing);
+            return OhDataResult.SuccessTask<N544Unvalidated>(thing);
         };
     }
 }
@@ -807,21 +807,21 @@ internal class N544StampedProfile : EntitySetProfile<int, N544Stamped>
     {
         EntitySetName = "N544Stamped";
 
-        GetAll = _ => Task.FromResult<IEnumerable<N544Stamped>>(Array.Empty<N544Stamped>());
-        GetById = (id, _) => Task.FromResult<N544Stamped?>(
+        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<N544Stamped>>(Array.Empty<N544Stamped>());
+        GetById = (id, _) => OhDataResult.SuccessTask<N544Stamped>(
             new N544Stamped { Id = id, CreatedBy = "e", InheritedStamp = "e" });
 
         Post = (thing, _) =>
         {
             LastPosted = thing;
-            return Task.FromResult<N544Stamped?>(thing);
+            return OhDataResult.SuccessTask<N544Stamped>(thing);
         };
 
         Put = (id, thing, _) =>
         {
             LastPut = thing;
             thing.Id = id;
-            return Task.FromResult(thing);
+            return OhDataResult.SuccessTask(thing);
         };
     }
 }

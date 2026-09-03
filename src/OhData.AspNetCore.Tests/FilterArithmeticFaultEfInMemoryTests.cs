@@ -54,7 +54,7 @@ internal sealed class ArithFaultEfProfile : EntitySetProfile<int, ArithFaultEfIt
                     new ArithFaultEfItem { Id = 2, Quantity = 7 });
                 db.SaveChanges();
             }
-            return Task.FromResult(db.Items.AsQueryable());
+            return OhDataResult.SuccessTask(db.Items.AsQueryable());
         };
     }
 }

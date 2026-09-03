@@ -355,9 +355,9 @@ public sealed class OhDataOpenApiSecurityOperationTransformerTests
         {
             EntitySetName = "SecuredWidgets";
             RequireAuthorization();
-            GetQueryable = (ct) => Task.FromResult(Store.AsQueryable());
-            GetById = (id, ct) => Task.FromResult(Store.FirstOrDefault(w => w.Id == id));
-            Post = (model, ct) => Task.FromResult<Widget?>(model);
+            GetQueryable = (ct) => OhDataResult.SuccessTask(Store.AsQueryable());
+            GetById = (id, ct) => OhDataResult.SuccessTask(Store.FirstOrDefault(w => w.Id == id));
+            Post = (model, ct) => OhDataResult.SuccessTask<Widget>(model);
         }
     }
 
@@ -366,7 +366,7 @@ public sealed class OhDataOpenApiSecurityOperationTransformerTests
         public AnonProfile() : base(x => x.Id)
         {
             EntitySetName = "AnonWidgets";
-            GetQueryable = (ct) => Task.FromResult(Store.AsQueryable());
+            GetQueryable = (ct) => OhDataResult.SuccessTask(Store.AsQueryable());
         }
     }
 
@@ -378,8 +378,8 @@ public sealed class OhDataOpenApiSecurityOperationTransformerTests
             ConfigureAuthorization(a => a
                 .Read(r => r.RequireRole("reader"))
                 .Create(c => c.AllowAnonymous()));
-            GetQueryable = (ct) => Task.FromResult(Store.AsQueryable());
-            Post = (model, ct) => Task.FromResult<Widget?>(model);
+            GetQueryable = (ct) => OhDataResult.SuccessTask(Store.AsQueryable());
+            Post = (model, ct) => OhDataResult.SuccessTask<Widget>(model);
         }
     }
 
@@ -391,13 +391,13 @@ public sealed class OhDataOpenApiSecurityOperationTransformerTests
         {
             EntitySetName = "ResourceOnlyWidgets";
             ConfigureAuthorization(a => a.Update(u => u.RequireResource()));
-            GetById = (id, ct) => Task.FromResult(Store.FirstOrDefault(w => w.Id == id));
+            GetById = (id, ct) => OhDataResult.SuccessTask(Store.FirstOrDefault(w => w.Id == id));
             Patch = (id, delta, ct) =>
             {
                 Widget? existing = Store.FirstOrDefault(w => w.Id == id);
-                if (existing is null) return Task.FromResult<Widget?>(null);
+                if (existing is null) return OhDataResult.SuccessTask<Widget>(null);
                 delta.Patch(existing);
-                return Task.FromResult<Widget?>(existing);
+                return OhDataResult.SuccessTask<Widget>(existing);
             };
         }
     }

@@ -90,7 +90,7 @@ public sealed class DtContainerProfile : EntitySetProfile<int, DtContainer>
         EntitySetName = "Containers";
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.Containers.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.Containers.AsQueryable());
         HasMany(x => x.Things); // delegate-less → pushable
     }
 }
@@ -103,7 +103,7 @@ public sealed class DtBaseProfile : EntitySetProfile<int, DtBase>
         EntitySetName = "Things";
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.Things.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.Things.AsQueryable());
         HasMany(x => x.Children); // delegate-LESS
     }
 }
@@ -245,7 +245,7 @@ public sealed class DpRootProfile : EntitySetProfile<int, DpRoot>
         EntitySetName = "Roots";
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.Roots.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.Roots.AsQueryable());
         // Delegate-BACKED: Include()s Children as an incidental implementation detail, simulating
         // the realistic EF-fixup precondition — the already-populated CLR graph must not survive
         // into the response just because the nested $expand=Children can't resolve a route here.
@@ -263,7 +263,7 @@ public sealed class DpBaseProfile : EntitySetProfile<int, DpBase>
         EntitySetName = "Things";
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.Things.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.Things.AsQueryable());
         HasMany(x => x.Children); // delegate-LESS
     }
 }

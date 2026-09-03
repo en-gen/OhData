@@ -227,7 +227,7 @@ public sealed class MlAuthorProfile : EntitySetProfile<int, MlAuthor>
         FilterEnabled = true;
         OrderByEnabled = true;
         CountEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.Authors.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.Authors.AsQueryable());
         HasMany(x => x.Books); // delegate-less → whole Book/Chapter/Page/Line chain is pushable
     }
 }
@@ -240,7 +240,7 @@ public sealed class MlNodeProfile : EntitySetProfile<int, MlNode>
         ExpandEnabled = true;
         OrderByEnabled = true;
         FilterEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.Nodes.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.Nodes.AsQueryable());
         HasMany(x => x.Children); // delegate-less, self-referential → $levels-pushable
     }
 }
@@ -254,7 +254,7 @@ public sealed class MlDeptProfile : EntitySetProfile<int, MlDept>
         OrderByEnabled = true;
         FilterEnabled = true;
         MaxExpansionDepth = 2; // per-profile override (default is 3) — the ceiling for $expand and $levels
-        GetQueryable = _ => Task.FromResult(db.Depts.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.Depts.AsQueryable());
         HasMany(x => x.Children);
     }
 }
@@ -266,7 +266,7 @@ public sealed class MlCatalogProfile : EntitySetProfile<int, MlCatalog>
         EntitySetName = "Catalogs";
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.Catalogs.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.Catalogs.AsQueryable());
         HasMany(x => x.Sections); // delegate-less → pushable (with its own Items chain)
         HasMany(x => x.Curators,
             getAll: (catalogId, ct) =>
@@ -287,7 +287,7 @@ public sealed class MlStoreProfile : EntitySetProfile<int, MlStore>
         EntitySetName = "Stores";
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.Stores.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.Stores.AsQueryable());
         HasMany(x => x.Aisles); // delegate-less on Store → pushable
     }
 }
@@ -299,7 +299,7 @@ public sealed class MlAisleProfile : EntitySetProfile<int, MlAisle>
         EntitySetName = "Aisles";
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.Aisles.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.Aisles.AsQueryable());
         HasMany(x => x.Products,
             getAll: (aisleId, ct) =>
             {

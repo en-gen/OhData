@@ -131,29 +131,29 @@ internal abstract class PerOpProfileBase : EntitySetProfile<int, PerOpParent>
         var parents = new List<PerOpParent> { new() { Id = 1, Name = "P1", Description = "D1" } };
         var children = new List<PerOpChild> { new() { Id = 10, ParentId = 1, Name = "C1" } };
 
-        GetAll = (ct) => Task.FromResult<IEnumerable<PerOpParent>>(parents);
-        GetById = (id, ct) => Task.FromResult(parents.FirstOrDefault(p => p.Id == id));
+        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<PerOpParent>>(parents);
+        GetById = (id, ct) => OhDataResult.SuccessTask(parents.FirstOrDefault(p => p.Id == id));
         Post = (model, ct) =>
         {
             model.Id = parents.Count > 0 ? parents.Max(p => p.Id) + 1 : 1;
             parents.Add(model);
-            return Task.FromResult<PerOpParent?>(model);
+            return OhDataResult.SuccessTask<PerOpParent>(model);
         };
         Put = (id, model, ct) =>
         {
             parents.RemoveAll(p => p.Id == id);
             model.Id = id;
             parents.Add(model);
-            return Task.FromResult(model);
+            return OhDataResult.SuccessTask(model);
         };
         Patch = (id, delta, ct) =>
         {
             var existing = parents.FirstOrDefault(p => p.Id == id);
-            if (existing is null) return Task.FromResult<PerOpParent?>(null);
+            if (existing is null) return OhDataResult.SuccessTask<PerOpParent>(null);
             delta.Patch(existing);
-            return Task.FromResult<PerOpParent?>(existing);
+            return OhDataResult.SuccessTask<PerOpParent>(existing);
         };
-        Delete = (id, ct) => Task.FromResult(parents.RemoveAll(p => p.Id == id) > 0);
+        Delete = (id, ct) => OhDataResult.SuccessTask(parents.RemoveAll(p => p.Id == id) > 0);
 
         HasMany(
             navigation: x => x.Children!,

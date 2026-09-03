@@ -56,7 +56,7 @@ public sealed class WideNodeProfile : EntitySetProfile<int, WideNode>
         EntitySetName = "WideNodes";
         ExpandEnabled = true; SelectEnabled = true; FilterEnabled = true;
         OrderByEnabled = true; CountEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.WideNodes.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.WideNodes.AsQueryable());
         HasMany(x => x.N1); HasMany(x => x.N2); HasMany(x => x.N3);
         HasMany(x => x.N4); HasMany(x => x.N5); HasMany(x => x.N6);
     }
@@ -127,7 +127,7 @@ public sealed class WideDeepNodeProfile : EntitySetProfile<int, WideNode>
         MaxExpansionDepth = 6;
         ExpandEnabled = true; SelectEnabled = true; FilterEnabled = true;
         OrderByEnabled = true; CountEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.WideNodes.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.WideNodes.AsQueryable());
         HasMany(x => x.N1); HasMany(x => x.N2); HasMany(x => x.N3);
         HasMany(x => x.N4); HasMany(x => x.N5); HasMany(x => x.N6);
     }

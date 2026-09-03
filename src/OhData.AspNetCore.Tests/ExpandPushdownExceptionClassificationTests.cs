@@ -95,7 +95,7 @@ public sealed class MlAuthorUntranslatableProfile : EntitySetProfile<int, MlAuth
         FilterEnabled = true;
         OrderByEnabled = true;
         CountEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.Authors.Where(a => ClientOnly(a.Name) == Marker));
+        GetQueryable = _ => OhDataResult.SuccessTask(db.Authors.Where(a => ClientOnly(a.Name) == Marker));
         HasMany(x => x.Books);
     }
 }

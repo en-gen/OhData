@@ -314,7 +314,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Leaving this <c>null</c> (the default) means no <c>GET /{EntitySet}</c> route is registered,
     /// unless <see cref="GetQueryable"/> is set.
     /// </remarks>
-    protected Func<CancellationToken, Task<IEnumerable<TModel>>>? GetAll = null;
+    protected Func<CancellationToken, Task<OhDataResult<IEnumerable<TModel>>>>? GetAll = null;
 
     /// <summary>
     /// Registers the <c>GET /{EntitySet}</c> handler using an <see cref="IQueryable{T}"/> source
@@ -327,7 +327,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Leaving this <c>null</c> (the default) means no <c>GET /{EntitySet}</c> route is registered,
     /// unless <see cref="GetAll"/> is set. Takes priority over <see cref="GetAll"/> when both are set.
     /// </remarks>
-    protected Func<CancellationToken, Task<IQueryable<TModel>>>? GetQueryable = null;
+    protected Func<CancellationToken, Task<OhDataResult<IQueryable<TModel>>>>? GetQueryable = null;
 
     /// <summary>
     /// Registers the <c>GET /{EntitySet}({key})</c> handler (OData §11.2.2 — Requesting an Entity).
@@ -336,7 +336,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// <remarks>
     /// Leaving this <c>null</c> (the default) means no <c>GET /{EntitySet}({key})</c> route is registered.
     /// </remarks>
-    protected Func<TKey, CancellationToken, Task<TModel?>>? GetById = null;
+    protected Func<TKey, CancellationToken, Task<OhDataResult<TModel>>>? GetById = null;
 
     /// <summary>
     /// Registers the <c>PUT /{EntitySet}({key})</c> handler (OData §11.4.3 — Update an Entity).
@@ -346,7 +346,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Leaving this <c>null</c> (the default) means no <c>PUT /{EntitySet}({key})</c> route is registered.
     /// Set <see cref="AllowUpsert"/> to enable upsert semantics (§11.4.4) when the key does not exist.
     /// </remarks>
-    protected Func<TKey, TModel, CancellationToken, Task<TModel>>? Put = null;
+    protected Func<TKey, TModel, CancellationToken, Task<OhDataResult<TModel>>>? Put = null;
 
     /// <summary>
     /// Registers the <c>POST /{EntitySet}</c> handler (OData §11.4.2 — Create an Entity).
@@ -370,7 +370,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// throw — which is the same <c>500</c>.
     /// </para>
     /// </remarks>
-    protected Func<TModel, CancellationToken, Task<TModel?>>? Post = null;
+    protected Func<TModel, CancellationToken, Task<OhDataResult<TModel>>>? Post = null;
 
     /// <summary>
     /// Handler for PATCH /{EntitySet}({key}).
@@ -381,7 +381,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// existing entity (if needed) and persisting the changes.
     /// Return <c>null</c> to produce a 404 Not Found response.
     /// </summary>
-    protected Func<TKey, Delta<TModel>, CancellationToken, Task<TModel?>>? Patch = null;
+    protected Func<TKey, Delta<TModel>, CancellationToken, Task<OhDataResult<TModel>>>? Patch = null;
 
     /// <summary>
     /// Registers the <c>DELETE /{EntitySet}({key})</c> handler (OData §11.4.5 — Delete an Entity).
@@ -392,7 +392,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Leaving this <c>null</c> (the default) means no <c>DELETE /{EntitySet}({key})</c> route is registered.
     /// Set <see cref="IdempotentDelete"/> to control the behaviour when the entity does not exist.
     /// </remarks>
-    protected Func<TKey, CancellationToken, Task<bool>>? Delete = null;
+    protected Func<TKey, CancellationToken, Task<OhDataResult<bool>>>? Delete = null;
 
     /// <summary>
     /// Registers a free-text search handler for <c>GET /{EntitySet}?$search=term</c>
@@ -403,7 +403,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Leaving this <c>null</c> (the default) means <c>$search</c> requests return
     /// <c>400 Bad Request</c> with an <c>UnsupportedQueryOption</c> error.
     /// </remarks>
-    protected Func<string, CancellationToken, Task<IEnumerable<TModel>>>? Search = null;
+    protected Func<string, CancellationToken, Task<OhDataResult<IEnumerable<TModel>>>>? Search = null;
 
     private int? _maxTop;
 
@@ -2421,29 +2421,37 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     string IEntitySetEndpointSource.KeyPropertyName => GetNavigationPropertyName(_getKey.Body);
     bool IEntitySetEndpointSource.IsAdvancedConfigureOverridden => _isAdvancedConfigureOverridden;
 
+    // #581: each of these unwraps the handler's OhDataResult. A rejection short-circuits by throwing
+    // the internal transport, so it reaches the SAME group-filter translation point a mapped
+    // exception does -- one place builds the envelope, whichever way the rejection was produced.
+    private static TValue Unwrap<TValue>(OhDataResult<TValue> result) =>
+        result.Rejection is { } rejection
+            ? throw new OhDataRejectionException(rejection)
+            : result.Value!;
+
     async Task<IEnumerable<object>> IEntitySetEndpointSource.InvokeSearchAsync(string searchTerm, CancellationToken ct)
     {
-        var result = await Search!.Invoke(searchTerm, ct);
+        var result = Unwrap(await Search!.Invoke(searchTerm, ct));
         return result.Cast<object>();
     }
 
     async Task<object?> IEntitySetEndpointSource.InvokeGetAllAsync(CancellationToken ct) =>
-        (object?)await GetAll!.Invoke(ct);
+        (object?)Unwrap(await GetAll!.Invoke(ct));
 
     async Task<IQueryable<object>> IEntitySetEndpointSource.InvokeGetQueryableAsync(CancellationToken ct) =>
-        (await GetQueryable!.Invoke(ct)).Cast<object>();
+        Unwrap(await GetQueryable!.Invoke(ct)).Cast<object>();
 
     async Task<object?> IEntitySetEndpointSource.InvokeGetByIdAsync(object key, CancellationToken ct) =>
-        (object?)await GetById!.Invoke((TKey)key, ct);
+        (object?)Unwrap(await GetById!.Invoke((TKey)key, ct));
 
     async Task<object?> IEntitySetEndpointSource.InvokePostAsync(object model, CancellationToken ct) =>
-        (object?)await Post!.Invoke((TModel)model, ct);
+        (object?)Unwrap(await Post!.Invoke((TModel)model, ct));
 
     async Task<object?> IEntitySetEndpointSource.InvokePutAsync(object key, object model, CancellationToken ct) =>
-        (object?)await Put!.Invoke((TKey)key, (TModel)model, ct);
+        (object?)Unwrap(await Put!.Invoke((TKey)key, (TModel)model, ct));
 
     async Task<object?> IEntitySetEndpointSource.InvokePatchAsync(object key, Delta delta, CancellationToken ct) =>
-        (object?)await Patch!.Invoke((TKey)key, (Delta<TModel>)delta, ct);
+        (object?)Unwrap(await Patch!.Invoke((TKey)key, (Delta<TModel>)delta, ct));
 
     // async, unlike the plain forwarder this replaced (#581). Every other Invoke* member already
     // was, and #496 relies on it: a handler that throws SYNCHRONOUSLY must have its exception
@@ -2451,7 +2459,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     // -- before any wrapper around the call can see it. Delete was the one member for which the
     // invariant CLAUDE.md states was not actually true.
     async Task<bool> IEntitySetEndpointSource.InvokeDeleteAsync(object key, CancellationToken ct) =>
-        await Delete!.Invoke((TKey)key, ct);
+        Unwrap(await Delete!.Invoke((TKey)key, ct));
 }
 
 /// <summary>

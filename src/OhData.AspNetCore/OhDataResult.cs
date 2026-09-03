@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 
 namespace OhData;
 
@@ -34,6 +35,22 @@ public sealed class OhDataResult
 
     /// <summary>The OData error envelope's <c>target</c>, when the rejection names one.</summary>
     public string? Target { get; }
+
+    /// <summary>
+    /// The handler succeeded and produced <paramref name="value"/>. The framework decides how to
+    /// represent it — 201 vs 204 from <c>Prefer</c>, the <c>Location</c> header, the ETag — which is
+    /// why there is no <c>Created</c> factory: a handler never sees <c>Prefer</c> and so cannot
+    /// answer that question.
+    /// </summary>
+    public static OhDataResult<T> Success<T>(T? value) => OhDataResult<T>.FromValue(value);
+
+    /// <summary>
+    /// <see cref="Success{T}"/> already wrapped in a completed <see cref="Task{TResult}"/> — the
+    /// shape a synchronous handler wants, and the direct replacement for
+    /// <c>Task.FromResult(value)</c>.
+    /// </summary>
+    public static Task<OhDataResult<T>> SuccessTask<T>(T? value) =>
+        Task.FromResult(OhDataResult<T>.FromValue(value));
 
     /// <summary>400 — the request is malformed or fails a rule the framework cannot see.</summary>
     public static OhDataResult BadRequest(string errorCode, string message, string? target = null) =>
@@ -78,4 +95,48 @@ public sealed class OhDataResult
 
         return new OhDataResult(statusCode, errorCode, message, target);
     }
+}
+
+/// <summary>
+/// What a handler returns: the value it produced, or a rejection (#581).
+/// </summary>
+/// <remarks>
+/// <para>
+/// Not derived from <see cref="OhDataResult"/>, and it cannot be: C# forbids a user-defined
+/// conversion across an inheritance edge (CS0553), which would rule out the implicit conversion
+/// that lets <c>return OhDataResult.Conflict(...)</c> compile in a handler returning this type.
+/// </para>
+/// <para>
+/// There is deliberately no implicit conversion from <typeparamref name="T"/>: every exit states
+/// its outcome. A bare <c>return model;</c> would silently mean "and whatever status the framework
+/// infers", which is the kind of unexpressed meaning #496 had to unpick when a <c>null</c> was the
+/// only way a handler could say "no". Being a class rather than an interface leaves that conversion
+/// available later if the ceremony proves not to earn its keep.
+/// </para>
+/// </remarks>
+public sealed class OhDataResult<T>
+{
+    private OhDataResult(T? value, OhDataResult? rejection)
+    {
+        Value = value;
+        Rejection = rejection;
+    }
+
+    /// <summary>The value the handler produced. Meaningful only when <see cref="IsSuccess"/>.</summary>
+    public T? Value { get; }
+
+    /// <summary>The rejection, when the handler produced one.</summary>
+    public OhDataResult? Rejection { get; }
+
+    /// <summary><c>true</c> when the handler produced a value rather than a rejection.</summary>
+    public bool IsSuccess => Rejection is null;
+
+    internal static OhDataResult<T> FromValue(T? value) => new(value, null);
+
+    /// <summary>
+    /// Lets a handler <c>return OhDataResult.Conflict(...)</c> directly — the rejection carries no
+    /// value, so there is nothing for the caller to supply.
+    /// </summary>
+    public static implicit operator OhDataResult<T>(OhDataResult rejection) =>
+        new(default, rejection ?? throw new ArgumentNullException(nameof(rejection)));
 }

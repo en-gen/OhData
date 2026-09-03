@@ -250,22 +250,22 @@ internal class E569Profile : EntitySetProfile<int, E569Thing>
             getAll: (_, _) => Task.FromResult<IEnumerable<E569Part>>(System.Array.Empty<E569Part>()),
             post: (_, part, _) => Task.FromResult<E569Part?>(part));
 
-        GetById = (id, _) => Task.FromResult<E569Thing?>(
+        GetById = (id, _) => OhDataResult.SuccessTask<E569Thing>(
             new E569Thing { Id = id, Title = "t", Note = "n" });
 
         Post = (thing, _) =>
         {
             PostReached = true;
-            return Task.FromResult<E569Thing?>(thing);
+            return OhDataResult.SuccessTask<E569Thing>(thing);
         };
 
-        Put = (id, thing, _) => { thing.Id = id; return Task.FromResult(thing); };
+        Put = (id, thing, _) => { thing.Id = id; return OhDataResult.SuccessTask(thing); };
 
         Patch = (id, delta, _) =>
         {
             var thing = new E569Thing { Id = id, Title = "t", Note = "n" };
             delta.Patch(thing);
-            return Task.FromResult<E569Thing?>(thing);
+            return OhDataResult.SuccessTask<E569Thing>(thing);
         };
     }
 }
@@ -275,7 +275,7 @@ internal class E569PartProfile : EntitySetProfile<int, E569Part>
     public E569PartProfile() : base(x => x.Id)
     {
         EntitySetName = "E569Parts";
-        Post = (part, _) => Task.FromResult<E569Part?>(part);
+        Post = (part, _) => OhDataResult.SuccessTask<E569Part>(part);
     }
 }
 
@@ -303,7 +303,7 @@ internal class E569SnakeProfile : EntitySetProfile<int, E569Snake>
         Post = (thing, _) =>
         {
             LastPosted = thing;
-            return Task.FromResult<E569Snake?>(thing);
+            return OhDataResult.SuccessTask<E569Snake>(thing);
         };
     }
 }

@@ -232,6 +232,6 @@ public sealed class IgnProductConflictingProfile : EntitySetProfile<int, IgnProd
     {
         EntitySetName = "IgnProductsAlt";
         Ignore(x => x.Name);
-        GetById = (id, ct) => Task.FromResult<IgnProduct?>(null);
+        GetById = (id, ct) => OhDataResult.SuccessTask<IgnProduct>(null);
     }
 }

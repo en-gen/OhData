@@ -68,7 +68,7 @@ public sealed class SqliteWideProfile : EntitySetProfile<int, SqliteWide>
         FilterEnabled = true;
         OrderByEnabled = true;
         CountEnabled = true;
-        GetQueryable = _ => Task.FromResult(_db.Wides.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(_db.Wides.AsQueryable());
     }
 }
 
@@ -194,7 +194,7 @@ public sealed class SqliteOwnedProfile : EntitySetProfile<int, SqliteOwnedItem>
         _db = db;
         SelectEnabled = true;
         // Deliberately a TRACKING queryable — the vanilla profile shape that triggered the 500.
-        GetQueryable = _ => Task.FromResult(_db.Items.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(_db.Items.AsQueryable());
     }
 }
 

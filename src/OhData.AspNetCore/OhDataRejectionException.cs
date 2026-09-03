@@ -24,5 +24,19 @@ internal sealed class OhDataRejectionException : Exception
     internal OhDataRejectionException(OhDataResult result, Exception inner)
         : base(result.Message, inner) => Result = result;
 
+    /// <summary>
+    /// A rejection the handler RETURNED rather than one mapped from a throw. There is no inner
+    /// exception, and the group filter uses that to tell the two apart: a mapped fault is logged at
+    /// Warning because it was reclassified, a returned rejection at Debug because it is an ordinary
+    /// outcome the handler chose.
+    /// <para>
+    /// Using an exception to carry it is an internal transport, not control flow the adopter writes:
+    /// the handler returns a value. It buys one translation point shared with the mapping path, and
+    /// the cost lands only on responses that were going to be errors anyway.
+    /// </para>
+    /// </summary>
+    internal OhDataRejectionException(OhDataResult result)
+        : base(result.Message) => Result = result;
+
     internal OhDataResult Result { get; }
 }

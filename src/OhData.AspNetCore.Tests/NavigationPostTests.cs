@@ -273,7 +273,7 @@ public class NavigationPostTests
         public NavPostHappyProfile() : base(x => x.Id)
         {
             EntitySetName = "NavPostHappyParents";
-            GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(p => p.Id == id));
+            GetById = (id, ct) => OhDataResult.SuccessTask(_parents.FirstOrDefault(p => p.Id == id));
 
             HasMany(
                 navigation: x => x.Children!,
@@ -298,7 +298,7 @@ public class NavigationPostTests
         public NavPostNoRefProfile() : base(x => x.Id)
         {
             EntitySetName = "NavPostNoRefParents";
-            GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(p => p.Id == id));
+            GetById = (id, ct) => OhDataResult.SuccessTask(_parents.FirstOrDefault(p => p.Id == id));
 
             HasMany(
                 navigation: x => x.Children!,
@@ -323,7 +323,7 @@ public class NavigationPostTests
         public NavPostMinimalProfile() : base(x => x.Id)
         {
             EntitySetName = "NavPostMinimalParents";
-            GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(p => p.Id == id));
+            GetById = (id, ct) => OhDataResult.SuccessTask(_parents.FirstOrDefault(p => p.Id == id));
 
             HasMany(
                 navigation: x => x.Children!,
@@ -347,7 +347,7 @@ public class NavigationPostTests
         public NavPostParentMissingProfile() : base(x => x.Id)
         {
             EntitySetName = "NavPostMissingParents";
-            GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(p => p.Id == id));
+            GetById = (id, ct) => OhDataResult.SuccessTask(_parents.FirstOrDefault(p => p.Id == id));
 
             HasMany(
                 navigation: x => x.Children!,
@@ -369,7 +369,7 @@ public class NavigationPostTests
         public NavPostValidationProfile() : base(x => x.Id)
         {
             EntitySetName = "NavPostValidationParents";
-            GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(p => p.Id == id));
+            GetById = (id, ct) => OhDataResult.SuccessTask(_parents.FirstOrDefault(p => p.Id == id));
 
             HasMany(
                 navigation: x => x.Children!,
@@ -393,7 +393,7 @@ public class NavigationPostTests
         public NavPostNoHandlerProfile() : base(x => x.Id)
         {
             EntitySetName = "NavPostNoHandlerParents";
-            GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(p => p.Id == id));
+            GetById = (id, ct) => OhDataResult.SuccessTask(_parents.FirstOrDefault(p => p.Id == id));
 
             // getAll only — no post handler, so POST /{key}/Children must not be registered.
             HasMany(x => x.Children!,
@@ -410,7 +410,7 @@ public class NavigationPostTests
         {
             EntitySetName = "NavPostAuthParents";
             RequireAuthorization();
-            GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(p => p.Id == id));
+            GetById = (id, ct) => OhDataResult.SuccessTask(_parents.FirstOrDefault(p => p.Id == id));
 
             HasMany(
                 navigation: x => x.Children!,
@@ -451,8 +451,8 @@ public class NavigationPostTests
         {
             EntitySetName = "NavPostBatchParents";
             ExpandEnabled = true;
-            GetAll = (ct) => Task.FromResult<IEnumerable<NavPostParentEx>>(_parents);
-            GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(p => p.Id == id));
+            GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<NavPostParentEx>>(_parents);
+            GetById = (id, ct) => OhDataResult.SuccessTask(_parents.FirstOrDefault(p => p.Id == id));
 
             HasMany(
                 navigation: x => x.Children!,
@@ -476,7 +476,7 @@ public class NavigationPostTests
         public NavPostMetadataWithPostProfile() : base(x => x.Id)
         {
             EntitySetName = "NavPostMetadataParents";
-            GetById = (id, ct) => Task.FromResult<NavPostParent?>(null);
+            GetById = (id, ct) => OhDataResult.SuccessTask<NavPostParent>(null);
 
             HasMany(
                 navigation: x => x.Children!,
@@ -491,7 +491,7 @@ public class NavigationPostTests
         public NavPostMetadataBaselineProfile() : base(x => x.Id)
         {
             EntitySetName = "NavPostMetadataParents";
-            GetById = (id, ct) => Task.FromResult<NavPostParent?>(null);
+            GetById = (id, ct) => OhDataResult.SuccessTask<NavPostParent>(null);
 
             HasMany(
                 navigation: x => x.Children!,
@@ -515,7 +515,7 @@ public class NavigationPostTests
         public NavPostActionCollisionProfile() : base(x => x.Id)
         {
             EntitySetName = "NavPostActionCollisionParents";
-            GetById = (id, ct) => Task.FromResult<NavPostParent?>(null);
+            GetById = (id, ct) => OhDataResult.SuccessTask<NavPostParent>(null);
 
             HasMany(
                 navigation: x => x.Children!,

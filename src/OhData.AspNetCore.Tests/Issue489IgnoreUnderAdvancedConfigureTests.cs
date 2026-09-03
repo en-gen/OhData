@@ -188,8 +188,8 @@ internal abstract class Ia489ProfileBase : EntitySetProfile<int, Ia489Widget>
         FilterEnabled = true;
         SelectEnabled = true;
         Ignore(x => x.Secret);
-        GetQueryable = _ => Task.FromResult(Store.AsQueryable());
-        GetById = (id, _) => Task.FromResult(Store.FirstOrDefault(w => w.Id == id));
+        GetQueryable = _ => OhDataResult.SuccessTask(Store.AsQueryable());
+        GetById = (id, _) => OhDataResult.SuccessTask(Store.FirstOrDefault(w => w.Id == id));
     }
 }
 
@@ -232,7 +232,7 @@ internal sealed class Ia489NoIgnoreProfile : EntitySetProfile<int, Ia489Widget>
     public Ia489NoIgnoreProfile() : base(x => x.Id)
     {
         EntitySetName = "Ia489NoIgnore";
-        GetById = (id, _) => Task.FromResult<Ia489Widget?>(new Ia489Widget { Id = id });
+        GetById = (id, _) => OhDataResult.SuccessTask<Ia489Widget>(new Ia489Widget { Id = id });
     }
 
     protected override void AdvancedConfigure(EntitySetConfiguration<Ia489Widget> configuration)

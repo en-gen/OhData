@@ -13,9 +13,23 @@
 		  Package validation: catches breaking API/ABI changes and TFM-compat
 		  issues before they ship. Every pack is diffed against the published
 		  baseline below; bump the baseline as part of each release.
+
+		  #581 / 2.0.0: the eight handler delegates on EntitySetProfile<TKey,TModel> change shape,
+		  which is an INTENTIONAL break and the reason this release is a major. ApiCompat can only
+		  baseline against a PUBLISHED version, so there is no 2.x package to diff against until
+		  2.0.0 ships — leaving the 1.7.0 baseline in place reports those eight breaks on every
+		  build, forever.
+
+		  The two ways out are a suppression file or suspending the baseline. This repo has never
+		  had a suppression file and does not want its first one to be a permanent record of a break
+		  that is deliberate and already documented, so the baseline is suspended for the 2.0.0
+		  cycle. EnablePackageValidation stays TRUE: the TFM-compat and same-version checks still
+		  run; only the cross-version diff is off.
+
+		  RESTORE AT CLOSE-OUT, pointing at 2.0.0 — docs/releasing.md carries the step.
 		-->
 		<EnablePackageValidation>true</EnablePackageValidation>
-		<PackageValidationBaselineVersion>1.7.0</PackageValidationBaselineVersion>
+		<!-- <PackageValidationBaselineVersion>1.7.0</PackageValidationBaselineVersion> -->
 	</PropertyGroup>
 
 	<ItemGroup>

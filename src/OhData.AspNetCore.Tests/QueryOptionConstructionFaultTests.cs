@@ -47,8 +47,8 @@ internal sealed class QocQueryableProfile : EntitySetProfile<int, QocWidget>
         ExpandEnabled = true;
         CountEnabled = true;
 
-        GetQueryable = ct => Task.FromResult(Store.AsQueryable());
-        GetById = (id, ct) => Task.FromResult(Store.FirstOrDefault(w => w.Id == id));
+        GetQueryable = ct => OhDataResult.SuccessTask(Store.AsQueryable());
+        GetById = (id, ct) => OhDataResult.SuccessTask(Store.FirstOrDefault(w => w.Id == id));
 
         HasMany(
             navigation: x => x.Children!,
@@ -62,7 +62,7 @@ internal sealed class QocGetAllProfile : EntitySetProfile<int, QocWidget>
     public QocGetAllProfile() : base(x => x.Id)
     {
         EntitySetName = "QocGetAll";
-        GetAll = ct => Task.FromResult<IEnumerable<QocWidget>>(Array.Empty<QocWidget>());
+        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<QocWidget>>(Array.Empty<QocWidget>());
     }
 }
 

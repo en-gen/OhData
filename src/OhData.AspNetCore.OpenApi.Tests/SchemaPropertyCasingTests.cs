@@ -232,7 +232,7 @@ public sealed class SchemaPropertyCasingTests
         public CasingProfile() : base(x => x.Id)
         {
             EntitySetName = "CasingWidgets";
-            GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store);
+            GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<Widget>>(_store);
         }
     }
 }

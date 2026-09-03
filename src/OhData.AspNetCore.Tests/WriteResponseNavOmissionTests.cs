@@ -35,14 +35,14 @@ public class WriteResponseNavOmissionTests
         {
             EntitySetName = "WriteNavMovies";
 
-            GetById = (id, _) => Task.FromResult<OmitMovie?>(Populated(id, "Ascent"));
-            Post = (movie, _) => Task.FromResult<OmitMovie?>(Populated(movie.Id == 0 ? 1 : movie.Id, movie.Title));
-            Put = (id, movie, _) => Task.FromResult<OmitMovie>(Populated(id, movie.Title));
+            GetById = (id, _) => OhDataResult.SuccessTask<OmitMovie>(Populated(id, "Ascent"));
+            Post = (movie, _) => OhDataResult.SuccessTask<OmitMovie>(Populated(movie.Id == 0 ? 1 : movie.Id, movie.Title));
+            Put = (id, movie, _) => OhDataResult.SuccessTask<OmitMovie>(Populated(id, movie.Title));
             Patch = (id, delta, _) =>
             {
                 OmitMovie entity = Populated(id, "Original");
                 delta.Patch(entity);
-                return Task.FromResult<OmitMovie?>(entity);
+                return OhDataResult.SuccessTask<OmitMovie>(entity);
             };
 
             HasOptional(
@@ -72,9 +72,9 @@ public class WriteResponseNavOmissionTests
             EntitySetName = "UpsertNavMovies";
             AllowUpsert = true;
 
-            GetById = (id, _) => Task.FromResult<OmitMovie?>(null);
-            Put = (id, movie, _) => Task.FromResult<OmitMovie>(null!); // null → triggers upsert-create
-            Post = (movie, _) => Task.FromResult<OmitMovie?>(Populated(movie.Id == 0 ? 9 : movie.Id, movie.Title));
+            GetById = (id, _) => OhDataResult.SuccessTask<OmitMovie>(null);
+            Put = (id, movie, _) => OhDataResult.SuccessTask<OmitMovie>(null!); // null → triggers upsert-create
+            Post = (movie, _) => OhDataResult.SuccessTask<OmitMovie>(Populated(movie.Id == 0 ? 9 : movie.Id, movie.Title));
 
             HasOptional(
                 navigation: x => x.Studio!,

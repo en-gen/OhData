@@ -1390,12 +1390,25 @@ internal static class OhDataEndpointFactory
             // this line is the only thing left of it.
             catch (OhDataRejectionException rejection)
             {
-                groupLogger?.LogWarning(rejection.InnerException,
-                    "OhData: mapped {Exception} to {Status} processing {Method} {Path}",
-                    rejection.InnerException?.GetType().Name,
-                    rejection.Result.StatusCode,
-                    SanitizeLogValue(ctx.HttpContext.Request.Method),
-                    SanitizeLogValue(ctx.HttpContext.Request.Path.ToString()));
+                if (rejection.InnerException is { } mappedFrom)
+                {
+                    groupLogger?.LogWarning(mappedFrom,
+                        "OhData: mapped {Exception} to {Status} processing {Method} {Path}",
+                        mappedFrom.GetType().Name,
+                        rejection.Result.StatusCode,
+                        SanitizeLogValue(ctx.HttpContext.Request.Method),
+                        SanitizeLogValue(ctx.HttpContext.Request.Path.ToString()));
+                }
+                else
+                {
+                    // Returned, not mapped: an ordinary outcome the handler chose, so Debug. A
+                    // Warning per business rejection would drown the signal the branch above carries.
+                    groupLogger?.LogDebug(
+                        "OhData: handler returned {Status} processing {Method} {Path}",
+                        rejection.Result.StatusCode,
+                        SanitizeLogValue(ctx.HttpContext.Request.Method),
+                        SanitizeLogValue(ctx.HttpContext.Request.Path.ToString()));
+                }
                 return ODataError(
                     rejection.Result.StatusCode, rejection.Result.ErrorCode,
                     rejection.Result.Message, rejection.Result.Target);

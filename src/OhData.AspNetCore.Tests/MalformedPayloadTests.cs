@@ -550,14 +550,14 @@ public class MalformedPayloadTests
         {
             EntitySetName = "MalformedWidgets";
 
-            GetAll = (ct) => Task.FromResult<IEnumerable<MalformedWidget>>(_store);
-            GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
+            GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<MalformedWidget>>(_store);
+            GetById = (id, ct) => OhDataResult.SuccessTask(_store.FirstOrDefault(w => w.Id == id));
 
             Post = (widget, ct) =>
             {
                 widget.Id = _store.Count > 0 ? _store.Max(w => w.Id) + 1 : 1;
                 _store.Add(widget);
-                return Task.FromResult<MalformedWidget?>(widget);
+                return OhDataResult.SuccessTask<MalformedWidget>(widget);
             };
 
             Put = (id, widget, ct) =>
@@ -565,17 +565,17 @@ public class MalformedPayloadTests
                 _store.RemoveAll(w => w.Id == id);
                 widget.Id = id;
                 _store.Add(widget);
-                return Task.FromResult(widget);
+                return OhDataResult.SuccessTask(widget);
             };
 
-            Delete = (id, ct) => Task.FromResult(_store.RemoveAll(w => w.Id == id) > 0);
+            Delete = (id, ct) => OhDataResult.SuccessTask(_store.RemoveAll(w => w.Id == id) > 0);
 
             Patch = (id, delta, ct) =>
             {
                 var existing = _store.FirstOrDefault(w => w.Id == id);
-                if (existing is null) return Task.FromResult<MalformedWidget?>(null);
+                if (existing is null) return OhDataResult.SuccessTask<MalformedWidget>(null);
                 delta.Patch(existing);
-                return Task.FromResult<MalformedWidget?>(existing);
+                return OhDataResult.SuccessTask<MalformedWidget>(existing);
             };
         }
     }
@@ -589,7 +589,7 @@ public class MalformedPayloadTests
         public MalformedStringKeyProfile() : base(x => x.Id)
         {
             EntitySetName = "MalformedStringThings";
-            GetById = (id, ct) => Task.FromResult(Store.FirstOrDefault(t => t.Id == id));
+            GetById = (id, ct) => OhDataResult.SuccessTask(Store.FirstOrDefault(t => t.Id == id));
         }
     }
 
@@ -600,13 +600,13 @@ public class MalformedPayloadTests
         public MalformedETagWidgetProfile() : base(x => x.Id)
         {
             EntitySetName = "MalformedETagWidgets";
-            GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
+            GetById = (id, ct) => OhDataResult.SuccessTask(_store.FirstOrDefault(w => w.Id == id));
             Put = (id, widget, ct) =>
             {
                 _store.RemoveAll(w => w.Id == id);
                 widget.Id = id;
                 _store.Add(widget);
-                return Task.FromResult(widget);
+                return OhDataResult.SuccessTask(widget);
             };
             UseETag(x => x.Name);
         }

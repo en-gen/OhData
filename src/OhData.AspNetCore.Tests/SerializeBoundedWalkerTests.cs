@@ -68,7 +68,7 @@ public sealed class SeNodeProfile : EntitySetProfile<int, SeNode>
         ExpandEnabled = true;
         OrderByEnabled = true;
         ExpandPushdownEnabled = false;
-        GetQueryable = _ => Task.FromResult(db.SeNodes.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.SeNodes.AsQueryable());
         HasOptional(x => x.Parent!);
         HasMany(x => x.Children);
     }
@@ -185,18 +185,19 @@ public sealed class SpNodeProfile : EntitySetProfile<int, SpNode>
         EntitySetName = "SpNodes";
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.SpNodes.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.SpNodes.AsQueryable());
         // Include(Parent): Parent is delegate-less (ServeRaw) — with no eager load, a single-row
         // GetById query would leave it un-materialized (null), unlike the collection-GET fixtures
         // above where the whole table loads in one query and EF fixup wires it up for free.
-        GetById = (id, ct) => db.SpNodes.Include(n => n.Parent).FirstOrDefaultAsync(n => n.Id == id, ct);
+        GetById = async (id, ct) =>
+            OhDataResult.Success(await db.SpNodes.Include(n => n.Parent).FirstOrDefaultAsync(n => n.Id == id, ct));
         Patch = async (id, delta, ct) =>
         {
             SpNode? existing = await db.SpNodes.FirstOrDefaultAsync(n => n.Id == id, ct);
-            if (existing is null) return null;
+            if (existing is null) return OhDataResult.Success<SpNode>(null);
             delta.Patch(existing);
             await db.SaveChangesAsync(ct);
-            return existing;
+            return OhDataResult.Success(existing);
         };
         HasOptional(x => x.Parent!);
         // T26 needs a real GET /{Set}({key})/Children route, which requires a getAll handler
@@ -409,7 +410,7 @@ public sealed class SpTreeNodeProfile : EntitySetProfile<int, SpTreeNode>
     {
         _db = db;
         EntitySetName = "SpTreeNodes";
-        GetQueryable = _ => Task.FromResult(db.SpTreeNodes.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.SpTreeNodes.AsQueryable());
         HasOptional(x => x.Parent!);
         HasMany(x => x.Children);
         BindFunction(AllNodes); // T27: bound function returning a collection of the set's own type
@@ -494,7 +495,7 @@ public sealed class SdNodeProfile : EntitySetProfile<int, SdNode>
         ExpandEnabled = true;
         OrderByEnabled = true;
         FilterEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.SdNodes.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.SdNodes.AsQueryable());
         HasMany(
             x => x.Children,
             getAll: (parentId, ct) => Task.FromResult<IEnumerable<SdNode>>(
@@ -589,7 +590,7 @@ public sealed class SbkRootProfile : EntitySetProfile<int, SbkRoot>
     {
         EntitySetName = "SbkRoots";
         ExpandEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.SbkRoots.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.SbkRoots.AsQueryable());
         // Delegate-backed on purpose: ServeRaw navigations skip nested-clause processing entirely
         // in ExpandLevelAsync (nothing to overwrite — the raw graph already stands), so a Blank
         // disagreement reached ONLY through a ServeRaw parent would never be evaluated at all.
@@ -609,7 +610,7 @@ public sealed class SbkNodesAProfile : EntitySetProfile<int, SbkNode>
     {
         EntitySetName = "SbkNodesA";
         ExpandEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.SbkNodes.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.SbkNodes.AsQueryable());
         HasMany(x => x.Children);
     }
 }
@@ -620,7 +621,7 @@ public sealed class SbkNodesBProfile : EntitySetProfile<int, SbkNode>
     {
         EntitySetName = "SbkNodesB";
         ExpandEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.SbkNodes.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.SbkNodes.AsQueryable());
         HasMany(x => x.Children, getAll: (_, ct) => Task.FromResult<IEnumerable<SbkNode>>(Array.Empty<SbkNode>()));
     }
 }
@@ -706,7 +707,7 @@ public sealed class SxNodeProfile : EntitySetProfile<int, SxNode>
     public SxNodeProfile() : base(x => x.Id)
     {
         EntitySetName = "SxNodes";
-        GetQueryable = _ => Task.FromResult(new[] { NodeA, NodeB }.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(new[] { NodeA, NodeB }.AsQueryable());
     }
 
     // The automatic EDM builder (ODataConventionModelBuilder) auto-detects ANY entity-typed CLR
@@ -783,7 +784,7 @@ public sealed class ZjRootProfile : EntitySetProfile<int, ZjRoot>
     {
         EntitySetName = "ZjRoots";
         ExpandEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.ZjRoots.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.ZjRoots.AsQueryable());
         HasMany(x => x.HiddenTags);
     }
 }
@@ -870,7 +871,7 @@ public sealed class ZcThingProfile : EntitySetProfile<int, ZcThing>
     public ZcThingProfile() : base(x => x.Id)
     {
         EntitySetName = "ZcThings";
-        GetQueryable = _ => Task.FromResult(new[] { new ZcThing { Id = 1, Name = "One" } }.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(new[] { new ZcThing { Id = 1, Name = "One" } }.AsQueryable());
     }
 }
 
@@ -928,7 +929,7 @@ public sealed class ZeRootProfile : EntitySetProfile<int, ZeRoot>
         EntitySetName = "ZeRoots";
         ExpandEnabled = true;
         var target = new ZeTarget { Id = 1, Name = "T" };
-        GetQueryable = _ => Task.FromResult(new[] { new ZeRoot { Id = 1, Name = "R", Target = target } }.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(new[] { new ZeRoot { Id = 1, Name = "R", Target = target } }.AsQueryable());
         HasOptional(x => x.Target!);
     }
 }
@@ -991,7 +992,7 @@ public sealed class IxNodeProfile : EntitySetProfile<int, IxNode>
         ExpandEnabled = true;
         OrderByEnabled = true;
         ExpandPushdownEnabled = false; // force the ServeRaw/EDM-only SerializeBoundedCollection path
-        GetQueryable = _ => Task.FromResult(db.IxNodes.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.IxNodes.AsQueryable());
         HasOptional(x => x.Parent!);
         HasMany(x => x.Children);
     }

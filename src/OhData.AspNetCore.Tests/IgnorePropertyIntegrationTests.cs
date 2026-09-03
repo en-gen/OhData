@@ -145,27 +145,27 @@ public sealed class IgnProductProfile : EntitySetProfile<int, IgnProduct>
         HasMany(x => x.Tags!, (int key, CancellationToken ct) =>
             Task.FromResult<IEnumerable<IgnTag>>(IgnData.Tags()));
 
-        GetQueryable = ct => Task.FromResult(_store.AsQueryable());
-        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(p => p.Id == id));
+        GetQueryable = ct => OhDataResult.SuccessTask(_store.AsQueryable());
+        GetById = (id, ct) => OhDataResult.SuccessTask(_store.FirstOrDefault(p => p.Id == id));
         Post = (model, ct) =>
         {
             captures.LastPosted = model;
             model.Id = 99;
             _store.Add(model);
-            return Task.FromResult<IgnProduct?>(model);
+            return OhDataResult.SuccessTask<IgnProduct>(model);
         };
         Put = (id, model, ct) =>
         {
             captures.LastPut = model;
-            return Task.FromResult(model);
+            return OhDataResult.SuccessTask(model);
         };
         Patch = (id, delta, ct) =>
         {
             captures.LastPatchChangedNames = delta.GetChangedPropertyNames().ToList();
             var existing = _store.FirstOrDefault(p => p.Id == id);
-            if (existing is null) return Task.FromResult<IgnProduct?>(null);
+            if (existing is null) return OhDataResult.SuccessTask<IgnProduct>(null);
             delta.Patch(existing);
-            return Task.FromResult<IgnProduct?>(existing);
+            return OhDataResult.SuccessTask<IgnProduct>(existing);
         };
     }
 }
@@ -175,7 +175,7 @@ public sealed class IgnTagProfile : EntitySetProfile<int, IgnTag>
     public IgnTagProfile() : base(x => x.Id)
     {
         Ignore(x => x.InternalCode);
-        GetById = (id, ct) => Task.FromResult(IgnData.Tags().FirstOrDefault(t => t.Id == id));
+        GetById = (id, ct) => OhDataResult.SuccessTask(IgnData.Tags().FirstOrDefault(t => t.Id == id));
     }
 }
 
@@ -183,7 +183,7 @@ public sealed class IgnControlProfile : EntitySetProfile<int, IgnControl>
 {
     public IgnControlProfile() : base(x => x.Id)
     {
-        GetById = (id, ct) => Task.FromResult<IgnControl?>(new IgnControl { Id = id, CostBasis = 5m });
+        GetById = (id, ct) => OhDataResult.SuccessTask<IgnControl>(new IgnControl { Id = id, CostBasis = 5m });
     }
 }
 
@@ -410,7 +410,7 @@ public sealed class IgnConflictA : EntitySetProfile<int, IgnProduct>
     {
         EntitySetName = "ConflictA";
         Ignore(x => x.CostBasis);
-        GetById = (id, ct) => Task.FromResult<IgnProduct?>(null);
+        GetById = (id, ct) => OhDataResult.SuccessTask<IgnProduct>(null);
     }
 }
 
@@ -419,7 +419,7 @@ public sealed class IgnConflictB : EntitySetProfile<int, IgnProduct>
     public IgnConflictB() : base(x => x.Id)
     {
         EntitySetName = "ConflictB"; // same TModel, DIFFERENT ignore set (none)
-        GetById = (id, ct) => Task.FromResult<IgnProduct?>(null);
+        GetById = (id, ct) => OhDataResult.SuccessTask<IgnProduct>(null);
     }
 }
 
