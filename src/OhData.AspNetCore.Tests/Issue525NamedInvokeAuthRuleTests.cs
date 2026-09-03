@@ -212,7 +212,7 @@ internal sealed class Oar525NoOpsProfile : EntitySetProfile<int, Oar525Widget>
     public Oar525NoOpsProfile() : base(x => x.Id)
     {
         EntitySetName = "Oar525NoOps";
-        GetById = (id, _) => Task.FromResult<Oar525Widget?>(new Oar525Widget { Id = id });
+        GetById = (id, _) => OhDataResult.SuccessTask<Oar525Widget>(new Oar525Widget { Id = id });
         ConfigureAuthorization(a => a.Invoke("Stamp", i => i.RequireRole("Admin")));
     }
 }
@@ -223,7 +223,7 @@ internal sealed class Oar525EntityLevelProfile : EntitySetProfile<int, Oar525Wid
     public Oar525EntityLevelProfile() : base(x => x.Id)
     {
         EntitySetName = "Oar525EntityLevel";
-        GetById = (id, _) => Task.FromResult<Oar525Widget?>(new Oar525Widget { Id = id });
+        GetById = (id, _) => OhDataResult.SuccessTask<Oar525Widget>(new Oar525Widget { Id = id });
         BindEntityFunction(Tag);
         BindEntityAction(Seal);
         ConfigureAuthorization(a => a

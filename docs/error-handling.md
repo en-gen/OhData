@@ -2,6 +2,33 @@
 
 ## How a handler reports failure
 
+Every handler delegate returns `Task<OhDataResult<T>>`. A handler either succeeds with a value or
+returns a rejection:
+
+```csharp
+Post = async (order, ct) =>
+{
+    if (await db.Orders.AnyAsync(o => o.Sku == order.Sku, ct))
+        return OhDataResult.Conflict("DuplicateSku", $"SKU {order.Sku} already exists.", target: "Sku");
+
+    db.Add(order);
+    await db.SaveChangesAsync(ct);
+    return OhDataResult.Success(order);
+};
+```
+
+A rejection converts implicitly, so `return OhDataResult.Conflict(...)` compiles in a handler
+declared to return `OhDataResult<Order>` — the rejection carries no value, so there is nothing to
+supply. For a synchronous handler, `OhDataResult.SuccessTask(value)` is the direct replacement for
+`Task.FromResult(value)`.
+
+There is deliberately **no** implicit conversion from `T`: a bare `return model;` would silently
+mean "and whatever status the framework infers", and unexpressed meaning in a handler's return is
+precisely what #496 had to unpick when `null` was the only way to say "no".
+
+## Mapping exceptions you do not raise yourself
+
+
 The framework validates a great deal at its own boundary — key format, EDM nullability, capability
 flags, property allowlists, deep-write shape — and answers `400` for each. But a rejection that
 depends on domain state the framework cannot see (*"that SKU already exists"*, *"this transition is

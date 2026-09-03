@@ -31,8 +31,8 @@ internal class AllFlagsWidgetProfile : EntitySetProfile<int, Widget>
         CountEnabled = true;
         MaxTop = 25;
 
-        GetQueryable = (ct) => Task.FromResult(_store.AsQueryable());
-        Search = (term, ct) => Task.FromResult<IEnumerable<Widget>>(
+        GetQueryable = (ct) => OhDataResult.SuccessTask(_store.AsQueryable());
+        Search = (term, ct) => OhDataResult.SuccessTask<IEnumerable<Widget>>(
             _store.Where(w => w.Name.Contains(term)));
     }
 }
@@ -45,7 +45,7 @@ internal class NoFlagsWidgetProfile : EntitySetProfile<int, Widget>
     public NoFlagsWidgetProfile() : base(x => x.Id)
     {
         EntitySetName = "NoFlagsWidgets";
-        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store);
+        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<Widget>>(_store);
     }
 }
 
@@ -62,7 +62,7 @@ internal class NoMaxTopWidgetProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "NoMaxTopWidgets";
         MaxTop = null;
-        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store);
+        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<Widget>>(_store);
     }
 }
 
@@ -74,7 +74,7 @@ internal class FilterOnlyWidgetProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "FilterOnlyWidgets";
         FilterEnabled = true;
-        GetQueryable = (ct) => Task.FromResult(_store.AsQueryable());
+        GetQueryable = (ct) => OhDataResult.SuccessTask(_store.AsQueryable());
     }
 }
 
@@ -86,7 +86,7 @@ internal class OrderByOnlyWidgetProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "OrderByOnlyWidgets";
         OrderByEnabled = true;
-        GetQueryable = (ct) => Task.FromResult(_store.AsQueryable());
+        GetQueryable = (ct) => OhDataResult.SuccessTask(_store.AsQueryable());
     }
 }
 
@@ -98,7 +98,7 @@ internal class SelectOnlyWidgetProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "SelectOnlyWidgets";
         SelectEnabled = true;
-        GetQueryable = (ct) => Task.FromResult(_store.AsQueryable());
+        GetQueryable = (ct) => OhDataResult.SuccessTask(_store.AsQueryable());
     }
 }
 
@@ -110,7 +110,7 @@ internal class ExpandOnlyWidgetProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "ExpandOnlyWidgets";
         ExpandEnabled = true;
-        GetQueryable = (ct) => Task.FromResult(_store.AsQueryable());
+        GetQueryable = (ct) => OhDataResult.SuccessTask(_store.AsQueryable());
     }
 }
 
@@ -122,7 +122,7 @@ internal class CountOnlyWidgetProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "CountOnlyWidgets";
         CountEnabled = true;
-        GetQueryable = (ct) => Task.FromResult(_store.AsQueryable());
+        GetQueryable = (ct) => OhDataResult.SuccessTask(_store.AsQueryable());
     }
 }
 
@@ -134,8 +134,8 @@ internal class SearchOnlyWidgetProfile : EntitySetProfile<int, Widget>
     public SearchOnlyWidgetProfile() : base(x => x.Id)
     {
         EntitySetName = "SearchOnlyWidgets";
-        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store);
-        Search = (term, ct) => Task.FromResult<IEnumerable<Widget>>(
+        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<Widget>>(_store);
+        Search = (term, ct) => OhDataResult.SuccessTask<IEnumerable<Widget>>(
             _store.Where(w => w.Name.Contains(term)));
     }
 }
@@ -149,7 +149,7 @@ internal class GetByIdOnlyWidgetProfile : EntitySetProfile<int, Widget>
     public GetByIdOnlyWidgetProfile() : base(x => x.Id)
     {
         EntitySetName = "GetByIdOnlyWidgets";
-        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
+        GetById = (id, ct) => OhDataResult.SuccessTask(_store.FirstOrDefault(w => w.Id == id));
     }
 }
 
@@ -167,7 +167,7 @@ internal class GetAllFilterEnabledWidgetProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "GetAllFilterWidgets";
         FilterEnabled = true;
-        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store);
+        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<Widget>>(_store);
     }
 }
 
@@ -179,6 +179,6 @@ internal class DupTopWidgetProfile : EntitySetProfile<int, Widget>
     public DupTopWidgetProfile() : base(x => x.Id)
     {
         EntitySetName = "DupTopWidgets";
-        GetQueryable = (ct) => Task.FromResult(_store.AsQueryable());
+        GetQueryable = (ct) => OhDataResult.SuccessTask(_store.AsQueryable());
     }
 }

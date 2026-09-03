@@ -49,7 +49,7 @@ internal sealed class OpFaultProfile : EntitySetProfile<int, OpFaultWidget>
     public OpFaultProfile() : base(x => x.Id)
     {
         EntitySetName = "OpFaults";
-        GetById = (id, ct) => Task.FromResult<OpFaultWidget?>(
+        GetById = (id, ct) => OhDataResult.SuccessTask<OpFaultWidget>(
             new OpFaultWidget { Id = id, Name = "n" });
 
         BindFunction(FaultyFunction);
@@ -71,9 +71,9 @@ internal sealed class OpHealthyProfile : EntitySetProfile<int, OpHealthyWidget>
     public OpHealthyProfile() : base(x => x.Id)
     {
         EntitySetName = "OpHealthy";
-        GetAll = ct => Task.FromResult<IEnumerable<OpHealthyWidget>>(
+        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<OpHealthyWidget>>(
             new[] { new OpHealthyWidget { Id = 1, Name = "one" } });
-        GetById = (id, ct) => Task.FromResult<OpHealthyWidget?>(
+        GetById = (id, ct) => OhDataResult.SuccessTask<OpHealthyWidget>(
             new OpHealthyWidget { Id = id, Name = "one" });
 
         BindFunction(HealthyFunction);

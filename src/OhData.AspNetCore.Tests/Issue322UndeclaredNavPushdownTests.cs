@@ -145,8 +145,8 @@ public sealed class UdAuthorProfile : EntitySetProfile<int, UdAuthor>
     {
         EntitySetName = "UdAuthors";
         ExpandEnabled = true; SelectEnabled = true; FilterEnabled = true; OrderByEnabled = true; CountEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.UdAuthors.AsQueryable());
-        GetById = (id, _) => Task.FromResult(db.UdAuthors.FirstOrDefault(a => a.Id == id));
+        GetQueryable = _ => OhDataResult.SuccessTask(db.UdAuthors.AsQueryable());
+        GetById = (id, _) => OhDataResult.SuccessTask(db.UdAuthors.FirstOrDefault(a => a.Id == id));
         HasMany(x => x.Books);
         // Publisher deliberately NOT declared.
     }
@@ -158,7 +158,7 @@ public sealed class UdPublisherProfile : EntitySetProfile<int, UdPublisher>
     {
         EntitySetName = "UdPublishers";
         ExpandEnabled = true; SelectEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.UdPublishers.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.UdPublishers.AsQueryable());
     }
 }
 
@@ -168,8 +168,8 @@ public sealed class NpAuthorProfile : EntitySetProfile<int, NpAuthor>
     {
         EntitySetName = "NpAuthors";
         ExpandEnabled = true; SelectEnabled = true; FilterEnabled = true; OrderByEnabled = true; CountEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.NpAuthors.AsQueryable());
-        GetById = (id, _) => Task.FromResult(db.NpAuthors.FirstOrDefault(a => a.Id == id));
+        GetQueryable = _ => OhDataResult.SuccessTask(db.NpAuthors.AsQueryable());
+        GetById = (id, _) => OhDataResult.SuccessTask(db.NpAuthors.FirstOrDefault(a => a.Id == id));
         HasMany(x => x.Books);
         // Publisher deliberately NOT declared, and NpPublisher has NO profile.
     }
@@ -181,8 +181,8 @@ public sealed class DcAuthorProfile : EntitySetProfile<int, DcAuthor>
     {
         EntitySetName = "DcAuthors";
         ExpandEnabled = true; SelectEnabled = true; FilterEnabled = true; OrderByEnabled = true; CountEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.DcAuthors.AsQueryable());
-        GetById = (id, _) => Task.FromResult(db.DcAuthors.FirstOrDefault(a => a.Id == id));
+        GetQueryable = _ => OhDataResult.SuccessTask(db.DcAuthors.AsQueryable());
+        GetById = (id, _) => OhDataResult.SuccessTask(db.DcAuthors.FirstOrDefault(a => a.Id == id));
         HasMany(x => x.Books);
         HasOptional<DcPublisher>(x => x.Publisher!); // the issue-stated workaround
     }
@@ -194,7 +194,7 @@ public sealed class DcPublisherProfile : EntitySetProfile<int, DcPublisher>
     {
         EntitySetName = "DcPublishers";
         ExpandEnabled = true; SelectEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.DcPublishers.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.DcPublishers.AsQueryable());
     }
 }
 
@@ -580,7 +580,7 @@ public sealed class UdMemOrderProfile : EntitySetProfile<int, UdMemOrder>
         ExpandEnabled = true;
         SelectEnabled = true;
         List<UdMemOrder> data = NewData();
-        GetQueryable = _ => Task.FromResult(data.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(data.AsQueryable());
         HasOptional<UdMemCust>(x => x.DeclaredCust!);
         // Cust deliberately NOT declared.
     }

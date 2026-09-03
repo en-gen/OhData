@@ -155,7 +155,7 @@ internal class GetAllCapProfile : EntitySetProfile<int, Widget>
         EntitySetName = "GetAllCapWidgets";
         CountEnabled = true;
         MaxTop = 10;
-        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(Store);
+        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<Widget>>(Store);
     }
 }
 
@@ -169,7 +169,7 @@ internal class GetAllUnboundedProfile : EntitySetProfile<int, Widget>
         EntitySetName = "GetAllUnboundedWidgets";
         CountEnabled = true;
         MaxTop = null; // #201 opt-out: return the full set, no cap, no nextLink.
-        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(Store);
+        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<Widget>>(Store);
     }
 }
 
@@ -183,9 +183,9 @@ internal class GetAllSearchCapProfile : EntitySetProfile<int, Widget>
         EntitySetName = "GetAllSearchCapWidgets";
         CountEnabled = true;
         MaxTop = 10;
-        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(Store);
+        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<Widget>>(Store);
         // Every item matches "Widget", so the search result set (25) exceeds MaxTop (10).
-        Search = (term, ct) => Task.FromResult<IEnumerable<Widget>>(
+        Search = (term, ct) => OhDataResult.SuccessTask<IEnumerable<Widget>>(
             Store.Where(w => w.Name.Contains(term, StringComparison.OrdinalIgnoreCase)));
     }
 }

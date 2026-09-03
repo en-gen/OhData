@@ -128,7 +128,7 @@ internal sealed class CeilingChainProfile : EntitySetProfile<int, TreeNode>
         EntitySetName = "CeilingChain";
         ExpandEnabled = true;
         MaxExpansionDepth = EntitySetDefaults.MaxExpansionDepthCeiling;
-        GetQueryable = ct => Task.FromResult(Store.AsQueryable());
+        GetQueryable = ct => OhDataResult.SuccessTask(Store.AsQueryable());
         HasMany(
             navigation: x => x.Children!,
             getAll: (id, ct) => Task.FromResult<IEnumerable<TreeNode>>(Array.Empty<TreeNode>()));

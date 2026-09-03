@@ -32,7 +32,7 @@ public sealed class BeAuthorMemoryProfile : EntitySetProfile<int, BeAuthor>
         EntitySetName = "BeAuthorsMem";
         ExpandEnabled = true;
         SelectEnabled = true;
-        GetQueryable = _ => Task.FromResult(
+        GetQueryable = _ => OhDataResult.SuccessTask(
             db.Authors.Include(a => a.Books).ToList().AsQueryable());
         HasMany(x => x.Books);
     }
@@ -49,7 +49,7 @@ public sealed class BeAuthorGetAllProfile : EntitySetProfile<int, BeAuthor>
         // PR #477 review, F1: `.ThenInclude(b => b.Chapters)` puts a SECOND level into the graph the
         // handler returns. Chapters is not $expand'd unless a request asks for it, so every other
         // assertion in this file is unaffected (SerializeBounded never walks an un-expanded nav).
-        GetAll = ct => Task.FromResult<IEnumerable<BeAuthor>>(
+        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<BeAuthor>>(
             db.Authors.Include(a => a.Books).ThenInclude(b => b.Chapters).ToList());
         HasMany(x => x.Books);
     }
@@ -388,7 +388,7 @@ public sealed class BeAuthorDelegateGetAllProfile : EntitySetProfile<int, BeAuth
     {
         EntitySetName = "BeAuthorsDlgAll";
         ExpandEnabled = true;
-        GetAll = ct => Task.FromResult<IEnumerable<BeAuthor>>(db.Authors.ToList());
+        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<BeAuthor>>(db.Authors.ToList());
         HasMany(x => x.Books,
             getAll: (id, ct) => Task.FromResult(db.Books.Where(b => b.AuthorId == id).AsEnumerable()));
     }
@@ -415,7 +415,7 @@ public sealed class BeBookDelegateProfile : EntitySetProfile<int, BeBook>
         EntitySetName = "BeBooksDlg";
         ExpandEnabled = true;
         FilterEnabled = true; // so the depth-1 O6 control can isolate book 1 deterministically
-        GetQueryable = _ => Task.FromResult(db.Books.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.Books.AsQueryable());
         HasMany(x => x.Chapters, getAll: (id, ct) =>
         {
             counter.Count();
@@ -436,7 +436,7 @@ public sealed class BeBookPlainProfile : EntitySetProfile<int, BeBook>
     {
         EntitySetName = "BeBooksPlain";
         ExpandEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.Books.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.Books.AsQueryable());
         HasMany(x => x.Chapters);
     }
 }

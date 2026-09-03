@@ -115,12 +115,12 @@ internal class DocProfile : EntitySetProfile<int, Doc>
     {
         EntitySetName = "Docs";
         UseETag(x => x.Id, x => x.Title);
-        GetById = (id, ct) => Task.FromResult<Doc?>(id == 1 ? _doc : null);
+        GetById = (id, ct) => OhDataResult.SuccessTask<Doc>(id == 1 ? _doc : null);
         Patch = (id, delta, ct) =>
         {
-            if (id != 1) return Task.FromResult<Doc?>(null);
+            if (id != 1) return OhDataResult.SuccessTask<Doc>(null);
             delta.Patch(_doc);
-            return Task.FromResult<Doc?>(_doc);
+            return OhDataResult.SuccessTask<Doc>(_doc);
         };
     }
 }

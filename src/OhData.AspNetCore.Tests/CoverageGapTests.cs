@@ -688,7 +688,7 @@ internal class ScanTargetProfile : EntitySetProfile<int, ScanTarget>
     public ScanTargetProfile() : base(x => x.Id)
     {
         EntitySetName = "ScanTargets";
-        GetAll = (ct) => Task.FromResult<IEnumerable<ScanTarget>>(Array.Empty<ScanTarget>());
+        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<ScanTarget>>(Array.Empty<ScanTarget>());
     }
 }
 
@@ -703,7 +703,7 @@ internal class DefaultNameCategoryProfile : EntitySetProfile<int, DefaultNameCat
     public DefaultNameCategoryProfile() : base(x => x.Id)
     {
         // No explicit EntitySetName — Pluralize("DefaultNameCategory") = "DefaultNameCategories"
-        GetAll = (ct) => Task.FromResult<IEnumerable<DefaultNameCategory>>(Array.Empty<DefaultNameCategory>());
+        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<DefaultNameCategory>>(Array.Empty<DefaultNameCategory>());
     }
 }
 
@@ -716,7 +716,7 @@ internal class ETagNoSelectorsProfileConcrete : EntitySetProfile<int, Widget>
     public ETagNoSelectorsProfileConcrete() : base(x => x.Id)
     {
         EntitySetName = "ETagNoSelectorsWidgets";
-        GetById = (id, ct) => Task.FromResult<Widget?>(null);
+        GetById = (id, ct) => OhDataResult.SuccessTask<Widget>(null);
         UseETag(); // zero selectors → ArgumentException
     }
 }
@@ -727,7 +727,7 @@ internal class ETagWithoutGetByIdProfile : EntitySetProfile<int, Widget>
     public ETagWithoutGetByIdProfile() : base(x => x.Id)
     {
         EntitySetName = "ETagNoGetByIdWidgets";
-        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(Array.Empty<Widget>());
+        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<Widget>>(Array.Empty<Widget>());
         UseETag(x => x.Name); // GetById is null → factory rejects at startup
     }
 }
@@ -743,7 +743,7 @@ internal class MultiETagProfile : EntitySetProfile<int, Widget>
     public MultiETagProfile() : base(x => x.Id)
     {
         EntitySetName = "MultiETagWidgets";
-        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
+        GetById = (id, ct) => OhDataResult.SuccessTask(_store.FirstOrDefault(w => w.Id == id));
         UseETag(x => x.Id, x => x.Name); // two selectors
     }
 }
@@ -784,8 +784,8 @@ internal class ParentWithTagProfile : EntitySetProfile<int, ParentWithCovTag>
     public ParentWithTagProfile() : base(x => x.Id)
     {
         EntitySetName = "TaggedParents";
-        GetAll = (ct) => Task.FromResult<IEnumerable<ParentWithCovTag>>(_parents);
-        GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(p => p.Id == id));
+        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<ParentWithCovTag>>(_parents);
+        GetById = (id, ct) => OhDataResult.SuccessTask(_parents.FirstOrDefault(p => p.Id == id));
 
         HasOptional<CovTag>(
             navigation: x => x.Tag!,
@@ -809,8 +809,8 @@ internal class ParentWithTagRefProfile : EntitySetProfile<int, ParentWithCovTag>
     public ParentWithTagRefProfile() : base(x => x.Id)
     {
         EntitySetName = "TagRefParents";
-        GetAll = (ct) => Task.FromResult<IEnumerable<ParentWithCovTag>>(_parents);
-        GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(p => p.Id == id));
+        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<ParentWithCovTag>>(_parents);
+        GetById = (id, ct) => OhDataResult.SuccessTask(_parents.FirstOrDefault(p => p.Id == id));
 
         HasOptional<CovTag>(
             navigation: x => x.Tag!,
@@ -845,8 +845,8 @@ internal class ParentWithAddressProfile : EntitySetProfile<int, ParentWithCovAdd
     public ParentWithAddressProfile() : base(x => x.Id)
     {
         EntitySetName = "AddressedParents";
-        GetAll = (ct) => Task.FromResult<IEnumerable<ParentWithCovAddress>>(_parents);
-        GetById = (id, ct) => Task.FromResult(_parents.FirstOrDefault(p => p.Id == id));
+        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<ParentWithCovAddress>>(_parents);
+        GetById = (id, ct) => OhDataResult.SuccessTask(_parents.FirstOrDefault(p => p.Id == id));
 
         HasRequired(
             navigation: x => x.Address!,
@@ -867,7 +867,7 @@ internal class NameFilterOnlyProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "NameFilterWidgets";
         FilterEnabled = true;
-        GetQueryable = (ct) => Task.FromResult(_store.AsQueryable());
+        GetQueryable = (ct) => OhDataResult.SuccessTask(_store.AsQueryable());
         FilterProperties(x => x.Name);
     }
 }
@@ -884,7 +884,7 @@ internal class NameSelectOnlyProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "NameSelectWidgets";
         SelectEnabled = true;
-        GetQueryable = (ct) => Task.FromResult(_store.AsQueryable());
+        GetQueryable = (ct) => OhDataResult.SuccessTask(_store.AsQueryable());
         SelectProperties(x => x.Name);
     }
 }
@@ -902,7 +902,7 @@ internal class NameOrderByOnlyProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "NameOrderByWidgets";
         OrderByEnabled = true;
-        GetQueryable = (ct) => Task.FromResult(_store.AsQueryable());
+        GetQueryable = (ct) => OhDataResult.SuccessTask(_store.AsQueryable());
         OrderByProperties(x => x.Name);
     }
 }
@@ -919,7 +919,7 @@ internal class StringSelectOnlyProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "StringSelectWidgets";
         SelectEnabled = true;
-        GetQueryable = (ct) => Task.FromResult(_store.AsQueryable());
+        GetQueryable = (ct) => OhDataResult.SuccessTask(_store.AsQueryable());
         SelectProperties("Name");
     }
 }
@@ -937,7 +937,7 @@ internal class StringOrderByOnlyProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "StringOrderByWidgets";
         OrderByEnabled = true;
-        GetQueryable = (ct) => Task.FromResult(_store.AsQueryable());
+        GetQueryable = (ct) => OhDataResult.SuccessTask(_store.AsQueryable());
         OrderByProperties("Name");
     }
 }
@@ -971,7 +971,7 @@ internal class NoExpandProfile : EntitySetProfile<int, CovParent>
     {
         EntitySetName = "NoExpandParents";
         ExpandEnabled = true;
-        GetQueryable = (ct) => Task.FromResult(_parents.AsQueryable());
+        GetQueryable = (ct) => OhDataResult.SuccessTask(_parents.AsQueryable());
         HasMany(x => x.Children!);
         ExpandProperties(Array.Empty<string>()); // empty string array → restricts all $expand
     }
@@ -988,8 +988,8 @@ internal class NullReturnEntityFnProfile : EntitySetProfile<int, Widget>
     public NullReturnEntityFnProfile() : base(x => x.Id)
     {
         EntitySetName = "NullFnWidgets";
-        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store);
-        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
+        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<Widget>>(_store);
+        GetById = (id, ct) => OhDataResult.SuccessTask(_store.FirstOrDefault(w => w.Id == id));
         BindEntityFunction(GetNullWidget);
     }
 
@@ -1012,23 +1012,23 @@ internal class ETagUpsertProfile : EntitySetProfile<int, Widget>
         EntitySetName = "ETagUpsertWidgets";
         AllowUpsert = true;
 
-        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
+        GetById = (id, ct) => OhDataResult.SuccessTask(_store.FirstOrDefault(w => w.Id == id));
 
         Put = (id, widget, ct) =>
         {
             var existing = _store.FirstOrDefault(w => w.Id == id);
             // Return null when the entity doesn't exist — signals the framework to upsert
-            if (existing is null) return Task.FromResult<Widget>(null!);
+            if (existing is null) return OhDataResult.SuccessTask<Widget>(null);
             _store.RemoveAll(w => w.Id == id);
             widget.Id = id;
             _store.Add(widget);
-            return Task.FromResult(widget);
+            return OhDataResult.SuccessTask(widget);
         };
 
         Post = (widget, ct) =>
         {
             _store.Add(widget);
-            return Task.FromResult<Widget?>(widget);
+            return OhDataResult.SuccessTask<Widget>(widget);
         };
 
         UseETag(x => x.Name);

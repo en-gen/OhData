@@ -57,17 +57,17 @@ internal abstract class ResProfileBase : EntitySetProfile<int, ResOwnedItem>
     protected ResProfileBase() : base(x => x.Id)
     {
         var store = new List<ResOwnedItem> { new() { Id = 1, Owner = "alice", Name = "A" } };
-        GetAll = ct => Task.FromResult<IEnumerable<ResOwnedItem>>(store);
-        GetById = (id, ct) => Task.FromResult(store.FirstOrDefault(x => x.Id == id));
-        Post = (m, ct) => { m.Id = 99; store.Add(m); return Task.FromResult<ResOwnedItem?>(m); };
-        Put = (id, m, ct) => { m.Id = id; return Task.FromResult(m); };
+        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<ResOwnedItem>>(store);
+        GetById = (id, ct) => OhDataResult.SuccessTask(store.FirstOrDefault(x => x.Id == id));
+        Post = (m, ct) => { m.Id = 99; store.Add(m); return OhDataResult.SuccessTask<ResOwnedItem>(m); };
+        Put = (id, m, ct) => { m.Id = id; return OhDataResult.SuccessTask(m); };
         Patch = (id, delta, ct) =>
         {
             var e = store.FirstOrDefault(x => x.Id == id);
             if (e is not null) delta.Patch(e);
-            return Task.FromResult(e);
+            return OhDataResult.SuccessTask(e);
         };
-        Delete = (id, ct) => Task.FromResult(store.RemoveAll(x => x.Id == id) > 0);
+        Delete = (id, ct) => OhDataResult.SuccessTask(store.RemoveAll(x => x.Id == id) > 0);
     }
 }
 
@@ -111,7 +111,7 @@ internal sealed class ResourceNoGetByIdProfile : EntitySetProfile<int, ResOwnedI
     public ResourceNoGetByIdProfile() : base(x => x.Id)
     {
         EntitySetName = "ResNoGet";
-        Put = (id, m, ct) => { m.Id = id; return Task.FromResult(m); };
+        Put = (id, m, ct) => { m.Id = id; return OhDataResult.SuccessTask(m); };
         ConfigureAuthorization(a => a.Update(u => u.RequireResource()));
     }
 }

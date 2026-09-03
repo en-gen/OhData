@@ -87,7 +87,7 @@ public sealed class BeAuthorProfile : EntitySetProfile<int, BeAuthor>
         // shaping pass runs (G6), and that is the case the continuation link's key must survive. One
         // capability flag added to a stage-2 fixture, not a new fixture built around the behaviour.
         SelectEnabled = true;
-        GetQueryable = _ => Task.FromResult(db.Authors.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.Authors.AsQueryable());
         HasMany(x => x.Books); // delegate-less → pushable, including its own Chapters chain
         HasOptional(x => x.Publisher!); // delegate-less single-valued nav (nullable FK)
     }

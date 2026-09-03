@@ -2761,7 +2761,7 @@ public class EndpointMappingTests
         public TrackingRefProfile() : base(x => x.Id)
         {
             EntitySetName = "TrackingParents";
-            GetAll = (ct) => System.Threading.Tasks.Task.FromResult<System.Collections.Generic.IEnumerable<Parent>>(Store);
+            GetAll = (ct) => OhDataResult.SuccessTask<System.Collections.Generic.IEnumerable<Parent>>(Store);
             HasMany(
                 navigation: x => x.Children!,
                 getAll: (parentId, ct) => System.Threading.Tasks.Task.FromResult<System.Collections.Generic.IEnumerable<Child>>(System.Array.Empty<Child>()),
@@ -2787,7 +2787,7 @@ public class EndpointMappingTests
         public TrackingSetRefProfile() : base(x => x.Id)
         {
             EntitySetName = "SetRefParents";
-            GetAll = (ct) => System.Threading.Tasks.Task.FromResult<System.Collections.Generic.IEnumerable<Parent>>(Store);
+            GetAll = (ct) => OhDataResult.SuccessTask<System.Collections.Generic.IEnumerable<Parent>>(Store);
             HasOptional(
                 navigation: x => x.PrimaryChild!,
                 get: null,
@@ -2811,7 +2811,7 @@ public class EndpointMappingTests
         public ReadOnlyNavProfile() : base(x => x.Id)
         {
             EntitySetName = "ReadOnlyParents";
-            GetAll = (ct) => System.Threading.Tasks.Task.FromResult<System.Collections.Generic.IEnumerable<Parent>>(Store);
+            GetAll = (ct) => OhDataResult.SuccessTask<System.Collections.Generic.IEnumerable<Parent>>(Store);
             HasMany(
                 navigation: x => x.Children!,
                 getAll: (parentId, ct) => System.Threading.Tasks.Task.FromResult<System.Collections.Generic.IEnumerable<Child>>(System.Array.Empty<Child>()));
@@ -2831,8 +2831,8 @@ public class EndpointMappingTests
             EntitySetName = "AdvancedWidgets";
             FilterEnabled = true;
             OrderByEnabled = true;
-            GetQueryable = (ct) => System.Threading.Tasks.Task.FromResult(Store.AsQueryable());
-            GetById = (id, ct) => System.Threading.Tasks.Task.FromResult(Store.FirstOrDefault(w => w.Id == id));
+            GetQueryable = (ct) => OhDataResult.SuccessTask(Store.AsQueryable());
+            GetById = (id, ct) => OhDataResult.SuccessTask(Store.FirstOrDefault(w => w.Id == id));
         }
 
         protected override void AdvancedConfigure(Microsoft.OData.ModelBuilder.EntitySetConfiguration<Widget> config)

@@ -144,8 +144,8 @@ internal class QomAllOnProfile : EntitySetProfile<int, Widget>
         SelectEnabled = true;
         ExpandEnabled = true;
         CountEnabled = true;
-        GetQueryable = (ct) => Task.FromResult(_store.AsQueryable());
-        GetById = (id, ct) => Task.FromResult(_store.FirstOrDefault(w => w.Id == id));
+        GetQueryable = (ct) => OhDataResult.SuccessTask(_store.AsQueryable());
+        GetById = (id, ct) => OhDataResult.SuccessTask(_store.FirstOrDefault(w => w.Id == id));
     }
 }
 
@@ -157,6 +157,6 @@ internal class QomGetAllFilterOnProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "QomGetAllWidgets";
         FilterEnabled = true;
-        GetAll = (ct) => Task.FromResult<IEnumerable<Widget>>(_store);
+        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<Widget>>(_store);
     }
 }

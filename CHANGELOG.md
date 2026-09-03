@@ -9,6 +9,62 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking
+
+- **⚠ BREAKING CHANGE — every entity-set handler delegate returns `Task<OhDataResult<T>>` (#581).**
+  The completion of the work #605 started: a handler can now **return** a rejection, not only throw
+  one for `ConfigureExceptions` to map.
+
+  ```csharp
+  Post = async (order, ct) =>
+  {
+      if (await db.Orders.AnyAsync(o => o.Sku == order.Sku, ct))
+          return OhDataResult.Conflict("DuplicateSku", $"SKU {order.Sku} already exists.", target: "Sku");
+
+      db.Add(order);
+      await db.SaveChangesAsync(ct);
+      return OhDataResult.Success(order);
+  };
+  ```
+
+  All eight delegates change — `GetAll`, `GetQueryable`, `GetById`, `Post`, `Put`, `Patch`,
+  `Delete`, `Search` — for uniformity: a split surface where only writes can reject is worse to
+  explain than the migration is to perform.
+
+  **This is the project's first API-SHAPE break.** Every prior ⚠ entry was behavioural — a status
+  code, a wire shape, a refusal. `EntitySetProfile<TKey,TModel>` is `public abstract` and
+  non-sealed, so its `protected` delegate fields are part of the API surface, which makes this a
+  `CP0002` against the `1.7.0` ApiCompat baseline. **It therefore ships as `2.0.0`, with the
+  baseline bumped at close-out — not with a suppression file.**
+
+  **Migration is mechanical and compiler-visible; nothing fails silently.** Every site is a build
+  error, never a behaviour change. In this repo it was **856 handler statements across 141 files**,
+  and the dominant form is a one-token edit:
+
+  ```csharp
+  Task.FromResult<Movie?>(movie)      ->  OhDataResult.SuccessTask(movie)
+  Task.FromResult(db.X.AsQueryable()) ->  OhDataResult.SuccessTask<IQueryable<X>>(db.X.AsQueryable())
+  return existing;                    ->  return OhDataResult.Success(existing);   // async lambdas
+  ```
+
+  `OhDataResult.SuccessTask(value)` is the direct replacement for `Task.FromResult(value)`. A
+  rejection converts implicitly, so `return OhDataResult.Conflict(...)` compiles in a handler
+  declared `OhDataResult<Order>`. There is deliberately **no** implicit conversion from `T` — a bare
+  `return model;` would silently mean "and whatever status the framework infers", the unexpressed
+  meaning #496 had to unpick when `null` was the only way a handler could say "no". `OhDataResult<T>`
+  is a class rather than an interface precisely so that conversion stays *available* later
+  (CS0552 forbids it on an interface, permanently).
+
+  Internally a returned rejection reaches the **same** group-filter translation point a mapped
+  exception does, so one place builds the envelope whichever way the rejection was produced. It is
+  logged at `Debug` rather than `Warning`: a returned rejection is an ordinary outcome the handler
+  chose, while a mapped fault was *reclassified* and keeps the louder line.
+
+  Also verified: the mapping declines a request the client actually **aborted** — #493's exact
+  condition — while still mapping a `TaskCanceledException` from a live request, which is what
+  `HttpClient` throws on its own timeout. Both sides are pinned.
+
+
 ### Added
 
 - **A handler can produce a client error: `ConfigureExceptions` (#581).** Every handler delegate

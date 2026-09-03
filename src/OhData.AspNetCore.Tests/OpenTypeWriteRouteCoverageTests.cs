@@ -97,7 +97,7 @@ internal sealed class OtwParentProfile : EntitySetProfile<int, OtwParent>
     public OtwParentProfile(OtwStore store) : base(x => x.Id)
     {
         EntitySetName = "OtwParents";
-        GetById = (id, ct) => Task.FromResult(store.Parents.FirstOrDefault(p => p.Id == id));
+        GetById = (id, ct) => OhDataResult.SuccessTask(store.Parents.FirstOrDefault(p => p.Id == id));
         HasMany(
             navigation: x => x.Children!,
             getAll: (parentId, ct) =>
@@ -122,7 +122,7 @@ internal sealed class OtwActionProfile : EntitySetProfile<int, OtwActionHost>
     {
         _store = store;
         EntitySetName = "OtwActionHosts";
-        GetAll = ct => Task.FromResult<IEnumerable<OtwActionHost>>(
+        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<OtwActionHost>>(
             new[] { new OtwActionHost { Id = 1, Name = "a1" } });
         BindAction(Stamp);
     }
@@ -139,7 +139,7 @@ internal sealed class OtwDictHostProfile : EntitySetProfile<int, OtwDictHost>
         Post = (entity, ct) =>
         {
             store.LastDictHost = entity;
-            return Task.FromResult<OtwDictHost?>(entity);
+            return OhDataResult.SuccessTask<OtwDictHost>(entity);
         };
     }
 }
@@ -157,17 +157,17 @@ internal sealed class OtwPlainProfile : EntitySetProfile<int, OtwPlain>
     public OtwPlainProfile() : base(x => x.Id)
     {
         EntitySetName = "OtwPlains";
-        GetAll = ct => Task.FromResult<IEnumerable<OtwPlain>>(new[] { new OtwPlain { Id = 1, Name = "n" } });
-        GetById = (id, ct) => Task.FromResult<OtwPlain?>(new OtwPlain { Id = id, Name = "n" });
-        Post = (model, ct) => Task.FromResult<OtwPlain?>(model);
-        Put = (id, model, ct) => Task.FromResult(model);
+        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<OtwPlain>>(new[] { new OtwPlain { Id = 1, Name = "n" } });
+        GetById = (id, ct) => OhDataResult.SuccessTask<OtwPlain>(new OtwPlain { Id = id, Name = "n" });
+        Post = (model, ct) => OhDataResult.SuccessTask<OtwPlain>(model);
+        Put = (id, model, ct) => OhDataResult.SuccessTask(model);
         Patch = (id, delta, ct) =>
         {
             var target = new OtwPlain { Id = id, Name = "n" };
             delta.Patch(target);
-            return Task.FromResult<OtwPlain?>(target);
+            return OhDataResult.SuccessTask<OtwPlain>(target);
         };
-        Delete = (id, ct) => Task.FromResult(true);
+        Delete = (id, ct) => OhDataResult.SuccessTask(true);
     }
 }
 

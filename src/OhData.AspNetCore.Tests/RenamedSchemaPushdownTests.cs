@@ -73,8 +73,8 @@ public sealed class NmParentProfile : EntitySetProfile<int, NmParent>
         SelectEnabled = true;
         OrderByEnabled = true;
         HasMany(x => x.Children); // delegate-LESS, so the pushdown gate is the only thing in play
-        GetQueryable = _ => Task.FromResult(_db.NmParents.AsQueryable());
-        GetById = (id, ct) => _db.NmParents.FirstOrDefaultAsync(p => p.Id == id, ct)!;
+        GetQueryable = _ => OhDataResult.SuccessTask(_db.NmParents.AsQueryable());
+        GetById = async (id, ct) => OhDataResult.Success(await _db.NmParents.FirstOrDefaultAsync(p => p.Id == id, ct));
     }
 }
 
@@ -93,7 +93,7 @@ public sealed class NmChildProfile : EntitySetProfile<int, NmChild>
         _db = db;
         EntitySetName = "NmChildren";
         HasMany(x => x.Tags);
-        GetQueryable = _ => Task.FromResult(_db.NmChildren.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(_db.NmChildren.AsQueryable());
     }
 
     protected override void AdvancedConfigure(EntitySetConfiguration<NmChild> configuration)
