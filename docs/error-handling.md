@@ -28,7 +28,6 @@ precisely what #496 had to unpick when `null` was the only way to say "no".
 
 ## Mapping exceptions you do not raise yourself
 
-
 The framework validates a great deal at its own boundary — key format, EDM nullability, capability
 flags, property allowlists, deep-write shape — and answers `400` for each. But a rejection that
 depends on domain state the framework cannot see (*"that SKU already exists"*, *"this transition is
@@ -43,7 +42,12 @@ public class OrderProfile : EntitySetProfile<int, Order>
 {
     public OrderProfile(AppDb db) : base(x => x.Id)
     {
-        Post = async (order, ct) => { db.Add(order); await db.SaveChangesAsync(ct); return order; };
+        Post = async (order, ct) =>
+        {
+            db.Add(order);
+            await db.SaveChangesAsync(ct);
+            return OhDataResult.Success(order);
+        };
 
         ConfigureExceptions(e => e
             .Map<DbUpdateConcurrencyException>((ctx, ex) =>

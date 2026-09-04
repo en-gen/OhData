@@ -51,7 +51,7 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
             db.Orders.Add(order);            // adds the whole graph — order + order.Lines
             await db.SaveChangesAsync(ct);   // ONE atomic write; EF Core's relationship fixup
                                              // assigns each line's OrderId from the tracked nav
-            return order;
+            return OhDataResult.Success(order);
         };
     }
 }
@@ -126,7 +126,7 @@ Post = async (order, ct) =>
     // the framework stripped it before this handler ran.
     db.Orders.Add(order);
     await db.SaveChangesAsync(ct);
-    return order;
+    return OhDataResult.Success(order);
 };
 
 Patch = async (id, delta, ct) =>
@@ -134,10 +134,10 @@ Patch = async (id, delta, ct) =>
     // delta.GetChangedPropertyNames() never contains "Lines", even if the request body
     // included a "lines" array — it was withheld before the delta was built.
     var order = await db.Orders.FindAsync([id], ct);
-    if (order is null) return null;
+    if (order is null) return OhDataResult.Success<Order>(null);   // -> 404
     delta.Patch(order);
     await db.SaveChangesAsync(ct);
-    return order;
+    return OhDataResult.Success(order);
 };
 ```
 

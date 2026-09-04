@@ -23,7 +23,7 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
         HasMany(x => x.Lines);
         HasOptional(x => x.Customer);
 
-        GetQueryable = _ => Task.FromResult<IQueryable<Order>>(db.Orders);
+        GetQueryable = _ => OhDataResult.SuccessTask<IQueryable<Order>>(db.Orders);
     }
 }
 ```

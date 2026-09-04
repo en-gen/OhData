@@ -95,19 +95,20 @@ public class ProductProfile : EntitySetProfile<int, Product>
         // Collection GET. GetQueryable hands the framework an un-materialized IQueryable, so it can
         // compose $filter/$orderby/$skip/$top onto it; EF Core then materializes the result
         // asynchronously (over a real database provider that becomes one SQL query). Returning the
-        // IQueryable is itself synchronous — that is why this single handler stays Task.FromResult
+        // IQueryable is itself synchronous — that is why this single handler stays SuccessTask
         // while the reads and writes below are genuinely async.
-        GetQueryable = _ => Task.FromResult<IQueryable<Product>>(db.Products);
+        GetQueryable = _ => OhDataResult.SuccessTask<IQueryable<Product>>(db.Products);
 
         // Single entity GET → GET /odata/Products({key}). Returns null (→ 404) when the row is absent.
-        GetById = async (id, ct) => await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
+        GetById = async (id, ct) =>
+            OhDataResult.Success(await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct));
 
         // Create → POST /odata/Products. Add the row and let the database assign its key.
         Post = async (product, ct) =>
         {
             db.Products.Add(product);
             await db.SaveChangesAsync(ct);
-            return product;
+            return OhDataResult.Success(product);
         };
 
         // Delete → DELETE /odata/Products({key}). Return false when the row is absent;
@@ -115,10 +116,10 @@ public class ProductProfile : EntitySetProfile<int, Product>
         Delete = async (id, ct) =>
         {
             Product? existing = await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
-            if (existing is null) return false;
+            if (existing is null) return OhDataResult.Success(false);
             db.Products.Remove(existing);
             await db.SaveChangesAsync(ct);
-            return true;
+            return OhDataResult.Success(true);
         };
     }
 }

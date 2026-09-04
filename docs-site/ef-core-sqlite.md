@@ -111,32 +111,34 @@ public class ProductProfile : EntitySetProfile<int, Product>
         // you a standalone GET /odata/Products(1)/Category route.)
         HasRequired(x => x.Category);
 
-        GetQueryable = _ => Task.FromResult<IQueryable<Product>>(db.Products);
-        GetById      = (id, ct) => db.Products.SingleOrDefaultAsync(p => p.Id == id, ct);
+        GetQueryable = _ => OhDataResult.SuccessTask<IQueryable<Product>>(db.Products);
+        GetById      = async (id, ct) =>
+            OhDataResult.Success(await db.Products.SingleOrDefaultAsync(p => p.Id == id, ct));
 
         Post = async (product, ct) =>
         {
             db.Products.Add(product);
             await db.SaveChangesAsync(ct);
-            return product;
+            return OhDataResult.Success(product);
         };
 
         Patch = async (id, delta, ct) =>
         {
             Product? existing = await db.Products.FindAsync([id], ct);
-            if (existing is null) return null;
+            if (existing is null) return OhDataResult.Success<Product>(null);   // -> 404
             delta.Patch(existing);          // applies only the properties in the request body
             await db.SaveChangesAsync(ct);
-            return existing;
+            return OhDataResult.Success(existing);
         };
 
         Delete = async (id, ct) =>
         {
             Product? existing = await db.Products.FindAsync([id], ct);
-            if (existing is null) return false;   // IdempotentDelete defaults to true → 204
+            if (existing is null)
+                return OhDataResult.Success(false);   // IdempotentDelete defaults to true → 204
             db.Products.Remove(existing);
             await db.SaveChangesAsync(ct);
-            return true;
+            return OhDataResult.Success(true);
         };
     }
 }
