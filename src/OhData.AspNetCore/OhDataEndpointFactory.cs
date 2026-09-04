@@ -5372,6 +5372,24 @@ internal static class OhDataEndpointFactory
             return false;
         }
 
+        // #529: only on the EXPAND path. A member-init can construct nothing but the declared type, so
+        // on a TPH hierarchy every row comes back as the base and the derived properties vanish under a
+        // 200. Scoped to expandNavs because the $select-only projection emits just the selected members,
+        // where no derived property is reachable and the runtime type is unobservable -- refusing there
+        // would cost the pushdown for a difference nothing can see.
+        if (expandNavs is { Count: > 0 } && edmModel is not null &&
+            HasDerivedEntityTypes(edmModel, typeof(TModel)))
+        {
+            ineligibilityReason =
+                $"'{typeof(TModel).Name}' has derived types in the EDM, and a member-init projection " +
+                "can only construct the declared type -- every row would come back as " +
+                $"'{typeof(TModel).Name}' with the derived types' own properties dropped";
+            logger?.LogDebug(
+                "OhData: $expand pushdown projection skipped for {EntitySet}: {Model} is polymorphic.",
+                source.EntitySetName, typeof(TModel).Name);
+            return false;
+        }
+
         // Selected names can include expanded-navigation identifiers (ExtractSelectedProperties
         // keeps them for the JSON trim); those are not structural and are skipped here —
         // expansion loads via delegates correlated by the always-projected key. Nested $select
@@ -5883,6 +5901,36 @@ internal static class OhDataEndpointFactory
     // request within one registration, and different registrations never share a model instance.
     private static readonly ConcurrentDictionary<(Type ElementType, IEdmModel Model), bool>
         s_memberInitProjectableCache = new();
+
+    // #529: does the EDM declare a type deriving from this one (a TPH hierarchy)? Cached on the same
+    // (type, model) key and for the same reason as s_memberInitProjectableCache above.
+    private static readonly ConcurrentDictionary<(Type ElementType, IEdmModel Model), bool>
+        s_hasDerivedEntityTypesCache = new();
+
+    // #529: a member-init projection can only construct the DECLARED type, so on a TPH hierarchy every
+    // row materializes as the base and the derived types' own properties are dropped -- silently, under
+    // a 200. The projection is therefore refused for a polymorphic root and the request falls to the
+    // Include path (#305 Path A), which loads real entities and so preserves each row's runtime type.
+    // Walks BaseType rather than calling an Edm extension so the net8.0 and net10.0 builds agree.
+    private static bool HasDerivedEntityTypes(IEdmModel model, Type clrType) =>
+        s_hasDerivedEntityTypesCache.GetOrAdd((clrType, model), static key =>
+        {
+            (Type clrType, IEdmModel model) = key;
+            // #508: EdmClrTypeMap, never model.FindDeclaredType(clrType.FullName) -- the latter answers
+            // null for every type on a renamed schema, which would silently disable this check.
+            if (EdmClrTypeMap.FindEntityType(model, clrType) is not { } edmType) return false;
+
+            foreach (IEdmStructuredType candidate in model.SchemaElements
+                         .OfType<IEdmStructuredType>()
+                         .Where(t => !ReferenceEquals(t, edmType)))
+            {
+                for (IEdmStructuredType? b = candidate.BaseType; b is not null; b = b.BaseType)
+                {
+                    if (ReferenceEquals(b, edmType)) return true;
+                }
+            }
+            return false;
+        });
 
     private static bool IsMemberInitProjectable(Type elementType, IEdmModel model) =>
         s_memberInitProjectableCache.GetOrAdd((elementType, model), static key =>
@@ -7243,23 +7291,6 @@ internal static class OhDataEndpointFactory
                     m.GetParameters()[0].ParameterType.GetGenericTypeDefinition() == typeof(IQueryable<>));
         });
 
-    // #305 Path A: true when ANY engaged expand — at any depth, including deferred nested children —
-    // carries a nested $filter/$orderby. Those are SQL-only (bound and composed by
-    // BindNavShape/ApplyNavShape/BuildShapedNavAccess onto the member-init projection); once the root
-    // projection is ineligible there is no member-init to compose them onto, and a plain EF Include
-    // cannot carry a predicate/ordering at all — so the caller fails loud instead of silently serving
-    // the navigation unfiltered/unsorted (which would be exactly the kind of wrong-data-under-200 #305
-    // reports, just for a different reason than the original silent-drop).
-    private static bool HasNestedFilterOrOrderBy(IReadOnlyList<EngagedExpand> engaged)
-    {
-        foreach (EngagedExpand e in engaged)
-        {
-            if (e.Filter is not null || e.OrderBy is not null) return true;
-            if (e.Children is { Count: > 0 } && HasNestedFilterOrOrderBy(e.Children)) return true;
-        }
-        return false;
-    }
-
     // #305 fold-in (review): the FIRST top-level engaged expand that carries a nested $expand or
     // $levels — the scope ApplyIncludeFallback below does not serve (see its remarks). Checked by the
     // caller BEFORE invoking ApplyIncludeFallback, and OUTSIDE the try/catch that wraps the actual
@@ -7307,7 +7338,7 @@ internal static class OhDataEndpointFactory
     // the tracked graph safe whichever two instances close the cycle.
     private static IQueryable<TModel> ApplyIncludeFallback<TModel>(
         IQueryable<TModel> query, IReadOnlyList<EngagedExpand> engaged, MethodInfo includeMethod,
-        IEdmModel model, int? maxExpandTop)
+        IEdmModel model, int? maxExpandTop, ODataQuerySettings binderSettings)
         where TModel : class
     {
         foreach (EngagedExpand e in engaged)
@@ -7316,10 +7347,14 @@ internal static class OhDataEndpointFactory
             Expression access = Expression.Property(owner, e.Binding.Property);
             if (e.Binding.IsCollection)
             {
-                // Filter/OrderBy are verified absent by the caller (HasNestedFilterOrOrderBy), so this
-                // reduces to exactly the Skip/Take/count-bound windowing ApplyNavShape composes on the
-                // (eligible) member-init projection path.
-                access = ApplyNavShape(access, e, e.Binding.ElementType, model, default, maxExpandTop);
+                // #529: a nested $filter/$orderby is bound here rather than refused. EF Core's
+                // filtered Include accepts exactly the Where -> OrderBy/ThenBy -> Skip/Take sequence
+                // ApplyNavShape composes, so this is the same shaping the member-init projection path
+                // applies -- through the same BindNavShape, never a second transcription of it. A level
+                // with nested $expand children would make ApplyNavShape emit a .Select, which filtered
+                // Include does not accept; the caller refuses that case before reaching here.
+                NavShapeBindings bound = BindNavShape(e, e.Binding.ElementType, model, binderSettings);
+                access = ApplyNavShape(access, e, e.Binding.ElementType, model, bound, maxExpandTop);
             }
 
             LambdaExpression lambda = Expression.Lambda(access, owner);
@@ -8748,22 +8783,6 @@ internal static class OhDataEndpointFactory
                             // path — see ApplyIncludeFallback), or fail loud (400) when the request needs
                             // something a plain Include cannot carry (a nested $filter/$orderby) or that
                             // this fix does not fold through Include (a nested $expand/$levels).
-                            if (HasNestedFilterOrOrderBy(engagedExpandNavs))
-                            {
-                                // #322: this message used to recite the eligibility RULE — "a public
-                                // parameterless constructor, settable non-complex properties, and ... a
-                                // direct UseETag selector" — at a developer whose model had all three,
-                                // naming nothing that was actually wrong. It now names the ONE check
-                                // that failed, as reported by the check itself.
-                                throw new Microsoft.OData.ODataException(
-                                    $"The '$expand' on '{source.EntitySetName}' could not be processed: " +
-                                    "a nested $filter/$orderby on $expand requires a projection-eligible " +
-                                    $"model, and '{typeof(TModel).Name}' is not one because " +
-                                    $"{projectionIneligibleReason ?? "its member-init projection could not be built"}. " +
-                                    "Fix that, or write an expand delegate for this navigation to take " +
-                                    "full control of its query shape.");
-                            }
-
                             // #305 fold-in (review): validated here, OUTSIDE the try/catch around the
                             // actual Include construction+execution below, so this SPECIFIC actionable
                             // message reaches the client via the route's outer ODataException handler
@@ -8821,7 +8840,7 @@ internal static class OhDataEndpointFactory
                                     () => TranslateThenMaterialize(() => ApplySelectPushdown(
                                         ApplyIncludeFallback(
                                             filtered, engagedExpandNavs, efInclude, registration.EdmModel,
-                                            source.MaxExpandTop))),
+                                            source.MaxExpandTop, cachedBinderSettings))),
                                     options, logger, source.EntitySetName);
                                 // engagedExpandNavs stays SET (not nulled): the existing
                                 // ShapePushedExpandsInJson pass below shapes nested

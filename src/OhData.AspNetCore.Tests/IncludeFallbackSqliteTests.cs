@@ -266,31 +266,47 @@ public sealed class IncludeFallbackServeTests : IAsyncLifetime
         }
     }
 
-    [Theory]
-    [InlineData("$expand=Children($filter=contains(name,'C1'))", "$filter")]
-    [InlineData("$expand=Children($orderby=name desc)", "$orderby")]
-    public async Task NoParameterlessCtor_NestedFilterOrOrderBy_FailsLoud400(string query, string optionToken)
+    [Fact]
+    public async Task NoParameterlessCtor_NestedFilter_IsServed_NotRefused()
     {
-        HttpResponseMessage resp = await _fx.Client.GetAsync($"/odata/NoCtorParents?{query}");
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        // INVERTED by #529. This asserted 400, on the stated grounds that "a plain EF Include cannot
+        // carry a predicate/ordering at all". EF Core's FILTERED Include carries both, in exactly the
+        // Where -> OrderBy/ThenBy -> Skip/Take sequence ApplyNavShape already composed for this path,
+        // so the clause is bound through the same BindNavShape the projection path uses. The
+        // expectation is inverted rather than deleted: the request this pinned as unservable is the
+        // one now being served, and it must be served CORRECTLY, not merely accepted.
+        HttpResponseMessage resp = await _fx.Client.GetAsync(
+            "/odata/NoCtorParents?$orderby=id&$expand=Children($filter=contains(name,'C1'))");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
-        string body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("\"error\"", body);
-        Assert.Contains("InvalidQueryOption", body);
-        Assert.Contains(optionToken, body);
-        Assert.DoesNotContain("Sqlite", body);
-        Assert.DoesNotContain("SQLITE", body);
-
-        // #322: the message names the check that ACTUALLY failed for THIS model, reported by the
-        // eligibility check itself. It used to recite the whole rule — "a public parameterless
-        // constructor, settable non-complex properties, and ... a direct UseETag selector" — which
-        // for a model failing only one of those (and, before #322, for a model failing NONE of them
-        // and merely carrying an undeclared convention navigation) named nothing that was wrong.
-        Assert.Contains("NoCtorParent", body);
-        Assert.Contains("has no public parameterless constructor", body);
-        Assert.DoesNotContain("settable non-complex properties", body);
-        Assert.DoesNotContain("UseETag selector", body);
+        using JsonDocument doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        JsonElement value = doc.RootElement.GetProperty("value");
+        // P1's three children all contain "C1"; P2's single child (C2a) does not.
+        Assert.Equal(3, value[0].GetProperty("Children").GetArrayLength());
+        Assert.Equal(0, value[1].GetProperty("Children").GetArrayLength());
     }
+
+    [Fact]
+    public async Task NoParameterlessCtor_NestedOrderBy_IsServed_AndActuallyOrders()
+    {
+        HttpResponseMessage resp = await _fx.Client.GetAsync(
+            "/odata/NoCtorParents?$orderby=id&$expand=Children($orderby=name desc)");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        using JsonDocument doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        JsonElement children = doc.RootElement.GetProperty("value")[0].GetProperty("Children");
+
+        // Accepted is not applied: assert the order, not just the status.
+        Assert.Equal("C1c", children[0].GetProperty("Name").GetString());
+        Assert.Equal("C1b", children[1].GetProperty("Name").GetString());
+        Assert.Equal("C1a", children[2].GetProperty("Name").GetString());
+    }
+
+    // The nested-$expand refusal that REMAINS on this path is pinned in
+    // Issue529TphExpandProjectionTests.ANestedExpandUnderAPolymorphicRoot_FailsLoud_NamingWhy, on a
+    // fixture that actually reaches it: NoCtorParent's child declares no navigation, and
+    // NoCtorCyclicParent's Parent back-reference is convention-discovered rather than declared, so
+    // neither engages a nested expand and both answer 200 here.
 }
 
 // MaxExpandTop must still bound materialization through the Include fallback — mirrors
