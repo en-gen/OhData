@@ -188,7 +188,7 @@ internal abstract class Ia489ProfileBase : EntitySetProfile<int, Ia489Widget>
         FilterEnabled = true;
         SelectEnabled = true;
         Ignore(x => x.Secret);
-        GetQueryable = _ => OhDataResult.Success(Store.AsQueryable());
+        GetQueryable = _ => Store.AsQueryable();
         GetById = (id, _) => OhDataResult.Success(Store.FirstOrDefault(w => w.Id == id));
     }
 }

@@ -43,7 +43,7 @@ public sealed class BeAuthorByIdProfile : EntitySetProfile<int, BeAuthor>
         FilterEnabled = true;
         OrderByEnabled = true;
         CountEnabled = true;
-        GetQueryable = _ => OhDataResult.Success(db.Authors.AsQueryable());
+        GetQueryable = _ => db.Authors.AsQueryable();
         // #463: `.ThenInclude(b => b.Chapters)` is the one addition. #418's fixture eager-loaded ONE
         // level, which is exactly why its ceiling could pass while being enforced at one level: with
         // nothing materialized at depth 2 there was nothing for the missing check to have caught.

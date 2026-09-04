@@ -22,7 +22,7 @@ public sealed class PagingWideProfile : EntitySetProfile<int, SqliteWide>
     {
         OrderByEnabled = true;
         MaxTop = 2;
-        GetQueryable = _ => OhDataResult.Success(db.Wides.AsQueryable());
+        GetQueryable = _ => db.Wides.AsQueryable();
     }
 }
 
@@ -34,7 +34,7 @@ public sealed class PagingPreOrderedProfile : EntitySetProfile<int, SqliteWide>
     {
         OrderByEnabled = true;
         MaxTop = 2;
-        GetQueryable = _ => OhDataResult.Success(db.Wides.OrderByDescending(x => x.Id).AsQueryable());
+        GetQueryable = _ => db.Wides.OrderByDescending(x => x.Id).AsQueryable();
     }
 }
 
@@ -48,8 +48,8 @@ public sealed class PagingBuriedOrderProfile : EntitySetProfile<int, SqliteWide>
         MaxTop = 2;
         // Stock >= (min Stock, ordered by Name) — every seeded row has Stock=1, so all match; the
         // OrderBy(Name) lives only inside the correlated subquery, not on the outer sequence.
-        GetQueryable = _ => OhDataResult.Success(
-            db.Wides.Where(w => w.Stock >= db.Wides.OrderBy(x => x.Name).Select(x => x.Stock).First()));
+        GetQueryable = _ =>
+            db.Wides.Where(w => w.Stock >= db.Wides.OrderBy(x => x.Name).Select(x => x.Stock).First());
     }
 }
 
@@ -60,7 +60,7 @@ public sealed class PagingUnboundedProfile : EntitySetProfile<int, SqliteWide>
     public PagingUnboundedProfile(PushSqliteDbContext db) : base(x => x.Id)
     {
         OrderByEnabled = true;
-        GetQueryable = _ => OhDataResult.Success(db.Wides.AsQueryable());
+        GetQueryable = _ => db.Wides.AsQueryable();
     }
 }
 

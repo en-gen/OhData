@@ -145,7 +145,7 @@ public sealed class IgnProductProfile : EntitySetProfile<int, IgnProduct>
         HasMany(x => x.Tags!, (int key, CancellationToken ct) =>
             Task.FromResult<IEnumerable<IgnTag>>(IgnData.Tags()));
 
-        GetQueryable = ct => OhDataResult.Success(_store.AsQueryable());
+        GetQueryable = ct => _store.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(_store.FirstOrDefault(p => p.Id == id));
         Post = (model, ct) =>
         {

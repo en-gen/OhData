@@ -45,7 +45,7 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
         OrderByEnabled = true;
         CountEnabled = true;
 
-        GetQueryable = (ct) => OhDataResult.Success(_store.Items.AsQueryable());
+        GetQueryable = (ct) => _store.Items.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(_store.Items.FirstOrDefault(w => w.Id == id));
         Post = (widget, ct) =>
         {
@@ -139,7 +139,7 @@ internal class PaginatedWidgetProfile : EntitySetProfile<int, Widget>
         FilterEnabled = true;
         OrderByEnabled = true;
         CountEnabled = true;
-        GetQueryable = (ct) => OhDataResult.Success(_store.AsQueryable());
+        GetQueryable = (ct) => _store.AsQueryable();
     }
 }
 
@@ -255,7 +255,7 @@ internal class TemporalWidgetProfile : EntitySetProfile<int, TemporalWidget>
     {
         EntitySetName = "TemporalWidgets";
         FilterEnabled = true;
-        GetQueryable = (ct) => OhDataResult.Success(_store.AsQueryable());
+        GetQueryable = (ct) => _store.AsQueryable();
     }
 }
 
@@ -335,7 +335,7 @@ internal class TaggedItemProfile : EntitySetProfile<int, TaggedItem>
         // author. Only the flag is new -- no existing test issues an $expand against this set.
         ExpandEnabled = true;
         // Deliberately no FilterProperties allowlist -- the NEW-1 repro shape.
-        GetQueryable = (ct) => OhDataResult.Success(_store.AsQueryable());
+        GetQueryable = (ct) => _store.AsQueryable();
         HasMany(x => x.Tags);
     }
 }

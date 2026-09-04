@@ -87,7 +87,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
     public ProductProfile(AppDbContext db) : base(x => x.Id)
     {
         EntitySetName = "Products";
-        GetQueryable = _ => OhDataResult.Success(db.Products.AsQueryable());
+        GetQueryable = _ => db.Products.AsQueryable();
     }
 }
 

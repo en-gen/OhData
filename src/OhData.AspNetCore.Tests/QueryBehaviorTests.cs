@@ -51,7 +51,7 @@ public class QueryBehaviorTests
         public LargeStoreProfile() : base(x => x.Id)
         {
             EntitySetName = "LargeStoreWidgets";
-            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetQueryable = (ct) => Store.AsQueryable();
         }
     }
 
@@ -68,7 +68,7 @@ public class QueryBehaviorTests
         {
             EntitySetName = "SearchFilterWidgets";
             FilterEnabled = true;
-            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetQueryable = (ct) => Store.AsQueryable();
             Search = (term, ct) => OhDataResult.Success<IEnumerable<Widget>>(
                 Store.Where(w => w.Name.Contains(term, StringComparison.OrdinalIgnoreCase)));
         }

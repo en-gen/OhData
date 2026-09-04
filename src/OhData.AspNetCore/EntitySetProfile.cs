@@ -324,10 +324,19 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// to preserve the configured JSON naming policy (PascalCase by default).
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Leaving this <c>null</c> (the default) means no <c>GET /{EntitySet}</c> route is registered,
     /// unless <see cref="GetAll"/> is set. Takes priority over <see cref="GetAll"/> when both are set.
+    /// </para>
+    /// <para>
+    /// Alone among the handlers this returns a bare <see cref="IQueryable{T}"/> — neither wrapped in
+    /// <c>OhDataResult</c> nor in a <c>Task</c>. Composing a query performs no I/O and produces no
+    /// result: the framework appends <c>$filter</c>/<c>$orderby</c>/<c>$skip</c>/<c>$top</c> to the
+    /// expression tree and executes it later, and that execution is where the <c>await</c> belongs.
+    /// To reject a collection read, throw and map it with <c>ConfigureExceptions</c>.
+    /// </para>
     /// </remarks>
-    protected Func<CancellationToken, Task<OhDataResult<IQueryable<TModel>>>>? GetQueryable = null;
+    protected Func<CancellationToken, IQueryable<TModel>>? GetQueryable = null;
 
     /// <summary>
     /// Registers the <c>GET /{EntitySet}({key})</c> handler (OData §11.2.2 — Requesting an Entity).
@@ -2438,8 +2447,22 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     async Task<object?> IEntitySetEndpointSource.InvokeGetAllAsync(CancellationToken ct) =>
         (object?)Unwrap(await GetAll!.Invoke(ct));
 
-    async Task<IQueryable<object>> IEntitySetEndpointSource.InvokeGetQueryableAsync(CancellationToken ct) =>
-        Unwrap(await GetQueryable!.Invoke(ct)).Cast<object>();
+    // Returns a started Task rather than invoking inline: GetQueryable is SYNCHRONOUS, so a handler
+    // that throws while composing its query would throw here — while the caller was still evaluating
+    // this call's arguments, before AsHandlerFault could wrap it. That is exactly the #581 hole
+    // InvokeDeleteAsync had as a plain forwarder. Task.FromException puts a synchronous throw back on
+    // the faulted-Task path every other Invoke* member gets from `async`.
+    Task<IQueryable<object>> IEntitySetEndpointSource.InvokeGetQueryableAsync(CancellationToken ct)
+    {
+        try
+        {
+            return Task.FromResult(GetQueryable!.Invoke(ct).Cast<object>());
+        }
+        catch (Exception ex)
+        {
+            return Task.FromException<IQueryable<object>>(ex);
+        }
+    }
 
     async Task<object?> IEntitySetEndpointSource.InvokeGetByIdAsync(object key, CancellationToken ct) =>
         (object?)Unwrap(await GetById!.Invoke((TKey)key, ct));

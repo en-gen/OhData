@@ -90,6 +90,6 @@ internal sealed class BenchWidgetProfile : EntitySetProfile<int, BenchWidget>
 
     public BenchWidgetProfile() : base(x => x.Id)
     {
-        GetQueryable = (ct) => OhDataResult.Success(_store.AsQueryable());
+        GetQueryable = (ct) => _store.AsQueryable();
     }
 }

@@ -260,7 +260,7 @@ public sealed class OhDataOpenApiOperationTransformerTests
             SelectEnabled = true;
             ExpandEnabled = true;
             CountEnabled = true;
-            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetQueryable = (ct) => Store.AsQueryable();
             GetById = (id, ct) => OhDataResult.Success(Store.FirstOrDefault(w => w.Id == id));
             Search = (term, ct) => OhDataResult.Success<IEnumerable<Widget>>(Store);
         }
@@ -271,7 +271,7 @@ public sealed class OhDataOpenApiOperationTransformerTests
         public NoFlagsProfile() : base(x => x.Id)
         {
             EntitySetName = "NoFlagsWidgets";
-            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetQueryable = (ct) => Store.AsQueryable();
         }
     }
 
@@ -294,7 +294,7 @@ public sealed class OhDataOpenApiOperationTransformerTests
         {
             EntitySetName = "FilterOnlyWidgets";
             FilterEnabled = true;
-            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetQueryable = (ct) => Store.AsQueryable();
         }
     }
 
@@ -304,7 +304,7 @@ public sealed class OhDataOpenApiOperationTransformerTests
         {
             EntitySetName = "OrderByOnlyWidgets";
             OrderByEnabled = true;
-            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetQueryable = (ct) => Store.AsQueryable();
         }
     }
 
@@ -314,7 +314,7 @@ public sealed class OhDataOpenApiOperationTransformerTests
         {
             EntitySetName = "SelectOnlyWidgets";
             SelectEnabled = true;
-            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetQueryable = (ct) => Store.AsQueryable();
         }
     }
 
@@ -324,7 +324,7 @@ public sealed class OhDataOpenApiOperationTransformerTests
         {
             EntitySetName = "ExpandOnlyWidgets";
             ExpandEnabled = true;
-            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetQueryable = (ct) => Store.AsQueryable();
         }
     }
 
@@ -334,7 +334,7 @@ public sealed class OhDataOpenApiOperationTransformerTests
         {
             EntitySetName = "CountOnlyWidgets";
             CountEnabled = true;
-            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetQueryable = (ct) => Store.AsQueryable();
         }
     }
 
@@ -343,7 +343,7 @@ public sealed class OhDataOpenApiOperationTransformerTests
         public SearchOnlyProfile() : base(x => x.Id)
         {
             EntitySetName = "SearchOnlyWidgets";
-            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetQueryable = (ct) => Store.AsQueryable();
             Search = (term, ct) => OhDataResult.Success<IEnumerable<Widget>>(Store);
         }
     }
@@ -356,7 +356,7 @@ public sealed class OhDataOpenApiOperationTransformerTests
         {
             EntitySetName = "MaxTopWidgets";
             MaxTop = Cap;
-            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetQueryable = (ct) => Store.AsQueryable();
         }
     }
 

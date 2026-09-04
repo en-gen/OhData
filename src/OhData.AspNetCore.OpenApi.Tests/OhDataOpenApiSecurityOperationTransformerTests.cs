@@ -355,7 +355,7 @@ public sealed class OhDataOpenApiSecurityOperationTransformerTests
         {
             EntitySetName = "SecuredWidgets";
             RequireAuthorization();
-            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetQueryable = (ct) => Store.AsQueryable();
             GetById = (id, ct) => OhDataResult.Success(Store.FirstOrDefault(w => w.Id == id));
             Post = (model, ct) => OhDataResult.Success<Widget>(model);
         }
@@ -366,7 +366,7 @@ public sealed class OhDataOpenApiSecurityOperationTransformerTests
         public AnonProfile() : base(x => x.Id)
         {
             EntitySetName = "AnonWidgets";
-            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetQueryable = (ct) => Store.AsQueryable();
         }
     }
 
@@ -378,7 +378,7 @@ public sealed class OhDataOpenApiSecurityOperationTransformerTests
             ConfigureAuthorization(a => a
                 .Read(r => r.RequireRole("reader"))
                 .Create(c => c.AllowAnonymous()));
-            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetQueryable = (ct) => Store.AsQueryable();
             Post = (model, ct) => OhDataResult.Success<Widget>(model);
         }
     }

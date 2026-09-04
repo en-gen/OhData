@@ -248,7 +248,7 @@ internal abstract class SibProfileBase : EntitySetProfile<int, SibEntity>
 
     protected SibProfileBase() : base(x => x.Id)
     {
-        GetQueryable = ct => OhDataResult.Success(Data.AsQueryable());
+        GetQueryable = ct => Data.AsQueryable();
     }
 }
 
@@ -381,7 +381,7 @@ internal abstract class SibExpandProfileBase : EntitySetProfile<int, SibExpandEn
     protected SibExpandProfileBase() : base(x => x.Id)
     {
         ExpandEnabled = true;
-        GetQueryable = ct => OhDataResult.Success(Data.AsQueryable());
+        GetQueryable = ct => Data.AsQueryable();
         HasMany(x => x.Alpha!, getAll: (id, ct) => Task.FromResult<IEnumerable<SibKid>>(new List<SibKid>()));
         HasMany(x => x.Beta!, getAll: (id, ct) => Task.FromResult<IEnumerable<SibKid>>(new List<SibKid>()));
     }

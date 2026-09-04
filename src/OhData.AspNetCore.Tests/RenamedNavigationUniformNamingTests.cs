@@ -83,7 +83,7 @@ public sealed class UniBlogProfile : EntitySetProfile<int, UniBlog>
         FilterEnabled = true;
         OrderByEnabled = true;
 
-        GetQueryable = _ => OhDataResult.Success(db.Blogs.AsQueryable());
+        GetQueryable = _ => db.Blogs.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(db.Blogs.FirstOrDefault(b => b.Id == id));
 
         // Delegate-less single nav → $expand=writtenBy folds into a JOIN (pushdown); $filter/$orderby
