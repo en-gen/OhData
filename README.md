@@ -213,6 +213,27 @@ The second form still omits `Lines` from the response unless `$expand` asks for 
 only makes it *available*. The cost is that the `JOIN` is in the query whether or not the client
 expands, so project a navigation you expect to be expanded, and leave out one you do not.
 
+**You do not have to hand-write the projection.** Anything that returns an `IQueryable<TModel>` works,
+because that is the whole contract — including a mapping library's projection generator. With
+AutoMapper's `ProjectTo`, the mapping config produces the nested projection and the handler is one
+line:
+
+```csharp
+GetQueryable = _ => OhDataResult.SuccessTask(db.Orders.ProjectTo<OrderDto>(_config));
+```
+
+Measured against AutoMapper 14 on EF Core 10 / SQLite, all of these work with nothing hand-written:
+`$filter=Code eq 'A'`, `$expand=Lines`, `$expand=Lines($filter=Id gt 10)`, `$select=Code`, and even a
+filter *through* the navigation — `$filter=Lines/any(l: l/Sku eq 's2')`.
+
+If you would rather filter against the **entity** and project last — the
+`AutoMapper.Extensions.ExpressionMapping` pattern, where a DTO-shaped predicate is translated to an
+entity-shaped one — use the Priority-1 handler
+([`GetODataQueryable`](docs/query-options.md#getodataqueryable---full-odata-pushdown-advanced)). It
+hands your profile the whole `ODataQueryOptions` so you can translate and apply the clauses yourself.
+Two things come with that seam: declare what you actually honour via `HonouredQueryOptions`, and set
+`ODataQueryResult.TotalCount` if you page and support `$count`.
+
 **Writing** — projection has no inverse, which is the asymmetry
 [delta mapping](docs/delta-mapping.md) exists to close. A `DeltaProfile` declares how a DTO maps onto
 its backing entity; the framework compiles and validates every mapping **at startup**, and a handler
