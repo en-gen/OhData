@@ -16,13 +16,21 @@ public sealed class Z385Item
     public int Quantity { get; set; }
     public decimal Amount { get; set; }
     public int Divisor { get; set; }
+    public List<Z385Child> Children { get; set; } = new();
+}
+
+public sealed class Z385Child
+{
+    public int Id { get; set; }
+    public int Value { get; set; }
 }
 
 public sealed class Z385Profile : EntitySetProfile<int, Z385Item>
 {
     private static readonly List<Z385Item> Store = new()
     {
-        new() { Id = 1, Quantity = 10, Amount = 5.5m, Divisor = 2 },
+        new() { Id = 1, Quantity = 10, Amount = 5.5m, Divisor = 2,
+                Children = { new Z385Child { Id = 100, Value = 4 } } },
         new() { Id = 2, Quantity = 20, Amount = 7.5m, Divisor = 0 },
     };
 
@@ -31,6 +39,7 @@ public sealed class Z385Profile : EntitySetProfile<int, Z385Item>
         EntitySetName = "Z385Items";
         FilterEnabled = true; OrderByEnabled = true; CountEnabled = true;
         GetQueryable = _ => OhDataResult.SuccessTask<IQueryable<Z385Item>>(Store.AsQueryable());
+        HasMany(x => x.Children);
         GetById = (id, _) => OhDataResult.SuccessTask(Store.FirstOrDefault(x => x.Id == id));
     }
 }
@@ -61,6 +70,12 @@ public sealed class Issue385ZeroDivisorTests
     [InlineData("Amount div 0 eq 1")]
     [InlineData("Quantity div 0.0 eq 1")]          // the literal's CLR type differs (Single, not Int32)
     [InlineData("Quantity div 0M eq 1")]
+    [InlineData("Quantity div 0L eq 1")]            // Int64
+    [InlineData("Quantity div 0e0 eq 1")]           // Double, via the exponent form
+    [InlineData("Quantity div 0f eq 1")]
+    [InlineData("Quantity div -0.0 eq 1")]          // negative zero divides no better
+    [InlineData("Children/any(c: c/Value div 0 eq 1)")]   // inside a lambda body
+    [InlineData("Children/all(c: c/Value div 0 eq 1)")]
     [InlineData("Id eq 1 or Quantity div 0 eq 1")] // nested inside a boolean tree
     [InlineData("not (Quantity div 0 eq 1)")]      // under a unary operator
     [InlineData("round(Amount div 0) eq 1")]       // inside a function argument
