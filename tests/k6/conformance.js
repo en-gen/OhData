@@ -792,7 +792,10 @@ function preferHeader(writeId) {
       check(res, {
         [`Prefer: ${spelling} -> 200`]: (r) => r.status === 200,
         [`Prefer: ${spelling} really narrows the page to 5`]: () => b !== null && b.value.length === 5,
-        [`Prefer: ${spelling} echoes Preference-Applied`]: (r) => (header(r, 'Preference-Applied') || '').indexOf('maxpagesize=5') >= 0,
+        // #372: the ECHO is always OData 4.0's odata.maxpagesize, whichever spelling was sent.
+        // indexOf('maxpagesize=5') matched BOTH spellings, so it could not tell them apart.
+        [`Prefer: ${spelling} echoes the 4.0 Preference-Applied token`]: (r) =>
+          (header(r, 'Preference-Applied') || '').indexOf('odata.maxpagesize=5') >= 0,
         [`Prefer: ${spelling} still emits a continuation`]: () => b !== null && typeof b['@odata.nextLink'] === 'string',
       });
     }
