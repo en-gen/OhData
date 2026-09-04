@@ -231,7 +231,7 @@ internal sealed class Oar546EntityLevelDuplicateProfile : EntitySetProfile<int, 
     public Oar546EntityLevelDuplicateProfile() : base(x => x.Id)
     {
         EntitySetName = "Oar546EntityLevelDuplicate";
-        GetById = (id, _) => OhDataResult.SuccessTask<Oar546Widget>(new Oar546Widget { Id = id });
+        GetById = (id, _) => OhDataResult.Success<Oar546Widget>(new Oar546Widget { Id = id });
         BindEntityAction(Seal);
         ConfigureAuthorization(a => a
             .Invoke("Seal", i => i.RequireRole("Admin"))

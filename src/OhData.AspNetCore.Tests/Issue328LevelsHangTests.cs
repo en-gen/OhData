@@ -45,7 +45,7 @@ public sealed class HangNodeProfile : EntitySetProfile<int, HangNode>
         OrderByEnabled = true;
         CountEnabled = true;
         MaxExpansionDepth = 6;  // #328: was 15; the ceiling is now 6. To reproduce the depth 8-13 curve, raise EntitySetDefaults.MaxExpansionDepthCeiling locally.
-        GetQueryable = _ => OhDataResult.SuccessTask(db.HangNodes.AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(db.HangNodes.AsQueryable());
         HasMany(x => x.Children);
     }
 }
@@ -61,7 +61,7 @@ public sealed class HangDefaultProfile : EntitySetProfile<int, HangNode>
         FilterEnabled = true;
         OrderByEnabled = true;
         CountEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask(db.HangNodes.AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(db.HangNodes.AsQueryable());
         HasMany(x => x.Children);
     }
 }
@@ -95,7 +95,7 @@ public sealed class BrNodeProfile : EntitySetProfile<int, BrNode>
         ExpandEnabled = true; SelectEnabled = true; FilterEnabled = true;
         OrderByEnabled = true; CountEnabled = true;
         MaxExpansionDepth = 6;  // #328: was 15; the ceiling is now 6. To reproduce the depth 8-13 curve, raise EntitySetDefaults.MaxExpansionDepthCeiling locally.
-        GetQueryable = _ => OhDataResult.SuccessTask(db.BrNodes.AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(db.BrNodes.AsQueryable());
         HasMany(x => x.Children);
         HasMany(x => x.Peers);
     }
@@ -111,7 +111,7 @@ public sealed class HangNoPushProfile : EntitySetProfile<int, HangNode>
         OrderByEnabled = true; CountEnabled = true;
         MaxExpansionDepth = 6;  // #328: was 15; the ceiling is now 6. To reproduce the depth 8-13 curve, raise EntitySetDefaults.MaxExpansionDepthCeiling locally.
         ExpandPushdownEnabled = false;
-        GetQueryable = _ => OhDataResult.SuccessTask(db.HangNodes.AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(db.HangNodes.AsQueryable());
         HasMany(x => x.Children);
     }
 }

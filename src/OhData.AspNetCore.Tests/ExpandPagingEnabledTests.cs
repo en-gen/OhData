@@ -170,7 +170,7 @@ public sealed class EpdExposedProfile : EntitySetProfile<int, EpdParent>
     {
         EntitySetName = "EpdParents";
         ExpandEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask(db.Parents.AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(db.Parents.AsQueryable());
         HasMany(x => x.Children);      // collection, delegate-less → warns
         HasOptional(x => x.Owner!);    // single-valued, delegate-less → at most one row, never warns
     }
@@ -182,7 +182,7 @@ public sealed class EpdNoExpandProfile : EntitySetProfile<int, EpdParent>
     public EpdNoExpandProfile(EpdDbContext db) : base(x => x.Id)
     {
         EntitySetName = "EpdParents";
-        GetQueryable = _ => OhDataResult.SuccessTask(db.Parents.AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(db.Parents.AsQueryable());
         HasMany(x => x.Children);
     }
 }
@@ -194,7 +194,7 @@ public sealed class EpdGetAllProfile : EntitySetProfile<int, EpdParent>
     {
         EntitySetName = "EpdParents";
         ExpandEnabled = true;
-        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<EpdParent>>(db.Parents.ToList());
+        GetAll = _ => OhDataResult.Success<IEnumerable<EpdParent>>(db.Parents.ToList());
         HasMany(x => x.Children);
     }
 }
@@ -206,7 +206,7 @@ public sealed class EpdDelegateBackedProfile : EntitySetProfile<int, EpdParent>
     {
         EntitySetName = "EpdParents";
         ExpandEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask(db.Parents.AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(db.Parents.AsQueryable());
         HasMany(x => x.Children, (key, _) =>
             Task.FromResult<IEnumerable<EpdChild>>(db.Children.Where(c => c.ParentId == key).ToList()));
     }

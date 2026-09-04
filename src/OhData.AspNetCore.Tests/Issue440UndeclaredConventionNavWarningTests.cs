@@ -145,7 +145,7 @@ public sealed class W440HubProfile : EntitySetProfile<int, W440Hub>
         SelectEnabled = true;
         // GetAll, not GetQueryable: the raw substrate is where the #466 levels budget applies, and
         // the eager load is what puts three levels of branches into the graph it reads.
-        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<W440Hub>>(
+        GetAll = _ => OhDataResult.Success<IEnumerable<W440Hub>>(
             db.Hubs.Include(h => h.Other).ThenInclude(x => x.Children).ThenInclude(x => x.Children).ToList());
         HasMany(x => x.Other); // declared, delegate-less — the branch the walk descends through
         // x.Children is deliberately NOT declared: it is the #440 no-opinion navigation whose name
@@ -161,7 +161,7 @@ public sealed class W440BranchProfile : EntitySetProfile<int, W440Branch>
         EntitySetName = "W440Branches";
         ExpandEnabled = true;
         SelectEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask(db.Branches.AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(db.Branches.AsQueryable());
         HasMany(x => x.Children);
     }
 }
@@ -173,7 +173,7 @@ public sealed class W440NodeProfile : EntitySetProfile<int, W440Node>
     {
         EntitySetName = "W440Nodes";
         ExpandEnabled = true; SelectEnabled = true; FilterEnabled = true; OrderByEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask(db.Nodes.AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(db.Nodes.AsQueryable());
     }
 }
 
@@ -206,14 +206,14 @@ public sealed class W440OrderProfile : EntitySetProfile<int, W440Order>
     {
         EntitySetName = "W440Orders";
         ExpandEnabled = true; SelectEnabled = true; FilterEnabled = true; OrderByEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask(db.Orders.AsQueryable());
-        GetById = (id, _) => OhDataResult.SuccessTask(db.Orders.FirstOrDefault(o => o.Id == id));
+        GetQueryable = _ => OhDataResult.Success(db.Orders.AsQueryable());
+        GetById = (id, _) => OhDataResult.Success(db.Orders.FirstOrDefault(o => o.Id == id));
         // #461: deliberately does NOT persist. The defect is what the handler RECEIVES; a handler
         // that called SaveChanges() here is the adopter this protects, not the observation point.
         Post = (order, _) =>
         {
             LastPosted = order;
-            return OhDataResult.SuccessTask<W440Order>(order);
+            return OhDataResult.Success<W440Order>(order);
         };
         // #457: PUT, added for the deep-UPDATE half of the same defect class. Non-persisting for
         // exactly the reason Post is.
@@ -221,7 +221,7 @@ public sealed class W440OrderProfile : EntitySetProfile<int, W440Order>
         {
             LastPut = order;
             order.Id = id;
-            return OhDataResult.SuccessTask(order);
+            return OhDataResult.Success(order);
         };
         Patch = (id, delta, _) =>
         {
@@ -229,10 +229,10 @@ public sealed class W440OrderProfile : EntitySetProfile<int, W440Order>
             // not what survived being applied to a tracked entity.
             LastPatchChangedProperties = delta.GetChangedPropertyNames().ToArray();
             W440Order? existing = db.Orders.FirstOrDefault(o => o.Id == id);
-            if (existing is null) return OhDataResult.SuccessTask<W440Order>(null);
+            if (existing is null) return OhDataResult.Success<W440Order>(null);
             delta.Patch(existing);
             db.SaveChanges();
-            return OhDataResult.SuccessTask<W440Order>(existing);
+            return OhDataResult.Success<W440Order>(existing);
         };
         // Customer deliberately NOT declared.
     }
@@ -252,7 +252,7 @@ public sealed class W440InvoiceProfile : EntitySetProfile<int, W440Invoice>
         EntitySetName = "W440Invoices";
         ExpandEnabled = false;
         PropertyAccessEnabled = false;
-        GetQueryable = _ => OhDataResult.SuccessTask(db.Invoices.AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(db.Invoices.AsQueryable());
         // No GetById, no Patch, no declaration of Payer.
     }
 }
@@ -264,8 +264,8 @@ public sealed class W440PlainProfile : EntitySetProfile<int, W440Plain>
     {
         EntitySetName = "W440Plains";
         ExpandEnabled = true; SelectEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask(db.Plains.AsQueryable());
-        GetById = (id, _) => OhDataResult.SuccessTask(db.Plains.FirstOrDefault(p => p.Id == id));
+        GetQueryable = _ => OhDataResult.Success(db.Plains.AsQueryable());
+        GetById = (id, _) => OhDataResult.Success(db.Plains.FirstOrDefault(p => p.Id == id));
     }
 }
 
@@ -279,12 +279,12 @@ public sealed class W440DeclaredOrderProfile : EntitySetProfile<int, W440Order>
     {
         EntitySetName = "W440DeclaredOrders";
         ExpandEnabled = true; SelectEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask(db.Orders.AsQueryable());
-        GetById = (id, _) => OhDataResult.SuccessTask(db.Orders.FirstOrDefault(o => o.Id == id));
+        GetQueryable = _ => OhDataResult.Success(db.Orders.AsQueryable());
+        GetById = (id, _) => OhDataResult.Success(db.Orders.FirstOrDefault(o => o.Id == id));
         Post = (order, _) =>
         {
             LastPosted = order;
-            return OhDataResult.SuccessTask<W440Order>(order);
+            return OhDataResult.Success<W440Order>(order);
         };
         HasOptional<W440Customer>(x => x.Customer!);
     }

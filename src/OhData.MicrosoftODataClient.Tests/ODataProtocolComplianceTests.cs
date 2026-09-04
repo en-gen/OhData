@@ -48,29 +48,29 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
             new() { Id = 3, Name = "Bracket",  Price = 12.00m },
         };
 
-        GetQueryable = (ct) => OhDataResult.SuccessTask(_store.AsQueryable());
-        GetById = (id, ct) => OhDataResult.SuccessTask(_store.FirstOrDefault(w => w.Id == id));
+        GetQueryable = (ct) => OhDataResult.Success(_store.AsQueryable());
+        GetById = (id, ct) => OhDataResult.Success(_store.FirstOrDefault(w => w.Id == id));
         Post = (w, ct) =>
         {
             w.Id = _store.Count > 0 ? _store.Max(x => x.Id) + 1 : 1;
             _store.Add(w);
-            return OhDataResult.SuccessTask<Widget>(w);
+            return OhDataResult.Success<Widget>(w);
         };
         Put = (id, w, ct) =>
         {
             _store.RemoveAll(x => x.Id == id);
             w.Id = id;
             _store.Add(w);
-            return OhDataResult.SuccessTask(w);
+            return OhDataResult.Success(w);
         };
         Patch = (id, delta, ct) =>
         {
             var existing = _store.FirstOrDefault(x => x.Id == id);
-            if (existing is null) return OhDataResult.SuccessTask<Widget>(null);
+            if (existing is null) return OhDataResult.Success<Widget>(null);
             delta.Patch(existing);
-            return OhDataResult.SuccessTask<Widget>(existing);
+            return OhDataResult.Success<Widget>(existing);
         };
-        Delete = (id, ct) => OhDataResult.SuccessTask(_store.RemoveAll(w => w.Id == id) > 0);
+        Delete = (id, ct) => OhDataResult.Success(_store.RemoveAll(w => w.Id == id) > 0);
     }
 }
 

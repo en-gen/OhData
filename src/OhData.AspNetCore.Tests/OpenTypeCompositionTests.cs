@@ -112,8 +112,8 @@ internal sealed class CompOwnerProfile : EntitySetProfile<int, CompOwner>
         // weaker (but still real) claim that both modifiers survive in the same chained resolver:
         // neither is lost when the other is layered on.
         Ignore(x => x.Secret);
-        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<CompOwner>>(store.Owners);
-        GetById = (id, ct) => OhDataResult.SuccessTask(store.Owners.FirstOrDefault(o => o.Id == id));
+        GetAll = ct => OhDataResult.Success<IEnumerable<CompOwner>>(store.Owners);
+        GetById = (id, ct) => OhDataResult.Success(store.Owners.FirstOrDefault(o => o.Id == id));
         HasMany(x => x.Tags, getAll: (ownerId, ct) => Task.FromResult<IEnumerable<CompTag>>(
             store.Owners.Where(o => o.Id == ownerId).SelectMany(o => o.Tags).ToList()));
     }
@@ -125,7 +125,7 @@ internal sealed class CompNodeProfile : EntitySetProfile<int, CompNode>
     {
         EntitySetName = "CompNodes";
         ExpandEnabled = true;
-        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<CompNode>>(store.Nodes);
+        GetAll = ct => OhDataResult.Success<IEnumerable<CompNode>>(store.Nodes);
         HasOptional(x => x.Parent!);
         HasMany(x => x.Children);
     }

@@ -224,29 +224,29 @@ internal sealed class PipelineWidgetProfile : EntitySetProfile<int, PipelineWidg
         OrderByEnabled = true;
         CountEnabled = true;
 
-        GetQueryable = (ct) => OhDataResult.SuccessTask(_store.AsQueryable());
+        GetQueryable = (ct) => OhDataResult.Success(_store.AsQueryable());
 
-        GetById = (id, ct) => OhDataResult.SuccessTask(_store.FirstOrDefault(w => w.Id == id));
+        GetById = (id, ct) => OhDataResult.Success(_store.FirstOrDefault(w => w.Id == id));
 
         Post = (widget, ct) =>
         {
             // Don't mutate _store in benchmarks — just return the entity
             widget.Id = 999;
-            return OhDataResult.SuccessTask<PipelineWidget>(widget);
+            return OhDataResult.Success<PipelineWidget>(widget);
         };
 
         Put = (id, widget, ct) =>
         {
             widget.Id = id;
-            return OhDataResult.SuccessTask(widget);
+            return OhDataResult.Success(widget);
         };
 
-        Delete = (id, ct) => OhDataResult.SuccessTask(true);
+        Delete = (id, ct) => OhDataResult.Success(true);
 
         Patch = (id, delta, ct) =>
         {
             var existing = _store.FirstOrDefault(w => w.Id == id);
-            if (existing is null) return OhDataResult.SuccessTask<PipelineWidget>(null);
+            if (existing is null) return OhDataResult.Success<PipelineWidget>(null);
             // Don't mutate — return a copy
             var copy = new PipelineWidget
             {
@@ -256,7 +256,7 @@ internal sealed class PipelineWidgetProfile : EntitySetProfile<int, PipelineWidg
                 IsActive = existing.IsActive,
             };
             delta.Patch(copy);
-            return OhDataResult.SuccessTask<PipelineWidget>(copy);
+            return OhDataResult.Success<PipelineWidget>(copy);
         };
     }
 }

@@ -44,14 +44,6 @@ public sealed class OhDataResult
     /// </summary>
     public static OhDataResult<T> Success<T>(T? value) => OhDataResult<T>.FromValue(value);
 
-    /// <summary>
-    /// <see cref="Success{T}"/> already wrapped in a completed <see cref="Task{TResult}"/> — the
-    /// shape a synchronous handler wants, and the direct replacement for
-    /// <c>Task.FromResult(value)</c>.
-    /// </summary>
-    public static Task<OhDataResult<T>> SuccessTask<T>(T? value) =>
-        Task.FromResult(OhDataResult<T>.FromValue(value));
-
     /// <summary>400 — the request is malformed or fails a rule the framework cannot see.</summary>
     public static OhDataResult BadRequest(string errorCode, string message, string? target = null) =>
         Create(400, errorCode, message, target);
@@ -139,4 +131,25 @@ public sealed class OhDataResult<T>
     /// </summary>
     public static implicit operator OhDataResult<T>(OhDataResult rejection) =>
         new(default, rejection ?? throw new ArgumentNullException(nameof(rejection)));
+
+    /// <summary>
+    /// Lets a SYNCHRONOUS handler write <c>OhDataResult.Success(value)</c> where the delegate returns
+    /// <c>Task&lt;OhDataResult&lt;T&gt;&gt;</c>, with no <c>Task</c> ceremony in the caller (#633).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is a conversion rather than a <c>Success</c> overload because C# cannot overload on return
+    /// type (CS0111) — one method cannot return both <c>OhDataResult&lt;T&gt;</c> and
+    /// <c>Task&lt;OhDataResult&lt;T&gt;&gt;</c> for the same arguments. It replaces
+    /// <c>Success</c>, whose name encoded the framework's plumbing into the caller's vocabulary.
+    /// </para>
+    /// <para>
+    /// A synchronous REJECTION still needs <c>Task.FromResult&lt;OhDataResult&lt;T&gt;&gt;(...)</c> or
+    /// an <c>async</c> lambda: that would be two user-defined conversions
+    /// (<see cref="OhDataResult"/> → <see cref="OhDataResult{T}"/> → <see cref="Task{TResult}"/>) and
+    /// C# applies at most one. Unchanged from <c>Success</c>, which had no rejection twin either.
+    /// </para>
+    /// </remarks>
+    public static implicit operator Task<OhDataResult<T>>(OhDataResult<T> value) =>
+        Task.FromResult(value);
 }

@@ -19,7 +19,7 @@ Post = async (order, ct) =>
 
 A rejection converts implicitly, so `return OhDataResult.Conflict(...)` compiles in a handler
 declared to return `OhDataResult<Order>` — the rejection carries no value, so there is nothing to
-supply. For a synchronous handler, `OhDataResult.SuccessTask(value)` is the direct replacement for
+supply. For a synchronous handler, `OhDataResult.Success(value)` is the direct replacement for
 `Task.FromResult(value)`.
 
 There is deliberately **no** implicit conversion from `T`: a bare `return model;` would silently

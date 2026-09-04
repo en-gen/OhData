@@ -84,6 +84,6 @@ internal class UnimplQueryableProfile : EntitySetProfile<int, Widget>
         FilterEnabled = true;
         OrderByEnabled = true;
         CountEnabled = true;
-        GetQueryable = (ct) => OhDataResult.SuccessTask(Store.AsQueryable());
+        GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
     }
 }

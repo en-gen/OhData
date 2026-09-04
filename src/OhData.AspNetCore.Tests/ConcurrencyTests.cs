@@ -41,29 +41,29 @@ public class ConcurrencyTests
             EntitySetName = "ConcurrentWriteWidgets";
 
             GetById = (id, ct) =>
-                OhDataResult.SuccessTask(_store.Items.TryGetValue(id, out var w) ? w : null);
+                OhDataResult.Success(_store.Items.TryGetValue(id, out var w) ? w : null);
 
             Post = (widget, ct) =>
             {
                 _store.Items[widget.Id] = widget;
-                return OhDataResult.SuccessTask<Widget>(widget);
+                return OhDataResult.Success<Widget>(widget);
             };
 
             Put = (id, widget, ct) =>
             {
                 widget.Id = id;
                 _store.Items[id] = widget;
-                return OhDataResult.SuccessTask(widget);
+                return OhDataResult.Success(widget);
             };
 
             Patch = (id, delta, ct) =>
             {
-                if (!_store.Items.TryGetValue(id, out var existing)) return OhDataResult.SuccessTask<Widget>(null);
+                if (!_store.Items.TryGetValue(id, out var existing)) return OhDataResult.Success<Widget>(null);
                 delta.Patch(existing);
-                return OhDataResult.SuccessTask<Widget>(existing);
+                return OhDataResult.Success<Widget>(existing);
             };
 
-            Delete = (id, ct) => OhDataResult.SuccessTask(_store.Items.TryRemove(id, out _));
+            Delete = (id, ct) => OhDataResult.Success(_store.Items.TryRemove(id, out _));
         }
     }
 
@@ -97,15 +97,15 @@ public class ConcurrencyTests
         {
             _store = store;
             EntitySetName = "EtagSequenceWidgets";
-            GetById = (id, ct) => OhDataResult.SuccessTask(_store.Items.TryGetValue(id, out var w) ? w : null);
+            GetById = (id, ct) => OhDataResult.Success(_store.Items.TryGetValue(id, out var w) ? w : null);
             // Deliberately does NOT upsert: returns null (not found) when the key is absent,
             // so wildcard If-Match against a missing key surfaces the handler's 404, not a create.
             Put = (id, widget, ct) =>
             {
-                if (!_store.Items.ContainsKey(id)) return OhDataResult.SuccessTask<Widget>(null!);
+                if (!_store.Items.ContainsKey(id)) return OhDataResult.Success<Widget>(null!);
                 widget.Id = id;
                 _store.Items[id] = widget;
-                return OhDataResult.SuccessTask(widget);
+                return OhDataResult.Success(widget);
             };
             UseETag(x => x.Name);
         }
@@ -130,12 +130,12 @@ public class ConcurrencyTests
         {
             _store = store;
             EntitySetName = "HostIsolationWidgets";
-            GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<Widget>>(_store.Items);
+            GetAll = (ct) => OhDataResult.Success<IEnumerable<Widget>>(_store.Items);
             Post = (widget, ct) =>
             {
                 widget.Id = _store.Items.Count > 0 ? _store.Items.Max(w => w.Id) + 1 : 1;
                 _store.Items.Add(widget);
-                return OhDataResult.SuccessTask<Widget>(widget);
+                return OhDataResult.Success<Widget>(widget);
             };
         }
     }
@@ -145,7 +145,7 @@ public class ConcurrencyTests
         public ScopedTrackerProfile(ScopedTracker tracker) : base(x => x.Id)
         {
             EntitySetName = "ScopedTrackerWidgets";
-            GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<Widget>>(
+            GetAll = (ct) => OhDataResult.Success<IEnumerable<Widget>>(
                 new[] { new Widget { Id = 1, Name = tracker.InstanceId.ToString() } });
         }
     }
@@ -159,8 +159,8 @@ public class ConcurrencyTests
         public CacheRaceProfileA() : base(x => x.Id)
         {
             EntitySetName = "CacheRaceWidgetsA";
-            GetById = (id, ct) => OhDataResult.SuccessTask(_store.FirstOrDefault(w => w.Id == id));
-            Post = (w, ct) => { w.Id = _store.Count + 1; _store.Add(w); return OhDataResult.SuccessTask<Widget>(w); };
+            GetById = (id, ct) => OhDataResult.Success(_store.FirstOrDefault(w => w.Id == id));
+            Post = (w, ct) => { w.Id = _store.Count + 1; _store.Add(w); return OhDataResult.Success<Widget>(w); };
             UseETag(x => x.Name);
         }
     }
@@ -171,8 +171,8 @@ public class ConcurrencyTests
         public CacheRaceProfileB() : base(x => x.Id)
         {
             EntitySetName = "CacheRaceWidgetsB";
-            GetById = (id, ct) => OhDataResult.SuccessTask(_store.FirstOrDefault(w => w.Id == id));
-            Post = (w, ct) => { w.Id = _store.Count + 1; _store.Add(w); return OhDataResult.SuccessTask<Widget>(w); };
+            GetById = (id, ct) => OhDataResult.Success(_store.FirstOrDefault(w => w.Id == id));
+            Post = (w, ct) => { w.Id = _store.Count + 1; _store.Add(w); return OhDataResult.Success<Widget>(w); };
             UseETag(x => x.Name);
         }
     }
@@ -183,8 +183,8 @@ public class ConcurrencyTests
         public CacheRaceProfileC() : base(x => x.Id)
         {
             EntitySetName = "CacheRaceWidgetsC";
-            GetById = (id, ct) => OhDataResult.SuccessTask(_store.FirstOrDefault(w => w.Id == id));
-            Post = (w, ct) => { w.Id = _store.Count + 1; _store.Add(w); return OhDataResult.SuccessTask<Widget>(w); };
+            GetById = (id, ct) => OhDataResult.Success(_store.FirstOrDefault(w => w.Id == id));
+            Post = (w, ct) => { w.Id = _store.Count + 1; _store.Add(w); return OhDataResult.Success<Widget>(w); };
             UseETag(x => x.Name);
         }
     }
@@ -544,7 +544,7 @@ public class ConcurrencyTests
             EntitySetName = "EtagLinkParents";
             UseETag(x => x.Name);
 
-            GetById = (id, ct) => OhDataResult.SuccessTask(store.Parents.TryGetValue(id, out var p) ? p : null);
+            GetById = (id, ct) => OhDataResult.Success(store.Parents.TryGetValue(id, out var p) ? p : null);
 
             HasMany(
                 navigation: x => x.Children!,

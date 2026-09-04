@@ -285,7 +285,7 @@ internal class DocProductProfileV1 : EntitySetProfile<int, DocProduct>
     public DocProductProfileV1() : base(x => x.Id)
     {
         EntitySetName = "Products";
-        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<DocProduct>>(
+        GetAll = ct => OhDataResult.Success<IEnumerable<DocProduct>>(
             new[] { new DocProduct { Id = 1, Name = "v1 product" } });
     }
 }
@@ -296,7 +296,7 @@ internal class DocProductProfileV2 : EntitySetProfile<int, DocProduct>
     public DocProductProfileV2() : base(x => x.Id)
     {
         EntitySetName = "Products";
-        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<DocProduct>>(
+        GetAll = ct => OhDataResult.Success<IEnumerable<DocProduct>>(
             new[] { new DocProduct { Id = 1, Name = "v2 product" } });
     }
 }
@@ -307,7 +307,7 @@ internal class DocCustomerProfileV2 : EntitySetProfile<int, DocCustomer>
     public DocCustomerProfileV2() : base(x => x.Id)
     {
         EntitySetName = "Customers";
-        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<DocCustomer>>(
+        GetAll = ct => OhDataResult.Success<IEnumerable<DocCustomer>>(
             new[] { new DocCustomer { Id = 1, Name = "v2 customer" } });
     }
 }
@@ -332,7 +332,7 @@ internal class DocInjectedProductProfile : EntitySetProfile<int, DocProduct>
     public DocInjectedProductProfile(DocProductStore store) : base(x => x.Id)
     {
         EntitySetName = "Products";
-        GetAll = ct => OhDataResult.SuccessTask(store.Products);
+        GetAll = ct => OhDataResult.Success(store.Products);
     }
 }
 

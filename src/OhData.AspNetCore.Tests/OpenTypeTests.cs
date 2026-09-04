@@ -93,15 +93,15 @@ internal sealed class ExternalReferenceProfile : EntitySetProfile<Guid, External
         SelectEnabled = true;
         FilterEnabled = true;
 
-        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<ExternalReference>>(store.Items);
-        GetById = (id, ct) => OhDataResult.SuccessTask(store.Items.FirstOrDefault(x => x.Id == id));
+        GetAll = ct => OhDataResult.Success<IEnumerable<ExternalReference>>(store.Items);
+        GetById = (id, ct) => OhDataResult.Success(store.Items.FirstOrDefault(x => x.Id == id));
 
         Post = (entity, ct) =>
         {
             store.LastWritten = entity;
             if (entity.Id == Guid.Empty) entity.Id = Guid.NewGuid();
             store.Items.Add(entity);
-            return OhDataResult.SuccessTask<ExternalReference>(entity);
+            return OhDataResult.Success<ExternalReference>(entity);
         };
 
         Put = (id, entity, ct) =>
@@ -110,16 +110,16 @@ internal sealed class ExternalReferenceProfile : EntitySetProfile<Guid, External
             entity.Id = id;
             store.Items.RemoveAll(x => x.Id == id);
             store.Items.Add(entity);
-            return OhDataResult.SuccessTask(entity);
+            return OhDataResult.Success(entity);
         };
 
         Patch = (id, delta, ct) =>
         {
             ExternalReference? existing = store.Items.FirstOrDefault(x => x.Id == id);
-            if (existing is null) return OhDataResult.SuccessTask<ExternalReference>(null);
+            if (existing is null) return OhDataResult.Success<ExternalReference>(null);
             delta.Patch(existing);
             store.LastWritten = existing;
-            return OhDataResult.SuccessTask<ExternalReference>(existing);
+            return OhDataResult.Success<ExternalReference>(existing);
         };
     }
 }
@@ -129,7 +129,7 @@ internal sealed class OpenTypeHostProfile : EntitySetProfile<int, OpenTypeHost>
     public OpenTypeHostProfile() : base(x => x.Id)
     {
         EntitySetName = "OpenTypeHosts";
-        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<OpenTypeHost>>(new[]
+        GetAll = ct => OhDataResult.Success<IEnumerable<OpenTypeHost>>(new[]
         {
             new OpenTypeHost
             {
@@ -889,7 +889,7 @@ internal sealed class UnbindableBagProfile : EntitySetProfile<int, UnbindableBag
     public UnbindableBagProfile() : base(x => x.Id)
     {
         EntitySetName = "UnbindableBags";
-        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<UnbindableBagHost>>(Array.Empty<UnbindableBagHost>());
+        GetAll = ct => OhDataResult.Success<IEnumerable<UnbindableBagHost>>(Array.Empty<UnbindableBagHost>());
     }
 }
 
@@ -941,7 +941,7 @@ internal sealed class ShadowedKeyHostProfile : EntitySetProfile<int, OpenTypeHos
     public ShadowedKeyHostProfile() : base(x => x.Id)
     {
         EntitySetName = "ShadowedHosts";
-        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<OpenTypeHost>>(new[]
+        GetAll = ct => OhDataResult.Success<IEnumerable<OpenTypeHost>>(new[]
         {
             new OpenTypeHost
             {
@@ -1069,7 +1069,7 @@ internal sealed class NamelessKeyHostProfile : EntitySetProfile<int, OpenTypeHos
     public NamelessKeyHostProfile() : base(x => x.Id)
     {
         EntitySetName = "NamelessKeyHosts";
-        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<OpenTypeHost>>(new[]
+        GetAll = ct => OhDataResult.Success<IEnumerable<OpenTypeHost>>(new[]
         {
             new OpenTypeHost
             {

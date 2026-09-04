@@ -57,7 +57,7 @@ internal sealed class CeilParentProfile : EntitySetProfile<int, CeilParent>
         EntitySetName = "CeilParents";
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask(db.CeilParents.AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(db.CeilParents.AsQueryable());
         HasMany(x => x.Children); // delegate-less → $expand pushdown
     }
 }

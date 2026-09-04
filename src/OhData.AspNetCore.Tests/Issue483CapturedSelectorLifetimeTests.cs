@@ -67,7 +67,7 @@ public sealed class CapturingEtagProfile : EntitySetProfile<int, CapDoc>
     {
         _stamp = stamp;
         EntitySetName = "CapturingEtagDocs";
-        GetById = (id, ct) => OhDataResult.SuccessTask<CapDoc>(new CapDoc { Id = id, Name = "n" });
+        GetById = (id, ct) => OhDataResult.Success<CapDoc>(new CapDoc { Id = id, Name = "n" });
         // The selector closes over `this`, hence over the scoped dependency assigned above.
         UseETag(x => _stamp.Format(x.Name));
     }
@@ -78,7 +78,7 @@ public sealed class PlainEtagProfile : EntitySetProfile<int, CapDoc>
     public PlainEtagProfile() : base(x => x.Id)
     {
         EntitySetName = "PlainEtagDocs";
-        GetById = (id, ct) => OhDataResult.SuccessTask<CapDoc>(new CapDoc { Id = id, Name = "n" });
+        GetById = (id, ct) => OhDataResult.Success<CapDoc>(new CapDoc { Id = id, Name = "n" });
         UseETag(x => x.Name);
     }
 }
@@ -91,7 +91,7 @@ public sealed class CapturingKeyProfile : EntitySetProfile<int, CapDoc>
     public CapturingKeyProfile(ScopedKey key) : base(x => key.Value)
     {
         EntitySetName = "CapturingKeyDocs";
-        GetById = (id, ct) => OhDataResult.SuccessTask<CapDoc>(new CapDoc { Id = id, Name = "n" });
+        GetById = (id, ct) => OhDataResult.Success<CapDoc>(new CapDoc { Id = id, Name = "n" });
     }
 }
 

@@ -83,8 +83,8 @@ public sealed class UniBlogProfile : EntitySetProfile<int, UniBlog>
         FilterEnabled = true;
         OrderByEnabled = true;
 
-        GetQueryable = _ => OhDataResult.SuccessTask(db.Blogs.AsQueryable());
-        GetById = (id, ct) => OhDataResult.SuccessTask(db.Blogs.FirstOrDefault(b => b.Id == id));
+        GetQueryable = _ => OhDataResult.Success(db.Blogs.AsQueryable());
+        GetById = (id, ct) => OhDataResult.Success(db.Blogs.FirstOrDefault(b => b.Id == id));
 
         // Delegate-less single nav → $expand=writtenBy folds into a JOIN (pushdown); $filter/$orderby
         // over writtenBy/Name resolve against the EDM navigation (JSON name).
@@ -292,7 +292,7 @@ internal sealed class NavCollisionProfile : EntitySetProfile<int, NavCollisionMo
     public NavCollisionProfile() : base(x => x.Id)
     {
         EntitySetName = "NavCollisions";
-        GetById = (id, ct) => OhDataResult.SuccessTask<NavCollisionModel>(null);
+        GetById = (id, ct) => OhDataResult.Success<NavCollisionModel>(null);
         HasOptional(x => x.Related);
     }
 }

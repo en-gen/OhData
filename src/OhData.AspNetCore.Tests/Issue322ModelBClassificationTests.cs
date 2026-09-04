@@ -84,7 +84,7 @@ public sealed class SdShelfProfile : EntitySetProfile<int, SdShelf>
     {
         EntitySetName = "SdShelves";
         ExpandEnabled = true; SelectEnabled = true; OrderByEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask(db.SdShelves.AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(db.SdShelves.AsQueryable());
         // Delegate-BACKED so the Docs level runs through the delegate expansion path, which is where
         // the nested candidate set (all profiles over the SdDoc EDM type) is resolved.
         HasMany(x => x.Docs, (id, _) => Task.FromResult<IEnumerable<SdDoc>>(
@@ -102,7 +102,7 @@ public sealed class SdPublicDocsProfile : EntitySetProfile<int, SdDoc>
     {
         EntitySetName = "PublicDocs";
         ExpandEnabled = true; SelectEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask(db.SdDocs.AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(db.SdDocs.AsQueryable());
         // Owner deliberately NOT declared at all.
     }
 }
@@ -117,7 +117,7 @@ public sealed class SdSecureDocsProfile : EntitySetProfile<int, SdDoc>
     {
         EntitySetName = "SecureDocs";
         ExpandEnabled = true; SelectEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask(db.SdDocs.AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(db.SdDocs.AsQueryable());
         Func<int, CancellationToken, Task<SdOwner?>> getOwner = (id, _) =>
         {
             counter.Owner();
@@ -140,7 +140,7 @@ public sealed class SdRawDocsProfile : EntitySetProfile<int, SdDoc>
     {
         EntitySetName = "RawDocs";
         ExpandEnabled = true; SelectEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask(db.SdDocs.AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(db.SdDocs.AsQueryable());
         HasOptional<SdOwner>(x => x.Owner!);
     }
 }
@@ -152,7 +152,7 @@ public sealed class SdOtherSecureDocsProfile : EntitySetProfile<int, SdDoc>
     {
         EntitySetName = "OtherSecureDocs";
         ExpandEnabled = true; SelectEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask(db.SdDocs.AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(db.SdDocs.AsQueryable());
         HasOptional<SdOwner>(
             x => x.Owner!,
             (id, _) => Task.FromResult<SdOwner?>(new SdOwner { Id = -1, Name = "other" }),

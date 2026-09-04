@@ -45,30 +45,30 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
         OrderByEnabled = true;
         CountEnabled = true;
 
-        GetQueryable = (ct) => OhDataResult.SuccessTask(_store.Items.AsQueryable());
-        GetById = (id, ct) => OhDataResult.SuccessTask(_store.Items.FirstOrDefault(w => w.Id == id));
+        GetQueryable = (ct) => OhDataResult.Success(_store.Items.AsQueryable());
+        GetById = (id, ct) => OhDataResult.Success(_store.Items.FirstOrDefault(w => w.Id == id));
         Post = (widget, ct) =>
         {
             widget.Id = _store.Items.Count > 0 ? _store.Items.Max(w => w.Id) + 1 : 1;
             _store.Items.Add(widget);
-            return OhDataResult.SuccessTask<Widget>(widget);
+            return OhDataResult.Success<Widget>(widget);
         };
         Put = (id, w, ct) =>
         {
             int removed = _store.Items.RemoveAll(x => x.Id == id);
-            if (removed == 0) return OhDataResult.SuccessTask<Widget>(null!);
+            if (removed == 0) return OhDataResult.Success<Widget>(null!);
             w.Id = id;
             _store.Items.Add(w);
-            return OhDataResult.SuccessTask(w);
+            return OhDataResult.Success(w);
         };
         Patch = (id, delta, ct) =>
         {
             var existing = _store.Items.FirstOrDefault(x => x.Id == id);
-            if (existing is null) return OhDataResult.SuccessTask<Widget>(null);
+            if (existing is null) return OhDataResult.Success<Widget>(null);
             delta.Patch(existing);
-            return OhDataResult.SuccessTask<Widget>(existing);
+            return OhDataResult.Success<Widget>(existing);
         };
-        Delete = (id, ct) => OhDataResult.SuccessTask(_store.Items.RemoveAll(w => w.Id == id) > 0);
+        Delete = (id, ct) => OhDataResult.Success(_store.Items.RemoveAll(w => w.Id == id) > 0);
     }
 }
 
@@ -95,29 +95,29 @@ internal class ETagWidgetProfile : EntitySetProfile<int, Widget>
         EntitySetName = "ETagWidgets";
         IdempotentDelete = false;
 
-        GetById = (id, ct) => OhDataResult.SuccessTask(_store.Items.FirstOrDefault(w => w.Id == id));
+        GetById = (id, ct) => OhDataResult.Success(_store.Items.FirstOrDefault(w => w.Id == id));
         Post = (widget, ct) =>
         {
             widget.Id = _store.Items.Count > 0 ? _store.Items.Max(w => w.Id) + 1 : 1;
             _store.Items.Add(widget);
-            return OhDataResult.SuccessTask<Widget>(widget);
+            return OhDataResult.Success<Widget>(widget);
         };
         Put = (id, w, ct) =>
         {
             int removed = _store.Items.RemoveAll(x => x.Id == id);
-            if (removed == 0) return OhDataResult.SuccessTask<Widget>(null!);
+            if (removed == 0) return OhDataResult.Success<Widget>(null!);
             w.Id = id;
             _store.Items.Add(w);
-            return OhDataResult.SuccessTask(w);
+            return OhDataResult.Success(w);
         };
         Patch = (id, delta, ct) =>
         {
             var existing = _store.Items.FirstOrDefault(x => x.Id == id);
-            if (existing is null) return OhDataResult.SuccessTask<Widget>(null);
+            if (existing is null) return OhDataResult.Success<Widget>(null);
             delta.Patch(existing);
-            return OhDataResult.SuccessTask<Widget>(existing);
+            return OhDataResult.Success<Widget>(existing);
         };
-        Delete = (id, ct) => OhDataResult.SuccessTask(_store.Items.RemoveAll(w => w.Id == id) > 0);
+        Delete = (id, ct) => OhDataResult.Success(_store.Items.RemoveAll(w => w.Id == id) > 0);
 
         UseETag(x => x.Name);
     }
@@ -139,7 +139,7 @@ internal class PaginatedWidgetProfile : EntitySetProfile<int, Widget>
         FilterEnabled = true;
         OrderByEnabled = true;
         CountEnabled = true;
-        GetQueryable = (ct) => OhDataResult.SuccessTask(_store.AsQueryable());
+        GetQueryable = (ct) => OhDataResult.Success(_store.AsQueryable());
     }
 }
 
@@ -255,7 +255,7 @@ internal class TemporalWidgetProfile : EntitySetProfile<int, TemporalWidget>
     {
         EntitySetName = "TemporalWidgets";
         FilterEnabled = true;
-        GetQueryable = (ct) => OhDataResult.SuccessTask(_store.AsQueryable());
+        GetQueryable = (ct) => OhDataResult.Success(_store.AsQueryable());
     }
 }
 
@@ -335,7 +335,7 @@ internal class TaggedItemProfile : EntitySetProfile<int, TaggedItem>
         // author. Only the flag is new -- no existing test issues an $expand against this set.
         ExpandEnabled = true;
         // Deliberately no FilterProperties allowlist -- the NEW-1 repro shape.
-        GetQueryable = (ct) => OhDataResult.SuccessTask(_store.AsQueryable());
+        GetQueryable = (ct) => OhDataResult.Success(_store.AsQueryable());
         HasMany(x => x.Tags);
     }
 }

@@ -283,7 +283,7 @@ public sealed class OpenApiOptionsExtensionsTests
             EntitySetName = "IgnoreWidgets";
             FilterEnabled = true;
             Ignore(w => w.Secret);
-            GetQueryable = (ct) => OhDataResult.SuccessTask(Store.AsQueryable());
+            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
         }
     }
 
@@ -293,8 +293,8 @@ public sealed class OpenApiOptionsExtensionsTests
         {
             EntitySetName = "SecuredWidgets";
             ConfigureAuthorization(a => a.Read(r => r.RequireRole("readers")));
-            GetQueryable = (ct) => OhDataResult.SuccessTask(Store.AsQueryable());
-            GetById = (id, ct) => OhDataResult.SuccessTask(Store.FirstOrDefault(w => w.Id == id));
+            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetById = (id, ct) => OhDataResult.Success(Store.FirstOrDefault(w => w.Id == id));
         }
     }
 }

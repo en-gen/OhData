@@ -139,11 +139,11 @@ public sealed class OhDataSwaggerOperationFilterTests
             SelectEnabled = true;
             ExpandEnabled = true;
             CountEnabled = true;
-            GetQueryable = (ct) => OhDataResult.SuccessTask(Store.AsQueryable());
+            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
             // #467: GetById added so this fixture also covers the single-entity route, which
             // carries OhDataQueryOptionsMetadata and used to be documented with $top/$skip.
-            GetById = (id, ct) => OhDataResult.SuccessTask(Store.FirstOrDefault(w => w.Id == id));
-            Search = (term, ct) => OhDataResult.SuccessTask<IEnumerable<Widget>>(Store);
+            GetById = (id, ct) => OhDataResult.Success(Store.FirstOrDefault(w => w.Id == id));
+            Search = (term, ct) => OhDataResult.Success<IEnumerable<Widget>>(Store);
         }
     }
 
@@ -152,7 +152,7 @@ public sealed class OhDataSwaggerOperationFilterTests
         public NoFlagsProfile() : base(x => x.Id)
         {
             EntitySetName = "NoFlagsWidgets";
-            GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<Widget>>(Store);
+            GetAll = (ct) => OhDataResult.Success<IEnumerable<Widget>>(Store);
         }
     }
 
@@ -165,7 +165,7 @@ public sealed class OhDataSwaggerOperationFilterTests
         {
             EntitySetName = "GetAllFilterWidgets";
             FilterEnabled = true;
-            GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<Widget>>(Store);
+            GetAll = (ct) => OhDataResult.Success<IEnumerable<Widget>>(Store);
         }
     }
 
@@ -175,7 +175,7 @@ public sealed class OhDataSwaggerOperationFilterTests
         {
             EntitySetName = "MaxTopWidgets";
             MaxTop = 25;
-            GetQueryable = (ct) => OhDataResult.SuccessTask(Store.AsQueryable());
+            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
         }
     }
 }

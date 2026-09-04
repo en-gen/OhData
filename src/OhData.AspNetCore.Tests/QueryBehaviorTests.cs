@@ -26,7 +26,7 @@ public class QueryBehaviorTests
         public OptionalParamProfile() : base(x => x.Id)
         {
             EntitySetName = "OptionalParamWidgets";
-            GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<Widget>>(Store);
+            GetAll = (ct) => OhDataResult.Success<IEnumerable<Widget>>(Store);
             BindFunction(Greet);
             BindAction(Configure);
         }
@@ -51,7 +51,7 @@ public class QueryBehaviorTests
         public LargeStoreProfile() : base(x => x.Id)
         {
             EntitySetName = "LargeStoreWidgets";
-            GetQueryable = (ct) => OhDataResult.SuccessTask(Store.AsQueryable());
+            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
         }
     }
 
@@ -68,8 +68,8 @@ public class QueryBehaviorTests
         {
             EntitySetName = "SearchFilterWidgets";
             FilterEnabled = true;
-            GetQueryable = (ct) => OhDataResult.SuccessTask(Store.AsQueryable());
-            Search = (term, ct) => OhDataResult.SuccessTask<IEnumerable<Widget>>(
+            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            Search = (term, ct) => OhDataResult.Success<IEnumerable<Widget>>(
                 Store.Where(w => w.Name.Contains(term, StringComparison.OrdinalIgnoreCase)));
         }
     }

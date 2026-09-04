@@ -707,8 +707,8 @@ internal class SqQueryableProfile : EntitySetProfile<int, SqParent>
         ExpandEnabled = true;
         CountEnabled = true;
         MaxTop = 2;
-        GetQueryable = (ct) => OhDataResult.SuccessTask(SqStore.Parents.AsQueryable());
-        GetById = (id, ct) => OhDataResult.SuccessTask(SqStore.Parents.FirstOrDefault(p => p.Id == id));
+        GetQueryable = (ct) => OhDataResult.Success(SqStore.Parents.AsQueryable());
+        GetById = (id, ct) => OhDataResult.Success(SqStore.Parents.FirstOrDefault(p => p.Id == id));
         HasMany(x => x.Children!,
             getAll: (parentId, ct) => Task.FromResult<IEnumerable<SqChild>>(SqStore.Children));
         // A SINGLE-VALUED navigation route. Its handler branch reads no query option at all, so
@@ -728,7 +728,7 @@ internal class SqGetAllProfile : EntitySetProfile<int, SqParent>
         SelectEnabled = true;
         ExpandEnabled = true;
         CountEnabled = true;
-        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<SqParent>>(SqStore.Parents);
+        GetAll = (ct) => OhDataResult.Success<IEnumerable<SqParent>>(SqStore.Parents);
     }
 }
 
@@ -763,7 +763,7 @@ internal class SqOpsProfile : EntitySetProfile<int, SqParent>
     {
         EntitySetName = "SqOps";
         MaxTop = 2;
-        GetById = (id, ct) => OhDataResult.SuccessTask(SqStore.Parents.FirstOrDefault(p => p.Id == id));
+        GetById = (id, ct) => OhDataResult.Success(SqStore.Parents.FirstOrDefault(p => p.Id == id));
         BindFunction(TopRated);
         BindAction(Dump);
         BindEntityFunction(Stamp);

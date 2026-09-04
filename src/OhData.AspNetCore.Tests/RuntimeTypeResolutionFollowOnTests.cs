@@ -91,8 +91,8 @@ public sealed class PxEntityProfile : EntitySetProfile<int, PxEntity>
         EntitySetName = "PxEntities";
         ExpandEnabled = true;
         HasMany(x => x.Children!);
-        GetQueryable = _ => OhDataResult.SuccessTask(_store.AsQueryable());
-        GetById = (id, _) => OhDataResult.SuccessTask(
+        GetQueryable = _ => OhDataResult.Success(_store.AsQueryable());
+        GetById = (id, _) => OhDataResult.Success(
             id == 1 ? _cyclic : _store.FirstOrDefault(r => r.Id == id));
     }
 }
@@ -136,8 +136,8 @@ public sealed class WbWidgetProfile : EntitySetProfile<int, WbWidget>
         EntitySetName = "WbWidgets";
         UseETag(x => x.Name);
         HasMany(x => x.Parts!);
-        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<WbWidget>>(_plain);
-        GetById = (id, _) => OhDataResult.SuccessTask(_plain.FirstOrDefault(w => w.Id == id));
+        GetAll = _ => OhDataResult.Success<IEnumerable<WbWidget>>(_plain);
+        GetById = (id, _) => OhDataResult.Success(_plain.FirstOrDefault(w => w.Id == id));
         BindFunction(PlainList);
         BindFunction(DerivedList);
     }
@@ -196,8 +196,8 @@ public sealed class PbDerivedProfile : EntitySetProfile<int, PbDerived>
         ExpandEnabled = true;
         HasMany(x => x.Tasks!);   // declared on PbBase, reached through PbDerived
         HasOptional(x => x.Tag!); // ditto, single-valued
-        GetQueryable = _ => OhDataResult.SuccessTask(_store.AsQueryable());
-        GetById = (id, _) => OhDataResult.SuccessTask(_store.FirstOrDefault(r => r.Id == id));
+        GetQueryable = _ => OhDataResult.Success(_store.AsQueryable());
+        GetById = (id, _) => OhDataResult.Success(_store.FirstOrDefault(r => r.Id == id));
     }
 }
 
@@ -221,8 +221,8 @@ public sealed class PbBaseProfile : EntitySetProfile<int, PbBase>
         ExpandEnabled = true;
         HasMany(x => x.Tasks!);
         HasOptional(x => x.Tag!);
-        GetQueryable = _ => OhDataResult.SuccessTask(_store.AsQueryable());
-        GetById = (id, _) => OhDataResult.SuccessTask(_store.FirstOrDefault(r => r.Id == id));
+        GetQueryable = _ => OhDataResult.Success(_store.AsQueryable());
+        GetById = (id, _) => OhDataResult.Success(_store.FirstOrDefault(r => r.Id == id));
     }
 }
 

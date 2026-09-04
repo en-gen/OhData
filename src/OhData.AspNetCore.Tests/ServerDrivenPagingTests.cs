@@ -439,7 +439,7 @@ internal class PagingQueryableProfile : EntitySetProfile<int, Widget>
         CountEnabled = true;
         OrderByEnabled = true;
         MaxTop = 5;
-        GetQueryable = (ct) => OhDataResult.SuccessTask(PagingStore.Rows.AsQueryable());
+        GetQueryable = (ct) => OhDataResult.Success(PagingStore.Rows.AsQueryable());
     }
 }
 
@@ -451,7 +451,7 @@ internal class PagingGetAllProfile : EntitySetProfile<int, Widget>
         EntitySetName = "PagingGetAllWidgets";
         CountEnabled = true;
         MaxTop = 5;
-        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<Widget>>(PagingStore.Rows);
+        GetAll = (ct) => OhDataResult.Success<IEnumerable<Widget>>(PagingStore.Rows);
     }
 }
 

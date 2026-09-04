@@ -125,8 +125,8 @@ internal class NodeProfile : EntitySetProfile<int, TreeNode>
         MaxExpansionDepth = 2;
         MaxFilterNodeCount = 5;
 
-        GetQueryable = (ct) => OhDataResult.SuccessTask(Store.AsQueryable());
-        GetById = (id, ct) => OhDataResult.SuccessTask(Store.FirstOrDefault(n => n.Id == id));
+        GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+        GetById = (id, ct) => OhDataResult.Success(Store.FirstOrDefault(n => n.Id == id));
         HasMany(
             navigation: x => x.Children!,
             getAll: (id, ct) => Task.FromResult<IEnumerable<TreeNode>>(Array.Empty<TreeNode>()));
@@ -148,6 +148,6 @@ internal class AllLimitsProfile : EntitySetProfile<int, Widget>
         MaxFilterNodeCount = filter;
         MaxOrderByNodeCount = orderby;
         MaxAnyAllExpressionDepth = anyall;
-        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<Widget>>(System.Array.Empty<Widget>());
+        GetAll = (ct) => OhDataResult.Success<IEnumerable<Widget>>(System.Array.Empty<Widget>());
     }
 }

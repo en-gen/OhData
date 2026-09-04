@@ -192,14 +192,14 @@ internal class KeyImmutableRenamedProfile : EntitySetProfile<string, KeyImmutabl
             new() { Key = "B2", Name = "Beta" },
         };
 
-        GetById = (k, ct) => OhDataResult.SuccessTask(_store.FirstOrDefault(e => e.Key == k));
+        GetById = (k, ct) => OhDataResult.Success(_store.FirstOrDefault(e => e.Key == k));
 
         Patch = (k, delta, ct) =>
         {
             var existing = _store.FirstOrDefault(e => e.Key == k);
-            if (existing is null) return OhDataResult.SuccessTask<KeyImmutableRenamedEntity>(null);
+            if (existing is null) return OhDataResult.Success<KeyImmutableRenamedEntity>(null);
             delta.Patch(existing);
-            return OhDataResult.SuccessTask<KeyImmutableRenamedEntity>(existing);
+            return OhDataResult.Success<KeyImmutableRenamedEntity>(existing);
         };
     }
 }

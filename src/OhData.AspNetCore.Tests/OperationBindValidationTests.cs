@@ -256,7 +256,7 @@ internal class ObvOpsProfile : EntitySetProfile<int, ObvThing>
     public ObvOpsProfile() : base(x => x.Id)
     {
         EntitySetName = "ObvOps";
-        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<ObvThing>>(Array.Empty<ObvThing>());
+        GetAll = ct => OhDataResult.Success<IEnumerable<ObvThing>>(Array.Empty<ObvThing>());
         BindFunction(Doubled);
         BindFunction(Tags);
         BindFunction(Blob);

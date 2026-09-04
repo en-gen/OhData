@@ -248,8 +248,8 @@ public sealed class OhDataOpenApiAuthRequirementsOperationTransformerTests
                 .RequireRole("editors")
                 .RequireClaim("dept", "sales")
                 .RequirePolicy("HrOnly")));
-            GetQueryable = (ct) => OhDataResult.SuccessTask(Store.AsQueryable());
-            GetById = (id, ct) => OhDataResult.SuccessTask(Store.FirstOrDefault(w => w.Id == id));
+            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetById = (id, ct) => OhDataResult.Success(Store.FirstOrDefault(w => w.Id == id));
         }
     }
 
@@ -259,8 +259,8 @@ public sealed class OhDataOpenApiAuthRequirementsOperationTransformerTests
         {
             EntitySetName = "ResourceWidgets";
             ConfigureAuthorization(a => a.Read(r => r.RequireResource()));
-            GetQueryable = (ct) => OhDataResult.SuccessTask(Store.AsQueryable());
-            GetById = (id, ct) => OhDataResult.SuccessTask(Store.FirstOrDefault(w => w.Id == id));
+            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetById = (id, ct) => OhDataResult.Success(Store.FirstOrDefault(w => w.Id == id));
         }
     }
 
@@ -269,7 +269,7 @@ public sealed class OhDataOpenApiAuthRequirementsOperationTransformerTests
         public PlainProfile() : base(x => x.Id)
         {
             EntitySetName = "PlainWidgets";
-            GetQueryable = (ct) => OhDataResult.SuccessTask(Store.AsQueryable());
+            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
         }
     }
 }

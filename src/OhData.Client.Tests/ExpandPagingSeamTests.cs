@@ -70,8 +70,8 @@ internal class SeamAuthorProfile : EntitySetProfile<int, SeamAuthor>
         SelectEnabled = true;
         FilterEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask(db.Authors.AsQueryable());
-        GetById = (id, ct) => OhDataResult.SuccessTask(
+        GetQueryable = _ => OhDataResult.Success(db.Authors.AsQueryable());
+        GetById = (id, ct) => OhDataResult.Success(
             db.Authors.Include(a => a.Books).FirstOrDefault(a => a.Id == id));
         HasMany(x => x.Books); // delegate-less → pushable, so pageable
     }

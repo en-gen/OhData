@@ -40,11 +40,11 @@ public sealed class LvGetAllNodeProfile : EntitySetProfile<int, LvNode>
         SelectEnabled = true;
         // ToList() materializes every node; EF Core's relationship fixup then populates Children on
         // each tracked entity, which is what makes "the graph the handler returned" multi-level.
-        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<LvNode>>(db.LvNodes.Include(n => n.Tags).ToList());
+        GetAll = ct => OhDataResult.Success<IEnumerable<LvNode>>(db.LvNodes.Include(n => n.Tags).ToList());
         GetById = (id, ct) =>
         {
             List<LvNode> all = db.LvNodes.Include(n => n.Tags).ToList();
-            return OhDataResult.SuccessTask(all.FirstOrDefault(n => n.Id == id));
+            return OhDataResult.Success(all.FirstOrDefault(n => n.Id == id));
         };
         HasMany(x => x.Children);
         HasMany(x => x.Tags);
@@ -63,7 +63,7 @@ public sealed class LvMemoryNodeProfile : EntitySetProfile<int, LvNode>
         EntitySetName = "LvMemNodes";
         ExpandEnabled = true;
         SelectEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask(db.LvNodes.ToList().AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(db.LvNodes.ToList().AsQueryable());
         HasMany(x => x.Children);
         HasMany(x => x.Tags);
     }

@@ -26,14 +26,14 @@ public sealed class DmWidgetProfile : EntitySetProfile<int, DmDto>
     {
         EntitySetName = "Widgets";
 
-        GetById = (id, ct) => OhDataResult.SuccessTask(store.Get(id) is { } e ? ToDto(e) : null);
+        GetById = (id, ct) => OhDataResult.Success(store.Get(id) is { } e ? ToDto(e) : null);
 
         Patch = (id, delta, ct) =>
         {
             DmEntity? entity = store.Get(id);
-            if (entity is null) return OhDataResult.SuccessTask<DmDto>(null);
+            if (entity is null) return OhDataResult.Success<DmDto>(null);
             deltas.Create<DmDto, DmEntity>(delta).Patch(entity); // DTO-delta -> entity-delta -> apply
-            return OhDataResult.SuccessTask<DmDto>(ToDto(entity));
+            return OhDataResult.Success<DmDto>(ToDto(entity));
         };
     }
 
