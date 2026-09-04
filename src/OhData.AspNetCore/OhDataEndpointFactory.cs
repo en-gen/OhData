@@ -11535,7 +11535,11 @@ internal static class OhDataEndpointFactory
                             var requestProp = s.StructuralProperties.First(p => p.Name == propCapture.Name);
                             object? value = requestProp.Accessor(entity);
 
-                            // §11.2.6: a single-valued null property returns 204 No Content.
+                            // §11.2.3: "If the property is single-valued and has the null value, the
+                            // service responds with 204 No Content." (Cited §11.2.6 until #369 --
+                            // that is "Requesting Related Entities", which governs navigation
+                            // properties, not this route. The behaviour was right, the reference was
+                            // not.)
                             if (value is null) return Results.NoContent();
 
                             string baseUrl = BuildBaseUrl(ctx, prefix);
@@ -11594,13 +11598,17 @@ internal static class OhDataEndpointFactory
                             var requestProp = s.StructuralProperties.First(p => p.Name == propCapture.Name);
                             object? value = requestProp.Accessor(entity);
 
-                            // Part 2 §4.7: the raw value of a null property does not exist.
-                            if (value is null)
-                            {
-                                return ODataError(404, "NotFound",
-                                    $"{name}({key})/{propCapture.Name} is null; its raw value does not exist.",
-                                    target: propCapture.Name);
-                            }
+                            // #369 -- §11.2.3.1, verbatim: "A $value request for a property that is
+                            // null results in a 204 No Content response." 404 is reserved by the very
+                            // next sentence for a DIFFERENT condition: "If the property is not
+                            // available, for example due to permissions". A null value is available
+                            // and is null.
+                            //
+                            // This answered 404, citing Part 2 §4.7 ("the raw value of a null property
+                            // does not exist") -- which says nothing about a status code, while the
+                            // sibling /{Prop} route two routes up has always returned 204 for the same
+                            // entity in the same state. One property, two segments, two answers.
+                            if (value is null) return Results.NoContent();
 
                             if (value is byte[] bytes)
                                 return Results.Bytes(bytes, "application/octet-stream");
