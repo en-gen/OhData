@@ -34,7 +34,7 @@
 		<PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.*" />
 		<!-- #622: DocumentationSnippetCompilationTests compiles the marked documentation snippets,
 		     so an API change that invalidates a doc example fails CI instead of shipping. -->
-		<PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.*" />
+		<PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.*" />
 	</ItemGroup>
 
 	<ItemGroup>
