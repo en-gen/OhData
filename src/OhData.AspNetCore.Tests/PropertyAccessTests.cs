@@ -119,10 +119,44 @@ public class PropertyAccessTests
     }
 
     [Fact]
-    public async Task GetPropertyValue_NullProperty_Returns404()
+    public async Task GetPropertyValue_NullProperty_Returns204()
     {
+        // INVERTED by #369. §11.2.3.1, verbatim: "A $value request for a property that is null
+        // results in a 204 No Content response." The very next sentence reserves 404 for a DIFFERENT
+        // condition -- "If the property is not available, for example due to permissions" -- and a
+        // null value is available and is null. The old 404 cited Part 2 §4.7, which says the raw
+        // value does not exist but prescribes no status.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<PropertyAccessProfile>());
+
         var response = await fx.Client.GetAsync("/odata/PropertyAccessItems(2)/Description/$value");
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Empty(await response.Content.ReadAsByteArrayAsync());
+    }
+
+    [Fact]
+    public async Task GetPropertyValue_NullProperty_AgreesWithTheSiblingPropertyRoute()
+    {
+        // The defect was an inconsistency, not just a wrong number: one property, one entity, two
+        // segments apart, and /{Prop} has always answered 204 while /{Prop}/$value answered 404.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<PropertyAccessProfile>());
+
+        var property = await fx.Client.GetAsync("/odata/PropertyAccessItems(2)/Description");
+        var rawValue = await fx.Client.GetAsync("/odata/PropertyAccessItems(2)/Description/$value");
+
+        Assert.Equal(property.StatusCode, rawValue.StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, rawValue.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetPropertyValue_MissingEntity_Still404()
+    {
+        // The control: 404 keeps its meaning. An absent ENTITY is not an available-but-null property,
+        // which is the distinction §11.2.3.1's two sentences draw.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<PropertyAccessProfile>());
+
+        var response = await fx.Client.GetAsync("/odata/PropertyAccessItems(9999)/Description/$value");
+
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
