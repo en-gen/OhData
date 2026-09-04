@@ -3131,6 +3131,99 @@ internal static class OhDataEndpointFactory
     //
     // The (IEdmModel, IEdmType, ODataPath) overload is not a cheap alternative -- it leaves
     // ElementClrType null, which ODataQueryOptions<TEntity> throws on.
+    // #385: a literal zero divisor is refused BEFORE the query executes, so every provider gives the
+    // same answer. #358 catches DivideByZeroException/OverflowException, which only fires where the
+    // CLR evaluates the expression -- measured, the same URL split three ways: LINQ-to-Objects and
+    // EF InMemory raised and answered 400, SQLite evaluated x/0 to NULL and answered 200 with zero
+    // rows, and SQL Server (Msg 8134) and PostgreSQL (SQLSTATE 22012) raised DbException subclasses
+    // that reached the group filter as an unhandled 500 -- an anonymous client could drive those at
+    // will on the two databases most deployments use.
+    //
+    // Catching DbException instead was rejected: it is not portable, and it would also catch a
+    // connection dropped mid-enumeration and report it as a client error, which is #494's defect.
+    // An AST walk is provider-independent, costs no execution, and is honest -- X div 0 is
+    // unevaluable on every backend, so 400 is right everywhere. SQLite's empty 200 was a wrong
+    // answer under a success status, of the same family as #353/#354.
+    //
+    // Scope is the LITERAL divisor only. `A div B` where some row's B is 0 stays provider-dependent
+    // and is still covered by #358's runtime guard where the CLR evaluates it.
+    private static string? FindLiteralZeroDivisor<TModel>(ODataQueryOptions<TModel> options)
+    {
+        if (options.Filter?.FilterClause?.Expression is { } filter && DividesByLiteralZero(filter))
+        {
+            return "$filter";
+        }
+
+        for (OrderByClause? clause = options.OrderBy?.OrderByClause; clause is not null; clause = clause.ThenBy)
+        {
+            if (clause.Expression is { } expression && DividesByLiteralZero(expression))
+            {
+                return "$orderby";
+            }
+        }
+
+        return null;
+    }
+
+    private static bool DividesByLiteralZero(QueryNode node)
+    {
+        switch (node)
+        {
+            case BinaryOperatorNode binary:
+                if (binary.OperatorKind is BinaryOperatorKind.Divide or BinaryOperatorKind.Modulo
+                    && IsLiteralZero(binary.Right))
+                {
+                    return true;
+                }
+                return DividesByLiteralZero(binary.Left) || DividesByLiteralZero(binary.Right);
+
+            // ODL wraps operands in ConvertNode, so a naive `is ConstantNode` test on the right-hand
+            // side misses `Quantity div 0` outright.
+            case ConvertNode convert:
+                return DividesByLiteralZero(convert.Source);
+            case UnaryOperatorNode unary:
+                return DividesByLiteralZero(unary.Operand);
+
+            // A divisor inside contains(...)/round(...) or inside any()/all() is just as unevaluable.
+            case SingleValueFunctionCallNode call:
+                return call.Parameters.Any(DividesByLiteralZero);
+            case CollectionFunctionCallNode collectionCall:
+                return collectionCall.Parameters.Any(DividesByLiteralZero);
+            case AnyNode any:
+                return any.Body is not null && DividesByLiteralZero(any.Body);
+            case AllNode all:
+                return all.Body is not null && DividesByLiteralZero(all.Body);
+
+            default:
+                return false;
+        }
+    }
+
+    // Matched by VALUE across the numeric types rather than by parsing the constant's text: the
+    // literal's CLR type varies with how it was written (measured: `div 0` yields Int32, `div 0.0`
+    // yields Single), and a text comparison would miss one spelling or invent matches.
+    private static bool IsLiteralZero(QueryNode node)
+    {
+        while (node is ConvertNode convert) node = convert.Source;
+        if (node is not ConstantNode constant || constant.Value is null) return false;
+
+        return constant.Value switch
+        {
+            sbyte v => v == 0,
+            byte v => v == 0,
+            short v => v == 0,
+            ushort v => v == 0,
+            int v => v == 0,
+            uint v => v == 0,
+            long v => v == 0,
+            ulong v => v == 0,
+            float v => v == 0,
+            double v => v == 0,
+            decimal v => v == 0,
+            _ => false,
+        };
+    }
+
     private static bool TryBuildQueryOptions<TModel>(
         IEdmModel model, HttpContext ctx, ILogger? logger,
         [NotNullWhen(true)] out ODataQueryOptions<TModel>? options,
@@ -8052,6 +8145,15 @@ internal static class OhDataEndpointFactory
                     {
                         return optionsError;
                     }
+
+                    // #385: refuse a literal zero divisor BEFORE execution, so every provider gives
+                    // the same answer instead of three (400 / 200-empty / 500).
+                    if (FindLiteralZeroDivisor(options) is { } zeroDivisorOption)
+                    {
+                        return ODataError(400, "InvalidQueryOption",
+                            $"The {zeroDivisorOption} expression divides by the literal 0, which cannot " +
+                            "be evaluated.");
+                    }
                     // B1 fix: enforce FilterProperties/OrderByProperties/SelectProperties/
                     // ExpandProperties allowlists before handing options to the profile — the
                     // profile's own ApplyTo call has no opportunity to reject a disallowed
@@ -8248,6 +8350,15 @@ internal static class OhDataEndpointFactory
                             out ODataQueryOptions<TModel>? options, out IResult? optionsError))
                     {
                         return optionsError;
+                    }
+
+                    // #385: refuse a literal zero divisor BEFORE execution, so every provider gives
+                    // the same answer instead of three (400 / 200-empty / 500).
+                    if (FindLiteralZeroDivisor(options) is { } zeroDivisorOption)
+                    {
+                        return ODataError(400, "InvalidQueryOption",
+                            $"The {zeroDivisorOption} expression divides by the literal 0, which cannot " +
+                            "be evaluated.");
                     }
                     // B1 fix: enforce FilterProperties/OrderByProperties/SelectProperties/
                     // ExpandProperties allowlists before any ApplyTo call below.
@@ -9159,6 +9270,15 @@ internal static class OhDataEndpointFactory
                             out ODataQueryOptions<TModel>? options, out IResult? optionsError))
                     {
                         return optionsError;
+                    }
+
+                    // #385: refuse a literal zero divisor BEFORE execution, so every provider gives
+                    // the same answer instead of three (400 / 200-empty / 500).
+                    if (FindLiteralZeroDivisor(options) is { } zeroDivisorOption)
+                    {
+                        return ODataError(400, "InvalidQueryOption",
+                            $"The {zeroDivisorOption} expression divides by the literal 0, which cannot " +
+                            "be evaluated.");
                     }
                     // B1 fix: enforce the FilterProperties allowlist here too.
                     ValidatePropertyAllowlists(options, cachedValidationSettings);
