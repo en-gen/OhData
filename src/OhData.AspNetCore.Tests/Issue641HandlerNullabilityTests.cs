@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using Xunit;
@@ -70,10 +71,18 @@ public sealed class Issue641HandlerNullabilityTests
             .FirstOrDefault(a => a.AttributeType.Name == "NullableAttribute");
 
         Assert.NotNull(nullable);
-        var flags = nullable!.ConstructorArguments[0].Value as System.Collections.ObjectModel.ReadOnlyCollection<CustomAttributeTypedArgument>;
-        Assert.NotNull(flags);
 
-        bool modelIsNullable = (byte)flags![^1].Value! == 2;
+        // `as` + null-forgiving asserted the shape twice and told the compiler nothing;
+        // IsAssignableFrom both fails the test on the wrong shape AND hands back a non-null
+        // reference, so nothing below is suppressed.
+        IReadOnlyList<CustomAttributeTypedArgument> flags =
+            Assert.IsAssignableFrom<IReadOnlyList<CustomAttributeTypedArgument>>(
+                nullable.ConstructorArguments[0].Value);
+
+        object? lastFlag = flags[^1].Value;
+        Assert.NotNull(lastFlag);
+
+        bool modelIsNullable = (byte)lastFlag == 2;
         Assert.True(modelIsNullable == nullExpected,
             $"'{handler}' should {(nullExpected ? "" : "NOT ")}declare a nullable model type. " +
             $"Flags: [{string.Join(",", flags.Select(f => f.Value))}]");
