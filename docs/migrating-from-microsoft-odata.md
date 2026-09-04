@@ -254,8 +254,9 @@ Two things worth calling out about the "after" side:
   against `ODataController` + `[EnableQuery]` over the full HTTP round trip (routing → OData
   query-option processing → handler → serialization), same in-process `TestServer` setup,
   identical dataset, identical requests, with a correctness smoke-check gating every run. OhData
-  won all 11 measured scenarios — writes (POST/PUT/PATCH) were roughly 4× faster with up to
-  7.7× fewer bytes allocated; reads were 1.5-2.7× faster. Full methodology, the complete results
+  was faster on 10 of the 11 measured scenarios and allocated less on all 11 — writes
+  (POST/PUT/PATCH) roughly 4.6-5× faster with up to 7.7× fewer bytes allocated, reads 1.3-3.2×
+  faster. DELETE is a tie on time (1.02× ± 0.08) and a 1.2× allocation win. Full methodology, the complete results
   table, the provenance of every figure, and the known asymmetries between the two pipelines are
   in [docs/performance.md](performance.md).
   Reproduce it yourself with `dotnet run -c Release --project src/OhData.Server.Benchmarks -- --filter "*"`.

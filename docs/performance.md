@@ -5,47 +5,105 @@ OhData's minimal-API pipeline measured head-to-head against `Microsoft.AspNetCor
 with byte-identical requests and a correctness gate in front of every run.
 
 **Every number on this page carries the commit it was taken at.** A performance figure without its
-provenance is a rumour with units — this page was 119 commits stale once ([#636](https://github.com/en-gen/OhData/issues/636)) and the
-README was republishing it with no date at all.
+provenance is a rumour with units — this page was 119 commits stale once
+([#636](https://github.com/en-gen/OhData/issues/636)), and the README republished it with no date
+at all.
 
 | | |
 |---|---|
 | **Commit** | [`4e123b7`](https://github.com/en-gen/OhData/commit/4e123b7bc9ff763c8614161e441c57a394330cfa) (2.0.0 development head) |
-| **Measured** | 2026-09-04, 07:44 UTC |
+| **Measured** | 2026-09-04 |
+| **Run** | `--filter "*ServerComparisonBenchmarks*"` — the head-to-head suite **alone**, which is what the 1.7.0 control below also ran, and what every historically published figure on this page ran |
 | **Environment** | BenchmarkDotNet v0.15.8 · Windows 11 (10.0.26200.9168/25H2) · AMD Ryzen 9 5950X, 16 physical cores · .NET SDK 10.0.303 · .NET 10.0.11 X64 RyuJIT x86-64-v3 |
 | **Packages** | `Microsoft.AspNetCore.OData` 9.4.x (the same floating range `OhData.AspNetCore` references); OhData from source at that commit |
 | **Gate** | The 16-scenario smoke check passed before measurement — the run aborts otherwise |
 
 ## Summary
 
-OhData is faster and allocates less in **all 11** scenarios of the head-to-head suite:
+OhData is **faster on 10 of the 11 scenarios and allocates less on all 11**:
 
 | Scenario | OhData | Microsoft.AspNetCore.OData | Speedup | Alloc (OhData → MS) | Alloc ratio |
 |---|---:|---:|---:|---:|---:|
-| GetAll page (100) | 1,296 µs | 3,119 µs | **2.48×** | 169 → 781 KB | 4.6× |
-| `$filter` | 2,357 µs | 4,042 µs | **1.73×** | 177 → 805 KB | 4.6× |
-| `$orderby` | 1,583 µs | 4,140 µs | **2.67×** | 189 → 838 KB | 4.4× |
-| `$select` | 1,531 µs | 2,380 µs | **1.56×** | 280 → 339 KB | 1.2× |
-| `$top` + `$skip` | 1,142 µs | 2,465 µs | **2.17×** | 126 → 472 KB | 3.7× |
-| `$count=true` (+`$filter`) | 3,973 µs | 5,884 µs | **1.50×** | 196 → 842 KB | 4.3× |
-| GetById | 63.6 µs | 157.5 µs | **2.48×** | 17.4 → 48.8 KB | 2.8× |
-| POST | 78.2 µs | 330.2 µs | **4.32×** | 18.8 → 145.5 KB | 7.7× |
-| PUT | 79.9 µs | 337.3 µs | **4.24×** | 20.0 → 150.5 KB | 7.5× |
-| PATCH | 84.1 µs | 342.3 µs | **4.09×** | 21.3 → 137.4 KB | 6.5× |
-| DELETE | 44.5 µs | 50.7 µs | **1.14×** | 11.6 → 13.7 KB | 1.2× |
+| GetAll page (100) | 1,056 µs | 3,346 µs | **3.18×** ± 0.43 | 169.4 → 781.1 KB | 4.6× |
+| `$filter` | 2,176 µs | 3,831 µs | **1.77×** ± 0.30 | 176.5 → 824.2 KB | 4.7× |
+| `$orderby` | 1,599 µs | 4,016 µs | **2.56×** ± 0.54 | 189.6 → 818.7 KB | 4.3× |
+| `$select` | 1,634 µs | 2,093 µs | **1.30×** ± 0.24 | 280.0 → 339.4 KB | 1.2× |
+| `$top` + `$skip` | 1,019 µs | 2,666 µs | **2.62×** ± 0.31 | 126.0 → 471.7 KB | 3.7× |
+| `$count=true` (+`$filter`) | 3,436 µs | 5,792 µs | **1.72×** ± 0.33 | 195.3 → 841.7 KB | 4.3× |
+| GetById | 55.1 µs | 123.1 µs | **2.24×** ± 0.16 | 17.4 → 48.6 KB | 2.8× |
+| POST | 60.2 µs | 300.6 µs | **5.00×** ± 1.42 | 18.8 → 145.5 KB | 7.7× |
+| PUT | 63.0 µs | 298.7 µs | **4.75×** ± 1.29 | 20.0 → 150.4 KB | 7.5× |
+| PATCH | 66.6 µs | 308.5 µs | **4.63×** ± 1.50 | 21.3 → 137.4 KB | 6.5× |
+| DELETE | 34.7 µs | 35.2 µs | **1.02×** ± 0.08 | 11.7 → 13.7 KB | 1.2× |
+"Speedup" is BenchmarkDotNet's own `Ratio` column against the OhData baseline in each category —
+computed per iteration, not as a quotient of the two means — and it is quoted **with its standard
+deviation**, because two rows need it:
 
-"Speedup" is BenchmarkDotNet's own `Ratio` column against the OhData baseline in each category, not
-a quotient of the two means — it is computed per iteration and so carries the error bars in the raw
-output below. "Alloc ratio" is how many times more memory the MS OData pipeline allocates per
-request.
+- **DELETE is a tie on time, not a win.** 1.02× ± 0.08 is indistinguishable from parity; earlier
+  revisions of this page claimed 1.59× and then 1.14× for it, and both were within-noise reads of
+  the same tie. Neither framework does much on that route beyond routing. It is still a 1.2×
+  allocation win, which is why the claim above splits time from allocations.
+- **`$select` at 1.30× ± 0.24** is the narrowest real win, and the one scenario where MS OData's
+  `ISelectExpandWrapper` allocates comparably to OhData's JsonNode pass (1.2×, the only sub-2×
+  allocation ratio in the suite).
 
-The widest gaps are on **writes** (POST/PUT/PATCH, ~4×): MS OData's OData-JSON input/output
-formatters and EDM-bound serialization dominate there, and the allocation ratio (6.5–7.7×) is the
-clearer signal, being far outside the run-to-run noise the timings carry. Full-page reads sit at
-~2.5×. The two narrowest are honest limits rather than rounding: **DELETE** at 1.14× ± 0.07 is a
-route where neither framework does much beyond routing, and **`$select`** at 1.56× is the one
-scenario where MS OData's `ISelectExpandWrapper` allocates comparably to OhData's JsonNode pass
-(1.2×, the only sub-2× allocation ratio in the suite).
+The widest gaps are on **writes** (POST/PUT/PATCH, 4.6–5.0×): MS OData's OData-JSON input/output
+formatters and EDM-bound serialization dominate there. Note their ratio SDs (±1.3–1.5) — the
+allocation ratios (6.5–7.7×) are the firmer statement, being counted rather than timed. Full-page
+reads sit at 2.6–3.2×.
+
+## Did 2.0.0 regress? — the 1.7.0 control
+
+Every ratio here came in below the previously published figure, so this is not a bare republish.
+2.0.0 changed the hot path in ways [#636](https://github.com/en-gen/OhData/issues/636) names
+itself — above all [#581](https://github.com/en-gen/OhData/issues/581), which wraps every handler
+return in `OhDataResult<T>`, a sealed **class**, i.e. a heap object per request on every route.
+
+So v1.7.0 was checked out and run **under the same runtime, on the same machine, with the same
+suite and the same scope**:
+
+| Scenario | 1.7.0 | 2.0.0 | Δ time | Δ allocation |
+|---|---:|---:|---:|---:|
+| GetAll page (100) | 1,106 µs | 1,056 µs | -4.5% | 169.50 → 169.40 KB |
+| `$filter` | 2,070 µs | 2,176 µs | +5.1% | 176.67 → 176.51 KB |
+| `$orderby` | 1,545 µs | 1,599 µs | +3.5% | 189.40 → 189.59 KB |
+| `$select` | 1,636 µs | 1,634 µs | -0.1% | 279.68 → 280.02 KB |
+| `$top` + `$skip` | 1,040 µs | 1,019 µs | -2.0% | 126.28 → 126.05 KB |
+| `$count=true` (+`$filter`) | 3,810 µs | 3,436 µs | -9.8% | 195.10 → 195.35 KB |
+| GetById | 54.4 µs | 55.1 µs | +1.3% | 17.33 → 17.37 KB |
+| POST | 61.3 µs | 60.2 µs | -1.8% | 18.80 → 18.84 KB |
+| PUT | 64.1 µs | 63.0 µs | -1.8% | 19.92 → 19.96 KB |
+| PATCH | 67.7 µs | 66.6 µs | -1.6% | 21.26 → 21.30 KB |
+| DELETE | 29.6 µs | 34.7 µs | +17.2% | 11.52 → 11.74 KB |
+**No timing regression.** The three write routes are *faster* by 1.6–1.8%, and everything except
+DELETE sits inside run-to-run noise in both directions.
+
+**No allocation regression either, and this is the firmer half** — allocations are counted, not
+timed, so they are immune to machine state. The largest move on any route is **+340 bytes**, and
+on the four key-addressed routes it is a uniform **+41 bytes**. Read that as an upper bound rather
+than as a measurement of #581's object: the MS OData control, whose code is **byte-identical in
+both trees**, moved by 0 to +72 bytes on the same routes with no pattern, which puts +41 bytes at
+the measurement floor. Whatever `OhDataResult<T>` costs per request, it does not resolve above
+noise at this scale.
+
+**DELETE's +17.2% is the one deviation, and it has a mechanism.** Its handler went from
+`Task<bool>` — for which the runtime hands back a **cached** completed task — to
+`Task<OhDataResult<bool>>`, which cannot be cached; its allocation rose +225 B where every other
+route moved ≤ +41 B, and its MS control moved +0 B. It is ~5 µs on the cheapest route in the
+suite, and still inside 2 SD, so it is named here rather than treated as a finding.
+
+### Why this control was necessary
+
+A first attempt measured 2.0.0 inside a **full six-suite run** and 1.7.0 alone, and reported the
+write routes as 24–28% *slower*. That was entirely the difference in run scope: re-measured with
+matched scope, the same routes are marginally faster. Two consequences worth keeping:
+
+1. **Never compare runs of different scope.** The confound is larger than every effect being
+   looked for.
+2. It is the concrete reason this repo has **no CI benchmark threshold**. MS OData's byte-identical
+   code moved by −8% to +45% between two runs on one quiet desktop; a threshold picked without
+   first measuring that spread is either a flaky red build or a gate that catches nothing. See
+   `.github/workflows/benchmarks.yml`.
 
 ## `$expand` / `$levels` — measured, deliberately not headlined
 
@@ -54,7 +112,12 @@ were withheld from earlier revisions of this page because the shared run config 
 them to publish trustworthy magnitudes. They now run under their own heavier config
 (`InvocationCount=32`, 30 measured iterations, 50–100 warmup), which fixed the bimodality — but the
 standing decision was to republish only once numbers hold **across repeated runs**, and this is one
-run. So they are recorded here with their error bars visible and stay out of the README:
+run. So they are recorded here with their error bars visible and stay out of the README.
+
+They also come from a **six-suite run**, not the single-suite run the table above uses, and the
+control section showed that scope difference inflating short-route timings by up to 30%. The
+ratios are less exposed to it than the absolute figures (both hosts pay the same contention), but
+it is one more reason these are recorded rather than headlined:
 
 | Scenario | OhData | Microsoft.AspNetCore.OData | Ratio | Alloc ratio |
 |---|---:|---:|---:|---:|
@@ -193,38 +256,38 @@ IterationCount=20  WarmupCount=5
 
 | Method             | Categories | Mean        | Error      | StdDev     | Ratio | RatioSD | Gen0    | Gen1    | Allocated | Alloc Ratio |
 |------------------- |----------- |------------:|-----------:|-----------:|------:|--------:|--------:|--------:|----------:|------------:|
-| OhData_CountTrue   | CountTrue  | 3,972.99 us | 453.297 us | 522.017 us |  1.02 |    0.18 |  7.8125 |       - | 195.54 KB |        1.00 |
-| MsOData_CountTrue  | CountTrue  | 5,883.53 us | 249.308 us | 287.103 us |  1.50 |    0.19 | 46.8750 | 15.6250 | 841.85 KB |        4.31 |
+| OhData_CountTrue   | CountTrue  | 3,436.01 us | 466.648 us | 537.393 us |  1.02 |    0.22 |  7.8125 |       - | 195.35 KB |        1.00 |
+| MsOData_CountTrue  | CountTrue  | 5,792.49 us | 650.315 us | 748.904 us |  1.72 |    0.33 | 46.8750 | 15.6250 | 841.67 KB |        4.31 |
 |                    |            |             |            |            |       |         |         |         |           |             |
-| OhData_Delete      | Delete     |    44.50 us |   1.372 us |   1.580 us |  1.00 |    0.05 |  0.6104 |       - |  11.64 KB |        1.00 |
-| MsOData_Delete     | Delete     |    50.66 us |   2.468 us |   2.641 us |  1.14 |    0.07 |  0.7324 |       - |  13.73 KB |        1.18 |
+| OhData_Delete      | Delete     |    34.68 us |   1.318 us |   1.517 us |  1.00 |    0.06 |  0.6104 |       - |  11.74 KB |        1.00 |
+| MsOData_Delete     | Delete     |    35.21 us |   1.910 us |   2.199 us |  1.02 |    0.08 |  0.7324 |       - |  13.73 KB |        1.17 |
 |                    |            |             |            |            |       |         |         |         |           |             |
-| OhData_Filter      | Filter     | 2,356.60 us | 205.246 us | 236.361 us |  1.01 |    0.14 |  7.8125 |  3.9063 | 176.63 KB |        1.00 |
-| MsOData_Filter     | Filter     | 4,042.45 us | 389.555 us | 448.612 us |  1.73 |    0.25 | 46.8750 | 15.6250 | 804.72 KB |        4.56 |
+| OhData_Filter      | Filter     | 2,176.05 us | 185.331 us | 205.995 us |  1.01 |    0.13 |  7.8125 |  3.9063 | 176.51 KB |        1.00 |
+| MsOData_Filter     | Filter     | 3,831.36 us | 496.131 us | 571.346 us |  1.77 |    0.30 | 46.8750 | 15.6250 | 824.18 KB |        4.67 |
 |                    |            |             |            |            |       |         |         |         |           |             |
-| OhData_GetAllPage  | GetAllPage | 1,295.92 us | 202.757 us | 233.495 us |  1.03 |    0.25 |  7.8125 |  3.9063 | 169.39 KB |        1.00 |
-| MsOData_GetAllPage | GetAllPage | 3,119.32 us | 281.014 us | 323.616 us |  2.48 |    0.49 | 46.8750 | 15.6250 | 781.13 KB |        4.61 |
+| OhData_GetAllPage  | GetAllPage | 1,056.26 us |  68.483 us |  78.866 us |  1.01 |    0.10 |  9.7656 |  3.9063 |  169.4 KB |        1.00 |
+| MsOData_GetAllPage | GetAllPage | 3,345.69 us | 340.606 us | 392.243 us |  3.18 |    0.43 | 46.8750 | 15.6250 | 781.09 KB |        4.61 |
 |                    |            |             |            |            |       |         |         |         |           |             |
-| OhData_GetById     | GetById    |    63.58 us |   1.881 us |   2.013 us |  1.00 |    0.04 |  0.9766 |       - |  17.37 KB |        1.00 |
-| MsOData_GetById    | GetById    |   157.45 us |   1.597 us |   1.568 us |  2.48 |    0.08 |  2.9297 |       - |  48.76 KB |        2.81 |
+| OhData_GetById     | GetById    |    55.10 us |   3.485 us |   3.579 us |  1.00 |    0.09 |  0.9766 |       - |  17.37 KB |        1.00 |
+| MsOData_GetById    | GetById    |   123.11 us |   5.189 us |   5.329 us |  2.24 |    0.16 |  2.9297 |       - |  48.64 KB |        2.80 |
 |                    |            |             |            |            |       |         |         |         |           |             |
-| OhData_OrderBy     | OrderBy    | 1,582.77 us | 200.960 us | 231.426 us |  1.02 |    0.20 |  7.8125 |  3.9063 | 189.44 KB |        1.00 |
-| MsOData_OrderBy    | OrderBy    | 4,139.67 us | 460.381 us | 530.176 us |  2.67 |    0.49 | 46.8750 | 15.6250 | 838.29 KB |        4.43 |
+| OhData_OrderBy     | OrderBy    | 1,598.73 us | 194.889 us | 224.434 us |  1.02 |    0.20 |  7.8125 |  3.9063 | 189.59 KB |        1.00 |
+| MsOData_OrderBy    | OrderBy    | 4,016.27 us | 570.874 us | 657.420 us |  2.56 |    0.54 | 46.8750 | 15.6250 | 818.71 KB |        4.32 |
 |                    |            |             |            |            |       |         |         |         |           |             |
-| OhData_Patch       | Patch      |    84.11 us |   5.311 us |   5.682 us |  1.00 |    0.10 |  1.2207 |       - |   21.3 KB |        1.00 |
-| MsOData_Patch      | Patch      |   342.26 us |  80.832 us |  93.086 us |  4.09 |    1.12 |  7.8125 |  0.9766 | 137.39 KB |        6.45 |
+| OhData_Patch       | Patch      |    66.62 us |   1.638 us |   1.753 us |  1.00 |    0.04 |  1.2207 |       - |   21.3 KB |        1.00 |
+| MsOData_Patch      | Patch      |   308.47 us |  88.670 us | 102.112 us |  4.63 |    1.50 |  7.8125 |  0.9766 | 137.45 KB |        6.45 |
 |                    |            |             |            |            |       |         |         |         |           |             |
-| OhData_Post        | Post       |    78.21 us |  11.874 us |  13.198 us |  1.02 |    0.22 |  0.9766 |       - |  18.84 KB |        1.00 |
-| MsOData_Post       | Post       |   330.15 us |  87.204 us | 100.425 us |  4.32 |    1.43 |  8.7891 |  1.9531 | 145.53 KB |        7.73 |
+| OhData_Post        | Post       |    60.17 us |   1.132 us |   1.112 us |  1.00 |    0.03 |  0.9766 |       - |  18.84 KB |        1.00 |
+| MsOData_Post       | Post       |   300.60 us |  75.756 us |  87.240 us |  5.00 |    1.42 |  8.7891 |  1.9531 | 145.46 KB |        7.72 |
 |                    |            |             |            |            |       |         |         |         |           |             |
-| OhData_Put         | Put        |    79.89 us |   4.602 us |   4.924 us |  1.00 |    0.09 |  1.2207 |       - |  19.96 KB |        1.00 |
-| MsOData_Put        | Put        |   337.27 us |  99.672 us | 114.782 us |  4.24 |    1.43 |  8.7891 |  1.9531 | 150.46 KB |        7.54 |
+| OhData_Put         | Put        |    62.95 us |   0.931 us |   0.914 us |  1.00 |    0.02 |  1.2207 |       - |  19.96 KB |        1.00 |
+| MsOData_Put        | Put        |   298.74 us |  72.019 us |  82.937 us |  4.75 |    1.29 |  8.7891 |  1.9531 | 150.44 KB |        7.54 |
 |                    |            |             |            |            |       |         |         |         |           |             |
-| OhData_Select      | Select     | 1,531.13 us | 119.480 us | 127.842 us |  1.01 |    0.11 | 15.6250 |  7.8125 | 279.87 KB |        1.00 |
-| MsOData_Select     | Select     | 2,379.52 us | 389.813 us | 417.095 us |  1.56 |    0.29 | 15.6250 |  7.8125 | 339.44 KB |        1.21 |
+| OhData_Select      | Select     | 1,633.93 us | 189.240 us | 217.929 us |  1.02 |    0.18 | 15.6250 |  7.8125 | 280.02 KB |        1.00 |
+| MsOData_Select     | Select     | 2,092.79 us | 269.057 us | 299.056 us |  1.30 |    0.24 | 15.6250 |  7.8125 | 339.42 KB |        1.21 |
 |                    |            |             |            |            |       |         |         |         |           |             |
-| OhData_TopSkip     | TopSkip    | 1,142.38 us |  84.037 us |  96.778 us |  1.01 |    0.12 |  5.8594 |  1.9531 | 126.01 KB |        1.00 |
-| MsOData_TopSkip    | TopSkip    | 2,465.25 us | 177.124 us | 189.521 us |  2.17 |    0.25 | 15.6250 |       - | 471.83 KB |        3.74 |
+| OhData_TopSkip     | TopSkip    | 1,018.97 us |  45.517 us |  44.704 us |  1.00 |    0.06 |  5.8594 |  1.9531 | 126.05 KB |        1.00 |
+| MsOData_TopSkip    | TopSkip    | 2,665.51 us | 283.040 us | 302.849 us |  2.62 |    0.31 | 15.6250 |       - | 471.72 KB |        3.74 |
 
 ### `$expand`/`$levels` suite (`ExpandComparisonBenchmarks`)
 

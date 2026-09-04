@@ -363,7 +363,7 @@ different questions):
 ## Unbound functions and actions carry their own requirement
 
 `AddFunction`/`AddAction` (registered on `OhDataBuilder`, not inside a profile - see
-[bound-operations.md](bound-operations.md#unbound-functions-and-actions-carry-their-own-requirement)) are mapped on the same
+[bound-operations.md](bound-operations.md#unbound-functions-and-actions)) are mapped on the same
 top-level route group as `$metadata` and the service document, for the same reason: they aren't
 tied to any single entity set, so there's no profile-level auth group for them to sit inside.
 
