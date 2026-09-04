@@ -79,8 +79,8 @@ suite and the same scope**:
 DELETE sits inside run-to-run noise in both directions.
 
 **No allocation regression either, and this is the firmer half** — allocations are counted, not
-timed, so they are immune to machine state. The largest move on any route is **+340 bytes**, and
-on the four key-addressed routes it is a uniform **+41 bytes**. Read that as an upper bound rather
+timed, so they are immune to machine state. The largest move on any route is **+348 bytes**
+(`$select`), and on the four key-addressed routes it is a uniform **+41 bytes**. Read that as an upper bound rather
 than as a measurement of #581's object: the MS OData control, whose code is **byte-identical in
 both trees**, moved by 0 to +72 bytes on the same routes with no pattern, which puts +41 bytes at
 the measurement floor. Whatever `OhDataResult<T>` costs per request, it does not resolve above
