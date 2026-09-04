@@ -65,27 +65,41 @@ public class ProductProfile : EntitySetProfile<int, Product>
         SelectEnabled  = true;
 
         // IQueryable path: returning the un-materialized queryable is synchronous, so this one
-        // handler stays Task.FromResult; EF Core translates $filter/$orderby/$skip/$top and
+        // handler stays SuccessTask; EF Core translates $filter/$orderby/$skip/$top and
         // materializes the result asynchronously when the framework enumerates it.
-        GetQueryable = _ => Task.FromResult<IQueryable<Product>>(db.Products);
-        GetById      = async (id, ct) => await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
-        Post         = async (p, ct) => { db.Products.Add(p); await db.SaveChangesAsync(ct); return p; };
-        Put          = async (id, p, ct) => { db.Products.Update(p); await db.SaveChangesAsync(ct); return p; };
+        //
+        // `Product` here is the API MODEL, which in this quickstart happens to be the EF entity.
+        // They do not have to be the same type -- see "DTOs and EF entities" below.
+        GetQueryable = _ => OhDataResult.SuccessTask<IQueryable<Product>>(db.Products);
+        GetById      = async (id, ct) =>
+            OhDataResult.Success(await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct));
+        Post         = async (p, ct) =>
+        {
+            db.Products.Add(p);
+            await db.SaveChangesAsync(ct);
+            return OhDataResult.Success(p);
+        };
+        Put          = async (id, p, ct) =>
+        {
+            db.Products.Update(p);
+            await db.SaveChangesAsync(ct);
+            return OhDataResult.Success(p);
+        };
         Patch        = async (id, delta, ct) =>
         {
             var e = await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
-            if (e is null) return null;
+            if (e is null) return OhDataResult.Success<Product>(null);   // -> 404
             delta.Patch(e);
             await db.SaveChangesAsync(ct);
-            return e;
+            return OhDataResult.Success(e);
         };
         Delete       = async (id, ct) =>
         {
             var e = await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
-            if (e is null) return false;
+            if (e is null) return OhDataResult.Success(false);
             db.Products.Remove(e);
             await db.SaveChangesAsync(ct);
-            return true;
+            return OhDataResult.Success(true);
         };
     }
 }
@@ -144,6 +158,57 @@ See [docs/openapi.md](docs/openapi.md), [docs/swashbuckle.md](docs/swashbuckle.m
 [docs/nswag.md](docs/nswag.md), and [docs/versioning.md](docs/versioning.md) (multi-doc / versioned
 setup) for details.
 
+### DTOs and EF entities
+
+`EntitySetProfile<TKey, TModel>`'s `TModel` is the **API model** — the shape on the wire and in
+`$metadata`. The quick start above uses the EF entity as its own API model because that is the
+shortest thing that works, not because the two must be the same type.
+
+**Reading** — project in the handler. `TModel` is the DTO, and EF translates the projection to SQL,
+so `$filter`/`$orderby`/`$select`/`$top` still push down:
+
+```csharp
+public class ProductProfile : EntitySetProfile<int, ProductDto>
+{
+    public ProductProfile(AppDbContext db) : base(x => x.Id)
+    {
+        FilterEnabled = OrderByEnabled = SelectEnabled = true;
+
+        GetQueryable = _ => OhDataResult.SuccessTask(
+            db.Products.Select(p => new ProductDto
+            {
+                Id       = p.Id,
+                Name     = p.Name,
+                Category = p.Category.Name,   // flattened; still one SQL query
+            }));
+    }
+}
+```
+
+Query options are bound against `ProductDto`, so `$filter=Category eq 'Tools'` filters on the
+projected member and EF pushes it into the `JOIN`. Nothing in the framework needs to know the entity
+type exists.
+
+**Writing** — projection has no inverse, which is the asymmetry
+[delta mapping](docs/delta-mapping.md) exists to close. A `DeltaProfile` declares how a DTO maps onto
+its backing entity; the framework compiles and validates every mapping **at startup**, and a handler
+turns a `Delta<ProductDto>` into a `Delta<Product>` it can apply:
+
+```csharp
+Patch = async (id, delta, ct) =>
+{
+    var entity = await db.Products.FindAsync([id], ct);
+    if (entity is null) return OhDataResult.Success<ProductDto>(null);   // -> 404
+
+    deltas.Create<ProductDto, Product>(delta).Patch(entity);             // IDeltaFactory, injected
+    await db.SaveChangesAsync(ct);
+    return OhDataResult.Success(entity.ToDto());
+};
+```
+
+No AutoMapper, no reflection per request, and a DTO property you forget to map is a **startup**
+error rather than a silently dropped write. See [docs/delta-mapping.md](docs/delta-mapping.md).
+
 ### Beyond the basics
 
 The rest of the surface rides other profile declarations - navigation properties (`HasMany`/`HasOptional`/`HasRequired`), `UseETag`, and `BindFunction`/`BindAction` - rather than the plain CRUD handlers above. Each declaration registers its routes; the trailing comments show what you get:
@@ -153,7 +218,7 @@ public class OrdersProfile : EntitySetProfile<int, Order>
 {
     public OrdersProfile(AppDbContext db) : base(x => x.Id)
     {
-        GetQueryable = _ => Task.FromResult<IQueryable<Order>>(db.Orders);
+        GetQueryable = _ => OhDataResult.SuccessTask<IQueryable<Order>>(db.Orders);
 
         // Collection navigation. getAll gives the read routes; every parameter after it is
         // OPTIONAL - supply only the ones whose route you want:

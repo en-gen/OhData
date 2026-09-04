@@ -95,8 +95,13 @@ jobs:
       # (anchor on a receiver dot, a trailing ';', a '<'/'(' etc.), and note the release that
       # removed it.
       #
-      # Scope: docs/ and docs-site/ Markdown only, EXCLUDING design notes and superpowers plans
-      # (historical/internal — allowed to reference old APIs) and any generated _site/.
+      # Scope: README.md plus docs/ and docs-site/ Markdown, EXCLUDING design notes and
+      # superpowers plans (historical/internal — allowed to reference old APIs) and any
+      # generated _site/.
+      #
+      # README.md was added after #620: that sweep fixed docs/ and docs-site/ and this scan
+      # globbed the same two directories, so the single most-read file in the repo was outside
+      # BOTH and still carried the pre-#581 handler signature.
       #
       # The list is a denylist of tokens that no longer compile, so it only catches drift somebody
       # thought to add. #620 is what that costs: #581 changed all eight entity-set delegates to
@@ -120,7 +125,7 @@ jobs:
                 -e 'OhData\.Abstractions' \
                 -e 'using OhData\.AspNetCore;' \
                 -e '^ *(GetAll|GetQueryable|GetById|Post|Put|Patch|Delete|Search) *=.*Task\.FromResult' \
-                docs docs-site); then
+                README.md docs docs-site); then
             echo "::error::docs reference removed/renamed API — update the docs or extend the denylist in .github/workflows/docs.yml"
             echo "$hits"
             exit 1
