@@ -2074,14 +2074,23 @@ public class EndpointMappingTests
     }
 
     [Fact]
-    public async Task Accept_TextXml_OnCount_Returns406()
+    public async Task Accept_TextXml_OnCount_IsIgnored_NotRefused()
     {
-        // The text/plain exemption is narrow: a genuinely unsupported type on /$count still 406s.
+        // #580, REVERSING this test's original expectation (it asserted 406). §11.2.9: "Content
+        // negotiation using the Accept request header or the $format system query option is not
+        // allowed with the path segment /$count", and the body MUST be text/plain -- so the segment
+        // does not negotiate at all, and refusing a client that tried is negotiating.
+        //
+        // Microsoft.AspNetCore.OData settles it the same way: ODataCountMediaTypeMapping matches
+        // every /$count path at quality 1 and ODataOutputFormatter overrides the content type, so MS
+        // never 406s here. See Issue580CountNegotiationTests for the full matrix; this case is kept
+        // where the old expectation lived so the reversal is visible in place.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<WidgetProfile>());
         var request = new HttpRequestMessage(HttpMethod.Get, "/odata/Widgets/$count");
         request.Headers.Add("Accept", "text/xml");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
-        Assert.Equal(HttpStatusCode.NotAcceptable, response.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/plain", response.Content.Headers.ContentType?.MediaType);
     }
 
     // ── #182: RFC 7231 §5.3.2 media-range + q-value Accept negotiation ─────────

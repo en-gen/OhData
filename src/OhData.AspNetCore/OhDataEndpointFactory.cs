@@ -1491,7 +1491,26 @@ internal static class OhDataEndpointFactory
             // both short-circuit. It is set in the outermost filter now; see the note there.
             string path = ctx.HttpContext.Request.Path.Value ?? "";
             bool isMetadata = path.EndsWith("/$metadata", StringComparison.OrdinalIgnoreCase);
-            if (!isMetadata)
+
+            // #580: /$count negotiates NOTHING. §11.2.9 is explicit on both halves -- the body "MUST
+            // ... [be] a simple scalar integer value with media type text/plain", and "Content
+            // negotiation using the Accept request header or the $format system query option is not
+            // allowed with the path segment /$count". A segment that may not be negotiated has no
+            // business 406-ing a client that tried: the answer is text/plain either way.
+            //
+            // This REVERSES a ruling recorded in CLAUDE.md -- "Accept: application/xml still 406s,
+            // unchanged ... §11.2.9 forbids the CLIENT to negotiate, not the server to decline a
+            // media type the client refused (RFC 9110 §12.5.1)". That reading is defensible in
+            // isolation but was not checked against Microsoft.AspNetCore.OData, which settles it the
+            // other way: ODataCountMediaTypeMapping matches every /$count path at quality 1, and
+            // ODataOutputFormatter.CanWriteResult then OVERRIDES the content type ("If a media
+            // mapping was found, use that and override the value specified by the controller"). MS
+            // never negotiates here and never 406s. §11.2.9 is the specific rule over minimal item
+            // 5.1's general "conform to Accept or fail", and this is the direction that un-breaks a
+            // working client rather than breaking one.
+            bool isCount = path.EndsWith("/$count", StringComparison.OrdinalIgnoreCase);
+
+            if (!isMetadata && !isCount)
             {
                 // §11.2.10: $format overrides Accept. Only application/json (and the shorthand
                 // "json") are supported; any other value is rejected with 400.
@@ -1529,7 +1548,6 @@ internal static class OhDataEndpointFactory
                     string accept = ctx.HttpContext.Request.Headers.Accept.ToString();
                     if (!string.IsNullOrEmpty(accept))
                     {
-                        bool isCount = path.EndsWith("/$count", StringComparison.OrdinalIgnoreCase);
                         bool isValue = path.EndsWith("/$value", StringComparison.OrdinalIgnoreCase);
 
                         // Producible sets are unchanged from the substring version — only the matching
@@ -1537,17 +1555,13 @@ internal static class OhDataEndpointFactory
                         // produces JSON or text/plain; every other route produces JSON.
                         string[] producible = isValue
                             ? new[] { "application/json", "text/plain", "application/octet-stream" }
-                            : isCount
-                                ? new[] { "application/json", "text/plain" }
-                                : new[] { "application/json" };
+                            : new[] { "application/json" };
 
                         if (!AcceptHeaderPermits(accept, producible))
                         {
                             string producibleList = isValue
                                 ? "application/json, text/plain, or application/octet-stream"
-                                : isCount
-                                    ? "application/json or text/plain"
-                                    : "application/json";
+                                : "application/json";
                             return ODataError(406, "NotAcceptable",
                                 $"The server can only produce {producibleList} responses for this resource. " +
                                 "Set a matching Accept header or omit it.");
