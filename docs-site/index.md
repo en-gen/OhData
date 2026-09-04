@@ -15,8 +15,13 @@ public class ProductProfile : EntitySetProfile<int, Product>
 
         // IQueryable path → EF Core translates $filter/$orderby/$skip/$top/$select into one SQL query
         GetQueryable = _ => OhDataResult.SuccessTask<IQueryable<Product>>(db.Products);
-        GetById      = (id, ct) => db.Products.FindAsync([id], ct).AsTask();
-        Post         = async (p, ct) => { db.Products.Add(p); await db.SaveChangesAsync(ct); return p; };
+        GetById      = async (id, ct) => OhDataResult.Success(await db.Products.FindAsync([id], ct));
+        Post         = async (p, ct) =>
+        {
+            db.Products.Add(p);
+            await db.SaveChangesAsync(ct);
+            return OhDataResult.Success(p);
+        };
     }
 }
 

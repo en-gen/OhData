@@ -90,10 +90,10 @@ public class WidgetProfile : EntitySetProfile<int, WidgetDto>
         Patch = async (key, delta, ct) =>            // delta is Delta<WidgetDto>
         {
             var widget = await db.Widgets.FindAsync([key], ct);
-            if (widget is null) return null;
+            if (widget is null) return OhDataResult.Success<WidgetDto>(null);   // -> 404
             deltas.Create<WidgetDto, Widget>(delta).Patch(widget);   // DTO-delta → entity-delta → apply
             await db.SaveChangesAsync(ct);
-            return widget.ToDto();
+            return OhDataResult.Success(widget.ToDto());
         };
     }
 }

@@ -97,6 +97,15 @@ jobs:
       #
       # Scope: docs/ and docs-site/ Markdown only, EXCLUDING design notes and superpowers plans
       # (historical/internal — allowed to reference old APIs) and any generated _site/.
+      #
+      # The list is a denylist of tokens that no longer compile, so it only catches drift somebody
+      # thought to add. #620 is what that costs: #581 changed all eight entity-set delegates to
+      # Task<OhDataResult<T>> and every one of the 45 handler examples across 15 files went stale
+      # without this gate firing once -- Task.FromResult(...) is valid C# and names no removed API.
+      # The fourth pattern below closes that specific hole (one of the eight delegates assigned a
+      # raw Task.FromResult), scoped to the delegate NAMES so the bound-operation examples in
+      # docs/bound-operations.md -- ordinary delegates, untouched by #581 -- still pass. It cannot
+      # catch an async handler returning a bare value; only compiling the snippets would.
       - name: Stale-API scan (docs must not reference removed/renamed API)
         run: |
           if hits=$(grep -rnE --include='*.md' \
@@ -104,6 +113,7 @@ jobs:
                 -e '\.AddProfile[<(]' \
                 -e 'OhData\.Abstractions' \
                 -e 'using OhData\.AspNetCore;' \
+                -e '^ *(GetAll|GetQueryable|GetById|Post|Put|Patch|Delete|Search) *=.*Task\.FromResult' \
                 docs docs-site); then
             echo "::error::docs reference removed/renamed API — update the docs or extend the denylist in .github/workflows/docs.yml"
             echo "$hits"

@@ -25,7 +25,8 @@ public class ProductProfile : EntitySetProfile<int, Product>
         BindFunction(GetCheapest);      // GET /Products/GetCheapest?maxPrice=10.00
         BindAction(ApplyDiscount);      // POST /Products/ApplyDiscount  { "percent": 10 }
 
-        GetAll = async (ct) => await _db.Products.ToListAsync(ct);
+        GetAll = async (ct) =>
+            OhDataResult.Success<IEnumerable<Product>>(await _db.Products.ToListAsync(ct));
     }
 
     private async Task<IEnumerable<Product>> GetCheapest(decimal maxPrice, CancellationToken ct) =>
@@ -63,7 +64,8 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
         BindEntityFunction(GetLineCount);  // GET /Orders(id)/GetLineCount
         BindEntityAction(Cancel);          // POST /Orders(id)/Cancel
 
-        GetById = (id, ct) => _db.Orders.FirstOrDefaultAsync(o => o.Id == id, ct);
+        GetById = async (id, ct) =>
+            OhDataResult.Success(await _db.Orders.FirstOrDefaultAsync(o => o.Id == id, ct));
     }
 
     // First param is the key - the framework extracts it from the URL

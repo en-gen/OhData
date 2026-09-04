@@ -100,14 +100,15 @@ public class ProductProfile : EntitySetProfile<int, Product>
         GetQueryable = _ => OhDataResult.SuccessTask<IQueryable<Product>>(db.Products);
 
         // Single entity GET → GET /odata/Products({key}). Returns null (→ 404) when the row is absent.
-        GetById = async (id, ct) => await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
+        GetById = async (id, ct) =>
+            OhDataResult.Success(await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct));
 
         // Create → POST /odata/Products. Add the row and let the database assign its key.
         Post = async (product, ct) =>
         {
             db.Products.Add(product);
             await db.SaveChangesAsync(ct);
-            return product;
+            return OhDataResult.Success(product);
         };
 
         // Delete → DELETE /odata/Products({key}). Return false when the row is absent;
@@ -115,10 +116,10 @@ public class ProductProfile : EntitySetProfile<int, Product>
         Delete = async (id, ct) =>
         {
             Product? existing = await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
-            if (existing is null) return false;
+            if (existing is null) return OhDataResult.Success(false);
             db.Products.Remove(existing);
             await db.SaveChangesAsync(ct);
-            return true;
+            return OhDataResult.Success(true);
         };
     }
 }

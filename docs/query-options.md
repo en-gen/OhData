@@ -164,7 +164,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
         GetAll = async ct =>
         {
             await using var db = await factory.CreateDbContextAsync(ct);
-            return await db.Products.ToListAsync(ct);
+            return OhDataResult.Success<IEnumerable<Product>>(await db.Products.ToListAsync(ct));
         };
     }
 }
@@ -1074,9 +1074,10 @@ as one.
 Register a `Search` handler to support free-text search:
 
 ```csharp
-Search = async (term, ct) => await db.Products
-    .Where(p => p.Name.Contains(term) || p.Description.Contains(term))
-    .ToListAsync(ct);
+Search = async (term, ct) => OhDataResult.Success<IEnumerable<Product>>(
+    await db.Products
+        .Where(p => p.Name.Contains(term) || p.Description.Contains(term))
+        .ToListAsync(ct));
 ```
 
 ```
