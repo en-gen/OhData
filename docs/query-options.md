@@ -615,22 +615,25 @@ A pushed (delegate-less) `$expand` honors the nested options of the expanded col
 | `$levels` — `Children($levels=2)` / `Children($levels=max)` | ✅ | recursive self-referential expand, bounded by `MaxExpansionDepth`; may carry `$filter`/`$orderby`/`$skip`/`$top`/`$count`/`$select`, applied at **every** level (see below) |
 | `$search` / `$compute` / `$apply` | ❌ (deferred) | not implemented on the pushdown path |
 
-A deferred nested option is not an error: the request still returns `200`, but the delegate-less navigation that carried it stays EDM-only for that request — the framework doesn't load it via pushdown, though whatever the handler's own query already populated (or didn't) is what serializes (see the caveat above). Nested options on a **delegate-backed** navigation follow the delegate path and are subject to that path's own support (see [navigation-routing.md](navigation-routing.md)); they never engage pushdown. **Nothing is silently dropped there.** Every nested option a delegate-backed navigation cannot honour is rejected with `400` (`InvalidQueryOption`), naming the option and the remedy:
+A deferred nested option is not an error: the request still returns `200`, but the delegate-less navigation that carried it stays EDM-only for that request — the framework doesn't load it via pushdown, though whatever the handler's own query already populated (or didn't) is what serializes (see the caveat above). Nested options on a **delegate-backed** navigation follow the delegate path and are subject to that path's own support (see [navigation-routing.md](navigation-routing.md)); they never engage pushdown. <a id="nested-options-on-a-delegate-backed-navigation"></a>
+##### Nested options on a delegate-backed navigation
+
+**Nothing is silently dropped there.** Every nested option a delegate-backed navigation cannot honour is rejected with `400` (`InvalidQueryOption`), naming the option and the remedy:
 
 | Nested option (on a **delegate-backed** nav) | Answer |
 |---|---|
+| `$filter` / `$orderby` | ✅ applied ([#650](https://github.com/en-gen/OhData/issues/650)) — bound by the same `FilterBinder`/`OrderByBinder` as the pushdown path, executed in memory over the children the delegate returned |
+| `$count` | ✅ applied — counted from the **filtered** children (§11.2.5.5) |
 | `$top` / `$skip` | `400` (#294) |
-| `$filter` / `$orderby` | `400` ([#650](https://github.com/en-gen/OhData/issues/650)) |
-| `$count` | ✅ applied — counted from the materialized children |
 | `$select` | ✅ applied — JSON projection of the materialized children |
 | nested `$expand` | resolved through the delegate path, level by level |
 | multi-level `$levels` | `400` (#466) |
 
-The four refusals share one reason: the delegate's `Handler`/`BatchHandler` returns its full answer for a given parent key and **nothing downstream re-shapes it**, so honouring the option would mean quietly serving every related row (or an unordered one) under an unsuspicious `200`. That was measurably the case for `$filter`/`$orderby` through 1.7.0 — `Children($filter=…)` returned the unfiltered collection, which a client cannot distinguish from a filter that matched everything.
+`$filter`/`$orderby`/`$count` are **applied**, not merely permitted. Through 1.7.0 they were silently dropped — `Children($filter=…)` returned the *unfiltered* collection, which a client cannot distinguish from a filter that matched everything. They are bound with Microsoft's own `FilterBinder`/`OrderByBinder`, the same call the pushdown path makes, so a clause means the same thing whichever way the navigation is declared.
 
-`$count` is the exception precisely *because* nothing re-windows the delegate's answer: the materialized array **is** the full related collection, so its length is the honest count and refusing something free would be gratuitous. (Contrast the pushdown path, where materialization is capped at `MaxExpandTop + 1` and the count has to be ceiling-checked before it can be trusted.)
+**One difference is worth knowing.** The pushdown path executes the clause as SQL; this path executes it in memory over what the delegate returned, so string comparison, null ordering and culture follow the CLR rather than the database's collation. That is the same divergence `Microsoft.AspNetCore.OData` has when `[EnableQuery]` runs over an in-memory source, and it is why this path binds with `HandleNullPropagation` **on** where the SQL path has it off — LINQ-to-Objects would otherwise dereference and throw where SQL evaluates `NULL` to "no match".
 
-The status is `400` and not `501` because a profile setting *does* make these requests succeed — declaring the navigation delegate-less moves it onto the pushdown path, where all of them are supported. `Microsoft.AspNetCore.OData` answers a nested option it will not honour the same way (`SelectExpandQueryValidator` throws, `EnableQueryAttribute` converts to a bad request). This applies to any delegate-backed navigation under `$expand`, self-referential or not (see `SelfReferentialNavMaxTopTests.cs`, `BatchExpandTests.cs` and `Issue650NestedOptionsOnDelegateNavTests.cs`).
+`$top`/`$skip` remain a `400` (#294): windowing a delegate's answer is a decision about *how much of it the developer meant to return*, not about shaping what was returned, and is tracked separately. A clause the binders cannot bind at all is also a `400` — loud either way, never dropped. The status is `400` and not `501` because a profile setting does make such a request succeed (declare the navigation delegate-less); `Microsoft.AspNetCore.OData` answers an unhonourable nested option the same way (`SelectExpandQueryValidator` throws, `EnableQueryAttribute` converts to a bad request). This applies to any delegate-backed navigation under `$expand`, self-referential or not (see `SelfReferentialNavMaxTopTests.cs`, `BatchExpandTests.cs` and `Issue650NestedOptionsOnDelegateNavTests.cs`).
 
 <a id="multi-level-expand-and-levels-206"></a>
 #### Multi-level `$expand` and `$levels` (#206)

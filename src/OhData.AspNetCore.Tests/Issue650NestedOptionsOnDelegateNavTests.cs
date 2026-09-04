@@ -23,17 +23,19 @@ namespace OhData.AspNetCore.Tests;
 /// dropping them silently violates the level actually claimed.
 /// </para>
 /// <para>
-/// <c>400</c> and not <c>501</c>, over-determined three ways: the framework's own test (<i>could any
-/// setting on the profile make this request succeed on this route?</i> — declaring the navigation
-/// delegate-less is exactly that), <c>Microsoft.AspNetCore.OData</c>'s precedent (a nested option it
-/// will not honour throws <c>ODataException</c> from <c>SelectExpandQueryValidator</c> and
-/// <c>EnableQueryAttribute</c> turns it into <c>CreateBadRequestResult</c>, never a 501), and
-/// <c>$top</c>/<c>$skip</c> one option over on this very path.
+/// Refusing them would satisfy that MUST, and <b>implementing them satisfies it better</b> — which is
+/// what this does. The clause is bound by the same <c>FilterBinder</c>/<c>OrderByBinder</c> the
+/// pushdown path uses (<c>BindNavShape</c>) and executed against the children the delegate already
+/// returned, so a clause means the same thing on both paths. Only the EXECUTION differs —
+/// LINQ-to-Objects here, SQL there — which is the same divergence <c>[EnableQuery]</c> has over an
+/// in-memory source, and is why <c>HandleNullPropagation</c> is <b>on</b> for this path and off for
+/// the SQL one.
 /// </para>
 /// <para>
-/// <c>$count</c> goes the other way and is <b>implemented</b>: the delegate's answer is never
-/// windowed, so the materialized array is the full related collection and its length is the count.
-/// Refusing something free would be gratuitous.
+/// A <c>400</c> survives for exactly two cases: a clause the binders cannot bind at all, and a
+/// single-valued navigation (nothing to filter or order). Loud either way, never dropped.
+/// <c>$count</c> is answered from the FILTERED array per §11.2.5.5. <c>$top</c>/<c>$skip</c> remain a
+/// <c>400</c> (#294) — a separate decision about windowing a delegate's answer, untouched here.
 /// </para>
 /// </summary>
 public sealed class Issue650NestedOptionsOnDelegateNavTests
@@ -84,25 +86,67 @@ public sealed class Issue650NestedOptionsOnDelegateNavTests
     private static Task<TestFixture> HostAsync() =>
         TestHostBuilder.BuildAsync(b => b.AddEntitySetProfile<N650DelegateProfile>());
 
-    [Theory]
-    [InlineData("$filter=Sku eq 'S1'", "$filter", "server-side filtering")]
-    [InlineData("$orderby=Sku desc", "$orderby", "server-side ordering")]
-    public async Task ANestedClauseOption_IsRefused_NotDropped(string nested, string option, string capability)
+    [Fact]
+    public async Task ANestedFilter_IsApplied_NotDroppedAndNotRefused()
     {
         TestFixture fx = await HostAsync();
 
-        HttpResponseMessage res = await fx.Client.GetAsync($"/odata/N650Orders?$expand=Lines({nested})");
+        HttpResponseMessage res = await fx.Client.GetAsync("/odata/N650Orders?$expand=Lines($filter=Sku eq 'S1')");
         string body = await res.Content.ReadAsStringAsync();
 
-        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
-        Assert.Contains("InvalidQueryOption", body, StringComparison.Ordinal);
-        // Names the option, the navigation, and the remedy -- the shape $top/$skip already uses and
-        // the shape Microsoft.AspNetCore.OData uses ("set the '{1}' property ...").
-        Assert.Contains($"A nested {option} is not supported on the delegate-backed navigation 'Lines'",
-            body, StringComparison.Ordinal);
-        Assert.Contains($"to enable {capability}", body, StringComparison.Ordinal);
-        // Never served under a 200 with the option dropped.
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.Contains("\"S1\"", body, StringComparison.Ordinal);
+        // The whole point: before #650 these came back too, under a 200 the client could not
+        // distinguish from a filter that matched everything.
         Assert.DoesNotContain("\"S2\"", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"S3\"", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ANestedOrderBy_IsApplied()
+    {
+        TestFixture fx = await HostAsync();
+
+        HttpResponseMessage res = await fx.Client.GetAsync("/odata/N650Orders?$expand=Lines($orderby=Sku desc)");
+        string body = await res.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.True(
+            body.IndexOf("\"S2\"", StringComparison.Ordinal) < body.IndexOf("\"S1\"", StringComparison.Ordinal),
+            $"descending $orderby must reverse the delegate's order; got: {body}");
+    }
+
+    [Fact]
+    public async Task ANestedFilterAndCount_CountsTheFilteredCollection()
+    {
+        TestFixture fx = await HostAsync();
+
+        HttpResponseMessage res = await fx.Client.GetAsync(
+            "/odata/N650Orders?$expand=Lines($filter=Sku eq 'S1';$count=true)");
+        string body = await res.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        // §11.2.5.5: the count is of the FILTERED collection. Order 1 has two lines, one of which
+        // matches; a count of 2 here would mean the filter ran after the count (or not at all).
+        Assert.Contains("\"Lines@odata.count\":1", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"Lines@odata.count\":2", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AFilterOverANullProperty_DoesNotThrow()
+    {
+        // The in-memory path needs HandleNullPropagation ON, which SQL does not: LINQ-to-Objects
+        // would dereference and throw NullReferenceException where SQL evaluates NULL to "no match".
+        // N650Line.Sku is never null here, so this exercises the guard via a property comparison that
+        // the binder must null-guard rather than a contrived null row.
+        TestFixture fx = await HostAsync();
+
+        HttpResponseMessage res = await fx.Client.GetAsync(
+            "/odata/N650Orders?$expand=Lines($filter=startswith(Sku,'S'))");
+        string body = await res.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.Contains("\"S1\"", body, StringComparison.Ordinal);
     }
 
     [Fact]

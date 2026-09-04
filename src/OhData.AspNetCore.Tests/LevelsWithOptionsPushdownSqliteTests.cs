@@ -515,10 +515,12 @@ public sealed class LevelsWithOptionsDelegateSafetyTests
     [Theory]
     [InlineData(true, "$levels=1;$select=name")]
     [InlineData(false, "$levels=1;$select=name")]
-    // #650 moved the $filter shape out of this theory and into
-    // DelegateBackedSelfNav_LevelsWithNestedFilter_Is400 below: a nested $filter on a delegate-backed
-    // navigation is now refused, so the request never reaches the delegate and cannot exercise the
-    // delegate-safety assertions this theory exists for. $select and $count still serve and stay.
+    // #650: the $filter rows are back. They were removed for one commit while a nested $filter on a
+    // delegate-backed navigation was refused; it is APPLIED now (in memory, bound by the same
+    // FilterBinder the pushdown path uses), so the request reaches the delegate again and exercises
+    // these delegate-safety assertions exactly as it always did.
+    [InlineData(true, "$levels=1;$filter=active eq true")]
+    [InlineData(false, "$levels=1;$filter=active eq true")]
     [InlineData(true, "$levels=1;$count=true")]
     [InlineData(false, "$levels=1;$count=true")]
     public async Task DelegateBackedSelfNav_WithLevelsOptions_NeverSelfJoined_DelegateInvoked(
@@ -551,37 +553,6 @@ public sealed class LevelsWithOptionsDelegateSafetyTests
         string body = await resp.Content.ReadAsStringAsync();
         Assert.Contains("\"A\"", body);
         Assert.DoesNotContain("\"A1\"", body);
-    }
-
-    // #650: a nested $filter under $levels on a delegate-backed navigation is refused, not dropped.
-    // Split out of DelegateBackedSelfNav_WithLevelsOptions_NeverSelfJoined_DelegateInvoked, whose
-    // $filter rows asserted the pre-#650 behaviour by construction (they could only pass while the
-    // option was silently ignored and the request still reached the delegate).
-    //
-    // Shaped like #466's multi-level rejection immediately below: refused BEFORE the delegate runs,
-    // so ChildCalls is zero and nothing is loaded for a request that is going to be refused.
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task DelegateBackedSelfNav_LevelsWithNestedFilter_Is400(bool delegatelessFirst)
-    {
-        using var connection = new SqliteConnection("Data Source=:memory:");
-        connection.Open();
-        var sink = new SqlCaptureSink();
-        var counter = new LevelsDelegateCounter();
-        await using TestFixture fx = await LevelsOptionsSqliteHarness.BuildAsync(
-            connection, counter, sink, delegatelessFirst);
-        sink.Clear();
-
-        HttpResponseMessage resp = await fx.Client.GetAsync(
-            "/odata/LvSecureNodes?$filter=parentId eq null&$expand=Children($levels=1;$filter=active eq true)");
-
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-
-        string body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("A nested $filter is not supported on the delegate-backed navigation 'Children'",
-            body, StringComparison.Ordinal);
-        Assert.Equal(0, counter.ChildCalls);
     }
 
     // #466: a MULTI-LEVEL $levels on a delegate-backed navigation is rejected rather than silently

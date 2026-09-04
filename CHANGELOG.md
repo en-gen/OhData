@@ -349,31 +349,32 @@ status codes or headers.
   later would be breaking. `GetODataQueryable` is async now for anyone who needs it.
 
 
-- **⚠ BREAKING CHANGE — a nested `$filter`/`$orderby` on a delegate-backed navigation is refused,
-  not dropped (#650).** `?$expand=Lines($filter=Sku eq 'S1')` answered `200` with **every** row —
+- **⚠ BREAKING CHANGE — a nested `$filter`/`$orderby` on a delegate-backed navigation is now
+  APPLIED (#650).** `?$expand=Lines($filter=Sku eq 'S1')` answered `200` with **every** row —
   indistinguishable, from the client's side, from a filter that matched everything. `$orderby` was
-  dropped the same way, and `$count=true` emitted no `Lines@odata.count` at all. Meanwhile
-  `$top`/`$skip` on the identical path correctly answered `400` (#294): three options ignored and
-  one refused, inside a single route.
+  dropped the same way and `$count=true` emitted no `Lines@odata.count`, while `$top`/`$skip` on the
+  identical path correctly answered `400` (#294): three options ignored and one refused, inside a
+  single route.
 
-  **The spec settles it, and not by requiring the feature.** Nested `$filter`/`$orderby`/`$count`/
-  `$top` on expanded collections are **Advanced** conformance (§13.1.3 item 9.2/9.4/9.5/9.6) and
-  this service claims Minimal, so it need not support them — but §11.2.5 is a MUST-fail on an
-  unsupported option and §9.3.1's `501` sits inside the Minimal MUST list (§13.1.1 item 7), so
-  *dropping* them violates the level actually claimed.
+  Nested `$filter`/`$orderby`/`$count`/`$top` on expanded collections are **Advanced** conformance
+  (§13.1.3 item 9.2/9.4/9.5/9.6) and this service claims Minimal, so it need not support them — but
+  §11.2.5 is a MUST-fail on an unsupported option and §9.3.1's `501` sits inside the Minimal MUST
+  list (§13.1.1 item 7), so *dropping* them violates the level actually claimed. Refusing would have
+  satisfied that; **applying satisfies it better**, and these are answerable: the delegate hands back
+  the full related collection, so filtering and ordering it is exactly what the client asked for.
 
-  `400` rather than `501`, over-determined three ways: the framework's own test (*could any setting
-  on the profile make this request succeed on this route?* — declaring the navigation delegate-less
-  is exactly that), `Microsoft.AspNetCore.OData`'s precedent (a nested option it will not honour
-  throws from `SelectExpandQueryValidator` and `EnableQueryAttribute` turns it into a bad request,
-  never a `501`), and `$top`/`$skip` one option over on this very path. The message shares that
-  option's wording and remedy; its bytes are unchanged, and pinned.
+  They are bound with Microsoft's own `FilterBinder`/`OrderByBinder` — the same `BindNavShape` call
+  the pushdown path makes — so a clause means the same thing whichever way the navigation is
+  declared. **One difference is worth knowing:** the pushdown path executes it as SQL, this path in
+  memory, so string comparison, null ordering and culture follow the CLR rather than the database's
+  collation. That is the same divergence `[EnableQuery]` has over an in-memory source, and is why
+  this path binds with `HandleNullPropagation` **on** where the SQL path has it off — LINQ-to-Objects
+  would otherwise dereference and throw where SQL evaluates `NULL` to "no match".
 
-  **`$count` went the other way and is now implemented** — refusing something free would be
-  gratuitous. It is honest precisely because nothing windows a delegate's answer: the materialized
-  array *is* the full related collection. (On the pushdown path the same number needs a ceiling
-  check first, since materialization is capped at `MaxExpandTop + 1`.) `$select` was already applied
-  and is unchanged.
+  `$count` is answered from the **filtered** array (§11.2.5.5). `$top`/`$skip` remain a `400`
+  (#294) — windowing a delegate's answer is a decision about how much of it the developer meant to
+  return, not about shaping what was returned. A clause the binders cannot bind at all, and a
+  single-valued navigation, are also `400`: loud either way, never dropped.
 
 
 ### Added

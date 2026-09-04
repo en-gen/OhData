@@ -3871,13 +3871,45 @@ internal static class OhDataEndpointFactory
                 throw NestedWindowRejection(propName, treatment.Treatment);
             }
 
+            // #650: a nested $filter/$orderby is APPLIED here, in memory, against the children the
+            // delegate returns — not refused. It used to be silently dropped, which is the defect;
+            // refusing it would have been honest but strictly worse for the client when the option is
+            // answerable, and it is: the delegate hands back the full related collection, so filtering
+            // and ordering it is exactly what the client asked for.
+            //
+            // Falls back to a 400 only when the clause cannot be BOUND (a construct Microsoft's
+            // binders reject for this element type). Loud either way; never dropped.
+            Func<object?, object?>? navShaper = null;
             if (expandItem.FilterOption is not null || expandItem.OrderByOption is not null)
             {
-                throw NestedClauseRejection(
-                    propName,
-                    treatment.Treatment,
-                    expandItem.FilterOption is not null ? "$filter" : "$orderby",
-                    expandItem.FilterOption is not null ? "server-side filtering" : "server-side ordering");
+                // treatment.Route is null under Blank (the candidate sets disagree, so the nav is
+                // served empty); there is nothing to shape, and an option we cannot honour is still
+                // refused rather than dropped — NestedClauseRejection's non-RunDelegate arm says so.
+                Type? shapeElem = isCollectionNav ? treatment.Route?.NavItemType : null;
+                if (shapeElem is null)
+                {
+                    // A single-valued navigation has nothing to filter or order.
+                    throw NestedClauseRejection(
+                        propName,
+                        treatment.Treatment,
+                        expandItem.FilterOption is not null ? "$filter" : "$orderby",
+                        expandItem.FilterOption is not null ? "server-side filtering" : "server-side ordering");
+                }
+
+                try
+                {
+                    navShaper = TryBuildDelegateNavShaper(
+                        expandItem.FilterOption, expandItem.OrderByOption, shapeElem,
+                        registration.EdmModel, s_delegateNavBinderSettings);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    throw NestedClauseRejection(
+                        propName,
+                        treatment.Treatment,
+                        expandItem.FilterOption is not null ? "$filter" : "$orderby",
+                        expandItem.FilterOption is not null ? "server-side filtering" : "server-side ordering");
+                }
             }
 
             if (treatment.Treatment == NavTreatment.Blank)
@@ -3975,6 +4007,14 @@ internal static class OhDataEndpointFactory
             // (same ordering guarantee as Stage 1: walker first, delegate-safety overwrite after).
             for (int i = 0; i < items.Count; i++)
             {
+                // #650: shape BEFORE serializing and before counting. Order matters and follows
+                // §11.2.5.5 — the count is of the FILTERED collection — which falls out of doing this
+                // first: the array the count is taken from below is already the filtered one.
+                if (navShaper is not null && relatedByIndex[i] is not null)
+                {
+                    relatedByIndex[i] = navShaper(relatedByIndex[i]);
+                }
+
                 // Fold-in #2: cardinality comes from the EDM (isCollectionNav, already resolved
                 // above), never sniffed from relatedByIndex[i]'s own CLR shape.
                 jsonItems[i][expandKey] = SerializeBounded(
@@ -4077,6 +4117,75 @@ internal static class OhDataEndpointFactory
     // sites (the navigation reached directly by ExpandLevelAsync, and one reached only through a
     // ServeRaw parent's materialized graph) can never drift apart. The RunDelegate wording is
     // byte-identical to the message #294 shipped — it is quoted in docs and asserted in tests.
+
+    // #650: binder settings for the in-memory delegate path. HandleNullPropagation is TRUE here and
+    // FALSE on the pushdown path (cachedBinderSettings), and the difference is required rather than an
+    // oversight: SQL already evaluates `x.X eq 'y'` over a NULL row to "not matched", so the SQL path
+    // needs no guards, while LINQ-to-Objects would dereference and throw NullReferenceException on the
+    // same data. Microsoft's own default resolves the same way round -- False for IQueryable, True for
+    // IEnumerable. Shared as a static: ODataQuerySettings is read-only in every consumer it reaches
+    // (see the note above cachedBinderSettings), unlike ODataQueryContext which is strictly per request.
+    private static readonly ODataQuerySettings s_delegateNavBinderSettings =
+        new() { HandleNullPropagation = HandleNullPropagationOption.True };
+
+    // #650: apply a delegate-backed navigation's nested $filter/$orderby to the children the delegate
+    // already returned, in memory. Built once per (navigation, request) and reused for every parent.
+    //
+    // The BINDING is Microsoft's own FilterBinder/OrderByBinder via the same BindNavShape the pushdown
+    // path uses, so a clause means the same thing on both paths; only the EXECUTION differs —
+    // LINQ-to-Objects here, SQL there. That divergence is real (string comparison, null ordering and
+    // culture follow the CLR rather than the database's collation) and it is the same divergence
+    // Microsoft.AspNetCore.OData has when [EnableQuery] runs over an in-memory source, which is why
+    // it is documented rather than avoided.
+    //
+    // Deliberately NOT routed through ApplyNavShape: that composes $skip/$top and the MaxExpandTop
+    // count bound as well, all of which are pushdown concerns here ($top/$skip on a delegate-backed
+    // nav remain a 400, #294). Composing only what this path implements keeps the two honest.
+    //
+    // Returns null when nothing is requested. THROWS when a clause cannot be bound, which the caller
+    // turns into the same 400 the option used to get unconditionally — a clause we cannot honour is
+    // still refused loudly, never dropped.
+    private static Func<object?, object?>? TryBuildDelegateNavShaper(
+        FilterClause? filter, OrderByClause? orderBy, Type elem, IEdmModel model,
+        ODataQuerySettings binderSettings)
+    {
+        if (filter is null && orderBy is null) return null;
+
+        NavShapeBindings bound = BindNavShape(filter, orderBy, elem, model, binderSettings);
+
+        Type seqType = typeof(IEnumerable<>).MakeGenericType(elem);
+        ParameterExpression src = Expression.Parameter(typeof(object), "src");
+        Expression seq = Expression.Convert(src, seqType);
+
+        if (bound.Predicate is not null)
+            seq = Expression.Call(_enumerableWhere.MakeGenericMethod(elem), seq, bound.Predicate);
+
+        if (bound.OrderBy is { Count: > 0 })
+        {
+            bool first = true;
+            foreach ((LambdaExpression keySelector, bool descending) in bound.OrderBy)
+            {
+                MethodInfo op = (first, descending) switch
+                {
+                    (true, false) => _enumerableOrderBy,
+                    (true, true) => _enumerableOrderByDescending,
+                    (false, false) => _enumerableThenBy,
+                    (false, true) => _enumerableThenByDescending,
+                };
+                seq = Expression.Call(
+                    op.MakeGenericMethod(elem, keySelector.ReturnType), seq, keySelector);
+                first = false;
+            }
+        }
+
+        // Materialise: the caller serialises the result and may count it, and a lazy sequence would
+        // re-run the predicate on every enumeration.
+        seq = Expression.Call(_enumerableToList.MakeGenericMethod(elem), seq);
+
+        return Expression.Lambda<Func<object?, object?>>(
+            Expression.Convert(seq, typeof(object)), src).Compile();
+    }
+
     // #650: the $filter/$orderby twin. Deliberately a SEPARATE method rather than a parameter on
     // NestedWindowRejection, whose RunDelegate wording is byte-identical to what #294 shipped and is
     // quoted in docs and asserted in tests — folding a format argument into it would put those bytes
@@ -5677,7 +5786,7 @@ internal static class OhDataEndpointFactory
     {
         Type elem = engaged.Binding.ElementType;
         Expression access = Expression.Property(owner, engaged.Binding.Property);
-        NavShapeBindings bound = BindNavShape(engaged, elem, model, binderSettings);
+        NavShapeBindings bound = BindNavShape(engaged.Filter, engaged.OrderBy, elem, model, binderSettings);
         if (bound.Predicate is not null)
             access = Expression.Call(_enumerableWhere.MakeGenericMethod(elem), access, bound.Predicate);
         return Expression.Call(_enumerableCount.MakeGenericMethod(elem), access);
@@ -6115,7 +6224,7 @@ internal static class OhDataEndpointFactory
             // nav element type is invariant under $levels (BuildLevelsNavBinding requires
             // elementType == ownerType) and expression trees are immutable, so re-binding per level
             // would allocate identical nodes for no benefit.
-            NavShapeBindings levelsBound = BindNavShape(engaged, nav.ElementType, model, binderSettings);
+            NavShapeBindings levelsBound = BindNavShape(engaged.Filter, engaged.OrderBy, nav.ElementType, model, binderSettings);
             return BuildLevelsNavAccess(owner, engaged, engaged.Levels, model, levelsBound);
         }
 
@@ -6146,7 +6255,7 @@ internal static class OhDataEndpointFactory
         }
 
         access = ApplyNavShape(
-            access, engaged, elem, model, BindNavShape(engaged, elem, model, binderSettings), maxExpandTop,
+            access, engaged, elem, model, BindNavShape(engaged.Filter, engaged.OrderBy, elem, model, binderSettings), maxExpandTop,
             countViaCarrier: countViaCarrier);
 
         // #323 (Change A): fold EVERY element-wise projection — leaf or intermediate — into the query
@@ -6183,21 +6292,28 @@ internal static class OhDataEndpointFactory
     // binder's `$it` lambda parameter and other per-clause state, so filter and orderby each get their
     // own rather than sharing one. Throws (via the binders) on a clause that cannot be bound — the
     // caller's try/catch then abandons pushdown for the request.
+    //
+    // #650 takes the clauses directly rather than an EngagedExpand, so the DELEGATE-backed path can
+    // bind the very same way. An EngagedExpand is a pushdown concept — it carries an ExpandNavBinding
+    // resolved against a navigation that engaged the projection — and a delegate-backed navigation has
+    // none by definition. Synthesising a hollow one to satisfy the signature would have made the two
+    // paths look related where they are not; the two clauses are all this ever read.
     private static NavShapeBindings BindNavShape(
-        EngagedExpand engaged, Type elem, IEdmModel model, ODataQuerySettings binderSettings)
+        FilterClause? filter, OrderByClause? orderByClause, Type elem, IEdmModel model,
+        ODataQuerySettings binderSettings)
     {
         LambdaExpression? predicate = null;
-        if (engaged.Filter is not null)
+        if (filter is not null)
         {
             var ctx = new QueryBinderContext(model, binderSettings, elem);
-            predicate = (LambdaExpression)_filterBinder.BindFilter(engaged.Filter, ctx);
+            predicate = (LambdaExpression)_filterBinder.BindFilter(filter, ctx);
         }
 
         List<(LambdaExpression, bool)>? orderBy = null;
-        if (engaged.OrderBy is not null)
+        if (orderByClause is not null)
         {
             var ctx = new QueryBinderContext(model, binderSettings, elem);
-            OrderByBinderResult? result = _orderByBinder.BindOrderBy(engaged.OrderBy, ctx);
+            OrderByBinderResult? result = _orderByBinder.BindOrderBy(orderByClause, ctx);
             for (OrderByBinderResult? cur = result; cur is not null; cur = cur.ThenBy)
             {
                 orderBy ??= new List<(LambdaExpression, bool)>();
@@ -7557,7 +7673,7 @@ internal static class OhDataEndpointFactory
                 // the JSON pass. Measured on EF Core 10 / SQLite: a windowed parent beside a nested
                 // collection throws "Translating this query requires the SQL APPLY operation, which is
                 // not supported on SQLite"; Where/OrderBy on the parent translates.
-                NavShapeBindings bound = BindNavShape(e, e.Binding.ElementType, model, binderSettings);
+                NavShapeBindings bound = BindNavShape(e.Filter, e.OrderBy, e.Binding.ElementType, model, binderSettings);
                 access = ApplyNavShape(access, e, e.Binding.ElementType, model, bound, maxExpandTop);
             }
 
@@ -7574,7 +7690,7 @@ internal static class OhDataEndpointFactory
                 if (child.Binding.IsCollection)
                 {
                     NavShapeBindings childBound =
-                        BindNavShape(child, child.Binding.ElementType, model, binderSettings);
+                        BindNavShape(child.Filter, child.OrderBy, child.Binding.ElementType, model, binderSettings);
                     childAccess = ApplyNavShape(
                         childAccess, child, child.Binding.ElementType, model, childBound, maxExpandTop);
                 }
