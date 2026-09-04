@@ -158,14 +158,14 @@ internal sealed class OtwPlainProfile : EntitySetProfile<int, OtwPlain>
     {
         EntitySetName = "OtwPlains";
         GetAll = ct => OhDataResult.Success<IEnumerable<OtwPlain>>(new[] { new OtwPlain { Id = 1, Name = "n" } });
-        GetById = (id, ct) => OhDataResult.Success<OtwPlain>(new OtwPlain { Id = id, Name = "n" });
+        GetById = (id, ct) => OhDataResult.Success<OtwPlain?>(new OtwPlain { Id = id, Name = "n" });
         Post = (model, ct) => OhDataResult.Success<OtwPlain>(model);
         Put = (id, model, ct) => OhDataResult.Success(model);
         Patch = (id, delta, ct) =>
         {
             var target = new OtwPlain { Id = id, Name = "n" };
             delta.Patch(target);
-            return OhDataResult.Success<OtwPlain>(target);
+            return OhDataResult.Success<OtwPlain?>(target);
         };
         Delete = (id, ct) => OhDataResult.Success(true);
     }

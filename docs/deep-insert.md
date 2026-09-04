@@ -134,7 +134,7 @@ Patch = async (id, delta, ct) =>
     // delta.GetChangedPropertyNames() never contains "Lines", even if the request body
     // included a "lines" array — it was withheld before the delta was built.
     var order = await db.Orders.FindAsync([id], ct);
-    if (order is null) return OhDataResult.Success<Order>(null);   // -> 404
+    if (order is null) return OhDataResult.Success<Order?>(null);   // -> 404
     delta.Patch(order);
     await db.SaveChangesAsync(ct);
     return OhDataResult.Success(order);

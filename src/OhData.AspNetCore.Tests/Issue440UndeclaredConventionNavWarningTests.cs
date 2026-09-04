@@ -229,10 +229,10 @@ public sealed class W440OrderProfile : EntitySetProfile<int, W440Order>
             // not what survived being applied to a tracked entity.
             LastPatchChangedProperties = delta.GetChangedPropertyNames().ToArray();
             W440Order? existing = db.Orders.FirstOrDefault(o => o.Id == id);
-            if (existing is null) return OhDataResult.Success<W440Order>(null);
+            if (existing is null) return OhDataResult.Success<W440Order?>(null);
             delta.Patch(existing);
             db.SaveChanges();
-            return OhDataResult.Success<W440Order>(existing);
+            return OhDataResult.Success<W440Order?>(existing);
         };
         // Customer deliberately NOT declared.
     }

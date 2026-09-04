@@ -24,7 +24,7 @@ internal sealed class NullPostProfile : EntitySetProfile<int, Widget>
     public NullPostProfile() : base(x => x.Id)
     {
         EntitySetName = "NullPostWidgets";
-        GetById = (id, ct) => OhDataResult.Success<Widget>(null);
+        GetById = (id, ct) => OhDataResult.Success<Widget?>(null);
         Post = (widget, ct) => OhDataResult.Success<Widget>(null);
     }
 }

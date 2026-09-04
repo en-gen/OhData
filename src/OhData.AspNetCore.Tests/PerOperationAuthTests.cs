@@ -149,9 +149,9 @@ internal abstract class PerOpProfileBase : EntitySetProfile<int, PerOpParent>
         Patch = (id, delta, ct) =>
         {
             var existing = parents.FirstOrDefault(p => p.Id == id);
-            if (existing is null) return OhDataResult.Success<PerOpParent>(null);
+            if (existing is null) return OhDataResult.Success<PerOpParent?>(null);
             delta.Patch(existing);
-            return OhDataResult.Success<PerOpParent>(existing);
+            return OhDataResult.Success<PerOpParent?>(existing);
         };
         Delete = (id, ct) => OhDataResult.Success(parents.RemoveAll(p => p.Id == id) > 0);
 

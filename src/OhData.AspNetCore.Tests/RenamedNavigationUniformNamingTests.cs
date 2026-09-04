@@ -292,7 +292,7 @@ internal sealed class NavCollisionProfile : EntitySetProfile<int, NavCollisionMo
     public NavCollisionProfile() : base(x => x.Id)
     {
         EntitySetName = "NavCollisions";
-        GetById = (id, ct) => OhDataResult.Success<NavCollisionModel>(null);
+        GetById = (id, ct) => OhDataResult.Success<NavCollisionModel?>(null);
         HasOptional(x => x.Related);
     }
 }

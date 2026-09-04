@@ -116,10 +116,10 @@ internal sealed class ExternalReferenceProfile : EntitySetProfile<Guid, External
         Patch = (id, delta, ct) =>
         {
             ExternalReference? existing = store.Items.FirstOrDefault(x => x.Id == id);
-            if (existing is null) return OhDataResult.Success<ExternalReference>(null);
+            if (existing is null) return OhDataResult.Success<ExternalReference?>(null);
             delta.Patch(existing);
             store.LastWritten = existing;
-            return OhDataResult.Success<ExternalReference>(existing);
+            return OhDataResult.Success<ExternalReference?>(existing);
         };
     }
 }

@@ -716,7 +716,7 @@ internal class ETagNoSelectorsProfileConcrete : EntitySetProfile<int, Widget>
     public ETagNoSelectorsProfileConcrete() : base(x => x.Id)
     {
         EntitySetName = "ETagNoSelectorsWidgets";
-        GetById = (id, ct) => OhDataResult.Success<Widget>(null);
+        GetById = (id, ct) => OhDataResult.Success<Widget?>(null);
         UseETag(); // zero selectors → ArgumentException
     }
 }
@@ -1018,7 +1018,7 @@ internal class ETagUpsertProfile : EntitySetProfile<int, Widget>
         {
             var existing = _store.FirstOrDefault(w => w.Id == id);
             // Return null when the entity doesn't exist — signals the framework to upsert
-            if (existing is null) return OhDataResult.Success<Widget>(null);
+            if (existing is null) return OhDataResult.Success<Widget?>(null);
             _store.RemoveAll(w => w.Id == id);
             widget.Id = id;
             _store.Add(widget);

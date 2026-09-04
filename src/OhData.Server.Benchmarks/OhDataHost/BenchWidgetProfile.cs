@@ -53,10 +53,10 @@ internal sealed class BenchWidgetProfile : EntitySetProfile<int, BenchWidget>
         Patch = (id, delta, _) =>
         {
             BenchWidget? existing = Store.FirstOrDefault(w => w.Id == id);
-            if (existing is null) return OhDataResult.Success<BenchWidget>(null);
+            if (existing is null) return OhDataResult.Success<BenchWidget?>(null);
             BenchWidget copy = existing.Clone();
             delta.Patch(copy);
-            return OhDataResult.Success<BenchWidget>(copy);
+            return OhDataResult.Success<BenchWidget?>(copy);
         };
 
         Delete = (_, __) => OhDataResult.Success(true);

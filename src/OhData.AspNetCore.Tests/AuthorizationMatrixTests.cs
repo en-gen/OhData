@@ -146,9 +146,9 @@ internal class AuthMatrixFullProfile : EntitySetProfile<int, AuthMatrixParent>
         Patch = (id, delta, ct) =>
         {
             var existing = _parents.FirstOrDefault(p => p.Id == id);
-            if (existing is null) return OhDataResult.Success<AuthMatrixParent>(null);
+            if (existing is null) return OhDataResult.Success<AuthMatrixParent?>(null);
             delta.Patch(existing);
-            return OhDataResult.Success<AuthMatrixParent>(existing);
+            return OhDataResult.Success<AuthMatrixParent?>(existing);
         };
         Delete = (id, ct) => OhDataResult.Success(_parents.RemoveAll(p => p.Id == id) > 0);
 
@@ -218,9 +218,9 @@ internal class RoleMatrixFullProfile : EntitySetProfile<int, RoleMatrixParent>
         Patch = (id, delta, ct) =>
         {
             var existing = _parents.FirstOrDefault(p => p.Id == id);
-            if (existing is null) return OhDataResult.Success<RoleMatrixParent>(null);
+            if (existing is null) return OhDataResult.Success<RoleMatrixParent?>(null);
             delta.Patch(existing);
-            return OhDataResult.Success<RoleMatrixParent>(existing);
+            return OhDataResult.Success<RoleMatrixParent?>(existing);
         };
         Delete = (id, ct) => OhDataResult.Success(_parents.RemoveAll(p => p.Id == id) > 0);
 

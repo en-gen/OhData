@@ -197,9 +197,9 @@ internal class KeyImmutableRenamedProfile : EntitySetProfile<string, KeyImmutabl
         Patch = (k, delta, ct) =>
         {
             var existing = _store.FirstOrDefault(e => e.Key == k);
-            if (existing is null) return OhDataResult.Success<KeyImmutableRenamedEntity>(null);
+            if (existing is null) return OhDataResult.Success<KeyImmutableRenamedEntity?>(null);
             delta.Patch(existing);
-            return OhDataResult.Success<KeyImmutableRenamedEntity>(existing);
+            return OhDataResult.Success<KeyImmutableRenamedEntity?>(existing);
         };
     }
 }
