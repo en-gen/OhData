@@ -7228,7 +7228,7 @@ internal static class OhDataEndpointFactory
     // SerializeBounded, and still the only thing that decides pushdown ELIGIBILITY in the first
     // place — SerializeBounded only makes the RESULT safe to serialize once a shape is pushed). The
     // #305 Include fallback's OWN former use of this method (FindCyclicLeafExpand, Change C) was
-    // REMOVED by #325/#326 (Option B) — see the removal note below FindNestedExpandOrLevels,
+    // REMOVED by #325/#326 (Option B) — see the removal note below FindLevelsExpand,
     // immediately preceding ApplyIncludeFallback.
     private static bool TypeHasNavigationTo(Type type, Type target)
     {
@@ -7272,6 +7272,55 @@ internal static class OhDataEndpointFactory
         return null;
     }
 
+    // #616: MethodInfo.Invoke always wraps the callee's own exception. The caller's catch narrows on
+    // the callee's REAL type and #494 classifies a provider fault by WHEN it was raised, so the
+    // wrapper must reach neither.
+    private static object InvokeUnwrapped(MethodInfo method, params object?[] args)
+    {
+        try
+        {
+            return method.Invoke(null, args)!;
+        }
+        catch (TargetInvocationException tie) when (tie.InnerException is not null)
+        {
+            throw tie.InnerException;
+        }
+    }
+
+    // #616: every root-to-LEAF path through one top-level expand's tree. EF's ThenInclude continues
+    // from the navigation most recently included, so sibling branches cannot share one chain -- each
+    // path is its own Include(...).ThenInclude(...) chain, and the shared prefix is re-issued.
+    //
+    // Re-issuing is safe only because the prefix is re-issued IDENTICALLY. Measured on EF Core 10:
+    // repeating a filtered Include with the same predicate is accepted and the earlier chain's
+    // ThenIncludes are preserved, while repeating one with a DIFFERENT predicate throws
+    // InvalidOperationException ("The filters 'navigation...'"). A navigation appears once in the
+    // engaged tree, so the second case is unreachable from here.
+    //
+    // Including a leaf includes its ancestors, so leaf paths alone cover the whole tree.
+    private static void CollectExpandPaths(
+        EngagedExpand node, List<EngagedExpand> prefix, List<IReadOnlyList<EngagedExpand>> paths)
+    {
+        prefix.Add(node);
+        if (node.Children is { Count: > 0 })
+        {
+            foreach (EngagedExpand child in node.Children)
+            {
+                CollectExpandPaths(child, prefix, paths);
+            }
+        }
+        else
+        {
+            paths.Add(prefix.ToArray());
+        }
+
+        prefix.RemoveAt(prefix.Count - 1);
+    }
+
+    // The CLR type a ThenInclude off this navigation binds its lambda parameter to.
+    private static Type NextPreviousClrType(ExpandNavBinding nav) =>
+        nav.IsCollection ? nav.ElementType : nav.Property.PropertyType;
+
     // #305 Path A: reflection handle for EF Core's
     // Include&lt;TEntity,TProperty&gt;(IQueryable&lt;TEntity&gt;, Expression&lt;Func&lt;TEntity,TProperty&gt;&gt;)
     // — the two-generic-parameter, lambda-based overload (EF Core also exposes a one-generic-parameter
@@ -7279,6 +7328,36 @@ internal static class OhDataEndpointFactory
     // filtering is not free, and this resolves on the hot GetQueryable pushdown path whenever the root
     // projection is ineligible (see ApplyIncludeFallback).
     private static readonly ConcurrentDictionary<Assembly, MethodInfo?> s_efIncludeMethodCache = new();
+
+    // #616: EF Core exposes TWO ThenInclude overloads, distinguished only by the shape of the
+    // PREVIOUS navigation -- IIncludableQueryable<TEntity, IEnumerable<TPrev>> after a collection,
+    // IIncludableQueryable<TEntity, TPrev> after a reference. Picking the wrong one is a runtime
+    // failure, not a compile error, so the collection one is selected by testing that second type
+    // argument for IEnumerable<> rather than by position in GetMethods(), which has no defined order.
+    private static readonly ConcurrentDictionary<Assembly, (MethodInfo? Collection, MethodInfo? Reference)>
+        s_efThenIncludeMethodCache = new();
+
+    private static (MethodInfo? Collection, MethodInfo? Reference) ResolveEfThenIncludeMethods(
+        Assembly efAssembly) =>
+        s_efThenIncludeMethodCache.GetOrAdd(efAssembly, static asm =>
+        {
+            Type? ext = asm.GetType("Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions");
+            MethodInfo[] candidates = ext?.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                .Where(m => m.Name == "ThenInclude" && m.IsGenericMethodDefinition &&
+                    m.GetGenericArguments().Length == 3 && m.GetParameters().Length == 2 &&
+                    m.GetParameters()[0].ParameterType.IsGenericType &&
+                    m.GetParameters()[0].ParameterType.GetGenericArguments().Length == 2)
+                .ToArray() ?? Array.Empty<MethodInfo>();
+
+            static bool PreviousIsCollection(MethodInfo m)
+            {
+                Type prev = m.GetParameters()[0].ParameterType.GetGenericArguments()[1];
+                return prev.IsGenericType && prev.GetGenericTypeDefinition() == typeof(IEnumerable<>);
+            }
+
+            return (candidates.FirstOrDefault(PreviousIsCollection),
+                    candidates.FirstOrDefault(m => !PreviousIsCollection(m)));
+        });
 
     private static MethodInfo? ResolveEfIncludeMethod(Assembly efAssembly) =>
         s_efIncludeMethodCache.GetOrAdd(efAssembly, static asm =>
@@ -7297,11 +7376,17 @@ internal static class OhDataEndpointFactory
     // Include construction+execution, so this validation's specific/actionable ODataException message
     // reaches the client verbatim (via the route's outer ODataException handler) instead of being
     // caught and overwritten by the generic provider-failure catch around the real Include call.
-    private static EngagedExpand? FindNestedExpandOrLevels(IReadOnlyList<EngagedExpand> engaged)
+    // #616 narrowed this from "nested $expand OR $levels" to $levels alone: a nested $expand is now
+    // served by chaining ThenInclude (see ApplyIncludeFallback). $levels stays refused because its
+    // depth is decided per request by the data, so there is no statically-known nesting to build a
+    // chain from -- and the projection path's own $levels support (BuildLevelsNavAccess) works by
+    // emitting a Select per level, which filtered Include does not accept.
+    private static EngagedExpand? FindLevelsExpand(IReadOnlyList<EngagedExpand> engaged)
     {
         foreach (EngagedExpand e in engaged)
         {
-            if (e.Children is { Count: > 0 } || e.Levels > 0) return e;
+            if (e.Levels > 0) return e;
+            if (e.Children is { Count: > 0 } && FindLevelsExpand(e.Children) is { } nested) return nested;
         }
         return null;
     }
@@ -7338,11 +7423,19 @@ internal static class OhDataEndpointFactory
     // the tracked graph safe whichever two instances close the cycle.
     private static IQueryable<TModel> ApplyIncludeFallback<TModel>(
         IQueryable<TModel> query, IReadOnlyList<EngagedExpand> engaged, MethodInfo includeMethod,
+        (MethodInfo? Collection, MethodInfo? Reference) thenIncludeMethods,
         IEdmModel model, int? maxExpandTop, ODataQuerySettings binderSettings)
         where TModel : class
     {
+        var paths = new List<IReadOnlyList<EngagedExpand>>();
         foreach (EngagedExpand e in engaged)
         {
+            CollectExpandPaths(e, new List<EngagedExpand>(), paths);
+        }
+
+        foreach (IReadOnlyList<EngagedExpand> path in paths)
+        {
+            EngagedExpand e = path[0];
             ParameterExpression owner = Expression.Parameter(typeof(TModel), "x");
             Expression access = Expression.Property(owner, e.Binding.Property);
             if (e.Binding.IsCollection)
@@ -7350,26 +7443,55 @@ internal static class OhDataEndpointFactory
                 // #529: a nested $filter/$orderby is bound here rather than refused. EF Core's
                 // filtered Include accepts exactly the Where -> OrderBy/ThenBy -> Skip/Take sequence
                 // ApplyNavShape composes, so this is the same shaping the member-init projection path
-                // applies -- through the same BindNavShape, never a second transcription of it. A level
-                // with nested $expand children would make ApplyNavShape emit a .Select, which filtered
-                // Include does not accept; the caller refuses that case before reaching here.
+                // applies -- through the same BindNavShape, never a second transcription of it.
+                //
+                // #616: a level with children composes NO SQL window here, and that is what keeps the
+                // untranslatable shape unreachable rather than merely unlikely -- ApplyNavShape gates
+                // the #298 count bound, the #313 default leaf bound and #304's explicit $skip/$top on
+                // isProjectionLeaf, so such a level gets Where/OrderBy only and its window moves to
+                // the JSON pass. Measured on EF Core 10 / SQLite: a windowed parent beside a nested
+                // collection throws "Translating this query requires the SQL APPLY operation, which is
+                // not supported on SQLite"; Where/OrderBy on the parent translates.
                 NavShapeBindings bound = BindNavShape(e, e.Binding.ElementType, model, binderSettings);
                 access = ApplyNavShape(access, e, e.Binding.ElementType, model, bound, maxExpandTop);
             }
 
             LambdaExpression lambda = Expression.Lambda(access, owner);
             MethodInfo closedInclude = includeMethod.MakeGenericMethod(typeof(TModel), access.Type);
-            try
+            object chain = InvokeUnwrapped(closedInclude, query, lambda);
+            Type previousClrType = NextPreviousClrType(e.Binding);
+
+            for (int depth = 1; depth < path.Count; depth++)
             {
-                query = (IQueryable<TModel>)closedInclude.Invoke(null, new object?[] { query, lambda })!;
+                EngagedExpand child = path[depth];
+                ParameterExpression parent = Expression.Parameter(previousClrType, "p");
+                Expression childAccess = Expression.Property(parent, child.Binding.Property);
+                if (child.Binding.IsCollection)
+                {
+                    NavShapeBindings childBound =
+                        BindNavShape(child, child.Binding.ElementType, model, binderSettings);
+                    childAccess = ApplyNavShape(
+                        childAccess, child, child.Binding.ElementType, model, childBound, maxExpandTop);
+                }
+
+                MethodInfo? thenInclude = child.Binding.IsCollection
+                    ? thenIncludeMethods.Collection
+                    : thenIncludeMethods.Reference;
+                if (thenInclude is null)
+                {
+                    throw new Microsoft.OData.ODataException(
+                        $"The nested '$expand' on '{child.Binding.Property.Name}' could not be " +
+                        "processed: the underlying provider does not expose a usable ThenInclude API. " +
+                        "Write an expand delegate for this navigation instead.");
+                }
+
+                chain = InvokeUnwrapped(
+                    thenInclude.MakeGenericMethod(typeof(TModel), previousClrType, childAccess.Type),
+                    chain, Expression.Lambda(childAccess, parent));
+                previousClrType = NextPreviousClrType(child.Binding);
             }
-            catch (TargetInvocationException tie) when (tie.InnerException is not null)
-            {
-                // Unwrap: MethodInfo.Invoke always wraps the callee's own exception. The caller's catch
-                // narrows on the callee's REAL exception type (InvalidOperationException/
-                // NotSupportedException/ODataException), so it must see that type, not this wrapper.
-                throw tie.InnerException;
-            }
+
+            query = (IQueryable<TModel>)chain;
         }
         return query;
     }
@@ -8780,22 +8902,24 @@ internal static class OhDataEndpointFactory
                             // whatever the CLR property's default value already was (typically an empty
                             // collection) under a lying 200. Now: serve the SAME engaged navigations via
                             // EF Core's own Include (bounded by MaxExpandTop exactly like the projection
-                            // path — see ApplyIncludeFallback), or fail loud (400) when the request needs
-                            // something a plain Include cannot carry (a nested $filter/$orderby) or that
-                            // this fix does not fold through Include (a nested $expand/$levels).
+                            // path — see ApplyIncludeFallback), or fail loud (400) for the one shape it
+                            // still cannot fold through Include: $levels.
                             // #305 fold-in (review): validated here, OUTSIDE the try/catch around the
                             // actual Include construction+execution below, so this SPECIFIC actionable
                             // message reaches the client via the route's outer ODataException handler
                             // instead of being caught and overwritten by the generic provider-failure
                             // catch that wraps the real Include call.
-                            if (FindNestedExpandOrLevels(engagedExpandNavs) is { } nestedNav)
+                            //
+                            // #616 narrowed this: a nested $expand is chained with ThenInclude now, so
+                            // only $levels reaches the refusal.
+                            if (FindLevelsExpand(engagedExpandNavs) is { } nestedNav)
                             {
                                 // #322: same correction as the message above — name the check that
                                 // actually failed, not the whole rule.
                                 throw new Microsoft.OData.ODataException(
                                     $"The '$expand' on '{nestedNav.Binding.Property.Name}' could not be " +
-                                    "served without a projection-eligible model: a nested $expand or " +
-                                    "$levels under a plain Include fallback is not supported, and " +
+                                    "served without a projection-eligible model: $levels under an " +
+                                    "Include fallback is not supported, and " +
                                     $"'{typeof(TModel).Name}' is not projection-eligible because " +
                                     $"{projectionIneligibleReason ?? "its member-init projection could not be built"}. " +
                                     "Fix that to enable full pushdown, or write an expand delegate for " +
@@ -8839,7 +8963,8 @@ internal static class OhDataEndpointFactory
                                 items = EvaluateQueryWithArithmeticFaultGuard(
                                     () => TranslateThenMaterialize(() => ApplySelectPushdown(
                                         ApplyIncludeFallback(
-                                            filtered, engagedExpandNavs, efInclude, registration.EdmModel,
+                                            filtered, engagedExpandNavs, efInclude,
+                                            ResolveEfThenIncludeMethods(efAssembly!), registration.EdmModel,
                                             source.MaxExpandTop, cachedBinderSettings))),
                                     options, logger, source.EntitySetName);
                                 // engagedExpandNavs stays SET (not nulled): the existing
@@ -8956,7 +9081,7 @@ internal static class OhDataEndpointFactory
                         // unreachable through this path now, on BOTH the member-init projection path
                         // (already true before #325/#326, via Change A) and the #305 Include fallback
                         // (newly true — see the FindCyclicLeafExpand removal note below
-                        // FindNestedExpandOrLevels, immediately preceding ApplyIncludeFallback). This
+                        // FindLevelsExpand, immediately preceding ApplyIncludeFallback). This
                         // catch stays reachable for the one class #325's OWNER DECISIONS explicitly left
                         // as a loud 500 rather than fix: a cycle closed by an entity-typed CLR property
                         // that is NOT an EDM navigation (e.g. [NotMapped]) — SerializeBounded only
