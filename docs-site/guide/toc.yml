@@ -43,6 +43,8 @@
           href: ../../docs/ignoring-properties.md
         - name: Open types (dynamic property bags)
           href: ../../docs/open-types.md
+        - name: Polymorphic entity sets (TPH)
+          href: ../../docs/polymorphism.md
         - name: Bound functions & actions
           href: ../../docs/bound-operations.md
     - name: Querying
