@@ -85,6 +85,10 @@ jobs:
       #                            (`AddProfile<T>()` in docs/delta-mapping.md); the [<(] also
       #                            keeps it from matching AddProfilesFromAssemblyOf.
       #   OhData\.Abstractions     namespace removed (folded into OhData).
+      #   OhDataResult\.SuccessTask   removed in 2.0.0 (#633) -- OhDataResult<T> converts
+      #                            implicitly to Task<OhDataResult<T>>, so Success covers both
+      #                            positions. Anchored on the receiver dot so prose mentioning
+      #                            the old name in a migration note still passes.
       #   using OhData\.AspNetCore; types moved to the OhData namespace. The trailing ';'
       #                            avoids matching the .OpenApi/.NSwag/.Swashbuckle companion
       #                            usings and the EnGen.OhData.AspNetCore package-id prose.
@@ -124,6 +128,7 @@ jobs:
                 -e '\.AddProfile[<(]' \
                 -e 'OhData\.Abstractions' \
                 -e 'using OhData\.AspNetCore;' \
+                -e 'OhDataResult\.SuccessTask' \
                 -e '^ *(GetAll|GetQueryable|GetById|Post|Put|Patch|Delete|Search) *=.*Task\.FromResult' \
                 README.md docs docs-site); then
             echo "::error::docs reference removed/renamed API — update the docs or extend the denylist in .github/workflows/docs.yml"
