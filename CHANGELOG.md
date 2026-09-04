@@ -774,6 +774,36 @@ status codes or headers.
   further numbers were wrong, but five rows drew on JSON Format, Part 2 or RFC 9110 without saying so,
   and a bare `§4.5.3` is genuinely ambiguous between documents.
 
+- **The benchmark numbers are re-measured, stamped, and hosted on the docsite (#636).** They were
+  generated 119 commits earlier and republished in the README with no date, no commit and no
+  environment — the *"a perf number without the commit it was taken at is a rumour with units"*
+  rule, pointed at the repo's own front page. The report also lived under
+  `src/OhData.Server.Benchmarks/docs/`, which docfx does not map, so the site's
+  "Performance & benchmarks" nav entry linked off-site to a GitHub blob; it is now
+  `docs/performance.md`, a real page, and the benchmark project keeps no second copy.
+
+  **One published claim did not survive the re-measurement.** "OhData won all 11 scenarios" is
+  now "faster on 10 of the 11 and allocates less on all 11": `DELETE` measures **1.02× ± 0.08**,
+  indistinguishable from parity on a route where neither framework does much beyond routing, and
+  the 1.59× and 1.14× published for it previously were within-noise reads of the same tie. Ratio
+  standard deviations are published beside every speedup now, so a within-noise number cannot be
+  quoted as a win again without it being visible.
+
+  **v1.7.0 was run as a control**, because every ratio came in below the published figure and
+  #581 puts a heap-allocated `OhDataResult<T>` on every route. There is no regression: the three
+  write routes are 1.6–1.8% *faster*, and allocations move by at most +340 B, with the uniform
+  +41 B on key-addressed routes bounded rather than attributed — the MS OData control, byte-identical
+  in both trees, moved 0 to +72 B with no pattern. `DELETE`'s +225 B is the one move with a
+  mechanism: `Task<bool>` hands back a **cached** completed task and `Task<OhDataResult<bool>>`
+  cannot. The first attempt at this control reported the writes as 24–28% *slower*, purely because
+  it compared a six-suite run against a single-suite one; the page records that scope confound,
+  which is larger than every effect being looked for.
+
+  The `$expand`/`$levels` half is published for the first time and deliberately un-headlined — one
+  run, and two of the five straddle parity. Benchmarks also gain a dispatchable workflow, and
+  deliberately not a scheduled or gating one: a hosted runner cannot produce publishable
+  magnitudes, and a threshold needs that runner class's run-to-run spread measured first.
+
 
 ### Build
 
