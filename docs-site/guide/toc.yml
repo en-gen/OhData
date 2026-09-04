@@ -73,6 +73,8 @@
       items:
         - name: OData 4.0 spec compliance
           href: ../../docs/spec-compliance.md
+        - name: Differences from Microsoft.AspNetCore.OData
+          href: ../../docs/differences-from-microsoft-odata.md
         # Kept reachable here (as in the original site's "Reference" group): the benchmarks report
         # and the generated .NET API reference. `../api/` is a FOLDER href to the metadata-generated
         # api/ toc, which carries its own left sidebar when opened.
