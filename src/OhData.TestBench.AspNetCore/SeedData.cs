@@ -41,7 +41,49 @@ public static class DbSeeder
             }
         }
         db.SaveChanges();
+
+        // #617: three rows, three shapes -- one base Award and one of each derived type -- so a page
+        // MIXES them. That mix is the shape #529's defect needed: a projection over the declared type
+        // served the base row correctly and silently dropped the derived rows' own properties, so a
+        // fixture with only one shape would have proved nothing either way.
+        db.Awards.AddRange(NewAwards());
+        db.SaveChanges();
+
+        db.AwardNominations.AddRange(NewAwardNominations());
+        db.SaveChanges();
     }
+
+    // ── Awards — the polymorphic (TPH) showcase; see AwardProfile ─────────────────
+    // FRESH INSTANCES PER CALL, unlike Studios/Actors/Genres, and the difference is load-bearing.
+    // Those are static arrays shared across every DbContext in the process, which is safe only
+    // because their navigations are Ignore()d -- fake CLR properties EF never fixes up. Nominations
+    // is a REAL relationship (that is the whole point of it), so EF populates Award.Nominations on
+    // the shared instances during the first seed; a second WebApplicationFactory then cascades those
+    // children in via the navigation AND adds them again explicitly -> duplicate key. Movies already
+    // dodge this by materializing per call (see SeedMovie.ToMovie); this follows that precedent.
+    public static Award[] NewAwards() => new Award[]
+    {
+        new AcademyAward
+        {
+            Id = 1, Name = "Best Picture", Year = 1994,
+            Ceremony = "67th Academy Awards", IsWinner = true,
+        },
+        new FestivalAward
+        {
+            Id = 2, Name = "Palme d'Or", Year = 1994,
+            Festival = "Cannes", Jury = "Clint Eastwood",
+        },
+        new Award { Id = 3, Name = "Audience Choice", Year = 1994 },
+    };
+
+    public static AwardNomination[] NewAwardNominations() => new AwardNomination[]
+    {
+        new() { Id = 1, AwardId = 1, Title = "Forrest Gump" },
+        new() { Id = 2, AwardId = 1, Title = "The Shawshank Redemption" },
+        new() { Id = 3, AwardId = 1, Title = "Pulp Fiction" },
+        new() { Id = 4, AwardId = 2, Title = "Pulp Fiction" },
+        new() { Id = 5, AwardId = 3, Title = "The Lion King" },
+    };
 
     // ── Genres — the GetAll (IEnumerable) showcase; see GenreProfile ─────────────
     public static readonly Genre[] Genres =

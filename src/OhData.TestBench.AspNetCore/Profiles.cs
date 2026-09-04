@@ -370,6 +370,41 @@ public class GenreProfile : EntitySetProfile<string, Genre>
 /// </summary>
 public class GenreProfileV2 : GenreProfile { }
 
+// -- Awards: the polymorphic (TPH) showcase (v2 only) ------------------------
+
+/// <summary>
+/// The demo's one POLYMORPHIC entity set. <c>AcademyAward</c> and <c>FestivalAward</c> derive from
+/// <see cref="Award"/>, so the EDM carries derived types and the root takes a different code path
+/// from every other set here.
+/// </summary>
+/// <remarks>
+/// Since #529, a root with derived types is refused the member-init <c>$expand</c> projection -- it
+/// can only construct the declared type, so every row would come back as <see cref="Award"/> with
+/// the derived properties dropped under a 200 -- and is served through EF's <c>Include</c> instead,
+/// which materializes each row as its own runtime type. <c>HasMany</c> is declared with NO expand
+/// delegate on purpose: that is what makes the navigation pushable and the path engage. Nested
+/// <c>$filter</c>/<c>$orderby</c> ride EF's filtered Include; a nested <c>$expand</c> is refused
+/// with 400 (#616 tracks lifting that).
+/// </remarks>
+public class AwardProfile : EntitySetProfile<int, Award>
+{
+    public AwardProfile(AppDbContext db) : base(x => x.Id)
+    {
+        EntitySetName = "Awards";
+
+        FilterEnabled = true;
+        OrderByEnabled = true;
+        SelectEnabled = true;
+        ExpandEnabled = true;
+        CountEnabled = true;
+
+        GetQueryable = _ => OhDataResult.SuccessTask<IQueryable<Award>>(db.Awards);
+        GetById = (id, _) => OhDataResult.SuccessTask(db.Awards.FirstOrDefault(a => a.Id == id));
+
+        HasMany(x => x.Nominations); // delegate-less -> pushed down, which is the point
+    }
+}
+
 // ── Actors (v2 only) ─────────────────────────────────────────────────────────
 
 /// <summary>Queryable actor catalog. v2 only -- v1 keeps its surface to Movies/Genres.</summary>
