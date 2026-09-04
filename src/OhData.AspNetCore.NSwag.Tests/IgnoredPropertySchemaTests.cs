@@ -161,8 +161,8 @@ public sealed class IgnoredPropertySchemaTests
         {
             EntitySetName = "IgnoredSchemaProducts";
             Ignore(x => x.CostBasis, x => x.InternalNotes);
-            GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<Product>>(_store);
-            Post = (p, ct) => { _store.Add(p); return OhDataResult.SuccessTask<Product>(p); };
+            GetAll = (ct) => OhDataResult.Success<IEnumerable<Product>>(_store);
+            Post = (p, ct) => { _store.Add(p); return OhDataResult.Success<Product>(p); };
         }
     }
 
@@ -183,8 +183,8 @@ public sealed class IgnoredPropertySchemaTests
         {
             EntitySetName = "IgnoredSchemaRenameds";
             Ignore(x => x.UnitMargin);
-            GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<Renamed>>(_store);
-            Post = (r, ct) => { _store.Add(r); return OhDataResult.SuccessTask<Renamed>(r); };
+            GetAll = (ct) => OhDataResult.Success<IEnumerable<Renamed>>(_store);
+            Post = (r, ct) => { _store.Add(r); return OhDataResult.Success<Renamed>(r); };
         }
     }
 
@@ -195,8 +195,8 @@ public sealed class IgnoredPropertySchemaTests
         public AuditEntryProfile() : base(x => x.Id)
         {
             EntitySetName = "IgnoredSchemaAudits";
-            GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<AuditEntry>>(_store);
-            Post = (a, ct) => { _store.Add(a); return OhDataResult.SuccessTask<AuditEntry>(a); };
+            GetAll = (ct) => OhDataResult.Success<IEnumerable<AuditEntry>>(_store);
+            Post = (a, ct) => { _store.Add(a); return OhDataResult.Success<AuditEntry>(a); };
         }
     }
 }

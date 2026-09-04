@@ -52,8 +52,8 @@ internal class WidgetDtoProfile : EntitySetProfile<int, WidgetDto>
             new() { Id = 3, Name = "Bracket",  Price = 12.00m },
         };
 
-        GetQueryable = (ct) => OhDataResult.SuccessTask(_store.AsQueryable());
-        GetById = (id, ct) => OhDataResult.SuccessTask(_store.FirstOrDefault(w => w.Id == id));
+        GetQueryable = (ct) => OhDataResult.Success(_store.AsQueryable());
+        GetById = (id, ct) => OhDataResult.Success(_store.FirstOrDefault(w => w.Id == id));
     }
 }
 

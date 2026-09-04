@@ -72,7 +72,7 @@ public sealed class W481AdminChildProfile : EntitySetProfile<int, W481Child>
     {
         EntitySetName = "W481Children";
         RequireRoles("admin");
-        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<W481Child>>(W481Data.Children);
+        GetAll = _ => OhDataResult.Success<IEnumerable<W481Child>>(W481Data.Children);
     }
 }
 
@@ -82,7 +82,7 @@ public sealed class W481PublicChildProfile : EntitySetProfile<int, W481Child>
     public W481PublicChildProfile() : base(x => x.Id)
     {
         EntitySetName = "W481PublicChildren";
-        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<W481Child>>(W481Data.Children);
+        GetAll = _ => OhDataResult.Success<IEnumerable<W481Child>>(W481Data.Children);
     }
 }
 
@@ -92,7 +92,7 @@ public sealed class W481OpenChildProfile : EntitySetProfile<int, W481Child>
     public W481OpenChildProfile() : base(x => x.Id)
     {
         EntitySetName = "W481OpenChildren";
-        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<W481Child>>(W481Data.Children);
+        GetAll = _ => OhDataResult.Success<IEnumerable<W481Child>>(W481Data.Children);
     }
 }
 
@@ -108,7 +108,7 @@ public sealed class W481WriteGuardedChildProfile : EntitySetProfile<int, W481Chi
         ConfigureAuthorization(auth => auth
             .Read(r => r.AllowAnonymous())
             .Writes(w => w.RequireRole("admin")));
-        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<W481Child>>(W481Data.Children);
+        GetAll = _ => OhDataResult.Success<IEnumerable<W481Child>>(W481Data.Children);
     }
 }
 
@@ -118,8 +118,8 @@ public sealed class W481RoutedParentProfile : EntitySetProfile<int, W481Parent>
     public W481RoutedParentProfile() : base(x => x.Id)
     {
         EntitySetName = "W481RoutedParents";
-        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<W481Parent>>(W481Data.Parents);
-        GetById = (id, _) => OhDataResult.SuccessTask(W481Data.Parents.FirstOrDefault(p => p.Id == id));
+        GetAll = _ => OhDataResult.Success<IEnumerable<W481Parent>>(W481Data.Parents);
+        GetById = (id, _) => OhDataResult.Success(W481Data.Parents.FirstOrDefault(p => p.Id == id));
 
         HasMany<W481Child>(
             navigation: x => x.Children!,
@@ -148,7 +148,7 @@ public sealed class W481BareParentProfile : EntitySetProfile<int, W481Parent>
         EntitySetName = "W481BareParents";
         ExpandEnabled = true;
         HasMany<W481Child>(x => x.Children!);
-        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<W481Parent>>(W481Data.Parents);
+        GetAll = _ => OhDataResult.Success<IEnumerable<W481Parent>>(W481Data.Parents);
     }
 }
 
@@ -166,7 +166,7 @@ public sealed class W481BatchParentProfile : EntitySetProfile<int, W481Parent>
             navigation: x => x.Children!,
             batchGetAll: (ids, _) => Task.FromResult(
                 W481Data.Children.Where(c => ids.Contains(c.ParentId)).ToLookup(c => c.ParentId)));
-        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<W481Parent>>(W481Data.Parents);
+        GetAll = _ => OhDataResult.Success<IEnumerable<W481Parent>>(W481Data.Parents);
     }
 }
 
@@ -183,8 +183,8 @@ public sealed class W481SingleParentProfile : EntitySetProfile<int, W481Parent>
             navigation: x => x.Primary!,
             get: (pid, _) => Task.FromResult(W481Data.Children.FirstOrDefault(c => c.ParentId == pid)),
             refTargetEntitySet: null);
-        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<W481Parent>>(W481Data.Parents);
-        GetById = (id, _) => OhDataResult.SuccessTask(W481Data.Parents.FirstOrDefault(p => p.Id == id));
+        GetAll = _ => OhDataResult.Success<IEnumerable<W481Parent>>(W481Data.Parents);
+        GetById = (id, _) => OhDataResult.Success(W481Data.Parents.FirstOrDefault(p => p.Id == id));
     }
 }
 
@@ -197,7 +197,7 @@ public sealed class W481EqualParentProfile : EntitySetProfile<int, W481Parent>
         RequireRoles("admin");
         ExpandEnabled = true;
         HasMany<W481Child>(x => x.Children!);
-        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<W481Parent>>(W481Data.Parents);
+        GetAll = _ => OhDataResult.Success<IEnumerable<W481Parent>>(W481Data.Parents);
     }
 }
 
@@ -211,8 +211,8 @@ public sealed class W549ResourceChildProfile : EntitySetProfile<int, W481Child>
     {
         EntitySetName = "W549ResourceChildren";
         ConfigureAuthorization(auth => auth.All(a => a.RequireResource()));
-        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<W481Child>>(W481Data.Children);
-        GetById = (id, _) => OhDataResult.SuccessTask(W481Data.Children.FirstOrDefault(c => c.Id == id));
+        GetAll = _ => OhDataResult.Success<IEnumerable<W481Child>>(W481Data.Children);
+        GetById = (id, _) => OhDataResult.Success(W481Data.Children.FirstOrDefault(c => c.Id == id));
     }
 }
 
@@ -230,8 +230,8 @@ public sealed class W549ResourceParentProfile : EntitySetProfile<int, W481Parent
         ConfigureAuthorization(auth => auth.All(a => a.RequireResource()));
         ExpandEnabled = true;
         HasMany<W481Child>(x => x.Children!);
-        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<W481Parent>>(W481Data.Parents);
-        GetById = (id, _) => OhDataResult.SuccessTask(W481Data.Parents.FirstOrDefault(p => p.Id == id));
+        GetAll = _ => OhDataResult.Success<IEnumerable<W481Parent>>(W481Data.Parents);
+        GetById = (id, _) => OhDataResult.Success(W481Data.Parents.FirstOrDefault(p => p.Id == id));
     }
 }
 
@@ -247,7 +247,7 @@ public sealed class W549RoleChildProfile : EntitySetProfile<int, W481Child>
     {
         EntitySetName = "W549RoleChildren";
         ConfigureAuthorization(auth => auth.All(a => a.RequireRole("admin")));
-        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<W481Child>>(W481Data.Children);
+        GetAll = _ => OhDataResult.Success<IEnumerable<W481Child>>(W481Data.Children);
     }
 }
 
@@ -259,7 +259,7 @@ public sealed class W549RoleParentProfile : EntitySetProfile<int, W481Parent>
         ConfigureAuthorization(auth => auth.All(a => a.RequireRole("admin")));
         ExpandEnabled = true;
         HasMany<W481Child>(x => x.Children!);
-        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<W481Parent>>(W481Data.Parents);
+        GetAll = _ => OhDataResult.Success<IEnumerable<W481Parent>>(W481Data.Parents);
     }
 }
 
@@ -275,7 +275,7 @@ public sealed class W481StricterParentProfile : EntitySetProfile<int, W481Parent
         RequireRoles("admin");
         ExpandEnabled = true;
         HasMany<W481Child>(x => x.Children!);
-        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<W481Parent>>(W481Data.Parents);
+        GetAll = _ => OhDataResult.Success<IEnumerable<W481Parent>>(W481Data.Parents);
     }
 }
 
@@ -287,7 +287,7 @@ public sealed class W481OpenParentProfile : EntitySetProfile<int, W481Parent>
         EntitySetName = "W481OpenParents";
         ExpandEnabled = true;
         HasMany<W481Child>(x => x.Children!);
-        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<W481Parent>>(W481Data.Parents);
+        GetAll = _ => OhDataResult.Success<IEnumerable<W481Parent>>(W481Data.Parents);
     }
 }
 
@@ -302,7 +302,7 @@ public sealed class W481UndeclaredParentProfile : EntitySetProfile<int, W481Pare
     {
         EntitySetName = "W481UndeclaredParents";
         ExpandEnabled = true;
-        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<W481Parent>>(W481Data.Parents);
+        GetAll = _ => OhDataResult.Success<IEnumerable<W481Parent>>(W481Data.Parents);
     }
 }
 
@@ -320,7 +320,7 @@ public sealed class W481OrphanParentProfile : EntitySetProfile<int, W481OrphanPa
         HasMany<W481Orphan>(
             navigation: x => x.Orphans!,
             getAll: (_, _) => Task.FromResult<IEnumerable<W481Orphan>>(Array.Empty<W481Orphan>()));
-        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<W481OrphanParent>>(Array.Empty<W481OrphanParent>());
+        GetAll = _ => OhDataResult.Success<IEnumerable<W481OrphanParent>>(Array.Empty<W481OrphanParent>());
     }
 }
 
@@ -339,7 +339,7 @@ public sealed class W481ReadOnlyNavParentProfile : EntitySetProfile<int, W481Par
             navigation: x => x.Children!,
             getAll: (pid, _) => Task.FromResult<IEnumerable<W481Child>>(
                 W481Data.Children.Where(c => c.ParentId == pid)));
-        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<W481Parent>>(W481Data.Parents);
+        GetAll = _ => OhDataResult.Success<IEnumerable<W481Parent>>(W481Data.Parents);
     }
 }
 
@@ -361,8 +361,8 @@ public sealed class W481WriteNavParentProfile : EntitySetProfile<int, W481Parent
             refTargetEntitySet: "W481WriteGuardedChildren",
             addRef: (_, _, _) => Task.CompletedTask,
             removeRef: (_, _, _) => Task.CompletedTask);
-        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<W481Parent>>(W481Data.Parents);
-        GetById = (id, _) => OhDataResult.SuccessTask(W481Data.Parents.FirstOrDefault(p => p.Id == id));
+        GetAll = _ => OhDataResult.Success<IEnumerable<W481Parent>>(W481Data.Parents);
+        GetById = (id, _) => OhDataResult.Success(W481Data.Parents.FirstOrDefault(p => p.Id == id));
     }
 }
 

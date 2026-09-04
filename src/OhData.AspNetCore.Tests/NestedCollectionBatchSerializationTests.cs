@@ -101,8 +101,8 @@ public sealed class NcbCompanyProfile : EntitySetProfile<int, NcbCompany>
         ExpandEnabled = true;
         SelectEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask(Store.AsQueryable());
-        GetById = (id, _) => OhDataResult.SuccessTask(Store.FirstOrDefault(c => c.Id == id));
+        GetQueryable = _ => OhDataResult.Success(Store.AsQueryable());
+        GetById = (id, _) => OhDataResult.Success(Store.FirstOrDefault(c => c.Id == id));
         HasMany(x => x.Employees!);
         HasMany(x => x.Notes!);
     }

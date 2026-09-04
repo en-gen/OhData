@@ -172,19 +172,19 @@ internal class BodyLimitProfile : EntitySetProfile<int, Widget>
         EntitySetName = "BodyLimitWidgets";
         MaxRequestBodyBytes = 200;
 
-        GetById = (id, ct) => OhDataResult.SuccessTask(_store.FirstOrDefault(w => w.Id == id));
+        GetById = (id, ct) => OhDataResult.Success(_store.FirstOrDefault(w => w.Id == id));
         Post = (widget, ct) =>
         {
             widget.Id = _store.Count > 0 ? _store.Max(w => w.Id) + 1 : 1;
             _store.Add(widget);
-            return OhDataResult.SuccessTask<Widget>(widget);
+            return OhDataResult.Success<Widget>(widget);
         };
-        Put = (id, widget, ct) => { widget.Id = id; return OhDataResult.SuccessTask(widget); };
+        Put = (id, widget, ct) => { widget.Id = id; return OhDataResult.Success(widget); };
         Patch = (id, delta, ct) =>
         {
             var w = new Widget { Id = id };
             delta.Patch(w);
-            return OhDataResult.SuccessTask<Widget>(w);
+            return OhDataResult.Success<Widget>(w);
         };
     }
 }

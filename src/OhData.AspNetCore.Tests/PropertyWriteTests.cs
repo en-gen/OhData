@@ -440,13 +440,13 @@ public class PropertyWriteTests
         public PropertyWriteProfile() : base(x => x.Id)
         {
             EntitySetName = "PropertyWriteItems";
-            GetById = (id, ct) => OhDataResult.SuccessTask(Store.FirstOrDefault(x => x.Id == id));
+            GetById = (id, ct) => OhDataResult.Success(Store.FirstOrDefault(x => x.Id == id));
             Patch = (id, delta, ct) =>
             {
                 var existing = Store.FirstOrDefault(x => x.Id == id);
-                if (existing is null) return OhDataResult.SuccessTask<PropertyWriteItem>(null);
+                if (existing is null) return OhDataResult.Success<PropertyWriteItem>(null);
                 delta.Patch(existing);
-                return OhDataResult.SuccessTask<PropertyWriteItem>(existing);
+                return OhDataResult.Success<PropertyWriteItem>(existing);
             };
         }
     }
@@ -466,13 +466,13 @@ public class PropertyWriteTests
         {
             EntitySetName = "PropertyWriteDisabledItems";
             PropertyAccessEnabled = false;
-            GetById = (id, ct) => OhDataResult.SuccessTask(Store.FirstOrDefault(x => x.Id == id));
+            GetById = (id, ct) => OhDataResult.Success(Store.FirstOrDefault(x => x.Id == id));
             Patch = (id, delta, ct) =>
             {
                 var existing = Store.FirstOrDefault(x => x.Id == id);
-                if (existing is null) return OhDataResult.SuccessTask<PropertyWriteItem>(null);
+                if (existing is null) return OhDataResult.Success<PropertyWriteItem>(null);
                 delta.Patch(existing);
-                return OhDataResult.SuccessTask<PropertyWriteItem>(existing);
+                return OhDataResult.Success<PropertyWriteItem>(existing);
             };
         }
     }

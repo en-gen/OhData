@@ -54,25 +54,25 @@ public class EntityIdUrlFormattingTests
         {
             _store = store;
             EntitySetName = "StringKeyItems";
-            GetById = (id, ct) => OhDataResult.SuccessTask(_store.Items.FirstOrDefault(x => x.Id == id));
+            GetById = (id, ct) => OhDataResult.Success(_store.Items.FirstOrDefault(x => x.Id == id));
             Post = (item, ct) =>
             {
                 _store.Items.Add(item);
-                return OhDataResult.SuccessTask<StringKeyItem>(item);
+                return OhDataResult.Success<StringKeyItem>(item);
             };
             Put = (id, item, ct) =>
             {
                 _store.Items.RemoveAll(x => x.Id == id);
                 item.Id = id;
                 _store.Items.Add(item);
-                return OhDataResult.SuccessTask(item);
+                return OhDataResult.Success(item);
             };
             Patch = (id, delta, ct) =>
             {
                 var existing = _store.Items.FirstOrDefault(x => x.Id == id);
-                if (existing is null) return OhDataResult.SuccessTask<StringKeyItem>(null);
+                if (existing is null) return OhDataResult.Success<StringKeyItem>(null);
                 delta.Patch(existing);
-                return OhDataResult.SuccessTask<StringKeyItem>(existing);
+                return OhDataResult.Success<StringKeyItem>(existing);
             };
         }
     }
@@ -96,12 +96,12 @@ public class EntityIdUrlFormattingTests
         {
             _store = store;
             EntitySetName = "UrlFormatIntItems";
-            GetById = (id, ct) => OhDataResult.SuccessTask(_store.Items.FirstOrDefault(x => x.Id == id));
+            GetById = (id, ct) => OhDataResult.Success(_store.Items.FirstOrDefault(x => x.Id == id));
             Post = (item, ct) =>
             {
                 item.Id = 42;
                 _store.Items.Add(item);
-                return OhDataResult.SuccessTask<IntKeyItem>(item);
+                return OhDataResult.Success<IntKeyItem>(item);
             };
         }
     }
@@ -126,12 +126,12 @@ public class EntityIdUrlFormattingTests
         {
             _store = store;
             EntitySetName = "UrlFormatGuidItems";
-            GetById = (id, ct) => OhDataResult.SuccessTask(_store.Items.FirstOrDefault(x => x.Id == id));
+            GetById = (id, ct) => OhDataResult.Success(_store.Items.FirstOrDefault(x => x.Id == id));
             Post = (item, ct) =>
             {
                 item.Id = FixedId;
                 _store.Items.Add(item);
-                return OhDataResult.SuccessTask<GuidKeyItem>(item);
+                return OhDataResult.Success<GuidKeyItem>(item);
             };
         }
     }

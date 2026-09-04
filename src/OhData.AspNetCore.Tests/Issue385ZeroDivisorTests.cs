@@ -38,9 +38,9 @@ public sealed class Z385Profile : EntitySetProfile<int, Z385Item>
     {
         EntitySetName = "Z385Items";
         FilterEnabled = true; OrderByEnabled = true; CountEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask<IQueryable<Z385Item>>(Store.AsQueryable());
+        GetQueryable = _ => OhDataResult.Success<IQueryable<Z385Item>>(Store.AsQueryable());
         HasMany(x => x.Children);
-        GetById = (id, _) => OhDataResult.SuccessTask(Store.FirstOrDefault(x => x.Id == id));
+        GetById = (id, _) => OhDataResult.Success(Store.FirstOrDefault(x => x.Id == id));
     }
 }
 

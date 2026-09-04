@@ -42,7 +42,7 @@ internal class CapDefaultProfile : EntitySetProfile<int, CapItem>
     public CapDefaultProfile() : base(x => x.Id)
     {
         EntitySetName = "CapDefaults";
-        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<CapItem>>(Array.Empty<CapItem>());
+        GetAll = (ct) => OhDataResult.Success<IEnumerable<CapItem>>(Array.Empty<CapItem>());
     }
 }
 
@@ -53,7 +53,7 @@ internal class CapExpandOnProfile : EntitySetProfile<int, CapItem>
         EntitySetName = "CapExpandOns";
         ExpandEnabled = true;
         MaxExpandTop = 25;
-        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<CapItem>>(Array.Empty<CapItem>());
+        GetAll = (ct) => OhDataResult.Success<IEnumerable<CapItem>>(Array.Empty<CapItem>());
         HasMany(x => x.Children, (key, ct) => Task.FromResult<IEnumerable<CapChild>>(Array.Empty<CapChild>()));
     }
 }
@@ -65,7 +65,7 @@ internal class CapCeilingProfile : EntitySetProfile<int, CapItem>
         EntitySetName = "CapCeilings";
         ExpandEnabled = true;
         MaxExpansionDepth = EntitySetDefaults.MaxExpansionDepthCeiling; // 6, the #328 ceiling
-        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<CapItem>>(Array.Empty<CapItem>());
+        GetAll = (ct) => OhDataResult.Success<IEnumerable<CapItem>>(Array.Empty<CapItem>());
     }
 }
 

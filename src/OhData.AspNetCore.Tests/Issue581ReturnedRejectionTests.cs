@@ -47,9 +47,9 @@ public sealed class R581SucceedingProfile : EntitySetProfile<int, R581Thing>
     public R581SucceedingProfile() : base(x => x.Id)
     {
         EntitySetName = "R581Ok";
-        GetById = (id, _) => OhDataResult.SuccessTask(new R581Thing { Id = id, Name = "ok" });
-        Post = (m, _) => OhDataResult.SuccessTask(m);
-        Delete = (id, _) => OhDataResult.SuccessTask(true);
+        GetById = (id, _) => OhDataResult.Success(new R581Thing { Id = id, Name = "ok" });
+        Post = (m, _) => OhDataResult.Success(m);
+        Delete = (id, _) => OhDataResult.Success(true);
     }
 }
 
@@ -268,9 +268,9 @@ public sealed class Issue581OhDataResultOfTTests
     }
 
     [Fact]
-    public async Task SuccessTask_IsSuccessAlreadyCompleted()
+    public async Task Success_IsSuccessAlreadyCompleted()
     {
-        Task<OhDataResult<bool>> task = OhDataResult.SuccessTask(true);
+        Task<OhDataResult<bool>> task = OhDataResult.Success(true);
 
         Assert.True(task.IsCompletedSuccessfully);
         OhDataResult<bool> result = await task;
@@ -298,7 +298,14 @@ public sealed class Issue581OhDataResultOfTTests
     {
         // Defensive, but it is a public conversion: without the guard a null would silently produce
         // a result that is neither a success nor a rejection.
+        //
+        // A STATEMENT lambda, deliberately. Since #633 OhDataResult<T> converts implicitly to
+        // Task<OhDataResult<T>>, so an expression lambda returning one makes xUnit's
+        // Assert.Throws<T>(Func<Task>) overload applicable -- which xUnit marks obsolete-as-error to
+        // catch un-awaited async assertions. The void form binds Assert.Throws<T>(Action) and says
+        // what this test means anyway. (Measured: the conversion does NOT silently redirect
+        // Task.Run(() => Success(x)), which still yields Task<OhDataResult<T>>.)
         OhDataResult nothing = null!;
-        Assert.Throws<ArgumentNullException>(() => (OhDataResult<R581Thing>)nothing);
+        Assert.Throws<ArgumentNullException>(() => { _ = (OhDataResult<R581Thing>)nothing; });
     }
 }

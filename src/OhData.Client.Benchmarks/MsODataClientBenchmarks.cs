@@ -47,13 +47,13 @@ internal sealed class MsBenchWidgetProfile : EntitySetProfile<int, MsBenchWidget
 
     public MsBenchWidgetProfile() : base(x => x.Id)
     {
-        GetQueryable = (ct) => OhDataResult.SuccessTask(_store.AsQueryable());
-        GetById = (id, ct) => OhDataResult.SuccessTask(_store.FirstOrDefault(w => w.Id == id));
+        GetQueryable = (ct) => OhDataResult.Success(_store.AsQueryable());
+        GetById = (id, ct) => OhDataResult.Success(_store.FirstOrDefault(w => w.Id == id));
         Post = (widget, ct) =>
         {
             widget.Id = _store.Count > 0 ? _store.Max(w => w.Id) + 1 : 1;
             _store.Add(widget);
-            return OhDataResult.SuccessTask<MsBenchWidget>(widget);
+            return OhDataResult.Success<MsBenchWidget>(widget);
         };
     }
 }

@@ -107,7 +107,7 @@ public sealed class NoCtorParentProfile : EntitySetProfile<int, NoCtorParent>
         OrderByEnabled = true;
         FilterEnabled = true;
         SelectEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask(db.NoCtorParents.AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(db.NoCtorParents.AsQueryable());
         HasMany(x => x.Children); // delegate-less → eligible for $expand pushdown
     }
 }
@@ -118,7 +118,7 @@ public sealed class IncludeInvalidParentProfile : EntitySetProfile<int, IncludeI
     {
         EntitySetName = "IncludeInvalidParents";
         ExpandEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask(db.IncludeInvalidParents.AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(db.IncludeInvalidParents.AsQueryable());
         HasMany(x => x.FakeNav); // CLR-eligible, but EF-ignored — Include must fail loud
     }
 }
@@ -130,7 +130,7 @@ public sealed class NoCtorCyclicParentProfile : EntitySetProfile<int, NoCtorCycl
     {
         EntitySetName = "NoCtorCyclicParents";
         ExpandEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask(db.NoCtorCyclicParents.AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(db.NoCtorCyclicParents.AsQueryable());
         HasMany(x => x.Children); // delegate-less, bidirectional — CLR-eligible for pushdown
     }
 }
@@ -144,7 +144,7 @@ public sealed class NoCtorCyclicParentNoTrackingProfile : EntitySetProfile<int, 
     {
         EntitySetName = "NoCtorCyclicParentsNoTracking";
         ExpandEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask(db.NoCtorCyclicParents.AsNoTracking().AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(db.NoCtorCyclicParents.AsNoTracking().AsQueryable());
         HasMany(x => x.Children);
     }
 }
@@ -609,7 +609,7 @@ public sealed class InvoiceProfile : EntitySetProfile<int, Invoice>
     {
         EntitySetName = "Invoices";
         ExpandEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask(db.Invoices.AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(db.Invoices.AsQueryable());
         HasMany(x => x.Customers); // delegate-less -> CLR-eligible for pushdown, forced to Path A
         HasMany(x => x.Orders);
     }
@@ -718,7 +718,7 @@ public sealed class OrgProfile : EntitySetProfile<int, Org>
     {
         EntitySetName = "Orgs";
         ExpandEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask(db.Orgs.AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(db.Orgs.AsQueryable());
         HasMany(x => x.Employees); // delegate-less -> CLR-eligible for pushdown, forced to Path A
     }
 }
