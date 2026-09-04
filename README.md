@@ -78,13 +78,14 @@ public class ProductProfile : EntitySetProfile<int, Product>
         Delete       = DeleteProduct;
     }
 
-    // GetQueryable returns the query itself - no Task, no OhDataResult. Composing an IQueryable
-    // does no I/O and produces no result; the framework appends $filter/$orderby/$skip/$top and
-    // awaits the execution. Every other handler DOES return Task<OhDataResult<T>>.
+    // GetQueryable returns the query itself - no Task, no OhDataResult, no CancellationToken.
+    // Composing an IQueryable does no I/O and produces no result; the framework appends
+    // $filter/$orderby/$skip/$top and owns the execution, which is where the await and the
+    // cancellation belong. Every other handler DOES return Task<OhDataResult<T>>.
     //
     // `Product` here is the API MODEL, which in this quickstart happens to be the EF entity.
     // They do not have to be the same type - see "DTOs and EF entities" below.
-    private IQueryable<Product> GetProducts(CancellationToken ct) => _db.Products;
+    private IQueryable<Product> GetProducts() => _db.Products;
 
     private async Task<OhDataResult<Product>> GetProduct(int id, CancellationToken ct) =>
         OhDataResult.Success(await _db.Products.FirstOrDefaultAsync(p => p.Id == id, ct));
@@ -194,7 +195,7 @@ public class ProductProfile : EntitySetProfile<int, ProductDto>
     {
         FilterEnabled = OrderByEnabled = SelectEnabled = true;
 
-        GetQueryable = _ => db.Products.Select(p => new ProductDto
+        GetQueryable = () => db.Products.Select(p => new ProductDto
         {
             Id       = p.Id,
             Name     = p.Name,
@@ -215,10 +216,10 @@ fails loud rather than serving an empty collection:
 
 ```csharp
 // $expand=Lines -> 400, "could not be translated by the underlying data provider"
-GetQueryable = _ => db.Orders.Select(o => new OrderDto { Id = o.Id, Code = o.Code });
+GetQueryable = () => db.Orders.Select(o => new OrderDto { Id = o.Id, Code = o.Code });
 
 // $expand=Lines -> 200, and a nested $filter/$orderby/$top still pushes down
-GetQueryable = _ => db.Orders.Select(o => new OrderDto
+GetQueryable = () => db.Orders.Select(o => new OrderDto
     {
         Id    = o.Id,
         Code  = o.Code,
@@ -245,7 +246,7 @@ public sealed class OrderDto
     // ...
 }
 
-GetQueryable = _ => db.Orders.Select(OrderDto.Projection);
+GetQueryable = () => db.Orders.Select(OrderDto.Projection);
 ```
 
 A mapping library can generate that expression instead — OhData neither requires nor assumes one, and
@@ -272,7 +273,7 @@ public class OrdersProfile : EntitySetProfile<int, Order>
 {
     public OrdersProfile(AppDbContext db) : base(x => x.Id)
     {
-        GetQueryable = _ => db.Orders;
+        GetQueryable = () => db.Orders;
 
         // Collection navigation. getAll gives the read routes; every parameter after it is
         // OPTIONAL - supply only the ones whose route you want:

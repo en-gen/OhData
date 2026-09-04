@@ -34,7 +34,7 @@ internal sealed class BenchWidgetProfile : EntitySetProfile<int, BenchWidget>
         CountEnabled = true;
         MaxTop = BenchmarkData.PageSize;
 
-        GetQueryable = (_) => Store.AsQueryable();
+        GetQueryable = () => Store.AsQueryable();
 
         GetById = (id, _) => OhDataResult.Success(Store.FirstOrDefault(w => w.Id == id));
 

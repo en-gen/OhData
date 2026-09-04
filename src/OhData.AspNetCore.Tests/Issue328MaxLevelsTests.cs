@@ -53,7 +53,7 @@ public sealed class MxNodeProfile : EntitySetProfile<int, MxNode>
         // reproduce the original measurement, raise EntitySetDefaults.MaxExpansionDepthCeiling AND
         // lower OhDataEndpointFactory.MaxNestedExpandDepth locally.
         MaxExpansionDepth = EntitySetDefaults.MaxExpansionDepthCeiling;
-        GetQueryable = _ => db.MxNodes.AsQueryable();
+        GetQueryable = () => db.MxNodes.AsQueryable();
         HasMany(x => x.Children);
     }
 }

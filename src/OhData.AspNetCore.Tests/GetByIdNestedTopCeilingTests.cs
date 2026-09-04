@@ -54,7 +54,7 @@ public sealed class GbCeilingProfile : EntitySetProfile<int, GbCeilingParent>
         ExpandEnabled = true;
         MaxExpandTop = 2;
 
-        GetQueryable = ct => _parents.AsQueryable();
+        GetQueryable = () => _parents.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(_parents.FirstOrDefault(p => p.Id == id));
 
         HasMany(x => x.Children,

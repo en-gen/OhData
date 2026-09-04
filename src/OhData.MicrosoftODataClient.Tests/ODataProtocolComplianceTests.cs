@@ -48,7 +48,7 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
             new() { Id = 3, Name = "Bracket",  Price = 12.00m },
         };
 
-        GetQueryable = (ct) => _store.AsQueryable();
+        GetQueryable = () => _store.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(_store.FirstOrDefault(w => w.Id == id));
         Post = (w, ct) =>
         {
