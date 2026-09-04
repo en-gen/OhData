@@ -22,6 +22,11 @@ public class P529Base
     public int Id { get; set; }
     public string Name { get; set; } = "";
     public List<P529Child> Children { get; set; } = new();
+    // #616: SELF-referential, which is the only shape $levels engages for (BuildLevelsNavBinding
+    // requires elementType == ownerType). Without it a $levels request is refused earlier, by the
+    // cast check, and FindLevelsExpand is never reached.
+    public int? ParentId { get; set; }
+    public List<P529Base> Subthings { get; set; } = new();
 }
 
 public sealed class P529Derived : P529Base
@@ -58,6 +63,17 @@ public sealed class P529Child
     public int BaseId { get; set; }
     public string Body { get; set; } = "";
     public List<P529Grandchild> Grandkids { get; set; } = new();
+    // #616: a SECOND navigation on the child, so a sibling nested $expand exists. EF's ThenInclude
+    // continues from the last-included navigation, so siblings cannot share one chain -- each is its
+    // own Include(...).ThenInclude(...) with the prefix re-issued. Nothing else here covers that.
+    public List<P529Note> Notes { get; set; } = new();
+}
+
+public sealed class P529Note
+{
+    public int Id { get; set; }
+    public int ChildId { get; set; }
+    public string Text { get; set; } = "";
 }
 
 public sealed class P529Grandchild
@@ -73,13 +89,16 @@ public sealed class P529DbContext : DbContext
     public DbSet<P529Base> Things => Set<P529Base>();
     public DbSet<P529Child> Children => Set<P529Child>();
     public DbSet<P529Grandchild> Grandkids => Set<P529Grandchild>();
+    public DbSet<P529Note> Notes => Set<P529Note>();
     public DbSet<Q529Base> QThings => Set<Q529Base>();
     public DbSet<Q529Child> QChildren => Set<Q529Child>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<P529Base>().HasMany(t => t.Children).WithOne().HasForeignKey(c => c.BaseId);
+        b.Entity<P529Base>().HasMany(t => t.Subthings).WithOne().HasForeignKey(t => t.ParentId);
         b.Entity<P529Child>().HasMany(c => c.Grandkids).WithOne().HasForeignKey(g => g.ChildId);
+        b.Entity<P529Child>().HasMany(c => c.Notes).WithOne().HasForeignKey(n => n.ChildId);
         b.Entity<P529Derived>(); // TPH: the derived type must be in the model to be mapped
         b.Entity<Q529Base>().Ignore(x => x.Computed);
         b.Entity<Q529Base>().HasMany(t => t.Children).WithOne().HasForeignKey(c => c.BaseId);
@@ -98,6 +117,7 @@ public sealed class P529BaseProfile : EntitySetProfile<int, P529Base>
         GetQueryable = _ => OhDataResult.SuccessTask<IQueryable<P529Base>>(db.Things.AsQueryable());
         GetById = (id, _) => OhDataResult.SuccessTask(db.Things.FirstOrDefault(t => t.Id == id));
         HasMany(x => x.Children); // delegate-less -> pushable
+        HasMany(x => x.Subthings);
     }
 }
 
@@ -149,6 +169,8 @@ public sealed class Issue529TphExpandProjectionTests
         db.Children.Add(new P529Child { Id = 20, BaseId = 2, Body = "c2" });
         db.Children.Add(new P529Child { Id = 21, BaseId = 2, Body = "c3" });
         db.Grandkids.Add(new P529Grandchild { Id = 100, ChildId = 20, Tag = "g1" });
+        db.Grandkids.Add(new P529Grandchild { Id = 101, ChildId = 20, Tag = "g2" });
+        db.Notes.Add(new P529Note { Id = 200, ChildId = 20, Text = "n1" });
         db.QThings.Add(new Q529Base { Id = 1, Name = "qbase" });
         db.QThings.Add(new Q529Derived { Id = 2, Name = "qderived", Extra = "QEXTRA" });
         db.QChildren.Add(new Q529Child { Id = 30, BaseId = 2, Body = "q2" });
@@ -250,27 +272,84 @@ public sealed class Issue529TphExpandProjectionTests
     }
 
     [Fact]
-    public async Task ANestedExpandUnderAPolymorphicRoot_FailsLoud_NamingWhy()
+    public async Task ANestedExpandUnderAPolymorphicRoot_IsServed()
     {
-        // BREAKING, and the deliberate half of this change. A nested $expand makes ApplyNavShape emit
-        // a .Select, which EF's filtered Include does not accept, so FindNestedExpandOrLevels refuses
-        // it -- unchanged. What moved is that a polymorphic root now REACHES that refusal, where it
-        // used to be served with the derived properties silently missing. Loud beats silently wrong,
-        // and the message names the check that actually failed for THIS model (#322) rather than
-        // reciting the eligibility rule.
+        // #616 INVERTED this. It answered 400 -- "a nested $expand ... under a plain Include fallback
+        // is not supported" -- which #529 had accepted as the loud-beats-wrong trade. Chaining
+        // ThenInclude removes the trade: the nested level is served AND the derived properties
+        // survive, so the assertion is on the data rather than on the status.
+        using var connection = new SqliteConnection("DataSource=:memory:");
+        connection.Open();
+        await using TestFixture fx = await BuildAsync(connection);
+
+        JsonElement value = await GetValueAsync(fx, "/odata/P529Things?$expand=Children($expand=Grandkids)");
+        JsonElement derived = Row(value, 2);
+
+        Assert.Equal("EXTRA", derived.GetProperty("Extra").GetString());
+        JsonElement kids = derived.GetProperty("Children");
+        JsonElement child20 = kids.EnumerateArray().Single(c => c.GetProperty("Id").GetInt32() == 20);
+        JsonElement child21 = kids.EnumerateArray().Single(c => c.GetProperty("Id").GetInt32() == 21);
+
+        Assert.Equal(2, child20.GetProperty("Grandkids").GetArrayLength());
+        Assert.Equal(0, child21.GetProperty("Grandkids").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task SiblingNestedExpands_AreBothServed()
+    {
+        // The re-issued-prefix path. EF's ThenInclude continues from the navigation most recently
+        // included, so Grandkids and Notes cannot share one chain -- each is its own
+        // Include(Children).ThenInclude(...), with the SAME filtered Include(Children) issued twice.
+        // Measured on EF Core 10: repeating a filtered Include identically is accepted and the earlier
+        // chain survives, while repeating it with a DIFFERENT predicate throws. A navigation appears
+        // once in the engaged tree, so only the safe case is reachable.
+        using var connection = new SqliteConnection("DataSource=:memory:");
+        connection.Open();
+        await using TestFixture fx = await BuildAsync(connection);
+
+        JsonElement child20 = Row(
+            await GetValueAsync(fx, "/odata/P529Things?$expand=Children($expand=Grandkids,Notes)"), 2)
+            .GetProperty("Children").EnumerateArray()
+            .Single(c => c.GetProperty("Id").GetInt32() == 20);
+
+        Assert.Equal(2, child20.GetProperty("Grandkids").GetArrayLength());
+        Assert.Equal(1, child20.GetProperty("Notes").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task ANestedFilterAtBothLevels_IsApplied()
+    {
+        using var connection = new SqliteConnection("DataSource=:memory:");
+        connection.Open();
+        await using TestFixture fx = await BuildAsync(connection);
+
+        JsonElement kids = Row(await GetValueAsync(fx,
+            "/odata/P529Things?$expand=Children($filter=Id gt 19;$expand=Grandkids($filter=Id gt 100))"), 2)
+            .GetProperty("Children");
+
+        Assert.Equal(2, kids.GetArrayLength());   // 20 and 21, not the base row's 10
+        JsonElement child20 = kids.EnumerateArray().Single(c => c.GetProperty("Id").GetInt32() == 20);
+        Assert.Equal(1, child20.GetProperty("Grandkids").GetArrayLength());   // 101 only, not 100
+        Assert.Equal(101, child20.GetProperty("Grandkids")[0].GetProperty("Id").GetInt32());
+    }
+
+    [Fact]
+    public async Task LevelsUnderAPolymorphicRoot_StillFailsLoud()
+    {
+        // The one shape ThenInclude cannot serve: $levels depth is decided per request by the data,
+        // so there is no statically-known nesting to build a chain from. Still 400, and the message
+        // now names $levels rather than "a nested $expand or $levels".
         using var connection = new SqliteConnection("DataSource=:memory:");
         connection.Open();
         await using TestFixture fx = await BuildAsync(connection);
 
         HttpResponseMessage resp = await fx.Client.GetAsync(
-            "/odata/P529Things?$expand=Children($expand=Grandkids)");
+            "/odata/P529Things?$expand=Subthings($levels=2)");
 
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
         string body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("InvalidQueryOption", body, StringComparison.Ordinal);
-        Assert.Contains("has derived types in the EDM", body, StringComparison.Ordinal);
-        Assert.DoesNotContain("no public parameterless constructor", body, StringComparison.Ordinal);
-        Assert.DoesNotContain("Sqlite", body, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("$levels under an Include fallback", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("a nested $expand or $levels", body, StringComparison.Ordinal);
     }
 
     [Fact]
