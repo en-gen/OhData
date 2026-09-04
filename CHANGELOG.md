@@ -371,10 +371,19 @@ status codes or headers.
   this path binds with `HandleNullPropagation` **on** where the SQL path has it off — LINQ-to-Objects
   would otherwise dereference and throw where SQL evaluates `NULL` to "no match".
 
-  `$count` is answered from the **filtered** array (§11.2.5.5). `$top`/`$skip` remain a `400`
-  (#294) — windowing a delegate's answer is a decision about how much of it the developer meant to
-  return, not about shaping what was returned. A clause the binders cannot bind at all, and a
-  single-valued navigation, are also `400`: loud either way, never dropped.
+  **`$top`/`$skip` are applied too**, reversing #294's refusal. That refusal's stated reason — the
+  delegate "returns its FULL answer and nothing downstream windows it" — was true when written and
+  is what this change makes false. They are applied **after** the count, because §11.2.5.5 makes
+  `Nav@odata.count` the count after `$filter` and *before* the window; counting a windowed array
+  would report the page size as the total, which is #379's defect one level down. `MaxExpandTop` is
+  still **not** imposed here — bounding a delegate's answer behind its back stays out of scope, and
+  only the window the *client* asked for is applied.
+
+  Two shapes still answer `400`, both cases where there is genuinely nothing to shape: a clause the
+  binders cannot bind, and a navigation expanded **beneath a raw-served parent** — that branch does
+  not recurse, so the rows come from the parent's own materialized graph and this navigation's
+  handler never runs. Its message is now position-specific rather than offering "declare it
+  delegate-less", which is no longer the remedy for anything.
 
 
 ### Added

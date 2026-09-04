@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Text.Json;
 using System.Threading.Tasks;
 using OhData;
 using Xunit;
@@ -93,21 +94,21 @@ public sealed class GetByIdNestedTopCeilingTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task GetById_NestedTop_AtCeiling_OnDelegateBackedNav_Rejected400()
+    public async Task GetById_NestedTop_AtCeiling_OnDelegateBackedNav_IsApplied()
     {
-        // #294 (owner decision, filed alongside #296): GbCeilingProfile's Children navigation is
-        // delegate-backed (HasMany(..., getAll:)), so an in-range nested $top can no longer be
-        // silently served here either — this used to be a 200 (the delegate's full answer, unwindowed)
-        // before #294's reject shipped. GetById shares the same $expand inlining pipeline as the
-        // collection routes (ApplyCollectionPipelineAsync → ExpandLevelAsync), so the reject applies
-        // uniformly across both.
+        // GbCeilingProfile's Children navigation is delegate-backed (HasMany(..., getAll:)). This
+        // assertion has been three things: a 200 with the delegate's full unwindowed answer (the
+        // silent-wrong-data bug), a 400 (#294), and now a 200 with the window actually applied
+        // (#650). GetById shares the same $expand inlining pipeline as the collection routes
+        // (ApplyCollectionPipelineAsync → ExpandLevelAsync), so it moves with them — which is the
+        // property this test is really here to hold.
         HttpResponseMessage resp = await _fx.Client.GetAsync(
             "/odata/GbCeilingParents(1)?$expand=Children($top=2)");
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         string body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("InvalidQueryOption", body);
-        Assert.Contains("Children", body);
+        using JsonDocument doc = JsonDocument.Parse(body);
+        Assert.Equal(2, doc.RootElement.GetProperty("Children").GetArrayLength());
     }
 
     [Fact]

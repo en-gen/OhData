@@ -3862,7 +3862,18 @@ internal static class OhDataEndpointFactory
             // is indistinguishable from a filter that matched everything. Same substrate, same
             // reason: the delegate's answer is not an IQueryable and nothing downstream re-shapes
             // it. $select is NOT in this set — it is applied below, to the materialized children.
-            if (expandItem.TopOption is not null || expandItem.SkipOption is not null)
+            // #650: a nested $top/$skip is APPLIED on the RunDelegate path (below, after the count) and
+            // still refused everywhere else. #294 refused it universally, reasoning that the delegate
+            // "returns its FULL answer and nothing downstream windows it" — true then, and this change
+            // is what makes it false: the framework now windows the materialized children itself.
+            //
+            // Blank keeps the refusal, and that is not an oversight. Under Blank the candidate sets
+            // disagree, so the navigation is deliberately served EMPTY — the framework does not have
+            // the real collection. Answering `$skip=5` from an empty array returns empty, which the
+            // client cannot distinguish from "there were fewer than five", i.e. exactly the silent
+            // wrong answer this whole issue is about. Same reason $filter/$orderby refuse there.
+            if (treatment.Treatment != NavTreatment.RunDelegate
+                && (expandItem.TopOption is not null || expandItem.SkipOption is not null))
             {
                 // Thrown (not returned) for the same reason EnsureWithinExpandCeiling throws below:
                 // it avoids IResult threading through this void recursive walk. All 5 collection-GET
@@ -4032,6 +4043,25 @@ internal static class OhDataEndpointFactory
                     && jsonItems[i][expandKey] is JsonArray countArr)
                 {
                     jsonItems[i][$"{expandKey}@odata.count"] = countArr.Count;
+                }
+
+                // #650: window LAST, and specifically after the count — §11.2.5.5 makes
+                // Nav@odata.count the count of the collection after $filter and BEFORE $top/$skip, so
+                // counting a windowed array would report the page size as the total. That is #379's
+                // defect one level down. The pushdown path sequences these the same way
+                // (WriteNestedCountAndWindow counts, then calls ApplyNestedWindow).
+                //
+                // MaxExpandTop is deliberately NOT imposed here: bounding a delegate's answer behind
+                // its back stays out of scope (see the Declared deviations table). This applies only
+                // the window the CLIENT asked for.
+                if (isCollectionNav
+                    && (expandItem.SkipOption is not null || expandItem.TopOption is not null)
+                    && jsonItems[i][expandKey] is JsonArray windowArr)
+                {
+                    ApplyNestedWindow(
+                        windowArr,
+                        expandItem.SkipOption is long dsk ? (int)Math.Min(dsk, int.MaxValue) : null,
+                        expandItem.TopOption is long dtp ? (int)Math.Min(dtp, int.MaxValue) : null);
                 }
             }
 
@@ -4213,6 +4243,14 @@ internal static class OhDataEndpointFactory
                 "exposing this type disagree about whether it is delegate-backed, so it is served " +
                 "empty and no window can be applied. Remove the option.");
 
+    // #650: the #320 position-specific twin of NestedWindowRejection. See its throw site for why the
+    // condition is about WHERE the navigation was reached rather than how it is declared.
+    private static Microsoft.OData.ODataException NestedWindowUnderRawParentRejection(string navName) =>
+        new(
+            $"A nested $top/$skip is not supported on '{navName}' here: it is expanded beneath a " +
+            "parent served from its own materialized graph, so its handler never runs and there is " +
+            "nothing to window. Expand it directly, or remove the option.");
+
     // #466: the message for a multi-level $levels on a delegate-backed navigation. Deliberately
     // shaped like NestedWindowRejection's RunDelegate arm — same substrate, same reason (the option
     // cannot be applied to a delegate's answer), same two remedies — and it names the spelling that
@@ -4356,7 +4394,19 @@ internal static class OhDataEndpointFactory
             if (navTreatment != NavTreatment.ServeRaw &&
                 (item.TopOption is not null || item.SkipOption is not null))
             {
-                throw NestedWindowRejection(navName, navTreatment);
+                // #650: still refused HERE, and the reason is now specific to this position rather
+                // than to the navigation. Reached directly, a delegate-backed navigation's nested
+                // $top/$skip is applied (ExpandLevelAsync windows the materialized children).
+                // Reached BENEATH a raw-served parent it is not: the rows come out of the parent's
+                // own materialized graph and this navigation's delegate never runs, so there is
+                // nothing for the window to be applied to. Refusing keeps #320's guarantee — the
+                // option is never dropped without a trace — and the message no longer offers
+                // "declare it delegate-less", which is no longer the remedy for this shape.
+                // Blank keeps its own message: the sets disagree about this navigation, which refuses
+                // it wherever it is reached, so naming the POSITION would name the lesser reason.
+                throw navTreatment == NavTreatment.RunDelegate
+                    ? NestedWindowUnderRawParentRejection(navName)
+                    : NestedWindowRejection(navName, navTreatment);
             }
 
             if (item.SelectAndExpand is { } deeper)
@@ -7273,10 +7323,15 @@ internal static class OhDataEndpointFactory
     // #298/#300: the $skip/$top window shared by the $count case above (WriteNestedCountAndWindow) and
     // the $levels no-$count case (ShapeLevelsInJson) below — split out so there is exactly one place
     // that windows a JsonArray in-place, rather than two copies of the same [skip, end) rebuild.
-    private static void ApplyNestedWindow(JsonArray arr, EngagedExpand e)
+    private static void ApplyNestedWindow(JsonArray arr, EngagedExpand e) =>
+        ApplyNestedWindow(arr, e.Skip, e.Top);
+
+    // #650: the same window, callable without an EngagedExpand so the delegate-backed path shares this
+    // implementation rather than transcribing it. One site, two consumers.
+    private static void ApplyNestedWindow(JsonArray arr, int? skipOption, int? topOption)
     {
-        int skip = e.Skip is int sk && sk > 0 ? Math.Min(sk, arr.Count) : 0;
-        int end = e.Top is int tp ? Math.Min(arr.Count, skip + Math.Max(tp, 0)) : arr.Count;
+        int skip = skipOption is int sk && sk > 0 ? Math.Min(sk, arr.Count) : 0;
+        int end = topOption is int tp ? Math.Min(arr.Count, skip + Math.Max(tp, 0)) : arr.Count;
         if (skip > 0 || end < arr.Count)
         {
             // Rebuild to the [skip, end) window in one O(n) pass (Clear detaches the captured nodes so

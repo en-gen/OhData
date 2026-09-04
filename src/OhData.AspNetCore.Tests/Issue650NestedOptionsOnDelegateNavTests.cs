@@ -150,20 +150,38 @@ public sealed class Issue650NestedOptionsOnDelegateNavTests
     }
 
     [Fact]
-    public async Task TheTopSkipMessageIsUnchanged()
+    public async Task ANestedTopAndSkip_AreApplied()
     {
         TestFixture fx = await HostAsync();
 
         HttpResponseMessage res = await fx.Client.GetAsync("/odata/N650Orders?$expand=Lines($top=1)");
         string body = await res.Content.ReadAsStringAsync();
 
-        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
-        // Byte-for-byte what #294 shipped: it is quoted in docs and #650 must not move it.
-        Assert.Contains(
-            "A nested $top/$skip is not supported on the delegate-backed navigation 'Lines'; " +
-            "declare it delegate-less (no Handler/BatchHandler) to enable server-side windowing, " +
-            "or remove the option.",
-            body, StringComparison.Ordinal);
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.Contains("\"S1\"", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"S2\"", body, StringComparison.Ordinal);   // order 1 windowed to 1 of 2
+
+        HttpResponseMessage skipped = await fx.Client.GetAsync("/odata/N650Orders?$expand=Lines($skip=1)");
+        string skippedBody = await skipped.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.OK, skipped.StatusCode);
+        Assert.DoesNotContain("\"S1\"", skippedBody, StringComparison.Ordinal);
+        Assert.Contains("\"S2\"", skippedBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ACountIsOfTheFilteredCollection_NotTheWindowedPage()
+    {
+        // §11.2.5.5: Nav@odata.count is the count after $filter and BEFORE $top/$skip. Order 1 has
+        // two lines; with $top=1 the page is 1 and the count must still be 2. Counting the windowed
+        // array would report the page size as the total -- #379's defect one level down.
+        TestFixture fx = await HostAsync();
+
+        HttpResponseMessage res = await fx.Client.GetAsync(
+            "/odata/N650Orders?$expand=Lines($top=1;$count=true)");
+        string body = await res.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.Contains("\"Lines@odata.count\":2", body, StringComparison.Ordinal);
     }
 
     [Fact]

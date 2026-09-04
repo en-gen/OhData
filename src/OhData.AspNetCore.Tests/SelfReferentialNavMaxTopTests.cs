@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Text.Json;
 using System.Threading.Tasks;
 using OhData;
 using Xunit;
@@ -76,21 +77,23 @@ public sealed class SelfReferentialNavMaxTopTests : IAsyncLifetime
     public async Task DisposeAsync() => await _fx.DisposeAsync();
 
     [Fact]
-    public async Task NestedTop_WithinMaxExpandTop_OnDelegateBackedSelfReferentialNav_Rejected400()
+    public async Task NestedTop_WithinMaxExpandTop_OnDelegateBackedSelfReferentialNav_IsApplied()
     {
-        // #294: before that fix this used to succeed with 200 and return all 3 children regardless of
-        // $top=2 -- the silent-wrong-data bug the adversarial review of #296 flagged, which is exactly
-        // why #294 and #296 are shipped together. A delegate-backed navigation cannot be safely
-        // re-windowed by the framework, so a nested $top/$skip against one now throws
-        // Microsoft.OData.ODataException (ExpandLevelAsync), caught by the route's existing handler
-        // and surfaced as 400 InvalidQueryOption, instead of silently ignored.
+        // HISTORY, because this assertion has now been three things. Before #294: 200 with all 3
+        // children and $top=2 silently ignored -- the wrong-data bug. #294: 400, because a delegate's
+        // answer could not be re-windowed by the framework. #650: 200 with the window APPLIED, because
+        // it can now -- ExpandLevelAsync windows the materialized children after counting them.
+        //
+        // The $top=2 is WITHIN MaxExpandTop, so the ceiling check above it does not fire; that
+        // over-ceiling case is still a 400 and is pinned by the test below, unchanged.
         HttpResponseMessage resp = await _fx.Client.GetAsync(
             "/odata/SrnNodes?$filter=id eq 1&$expand=Children($top=2)");
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         string body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("InvalidQueryOption", body);
-        Assert.Contains("Children", body);
+        using JsonDocument doc = JsonDocument.Parse(body);
+        JsonElement children = doc.RootElement.GetProperty("value")[0].GetProperty("Children");
+        Assert.Equal(2, children.GetArrayLength());   // 3 available, windowed to the requested 2
     }
 
     [Fact]
