@@ -186,43 +186,47 @@ public class ProductProfile : EntitySetProfile<int, Product>
         SelectEnabled = true;
         MaxTop = 100;
 
-        GetQueryable = _ => Task.FromResult<IQueryable<Product>>(db.Products);
-        GetById = (id, ct) => db.Products.FindAsync(new object[] { id }, ct).AsTask();
+        GetQueryable = _ => OhDataResult.SuccessTask<IQueryable<Product>>(db.Products);
+        GetById = async (id, ct) =>
+            OhDataResult.Success(await db.Products.FindAsync(new object[] { id }, ct));
 
         Post = async (product, ct) =>
         {
             db.Products.Add(product);
             await db.SaveChangesAsync(ct);
-            return product;
+            return OhDataResult.Success(product);
         };
 
         Put = async (id, product, ct) =>
         {
             Product? existing = await db.Products.FindAsync(new object[] { id }, ct);
-            if (existing is null) return null!; // framework treats null as "not found" / triggers upsert
+            // A null VALUE still means "not found" (→ 404, or an upsert when AllowUpsert is on).
+            // Success(null) is how that is expressed now; `return null;` would be a null result
+            // object, which the framework unwraps and would fault on.
+            if (existing is null) return OhDataResult.Success<Product>(null);
             existing.Name = product.Name;
             existing.Price = product.Price;
             existing.Category = product.Category;
             await db.SaveChangesAsync(ct);
-            return existing;
+            return OhDataResult.Success(existing);
         };
 
         Patch = async (id, delta, ct) =>
         {
             Product? existing = await db.Products.FindAsync(new object[] { id }, ct);
-            if (existing is null) return null;
+            if (existing is null) return OhDataResult.Success<Product>(null);
             delta.Patch(existing);
             await db.SaveChangesAsync(ct);
-            return existing;
+            return OhDataResult.Success(existing);
         };
 
         Delete = async (id, ct) =>
         {
             Product? existing = await db.Products.FindAsync(new object[] { id }, ct);
-            if (existing is null) return false;
+            if (existing is null) return OhDataResult.Success(false);
             db.Products.Remove(existing);
             await db.SaveChangesAsync(ct);
-            return true;
+            return OhDataResult.Success(true);
         };
     }
 }

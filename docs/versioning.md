@@ -66,7 +66,7 @@ public class GenreProfile : EntitySetProfile<string, Genre>
     public GenreProfile() : base(x => x.Code)
     {
         EntitySetName = "Genres";
-        GetAll = _ => Task.FromResult<IEnumerable<Genre>>(DbSeeder.Genres);
+        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<Genre>>(DbSeeder.Genres);
     }
 }
 
@@ -87,7 +87,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
     public ProductProfile(AppDbContext db) : base(x => x.Id)
     {
         EntitySetName = "Products";
-        GetQueryable = _ => Task.FromResult(db.Products.AsQueryable());
+        GetQueryable = _ => OhDataResult.SuccessTask(db.Products.AsQueryable());
     }
 }
 
