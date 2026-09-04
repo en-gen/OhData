@@ -432,7 +432,7 @@ Behaviour depends on the handler path:
 
 | Handler | `$count=true` behaviour |
 |---|---|
-| `GetODataQueryable` | Uses `TotalCount` from `ODataQueryResult<TModel>`. If not supplied, falls back to the current page size - **incorrect per spec**. Always set `TotalCount` on this path. |
+| `GetODataQueryable` | Uses `TotalCount` from `ODataQueryResult<TModel>`. If not supplied **and the request paged** (`$top`, `$skip`, a framework continuation, or a profile-supplied `NextLink`), the total is unknowable on this path — the profile applied the paging and the pre-paging source never reached the framework — so the request fails with `500` rather than reporting the page length as the total ([#379](https://github.com/en-gen/OhData/issues/379); it silently reported the page length through 1.7.0). With no paging, `items` **is** the filtered set and its length is still used. Set `TotalCount` to the pre-paging total, or remove `OhDataSystemQueryOption.Count` from `HonouredQueryOptions` so `$count` is refused with `501` instead. |
 | `GetQueryable` | Framework runs a second `COUNT(*)` query against the `IQueryable` before paging is applied. |
 | `GetAll` | Full collection is enumerated and counted. |
 
