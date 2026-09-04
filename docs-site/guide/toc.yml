@@ -82,11 +82,10 @@
           href: ../../docs/spec-compliance.md
         - name: Differences from Microsoft.AspNetCore.OData
           href: ../../docs/differences-from-microsoft-odata.md
-        # Kept reachable here (as in the original site's "Reference" group): the benchmarks report
-        # and the generated .NET API reference. `../api/` is a FOLDER href to the metadata-generated
-        # api/ toc, which carries its own left sidebar when opened.
+        # `../api/` is a FOLDER href to the metadata-generated api/ toc, which carries its own
+        # left sidebar when opened.
         - name: Performance & benchmarks
-          href: https://github.com/en-gen/OhData/blob/develop/src/OhData.Server.Benchmarks/docs/server-comparison-report.md
+          href: ../../docs/performance.md
         - name: API reference
           href: ../api/
 

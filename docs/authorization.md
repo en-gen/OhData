@@ -148,7 +148,7 @@ operation.
   > behaviour is opposite. Both startup warnings now say which one you are getting. If you only mean
   > *"this category needs no requirement of its own"*, name the requirement you intended instead -
   > on a category this call is the stronger statement. See
-  > [unbound operations](#unbound-functions-and-actions) for the other half.
+  > [unbound operations](#unbound-functions-and-actions-carry-their-own-requirement) for the other half.
 - `$metadata` and the service document are **not** entity-set-scoped, so `ConfigureAuthorization` does
   not reach them; protect them with group-level auth (see below), same as the legacy model. Unbound
   functions and actions are not entity-set-scoped either, but they now have their **own**
@@ -363,7 +363,7 @@ different questions):
 ## Unbound functions and actions carry their own requirement
 
 `AddFunction`/`AddAction` (registered on `OhDataBuilder`, not inside a profile - see
-[bound-operations.md](bound-operations.md#unbound-functions-and-actions)) are mapped on the same
+[bound-operations.md](bound-operations.md#unbound-functions-and-actions-carry-their-own-requirement)) are mapped on the same
 top-level route group as `$metadata` and the service document, for the same reason: they aren't
 tied to any single entity set, so there's no profile-level auth group for them to sit inside.
 

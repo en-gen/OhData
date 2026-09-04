@@ -48,8 +48,8 @@ annotate a controller. Responses are PascalCase, matching `$metadata` per the sp
   uniformly drives the OData name, so the wire, the EDM, and your serializer never drift. See the
   [spec-compliance reference](../docs/spec-compliance.md) for exactly what's covered.
 - **Fast.** OhData's minimal-API pipeline beat `Microsoft.AspNetCore.OData`'s
-  `ODataController` + `[EnableQuery]` pipeline on all 11 benchmarked scenarios (writes ~5–6×,
-  full-page reads ~3–3.7×). See [performance](https://github.com/en-gen/OhData/blob/develop/src/OhData.Server.Benchmarks/docs/server-comparison-report.md).
+  `ODataController` + `[EnableQuery]` pipeline on all 11 benchmarked scenarios (writes ~4×,
+  full-page reads ~2.5×). See [performance](../docs/performance.md).
 - **Clean DTO write path.** Dependency-free delta mapping (`DeltaProfile` + `IDeltaFactory`) maps
   a wire DTO onto your persistence entity for PATCH/PUT while preserving the property allowlist —
   no AutoMapper, no reflection at request time.

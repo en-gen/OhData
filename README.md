@@ -423,30 +423,33 @@ public class MyService(OhDataClient client) { ... }
 
 OhData's minimal-API pipeline was benchmarked head-to-head against `Microsoft.AspNetCore.OData`'s
 `ODataController` + `[EnableQuery]` pipeline over the full HTTP round-trip (routing → OData
-query-option processing → handler → serialization), same dataset, same requests, correctness
-verified before every run. OhData won all 11 scenarios:
+query-option processing → handler → serialization), same dataset, byte-identical requests,
+correctness verified before every run. OhData won all 11 scenarios:
 
 | Scenario | OhData | Microsoft.AspNetCore.OData | Speedup | Alloc ratio |
 |---|---:|---:|---:|---:|
-| GetAll page (100) | 763 µs | 2,821 µs | **3.7×** | 6.3× |
-| `$filter` | 1,778 µs | 3,393 µs | **1.9×** | 6.0× |
-| `$orderby` | 968 µs | 2,949 µs | **3.0×** | 5.4× |
-| `$select` | 878 µs | 1,858 µs | **2.1×** | 1.3× |
-| `$top` + `$skip` | 1,262 µs | 2,061 µs | **1.6×** | 4.6× |
-| `$count=true` (+`$filter`) | 2,831 µs | 4,740 µs | **1.7×** | 5.4× |
-| GetById | 37 µs | 112 µs | **3.0×** | 3.0× |
-| POST | 51 µs | 286 µs | **5.6×** | 7.7× |
-| PUT | 57 µs | 281 µs | **4.9×** | 7.7× |
-| PATCH | 53 µs | 325 µs | **6.2×** | 7.1× |
-| DELETE | 16 µs | 24 µs | **1.5×** | 1.3× |
+| GetAll page (100) | 1,296 µs | 3,119 µs | **2.5×** | 4.6× |
+| `$filter` | 2,357 µs | 4,042 µs | **1.7×** | 4.6× |
+| `$orderby` | 1,583 µs | 4,140 µs | **2.7×** | 4.4× |
+| `$select` | 1,531 µs | 2,380 µs | **1.6×** | 1.2× |
+| `$top` + `$skip` | 1,142 µs | 2,465 µs | **2.2×** | 3.7× |
+| `$count=true` (+`$filter`) | 3,973 µs | 5,884 µs | **1.5×** | 4.3× |
+| GetById | 64 µs | 157 µs | **2.5×** | 2.8× |
+| POST | 78 µs | 330 µs | **4.3×** | 7.7× |
+| PUT | 80 µs | 337 µs | **4.2×** | 7.5× |
+| PATCH | 84 µs | 342 µs | **4.1×** | 6.5× |
+| DELETE | 44 µs | 51 µs | **1.1×** | 1.2× |
 
-The biggest gaps are on writes (POST/PUT/PATCH, ~5-6× — MS OData's OData-JSON formatters and
-EDM-bound serialization dominate there) and full-page reads (~3-3.7×). "Alloc ratio" is how many
-times more memory the MS OData pipeline allocates per request. BenchmarkDotNet over in-process
-TestServer hosts, identical 1,000-entity dataset and byte-identical requests on both sides, with a
-correctness gate run before measurement; see
-[src/OhData.Server.Benchmarks/docs/server-comparison-report.md](src/OhData.Server.Benchmarks/docs/server-comparison-report.md)
-for the full methodology, raw output, and known asymmetries between the two pipelines.
+<sub>Measured 2026-09-04 at commit `4e123b7` · BenchmarkDotNet v0.15.8 · .NET 10.0.11 · AMD Ryzen 9
+5950X · Windows 11 25H2. Speedup is BenchmarkDotNet's per-iteration `Ratio` against the OhData
+baseline; "alloc ratio" is how many times more memory the MS OData pipeline allocates per
+request.</sub>
+
+The widest gaps are on writes (POST/PUT/PATCH, ~4× — MS OData's OData-JSON formatters and EDM-bound
+serialization dominate there) and full-page reads (~2.5×). Read DELETE's 1.1× as near-parity: it is
+a route where neither framework does much beyond routing. **[docs/performance.md](docs/performance.md)**
+has the full methodology, the raw BenchmarkDotNet capture, the `$expand`/`$levels` half, and the
+known asymmetries between the two pipelines that could not be eliminated.
 
 ## Battle-testing
 
