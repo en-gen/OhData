@@ -9,6 +9,73 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Upgrading from 1.7.0
+
+A checklist, not an explanation. Every line links to the entry below, which carries the measurement,
+the reasoning and the rejected alternatives. **The baseline throughout this section is 1.7.0** — the
+last shipped release — never an intermediate state on this branch.
+
+This is a major, and the compile-time half is unusually large: **every entity-set handler changes
+shape.** The wire half is smaller than the list suggests — most of it only fires on a request that
+was already being answered wrongly.
+
+#### 1. What stops the app compiling
+
+All of this is mechanical, and the compiler finds every site for you.
+
+- [ ] **Every handler returns `Task<OhDataResult<T>>`** (#581). `GetAll`, `GetQueryable`, `GetById`,
+      `Post`, `Put`, `Patch`, `Delete` and `Search`. A success becomes `OhDataResult.Success(value)`;
+      a handler can now also *return* a rejection — `OhDataResult.NotFound(...)`, `Conflict(...)`,
+      `Forbidden(...)`, `BadRequest(...)`, `PreconditionFailed(...)` — instead of throwing.
+- [ ] **`GetById`, `Put` and `Patch` take `OhDataResult<TModel?>`** (#641); `Post` stays
+      `OhDataResult<TModel>`. Add the `?` to the success return: `OhDataResult.Success<Product?>(e)`.
+      The asymmetry is the point — a `null` from the first three is a legitimate `404` (or an upsert
+      on `Put`), while a `null` from `Post` is a contract violation answering `500`.
+- [ ] **`OhDataResult.SuccessTask` is gone; use `Success`** (#633). `OhDataResult<T>` converts
+      implicitly to `Task<OhDataResult<T>>`, so a synchronous handler needs no `Task` ceremony. A
+      synchronous *rejection* still needs `Task.FromResult<OhDataResult<T>>(...)` or an `async`
+      lambda — that is unchanged, `SuccessTask` had no rejection twin either.
+
+`docs/error-handling.md` is the whole surface, and it is now reachable from the docsite nav.
+
+#### 2. What changes on the wire
+
+Each of these was answering a request wrongly before. Check them against any client that branches on
+status codes or headers.
+
+- [ ] **A derived-type row now carries `@odata.type`** (#628). If you have no entity-type inheritance,
+      nothing changes. If you do, a client with strict additional-property handling sees a new member —
+      and a client that was silently dropping your derived properties stops.
+- [ ] **`GET …/{Property}/$value` on a null property answers `204`, not `404`** (#369).
+- [ ] **`Preference-Applied` echoes `odata.maxpagesize`**, the OData 4.0 spelling, rather than 4.01's
+      bare `maxpagesize` (#372). Both spellings are still *accepted* on the request.
+- [ ] **`/$count` negotiates nothing** (#580). `Accept: application/xml` and `$format=xml` answer
+      `200 text/plain` instead of `406`/`400`.
+- [ ] **An unsupported system query option answers `501`, not `400`**, on a Priority-1 route whose
+      profile does not declare it (#475). Declare what you honour with `HonouredQueryOptions`.
+- [ ] **`$filter`/`$orderby` dividing by a literal zero is refused with `400` before execution**
+      (#385), on every provider — previously `400`, `200`-with-no-rows or `500` depending on the
+      database.
+
+#### 3. What changes only if you use the feature
+
+- [ ] **A polymorphic (TPH) entity set is served through EF `Include` rather than a projection**
+      (#529). Derived properties now survive `$expand` — they were silently dropped before. A nested
+      `$expand` works (#616); **`$levels` under a polymorphic root now answers `400`** where it
+      previously answered `200` with the derived properties missing. See
+      [docs/polymorphism.md](../docs/polymorphism.md).
+- [ ] **A Priority-1 profile that pages and supports `$count` must set
+      `ODataQueryResult.TotalCount`** (#379). Without it a paged `$count=true` now fails loudly
+      instead of reporting the page length as the total. The alternative is to drop
+      `OhDataSystemQueryOption.Count` from `HonouredQueryOptions`, which refuses `$count` with `501`.
+
+#### 4. Nothing to do
+
+- **An omitted required property is accepted again** on `POST`/`PUT` (#544/#545). 1.7.0 refused it;
+  no clause in Part 1 mandates that, and the refusal made the wire answer depend on a CLR initializer
+  that `$metadata` does not describe. An explicit `null` for a non-nullable property is still `400`.
+
+
 ### Breaking
 
 - **⚠ BREAKING CHANGE — a Priority-1 route refuses the system query options its profile does not
@@ -175,6 +242,81 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `HttpClient` throws on its own timeout. Both sides are pinned.
 
 
+- **⚠ BREAKING CHANGE — every handler delegate that can answer "not found" says so in its type
+  (#641).** `GetById`, `Put` and `Patch` return `Task<OhDataResult<TModel?>>`; `Post` keeps
+  `Task<OhDataResult<TModel>>`. That asymmetry is the point: a `null` from the first three is a
+  legitimate outcome — `404`, or an upsert on `Put` when `AllowUpsert` is set — while a `null` from
+  `Post` is a server-side contract violation answering `500` (#496 finding 1). The signature is now
+  the one place that difference is visible without reading the framework.
+
+  196 call sites, fixed compiler-first: build, read each `CS8619`, take the type the compiler itself
+  names as the target, rewrite, repeat. The library compiled clean throughout — every error was in
+  caller code, which is exactly what an adopter sees. **Upgrading:** add the nullable type argument
+  to the success return, `OhDataResult.Success<Product?>(entity)`.
+
+- **⚠ BREAKING CHANGE — `OhDataResult.SuccessTask` is removed; `Success` covers both positions
+  (#633).** The name pushed the framework's plumbing into the caller's vocabulary. It is not
+  expressible as an overload (C# cannot overload on return type, CS0111), so `OhDataResult<T>` gains
+  an implicit conversion to `Task<OhDataResult<T>>`.
+
+  A **synchronous rejection** still needs `Task.FromResult<OhDataResult<T>>(…)` or an `async` lambda
+  — two user-defined conversions, and C# applies at most one. Unchanged: `SuccessTask` had no
+  `RejectTask` twin either. **Upgrading:** rename `SuccessTask` to `Success`; the type argument is
+  unchanged.
+
+- **⚠ BREAKING CHANGE — a derived-type instance carries `@odata.type` (#628).** JSON Format §4.5.3
+  makes it a **MUST** in minimal or full metadata when an instance's type is derived from the type
+  declared for the containing collection. Measured on the live demo before the fix: `GET /v2/Awards`
+  served `{"Ceremony":"67th Academy Awards","IsWinner":true,…}` with no annotation while `$metadata`
+  correctly declared `AcademyAward BaseType="…Award"` — the server knew the type and did not say it,
+  so a conforming client deserializes into the base and silently drops the derived members.
+  `Microsoft.AspNetCore.OData` emits it (35 of its test files assert it), so this was a divergence
+  from MS as well as from the spec. An instance of the *declared* type carries none: the client
+  determines that from `@odata.context`, and §3.1.1 asks a minimal-metadata service to omit
+  computable control information.
+
+- **⚠ BREAKING CHANGE — a TPH root keeps its derived properties under `$expand` (#529).** The expand
+  pushdown folded engaged navigations into a member-init projection over `TModel`, and a member-init
+  can construct nothing but the *declared* type — so on a TPH hierarchy every row materialized as the
+  base and the derived properties vanished, silently, under a `200`, **decided by whether the request
+  carried `$expand`**. Measured: `GET /P529Things` emitted `SELECT Id, Discriminator, Name, Extra,
+  Rank` while `?$expand=Children` emitted `SELECT t0.Id, t0.Name, c.Id, c.BaseId, c.Body` — the
+  discriminator not even selected.
+
+  A polymorphic root is now refused the projection and served through the EF `Include` path, which
+  loads real entities and preserves each row's runtime type. Required with it: that path stopped
+  refusing a nested `$filter`/`$orderby`, on the stated grounds that *"a plain EF Include cannot carry
+  a predicate/ordering at all"* — EF Core's **filtered** Include does. **Also breaking:** a nested
+  `$expand`/`$levels` under a polymorphic root answered `200` with the derived properties missing and
+  now answers `400`; `$levels` still does (#616 lifted the nested-`$expand` half).
+
+- **⚠ BREAKING CHANGE — a paged Priority-1 `$count` no longer reports the page length (#379).**
+  `@odata.count` was `TotalCount ?? items.Length`, and `items` is the page — measured *after* the
+  framework's own `Take` cap. On `MaxTop = 50` over 10,000 rows that reported `"@odata.count": 50`
+  under a `200`, so a paging UI computed one page instead of 200. §11.2.6.5 wants the count of items
+  matching the request, unaffected by `$top`/`$skip`.
+
+  The condition is **measured, not refused wholesale** — with no `$top`, no `$skip` and no cap,
+  `items` *is* the filtered set and the number is right, which is why this hid so long. It throws only
+  where paging could have moved the page away from the full set. `500` rather than `501`: since #475 a
+  Priority-1 profile *declares* whether it honours `$count`, so reaching that line means it said yes,
+  and the condition is decided entirely by server-side state. **Upgrading:** set
+  `ODataQueryResult.TotalCount`, or drop `OhDataSystemQueryOption.Count` from `HonouredQueryOptions`
+  so `$count` is refused with `501`.
+
+- **⚠ BREAKING CHANGE — `Preference-Applied` echoes OData 4.0's `odata.maxpagesize` (#372).** It
+  echoed the bare `maxpagesize`, which is the **4.01** rename, while this service reports
+  `OData-Version: 4.0` — claiming a preference that version does not define (§8.2.8.5). Both spellings
+  are still accepted on the request. **Upgrading:** a client matching the exact bare token now sees the
+  prefixed one.
+
+- **⚠ BREAKING CHANGE — `GET …/{Property}/$value` on a null property returns `204`, not `404`
+  (#369).** §11.2.3.1, verbatim: *"A `$value` request for a property that is null results in a 204 No
+  Content response."* The next sentence reserves `404` for a different condition — *"if the property
+  is not available, for example due to permissions"* — and a null value is available and is null. The
+  sibling `/{Property}` route has always answered `204` for the same entity in the same state.
+
+
 ### Added
 
 - **A handler can produce a client error: `ConfigureExceptions` (#581).** Every handler delegate
@@ -245,6 +387,21 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   not fire on a correct configuration is pinned both ways, and one handler alone is silent. Across
   the repo's own seven test projects exactly **two** profiles set more than one collection handler,
   and both are this issue's own fixtures — so there are no pre-existing emissions.
+
+- **A nested `$expand` is served under the Include fallback via `ThenInclude` (#616).** A
+  projection-ineligible root — which since #529 includes every polymorphic (TPH) root — is served
+  through EF `Include`, and that path refused a nested `$expand` with `400`. Each root-to-leaf path
+  through the engaged tree now becomes its own `Include(…).ThenInclude(…)` chain.
+
+  Four things were probed on EF Core 10 / SQLite before writing it, and each shaped the result: the
+  filtered pair preserves the derived runtime type *and* the nested filter; there are **two**
+  `ThenInclude` overloads distinguished only by the previous navigation's shape, and picking wrong is
+  a runtime failure rather than a compile error; siblings cannot share a chain, so each path re-issues
+  the prefix (re-issuing a filtered Include *identically* is accepted, with a *different* predicate it
+  throws); and the #298 "double collection" `SQL APPLY` hazard is real but already unreachable, because
+  `ApplyNavShape` gates every SQL window on `isProjectionLeaf`. `$levels` stays refused — its depth is
+  decided per request by the data, so there is no statically-known nesting to build a chain from.
+
 
 ### Fixed
 
@@ -555,6 +712,31 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   POST/PUT/PATCH and over a global default, and `RequestBodySizeFeatureTests` covers the feature arm
   in both directions. The justification is cost and determinism alone.
 
+- **The documentation snippets marked for it are compiled in CI (#622).** #620 found 45 stale handler
+  examples across 15 files — every one of them — while the `docs.yml` stale-API gate stayed green,
+  because that gate is a denylist of removed API *names* and `Task.FromResult(…)` is valid C# naming
+  none. "This snippet no longer compiles" is not a token, so no denylist can express it.
+
+  Opt-in deliberately: of 155 `csharp` fences, 22 carry a `...` elision and most of the rest are
+  fragments, so compiling all of them means a per-shape harness for an 87-item tail — and a harness
+  that half-works gives false confidence. One compilation per page, **one syntax tree per fence**,
+  because a fence *is* a file (`// Models.cs`, `// Program.cs`). It found a real bug on its first run:
+  `ef-core-sqlite.md` registered a `CategoryProfile` the page described in prose but never showed.
+
+- **The navigation `/$count` option gate is pinned (#382).** The route once performed no validation at
+  all, so `?$filter=` returned the **unfiltered** count under a `200` while the sibling navigation
+  route refused the same option one segment away. #359 fixed it and nothing asserted it, which is why
+  the issue stayed open against code that had already changed. Fourteen cases, including that the
+  accepted-and-ignored options leave the **number** unchanged (§11.2.9 says they must) and that the two
+  routes agree — the defect was a split, so pinning one side would let it reappear from the other.
+
+- **The TestBench gained a polymorphic (TPH) entity set, and k6 covers it (#617).** The demo declared
+  no inheritance anywhere, so k6 — which runs against it in CI — could not cover TPH, and the code path
+  a polymorphic root takes was verified only by TestServer + SQLite tests. Three seeded rows in three
+  shapes, so a page mixes them. The k6 A/B lands exactly on the defect: against a build with #529
+  reverted, precisely the derived-property checks fail and every control holds.
+
+
 ### Documentation
 
 - **The 1.7.0 `Convert()` capture refusal is recorded, after the fact (#551).** #488/#535 made a
@@ -565,6 +747,63 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `Convert()`, and `Issue551ConvertCaptureShapeTests` pins all five rows — including the three
   ACCEPTED ones, which had no coverage at all and are what stops a later tightening of the check
   from refusing a plain non-capturing lambda.
+
+- **The differences from `Microsoft.AspNetCore.OData` are collected in one page (#623).** Six
+  divergences, each with the clause that forced it, and — given equal billing — six places OhData
+  deliberately keeps Microsoft's answer where the specification left room. Every claim about MS was
+  read from its source at `a05e1ad0` and is cited by file and line.
+
+- **The README teaches the current API, and separating DTOs from EF entities (#620, #639).** It still
+  carried the pre-#581 handler signature: `docs/` and `docs-site/` were swept, and the stale-API scan
+  globs those same two directories, so the most-read file in the repo was outside both. The scan now
+  includes it. The quick start also assigns **named methods** rather than inline lambdas, so the
+  constructor reads as the route manifest it is, and a new section states both directions of DTO
+  separation — projection on the read side, delta mapping on the write side, because a projection has
+  no inverse.
+
+- **`docs/error-handling.md` is reachable from the docsite (#640).** It documents #581's whole surface
+  across six sections and was never added to `toc.yml`, so the headline feature of this release was
+  invisible on the published site. Swept the rest: only `deployment.md` and `releasing.md` are also
+  absent, and both deliberately.
+
+- **Spec citations name their source document, and three wrong ones are corrected (#612, #637).** The
+  `/$count` negotiation ruling #580 reversed survived in `spec-compliance.md` — the fourth place
+  carrying it. The *Response annotations* table had no row for `@odata.type` and cited `@odata.id` at
+  §4.5.8 (that is `editLink`/`readLink`) and `@odata.etag` at §4.5.3 — **the section belonging to the
+  annotation the table was missing**. Every citation was then audited against the Part 1 text; no
+  further numbers were wrong, but five rows drew on JSON Format, Part 2 or RFC 9110 without saying so,
+  and a bare `§4.5.3` is genuinely ambiguous between documents.
+
+- **The benchmark numbers are re-measured, stamped, and hosted on the docsite (#636).** They were
+  generated 119 commits earlier and republished in the README with no date, no commit and no
+  environment — the *"a perf number without the commit it was taken at is a rumour with units"*
+  rule, pointed at the repo's own front page. The report also lived under
+  `src/OhData.Server.Benchmarks/docs/`, which docfx does not map, so the site's
+  "Performance & benchmarks" nav entry linked off-site to a GitHub blob; it is now
+  `docs/performance.md`, a real page, and the benchmark project keeps no second copy.
+
+  **One published claim did not survive the re-measurement.** "OhData won all 11 scenarios" is
+  now "faster on 10 of the 11 and allocates less on all 11": `DELETE` measures **1.02× ± 0.08**,
+  indistinguishable from parity on a route where neither framework does much beyond routing, and
+  the 1.59× and 1.14× published for it previously were within-noise reads of the same tie. Ratio
+  standard deviations are published beside every speedup now, so a within-noise number cannot be
+  quoted as a win again without it being visible.
+
+  **v1.7.0 was run as a control**, because every ratio came in below the published figure and
+  #581 puts a heap-allocated `OhDataResult<T>` on every route. There is no regression: the three
+  write routes are 1.6–1.8% *faster*, and allocations move by at most +340 B, with the uniform
+  +41 B on key-addressed routes bounded rather than attributed — the MS OData control, byte-identical
+  in both trees, moved 0 to +72 B with no pattern. `DELETE`'s +225 B is the one move with a
+  mechanism: `Task<bool>` hands back a **cached** completed task and `Task<OhDataResult<bool>>`
+  cannot. The first attempt at this control reported the writes as 24–28% *slower*, purely because
+  it compared a six-suite run against a single-suite one; the page records that scope confound,
+  which is larger than every effect being looked for.
+
+  The `$expand`/`$levels` half is published for the first time and deliberately un-headlined — one
+  run, and two of the five straddle parity. Benchmarks also gain a dispatchable workflow, and
+  deliberately not a scheduled or gating one: a hosted runner cannot produce publishable
+  magnitudes, and a threshold needs that runner class's run-to-run spread measured first.
+
 
 ### Build
 
