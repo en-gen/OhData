@@ -1240,7 +1240,8 @@ meaningless on a single entity.
 
 | Route | Accepted |
 |---|---|
-| `GET /{Set}` (`GetQueryable`, `GetODataQueryable`) | `$filter` `$orderby` `$top` `$skip` `$select` `$expand` `$count` `$search` `$skiptoken` `$format` |
+| `GET /{Set}` (`GetQueryable`) | `$filter` `$orderby` `$top` `$skip` `$select` `$expand` `$count` `$search` `$skiptoken` `$format` |
+| `GET /{Set}` (`GetODataQueryable`, Priority-1) | **whatever the profile declares** in `HonouredQueryOptions`, plus `$format`. The default is what `ODataQueryOptions.ApplyTo` honours - the row above **minus `$search`**, because `ApplyTo` drops `$search` when no `ISearchBinder` is registered (#475) |
 | `GET /{Set}` (`GetAll`) | the same, **minus `$skiptoken`** - this path continues with `$skip` and never read a `$skiptoken` |
 | `GET /{Set}/$count` | `$filter` `$top` `$skip` `$orderby` `$expand` `$select` `$format` - only `$filter` is applied; §11.2.9 requires the rest to be ignored, and since #580 the segment negotiates nothing at all (any `Accept`, any `$format` value, always `text/plain`) |
 | `GET /{Set}({key})` | `$select` `$expand` `$format` |

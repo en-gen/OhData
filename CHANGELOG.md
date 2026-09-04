@@ -11,6 +11,41 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking
 
+- **⚠ BREAKING CHANGE — a Priority-1 route refuses the system query options its profile does not
+  honour (#475).** `GET /{Set}?$search=…` on a `GetODataQueryable` profile with no `$search` handling
+  answered **`200` with the full, unfiltered collection**. The client cannot detect that: an
+  unfiltered result is indistinguishable from a search that matched everything.
+
+  §11.2.5 is a MUST — *"If a data service does not support a system query option, it MUST fail any
+  request that contains the unsupported option and SHOULD return 501 Not Implemented"* — and minimal
+  conformance item 7 repeats it. **`Microsoft.AspNetCore.OData` ignores it by choice**:
+  `SearchQueryOption.ApplyTo` carries *"If the developer doesn't provide the search binder, let's
+  ignore the $search clause"*. This is therefore a deliberate divergence from MS — the same one
+  #359/#380/#353 already made, where §11.2.5's MUST outweighs aligning with MS.
+
+  Priority-1 is the one route shape where the framework **cannot** know the answer: the profile
+  receives the whole `ODataQueryOptions` and interprets it, so "the framework does not read this
+  option" is not "the request does not honour it". So it asks:
+
+  ```csharp
+  HonouredQueryOptions = OhDataSystemQueryOption.Default | OhDataSystemQueryOption.Search;
+  ```
+
+  **The default costs nobody anything.** `OhDataSystemQueryOption.Default` is exactly what
+  `ODataQueryOptions.ApplyTo` applies, so a handler that just calls `ApplyTo` declares the truth
+  without setting anything — and `$search` falls outside it precisely because `ApplyTo` drops it.
+  The conformance gap closes without anyone enumerating the common case.
+
+  It generalises past `$search`: a profile honouring only `$filter` now has `$orderby`/`$top`/
+  `$select` refused too, rather than accepted and dropped. `$format` is never declinable — it is
+  negotiated once on the group filter, never reaches a handler, and cannot change a row.
+
+  Distinct from #465, which refuses `GetODataQueryable` + a `Search` **handler** at startup: that is
+  about there being no seam to feed a search-derived source into. Declaring `Search` here means "my
+  own handler reads `options.Search`". The `GetQueryable` (Priority-2) route is untouched — it
+  invokes a real `Search` handler, so its set stays framework-owned.
+
+
 - **⚠ BREAKING CHANGE — a literal zero divisor in `$filter`/`$orderby` is refused before execution
   (#385).** #358 catches `DivideByZeroException`/`OverflowException`, which only fires where the
   **CLR** evaluates the expression. One URL therefore split three ways:

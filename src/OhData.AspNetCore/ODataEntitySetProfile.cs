@@ -35,6 +35,27 @@ public abstract class ODataEntitySetProfile<TKey, TModel> : EntitySetProfile<TKe
     protected Func<ODataQueryOptions<TModel>, CancellationToken, Task<ODataQueryResult<TModel>>>? GetODataQueryable = null;
 
     /// <summary>
+    /// Which system query options this profile's <see cref="GetODataQueryable"/> honours (#475).
+    /// Anything not declared here is refused with <c>501</c> rather than accepted and ignored.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The default, <see cref="OhDataSystemQueryOption.Default"/>, is exactly what
+    /// <c>ODataQueryOptions.ApplyTo</c> applies — so a handler that just calls <c>ApplyTo</c> is
+    /// already declaring the truth and needs to set nothing.
+    /// </para>
+    /// <para>
+    /// <c>$search</c> is the one option outside that default, because <c>ApplyTo</c> drops it when
+    /// no <c>ISearchBinder</c> is registered. Left undeclared it is refused, which §11.2.5 requires
+    /// ("If a data service does not support a system query option, it MUST fail any request that
+    /// contains the unsupported option"); declare it when the handler reads <c>options.Search</c>
+    /// itself. That is a different thing from a <c>Search</c> HANDLER, which #465 refuses on this
+    /// route because there is no seam to feed a search-derived source into.
+    /// </para>
+    /// </remarks>
+    protected OhDataSystemQueryOption HonouredQueryOptions { get; init; } = OhDataSystemQueryOption.Default;
+
+    /// <summary>
     /// Initialises the profile. Pass a key-selector expression that identifies the entity's
     /// primary key property, e.g. <c>x => x.Id</c>.
     /// </summary>
@@ -47,6 +68,8 @@ public abstract class ODataEntitySetProfile<TKey, TModel> : EntitySetProfile<TKe
 
     // IODataEntitySetEndpointSource implementation
     bool IODataEntitySetEndpointSource.HasGetODataQueryable => GetODataQueryable is not null;
+
+    OhDataSystemQueryOption IODataEntitySetEndpointSource.HonouredQueryOptions => HonouredQueryOptions;
 
     async Task<ODataQueryResult<object>> IODataEntitySetEndpointSource.InvokeGetODataQueryableAsync(ODataQueryOptions options, CancellationToken ct)
     {
