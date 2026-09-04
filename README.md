@@ -497,6 +497,7 @@ The full documentation — getting started, the EF Core + SQLite walkthrough, an
 | Delta mapping (DTO → entity write path, dependency-free) | [docs/delta-mapping.md](docs/delta-mapping.md) |
 | Error handling (`OhDataResult<T>`, the rejection factories, the error envelope) | [docs/error-handling.md](docs/error-handling.md) |
 | Open types (dynamic property bags on complex types) | [docs/open-types.md](docs/open-types.md) |
+| Polymorphic entity sets (TPH inheritance), `@odata.type`, and what differs | [docs/polymorphism.md](docs/polymorphism.md) |
 | Bound functions and actions | [docs/bound-operations.md](docs/bound-operations.md) |
 | ETags and optimistic concurrency | [docs/etags.md](docs/etags.md) |
 | Authorization | [docs/authorization.md](docs/authorization.md) |
