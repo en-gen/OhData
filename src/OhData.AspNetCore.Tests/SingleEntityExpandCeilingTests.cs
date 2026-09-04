@@ -43,14 +43,14 @@ public sealed class BeAuthorByIdProfile : EntitySetProfile<int, BeAuthor>
         FilterEnabled = true;
         OrderByEnabled = true;
         CountEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask(db.Authors.AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(db.Authors.AsQueryable());
         // #463: `.ThenInclude(b => b.Chapters)` is the one addition. #418's fixture eager-loaded ONE
         // level, which is exactly why its ceiling could pass while being enforced at one level: with
         // nothing materialized at depth 2 there was nothing for the missing check to have caught.
         // Chapters is not $expand'd unless the request asks for it, so every pre-existing byte-
         // identity assertion in this file is unaffected (SerializeBounded never walks an un-expanded
         // navigation).
-        GetById = (id, ct) => OhDataResult.SuccessTask(
+        GetById = (id, ct) => OhDataResult.Success(
             db.Authors.Include(a => a.Books).ThenInclude(b => b.Chapters).FirstOrDefault(a => a.Id == id));
         HasMany(x => x.Books);
     }
@@ -67,7 +67,7 @@ public sealed class BeAuthorDelegateByIdProfile : EntitySetProfile<int, BeAuthor
     {
         EntitySetName = "BeAuthorsDlg";
         ExpandEnabled = true;
-        GetById = (id, ct) => OhDataResult.SuccessTask(db.Authors.FirstOrDefault(a => a.Id == id));
+        GetById = (id, ct) => OhDataResult.Success(db.Authors.FirstOrDefault(a => a.Id == id));
         HasMany(x => x.Books,
             getAll: (id, ct) => Task.FromResult(db.Books.Where(b => b.AuthorId == id).AsEnumerable()));
     }

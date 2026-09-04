@@ -58,7 +58,7 @@ internal class CsdlSpotCheckProfile : EntitySetProfile<int, CsdlSpotCheckItem>
     public CsdlSpotCheckProfile() : base(x => x.Id)
     {
         EntitySetName = "CsdlSpotCheckItems";
-        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<CsdlSpotCheckItem>>(Array.Empty<CsdlSpotCheckItem>());
+        GetAll = (ct) => OhDataResult.Success<IEnumerable<CsdlSpotCheckItem>>(Array.Empty<CsdlSpotCheckItem>());
 
         BindFunction(GetCount);
         BindAction(ResetAll);
@@ -88,7 +88,7 @@ internal class CsdlParentProfile : EntitySetProfile<int, CsdlParentItem>
     public CsdlParentProfile() : base(x => x.Id)
     {
         EntitySetName = "CsdlParents";
-        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<CsdlParentItem>>(Array.Empty<CsdlParentItem>());
+        GetAll = (ct) => OhDataResult.Success<IEnumerable<CsdlParentItem>>(Array.Empty<CsdlParentItem>());
 
         HasMany(x => x.Children!,
             getAll: (id, ct) => Task.FromResult<IEnumerable<CsdlChildItem>>(Array.Empty<CsdlChildItem>()));
@@ -106,7 +106,7 @@ internal class CsdlChildProfile : EntitySetProfile<int, CsdlChildItem>
     public CsdlChildProfile() : base(x => x.Id)
     {
         EntitySetName = "CsdlChildItems";
-        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<CsdlChildItem>>(Array.Empty<CsdlChildItem>());
+        GetAll = (ct) => OhDataResult.Success<IEnumerable<CsdlChildItem>>(Array.Empty<CsdlChildItem>());
     }
 }
 
@@ -116,7 +116,7 @@ internal class CsdlV1Profile : EntitySetProfile<int, CsdlV1Item>
     public CsdlV1Profile() : base(x => x.Id)
     {
         EntitySetName = "V1OnlyItems";
-        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<CsdlV1Item>>(Array.Empty<CsdlV1Item>());
+        GetAll = (ct) => OhDataResult.Success<IEnumerable<CsdlV1Item>>(Array.Empty<CsdlV1Item>());
     }
 }
 
@@ -126,7 +126,7 @@ internal class CsdlV2Profile : EntitySetProfile<int, CsdlV2Item>
     public CsdlV2Profile() : base(x => x.Id)
     {
         EntitySetName = "V2OnlyItems";
-        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<CsdlV2Item>>(Array.Empty<CsdlV2Item>());
+        GetAll = (ct) => OhDataResult.Success<IEnumerable<CsdlV2Item>>(Array.Empty<CsdlV2Item>());
     }
 }
 

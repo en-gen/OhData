@@ -1223,14 +1223,14 @@ public class DeepInsertTests
             HasMany(x => x.Lines);
             HasOptional(x => x.Category!);
 
-            GetAll = (_) => OhDataResult.SuccessTask<IEnumerable<DeepInsertOrder>>(_orders);
+            GetAll = (_) => OhDataResult.Success<IEnumerable<DeepInsertOrder>>(_orders);
 
             Post = (order, _) =>
             {
                 LastReceivedByHandler = order;
                 order.Id = _nextId++;
                 _orders.Add(order);
-                return OhDataResult.SuccessTask<DeepInsertOrder>(order);
+                return OhDataResult.Success<DeepInsertOrder>(order);
             };
 
             // #456: PUT/PATCH (and, riding PATCH, the structural-property writes) exist on this
@@ -1240,7 +1240,7 @@ public class DeepInsertTests
             {
                 LastReceivedByWriteHandler = order;
                 order.Id = id;
-                return OhDataResult.SuccessTask(order);
+                return OhDataResult.Success(order);
             };
 
             Patch = (id, delta, _) =>
@@ -1249,7 +1249,7 @@ public class DeepInsertTests
                 var order = new DeepInsertOrder { Id = id };
                 delta.Patch(order);
                 LastReceivedByWriteHandler = order;
-                return OhDataResult.SuccessTask<DeepInsertOrder>(order);
+                return OhDataResult.Success<DeepInsertOrder>(order);
             };
         }
     }
@@ -1276,7 +1276,7 @@ public class DeepInsertTests
             HasMany(x => x.Lines);
             HasOptional(x => x.Category!);
 
-            GetAll = (_) => OhDataResult.SuccessTask<IEnumerable<DeepInsertOrder>>(_orders);
+            GetAll = (_) => OhDataResult.Success<IEnumerable<DeepInsertOrder>>(_orders);
 
             // #457: the opt-in side of deep UPDATE. Non-persisting for the same reason the default
             // profile's are -- what a test needs is what the handler RECEIVED.
@@ -1284,7 +1284,7 @@ public class DeepInsertTests
             {
                 LastReceivedByWriteHandler = order;
                 order.Id = id;
-                return OhDataResult.SuccessTask(order);
+                return OhDataResult.Success(order);
             };
 
             Patch = (id, delta, _) =>
@@ -1293,7 +1293,7 @@ public class DeepInsertTests
                 var order = new DeepInsertOrder { Id = id };
                 delta.Patch(order);
                 LastReceivedByWriteHandler = order;
-                return OhDataResult.SuccessTask<DeepInsertOrder>(order);
+                return OhDataResult.Success<DeepInsertOrder>(order);
             };
 
             Post = (order, _) =>
@@ -1310,7 +1310,7 @@ public class DeepInsertTests
                 // "Atomic persistence" stand-in: a single in-memory add representing the whole
                 // graph, mirroring the contract of a single EF Core SaveChanges call.
                 _orders.Add(order);
-                return OhDataResult.SuccessTask<DeepInsertOrder>(order);
+                return OhDataResult.Success<DeepInsertOrder>(order);
             };
         }
     }
@@ -1371,7 +1371,7 @@ public class DeepInsertTests
                     return Task.FromResult<DeepInsertNote?>(note);
                 });
 
-            GetById = (id, _) => OhDataResult.SuccessTask(_orders.FirstOrDefault(o => o.Id == id));
+            GetById = (id, _) => OhDataResult.Success(_orders.FirstOrDefault(o => o.Id == id));
 
             Post = (order, _) =>
             {
@@ -1383,7 +1383,7 @@ public class DeepInsertTests
                     line.OrderId = order.Id;
                 }
                 _orders.Add(order);
-                return OhDataResult.SuccessTask<DeepInsertOrderWithNotes>(order);
+                return OhDataResult.Success<DeepInsertOrderWithNotes>(order);
             };
         }
     }

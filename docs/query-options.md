@@ -58,7 +58,7 @@ responses actually emit.
 ### `GetAll` - simple in-memory path
 
 ```csharp
-GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<Product>>(myList);
+GetAll = (ct) => OhDataResult.Success<IEnumerable<Product>>(myList);
 ```
 
 Returns all items. The framework does **not** apply `$filter` or `$orderby` to the returned collection - and it does not silently ignore them either. If the client sends either of these, the request is rejected with `400 Bad Request` (`UnsupportedQueryOption`), regardless of the capability flags - `GetAll` has no `ApplyTo`/`IQueryable` pipeline to push them down to.
@@ -120,7 +120,7 @@ On this path the profile — not the framework — owns query application, inclu
 ### `GetQueryable` - IQueryable with pushdown (recommended for databases)
 
 ```csharp
-GetQueryable = _ => OhDataResult.SuccessTask<IQueryable<Product>>(db.Products);
+GetQueryable = _ => OhDataResult.Success<IQueryable<Product>>(db.Products);
 ```
 
 Returns a base `IQueryable<TModel>`. The framework applies `$filter`, `$orderby`, `$skip`, and `$top` via `ApplyTo(IQueryable)`. With EF Core these become SQL clauses - only matching rows are fetched.
@@ -138,7 +138,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
         SelectEnabled  = true;   // allow $select
         ExpandEnabled  = true;   // allow $expand
 
-        GetQueryable = _ => OhDataResult.SuccessTask<IQueryable<Product>>(db.Products);
+        GetQueryable = _ => OhDataResult.Success<IQueryable<Product>>(db.Products);
     }
 }
 ```
@@ -551,7 +551,7 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
         HasOptional(x => x.Customer,
             get: async (orderId, ct) => await db.Customers.FindAsync([orderId], ct));
 
-        GetQueryable = _ => OhDataResult.SuccessTask<IQueryable<Order>>(db.Orders);
+        GetQueryable = _ => OhDataResult.Success<IQueryable<Order>>(db.Orders);
     }
 }
 ```

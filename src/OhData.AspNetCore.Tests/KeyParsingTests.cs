@@ -254,7 +254,7 @@ public class KeyParsingTests
 
         public GadgetProfile() : base(x => x.Id)
         {
-            GetById = (id, ct) => OhDataResult.SuccessTask(Store.FirstOrDefault(g => g.Id == id));
+            GetById = (id, ct) => OhDataResult.Success(Store.FirstOrDefault(g => g.Id == id));
         }
     }
 
@@ -266,7 +266,7 @@ public class KeyParsingTests
 
         public ThingProfile() : base(x => x.Id)
         {
-            GetById = (id, ct) => OhDataResult.SuccessTask(Store.FirstOrDefault(t => t.Id == id));
+            GetById = (id, ct) => OhDataResult.Success(Store.FirstOrDefault(t => t.Id == id));
         }
     }
 
@@ -277,7 +277,7 @@ public class KeyParsingTests
         public LongKeyProfile() : base(x => x.Id)
         {
             EntitySetName = "LongItems";
-            GetById = (id, ct) => OhDataResult.SuccessTask(id == Known.Id ? Known : null);
+            GetById = (id, ct) => OhDataResult.Success(id == Known.Id ? Known : null);
         }
     }
 
@@ -288,7 +288,7 @@ public class KeyParsingTests
         public ShortKeyProfile() : base(x => x.Id)
         {
             EntitySetName = "ShortItems";
-            GetById = (id, ct) => OhDataResult.SuccessTask(id == Known.Id ? Known : null);
+            GetById = (id, ct) => OhDataResult.Success(id == Known.Id ? Known : null);
         }
     }
 
@@ -299,7 +299,7 @@ public class KeyParsingTests
         public ByteKeyProfile() : base(x => x.Id)
         {
             EntitySetName = "ByteItems";
-            GetById = (id, ct) => OhDataResult.SuccessTask(id == Known.Id ? Known : null);
+            GetById = (id, ct) => OhDataResult.Success(id == Known.Id ? Known : null);
         }
     }
 
@@ -314,7 +314,7 @@ public class KeyParsingTests
         public BoolKeyProfile() : base(x => x.Id)
         {
             EntitySetName = "BoolItems";
-            GetById = (id, ct) => OhDataResult.SuccessTask(Store.FirstOrDefault(x => x.Id == id));
+            GetById = (id, ct) => OhDataResult.Success(Store.FirstOrDefault(x => x.Id == id));
         }
     }
 
@@ -325,7 +325,7 @@ public class KeyParsingTests
         public FloatKeyProfile() : base(x => x.Id)
         {
             EntitySetName = "FloatItems";
-            GetById = (id, ct) => OhDataResult.SuccessTask(id == Known.Id ? Known : null);
+            GetById = (id, ct) => OhDataResult.Success(id == Known.Id ? Known : null);
         }
     }
 
@@ -336,7 +336,7 @@ public class KeyParsingTests
         public DoubleKeyProfile() : base(x => x.Id)
         {
             EntitySetName = "DoubleItems";
-            GetById = (id, ct) => OhDataResult.SuccessTask(id == Known.Id ? Known : null);
+            GetById = (id, ct) => OhDataResult.Success(id == Known.Id ? Known : null);
         }
     }
 
@@ -348,7 +348,7 @@ public class KeyParsingTests
         public TimeOnlyKeyProfile() : base(x => x.Id)
         {
             EntitySetName = "TimeOnlyItems";
-            GetById = (id, ct) => OhDataResult.SuccessTask(id == Known.Id ? Known : null);
+            GetById = (id, ct) => OhDataResult.Success(id == Known.Id ? Known : null);
         }
     }
 
@@ -364,7 +364,7 @@ public class KeyParsingTests
         public StatusItemProfile() : base(x => x.Id)
         {
             EntitySetName = "StatusItems";
-            GetById = (id, ct) => OhDataResult.SuccessTask(Store.FirstOrDefault(x => x.Id == id));
+            GetById = (id, ct) => OhDataResult.Success(Store.FirstOrDefault(x => x.Id == id));
         }
     }
 
@@ -375,7 +375,7 @@ public class KeyParsingTests
         public NullableIntKeyProfile() : base(x => x.Id)
         {
             EntitySetName = "NullableIntItems";
-            GetById = (id, ct) => OhDataResult.SuccessTask(id == Known.Id ? Known : null);
+            GetById = (id, ct) => OhDataResult.Success(id == Known.Id ? Known : null);
         }
     }
 }

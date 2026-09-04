@@ -35,8 +35,8 @@ internal sealed class OpPagedProfile : EntitySetProfile<int, OpPagedItem>
         EntitySetName = "OpPagedItems";
         MaxTop = 10;
 
-        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<OpPagedItem>>(Store);
-        GetById = (id, ct) => OhDataResult.SuccessTask(Store.FirstOrDefault(x => x.Id == id));
+        GetAll = ct => OhDataResult.Success<IEnumerable<OpPagedItem>>(Store);
+        GetById = (id, ct) => OhDataResult.Success(Store.FirstOrDefault(x => x.Id == id));
 
         BindFunction(TopRated);            // GET  /OpPagedItems/TopRated       -> collection
         BindFunction(Headline);            // GET  /OpPagedItems/Headline       -> single entity
@@ -74,8 +74,8 @@ internal sealed class OpUnboundedProfile : EntitySetProfile<int, OpPagedItem>
         EntitySetName = "OpUnboundedItems";
         MaxTop = null;
 
-        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<OpPagedItem>>(_store);
-        GetById = (id, ct) => OhDataResult.SuccessTask(_store.FirstOrDefault(x => x.Id == id));
+        GetAll = ct => OhDataResult.Success<IEnumerable<OpPagedItem>>(_store);
+        GetById = (id, ct) => OhDataResult.Success(_store.FirstOrDefault(x => x.Id == id));
 
         BindFunction(TopRated);
     }
@@ -95,8 +95,8 @@ internal sealed class OpTinyProfile : EntitySetProfile<int, OpPagedItem>
         EntitySetName = "OpTinyItems";
         MaxTop = 10;
 
-        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<OpPagedItem>>(_store);
-        GetById = (id, ct) => OhDataResult.SuccessTask(_store.FirstOrDefault(x => x.Id == id));
+        GetAll = ct => OhDataResult.Success<IEnumerable<OpPagedItem>>(_store);
+        GetById = (id, ct) => OhDataResult.Success(_store.FirstOrDefault(x => x.Id == id));
 
         BindFunction(TopRated);
     }

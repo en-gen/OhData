@@ -34,31 +34,31 @@ internal sealed class BenchWidgetProfile : EntitySetProfile<int, BenchWidget>
         CountEnabled = true;
         MaxTop = BenchmarkData.PageSize;
 
-        GetQueryable = (_) => OhDataResult.SuccessTask(Store.AsQueryable());
+        GetQueryable = (_) => OhDataResult.Success(Store.AsQueryable());
 
-        GetById = (id, _) => OhDataResult.SuccessTask(Store.FirstOrDefault(w => w.Id == id));
+        GetById = (id, _) => OhDataResult.Success(Store.FirstOrDefault(w => w.Id == id));
 
         Post = (widget, _) =>
         {
             widget.Id = BenchmarkData.WidgetCount + 1;
-            return OhDataResult.SuccessTask<BenchWidget>(widget);
+            return OhDataResult.Success<BenchWidget>(widget);
         };
 
         Put = (id, widget, _) =>
         {
             widget.Id = id;
-            return OhDataResult.SuccessTask(widget);
+            return OhDataResult.Success(widget);
         };
 
         Patch = (id, delta, _) =>
         {
             BenchWidget? existing = Store.FirstOrDefault(w => w.Id == id);
-            if (existing is null) return OhDataResult.SuccessTask<BenchWidget>(null);
+            if (existing is null) return OhDataResult.Success<BenchWidget>(null);
             BenchWidget copy = existing.Clone();
             delta.Patch(copy);
-            return OhDataResult.SuccessTask<BenchWidget>(copy);
+            return OhDataResult.Success<BenchWidget>(copy);
         };
 
-        Delete = (_, __) => OhDataResult.SuccessTask(true);
+        Delete = (_, __) => OhDataResult.Success(true);
     }
 }

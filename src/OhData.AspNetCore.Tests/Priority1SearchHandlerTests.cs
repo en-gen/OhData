@@ -86,7 +86,7 @@ internal class P1SearchWidgetProfile : ODataEntitySetProfile<int, Widget>
             return Task.FromResult(new ODataQueryResult<Widget> { Items = applied });
         };
 
-        Search = (term, ct) => OhDataResult.SuccessTask<IEnumerable<Widget>>(
+        Search = (term, ct) => OhDataResult.Success<IEnumerable<Widget>>(
             _store.Where(w => w.Name.Contains(term, StringComparison.OrdinalIgnoreCase)));
     }
 }

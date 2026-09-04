@@ -62,10 +62,10 @@ public class RatingResult
 internal static class MovieHandlers
 {
     public static Func<CancellationToken, Task<OhDataResult<IQueryable<Movie>>>> GetQueryable(AppDbContext db) =>
-        (_) => OhDataResult.SuccessTask<IQueryable<Movie>>(db.Movies.AsQueryable());
+        (_) => OhDataResult.Success<IQueryable<Movie>>(db.Movies.AsQueryable());
 
     public static Func<int, CancellationToken, Task<OhDataResult<Movie>>> GetById(AppDbContext db) =>
-        (id, _) => OhDataResult.SuccessTask(db.Movies.Find(id));
+        (id, _) => OhDataResult.Success(db.Movies.Find(id));
 
     /// <summary>v1's Post: AllowDeepWrites is false there, so any nested "cast" the client sent
     /// has already been stripped (nulled) by the framework before this runs -- see
@@ -74,7 +74,7 @@ internal static class MovieHandlers
     {
         db.Movies.Add(movie);
         db.SaveChanges();
-        return OhDataResult.SuccessTask(movie);
+        return OhDataResult.Success(movie);
     };
 
     /// <summary>v2's Post: AllowDeepWrites is true there, so a nested "cast" array in the
@@ -99,13 +99,13 @@ internal static class MovieHandlers
             db.MovieActors.Add(new MovieActor { MovieId = movie.Id, ActorId = stub.Id });
         }
         db.SaveChanges();
-        return OhDataResult.SuccessTask(movie);
+        return OhDataResult.Success(movie);
     };
 
     public static Func<int, Movie, CancellationToken, Task<OhDataResult<Movie>>> Put(AppDbContext db) => (id, movie, _) =>
     {
         var existing = db.Movies.Find(id);
-        if (existing is null) return OhDataResult.SuccessTask<Movie>(null);
+        if (existing is null) return OhDataResult.Success<Movie>(null);
         existing.Title = movie.Title;
         existing.Year = movie.Year;
         existing.Rating = movie.Rating;
@@ -115,26 +115,26 @@ internal static class MovieHandlers
         existing.ReleaseDate = movie.ReleaseDate;
         existing.UpdatedAt = DateTimeOffset.UtcNow; // keeps the ETag (Id, UpdatedAt) fresh
         db.SaveChanges();
-        return OhDataResult.SuccessTask(existing);
+        return OhDataResult.Success(existing);
     };
 
     public static Func<int, Delta<Movie>, CancellationToken, Task<OhDataResult<Movie>>> Patch(AppDbContext db) => (id, delta, _) =>
     {
         var existing = db.Movies.Find(id);
-        if (existing is null) return OhDataResult.SuccessTask<Movie>(null);
+        if (existing is null) return OhDataResult.Success<Movie>(null);
         delta.Patch(existing);
         existing.UpdatedAt = DateTimeOffset.UtcNow;
         db.SaveChanges();
-        return OhDataResult.SuccessTask(existing);
+        return OhDataResult.Success(existing);
     };
 
     public static Func<int, CancellationToken, Task<OhDataResult<bool>>> Delete(AppDbContext db) => (id, _) =>
     {
         var existing = db.Movies.Find(id);
-        if (existing is null) return OhDataResult.SuccessTask(false);
+        if (existing is null) return OhDataResult.Success(false);
         db.Movies.Remove(existing); // EF cascades the MovieActor join rows for this movie
         db.SaveChanges();
-        return OhDataResult.SuccessTask(true);
+        return OhDataResult.Success(true);
     };
 
     /// <summary>GET /Movies/TopRated?count=5 -- backs the <c>TopRated</c> bound function on
@@ -358,8 +358,8 @@ public class GenreProfile : EntitySetProfile<string, Genre>
     {
         EntitySetName = "Genres";
 
-        GetAll = (_) => OhDataResult.SuccessTask<IEnumerable<Genre>>(DbSeeder.Genres);
-        GetById = (code, _) => OhDataResult.SuccessTask(
+        GetAll = (_) => OhDataResult.Success<IEnumerable<Genre>>(DbSeeder.Genres);
+        GetById = (code, _) => OhDataResult.Success(
             DbSeeder.Genres.FirstOrDefault(g => string.Equals(g.Code, code, StringComparison.OrdinalIgnoreCase)));
     }
 }
@@ -398,8 +398,8 @@ public class AwardProfile : EntitySetProfile<int, Award>
         ExpandEnabled = true;
         CountEnabled = true;
 
-        GetQueryable = _ => OhDataResult.SuccessTask<IQueryable<Award>>(db.Awards);
-        GetById = (id, _) => OhDataResult.SuccessTask(db.Awards.FirstOrDefault(a => a.Id == id));
+        GetQueryable = _ => OhDataResult.Success<IQueryable<Award>>(db.Awards);
+        GetById = (id, _) => OhDataResult.Success(db.Awards.FirstOrDefault(a => a.Id == id));
 
         HasMany(x => x.Nominations); // delegate-less -> pushed down, which is the point
     }
@@ -418,42 +418,42 @@ public class ActorProfile : EntitySetProfile<int, Actor>
         CountEnabled = true;
         MaxTop = 50;
 
-        GetQueryable = (_) => OhDataResult.SuccessTask(db.Actors.AsQueryable());
-        GetById = (id, _) => OhDataResult.SuccessTask(db.Actors.Find(id));
+        GetQueryable = (_) => OhDataResult.Success(db.Actors.AsQueryable());
+        GetById = (id, _) => OhDataResult.Success(db.Actors.Find(id));
 
         Post = (actor, _) =>
         {
             db.Actors.Add(actor);
             db.SaveChanges();
-            return OhDataResult.SuccessTask<Actor>(actor);
+            return OhDataResult.Success<Actor>(actor);
         };
 
         Put = (id, actor, _) =>
         {
             var existing = db.Actors.Find(id);
-            if (existing is null) return OhDataResult.SuccessTask<Actor>(null!);
+            if (existing is null) return OhDataResult.Success<Actor>(null!);
             existing.Name = actor.Name;
             existing.BirthYear = actor.BirthYear;
             db.SaveChanges();
-            return OhDataResult.SuccessTask(existing);
+            return OhDataResult.Success(existing);
         };
 
         Patch = (id, delta, _) =>
         {
             var existing = db.Actors.Find(id);
-            if (existing is null) return OhDataResult.SuccessTask<Actor>(null);
+            if (existing is null) return OhDataResult.Success<Actor>(null);
             delta.Patch(existing);
             db.SaveChanges();
-            return OhDataResult.SuccessTask<Actor>(existing);
+            return OhDataResult.Success<Actor>(existing);
         };
 
         Delete = (id, _) =>
         {
             var existing = db.Actors.Find(id);
-            if (existing is null) return OhDataResult.SuccessTask(false);
+            if (existing is null) return OhDataResult.Success(false);
             db.Actors.Remove(existing);
             db.SaveChanges();
-            return OhDataResult.SuccessTask(true);
+            return OhDataResult.Success(true);
         };
     }
 }
@@ -486,42 +486,42 @@ public class StudioProfile : EntitySetProfile<int, Studio>
             return Task.FromResult(lookup);
         });
 
-        GetQueryable = (_) => OhDataResult.SuccessTask(db.Studios.AsQueryable());
-        GetById = (id, _) => OhDataResult.SuccessTask(db.Studios.Find(id));
+        GetQueryable = (_) => OhDataResult.Success(db.Studios.AsQueryable());
+        GetById = (id, _) => OhDataResult.Success(db.Studios.Find(id));
 
         Post = (studio, _) =>
         {
             db.Studios.Add(studio);
             db.SaveChanges();
-            return OhDataResult.SuccessTask<Studio>(studio);
+            return OhDataResult.Success<Studio>(studio);
         };
 
         Put = (id, studio, _) =>
         {
             var existing = db.Studios.Find(id);
-            if (existing is null) return OhDataResult.SuccessTask<Studio>(null!);
+            if (existing is null) return OhDataResult.Success<Studio>(null!);
             existing.Name = studio.Name;
             existing.Founded = studio.Founded;
             db.SaveChanges();
-            return OhDataResult.SuccessTask(existing);
+            return OhDataResult.Success(existing);
         };
 
         Patch = (id, delta, _) =>
         {
             var existing = db.Studios.Find(id);
-            if (existing is null) return OhDataResult.SuccessTask<Studio>(null);
+            if (existing is null) return OhDataResult.Success<Studio>(null);
             delta.Patch(existing);
             db.SaveChanges();
-            return OhDataResult.SuccessTask<Studio>(existing);
+            return OhDataResult.Success<Studio>(existing);
         };
 
         Delete = (id, _) =>
         {
             var existing = db.Studios.Find(id);
-            if (existing is null) return OhDataResult.SuccessTask(false);
+            if (existing is null) return OhDataResult.Success(false);
             db.Studios.Remove(existing);
             db.SaveChanges();
-            return OhDataResult.SuccessTask(true);
+            return OhDataResult.Success(true);
         };
     }
 }

@@ -290,7 +290,7 @@ internal class ObsWidgetProfile : EntitySetProfile<int, Widget>
     public ObsWidgetProfile() : base(x => x.Id)
     {
         EntitySetName = "ObsWidgets";
-        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<Widget>>(Array.Empty<Widget>());
+        GetAll = (ct) => OhDataResult.Success<IEnumerable<Widget>>(Array.Empty<Widget>());
     }
 }
 
@@ -309,17 +309,17 @@ internal class ObsRichProfile : EntitySetProfile<int, ObsNode>
     {
         EntitySetName = "ObsRich";
         CountEnabled = true;
-        GetAll = (ct) => OhDataResult.SuccessTask<IEnumerable<ObsNode>>(_store);
-        GetById = (id, ct) => OhDataResult.SuccessTask(_store.FirstOrDefault(n => n.Id == id));
-        Post = (n, ct) => { n.Id = 99; _store.Add(n); return OhDataResult.SuccessTask<ObsNode>(n); };
-        Put = (id, n, ct) => { n.Id = id; return OhDataResult.SuccessTask(n); };
+        GetAll = (ct) => OhDataResult.Success<IEnumerable<ObsNode>>(_store);
+        GetById = (id, ct) => OhDataResult.Success(_store.FirstOrDefault(n => n.Id == id));
+        Post = (n, ct) => { n.Id = 99; _store.Add(n); return OhDataResult.Success<ObsNode>(n); };
+        Put = (id, n, ct) => { n.Id = id; return OhDataResult.Success(n); };
         Patch = (id, delta, ct) =>
         {
             var n = _store.FirstOrDefault(x => x.Id == id);
             if (n is not null) delta.Patch(n);
-            return OhDataResult.SuccessTask(n);
+            return OhDataResult.Success(n);
         };
-        Delete = (id, ct) => OhDataResult.SuccessTask(true);
+        Delete = (id, ct) => OhDataResult.Success(true);
         HasMany(
             navigation: x => x.Children!,
             getAll: (id, ct) => Task.FromResult<IEnumerable<ObsNode>>(Array.Empty<ObsNode>()));

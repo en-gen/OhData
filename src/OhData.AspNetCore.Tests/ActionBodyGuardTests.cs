@@ -421,7 +421,7 @@ public class ActionBodyGuardTests
         public RefPutGuardProfile() : base(x => x.Id)
         {
             EntitySetName = "RefPutGuardParents";
-            GetById = (id, ct) => OhDataResult.SuccessTask<RefPutGuardParent>(new RefPutGuardParent { Id = id, Name = "P" });
+            GetById = (id, ct) => OhDataResult.Success<RefPutGuardParent>(new RefPutGuardParent { Id = id, Name = "P" });
 
             HasOptional(
                 navigation: x => x.PrimaryChild!,

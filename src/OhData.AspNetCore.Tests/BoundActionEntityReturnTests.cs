@@ -47,7 +47,7 @@ internal sealed class ActRetOtherProfile : EntitySetProfile<int, ActRetOther>
     public ActRetOtherProfile() : base(x => x.Id)
     {
         EntitySetName = "ActRetOthers";
-        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<ActRetOther>>(new List<ActRetOther>());
+        GetAll = _ => OhDataResult.Success<IEnumerable<ActRetOther>>(new List<ActRetOther>());
     }
 }
 
@@ -57,7 +57,7 @@ internal sealed class ActRetForeignReturnProfile : EntitySetProfile<int, ActRetI
     public ActRetForeignReturnProfile() : base(x => x.Id)
     {
         EntitySetName = "ActRetForeign";
-        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<ActRetItem>>(new List<ActRetItem>());
+        GetAll = _ => OhDataResult.Success<IEnumerable<ActRetItem>>(new List<ActRetItem>());
         BindAction(Borrow);
     }
 
@@ -74,8 +74,8 @@ internal sealed class ActRetProfile : EntitySetProfile<int, ActRetItem>
         EntitySetName = "ActRetItems";
         MaxTop = 10;
 
-        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<ActRetItem>>(Store);
-        GetById = (id, ct) => OhDataResult.SuccessTask(Store.FirstOrDefault(x => x.Id == id));
+        GetAll = ct => OhDataResult.Success<IEnumerable<ActRetItem>>(Store);
+        GetById = (id, ct) => OhDataResult.Success(Store.FirstOrDefault(x => x.Id == id));
 
         // #539: a bound ACTION declaring the entity set's own type, collection and single.
         BindAction(Dump);           // POST /ActRetItems/Dump         -> IEnumerable<TModel>
@@ -112,8 +112,8 @@ internal sealed class ActRetUnboundedProfile : EntitySetProfile<int, ActRetItem>
         EntitySetName = "ActRetUnbounded";
         MaxTop = null;
 
-        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<ActRetItem>>(_store);
-        GetById = (id, ct) => OhDataResult.SuccessTask(_store.FirstOrDefault(x => x.Id == id));
+        GetAll = ct => OhDataResult.Success<IEnumerable<ActRetItem>>(_store);
+        GetById = (id, ct) => OhDataResult.Success(_store.FirstOrDefault(x => x.Id == id));
         BindAction(Dump);
     }
 
@@ -132,8 +132,8 @@ internal sealed class ActRetTinyProfile : EntitySetProfile<int, ActRetItem>
         EntitySetName = "ActRetTiny";
         MaxTop = 10;
 
-        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<ActRetItem>>(_store);
-        GetById = (id, ct) => OhDataResult.SuccessTask(_store.FirstOrDefault(x => x.Id == id));
+        GetAll = ct => OhDataResult.Success<IEnumerable<ActRetItem>>(_store);
+        GetById = (id, ct) => OhDataResult.Success(_store.FirstOrDefault(x => x.Id == id));
         BindAction(Dump);
         BindFunction(DumpFn);
     }

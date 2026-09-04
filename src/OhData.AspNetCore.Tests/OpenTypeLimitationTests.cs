@@ -39,7 +39,7 @@ internal sealed class RootBagProfile : EntitySetProfile<int, RootBagEntity>
     public RootBagProfile() : base(x => x.Id)
     {
         EntitySetName = "RootBags";
-        GetAll = ct => OhDataResult.SuccessTask<IEnumerable<RootBagEntity>>(new[]
+        GetAll = ct => OhDataResult.Success<IEnumerable<RootBagEntity>>(new[]
         {
             new RootBagEntity
             {
@@ -112,7 +112,7 @@ internal sealed class SqlRefProfile : EntitySetProfile<int, SqlRef>
         FilterEnabled = true;
         SelectEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask(db.Refs.AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(db.Refs.AsQueryable());
     }
 }
 
@@ -316,7 +316,7 @@ internal sealed class PathRefGetAllProfile : EntitySetProfile<int, PathRef>
         EntitySetName = "MemRefs";
         FilterEnabled = true;
         OrderByEnabled = true;
-        GetAll = _ => OhDataResult.SuccessTask<IEnumerable<PathRef>>(PathRefData.Rows());
+        GetAll = _ => OhDataResult.Success<IEnumerable<PathRef>>(PathRefData.Rows());
     }
 }
 
@@ -328,7 +328,7 @@ internal sealed class PathRefQueryableProfile : EntitySetProfile<int, PathRef>
         EntitySetName = "LinqRefs";
         FilterEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => OhDataResult.SuccessTask(PathRefData.Rows().AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(PathRefData.Rows().AsQueryable());
     }
 }
 
@@ -440,7 +440,7 @@ internal sealed class PathRefAllowlistProfile : EntitySetProfile<int, PathRef>
         OrderByEnabled = true;
         FilterProperties(x => x.Source);
         OrderByProperties(x => x.Source);
-        GetQueryable = _ => OhDataResult.SuccessTask(PathRefData.Rows().AsQueryable());
+        GetQueryable = _ => OhDataResult.Success(PathRefData.Rows().AsQueryable());
     }
 }
 
@@ -466,7 +466,7 @@ internal sealed class ClosedRefAllowlistProfile : EntitySetProfile<int, ClosedRe
         OrderByEnabled = true;
         FilterProperties(x => x.Source);
         OrderByProperties(x => x.Source);
-        GetQueryable = _ => OhDataResult.SuccessTask(new List<ClosedRef>
+        GetQueryable = _ => OhDataResult.Success(new List<ClosedRef>
         {
             new() { Id = 1, Source = "a", Metadata = new ClosedMeta { Region = "eu" } },
             new() { Id = 2, Source = "b", Metadata = new ClosedMeta { Region = "us" } },
@@ -484,7 +484,7 @@ internal sealed class RootBagAllowlistProfile : EntitySetProfile<int, RootBagEnt
         OrderByEnabled = true;
         FilterProperties(x => x.Id);
         OrderByProperties(x => x.Id);
-        GetQueryable = _ => OhDataResult.SuccessTask(new List<RootBagEntity>
+        GetQueryable = _ => OhDataResult.Success(new List<RootBagEntity>
         {
             new() { Id = 1, Name = "n1", Extras = new Dictionary<string, object?> { ["tier"] = 3 } },
             new() { Id = 2, Name = "n2", Extras = new Dictionary<string, object?> { ["tier"] = 9 } },
