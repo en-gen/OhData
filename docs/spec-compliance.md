@@ -188,6 +188,10 @@ matches the wire. See
 
 ## Declared deviations
 
+> Deviations specifically from `Microsoft.AspNetCore.OData`, and the places OhData deliberately
+> matches it where the specification left room, are collected with source citations in
+> [differences-from-microsoft-odata.md](differences-from-microsoft-odata.md).
+
 These are intentional, permanent design choices rather than bugs to be fixed - the code will not
 change to "correct" them.
 

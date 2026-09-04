@@ -11,6 +11,11 @@ different positions on which OData surface to expose and how requests get routed
 [docs/spec-compliance.md](spec-compliance.md) before migrating anything you rely on today — it is
 the authoritative list of what OhData does and does not implement.
 
+For the narrower question of where the two libraries answer the **same** request differently — with
+the Microsoft source cited line by line, and the runtime behaviour changes a migration is most
+likely to notice — see
+[differences-from-microsoft-odata.md](differences-from-microsoft-odata.md).
+
 ## Concept mapping
 
 | Microsoft.AspNetCore.OData | OhData | Notes |
