@@ -45,13 +45,21 @@ dotnet add package EnGen.OhData.Client
 
 ## Server quick start
 
+<!-- compile -->
 ```csharp
-// 1. Define your entity
+// 1. Define your entity and your EF Core context
 public class Product
 {
     public int Id { get; set; }
     public string Name { get; set; } = "";
     public decimal Price { get; set; }
+}
+
+public class AppDbContext : DbContext
+{
+    public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
+
+    public DbSet<Product> Products => Set<Product>();
 }
 
 // 2. Create a profile - assign only the handlers you need. Each assignment IS a route;
@@ -78,16 +86,20 @@ public class ProductProfile : EntitySetProfile<int, Product>
         Delete       = DeleteProduct;
     }
 
-    // GetQueryable returns the query itself - no Task, no OhDataResult. Composing an IQueryable
-    // does no I/O and produces no result; the framework appends $filter/$orderby/$skip/$top and
-    // awaits the execution. Every other handler DOES return Task<OhDataResult<T>>.
+    // GetQueryable returns the query itself - no Task, no OhDataResult, no CancellationToken.
+    // Composing an IQueryable does no I/O and produces no result; the framework appends
+    // $filter/$orderby/$skip/$top and owns the execution, which is where the await and the
+    // cancellation belong. Every other handler DOES return Task<OhDataResult<T>>.
     //
     // `Product` here is the API MODEL, which in this quickstart happens to be the EF entity.
     // They do not have to be the same type - see "DTOs and EF entities" below.
-    private IQueryable<Product> GetProducts(CancellationToken ct) => _db.Products;
+    private IQueryable<Product> GetProducts() => _db.Products;
 
-    private async Task<OhDataResult<Product>> GetProduct(int id, CancellationToken ct) =>
-        OhDataResult.Success(await _db.Products.FirstOrDefaultAsync(p => p.Id == id, ct));
+    // GetById, Put and Patch are OhDataResult<Product?> — null is a legitimate outcome there
+    // (404, or an upsert on Put). Post is OhDataResult<Product>: a null from it is a contract
+    // violation and answers 500.
+    private async Task<OhDataResult<Product?>> GetProduct(int id, CancellationToken ct) =>
+        OhDataResult.Success<Product?>(await _db.Products.FirstOrDefaultAsync(p => p.Id == id, ct));
 
     private async Task<OhDataResult<Product>> CreateProduct(Product product, CancellationToken ct)
     {
@@ -96,21 +108,21 @@ public class ProductProfile : EntitySetProfile<int, Product>
         return OhDataResult.Success(product);
     }
 
-    private async Task<OhDataResult<Product>> ReplaceProduct(int id, Product product, CancellationToken ct)
+    private async Task<OhDataResult<Product?>> ReplaceProduct(int id, Product product, CancellationToken ct)
     {
         _db.Products.Update(product);
         await _db.SaveChangesAsync(ct);
-        return OhDataResult.Success(product);
+        return OhDataResult.Success<Product?>(product);
     }
 
-    private async Task<OhDataResult<Product>> UpdateProduct(int id, Delta<Product> delta, CancellationToken ct)
+    private async Task<OhDataResult<Product?>> UpdateProduct(int id, Delta<Product> delta, CancellationToken ct)
     {
         var existing = await _db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
         if (existing is null) return OhDataResult.Success<Product?>(null);   // -> 404
 
         delta.Patch(existing);
         await _db.SaveChangesAsync(ct);
-        return OhDataResult.Success(existing);
+        return OhDataResult.Success<Product?>(existing);
     }
 
     private async Task<OhDataResult<bool>> DeleteProduct(int id, CancellationToken ct)
@@ -124,16 +136,25 @@ public class ProductProfile : EntitySetProfile<int, Product>
     }
 }
 
+```
+
+<!-- compile -->
+```csharp
 // 3. Register in Program.cs
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddDbContext<AppDbContext>(o => o.UseInMemoryDatabase("Shop"));
 builder.Services.AddOhData(o => o
     .WithPrefix("/odata")
-    .AddEntitySetProfile<ProductProfile>()                              // list profiles explicitly
+    .AddEntitySetProfile<ProductProfile>()                     // list profiles explicitly
     // ...or scan assemblies for every EntitySetProfile they contain:
     .AddProfilesFromAssembly(Assembly.GetExecutingAssembly())  // by assembly instance
     .AddProfilesFromAssemblyOf<ProductProfile>());             // by marker type
 
 // 4. Map endpoints after app.Build()
+var app = builder.Build();
 app.MapOhData();
+app.Run();
 ```
 
 This produces:
@@ -194,7 +215,7 @@ public class ProductProfile : EntitySetProfile<int, ProductDto>
     {
         FilterEnabled = OrderByEnabled = SelectEnabled = true;
 
-        GetQueryable = _ => db.Products.Select(p => new ProductDto
+        GetQueryable = () => db.Products.Select(p => new ProductDto
         {
             Id       = p.Id,
             Name     = p.Name,
@@ -215,10 +236,10 @@ fails loud rather than serving an empty collection:
 
 ```csharp
 // $expand=Lines -> 400, "could not be translated by the underlying data provider"
-GetQueryable = _ => db.Orders.Select(o => new OrderDto { Id = o.Id, Code = o.Code });
+GetQueryable = () => db.Orders.Select(o => new OrderDto { Id = o.Id, Code = o.Code });
 
 // $expand=Lines -> 200, and a nested $filter/$orderby/$top still pushes down
-GetQueryable = _ => db.Orders.Select(o => new OrderDto
+GetQueryable = () => db.Orders.Select(o => new OrderDto
     {
         Id    = o.Id,
         Code  = o.Code,
@@ -245,7 +266,7 @@ public sealed class OrderDto
     // ...
 }
 
-GetQueryable = _ => db.Orders.Select(OrderDto.Projection);
+GetQueryable = () => db.Orders.Select(OrderDto.Projection);
 ```
 
 A mapping library can generate that expression instead — OhData neither requires nor assumes one, and
@@ -272,7 +293,7 @@ public class OrdersProfile : EntitySetProfile<int, Order>
 {
     public OrdersProfile(AppDbContext db) : base(x => x.Id)
     {
-        GetQueryable = _ => db.Orders;
+        GetQueryable = () => db.Orders;
 
         // Collection navigation. getAll gives the read routes; every parameter after it is
         // OPTIONAL - supply only the ones whose route you want:

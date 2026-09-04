@@ -175,7 +175,7 @@ public sealed class RtBaseProfile : EntitySetProfile<int, RtBase>
         ExpandEnabled = true;
         SelectEnabled = true;
         HasMany(x => x.Items!);
-        GetQueryable = _ => _store.AsQueryable();
+        GetQueryable = () => _store.AsQueryable();
         GetById = (id, _) => OhDataResult.Success(_store.FirstOrDefault(r => r.Id == id));
     }
 }
@@ -190,7 +190,7 @@ public sealed class RtCycleProfile : EntitySetProfile<int, RtCycleBase>
         ExpandEnabled = true;
         SelectEnabled = true;
         HasMany(x => x.Items!);
-        GetQueryable = _ => _store.AsQueryable();
+        GetQueryable = () => _store.AsQueryable();
         GetById = (id, _) => OhDataResult.Success(_store.FirstOrDefault(r => r.Id == id));
     }
 }
@@ -206,7 +206,7 @@ public sealed class RtPlainProfile : EntitySetProfile<int, RtPlain>
         ExpandEnabled = true;
         SelectEnabled = true;
         HasMany(x => x.Items!);
-        GetQueryable = _ => _store.AsQueryable();
+        GetQueryable = () => _store.AsQueryable();
         // #482: id 2 is the poison row (see RtData.PoisonPlainRow). Off the collection route on
         // purpose, so the pre-fix byte-identity baselines below stay exactly where they were.
         GetById = (id, _) => OhDataResult.Success(

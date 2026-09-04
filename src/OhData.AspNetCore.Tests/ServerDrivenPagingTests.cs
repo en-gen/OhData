@@ -439,7 +439,7 @@ internal class PagingQueryableProfile : EntitySetProfile<int, Widget>
         CountEnabled = true;
         OrderByEnabled = true;
         MaxTop = 5;
-        GetQueryable = (ct) => PagingStore.Rows.AsQueryable();
+        GetQueryable = () => PagingStore.Rows.AsQueryable();
     }
 }
 

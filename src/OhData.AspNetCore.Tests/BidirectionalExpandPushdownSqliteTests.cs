@@ -308,7 +308,7 @@ public sealed class BxAuthorProfile : EntitySetProfile<int, BxAuthor>
         EntitySetName = "BxAuthors";
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => db.BxAuthors.AsQueryable();
+        GetQueryable = () => db.BxAuthors.AsQueryable();
         HasMany(x => x.Books); // delegate-less, bidirectional
     }
 }
@@ -321,7 +321,7 @@ public sealed class BxDeepAuthorProfile : EntitySetProfile<int, BxDeepAuthor>
         ExpandEnabled = true;
         OrderByEnabled = true;
         MaxExpansionDepth = 5; // room for the 5-level (4-nesting) chain, T2
-        GetQueryable = _ => db.BxDeepAuthors.AsQueryable();
+        GetQueryable = () => db.BxDeepAuthors.AsQueryable();
         HasMany(x => x.Books); // delegate-less, bidirectional — NOT exposed by any other profile
     }
 }
@@ -333,7 +333,7 @@ public sealed class BxOrderProfile : EntitySetProfile<int, BxOrder>
         EntitySetName = "BxOrders";
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => db.BxOrders.AsQueryable();
+        GetQueryable = () => db.BxOrders.AsQueryable();
         HasMany(x => x.Lines); // delegate-less, bidirectional
     }
 }
@@ -345,7 +345,7 @@ public sealed class AcRootProfile : EntitySetProfile<int, AcRoot>
         EntitySetName = "AcRoots";
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => db.AcRoots.AsQueryable();
+        GetQueryable = () => db.AcRoots.AsQueryable();
         HasMany(x => x.Mids); // delegate-less → level 1 pushable, folds Leaves in at level 2
     }
 }
@@ -357,7 +357,7 @@ public sealed class GsRootProfile : EntitySetProfile<int, GsRoot>
         EntitySetName = "GsRoots";
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => db.GsRoots.AsQueryable();
+        GetQueryable = () => db.GsRoots.AsQueryable();
         HasMany(x => x.Mids);
     }
 }
@@ -369,7 +369,7 @@ public sealed class IfRootProfile : EntitySetProfile<int, IfRoot>
         EntitySetName = "IfRoots";
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => db.IfRoots.AsQueryable();
+        GetQueryable = () => db.IfRoots.AsQueryable();
         HasMany(x => x.Children); // delegate-less; Children's element type carries an
                                   // interface-typed back-reference (AuditRef)
     }
@@ -384,7 +384,7 @@ public sealed class CyInvoiceProfile : EntitySetProfile<int, CyInvoice>
         EntitySetName = "CyInvoices";
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => db.CyInvoices.AsQueryable();
+        GetQueryable = () => db.CyInvoices.AsQueryable();
         HasOptional(x => x.Customer!); // delegate-less, single-valued leaf
         HasMany(x => x.Orders); // delegate-less, collection leaf
     }
@@ -399,7 +399,7 @@ public sealed class CyOrgProfile : EntitySetProfile<int, CyOrg>
         EntitySetName = "CyOrgs";
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => db.CyOrgs.AsQueryable();
+        GetQueryable = () => db.CyOrgs.AsQueryable();
         HasMany(x => x.Employees); // delegate-less; element type is self-referential (Manager/Reports)
     }
 }
@@ -423,7 +423,7 @@ public sealed class InMemoryBxAuthorProfile : EntitySetProfile<int, BxAuthor>
     {
         EntitySetName = "InMemoryBxAuthors";
         ExpandEnabled = true;
-        GetQueryable = _ => _authors.AsQueryable();
+        GetQueryable = () => _authors.AsQueryable();
         HasMany(x => x.Books); // delegate-less, bidirectional — but non-EF source → EDM-only
     }
 }
@@ -446,7 +446,7 @@ public sealed class BxSecureAuthorProfile : EntitySetProfile<int, BxAuthor>
         EntitySetName = "BxSecureAuthors";
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => db.BxAuthors.AsQueryable();
+        GetQueryable = () => db.BxAuthors.AsQueryable();
         HasMany(x => x.Books,
             getAll: (authorId, ct) =>
             {
@@ -1107,7 +1107,7 @@ public sealed class SgNodeProfile : EntitySetProfile<int, SgNode>
     {
         EntitySetName = "SgNodes";
         OrderByEnabled = true;
-        GetQueryable = _ => db.SgNodes.AsQueryable();
+        GetQueryable = () => db.SgNodes.AsQueryable();
         HasOptional(x => x.Parent!);
         HasMany(x => x.Children);
     }

@@ -133,7 +133,7 @@ public sealed class OeParentProfile : EntitySetProfile<int, OeParent>
         FilterEnabled = true;
         OrderByEnabled = true;
         CountEnabled = true;
-        GetQueryable = _ => db.OeParents.AsQueryable();
+        GetQueryable = () => db.OeParents.AsQueryable();
         HasMany(x => x.Children); // delegate-less → optioned SQL-JOIN expansion
     }
 }
@@ -146,7 +146,7 @@ public sealed class MixParentProfile : EntitySetProfile<int, MixParent>
         SelectEnabled = true;
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => db.MixParents.AsQueryable();
+        GetQueryable = () => db.MixParents.AsQueryable();
         HasMany(x => x.Pushed); // delegate-less → pushed
         HasMany(x => x.Delegated,
             getAll: (parentId, ct) =>
@@ -166,7 +166,7 @@ public sealed class OeRefHolderProfile : EntitySetProfile<int, OeRefHolder>
         SelectEnabled = true;
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => db.OeRefHolders.AsQueryable();
+        GetQueryable = () => db.OeRefHolders.AsQueryable();
         HasOptional(x => x.Target); // delegate-less single-valued → pushed
     }
 }

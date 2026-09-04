@@ -100,11 +100,11 @@ public class ProductProfile : EntitySetProfile<int, Product>
         // asynchronously (over a real database provider that becomes one SQL query). Returning the
         // IQueryable is itself synchronous — that is why this single handler stays Success
         // while the reads and writes below are genuinely async.
-        GetQueryable = _ => db.Products;
+        GetQueryable = () => db.Products;
 
         // Single entity GET → GET /odata/Products({key}). Returns null (→ 404) when the row is absent.
         GetById = async (id, ct) =>
-            OhDataResult.Success(await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct));
+            OhDataResult.Success<Product?>(await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct));
 
         // Create → POST /odata/Products. Add the row and let the database assign its key.
         Post = async (product, ct) =>
