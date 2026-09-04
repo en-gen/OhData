@@ -46,15 +46,22 @@ public static class DbSeeder
         // MIXES them. That mix is the shape #529's defect needed: a projection over the declared type
         // served the base row correctly and silently dropped the derived rows' own properties, so a
         // fixture with only one shape would have proved nothing either way.
-        db.Awards.AddRange(Awards);
+        db.Awards.AddRange(NewAwards());
         db.SaveChanges();
 
-        db.AwardNominations.AddRange(AwardNominations);
+        db.AwardNominations.AddRange(NewAwardNominations());
         db.SaveChanges();
     }
 
     // ── Awards — the polymorphic (TPH) showcase; see AwardProfile ─────────────────
-    public static readonly Award[] Awards =
+    // FRESH INSTANCES PER CALL, unlike Studios/Actors/Genres, and the difference is load-bearing.
+    // Those are static arrays shared across every DbContext in the process, which is safe only
+    // because their navigations are Ignore()d -- fake CLR properties EF never fixes up. Nominations
+    // is a REAL relationship (that is the whole point of it), so EF populates Award.Nominations on
+    // the shared instances during the first seed; a second WebApplicationFactory then cascades those
+    // children in via the navigation AND adds them again explicitly -> duplicate key. Movies already
+    // dodge this by materializing per call (see SeedMovie.ToMovie); this follows that precedent.
+    public static Award[] NewAwards() => new Award[]
     {
         new AcademyAward
         {
@@ -69,7 +76,7 @@ public static class DbSeeder
         new Award { Id = 3, Name = "Audience Choice", Year = 1994 },
     };
 
-    public static readonly AwardNomination[] AwardNominations =
+    public static AwardNomination[] NewAwardNominations() => new AwardNomination[]
     {
         new() { Id = 1, AwardId = 1, Title = "Forrest Gump" },
         new() { Id = 2, AwardId = 1, Title = "The Shawshank Redemption" },
