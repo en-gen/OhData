@@ -347,8 +347,8 @@ public class ApiDescriptionProviderTests
         {
             EntitySetName = "PropDocWidgets";
             PropertyRouteDocsEnabled = true;
-            GetById = (id, ct) => OhDataResult.Success<Widget>(null);
-            Patch = (id, delta, ct) => OhDataResult.Success<Widget>(null);
+            GetById = (id, ct) => OhDataResult.Success<Widget?>(null);
+            Patch = (id, delta, ct) => OhDataResult.Success<Widget?>(null);
         }
     }
 
@@ -358,8 +358,8 @@ public class ApiDescriptionProviderTests
         {
             EntitySetName = "NoPropDocWidgets";
             PropertyRouteDocsEnabled = false;
-            GetById = (id, ct) => OhDataResult.Success<Widget>(null);
-            Patch = (id, delta, ct) => OhDataResult.Success<Widget>(null);
+            GetById = (id, ct) => OhDataResult.Success<Widget?>(null);
+            Patch = (id, delta, ct) => OhDataResult.Success<Widget?>(null);
         }
     }
 
@@ -372,7 +372,7 @@ public class ApiDescriptionProviderTests
         {
             EntitySetName = "FnParamWidgets";
             GetAll = (ct) => OhDataResult.Success<System.Collections.Generic.IEnumerable<Widget>>(System.Array.Empty<Widget>());
-            GetById = (id, ct) => OhDataResult.Success<Widget>(null);
+            GetById = (id, ct) => OhDataResult.Success<Widget?>(null);
             BindFunction(TopRated);
             BindEntityFunction(Describe);
         }

@@ -27,10 +27,10 @@ public sealed class R581RejectingProfile : EntitySetProfile<int, R581Thing>
         EntitySetName = "R581Things";
 
         GetAll = _ => Bump<IEnumerable<R581Thing>>(OhDataResult.Forbidden("ReadDenied", "read denied"));
-        GetById = (id, _) => Bump<R581Thing>(OhDataResult.NotFound("Gone", $"{id} is gone"));
+        GetById = (id, _) => Bump<R581Thing?>(OhDataResult.NotFound("Gone", $"{id} is gone"));
         Post = (m, _) => Bump<R581Thing>(OhDataResult.Conflict("Duplicate", $"{m.Name} exists", target: "Name"));
-        Put = (id, m, _) => Bump<R581Thing>(OhDataResult.PreconditionFailed("Stale", "changed underneath you"));
-        Patch = (id, d, _) => Bump<R581Thing>(OhDataResult.BadRequest("Rule", "that transition is not allowed"));
+        Put = (id, m, _) => Bump<R581Thing?>(OhDataResult.PreconditionFailed("Stale", "changed underneath you"));
+        Patch = (id, d, _) => Bump<R581Thing?>(OhDataResult.BadRequest("Rule", "that transition is not allowed"));
         Delete = (id, _) => Bump<bool>(OhDataResult.Conflict("InUse", "still referenced"));
     }
 
@@ -178,7 +178,7 @@ public sealed class C581Profile : EntitySetProfile<int, C581Thing>
                 coord.ObservedCancelGetById.TrySetResult(true);
                 throw;
             }
-            return OhDataResult.Success<C581Thing>(null);
+            return OhDataResult.Success<C581Thing?>(null);
         };
 
         ConfigureExceptions(e => e

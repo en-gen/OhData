@@ -58,9 +58,9 @@ public class ConcurrencyTests
 
             Patch = (id, delta, ct) =>
             {
-                if (!_store.Items.TryGetValue(id, out var existing)) return OhDataResult.Success<Widget>(null);
+                if (!_store.Items.TryGetValue(id, out var existing)) return OhDataResult.Success<Widget?>(null);
                 delta.Patch(existing);
-                return OhDataResult.Success<Widget>(existing);
+                return OhDataResult.Success<Widget?>(existing);
             };
 
             Delete = (id, ct) => OhDataResult.Success(_store.Items.TryRemove(id, out _));
@@ -102,7 +102,7 @@ public class ConcurrencyTests
             // so wildcard If-Match against a missing key surfaces the handler's 404, not a create.
             Put = (id, widget, ct) =>
             {
-                if (!_store.Items.ContainsKey(id)) return OhDataResult.Success<Widget>(null!);
+                if (!_store.Items.ContainsKey(id)) return OhDataResult.Success<Widget?>(null!);
                 widget.Id = id;
                 _store.Items[id] = widget;
                 return OhDataResult.Success(widget);

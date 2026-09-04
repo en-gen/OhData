@@ -208,7 +208,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
             // A null VALUE still means "not found" (→ 404, or an upsert when AllowUpsert is on).
             // Success(null) is how that is expressed now; `return null;` would be a null result
             // object, which the framework unwraps and would fault on.
-            if (existing is null) return OhDataResult.Success<Product>(null);
+            if (existing is null) return OhDataResult.Success<Product?>(null);
             existing.Name = product.Name;
             existing.Price = product.Price;
             existing.Category = product.Category;
@@ -219,7 +219,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
         Patch = async (id, delta, ct) =>
         {
             Product? existing = await db.Products.FindAsync(new object[] { id }, ct);
-            if (existing is null) return OhDataResult.Success<Product>(null);
+            if (existing is null) return OhDataResult.Success<Product?>(null);
             delta.Patch(existing);
             await db.SaveChangesAsync(ct);
             return OhDataResult.Success(existing);

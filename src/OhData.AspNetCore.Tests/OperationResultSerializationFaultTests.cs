@@ -49,7 +49,7 @@ internal sealed class OpFaultProfile : EntitySetProfile<int, OpFaultWidget>
     public OpFaultProfile() : base(x => x.Id)
     {
         EntitySetName = "OpFaults";
-        GetById = (id, ct) => OhDataResult.Success<OpFaultWidget>(
+        GetById = (id, ct) => OhDataResult.Success<OpFaultWidget?>(
             new OpFaultWidget { Id = id, Name = "n" });
 
         BindFunction(FaultyFunction);
@@ -73,7 +73,7 @@ internal sealed class OpHealthyProfile : EntitySetProfile<int, OpHealthyWidget>
         EntitySetName = "OpHealthy";
         GetAll = ct => OhDataResult.Success<IEnumerable<OpHealthyWidget>>(
             new[] { new OpHealthyWidget { Id = 1, Name = "one" } });
-        GetById = (id, ct) => OhDataResult.Success<OpHealthyWidget>(
+        GetById = (id, ct) => OhDataResult.Success<OpHealthyWidget?>(
             new OpHealthyWidget { Id = id, Name = "one" });
 
         BindFunction(HealthyFunction);

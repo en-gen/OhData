@@ -74,7 +74,7 @@ public sealed class NmParentProfile : EntitySetProfile<int, NmParent>
         OrderByEnabled = true;
         HasMany(x => x.Children); // delegate-LESS, so the pushdown gate is the only thing in play
         GetQueryable = _ => OhDataResult.Success(_db.NmParents.AsQueryable());
-        GetById = async (id, ct) => OhDataResult.Success(await _db.NmParents.FirstOrDefaultAsync(p => p.Id == id, ct));
+        GetById = async (id, ct) => OhDataResult.Success<NmParent?>(await _db.NmParents.FirstOrDefaultAsync(p => p.Id == id, ct));
     }
 }
 

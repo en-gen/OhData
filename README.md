@@ -107,7 +107,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
     private async Task<OhDataResult<Product>> UpdateProduct(int id, Delta<Product> delta, CancellationToken ct)
     {
         var existing = await _db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
-        if (existing is null) return OhDataResult.Success<Product>(null);   // -> 404
+        if (existing is null) return OhDataResult.Success<Product?>(null);   // -> 404
 
         delta.Patch(existing);
         await _db.SaveChangesAsync(ct);

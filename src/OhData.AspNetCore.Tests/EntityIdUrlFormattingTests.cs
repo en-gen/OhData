@@ -70,9 +70,9 @@ public class EntityIdUrlFormattingTests
             Patch = (id, delta, ct) =>
             {
                 var existing = _store.Items.FirstOrDefault(x => x.Id == id);
-                if (existing is null) return OhDataResult.Success<StringKeyItem>(null);
+                if (existing is null) return OhDataResult.Success<StringKeyItem?>(null);
                 delta.Patch(existing);
-                return OhDataResult.Success<StringKeyItem>(existing);
+                return OhDataResult.Success<StringKeyItem?>(existing);
             };
         }
     }

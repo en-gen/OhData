@@ -250,7 +250,7 @@ internal class E569Profile : EntitySetProfile<int, E569Thing>
             getAll: (_, _) => Task.FromResult<IEnumerable<E569Part>>(System.Array.Empty<E569Part>()),
             post: (_, part, _) => Task.FromResult<E569Part?>(part));
 
-        GetById = (id, _) => OhDataResult.Success<E569Thing>(
+        GetById = (id, _) => OhDataResult.Success<E569Thing?>(
             new E569Thing { Id = id, Title = "t", Note = "n" });
 
         Post = (thing, _) =>
@@ -265,7 +265,7 @@ internal class E569Profile : EntitySetProfile<int, E569Thing>
         {
             var thing = new E569Thing { Id = id, Title = "t", Note = "n" };
             delta.Patch(thing);
-            return OhDataResult.Success<E569Thing>(thing);
+            return OhDataResult.Success<E569Thing?>(thing);
         };
     }
 }

@@ -31,9 +31,9 @@ public sealed class DmWidgetProfile : EntitySetProfile<int, DmDto>
         Patch = (id, delta, ct) =>
         {
             DmEntity? entity = store.Get(id);
-            if (entity is null) return OhDataResult.Success<DmDto>(null);
+            if (entity is null) return OhDataResult.Success<DmDto?>(null);
             deltas.Create<DmDto, DmEntity>(delta).Patch(entity); // DTO-delta -> entity-delta -> apply
-            return OhDataResult.Success<DmDto>(ToDto(entity));
+            return OhDataResult.Success<DmDto?>(ToDto(entity));
         };
     }
 

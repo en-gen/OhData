@@ -184,7 +184,7 @@ internal class BodyLimitProfile : EntitySetProfile<int, Widget>
         {
             var w = new Widget { Id = id };
             delta.Patch(w);
-            return OhDataResult.Success<Widget>(w);
+            return OhDataResult.Success<Widget?>(w);
         };
     }
 }

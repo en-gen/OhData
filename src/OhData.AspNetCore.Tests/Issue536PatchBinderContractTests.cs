@@ -48,7 +48,7 @@ public sealed class PcCustomerProfile : EntitySetProfile<int, PcCustomer>
         EntitySetName = "PcCustomers";
         Ignore(x => x.InternalNote!);
 
-        GetById = (id, _) => OhDataResult.Success<PcCustomer>(new PcCustomer { Id = id });
+        GetById = (id, _) => OhDataResult.Success<PcCustomer?>(new PcCustomer { Id = id });
 
         Patch = (id, delta, _) =>
         {
@@ -56,7 +56,7 @@ public sealed class PcCustomerProfile : EntitySetProfile<int, PcCustomer>
             var row = new PcCustomer { Id = id };
             delta.Patch(row);
             LastPatched = row;
-            return OhDataResult.Success<PcCustomer>(row);
+            return OhDataResult.Success<PcCustomer?>(row);
         };
     }
 }
@@ -80,14 +80,14 @@ public sealed class PcOrderProfile : EntitySetProfile<int, PcOrder>
     {
         EntitySetName = "PcOrders";
 
-        GetById = (id, _) => OhDataResult.Success<PcOrder>(new PcOrder { OrderId = id });
+        GetById = (id, _) => OhDataResult.Success<PcOrder?>(new PcOrder { OrderId = id });
 
         Patch = (id, delta, _) =>
         {
             LastChangedProperties = delta.GetChangedPropertyNames().ToArray();
             var row = new PcOrder { OrderId = id };
             delta.Patch(row);
-            return OhDataResult.Success<PcOrder>(row);
+            return OhDataResult.Success<PcOrder?>(row);
         };
     }
 }

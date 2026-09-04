@@ -253,7 +253,7 @@ internal class K557Profile : EntitySetProfile<string, K557Thing>
     {
         EntitySetName = "K557Things";
 
-        GetById = (code, _) => OhDataResult.Success<K557Thing>(new K557Thing { Code = code, Name = "n" });
+        GetById = (code, _) => OhDataResult.Success<K557Thing?>(new K557Thing { Code = code, Name = "n" });
 
         Post = (thing, _) =>
         {

@@ -64,7 +64,7 @@ internal static class MovieHandlers
     public static Func<CancellationToken, Task<OhDataResult<IQueryable<Movie>>>> GetQueryable(AppDbContext db) =>
         (_) => OhDataResult.Success<IQueryable<Movie>>(db.Movies.AsQueryable());
 
-    public static Func<int, CancellationToken, Task<OhDataResult<Movie>>> GetById(AppDbContext db) =>
+    public static Func<int, CancellationToken, Task<OhDataResult<Movie?>>> GetById(AppDbContext db) =>
         (id, _) => OhDataResult.Success(db.Movies.Find(id));
 
     /// <summary>v1's Post: AllowDeepWrites is false there, so any nested "cast" the client sent
@@ -102,10 +102,10 @@ internal static class MovieHandlers
         return OhDataResult.Success(movie);
     };
 
-    public static Func<int, Movie, CancellationToken, Task<OhDataResult<Movie>>> Put(AppDbContext db) => (id, movie, _) =>
+    public static Func<int, Movie, CancellationToken, Task<OhDataResult<Movie?>>> Put(AppDbContext db) => (id, movie, _) =>
     {
         var existing = db.Movies.Find(id);
-        if (existing is null) return OhDataResult.Success<Movie>(null);
+        if (existing is null) return OhDataResult.Success<Movie?>(null);
         existing.Title = movie.Title;
         existing.Year = movie.Year;
         existing.Rating = movie.Rating;
@@ -118,10 +118,10 @@ internal static class MovieHandlers
         return OhDataResult.Success(existing);
     };
 
-    public static Func<int, Delta<Movie>, CancellationToken, Task<OhDataResult<Movie>>> Patch(AppDbContext db) => (id, delta, _) =>
+    public static Func<int, Delta<Movie>, CancellationToken, Task<OhDataResult<Movie?>>> Patch(AppDbContext db) => (id, delta, _) =>
     {
         var existing = db.Movies.Find(id);
-        if (existing is null) return OhDataResult.Success<Movie>(null);
+        if (existing is null) return OhDataResult.Success<Movie?>(null);
         delta.Patch(existing);
         existing.UpdatedAt = DateTimeOffset.UtcNow;
         db.SaveChanges();
@@ -431,7 +431,7 @@ public class ActorProfile : EntitySetProfile<int, Actor>
         Put = (id, actor, _) =>
         {
             var existing = db.Actors.Find(id);
-            if (existing is null) return OhDataResult.Success<Actor>(null!);
+            if (existing is null) return OhDataResult.Success<Actor?>(null!);
             existing.Name = actor.Name;
             existing.BirthYear = actor.BirthYear;
             db.SaveChanges();
@@ -441,10 +441,10 @@ public class ActorProfile : EntitySetProfile<int, Actor>
         Patch = (id, delta, _) =>
         {
             var existing = db.Actors.Find(id);
-            if (existing is null) return OhDataResult.Success<Actor>(null);
+            if (existing is null) return OhDataResult.Success<Actor?>(null);
             delta.Patch(existing);
             db.SaveChanges();
-            return OhDataResult.Success<Actor>(existing);
+            return OhDataResult.Success<Actor?>(existing);
         };
 
         Delete = (id, _) =>
@@ -499,7 +499,7 @@ public class StudioProfile : EntitySetProfile<int, Studio>
         Put = (id, studio, _) =>
         {
             var existing = db.Studios.Find(id);
-            if (existing is null) return OhDataResult.Success<Studio>(null!);
+            if (existing is null) return OhDataResult.Success<Studio?>(null!);
             existing.Name = studio.Name;
             existing.Founded = studio.Founded;
             db.SaveChanges();
@@ -509,10 +509,10 @@ public class StudioProfile : EntitySetProfile<int, Studio>
         Patch = (id, delta, _) =>
         {
             var existing = db.Studios.Find(id);
-            if (existing is null) return OhDataResult.Success<Studio>(null);
+            if (existing is null) return OhDataResult.Success<Studio?>(null);
             delta.Patch(existing);
             db.SaveChanges();
-            return OhDataResult.Success<Studio>(existing);
+            return OhDataResult.Success<Studio?>(existing);
         };
 
         Delete = (id, _) =>

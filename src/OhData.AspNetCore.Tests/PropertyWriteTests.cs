@@ -444,9 +444,9 @@ public class PropertyWriteTests
             Patch = (id, delta, ct) =>
             {
                 var existing = Store.FirstOrDefault(x => x.Id == id);
-                if (existing is null) return OhDataResult.Success<PropertyWriteItem>(null);
+                if (existing is null) return OhDataResult.Success<PropertyWriteItem?>(null);
                 delta.Patch(existing);
-                return OhDataResult.Success<PropertyWriteItem>(existing);
+                return OhDataResult.Success<PropertyWriteItem?>(existing);
             };
         }
     }
@@ -470,9 +470,9 @@ public class PropertyWriteTests
             Patch = (id, delta, ct) =>
             {
                 var existing = Store.FirstOrDefault(x => x.Id == id);
-                if (existing is null) return OhDataResult.Success<PropertyWriteItem>(null);
+                if (existing is null) return OhDataResult.Success<PropertyWriteItem?>(null);
                 delta.Patch(existing);
-                return OhDataResult.Success<PropertyWriteItem>(existing);
+                return OhDataResult.Success<PropertyWriteItem?>(existing);
             };
         }
     }

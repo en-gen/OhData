@@ -596,7 +596,7 @@ internal class WbContactProfile : EntitySetProfile<int, WbContact>
             });
 
         GetAll = _ => OhDataResult.Success<IEnumerable<WbContact>>(Array.Empty<WbContact>());
-        GetById = (id, _) => OhDataResult.Success<WbContact>(new WbContact { Id = id, Name = "Existing" });
+        GetById = (id, _) => OhDataResult.Success<WbContact?>(new WbContact { Id = id, Name = "Existing" });
 
         Post = (contact, _) =>
         {
@@ -616,7 +616,7 @@ internal class WbContactProfile : EntitySetProfile<int, WbContact>
             LastPatchChangedProperties = delta.GetChangedPropertyNames().ToArray();
             var contact = new WbContact { Id = id, Name = "Existing" };
             delta.Patch(contact);
-            return OhDataResult.Success<WbContact>(contact);
+            return OhDataResult.Success<WbContact?>(contact);
         };
     }
 }
@@ -729,7 +729,7 @@ internal class WbOpenProfile : EntitySetProfile<int, WbOpenThing>
             post: (_, note, _) => Task.FromResult<WbNote?>(note));
 
         GetAll = _ => OhDataResult.Success<IEnumerable<WbOpenThing>>(Array.Empty<WbOpenThing>());
-        GetById = (id, _) => OhDataResult.Success<WbOpenThing>(new WbOpenThing { Id = id, Label = "L" });
+        GetById = (id, _) => OhDataResult.Success<WbOpenThing?>(new WbOpenThing { Id = id, Label = "L" });
         Put = (id, thing, _) =>
         {
             thing.Id = id;

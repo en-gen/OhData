@@ -395,9 +395,9 @@ public sealed class OhDataOpenApiSecurityOperationTransformerTests
             Patch = (id, delta, ct) =>
             {
                 Widget? existing = Store.FirstOrDefault(w => w.Id == id);
-                if (existing is null) return OhDataResult.Success<Widget>(null);
+                if (existing is null) return OhDataResult.Success<Widget?>(null);
                 delta.Patch(existing);
-                return OhDataResult.Success<Widget>(existing);
+                return OhDataResult.Success<Widget?>(existing);
             };
         }
     }

@@ -476,7 +476,7 @@ public class NavigationPostTests
         public NavPostMetadataWithPostProfile() : base(x => x.Id)
         {
             EntitySetName = "NavPostMetadataParents";
-            GetById = (id, ct) => OhDataResult.Success<NavPostParent>(null);
+            GetById = (id, ct) => OhDataResult.Success<NavPostParent?>(null);
 
             HasMany(
                 navigation: x => x.Children!,
@@ -491,7 +491,7 @@ public class NavigationPostTests
         public NavPostMetadataBaselineProfile() : base(x => x.Id)
         {
             EntitySetName = "NavPostMetadataParents";
-            GetById = (id, ct) => OhDataResult.Success<NavPostParent>(null);
+            GetById = (id, ct) => OhDataResult.Success<NavPostParent?>(null);
 
             HasMany(
                 navigation: x => x.Children!,
@@ -515,7 +515,7 @@ public class NavigationPostTests
         public NavPostActionCollisionProfile() : base(x => x.Id)
         {
             EntitySetName = "NavPostActionCollisionParents";
-            GetById = (id, ct) => OhDataResult.Success<NavPostParent>(null);
+            GetById = (id, ct) => OhDataResult.Success<NavPostParent?>(null);
 
             HasMany(
                 navigation: x => x.Children!,

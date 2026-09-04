@@ -1249,7 +1249,7 @@ public class DeepInsertTests
                 var order = new DeepInsertOrder { Id = id };
                 delta.Patch(order);
                 LastReceivedByWriteHandler = order;
-                return OhDataResult.Success<DeepInsertOrder>(order);
+                return OhDataResult.Success<DeepInsertOrder?>(order);
             };
         }
     }
@@ -1293,7 +1293,7 @@ public class DeepInsertTests
                 var order = new DeepInsertOrder { Id = id };
                 delta.Patch(order);
                 LastReceivedByWriteHandler = order;
-                return OhDataResult.Success<DeepInsertOrder>(order);
+                return OhDataResult.Success<DeepInsertOrder?>(order);
             };
 
             Post = (order, _) =>

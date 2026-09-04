@@ -55,7 +55,7 @@ internal sealed class S487SecuredProfile : EntitySetProfile<int, S487Row>
         EntitySetName = "S487Secured";
         RequireAuthorization();
         GetAll = _ => OhDataResult.Success<IEnumerable<S487Row>>(new[] { new S487Row { Id = 1, Name = "r" } });
-        GetById = (id, _) => OhDataResult.Success<S487Row>(new S487Row { Id = id, Name = "r" });
+        GetById = (id, _) => OhDataResult.Success<S487Row?>(new S487Row { Id = id, Name = "r" });
     }
 }
 
@@ -69,7 +69,7 @@ internal sealed class S487PublicProfile : EntitySetProfile<int, S487Row>
     {
         EntitySetName = "S487Public";
         GetAll = _ => OhDataResult.Success<IEnumerable<S487Row>>(new[] { new S487Row { Id = 1, Name = "r" } });
-        GetById = (id, _) => OhDataResult.Success<S487Row>(new S487Row { Id = id, Name = "r" });
+        GetById = (id, _) => OhDataResult.Success<S487Row?>(new S487Row { Id = id, Name = "r" });
     }
 }
 
@@ -89,7 +89,7 @@ internal sealed class S487MigratedProfile : EntitySetProfile<int, S487Row>
             .Read(r => r.RequireAuthenticatedUser())
             .Writes(w => w.RequireAuthenticatedUser()));
         GetAll = _ => OhDataResult.Success<IEnumerable<S487Row>>(new[] { new S487Row { Id = 1, Name = "r" } });
-        GetById = (id, _) => OhDataResult.Success<S487Row>(new S487Row { Id = id, Name = "r" });
+        GetById = (id, _) => OhDataResult.Success<S487Row?>(new S487Row { Id = id, Name = "r" });
         BindAction(Stamp);
         BindEntityAction(Touch);
     }
@@ -106,7 +106,7 @@ internal sealed class S487LegacyProfile : EntitySetProfile<int, S487Row>
         EntitySetName = "S487Legacy";
         RequireAuthorization();
         GetAll = _ => OhDataResult.Success<IEnumerable<S487Row>>(new[] { new S487Row { Id = 1, Name = "r" } });
-        GetById = (id, _) => OhDataResult.Success<S487Row>(new S487Row { Id = id, Name = "r" });
+        GetById = (id, _) => OhDataResult.Success<S487Row?>(new S487Row { Id = id, Name = "r" });
         BindAction(LegacyStamp);
     }
 
@@ -124,7 +124,7 @@ internal sealed class S487StatedProfile : EntitySetProfile<int, S487Row>
             .Writes(w => w.RequireAuthenticatedUser())
             .Invoke(i => i.AllowAnonymous()));
         GetAll = _ => OhDataResult.Success<IEnumerable<S487Row>>(new[] { new S487Row { Id = 1, Name = "r" } });
-        GetById = (id, _) => OhDataResult.Success<S487Row>(new S487Row { Id = id, Name = "r" });
+        GetById = (id, _) => OhDataResult.Success<S487Row?>(new S487Row { Id = id, Name = "r" });
         BindAction(StatedStamp);
     }
 
@@ -144,7 +144,7 @@ internal sealed class S487TunnelProfile : EntitySetProfile<int, S487Row>
             .Delete(d => d.RequireAuthenticatedUser())
             .Invoke(i => i.RequireAuthenticatedUser()));
         GetAll = _ => OhDataResult.Success<IEnumerable<S487Row>>(new[] { new S487Row { Id = 1, Name = "r" } });
-        GetById = (id, _) => OhDataResult.Success<S487Row>(new S487Row { Id = id, Name = "r" });
+        GetById = (id, _) => OhDataResult.Success<S487Row?>(new S487Row { Id = id, Name = "r" });
     }
 }
 
