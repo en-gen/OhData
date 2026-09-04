@@ -65,27 +65,41 @@ public class ProductProfile : EntitySetProfile<int, Product>
         SelectEnabled  = true;
 
         // IQueryable path: returning the un-materialized queryable is synchronous, so this one
-        // handler stays Task.FromResult; EF Core translates $filter/$orderby/$skip/$top and
+        // handler stays SuccessTask; EF Core translates $filter/$orderby/$skip/$top and
         // materializes the result asynchronously when the framework enumerates it.
-        GetQueryable = _ => Task.FromResult<IQueryable<Product>>(db.Products);
-        GetById      = async (id, ct) => await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
-        Post         = async (p, ct) => { db.Products.Add(p); await db.SaveChangesAsync(ct); return p; };
-        Put          = async (id, p, ct) => { db.Products.Update(p); await db.SaveChangesAsync(ct); return p; };
+        //
+        // `Product` here is the API MODEL, which in this quickstart happens to be the EF entity.
+        // They do not have to be the same type -- see "DTOs and EF entities" below.
+        GetQueryable = _ => OhDataResult.SuccessTask<IQueryable<Product>>(db.Products);
+        GetById      = async (id, ct) =>
+            OhDataResult.Success(await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct));
+        Post         = async (p, ct) =>
+        {
+            db.Products.Add(p);
+            await db.SaveChangesAsync(ct);
+            return OhDataResult.Success(p);
+        };
+        Put          = async (id, p, ct) =>
+        {
+            db.Products.Update(p);
+            await db.SaveChangesAsync(ct);
+            return OhDataResult.Success(p);
+        };
         Patch        = async (id, delta, ct) =>
         {
             var e = await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
-            if (e is null) return null;
+            if (e is null) return OhDataResult.Success<Product>(null);   // -> 404
             delta.Patch(e);
             await db.SaveChangesAsync(ct);
-            return e;
+            return OhDataResult.Success(e);
         };
         Delete       = async (id, ct) =>
         {
             var e = await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
-            if (e is null) return false;
+            if (e is null) return OhDataResult.Success(false);
             db.Products.Remove(e);
             await db.SaveChangesAsync(ct);
-            return true;
+            return OhDataResult.Success(true);
         };
     }
 }
@@ -144,6 +158,94 @@ See [docs/openapi.md](docs/openapi.md), [docs/swashbuckle.md](docs/swashbuckle.m
 [docs/nswag.md](docs/nswag.md), and [docs/versioning.md](docs/versioning.md) (multi-doc / versioned
 setup) for details.
 
+### DTOs and EF entities
+
+`EntitySetProfile<TKey, TModel>`'s `TModel` is the **API model** — the shape on the wire and in
+`$metadata`. The quick start above uses the EF entity as its own API model because that is the
+shortest thing that works, not because the two must be the same type.
+
+**Reading** — project in the handler. `TModel` is the DTO, and EF translates the projection to SQL,
+so `$filter`/`$orderby`/`$select`/`$top` still push down:
+
+```csharp
+public class ProductProfile : EntitySetProfile<int, ProductDto>
+{
+    public ProductProfile(AppDbContext db) : base(x => x.Id)
+    {
+        FilterEnabled = OrderByEnabled = SelectEnabled = true;
+
+        GetQueryable = _ => OhDataResult.SuccessTask(
+            db.Products.Select(p => new ProductDto
+            {
+                Id       = p.Id,
+                Name     = p.Name,
+                Category = p.Category.Name,   // flattened; still one SQL query
+            }));
+    }
+}
+```
+
+Query options are bound against `ProductDto`, so `$filter=Category eq 'Tools'` filters on the
+projected member and EF pushes it into the `JOIN`. Nothing in the framework needs to know the entity
+type exists.
+
+**`$expand` needs the navigation in the projection.** The framework folds an expanded navigation into
+a *member-init projection* over `TModel` — it does not call `Include`, which could not follow a
+`Select` anyway. So a navigation the projection never populated is not there to fold, and the request
+fails loud rather than serving an empty collection:
+
+```csharp
+// $expand=Lines -> 400, "could not be translated by the underlying data provider"
+GetQueryable = _ => OhDataResult.SuccessTask(
+    db.Orders.Select(o => new OrderDto { Id = o.Id, Code = o.Code }));
+
+// $expand=Lines -> 200, and a nested $filter/$orderby/$top still pushes down
+GetQueryable = _ => OhDataResult.SuccessTask(
+    db.Orders.Select(o => new OrderDto
+    {
+        Id    = o.Id,
+        Code  = o.Code,
+        Lines = o.Lines.Select(l => new LineDto { Id = l.Id, Sku = l.Sku }).ToList(),
+    }));
+```
+
+The second form still omits `Lines` from the response unless `$expand` asks for it — projecting it
+only makes it *available*. The cost is that the `JOIN` is in the query whether or not the client
+expands, so project a navigation you expect to be expanded, and leave out one you do not.
+
+**You do not have to repeat the projection.** The seam is only *"return an `IQueryable<TModel>`"*, so
+anything that produces one works. With no dependency at all, declare the projection once and reuse it:
+
+```csharp
+public sealed class OrderDto
+{
+    public static readonly Expression<Func<Order, OrderDto>> Projection = o => new OrderDto
+    {
+        Id    = o.Id,
+        Code  = o.Code,
+        Lines = o.Lines.Select(l => new LineDto { Id = l.Id, Sku = l.Sku }).ToList(),
+    };
+    // ...
+}
+
+GetQueryable = _ => OhDataResult.Success(db.Orders.Select(OrderDto.Projection));
+```
+
+A mapping library can generate that expression instead — OhData neither requires nor assumes one, and
+takes no dependency on any. If you pick one, check its licence and whether it supports `IQueryable`
+projection: **Mapperly** is Apache-2.0 and source-generated, **Mapster** is MIT, and **AutoMapper**'s
+`ProjectTo` works here too but AutoMapper 16 is licensed under RPL-1.5 or a commercial agreement —
+including transitively through the MIT-licensed `AutoMapper.Extensions.ExpressionMapping` and
+`AutoMapper.AspNetCore.OData.EFCore` packages, which depend on it.
+
+If you would rather filter against the **entity** and project last — translating a DTO-shaped predicate
+into an entity-shaped one, which is what `AutoMapper.Extensions.ExpressionMapping` does — use the
+Priority-1 handler
+([`GetODataQueryable`](docs/query-options.md#getodataqueryable---full-odata-pushdown-advanced)). It
+hands your profile the whole `ODataQueryOptions` so you can translate and apply the clauses yourself.
+Two obligations come with that seam: declare what you actually honour via `HonouredQueryOptions`, and
+set `ODataQueryResult.TotalCount` if you page and support `$count`.
+
 ### Beyond the basics
 
 The rest of the surface rides other profile declarations - navigation properties (`HasMany`/`HasOptional`/`HasRequired`), `UseETag`, and `BindFunction`/`BindAction` - rather than the plain CRUD handlers above. Each declaration registers its routes; the trailing comments show what you get:
@@ -153,7 +255,7 @@ public class OrdersProfile : EntitySetProfile<int, Order>
 {
     public OrdersProfile(AppDbContext db) : base(x => x.Id)
     {
-        GetQueryable = _ => Task.FromResult<IQueryable<Order>>(db.Orders);
+        GetQueryable = _ => OhDataResult.SuccessTask<IQueryable<Order>>(db.Orders);
 
         // Collection navigation. getAll gives the read routes; every parameter after it is
         // OPTIONAL - supply only the ones whose route you want:
