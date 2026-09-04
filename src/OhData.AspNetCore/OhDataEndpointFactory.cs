@@ -4550,6 +4550,30 @@ internal static class OhDataEndpointFactory
     //
     // isCollectionValue comes from EDM cardinality, NEVER from `value is IEnumerable`: an entity
     // whose CLR class implements IEnumerable would be walked element-wise and corrupt the response.
+    // #628: JSON Format §4.5.3 -- "The odata.type annotation MUST appear in minimal or full
+    // metadata if the type cannot be heuristically determined ... and one of the following is true:
+    // The type is derived from the type specified for the (collection of) entities". Identical in
+    // 4.0 and 4.01 (checked separately: #372 was exactly a 4.0-vs-4.01 difference).
+    //
+    // Without it a derived row is indistinguishable from the base type it was declared as, so a
+    // conforming client deserializes it into the base and silently drops the derived members -- the
+    // same silent-loss shape as #529, one layer out on the wire. Microsoft.AspNetCore.OData emits it
+    // (its own E2E expectations assert {"@odata.type":"#NS.Manager",...} inside a collection of
+    // Person), so this is a divergence from MS as well as from the spec.
+    //
+    // Resolved through EdmClrTypeMap, whose lookup is EXACT (#508) -- which is what this needs: the
+    // question is "what type IS this instance", never "what does it inherit from". A runtime type
+    // the EDM does not map yields no annotation rather than a guess.
+    private static void AnnotateDerivedType(
+        JsonObject obj, Type clrType, IEdmStructuredType declared, IEdmModel? model)
+    {
+        if (model is null) return;
+        if (EdmClrTypeMap.FindStructuredType(model, clrType) is not { } runtimeType) return;
+        if (ReferenceEquals(runtimeType, declared)) return;
+
+        obj["@odata.type"] = "#" + runtimeType.FullTypeName();
+    }
+
     private static JsonNode? SerializeBounded(
         object? value,
         IEdmEntityType? edmType,
@@ -4603,6 +4627,10 @@ internal static class OhDataEndpointFactory
         // also produce) — there are no navigations to splice into that, so return it as-is instead
         // of forcing .AsObject() and throwing InvalidOperationException.
         if (node is not JsonObject obj) return node;
+
+        // #628: before the navigation splice, so an expanded navigation's own annotation (added by
+        // the recursive call) cannot be confused with this level's.
+        AnnotateDerivedType(obj, clrType, edmType, model);
 
         // Navigation name -> its nested $expand clause, for navigations expanded at THIS level —
         // and, for a $levels-carrying self-referential nav that was actually PUSHED (levelsNavNames),
@@ -4752,6 +4780,10 @@ internal static class OhDataEndpointFactory
         JsonSerializerOptions? navSuppressed = null;
         HashSet<Type>? seenTypes = null;
         bool polymorphic = false;
+        // #628: piggy-backed on the same distinct-type pass as the polymorphism probe below, so a
+        // homogeneous collection -- the overwhelmingly common case -- costs one cached EDM lookup
+        // for the single runtime type present and nothing per element.
+        bool anyDerived = false;
         foreach (object? value in values)
         {
             if (value is null) continue;
@@ -4759,6 +4791,13 @@ internal static class OhDataEndpointFactory
             if ((seenTypes ??= new HashSet<Type>()).Add(t))
             {
                 navSuppressed = GetNavSuppressedOptions(opts, model, (IEdmEntityType)edmType, t);
+                if (!anyDerived && model is not null &&
+                    EdmClrTypeMap.FindStructuredType(model, t) is { } runtimeEdmType &&
+                    !ReferenceEquals(runtimeEdmType, edmType))
+                {
+                    anyDerived = true;
+                }
+
                 // Piggy-backed on the distinct-type pass that already exists, so the polymorphism
                 // test costs one cached lookup per DISTINCT runtime type per collection — never a
                 // per-element check on the hot path.
@@ -4821,6 +4860,20 @@ internal static class OhDataEndpointFactory
         }
 
         JsonArray batched = JsonSerializer.SerializeToNode(values, navSuppressed) as JsonArray ?? new JsonArray();
+
+        // #628: ahead of the fast path on purpose. The annotation is required whether or not any
+        // navigation was kept, so sitting behind `anyNavKept` would emit it only for requests that
+        // happened to carry $expand.
+        if (anyDerived)
+        {
+            for (int i = 0; i < values.Count && i < batched.Count; i++)
+            {
+                if (values[i] is { } derivedValue && batched[i] is JsonObject derivedObj)
+                {
+                    AnnotateDerivedType(derivedObj, derivedValue.GetType(), edmType, model);
+                }
+            }
+        }
 
         if (!anyNavKept) return batched; // FAST PATH: nothing to splice.
 
@@ -5379,20 +5432,22 @@ internal static class OhDataEndpointFactory
             return false;
         }
 
-        // #529: only on the EXPAND path. A member-init can construct nothing but the declared type, so
-        // on a TPH hierarchy every row comes back as the base and the derived properties vanish under a
-        // 200. Scoped to expandNavs because the $select-only projection emits just the selected members,
-        // where no derived property is reachable and the runtime type is unobservable -- refusing there
-        // would cost the pushdown for a difference nothing can see.
-        if (expandNavs is { Count: > 0 } && edmModel is not null &&
-            HasDerivedEntityTypes(edmModel, typeof(TModel)))
+        // #529 refused this only on the EXPAND path, reasoning that a $select-only projection emits
+        // just the selected members, "where no derived property is reachable and the runtime type is
+        // unobservable". #628 made that reasoning FALSE: the runtime type is now reported as
+        // @odata.type, which JSON Format §4.5.3 requires for a derived instance -- and a member-init
+        // can construct nothing but the declared type, so the projection erases the very identity the
+        // annotation has to carry. Measured: with the projection engaged, $select=Id on a polymorphic
+        // root emitted no annotation at all. The scope is therefore the whole pushdown, not the
+        // expand half of it.
+        if (edmModel is not null && HasDerivedEntityTypes(edmModel, typeof(TModel)))
         {
             ineligibilityReason =
                 $"'{typeof(TModel).Name}' has derived types in the EDM, and a member-init projection " +
                 "can only construct the declared type -- every row would come back as " +
                 $"'{typeof(TModel).Name}' with the derived types' own properties dropped";
             logger?.LogDebug(
-                "OhData: $expand pushdown projection skipped for {EntitySet}: {Model} is polymorphic.",
+                "OhData: pushdown projection skipped for {EntitySet}: {Model} is polymorphic.",
                 source.EntitySetName, typeof(TModel).Name);
             return false;
         }
@@ -8718,7 +8773,13 @@ internal static class OhDataEndpointFactory
                         pushdownNamesUnambiguous &&
                         options.SelectExpand?.SelectExpandClause is { } selClause &&
                         ExtractSelectedProperties(selClause) is { } selNames
-                            ? TryApplySelectProjection(q, selNames, source, pushdownCtorOk, pushdownStructuralByName, logger)
+                            // #628: the EDM model is passed HERE too, not only on the $expand call
+                            // sites below. Without it the polymorphic-root check inside cannot
+                            // fire, and a member-init over the declared type erases the runtime
+                            // identity @odata.type has to report -- measured: $select=Id on a
+                            // polymorphic root emitted no annotation for the derived row.
+                            ? TryApplySelectProjection(q, selNames, source, pushdownCtorOk,
+                                pushdownStructuralByName, logger, edmModel: registration.EdmModel)
                             : q;
 
                     // #206 phase 2: multi-level $expand Include pushdown. Folds the delegate-less
