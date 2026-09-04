@@ -18,13 +18,23 @@ namespace OhData.AspNetCore.Tests;
 /// <b>0 of 164</b> assignments in this repo were <c>async</c>.
 /// </para>
 /// <para>
-/// The load-bearing test here is <see cref="SynchronousThrow_StillGetsTheErrorEnvelope"/>. Every
-/// other <c>Invoke*</c> member is an <c>async</c> method, which captures a synchronously-throwing
-/// user lambda into the returned Task; a plain forwarder does not, and the caller evaluates
-/// <c>InvokeGetQueryableAsync(ct)</c> as an ARGUMENT to <c>AsHandlerFault</c> — so a synchronous
-/// throw would escape past the wrapper entirely. That is exactly the hole
-/// <c>InvokeDeleteAsync</c> had until #581 made it <c>async</c>. Because a sync delegate can now
-/// throw on the calling thread, the seam catches and returns <c>Task.FromException</c>.
+/// The load-bearing test is <see cref="ARejectionIsStillExpressible_ViaConfigureExceptions"/>, and
+/// which one that is was <b>measured, not assumed</b>. Every other <c>Invoke*</c> member is an
+/// <c>async</c> method, which captures a synchronously-throwing user lambda into the returned Task;
+/// a plain forwarder does not, and the caller evaluates <c>InvokeGetQueryableAsync(ct)</c> as an
+/// ARGUMENT to <c>WithExceptionMapping</c>/<c>AsHandlerFault</c> — so with a now-synchronous
+/// delegate a throw during query composition happens before either wrapper exists. That is the hole
+/// <c>InvokeDeleteAsync</c> had until #581 made it <c>async</c>; the seam therefore catches and
+/// returns <c>Task.FromException</c>.
+/// </para>
+/// <para>
+/// Replacing the seam with a plain forwarder was tried, and
+/// <see cref="SynchronousThrow_StillGetsTheErrorEnvelope"/> <b>still passed</b> — the throw happens
+/// inside the route handler, so the group filter catches it and writes a 500 envelope either way.
+/// What actually breaks is the MAPPING: <c>WithExceptionMapping</c> never sees the exception, so a
+/// <c>ConfigureExceptions</c> rule that should answer <c>403</c> answers <c>500</c> instead. Since
+/// <c>ConfigureExceptions</c> is the documented replacement for returning a rejection from this
+/// seam (#653), that is the regression worth pinning.
 /// </para>
 /// </summary>
 public sealed class Issue653SyncGetQueryableTests
