@@ -75,7 +75,7 @@ public sealed class DocumentationSnippetCompilationTests
     private static string RepoRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "src", "OhData.sln")))
+        while (dir is not null && !File.Exists(Path.Join(dir.FullName, "src", "OhData.sln")))
         {
             dir = dir.Parent;
         }
@@ -84,15 +84,19 @@ public sealed class DocumentationSnippetCompilationTests
         return dir!.FullName;
     }
 
+    // Path.Join, not Path.Combine, throughout: Combine DISCARDS everything before a rooted
+    // segment, so it silently answers a different question than the one asked. Every segment here
+    // is a literal or a GetRelativePath result and so cannot be rooted -- but that is an argument
+    // about today's arguments, not about the call, and Join has no such rule to reason about.
     private static IEnumerable<string> DocFiles(string root) =>
         // README.md is FIRST because it is the page an adopter reads before any other, and it was
         // outside this scan until #653: the CancellationToken removal updated it, that commit missed
         // the merge window, and nothing here could tell. It is the same blind spot #620 found for the
         // docs.yml stale-API scan, which globbed docs/ and docs-site/ and so skipped the most-read
         // file in the repo.
-        new[] { Path.Combine(root, "README.md") }
-            .Concat(Directory.EnumerateFiles(Path.Combine(root, "docs"), "*.md", SearchOption.AllDirectories))
-            .Concat(Directory.EnumerateFiles(Path.Combine(root, "docs-site"), "*.md", SearchOption.TopDirectoryOnly))
+        new[] { Path.Join(root, "README.md") }
+            .Concat(Directory.EnumerateFiles(Path.Join(root, "docs"), "*.md", SearchOption.AllDirectories))
+            .Concat(Directory.EnumerateFiles(Path.Join(root, "docs-site"), "*.md", SearchOption.TopDirectoryOnly))
             // design notes and superpowers plans are historical and may reference old APIs, exactly as
             // the docs.yml stale-API scan excludes them.
             .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}design{Path.DirectorySeparatorChar}",
@@ -121,7 +125,7 @@ public sealed class DocumentationSnippetCompilationTests
     public void EveryMarkedSnippetOnThePageCompiles(string relativePath)
     {
         string root = RepoRoot();
-        string text = File.ReadAllText(Path.Combine(root, relativePath));
+        string text = File.ReadAllText(Path.Join(root, relativePath));
 
         string[] sources = FencedCSharp.Matches(text)
             .Select(m => Usings + m.Groups["body"].Value)
