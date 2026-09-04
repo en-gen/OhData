@@ -57,6 +57,14 @@ public sealed class P529Child
     public int Id { get; set; }
     public int BaseId { get; set; }
     public string Body { get; set; } = "";
+    public List<P529Grandchild> Grandkids { get; set; } = new();
+}
+
+public sealed class P529Grandchild
+{
+    public int Id { get; set; }
+    public int ChildId { get; set; }
+    public string Tag { get; set; } = "";
 }
 
 public sealed class P529DbContext : DbContext
@@ -64,12 +72,14 @@ public sealed class P529DbContext : DbContext
     public P529DbContext(DbContextOptions<P529DbContext> options) : base(options) { }
     public DbSet<P529Base> Things => Set<P529Base>();
     public DbSet<P529Child> Children => Set<P529Child>();
+    public DbSet<P529Grandchild> Grandkids => Set<P529Grandchild>();
     public DbSet<Q529Base> QThings => Set<Q529Base>();
     public DbSet<Q529Child> QChildren => Set<Q529Child>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<P529Base>().HasMany(t => t.Children).WithOne().HasForeignKey(c => c.BaseId);
+        b.Entity<P529Child>().HasMany(c => c.Grandkids).WithOne().HasForeignKey(g => g.ChildId);
         b.Entity<P529Derived>(); // TPH: the derived type must be in the model to be mapped
         b.Entity<Q529Base>().Ignore(x => x.Computed);
         b.Entity<Q529Base>().HasMany(t => t.Children).WithOne().HasForeignKey(c => c.BaseId);
@@ -138,6 +148,7 @@ public sealed class Issue529TphExpandProjectionTests
         db.Children.Add(new P529Child { Id = 10, BaseId = 1, Body = "c1" });
         db.Children.Add(new P529Child { Id = 20, BaseId = 2, Body = "c2" });
         db.Children.Add(new P529Child { Id = 21, BaseId = 2, Body = "c3" });
+        db.Grandkids.Add(new P529Grandchild { Id = 100, ChildId = 20, Tag = "g1" });
         db.QThings.Add(new Q529Base { Id = 1, Name = "qbase" });
         db.QThings.Add(new Q529Derived { Id = 2, Name = "qderived", Extra = "QEXTRA" });
         db.QChildren.Add(new Q529Child { Id = 30, BaseId = 2, Body = "q2" });
@@ -236,6 +247,30 @@ public sealed class Issue529TphExpandProjectionTests
 
         Assert.Equal(21, kids[0].GetProperty("Id").GetInt32());
         Assert.Equal(20, kids[1].GetProperty("Id").GetInt32());
+    }
+
+    [Fact]
+    public async Task ANestedExpandUnderAPolymorphicRoot_FailsLoud_NamingWhy()
+    {
+        // BREAKING, and the deliberate half of this change. A nested $expand makes ApplyNavShape emit
+        // a .Select, which EF's filtered Include does not accept, so FindNestedExpandOrLevels refuses
+        // it -- unchanged. What moved is that a polymorphic root now REACHES that refusal, where it
+        // used to be served with the derived properties silently missing. Loud beats silently wrong,
+        // and the message names the check that actually failed for THIS model (#322) rather than
+        // reciting the eligibility rule.
+        using var connection = new SqliteConnection("DataSource=:memory:");
+        connection.Open();
+        await using TestFixture fx = await BuildAsync(connection);
+
+        HttpResponseMessage resp = await fx.Client.GetAsync(
+            "/odata/P529Things?$expand=Children($expand=Grandkids)");
+
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("InvalidQueryOption", body, StringComparison.Ordinal);
+        Assert.Contains("has derived types in the EDM", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("no public parameterless constructor", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("Sqlite", body, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
