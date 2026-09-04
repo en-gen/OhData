@@ -9,6 +9,73 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Upgrading from 1.7.0
+
+A checklist, not an explanation. Every line links to the entry below, which carries the measurement,
+the reasoning and the rejected alternatives. **The baseline throughout this section is 1.7.0** — the
+last shipped release — never an intermediate state on this branch.
+
+This is a major, and the compile-time half is unusually large: **every entity-set handler changes
+shape.** The wire half is smaller than the list suggests — most of it only fires on a request that
+was already being answered wrongly.
+
+#### 1. What stops the app compiling
+
+All of this is mechanical, and the compiler finds every site for you.
+
+- [ ] **Every handler returns `Task<OhDataResult<T>>`** (#581). `GetAll`, `GetQueryable`, `GetById`,
+      `Post`, `Put`, `Patch`, `Delete` and `Search`. A success becomes `OhDataResult.Success(value)`;
+      a handler can now also *return* a rejection — `OhDataResult.NotFound(...)`, `Conflict(...)`,
+      `Forbidden(...)`, `BadRequest(...)`, `PreconditionFailed(...)` — instead of throwing.
+- [ ] **`GetById`, `Put` and `Patch` take `OhDataResult<TModel?>`** (#641); `Post` stays
+      `OhDataResult<TModel>`. Add the `?` to the success return: `OhDataResult.Success<Product?>(e)`.
+      The asymmetry is the point — a `null` from the first three is a legitimate `404` (or an upsert
+      on `Put`), while a `null` from `Post` is a contract violation answering `500`.
+- [ ] **`OhDataResult.SuccessTask` is gone; use `Success`** (#633). `OhDataResult<T>` converts
+      implicitly to `Task<OhDataResult<T>>`, so a synchronous handler needs no `Task` ceremony. A
+      synchronous *rejection* still needs `Task.FromResult<OhDataResult<T>>(...)` or an `async`
+      lambda — that is unchanged, `SuccessTask` had no rejection twin either.
+
+`docs/error-handling.md` is the whole surface, and it is now reachable from the docsite nav.
+
+#### 2. What changes on the wire
+
+Each of these was answering a request wrongly before. Check them against any client that branches on
+status codes or headers.
+
+- [ ] **A derived-type row now carries `@odata.type`** (#628). If you have no entity-type inheritance,
+      nothing changes. If you do, a client with strict additional-property handling sees a new member —
+      and a client that was silently dropping your derived properties stops.
+- [ ] **`GET …/{Property}/$value` on a null property answers `204`, not `404`** (#369).
+- [ ] **`Preference-Applied` echoes `odata.maxpagesize`**, the OData 4.0 spelling, rather than 4.01's
+      bare `maxpagesize` (#372). Both spellings are still *accepted* on the request.
+- [ ] **`/$count` negotiates nothing** (#580). `Accept: application/xml` and `$format=xml` answer
+      `200 text/plain` instead of `406`/`400`.
+- [ ] **An unsupported system query option answers `501`, not `400`**, on a Priority-1 route whose
+      profile does not declare it (#475). Declare what you honour with `HonouredQueryOptions`.
+- [ ] **`$filter`/`$orderby` dividing by a literal zero is refused with `400` before execution**
+      (#385), on every provider — previously `400`, `200`-with-no-rows or `500` depending on the
+      database.
+
+#### 3. What changes only if you use the feature
+
+- [ ] **A polymorphic (TPH) entity set is served through EF `Include` rather than a projection**
+      (#529). Derived properties now survive `$expand` — they were silently dropped before. A nested
+      `$expand` works (#616); **`$levels` under a polymorphic root now answers `400`** where it
+      previously answered `200` with the derived properties missing. See
+      [docs/polymorphism.md](../docs/polymorphism.md).
+- [ ] **A Priority-1 profile that pages and supports `$count` must set
+      `ODataQueryResult.TotalCount`** (#379). Without it a paged `$count=true` now fails loudly
+      instead of reporting the page length as the total. The alternative is to drop
+      `OhDataSystemQueryOption.Count` from `HonouredQueryOptions`, which refuses `$count` with `501`.
+
+#### 4. Nothing to do
+
+- **An omitted required property is accepted again** on `POST`/`PUT` (#544/#545). 1.7.0 refused it;
+  no clause in Part 1 mandates that, and the refusal made the wire answer depend on a CLR initializer
+  that `$metadata` does not describe. An explicit `null` for a non-nullable property is still `400`.
+
+
 ### Breaking
 
 - **⚠ BREAKING CHANGE — a Priority-1 route refuses the system query options its profile does not
