@@ -163,7 +163,7 @@ the same dataset as iteration N — the same discipline used in
    but the two envelopes are not semantically identical, and the smoke gate does not check for it.
 7. **`@odata.context` differs**: `#BenchDepartments` on OhData vs
    `#BenchDepartments(Employees())` on MS OData — OhData omits the expand clause from the context
-   URL. Pre-existing spec nit, unrelated to this branch.
+   URL. Tracked as [#648](https://github.com/en-gen/OhData/issues/648) — read there before treating this as settled; nothing asserts context URLs today.
 8. **`MaxTop` means different things on the two hosts.** OhData treats it as an implicit page
    size, applied even to a request that sends no `$top`; MS's `[EnableQuery(MaxTop=...)]` only
    caps a client-*supplied* `$top` and does nothing to an unpaged request on its own. This is
