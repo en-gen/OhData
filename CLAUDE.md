@@ -306,7 +306,7 @@ Sixteen projects, all in `src/OhData.sln`. The `Target` column is the literal
 | `OhData.Client.Tests` | net10.0 | xUnit tests for OhData.Client |
 | `OhData.MicrosoftODataClient.Tests` | net10.0 | Compatibility tests against Microsoft.OData.Client |
 | `OhData.Client.Benchmarks` | net10.0 | BenchmarkDotNet project for client library performance |
-| `OhData.Server.Benchmarks` | net10.0 | BenchmarkDotNet project comparing OhData's minimal-API pipeline against `Microsoft.AspNetCore.OData`'s `ODataController`+`[EnableQuery]` pipeline; report in `src/OhData.Server.Benchmarks/docs/server-comparison-report.md` |
+| `OhData.Server.Benchmarks` | net10.0 | BenchmarkDotNet project comparing OhData's minimal-API pipeline against `Microsoft.AspNetCore.OData`'s `ODataController`+`[EnableQuery]` pipeline; report in `docs/performance.md` (a docsite page — it carries the provenance of every figure) |
 
 **`net8.0` on the two shipping libraries is load-bearing, not vestigial.** Several deliberate API
 choices exist *because* of it and will silently break the net8.0 build if "simplified" against the

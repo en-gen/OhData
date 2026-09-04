@@ -254,10 +254,11 @@ Two things worth calling out about the "after" side:
   against `ODataController` + `[EnableQuery]` over the full HTTP round trip (routing → OData
   query-option processing → handler → serialization), same in-process `TestServer` setup,
   identical dataset, identical requests, with a correctness smoke-check gating every run. OhData
-  won all 11 measured scenarios — writes (POST/PUT/PATCH) were roughly 5-6× faster with up to
-  7.7× fewer bytes allocated; reads were 2-3.7× faster. Full methodology, the complete results
-  table, and the known asymmetries between the two pipelines are in
-  [src/OhData.Server.Benchmarks/docs/server-comparison-report.md](https://github.com/en-gen/OhData/blob/develop/src/OhData.Server.Benchmarks/docs/server-comparison-report.md).
+  was faster on 10 of the 11 measured scenarios and allocated less on all 11 — writes
+  (POST/PUT/PATCH) roughly 4.6-5× faster with up to 7.7× fewer bytes allocated, reads 1.3-3.2×
+  faster. DELETE is a tie on time (1.02× ± 0.08) and a 1.2× allocation win. Full methodology, the complete results
+  table, the provenance of every figure, and the known asymmetries between the two pipelines are
+  in [docs/performance.md](performance.md).
   Reproduce it yourself with `dotnet run -c Release --project src/OhData.Server.Benchmarks -- --filter "*"`.
 - **Minimal-API idiom.** No controllers, no `[FromBody]`/`[EnableQuery]` attributes, no
   `SingleResult.Create` ceremony. A profile is a plain class; the handler surface (`GetAll`,
@@ -331,4 +332,4 @@ depends on any of them today, budget time to rework that part of the integration
 - [docs/navigation-routing.md](navigation-routing.md) — `HasMany`/`HasOptional`/`HasRequired`, `$ref`, batch `$expand`
 - [docs/bound-operations.md](bound-operations.md) — `BindFunction`/`BindAction`/`BindEntityFunction`/`BindEntityAction`
 - [docs/authorization.md](authorization.md) — `RequireAuthorization`/`RequireRoles`
-- [src/OhData.Server.Benchmarks/docs/server-comparison-report.md](https://github.com/en-gen/OhData/blob/develop/src/OhData.Server.Benchmarks/docs/server-comparison-report.md) — the benchmark referenced above
+- [docs/performance.md](performance.md) — the benchmark referenced above
