@@ -89,7 +89,7 @@ public sealed class PushProductProfile : EntitySetProfile<int, PushProduct>
         HasMany(x => x.Parts!, (int key, CancellationToken ct) =>
             Task.FromResult<IEnumerable<PushPart>>(PushData.Parts()));
 
-        GetQueryable = _ => _store.AsQueryable();
+        GetQueryable = () => _store.AsQueryable();
     }
 }
 
@@ -105,7 +105,7 @@ public sealed class PushTaggedProfile : EntitySetProfile<int, PushTaggedItem>
     {
         SelectEnabled = true;
         UseETag(x => x.Version);
-        GetQueryable = _ => _store.AsQueryable();
+        GetQueryable = () => _store.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(_store.FirstOrDefault(x => x.Id == id));
     }
 }
@@ -121,7 +121,7 @@ public sealed class PushRecordProfile : EntitySetProfile<int, PushRecordItem>
     public PushRecordProfile() : base(x => x.Id)
     {
         SelectEnabled = true;
-        GetQueryable = _ => _store.AsQueryable();
+        GetQueryable = () => _store.AsQueryable();
     }
 }
 
@@ -135,7 +135,7 @@ public sealed class PushComputedProfile : EntitySetProfile<int, PushComputedItem
     public PushComputedProfile() : base(x => x.Id)
     {
         SelectEnabled = true;
-        GetQueryable = _ => _store.AsQueryable();
+        GetQueryable = () => _store.AsQueryable();
     }
 }
 
@@ -163,7 +163,7 @@ public sealed class PushEtagComputedProfile : EntitySetProfile<int, PushEtagComp
     {
         SelectEnabled = true;
         UseETag(x => x.FullName);
-        GetQueryable = _ => _store.AsQueryable();
+        GetQueryable = () => _store.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(_store.FirstOrDefault(x => x.Id == id));
     }
 }
@@ -190,7 +190,7 @@ public sealed class PushEtagUnknowableProfile : EntitySetProfile<int, PushEtagUn
     {
         SelectEnabled = true;
         UseETag(x => x.Name.Length); // computed — names unknowable
-        GetQueryable = _ => _store.AsQueryable();
+        GetQueryable = () => _store.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(_store.FirstOrDefault(x => x.Id == id));
     }
 }
@@ -228,7 +228,7 @@ public sealed class PushEtagNavProfile : EntitySetProfile<int, PushEtagNavItem>
         HasMany(x => x.Parts!, (int key, CancellationToken ct) =>
             Task.FromResult<IEnumerable<PushPart>>(PushData.Parts()));
         UseETag(x => x.Name); // a navigation selector is rejected at startup since #351
-        GetQueryable = _ => _store.AsQueryable();
+        GetQueryable = () => _store.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(_store.FirstOrDefault(x => x.Id == id));
     }
 }

@@ -31,7 +31,7 @@ precisely what #496 had to unpick when `null` was the only way to say "no".
 `GetQueryable` returns a bare `IQueryable<TModel>` — no `OhDataResult`, and no `Task`:
 
 ```csharp
-GetQueryable = _ => db.Products;
+GetQueryable = () => db.Products;
 ```
 
 It is the only handler whose return the framework **further composes before executing**:
@@ -46,7 +46,7 @@ To reject a collection read, **throw and map it** — the same machinery as the 
 ConfigureExceptions(e => e.Map<OutOfTenantScopeException>(
     _ => OhDataResult.Forbidden("OutOfTenantScope", "This collection is out of scope.")));
 
-GetQueryable = _ => _tenant.IsAuthorized ? db.Products : throw new OutOfTenantScopeException();
+GetQueryable = () => _tenant.IsAuthorized ? db.Products : throw new OutOfTenantScopeException();
 ```
 
 The mapping fires for a throw during composition as well as during execution.

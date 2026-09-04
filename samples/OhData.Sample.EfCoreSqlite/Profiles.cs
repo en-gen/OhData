@@ -67,7 +67,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
             return pairs.ToLookup(x => x.Id, x => x.Tag);
         });
 
-        GetQueryable = (_) => db.Products;
+        GetQueryable = () => db.Products;
 
         GetById = async (id, ct) => OhDataResult.Success<Product?>(await db.Products.SingleOrDefaultAsync(p => p.Id == id, ct));
 
@@ -140,7 +140,7 @@ public class CategoryProfile : EntitySetProfile<int, Category>
 
         // Deliberately partial CRUD: any handler left unassigned registers NO route at all
         // (OhData's headline rule) — so Categories has no PUT/PATCH/DELETE endpoints.
-        GetQueryable = (_) => db.Categories;
+        GetQueryable = () => db.Categories;
 
         GetById = async (id, ct) => OhDataResult.Success<Category?>(await db.Categories.SingleOrDefaultAsync(c => c.Id == id, ct));
 
@@ -177,7 +177,7 @@ public class TagProfile : EntitySetProfile<int, Tag>
         // no reverse navigation route. The EF skip navigation is untouched.
         Ignore(x => x.Products);
 
-        GetQueryable = (_) => db.Tags;
+        GetQueryable = () => db.Tags;
 
         GetById = async (id, ct) => OhDataResult.Success<Tag?>(await db.Tags.SingleOrDefaultAsync(t => t.Id == id, ct));
     }
@@ -210,7 +210,7 @@ public class ProductSummaryProfile : EntitySetProfile<int, ProductSummary>
         // JOIN — here it would throw, since the navigation isn't in the EF model. Read-only by
         // design: no other handlers are assigned, so no POST/PUT/PATCH/DELETE routes exist for
         // this set (and no single-entity GET either — GetById is unassigned).
-        GetQueryable = (_) => db.Products.Join(
+        GetQueryable = () => db.Products.Join(
             db.Categories,
             p => p.CategoryId,
             c => c.Id,

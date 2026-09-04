@@ -91,7 +91,7 @@ public sealed class PxEntityProfile : EntitySetProfile<int, PxEntity>
         EntitySetName = "PxEntities";
         ExpandEnabled = true;
         HasMany(x => x.Children!);
-        GetQueryable = _ => _store.AsQueryable();
+        GetQueryable = () => _store.AsQueryable();
         GetById = (id, _) => OhDataResult.Success(
             id == 1 ? _cyclic : _store.FirstOrDefault(r => r.Id == id));
     }
@@ -196,7 +196,7 @@ public sealed class PbDerivedProfile : EntitySetProfile<int, PbDerived>
         ExpandEnabled = true;
         HasMany(x => x.Tasks!);   // declared on PbBase, reached through PbDerived
         HasOptional(x => x.Tag!); // ditto, single-valued
-        GetQueryable = _ => _store.AsQueryable();
+        GetQueryable = () => _store.AsQueryable();
         GetById = (id, _) => OhDataResult.Success(_store.FirstOrDefault(r => r.Id == id));
     }
 }
@@ -221,7 +221,7 @@ public sealed class PbBaseProfile : EntitySetProfile<int, PbBase>
         ExpandEnabled = true;
         HasMany(x => x.Tasks!);
         HasOptional(x => x.Tag!);
-        GetQueryable = _ => _store.AsQueryable();
+        GetQueryable = () => _store.AsQueryable();
         GetById = (id, _) => OhDataResult.Success(_store.FirstOrDefault(r => r.Id == id));
     }
 }

@@ -120,7 +120,7 @@ On this path the profile — not the framework — owns query application, inclu
 ### `GetQueryable` - IQueryable with pushdown (recommended for databases)
 
 ```csharp
-GetQueryable = _ => db.Products;
+GetQueryable = () => db.Products;
 ```
 
 Returns a base `IQueryable<TModel>`. The framework applies `$filter`, `$orderby`, `$skip`, and `$top` via `ApplyTo(IQueryable)`. With EF Core these become SQL clauses - only matching rows are fetched.
@@ -138,7 +138,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
         SelectEnabled  = true;   // allow $select
         ExpandEnabled  = true;   // allow $expand
 
-        GetQueryable = _ => db.Products;
+        GetQueryable = () => db.Products;
     }
 }
 ```
@@ -551,7 +551,7 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
         HasOptional(x => x.Customer,
             get: async (orderId, ct) => await db.Customers.FindAsync([orderId], ct));
 
-        GetQueryable = _ => db.Orders;
+        GetQueryable = () => db.Orders;
     }
 }
 ```

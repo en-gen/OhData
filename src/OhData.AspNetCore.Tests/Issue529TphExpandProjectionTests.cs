@@ -114,7 +114,7 @@ public sealed class P529BaseProfile : EntitySetProfile<int, P529Base>
         ExpandEnabled = true;
         OrderByEnabled = true;
         SelectEnabled = true;
-        GetQueryable = _ => db.Things.AsQueryable();
+        GetQueryable = () => db.Things.AsQueryable();
         GetById = (id, _) => OhDataResult.Success(db.Things.FirstOrDefault(t => t.Id == id));
         HasMany(x => x.Children); // delegate-less -> pushable
         HasMany(x => x.Subthings);
@@ -127,7 +127,7 @@ public sealed class Q529BaseProfile : EntitySetProfile<int, Q529Base>
     {
         EntitySetName = "Q529Things";
         ExpandEnabled = true; OrderByEnabled = true; SelectEnabled = true;
-        GetQueryable = _ => db.QThings.AsQueryable();
+        GetQueryable = () => db.QThings.AsQueryable();
         HasMany(x => x.Children);
     }
 }

@@ -61,8 +61,8 @@ public class RatingResult
 /// </summary>
 internal static class MovieHandlers
 {
-    public static Func<CancellationToken, IQueryable<Movie>> GetQueryable(AppDbContext db) =>
-        (_) => db.Movies.AsQueryable();
+    public static Func<IQueryable<Movie>> GetQueryable(AppDbContext db) =>
+        () => db.Movies.AsQueryable();
 
     public static Func<int, CancellationToken, Task<OhDataResult<Movie?>>> GetById(AppDbContext db) =>
         (id, _) => OhDataResult.Success(db.Movies.Find(id));
@@ -398,7 +398,7 @@ public class AwardProfile : EntitySetProfile<int, Award>
         ExpandEnabled = true;
         CountEnabled = true;
 
-        GetQueryable = _ => db.Awards;
+        GetQueryable = () => db.Awards;
         GetById = (id, _) => OhDataResult.Success(db.Awards.FirstOrDefault(a => a.Id == id));
 
         HasMany(x => x.Nominations); // delegate-less -> pushed down, which is the point
@@ -418,7 +418,7 @@ public class ActorProfile : EntitySetProfile<int, Actor>
         CountEnabled = true;
         MaxTop = 50;
 
-        GetQueryable = (_) => db.Actors.AsQueryable();
+        GetQueryable = () => db.Actors.AsQueryable();
         GetById = (id, _) => OhDataResult.Success(db.Actors.Find(id));
 
         Post = (actor, _) =>
@@ -486,7 +486,7 @@ public class StudioProfile : EntitySetProfile<int, Studio>
             return Task.FromResult(lookup);
         });
 
-        GetQueryable = (_) => db.Studios.AsQueryable();
+        GetQueryable = () => db.Studios.AsQueryable();
         GetById = (id, _) => OhDataResult.Success(db.Studios.Find(id));
 
         Post = (studio, _) =>

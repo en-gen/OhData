@@ -113,7 +113,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
         // you a standalone GET /odata/Products(1)/Category route.)
         HasRequired(x => x.Category);
 
-        GetQueryable = _ => db.Products;
+        GetQueryable = () => db.Products;
         GetById      = async (id, ct) =>
             OhDataResult.Success(await db.Products.SingleOrDefaultAsync(p => p.Id == id, ct));
 
@@ -154,7 +154,7 @@ public class CategoryProfile : EntitySetProfile<int, Category>
         EntitySetName = "Categories";
         FilterEnabled = OrderByEnabled = SelectEnabled = CountEnabled = true;
 
-        GetQueryable = _ => db.Categories;
+        GetQueryable = () => db.Categories;
         GetById = async (id, ct) => OhDataResult.Success(await db.Categories.FindAsync([id], ct));
     }
 }

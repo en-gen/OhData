@@ -52,7 +52,7 @@ public sealed class SrnNodeProfile : EntitySetProfile<int, SrnNode>
         // over-ceiling nested $top (3) can be distinguished from a within-ceiling one (2).
         MaxExpandTop = 2;
 
-        GetQueryable = _ => _nodes.AsQueryable();
+        GetQueryable = () => _nodes.AsQueryable();
         // Delegate-backed (getAll:) — deliberately so, to exercise #294's reject on a
         // self-referential navigation (RootTop_*/pushdown coverage for the delegate-LESS shared-type
         // case lives in SharedNavTargetTypePushdownTests.cs; duplicating it here against the identical
