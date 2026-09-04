@@ -234,3 +234,71 @@ public sealed class Issue581CancellationGuardTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => responseTask);
     }
 }
+
+/// <summary>
+/// #581 — the public surface of <see cref="OhDataResult{T}"/> itself. The framework's own unwrap
+/// tests <c>Rejection is { }</c>, so <see cref="OhDataResult{T}.IsSuccess"/> is API an adopter uses
+/// and nothing internal exercises; it is pinned here rather than left to a caller that may never
+/// come.
+/// </summary>
+public sealed class Issue581OhDataResultOfTTests
+{
+    [Fact]
+    public void Success_CarriesTheValueAndNoRejection()
+    {
+        var thing = new R581Thing { Id = 7, Name = "seven" };
+
+        OhDataResult<R581Thing> result = OhDataResult.Success(thing);
+
+        Assert.True(result.IsSuccess);
+        Assert.Same(thing, result.Value);
+        Assert.Null(result.Rejection);
+    }
+
+    [Fact]
+    public void SuccessOfNull_IsStillASuccess()
+    {
+        // A null value is how GetById/Patch say "not found" -- the framework turns it into a 404.
+        // It must NOT be mistaken for a rejection.
+        OhDataResult<R581Thing> result = OhDataResult.Success<R581Thing>(null);
+
+        Assert.True(result.IsSuccess);
+        Assert.Null(result.Value);
+        Assert.Null(result.Rejection);
+    }
+
+    [Fact]
+    public async Task SuccessTask_IsSuccessAlreadyCompleted()
+    {
+        Task<OhDataResult<bool>> task = OhDataResult.SuccessTask(true);
+
+        Assert.True(task.IsCompletedSuccessfully);
+        OhDataResult<bool> result = await task;
+        Assert.True(result.IsSuccess);
+        Assert.True(result.Value);
+    }
+
+    [Fact]
+    public void ARejectionConvertsImplicitly_AndIsNotASuccess()
+    {
+        // The conversion is what lets `return OhDataResult.Conflict(...)` compile in a handler
+        // declared OhDataResult<T>.
+        OhDataResult<R581Thing> result = OhDataResult.Conflict("Dup", "already exists", target: "Name");
+
+        Assert.False(result.IsSuccess);
+        Assert.Null(result.Value);
+        Assert.NotNull(result.Rejection);
+        Assert.Equal(409, result.Rejection!.StatusCode);
+        Assert.Equal("Dup", result.Rejection.ErrorCode);
+        Assert.Equal("Name", result.Rejection.Target);
+    }
+
+    [Fact]
+    public void ConvertingANullRejection_Throws()
+    {
+        // Defensive, but it is a public conversion: without the guard a null would silently produce
+        // a result that is neither a success nor a rejection.
+        OhDataResult nothing = null!;
+        Assert.Throws<ArgumentNullException>(() => (OhDataResult<R581Thing>)nothing);
+    }
+}
