@@ -54,53 +54,74 @@ public class Product
     public decimal Price { get; set; }
 }
 
-// 2. Create a profile - assign only the handlers you need
+// 2. Create a profile - assign only the handlers you need. Each assignment IS a route;
+//    a handler you never assign is a route that does not exist.
 public class ProductProfile : EntitySetProfile<int, Product>
 {
+    private readonly AppDbContext _db;
+
     public ProductProfile(AppDbContext db) : base(x => x.Id)
     {
+        _db = db;
+
         FilterEnabled  = true;
         OrderByEnabled = true;
         CountEnabled   = true;
         SelectEnabled  = true;
 
-        // IQueryable path: returning the un-materialized queryable is synchronous, so this one
-        // handler stays SuccessTask; EF Core translates $filter/$orderby/$skip/$top and
-        // materializes the result asynchronously when the framework enumerates it.
-        //
-        // `Product` here is the API MODEL, which in this quickstart happens to be the EF entity.
-        // They do not have to be the same type -- see "DTOs and EF entities" below.
-        GetQueryable = _ => OhDataResult.SuccessTask<IQueryable<Product>>(db.Products);
-        GetById      = async (id, ct) =>
-            OhDataResult.Success(await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct));
-        Post         = async (p, ct) =>
-        {
-            db.Products.Add(p);
-            await db.SaveChangesAsync(ct);
-            return OhDataResult.Success(p);
-        };
-        Put          = async (id, p, ct) =>
-        {
-            db.Products.Update(p);
-            await db.SaveChangesAsync(ct);
-            return OhDataResult.Success(p);
-        };
-        Patch        = async (id, delta, ct) =>
-        {
-            var e = await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
-            if (e is null) return OhDataResult.Success<Product>(null);   // -> 404
-            delta.Patch(e);
-            await db.SaveChangesAsync(ct);
-            return OhDataResult.Success(e);
-        };
-        Delete       = async (id, ct) =>
-        {
-            var e = await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
-            if (e is null) return OhDataResult.Success(false);
-            db.Products.Remove(e);
-            await db.SaveChangesAsync(ct);
-            return OhDataResult.Success(true);
-        };
+        // The constructor reads as the surface: which routes exist, and what serves each.
+        GetQueryable = GetProducts;
+        GetById      = GetProduct;
+        Post         = CreateProduct;
+        Put          = ReplaceProduct;
+        Patch        = UpdateProduct;
+        Delete       = DeleteProduct;
+    }
+
+    // Returning the un-materialized IQueryable is synchronous, so there is no Task ceremony:
+    // OhDataResult<T> converts implicitly to Task<OhDataResult<T>>. EF Core translates
+    // $filter/$orderby/$skip/$top and materializes asynchronously when the framework enumerates.
+    //
+    // `Product` here is the API MODEL, which in this quickstart happens to be the EF entity.
+    // They do not have to be the same type - see "DTOs and EF entities" below.
+    private Task<OhDataResult<IQueryable<Product>>> GetProducts(CancellationToken ct) =>
+        OhDataResult.Success(_db.Products.AsQueryable());
+
+    private async Task<OhDataResult<Product>> GetProduct(int id, CancellationToken ct) =>
+        OhDataResult.Success(await _db.Products.FirstOrDefaultAsync(p => p.Id == id, ct));
+
+    private async Task<OhDataResult<Product>> CreateProduct(Product product, CancellationToken ct)
+    {
+        _db.Products.Add(product);
+        await _db.SaveChangesAsync(ct);
+        return OhDataResult.Success(product);
+    }
+
+    private async Task<OhDataResult<Product>> ReplaceProduct(int id, Product product, CancellationToken ct)
+    {
+        _db.Products.Update(product);
+        await _db.SaveChangesAsync(ct);
+        return OhDataResult.Success(product);
+    }
+
+    private async Task<OhDataResult<Product>> UpdateProduct(int id, Delta<Product> delta, CancellationToken ct)
+    {
+        var existing = await _db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
+        if (existing is null) return OhDataResult.Success<Product>(null);   // -> 404
+
+        delta.Patch(existing);
+        await _db.SaveChangesAsync(ct);
+        return OhDataResult.Success(existing);
+    }
+
+    private async Task<OhDataResult<bool>> DeleteProduct(int id, CancellationToken ct)
+    {
+        var existing = await _db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
+        if (existing is null) return OhDataResult.Success(false);           // -> 204 (IdempotentDelete)
+
+        _db.Products.Remove(existing);
+        await _db.SaveChangesAsync(ct);
+        return OhDataResult.Success(true);
     }
 }
 
@@ -174,7 +195,7 @@ public class ProductProfile : EntitySetProfile<int, ProductDto>
     {
         FilterEnabled = OrderByEnabled = SelectEnabled = true;
 
-        GetQueryable = _ => OhDataResult.SuccessTask(
+        GetQueryable = _ => OhDataResult.Success(
             db.Products.Select(p => new ProductDto
             {
                 Id       = p.Id,
@@ -196,11 +217,11 @@ fails loud rather than serving an empty collection:
 
 ```csharp
 // $expand=Lines -> 400, "could not be translated by the underlying data provider"
-GetQueryable = _ => OhDataResult.SuccessTask(
+GetQueryable = _ => OhDataResult.Success(
     db.Orders.Select(o => new OrderDto { Id = o.Id, Code = o.Code }));
 
 // $expand=Lines -> 200, and a nested $filter/$orderby/$top still pushes down
-GetQueryable = _ => OhDataResult.SuccessTask(
+GetQueryable = _ => OhDataResult.Success(
     db.Orders.Select(o => new OrderDto
     {
         Id    = o.Id,
@@ -255,7 +276,7 @@ public class OrdersProfile : EntitySetProfile<int, Order>
 {
     public OrdersProfile(AppDbContext db) : base(x => x.Id)
     {
-        GetQueryable = _ => OhDataResult.SuccessTask<IQueryable<Order>>(db.Orders);
+        GetQueryable = _ => OhDataResult.Success<IQueryable<Order>>(db.Orders);
 
         // Collection navigation. getAll gives the read routes; every parameter after it is
         // OPTIONAL - supply only the ones whose route you want:
