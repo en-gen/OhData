@@ -276,9 +276,9 @@ public sealed class OhDataRequestBodyAndResponseTests
             Patch = (id, delta, ct) =>
             {
                 Parent? existing = _parents.FirstOrDefault(x => x.Id == id);
-                if (existing is null) return OhDataResult.Success<Parent>(null);
+                if (existing is null) return OhDataResult.Success<Parent?>(null);
                 delta.Patch(existing);
-                return OhDataResult.Success<Parent>(existing);
+                return OhDataResult.Success<Parent?>(existing);
             };
 
             HasMany(

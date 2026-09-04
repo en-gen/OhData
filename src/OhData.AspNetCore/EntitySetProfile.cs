@@ -336,7 +336,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// <remarks>
     /// Leaving this <c>null</c> (the default) means no <c>GET /{EntitySet}({key})</c> route is registered.
     /// </remarks>
-    protected Func<TKey, CancellationToken, Task<OhDataResult<TModel>>>? GetById = null;
+    protected Func<TKey, CancellationToken, Task<OhDataResult<TModel?>>>? GetById = null;
 
     /// <summary>
     /// Registers the <c>PUT /{EntitySet}({key})</c> handler (OData §11.4.3 — Update an Entity).
@@ -346,7 +346,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// Leaving this <c>null</c> (the default) means no <c>PUT /{EntitySet}({key})</c> route is registered.
     /// Set <see cref="AllowUpsert"/> to enable upsert semantics (§11.4.4) when the key does not exist.
     /// </remarks>
-    protected Func<TKey, TModel, CancellationToken, Task<OhDataResult<TModel>>>? Put = null;
+    protected Func<TKey, TModel, CancellationToken, Task<OhDataResult<TModel?>>>? Put = null;
 
     /// <summary>
     /// Registers the <c>POST /{EntitySet}</c> handler (OData §11.4.2 — Create an Entity).
@@ -381,7 +381,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// existing entity (if needed) and persisting the changes.
     /// Return <c>null</c> to produce a 404 Not Found response.
     /// </summary>
-    protected Func<TKey, Delta<TModel>, CancellationToken, Task<OhDataResult<TModel>>>? Patch = null;
+    protected Func<TKey, Delta<TModel>, CancellationToken, Task<OhDataResult<TModel?>>>? Patch = null;
 
     /// <summary>
     /// Registers the <c>DELETE /{EntitySet}({key})</c> handler (OData §11.4.5 — Delete an Entity).

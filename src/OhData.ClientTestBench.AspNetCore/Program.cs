@@ -64,9 +64,9 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
         Patch = (id, delta, ct) =>
         {
             var existing = _store.FirstOrDefault(x => x.Id == id);
-            if (existing is null) return OhDataResult.Success<Widget>(null);
+            if (existing is null) return OhDataResult.Success<Widget?>(null);
             delta.Patch(existing);
-            return OhDataResult.Success<Widget>(existing);
+            return OhDataResult.Success<Widget?>(existing);
         };
         Delete = (id, ct) => OhDataResult.Success(_store.RemoveAll(w => w.Id == id) > 0);
     }

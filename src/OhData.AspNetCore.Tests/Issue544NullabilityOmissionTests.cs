@@ -665,7 +665,7 @@ internal class N544ThingProfile : EntitySetProfile<int, N544Thing>
             });
 
         GetAll = _ => OhDataResult.Success<IEnumerable<N544Thing>>(Array.Empty<N544Thing>());
-        GetById = (id, _) => OhDataResult.Success<N544Thing>(
+        GetById = (id, _) => OhDataResult.Success<N544Thing?>(
             new N544Thing { Id = id, Initialized = "e", Uninitialized = "e", Tag = "t" });
 
         Post = (thing, _) =>
@@ -692,7 +692,7 @@ internal class N544ThingProfile : EntitySetProfile<int, N544Thing>
                 Tag = "t",
             };
             delta.Patch(thing);
-            return OhDataResult.Success<N544Thing>(thing);
+            return OhDataResult.Success<N544Thing?>(thing);
         };
     }
 }
@@ -726,7 +726,7 @@ internal class N544OpenProfile : EntitySetProfile<int, N544OpenThing>
         EntitySetName = "N544OpenThings";
 
         GetAll = _ => OhDataResult.Success<IEnumerable<N544OpenThing>>(Array.Empty<N544OpenThing>());
-        GetById = (id, _) => OhDataResult.Success<N544OpenThing>(
+        GetById = (id, _) => OhDataResult.Success<N544OpenThing?>(
             new N544OpenThing { Id = id, Uninitialized = "e" });
 
         Post = (thing, _) =>
@@ -808,7 +808,7 @@ internal class N544StampedProfile : EntitySetProfile<int, N544Stamped>
         EntitySetName = "N544Stamped";
 
         GetAll = _ => OhDataResult.Success<IEnumerable<N544Stamped>>(Array.Empty<N544Stamped>());
-        GetById = (id, _) => OhDataResult.Success<N544Stamped>(
+        GetById = (id, _) => OhDataResult.Success<N544Stamped?>(
             new N544Stamped { Id = id, CreatedBy = "e", InheritedStamp = "e" });
 
         Post = (thing, _) =>

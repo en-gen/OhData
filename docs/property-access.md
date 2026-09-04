@@ -142,7 +142,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
         Patch   = async (id, delta, ct) =>
         {
             var e = await db.Products.FindAsync([id], ct);
-            if (e is null) return OhDataResult.Success<Product>(null);   // -> 404
+            if (e is null) return OhDataResult.Success<Product?>(null);   // -> 404
             delta.Patch(e);
             await db.SaveChangesAsync(ct);
             return OhDataResult.Success(e);

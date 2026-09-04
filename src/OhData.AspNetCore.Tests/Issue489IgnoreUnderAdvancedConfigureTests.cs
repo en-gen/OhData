@@ -232,7 +232,7 @@ internal sealed class Ia489NoIgnoreProfile : EntitySetProfile<int, Ia489Widget>
     public Ia489NoIgnoreProfile() : base(x => x.Id)
     {
         EntitySetName = "Ia489NoIgnore";
-        GetById = (id, _) => OhDataResult.Success<Ia489Widget>(new Ia489Widget { Id = id });
+        GetById = (id, _) => OhDataResult.Success<Ia489Widget?>(new Ia489Widget { Id = id });
     }
 
     protected override void AdvancedConfigure(EntitySetConfiguration<Ia489Widget> configuration)

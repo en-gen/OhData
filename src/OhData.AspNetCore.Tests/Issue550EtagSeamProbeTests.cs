@@ -88,7 +88,7 @@ internal class X550Profile : EntitySetProfile<int, X550Thing>
         UseETag(x => Boom(x));
 
         GetAll = _ => OhDataResult.Success<IEnumerable<X550Thing>>(new[] { new X550Thing { Id = 1 } });
-        GetById = (id, _) => OhDataResult.Success<X550Thing>(new X550Thing { Id = id });
+        GetById = (id, _) => OhDataResult.Success<X550Thing?>(new X550Thing { Id = id });
 
         BindFunction(Recent);
     }

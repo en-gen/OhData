@@ -190,14 +190,14 @@ public sealed class SpNodeProfile : EntitySetProfile<int, SpNode>
         // GetById query would leave it un-materialized (null), unlike the collection-GET fixtures
         // above where the whole table loads in one query and EF fixup wires it up for free.
         GetById = async (id, ct) =>
-            OhDataResult.Success(await db.SpNodes.Include(n => n.Parent).FirstOrDefaultAsync(n => n.Id == id, ct));
+            OhDataResult.Success<SpNode?>(await db.SpNodes.Include(n => n.Parent).FirstOrDefaultAsync(n => n.Id == id, ct));
         Patch = async (id, delta, ct) =>
         {
             SpNode? existing = await db.SpNodes.FirstOrDefaultAsync(n => n.Id == id, ct);
-            if (existing is null) return OhDataResult.Success<SpNode>(null);
+            if (existing is null) return OhDataResult.Success<SpNode?>(null);
             delta.Patch(existing);
             await db.SaveChangesAsync(ct);
-            return OhDataResult.Success(existing);
+            return OhDataResult.Success<SpNode?>(existing);
         };
         HasOptional(x => x.Parent!);
         // T26 needs a real GET /{Set}({key})/Children route, which requires a getAll handler

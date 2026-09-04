@@ -84,9 +84,9 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
         Patch = (id, delta, ct) =>
         {
             var existing = _store.FirstOrDefault(w => w.Id == id);
-            if (existing is null) return OhDataResult.Success<Widget>(null);
+            if (existing is null) return OhDataResult.Success<Widget?>(null);
             delta.Patch(existing);
-            return OhDataResult.Success<Widget>(existing);
+            return OhDataResult.Success<Widget?>(existing);
         };
     }
 }
@@ -177,9 +177,9 @@ internal class AuthorizedWidgetProfile : EntitySetProfile<int, Widget>
         Patch = (id, delta, ct) =>
         {
             var existing = _store.FirstOrDefault(w => w.Id == id);
-            if (existing is null) return OhDataResult.Success<Widget>(null);
+            if (existing is null) return OhDataResult.Success<Widget?>(null);
             delta.Patch(existing);
-            return OhDataResult.Success<Widget>(existing);
+            return OhDataResult.Success<Widget?>(existing);
         };
     }
 }
@@ -226,9 +226,9 @@ internal class ETagWidgetProfile : EntitySetProfile<int, Widget>
         Patch = (id, delta, ct) =>
         {
             var existing = _store.FirstOrDefault(w => w.Id == id);
-            if (existing is null) return OhDataResult.Success<Widget>(null);
+            if (existing is null) return OhDataResult.Success<Widget?>(null);
             delta.Patch(existing);
-            return OhDataResult.Success<Widget>(existing);
+            return OhDataResult.Success<Widget?>(existing);
         };
         UseETag(x => x.Name);
     }
@@ -287,8 +287,8 @@ internal class NullPutProfile : EntitySetProfile<int, Widget>
     public NullPutProfile() : base(x => x.Id)
     {
         EntitySetName = "NullPutWidgets";
-        GetById = (id, ct) => OhDataResult.Success<Widget>(null);
-        Put = (id, widget, ct) => OhDataResult.Success<Widget>(null!); // always "not found"
+        GetById = (id, ct) => OhDataResult.Success<Widget?>(null);
+        Put = (id, widget, ct) => OhDataResult.Success<Widget?>(null!); // always "not found"
     }
 }
 
@@ -550,9 +550,9 @@ internal class ETagBodyProfile : EntitySetProfile<int, Widget>
         Patch = (id, delta, ct) =>
         {
             var existing = _store.FirstOrDefault(w => w.Id == id);
-            if (existing is null) return OhDataResult.Success<Widget>(null);
+            if (existing is null) return OhDataResult.Success<Widget?>(null);
             delta.Patch(existing);
-            return OhDataResult.Success<Widget>(existing);
+            return OhDataResult.Success<Widget?>(existing);
         };
         UseETag(x => x.Name);
     }
@@ -578,7 +578,7 @@ internal class UpsertProfile : EntitySetProfile<int, Widget>
         Put = (id, widget, ct) =>
         {
             var existing = _store.FirstOrDefault(w => w.Id == id);
-            if (existing is null) return OhDataResult.Success<Widget>(null!); // signal "not found" → upsert
+            if (existing is null) return OhDataResult.Success<Widget?>(null!); // signal "not found" → upsert
             _store.RemoveAll(w => w.Id == id);
             widget.Id = id;
             _store.Add(widget);
@@ -818,9 +818,9 @@ internal class DeltaPatchWidgetProfile : EntitySetProfile<int, Widget>
         Patch = (id, delta, ct) =>
         {
             var existing = _store.FirstOrDefault(w => w.Id == id);
-            if (existing is null) return OhDataResult.Success<Widget>(null);
+            if (existing is null) return OhDataResult.Success<Widget?>(null);
             delta.Patch(existing);
-            return OhDataResult.Success<Widget>(existing);
+            return OhDataResult.Success<Widget?>(existing);
         };
     }
 }
@@ -1009,9 +1009,9 @@ internal class PatchItemProfile : EntitySetProfile<int, PatchItem>
         Patch = (id, delta, ct) =>
         {
             var existing = _store.Items.FirstOrDefault(x => x.Id == id);
-            if (existing is null) return OhDataResult.Success<PatchItem>(null);
+            if (existing is null) return OhDataResult.Success<PatchItem?>(null);
             delta.Patch(existing);
-            return OhDataResult.Success<PatchItem>(existing);
+            return OhDataResult.Success<PatchItem?>(existing);
         };
     }
 }
@@ -1386,7 +1386,7 @@ internal class PropertyAccessDisabledProfile : EntitySetProfile<int, PropertyAcc
     {
         EntitySetName = "PropertyAccessDisabledItems";
         PropertyAccessEnabled = false;
-        GetById = (id, ct) => OhDataResult.Success<PropertyAccessItem>(
+        GetById = (id, ct) => OhDataResult.Success<PropertyAccessItem?>(
             new PropertyAccessItem { Id = 1, Name = "X" });
     }
 }
@@ -1402,7 +1402,7 @@ internal class PropertyCollisionProfile : EntitySetProfile<int, Widget>
     public PropertyCollisionProfile() : base(x => x.Id)
     {
         EntitySetName = "PropertyCollisionWidgets";
-        GetById = (id, ct) => OhDataResult.Success<Widget>(new Widget { Id = 1, Name = "X" });
+        GetById = (id, ct) => OhDataResult.Success<Widget?>(new Widget { Id = 1, Name = "X" });
         BindEntityFunction(Name);
     }
 
@@ -1421,7 +1421,7 @@ internal class ZeroParamEntityFunctionProfile : EntitySetProfile<int, Widget>
     public ZeroParamEntityFunctionProfile() : base(x => x.Id)
     {
         EntitySetName = "ZeroParamFnWidgets";
-        GetById = (id, ct) => OhDataResult.Success<Widget>(new Widget { Id = 1, Name = "X" });
+        GetById = (id, ct) => OhDataResult.Success<Widget?>(new Widget { Id = 1, Name = "X" });
         BindEntityFunction(NoParams);
     }
 
@@ -1437,7 +1437,7 @@ internal class ZeroParamEntityActionProfile : EntitySetProfile<int, Widget>
     public ZeroParamEntityActionProfile() : base(x => x.Id)
     {
         EntitySetName = "ZeroParamActionWidgets";
-        GetById = (id, ct) => OhDataResult.Success<Widget>(new Widget { Id = 1, Name = "X" });
+        GetById = (id, ct) => OhDataResult.Success<Widget?>(new Widget { Id = 1, Name = "X" });
         BindEntityAction(NoParams);
     }
 
@@ -1455,7 +1455,7 @@ internal class WrongKeyTypeEntityFunctionProfile : EntitySetProfile<int, Widget>
     public WrongKeyTypeEntityFunctionProfile() : base(x => x.Id)
     {
         EntitySetName = "WrongKeyTypeFnWidgets";
-        GetById = (id, ct) => OhDataResult.Success<Widget>(new Widget { Id = 1, Name = "X" });
+        GetById = (id, ct) => OhDataResult.Success<Widget?>(new Widget { Id = 1, Name = "X" });
         BindEntityFunction(BadFirstParam);
     }
 
@@ -1772,9 +1772,9 @@ internal class RenamedStructCustomerProfile : EntitySetProfile<int, RenamedStruc
         Patch = (id, delta, ct) =>
         {
             var existing = _data.FirstOrDefault(c => c.Id == id);
-            if (existing is null) return OhDataResult.Success<RenamedStructCustomer>(null);
+            if (existing is null) return OhDataResult.Success<RenamedStructCustomer?>(null);
             delta.Patch(existing);
-            return OhDataResult.Success<RenamedStructCustomer>(existing);
+            return OhDataResult.Success<RenamedStructCustomer?>(existing);
         };
 
         HasMany(
@@ -1858,7 +1858,7 @@ internal class CollidingRenameProfile : EntitySetProfile<int, CollidingRenameEnt
     public CollidingRenameProfile() : base(x => x.Id)
     {
         EntitySetName = "CollidingRenames";
-        GetById = (id, ct) => OhDataResult.Success<CollidingRenameEntity>(null);
+        GetById = (id, ct) => OhDataResult.Success<CollidingRenameEntity?>(null);
     }
 }
 

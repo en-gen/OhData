@@ -163,9 +163,9 @@ public sealed class IgnProductProfile : EntitySetProfile<int, IgnProduct>
         {
             captures.LastPatchChangedNames = delta.GetChangedPropertyNames().ToList();
             var existing = _store.FirstOrDefault(p => p.Id == id);
-            if (existing is null) return OhDataResult.Success<IgnProduct>(null);
+            if (existing is null) return OhDataResult.Success<IgnProduct?>(null);
             delta.Patch(existing);
-            return OhDataResult.Success<IgnProduct>(existing);
+            return OhDataResult.Success<IgnProduct?>(existing);
         };
     }
 }
@@ -183,7 +183,7 @@ public sealed class IgnControlProfile : EntitySetProfile<int, IgnControl>
 {
     public IgnControlProfile() : base(x => x.Id)
     {
-        GetById = (id, ct) => OhDataResult.Success<IgnControl>(new IgnControl { Id = id, CostBasis = 5m });
+        GetById = (id, ct) => OhDataResult.Success<IgnControl?>(new IgnControl { Id = id, CostBasis = 5m });
     }
 }
 
@@ -410,7 +410,7 @@ public sealed class IgnConflictA : EntitySetProfile<int, IgnProduct>
     {
         EntitySetName = "ConflictA";
         Ignore(x => x.CostBasis);
-        GetById = (id, ct) => OhDataResult.Success<IgnProduct>(null);
+        GetById = (id, ct) => OhDataResult.Success<IgnProduct?>(null);
     }
 }
 
@@ -419,7 +419,7 @@ public sealed class IgnConflictB : EntitySetProfile<int, IgnProduct>
     public IgnConflictB() : base(x => x.Id)
     {
         EntitySetName = "ConflictB"; // same TModel, DIFFERENT ignore set (none)
-        GetById = (id, ct) => OhDataResult.Success<IgnProduct>(null);
+        GetById = (id, ct) => OhDataResult.Success<IgnProduct?>(null);
     }
 }
 

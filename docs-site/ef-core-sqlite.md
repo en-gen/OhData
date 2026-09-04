@@ -127,7 +127,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
         Patch = async (id, delta, ct) =>
         {
             Product? existing = await db.Products.FindAsync([id], ct);
-            if (existing is null) return OhDataResult.Success<Product>(null);   // -> 404
+            if (existing is null) return OhDataResult.Success<Product?>(null);   // -> 404
             delta.Patch(existing);          // applies only the properties in the request body
             await db.SaveChangesAsync(ct);
             return OhDataResult.Success(existing);

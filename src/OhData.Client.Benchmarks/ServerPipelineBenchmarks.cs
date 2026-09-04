@@ -246,7 +246,7 @@ internal sealed class PipelineWidgetProfile : EntitySetProfile<int, PipelineWidg
         Patch = (id, delta, ct) =>
         {
             var existing = _store.FirstOrDefault(w => w.Id == id);
-            if (existing is null) return OhDataResult.Success<PipelineWidget>(null);
+            if (existing is null) return OhDataResult.Success<PipelineWidget?>(null);
             // Don't mutate — return a copy
             var copy = new PipelineWidget
             {
@@ -256,7 +256,7 @@ internal sealed class PipelineWidgetProfile : EntitySetProfile<int, PipelineWidg
                 IsActive = existing.IsActive,
             };
             delta.Patch(copy);
-            return OhDataResult.Success<PipelineWidget>(copy);
+            return OhDataResult.Success<PipelineWidget?>(copy);
         };
     }
 }

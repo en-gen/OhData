@@ -573,9 +573,9 @@ public class MalformedPayloadTests
             Patch = (id, delta, ct) =>
             {
                 var existing = _store.FirstOrDefault(w => w.Id == id);
-                if (existing is null) return OhDataResult.Success<MalformedWidget>(null);
+                if (existing is null) return OhDataResult.Success<MalformedWidget?>(null);
                 delta.Patch(existing);
-                return OhDataResult.Success<MalformedWidget>(existing);
+                return OhDataResult.Success<MalformedWidget?>(existing);
             };
         }
     }

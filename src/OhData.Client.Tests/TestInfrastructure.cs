@@ -56,7 +56,7 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
         Put = (id, w, ct) =>
         {
             int removed = _store.Items.RemoveAll(x => x.Id == id);
-            if (removed == 0) return OhDataResult.Success<Widget>(null!);
+            if (removed == 0) return OhDataResult.Success<Widget?>(null!);
             w.Id = id;
             _store.Items.Add(w);
             return OhDataResult.Success(w);
@@ -64,9 +64,9 @@ internal class WidgetProfile : EntitySetProfile<int, Widget>
         Patch = (id, delta, ct) =>
         {
             var existing = _store.Items.FirstOrDefault(x => x.Id == id);
-            if (existing is null) return OhDataResult.Success<Widget>(null);
+            if (existing is null) return OhDataResult.Success<Widget?>(null);
             delta.Patch(existing);
-            return OhDataResult.Success<Widget>(existing);
+            return OhDataResult.Success<Widget?>(existing);
         };
         Delete = (id, ct) => OhDataResult.Success(_store.Items.RemoveAll(w => w.Id == id) > 0);
     }
@@ -105,7 +105,7 @@ internal class ETagWidgetProfile : EntitySetProfile<int, Widget>
         Put = (id, w, ct) =>
         {
             int removed = _store.Items.RemoveAll(x => x.Id == id);
-            if (removed == 0) return OhDataResult.Success<Widget>(null!);
+            if (removed == 0) return OhDataResult.Success<Widget?>(null!);
             w.Id = id;
             _store.Items.Add(w);
             return OhDataResult.Success(w);
@@ -113,9 +113,9 @@ internal class ETagWidgetProfile : EntitySetProfile<int, Widget>
         Patch = (id, delta, ct) =>
         {
             var existing = _store.Items.FirstOrDefault(x => x.Id == id);
-            if (existing is null) return OhDataResult.Success<Widget>(null);
+            if (existing is null) return OhDataResult.Success<Widget?>(null);
             delta.Patch(existing);
-            return OhDataResult.Success<Widget>(existing);
+            return OhDataResult.Success<Widget?>(existing);
         };
         Delete = (id, ct) => OhDataResult.Success(_store.Items.RemoveAll(w => w.Id == id) > 0);
 

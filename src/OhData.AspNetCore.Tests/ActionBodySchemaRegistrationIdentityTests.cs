@@ -300,7 +300,7 @@ internal class SchemaOrderProfileV1 : EntitySetProfile<int, SchemaOrder>
     {
         EntitySetName = "SchemaOrders";
         GetAll = ct => OhDataResult.Success<IEnumerable<SchemaOrder>>(Array.Empty<SchemaOrder>());
-        GetById = (id, ct) => OhDataResult.Success<SchemaOrder>(null);
+        GetById = (id, ct) => OhDataResult.Success<SchemaOrder?>(null);
         BindAction(Submit);
         BindEntityAction(Approve);
     }
@@ -320,7 +320,7 @@ internal class SchemaOrderProfileV2 : EntitySetProfile<int, SchemaOrder>
     {
         EntitySetName = "SchemaOrders";
         GetAll = ct => OhDataResult.Success<IEnumerable<SchemaOrder>>(Array.Empty<SchemaOrder>());
-        GetById = (id, ct) => OhDataResult.Success<SchemaOrder>(null);
+        GetById = (id, ct) => OhDataResult.Success<SchemaOrder?>(null);
         BindAction(Submit);
         BindEntityAction(Approve);
     }
@@ -355,7 +355,7 @@ internal class ZzSchemaProfileHost1 : EntitySetProfile<int, ZzSchema>
     {
         EntitySetName = "ZZSchemas";
         GetAll = ct => OhDataResult.Success<IEnumerable<ZzSchema>>(Array.Empty<ZzSchema>());
-        GetById = (id, ct) => OhDataResult.Success<ZzSchema>(null);
+        GetById = (id, ct) => OhDataResult.Success<ZzSchema?>(null);
         BindAction(Submit);
         BindEntityAction(Approve);
     }
@@ -371,7 +371,7 @@ internal class ZzSchemaProfileHost2 : EntitySetProfile<int, ZzSchema>
     {
         EntitySetName = "ZZSchemas";
         GetAll = ct => OhDataResult.Success<IEnumerable<ZzSchema>>(Array.Empty<ZzSchema>());
-        GetById = (id, ct) => OhDataResult.Success<ZzSchema>(null);
+        GetById = (id, ct) => OhDataResult.Success<ZzSchema?>(null);
         BindAction(Submit);
         BindEntityAction(Approve);
     }

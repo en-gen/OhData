@@ -189,7 +189,7 @@ internal sealed class RagKeyedWithGetByIdProfile : EntitySetProfile<int, RagPare
     public RagKeyedWithGetByIdProfile() : base(x => x.Id)
     {
         EntitySetName = "RagKeyed";
-        GetById = (id, ct) => OhDataResult.Success<RagParent>(new RagParent { Id = id });
+        GetById = (id, ct) => OhDataResult.Success<RagParent?>(new RagParent { Id = id });
         HasMany(x => x.Notes,
             getAll: null,
             post: (key, child, ct) => Task.FromResult<RagChild?>(child));

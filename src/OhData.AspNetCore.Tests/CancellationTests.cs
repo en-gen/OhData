@@ -76,7 +76,7 @@ public class CancellationTests
                     coord.ObservedCancelGetById.TrySetResult(true);
                     throw;
                 }
-                return OhDataResult.Success<Widget>(null);
+                return OhDataResult.Success<Widget?>(null);
             };
 
             Post = async (widget, ct) =>
