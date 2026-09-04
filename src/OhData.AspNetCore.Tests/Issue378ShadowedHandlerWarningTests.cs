@@ -25,8 +25,8 @@ public sealed class S378DualProfile : EntitySetProfile<int, S378Thing>
             return OhDataResult.Success<IEnumerable<S378Thing>>(
                 new[] { new S378Thing { Id = 1, Source = "FROM-GETALL" } });
         };
-        GetQueryable = (CancellationToken _) => OhDataResult.Success(
-            new[] { new S378Thing { Id = 2, Source = "FROM-GETQUERYABLE" } }.AsQueryable());
+        GetQueryable = (CancellationToken _) =>
+            new[] { new S378Thing { Id = 2, Source = "FROM-GETQUERYABLE" } }.AsQueryable();
     }
 }
 
@@ -53,7 +53,7 @@ public sealed class S378Priority1Profile : ODataEntitySetProfile<int, S378Thing>
         GetQueryable = (CancellationToken _) =>
         {
             Interlocked.Increment(ref GetQueryableCalls);
-            return OhDataResult.Success(new[] { new S378Thing { Id = 2, Source = "FROM-GETQUERYABLE" } }.AsQueryable());
+            return new[] { new S378Thing { Id = 2, Source = "FROM-GETQUERYABLE" } }.AsQueryable();
         };
         GetAll = (CancellationToken _) =>
         {
@@ -79,8 +79,8 @@ public sealed class S378QueryableOnlyProfile : EntitySetProfile<int, S378Thing>
     public S378QueryableOnlyProfile() : base(x => x.Id)
     {
         EntitySetName = "S378QueryableOnly";
-        GetQueryable = (CancellationToken _) => OhDataResult.Success(
-            new[] { new S378Thing { Id = 2, Source = "FROM-GETQUERYABLE" } }.AsQueryable());
+        GetQueryable = (CancellationToken _) =>
+            new[] { new S378Thing { Id = 2, Source = "FROM-GETQUERYABLE" } }.AsQueryable();
     }
 }
 

@@ -191,7 +191,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
         SelectEnabled = true;
         MaxTop = 100;
 
-        GetQueryable = _ => OhDataResult.Success<IQueryable<Product>>(db.Products);
+        GetQueryable = _ => db.Products;
         GetById = async (id, ct) =>
             OhDataResult.Success(await db.Products.FindAsync(new object[] { id }, ct));
 

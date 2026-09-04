@@ -326,7 +326,7 @@ public sealed class BePreOrderedAuthorProfile : EntitySetProfile<int, BeAuthor>
         FilterEnabled = true;
         // Descending on Name, which the seed deliberately duplicates — so this order alone is NOT a
         // total order over parents, let alone over children.
-        GetQueryable = _ => OhDataResult.Success(db.Authors.OrderByDescending(a => a.Name).AsQueryable());
+        GetQueryable = _ => db.Authors.OrderByDescending(a => a.Name).AsQueryable();
         HasMany(x => x.Books);
     }
 }
@@ -562,7 +562,7 @@ public sealed class BeDelegatedAuthorProfile : EntitySetProfile<int, BeAuthor>
         EntitySetName = "BeDelegatedAuthors";
         ExpandEnabled = true;
         FilterEnabled = true;
-        GetQueryable = _ => OhDataResult.Success(db.Authors.AsQueryable());
+        GetQueryable = _ => db.Authors.AsQueryable();
         HasMany(x => x.Books, (key, _) =>
         {
             _counter.Record();
@@ -1284,7 +1284,7 @@ public sealed class BeCollidingFunctionProfile : EntitySetProfile<int, BeAuthor>
     {
         EntitySetName = "BeCollidingAuthors";
         ExpandEnabled = true;
-        GetQueryable = _ => OhDataResult.Success(db.Authors.AsQueryable());
+        GetQueryable = _ => db.Authors.AsQueryable();
         HasMany(x => x.Books);
         // An entity-level bound function named exactly like the delegate-less collection navigation
         // (the function name is the method name). Legal on develop — nothing registers

@@ -31,7 +31,7 @@ internal class AllFlagsWidgetProfile : EntitySetProfile<int, Widget>
         CountEnabled = true;
         MaxTop = 25;
 
-        GetQueryable = (ct) => OhDataResult.Success(_store.AsQueryable());
+        GetQueryable = (ct) => _store.AsQueryable();
         Search = (term, ct) => OhDataResult.Success<IEnumerable<Widget>>(
             _store.Where(w => w.Name.Contains(term)));
     }
@@ -74,7 +74,7 @@ internal class FilterOnlyWidgetProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "FilterOnlyWidgets";
         FilterEnabled = true;
-        GetQueryable = (ct) => OhDataResult.Success(_store.AsQueryable());
+        GetQueryable = (ct) => _store.AsQueryable();
     }
 }
 
@@ -86,7 +86,7 @@ internal class OrderByOnlyWidgetProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "OrderByOnlyWidgets";
         OrderByEnabled = true;
-        GetQueryable = (ct) => OhDataResult.Success(_store.AsQueryable());
+        GetQueryable = (ct) => _store.AsQueryable();
     }
 }
 
@@ -98,7 +98,7 @@ internal class SelectOnlyWidgetProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "SelectOnlyWidgets";
         SelectEnabled = true;
-        GetQueryable = (ct) => OhDataResult.Success(_store.AsQueryable());
+        GetQueryable = (ct) => _store.AsQueryable();
     }
 }
 
@@ -110,7 +110,7 @@ internal class ExpandOnlyWidgetProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "ExpandOnlyWidgets";
         ExpandEnabled = true;
-        GetQueryable = (ct) => OhDataResult.Success(_store.AsQueryable());
+        GetQueryable = (ct) => _store.AsQueryable();
     }
 }
 
@@ -122,7 +122,7 @@ internal class CountOnlyWidgetProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "CountOnlyWidgets";
         CountEnabled = true;
-        GetQueryable = (ct) => OhDataResult.Success(_store.AsQueryable());
+        GetQueryable = (ct) => _store.AsQueryable();
     }
 }
 
@@ -179,6 +179,6 @@ internal class DupTopWidgetProfile : EntitySetProfile<int, Widget>
     public DupTopWidgetProfile() : base(x => x.Id)
     {
         EntitySetName = "DupTopWidgets";
-        GetQueryable = (ct) => OhDataResult.Success(_store.AsQueryable());
+        GetQueryable = (ct) => _store.AsQueryable();
     }
 }

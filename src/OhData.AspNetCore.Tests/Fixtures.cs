@@ -118,7 +118,7 @@ internal class QueryableWidgetProfile : EntitySetProfile<int, Widget>
             new() { Id = 2, Name = "Cog" },
         };
 
-        GetQueryable = (ct) => OhDataResult.Success(_store.AsQueryable());
+        GetQueryable = (ct) => _store.AsQueryable();
     }
 }
 
@@ -145,7 +145,7 @@ internal class EfCoreWidgetProfile : EntitySetProfile<int, Widget>
                 );
                 ctx.SaveChanges();
             }
-            return OhDataResult.Success(ctx.Widgets.AsQueryable());
+            return ctx.Widgets.AsQueryable();
         };
     }
 }
@@ -330,7 +330,7 @@ internal class MaxTopProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "MaxTopWidgets";
         MaxTop = 5; // per-profile cap
-        GetQueryable = (ct) => OhDataResult.Success(_store.AsQueryable());
+        GetQueryable = (ct) => _store.AsQueryable();
     }
 }
 
@@ -514,7 +514,7 @@ internal class ExpandableParentProfile : EntitySetProfile<int, Parent>
         EntitySetName = "ExpandableParents";
         ExpandEnabled = true;
 
-        GetQueryable = (ct) => OhDataResult.Success(_parents.AsQueryable());
+        GetQueryable = (ct) => _parents.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(_parents.FirstOrDefault(p => p.Id == id));
 
         HasMany(x => x.Children!,
@@ -894,7 +894,7 @@ internal class MaxPageSizeProfile : EntitySetProfile<int, Widget>
         EntitySetName = "MaxPageWidgets";
         FilterEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = (ct) => OhDataResult.Success<IQueryable<Widget>>(_store.AsQueryable());
+        GetQueryable = (ct) => _store.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(_store.FirstOrDefault(w => w.Id == id));
     }
 }
@@ -1069,7 +1069,7 @@ internal class ETagExpandSelectProfile : EntitySetProfile<int, Parent>
         SelectEnabled = true;
         ExpandEnabled = true;
 
-        GetQueryable = (ct) => OhDataResult.Success(_parents.AsQueryable());
+        GetQueryable = (ct) => _parents.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(_parents.FirstOrDefault(p => p.Id == id));
 
         HasMany(x => x.Children!,
@@ -1134,7 +1134,7 @@ internal class BatchExpandQueryableProfile : EntitySetProfile<int, Parent>
         ExpandEnabled = true;
         SelectEnabled = true;
 
-        GetQueryable = (ct) => OhDataResult.Success(_parents.AsQueryable());
+        GetQueryable = (ct) => _parents.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(_parents.FirstOrDefault(p => p.Id == id));
 
         HasMany(x => x.Children!, batchGetAll: (ids, ct) =>
@@ -1260,7 +1260,7 @@ internal class MixedBatchExpandProfile : EntitySetProfile<int, Parent>
         EntitySetName = "MixedBatchExpandParents";
         ExpandEnabled = true;
 
-        GetQueryable = (ct) => OhDataResult.Success(_parents.AsQueryable());
+        GetQueryable = (ct) => _parents.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(_parents.FirstOrDefault(p => p.Id == id));
 
         // Batch path.
@@ -1305,7 +1305,7 @@ internal class BatchOnlyNavProfile : EntitySetProfile<int, Parent>
         EntitySetName = "BatchOnlyParents";
         ExpandEnabled = true;
 
-        GetQueryable = (ct) => OhDataResult.Success(_parents.AsQueryable());
+        GetQueryable = (ct) => _parents.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(_parents.FirstOrDefault(p => p.Id == id));
 
         HasMany(x => x.Children!, batchGetAll: (ids, ct) =>
@@ -1767,7 +1767,7 @@ internal class RenamedStructCustomerProfile : EntitySetProfile<int, RenamedStruc
         OrderByEnabled = true;
         ExpandEnabled = true;
 
-        GetQueryable = (ct) => OhDataResult.Success(_data.AsQueryable());
+        GetQueryable = (ct) => _data.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(_data.FirstOrDefault(c => c.Id == id));
         Patch = (id, delta, ct) =>
         {
@@ -1810,7 +1810,7 @@ internal class RenamedAllowlistCustomerProfile : EntitySetProfile<int, RenamedSt
         FilterProperties(x => x.Email);
         OrderByProperties(x => x.Email);
 
-        GetQueryable = (ct) => OhDataResult.Success(_data.AsQueryable());
+        GetQueryable = (ct) => _data.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(_data.FirstOrDefault(c => c.Id == id));
     }
 }
@@ -1837,7 +1837,7 @@ internal class RenamedKeyProfile : EntitySetProfile<string, RenamedKeyEntity>
     {
         EntitySetName = "RenamedKeyEntities";
         SelectEnabled = true;
-        GetQueryable = (ct) => OhDataResult.Success(_data.AsQueryable());
+        GetQueryable = (ct) => _data.AsQueryable();
         GetById = (k, ct) => OhDataResult.Success(_data.FirstOrDefault(e => e.Key == k));
     }
 }
@@ -1887,7 +1887,7 @@ internal class RenamedIgnoreProfile : EntitySetProfile<int, RenamedIgnoreEntity>
         EntitySetName = "RenamedIgnores";
         SelectEnabled = true;
         Ignore(x => x.InternalNotes);
-        GetQueryable = (ct) => OhDataResult.Success(_data.AsQueryable());
+        GetQueryable = (ct) => _data.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(_data.FirstOrDefault(e => e.Id == id));
     }
 }

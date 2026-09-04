@@ -317,6 +317,36 @@ status codes or headers.
   sibling `/{Property}` route has always answered `204` for the same entity in the same state.
 
 
+- **⚠ BREAKING CHANGE — `GetQueryable` returns a bare `IQueryable<TModel>` (#653).**
+
+  ```diff
+  -protected Func<CancellationToken, Task<OhDataResult<IQueryable<TModel>>>>? GetQueryable;
+  +protected Func<CancellationToken, IQueryable<TModel>>? GetQueryable;
+  ```
+
+  `OhDataResult.Success(db.Products)` read as a category error because it was one. `IQueryable` is
+  the only handler return the framework **further composes before executing** — `$filter`/`$orderby`/
+  `$skip`/`$top` are appended to the expression tree and the query runs after that — so at the moment
+  the handler returns there is no result, not even a materialized one. The other seven return values
+  the framework merely envelopes.
+
+  Both wrappers were ceremony, and it is measured rather than argued: **0 of 164** assignments in
+  this repo were `async` (composing an `IQueryable` performs no I/O by construction, and the `await`
+  belongs where the framework executes the query — which it already owns), and **0** returned a
+  rejection from this seam. `GetODataQueryable` (Priority-1) keeps `Task<ODataQueryResult<TModel>>`,
+  correctly: there the profile has applied the options and may have executed a count, so it holds a
+  result plus paging metadata. #581 had converted the eight entity-set handlers and left Priority-1
+  alone, so the wrapper was never universal.
+
+  **Upgrading:** drop the wrapper — `GetQueryable = _ => db.Products;`. To reject a collection read,
+  throw and map it with `ConfigureExceptions`, which `OhDataRejectionException`'s own documentation
+  already names as the supported route. `docs/error-handling.md` has the worked example.
+
+  A profile that must `await` to *decide* its query has no seam here today; that is deliberate,
+  because a `GetQueryableAsync` delegate can be added **additively** later, whereas removing `Task`
+  later would be breaking. `GetODataQueryable` is async now for anyone who needs it.
+
+
 ### Added
 
 - **A handler can produce a client error: `ConfigureExceptions` (#581).** Every handler delegate
@@ -690,6 +720,20 @@ status codes or headers.
   responses, so k6 provably cannot observe the header — measured, the assertion fails there while a
   raw socket sees it. The effect is still visible in k6, because its client honours the close and
   reconnects.
+
+- **The EF Core + SQLite sample compiles again, and CI now builds it (#656).** `samples/` is in no
+  solution and no CI job, so nothing compiled it — and it stopped compiling at **#581**, which
+  changed all eight handler signatures. Measured on `develop`: **54 errors**, every one of them a
+  pre-#581 handler shape (`GetById = (id, ct) => db.Products.SingleOrDefaultAsync(...)`,
+  `Post = async (p, ct) => { …; return p; }`). It had been broken through the entire 2.0.0 cycle,
+  and #641 and #653 landed on top without touching it because nothing could tell them to.
+
+  A sample is shipped documentation — `samples/README.md` presents it as the worked EF Core example
+  — and it is the artifact a new adopter is most likely to copy verbatim. It is updated for #581,
+  #641 and #653, and `ci.yml` gains a build step for it, as its own project rather than a solution
+  member so it stays out of the packable/test surface. This is #622's gap one layer down: that issue
+  added a Roslyn compile gate for fenced snippets; a real project needed only a build step.
+
 
 ### Tests
 

@@ -565,7 +565,7 @@ public class QueryOptionEnforcementTests
             OrderByEnabled = true;
             SelectEnabled = true;
             CountEnabled = true;
-            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetQueryable = (ct) => Store.AsQueryable();
         }
     }
 
@@ -580,7 +580,7 @@ public class QueryOptionEnforcementTests
         public AllOffProfile() : base(x => x.Id)
         {
             EntitySetName = "AllOffWidgets";
-            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetQueryable = (ct) => Store.AsQueryable();
             GetById = (id, ct) => OhDataResult.Success(Store.FirstOrDefault(w => w.Id == id));
         }
     }
@@ -629,7 +629,7 @@ public class QueryOptionEnforcementTests
         {
             EntitySetName = "MaxTopWidgets";
             MaxTop = 5;
-            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetQueryable = (ct) => Store.AsQueryable();
         }
     }
 
@@ -654,7 +654,7 @@ public class QueryOptionEnforcementTests
             FilterProperties(x => x.Name);
             OrderByProperties(x => x.Id);
             SelectProperties(x => x.Name);
-            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetQueryable = (ct) => Store.AsQueryable();
         }
     }
 
@@ -683,7 +683,7 @@ public class QueryOptionEnforcementTests
             EntitySetName = "ExpandAllowlistParents";
             ExpandEnabled = true;
             ExpandProperties(x => x.Children);
-            GetQueryable = (ct) => OhDataResult.Success(Parents.AsQueryable());
+            GetQueryable = (ct) => Parents.AsQueryable();
             HasMany(x => x.Children!,
                 getAll: (parentId, ct) => Task.FromResult<IEnumerable<ExpandAllowlistChild>>(
                     new[] { new ExpandAllowlistChild { Id = 10, Name = "Child" } }));
@@ -722,7 +722,7 @@ public class QueryOptionEnforcementTests
             EntitySetName = "NavEnforcementParents";
             SelectEnabled = true;
             ExpandEnabled = true;
-            GetQueryable = (ct) => OhDataResult.Success(Parents.AsQueryable());
+            GetQueryable = (ct) => Parents.AsQueryable();
             GetById = (id, ct) => OhDataResult.Success(Parents.FirstOrDefault(p => p.Id == id));
             HasMany(x => x.Children!,
                 getAll: (parentId, ct) => Task.FromResult<IEnumerable<NavEnforcementChild>>(Children));
@@ -746,7 +746,7 @@ public class QueryOptionEnforcementTests
         {
             EntitySetName = "BatchNavParents";
             ExpandEnabled = true;
-            GetQueryable = (ct) => OhDataResult.Success(Parents.AsQueryable());
+            GetQueryable = (ct) => Parents.AsQueryable();
             GetById = (id, ct) => OhDataResult.Success(Parents.FirstOrDefault(p => p.Id == id));
             HasMany(x => x.Children!,
                 batchGetAll: (parentIds, ct) =>
@@ -786,7 +786,7 @@ public class QueryOptionEnforcementTests
             EntitySetName = "NavPathFilterParents";
             FilterEnabled = true;
             OrderByEnabled = true;
-            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetQueryable = (ct) => Store.AsQueryable();
             HasMany(x => x.Tags);
         }
     }
@@ -805,7 +805,7 @@ public class QueryOptionEnforcementTests
             EntitySetName = "NavPathAllowlistParents";
             FilterEnabled = true;
             FilterProperties(x => x.Name);
-            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetQueryable = (ct) => Store.AsQueryable();
             HasMany(x => x.Tags);
         }
     }
@@ -836,7 +836,7 @@ public class QueryOptionEnforcementTests
         {
             EntitySetName = "NavPathOrders";
             FilterEnabled = true;
-            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetQueryable = (ct) => Store.AsQueryable();
             HasMany(x => x.Lines);
         }
     }
@@ -867,7 +867,7 @@ public class QueryOptionEnforcementTests
         {
             EntitySetName = "NavPathOrderByParents";
             OrderByEnabled = true;
-            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetQueryable = (ct) => Store.AsQueryable();
             HasOptional(x => x.Category!);
         }
     }
@@ -886,7 +886,7 @@ public class QueryOptionEnforcementTests
             EntitySetName = "NavPathOrderByAllowlistParents";
             OrderByEnabled = true;
             OrderByProperties(x => x.Name);
-            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetQueryable = (ct) => Store.AsQueryable();
             HasOptional(x => x.Category!);
         }
     }

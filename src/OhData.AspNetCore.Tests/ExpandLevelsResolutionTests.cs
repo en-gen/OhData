@@ -144,7 +144,7 @@ public sealed class MaxLvNodeProfile : EntitySetProfile<int, MaxLvNode>
         OrderByEnabled = true;
         CountEnabled = true;
         MaxExpansionDepth = EntitySetDefaults.MaxExpansionDepthCeiling;
-        GetQueryable = _ => OhDataResult.Success(db.MaxLvNodes.AsQueryable());
+        GetQueryable = _ => db.MaxLvNodes.AsQueryable();
         HasMany(x => x.Kids);
     }
 }

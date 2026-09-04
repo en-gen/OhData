@@ -224,7 +224,7 @@ internal sealed class PipelineWidgetProfile : EntitySetProfile<int, PipelineWidg
         OrderByEnabled = true;
         CountEnabled = true;
 
-        GetQueryable = (ct) => OhDataResult.Success(_store.AsQueryable());
+        GetQueryable = (ct) => _store.AsQueryable();
 
         GetById = (id, ct) => OhDataResult.Success(_store.FirstOrDefault(w => w.Id == id));
 

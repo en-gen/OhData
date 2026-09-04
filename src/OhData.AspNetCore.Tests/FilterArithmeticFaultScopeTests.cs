@@ -74,11 +74,11 @@ internal sealed class HandlerFaultProfile : EntitySetProfile<int, HandlerFaultIt
             new() { Id = 1, Quantity = 5 },
             new() { Id = 2, Quantity = 0 }, // 100 / 0 -> DivideByZeroException on enumeration
         };
-        GetQueryable = (ct) => OhDataResult.Success(store.AsQueryable().Select(x => new HandlerFaultItem
+        GetQueryable = (ct) => store.AsQueryable().Select(x => new HandlerFaultItem
         {
             Id = 100 / x.Quantity,
             Quantity = x.Quantity,
-        }));
+        });
         GetById = (id, ct) => OhDataResult.Success(store.FirstOrDefault(x => x.Id == id));
     }
 }
@@ -110,7 +110,7 @@ internal sealed class EtagFaultProfile : EntitySetProfile<int, EtagFaultItem>
     {
         EntitySetName = "EtagFault";
 
-        GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+        GetQueryable = (ct) => Store.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(Store.FirstOrDefault(x => x.Id == id));
     }
 }
@@ -137,7 +137,7 @@ internal sealed class NavFaultProfile : EntitySetProfile<int, NavFaultParent>
         EntitySetName = "NavFault";
         ExpandEnabled = true;
 
-        GetQueryable = (ct) => OhDataResult.Success(_parents.AsQueryable());
+        GetQueryable = (ct) => _parents.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(_parents.FirstOrDefault(p => p.Id == id));
 
         HasMany(x => x.Children!, getAll: (parentId, ct) =>

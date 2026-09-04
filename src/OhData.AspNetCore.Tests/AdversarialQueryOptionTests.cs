@@ -317,7 +317,7 @@ public class AdversarialQueryOptionTests
             ExpandEnabled = true;
             CountEnabled = true;
 
-            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetQueryable = (ct) => Store.AsQueryable();
         }
     }
 }

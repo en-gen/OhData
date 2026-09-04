@@ -867,7 +867,7 @@ internal class NameFilterOnlyProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "NameFilterWidgets";
         FilterEnabled = true;
-        GetQueryable = (ct) => OhDataResult.Success(_store.AsQueryable());
+        GetQueryable = (ct) => _store.AsQueryable();
         FilterProperties(x => x.Name);
     }
 }
@@ -884,7 +884,7 @@ internal class NameSelectOnlyProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "NameSelectWidgets";
         SelectEnabled = true;
-        GetQueryable = (ct) => OhDataResult.Success(_store.AsQueryable());
+        GetQueryable = (ct) => _store.AsQueryable();
         SelectProperties(x => x.Name);
     }
 }
@@ -902,7 +902,7 @@ internal class NameOrderByOnlyProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "NameOrderByWidgets";
         OrderByEnabled = true;
-        GetQueryable = (ct) => OhDataResult.Success(_store.AsQueryable());
+        GetQueryable = (ct) => _store.AsQueryable();
         OrderByProperties(x => x.Name);
     }
 }
@@ -919,7 +919,7 @@ internal class StringSelectOnlyProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "StringSelectWidgets";
         SelectEnabled = true;
-        GetQueryable = (ct) => OhDataResult.Success(_store.AsQueryable());
+        GetQueryable = (ct) => _store.AsQueryable();
         SelectProperties("Name");
     }
 }
@@ -937,7 +937,7 @@ internal class StringOrderByOnlyProfile : EntitySetProfile<int, Widget>
     {
         EntitySetName = "StringOrderByWidgets";
         OrderByEnabled = true;
-        GetQueryable = (ct) => OhDataResult.Success(_store.AsQueryable());
+        GetQueryable = (ct) => _store.AsQueryable();
         OrderByProperties("Name");
     }
 }
@@ -971,7 +971,7 @@ internal class NoExpandProfile : EntitySetProfile<int, CovParent>
     {
         EntitySetName = "NoExpandParents";
         ExpandEnabled = true;
-        GetQueryable = (ct) => OhDataResult.Success(_parents.AsQueryable());
+        GetQueryable = (ct) => _parents.AsQueryable();
         HasMany(x => x.Children!);
         ExpandProperties(Array.Empty<string>()); // empty string array → restricts all $expand
     }

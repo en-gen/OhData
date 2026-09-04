@@ -707,7 +707,7 @@ internal class SqQueryableProfile : EntitySetProfile<int, SqParent>
         ExpandEnabled = true;
         CountEnabled = true;
         MaxTop = 2;
-        GetQueryable = (ct) => OhDataResult.Success(SqStore.Parents.AsQueryable());
+        GetQueryable = (ct) => SqStore.Parents.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(SqStore.Parents.FirstOrDefault(p => p.Id == id));
         HasMany(x => x.Children!,
             getAll: (parentId, ct) => Task.FromResult<IEnumerable<SqChild>>(SqStore.Children));

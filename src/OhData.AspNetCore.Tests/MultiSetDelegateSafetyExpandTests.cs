@@ -184,7 +184,7 @@ public sealed class MsLibraryProfile : EntitySetProfile<int, MsLibrary>
         EntitySetName = "Libraries";
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => OhDataResult.Success(db.Libraries.AsQueryable());
+        GetQueryable = _ => db.Libraries.AsQueryable();
         HasMany(x => x.Books); // delegate-less → pushable
     }
 }
@@ -197,7 +197,7 @@ public sealed class MsBooksProfile : EntitySetProfile<int, MsBook>
         EntitySetName = "Books";
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => OhDataResult.Success(db.Books.AsQueryable());
+        GetQueryable = _ => db.Books.AsQueryable();
         HasMany(x => x.Reviews); // delegate-LESS
         HasMany(x => x.Tags);    // delegate-less control nav (see the same-name-different-type test)
     }
@@ -213,7 +213,7 @@ public sealed class MsFeaturedBooksProfile : EntitySetProfile<int, MsBook>
         EntitySetName = "FeaturedBooks";
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => OhDataResult.Success(db.Books.AsQueryable());
+        GetQueryable = _ => db.Books.AsQueryable();
         HasMany(x => x.Reviews,
             getAll: (bookId, ct) =>
             {
@@ -233,7 +233,7 @@ public sealed class MsMagazineProfile : EntitySetProfile<int, MsMagazine>
         EntitySetName = "Magazines";
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => OhDataResult.Success(db.Magazines.AsQueryable());
+        GetQueryable = _ => db.Magazines.AsQueryable();
         HasMany(x => x.Reviews,
             getAll: (magId, ct) =>
             {
@@ -253,7 +253,7 @@ public sealed class MsShelfProfile : EntitySetProfile<int, MsShelf>
     {
         EntitySetName = "Shelves";
         ExpandEnabled = true;
-        GetQueryable = _ => OhDataResult.Success(db.Shelves.AsQueryable());
+        GetQueryable = _ => db.Shelves.AsQueryable();
 
         HasMany(x => x.Books,
             getAll: (shelfId, ct) =>
@@ -281,7 +281,7 @@ public sealed class MsSecureBooksProfile : EntitySetProfile<int, MsSecureBook>
     {
         EntitySetName = "SecureBooks";
         ExpandEnabled = true;
-        GetQueryable = _ => OhDataResult.Success(db.SecureBooks.AsQueryable());
+        GetQueryable = _ => db.SecureBooks.AsQueryable();
         HasMany(x => x.Notes,
             getAll: (bookId, ct) =>
             {
@@ -304,7 +304,7 @@ public sealed class MsGroupProfile : EntitySetProfile<int, MsGroup>
     {
         EntitySetName = "Groups";
         ExpandEnabled = true;
-        GetQueryable = _ => OhDataResult.Success(new[] { new MsGroup { Id = 1 } }.AsQueryable());
+        GetQueryable = _ => new[] { new MsGroup { Id = 1 } }.AsQueryable();
         HasMany(x => x.Shelves,
             getAll: (groupId, ct) => Task.FromResult<IEnumerable<MsShelf>>(db.Shelves.ToList()));
     }
@@ -319,7 +319,7 @@ public sealed class MsBookAlphaProfile : EntitySetProfile<int, MsBook2>
     {
         EntitySetName = "BookAlphas";
         ExpandEnabled = true;
-        GetQueryable = _ => OhDataResult.Success(db.Book2s.AsQueryable());
+        GetQueryable = _ => db.Book2s.AsQueryable();
         HasMany(x => x.Reviews,
             getAll: (bookId, ct) =>
             {
@@ -336,7 +336,7 @@ public sealed class MsBookBetaProfile : EntitySetProfile<int, MsBook2>
     {
         EntitySetName = "BookBetas";
         ExpandEnabled = true;
-        GetQueryable = _ => OhDataResult.Success(db.Book2s.AsQueryable());
+        GetQueryable = _ => db.Book2s.AsQueryable();
         HasMany(x => x.Reviews,
             getAll: (bookId, ct) =>
             {

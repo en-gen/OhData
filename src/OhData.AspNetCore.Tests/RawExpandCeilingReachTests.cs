@@ -32,8 +32,8 @@ public sealed class BeAuthorMemoryProfile : EntitySetProfile<int, BeAuthor>
         EntitySetName = "BeAuthorsMem";
         ExpandEnabled = true;
         SelectEnabled = true;
-        GetQueryable = _ => OhDataResult.Success(
-            db.Authors.Include(a => a.Books).ToList().AsQueryable());
+        GetQueryable = _ =>
+            db.Authors.Include(a => a.Books).ToList().AsQueryable();
         HasMany(x => x.Books);
     }
 }
@@ -415,7 +415,7 @@ public sealed class BeBookDelegateProfile : EntitySetProfile<int, BeBook>
         EntitySetName = "BeBooksDlg";
         ExpandEnabled = true;
         FilterEnabled = true; // so the depth-1 O6 control can isolate book 1 deterministically
-        GetQueryable = _ => OhDataResult.Success(db.Books.AsQueryable());
+        GetQueryable = _ => db.Books.AsQueryable();
         HasMany(x => x.Chapters, getAll: (id, ct) =>
         {
             counter.Count();
@@ -436,7 +436,7 @@ public sealed class BeBookPlainProfile : EntitySetProfile<int, BeBook>
     {
         EntitySetName = "BeBooksPlain";
         ExpandEnabled = true;
-        GetQueryable = _ => OhDataResult.Success(db.Books.AsQueryable());
+        GetQueryable = _ => db.Books.AsQueryable();
         HasMany(x => x.Chapters);
     }
 }

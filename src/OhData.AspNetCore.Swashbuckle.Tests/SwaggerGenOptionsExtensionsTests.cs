@@ -168,7 +168,7 @@ public sealed class SwaggerGenOptionsExtensionsTests
             EntitySetName = "IgnoreWidgets";
             FilterEnabled = true;
             Ignore(w => w.Secret);
-            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetQueryable = (ct) => Store.AsQueryable();
         }
     }
 }

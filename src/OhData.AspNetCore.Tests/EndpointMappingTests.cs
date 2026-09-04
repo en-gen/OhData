@@ -2843,7 +2843,7 @@ public class EndpointMappingTests
             EntitySetName = "AdvancedWidgets";
             FilterEnabled = true;
             OrderByEnabled = true;
-            GetQueryable = (ct) => OhDataResult.Success(Store.AsQueryable());
+            GetQueryable = (ct) => Store.AsQueryable();
             GetById = (id, ct) => OhDataResult.Success(Store.FirstOrDefault(w => w.Id == id));
         }
 

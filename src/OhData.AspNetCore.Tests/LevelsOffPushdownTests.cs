@@ -63,7 +63,7 @@ public sealed class LvMemoryNodeProfile : EntitySetProfile<int, LvNode>
         EntitySetName = "LvMemNodes";
         ExpandEnabled = true;
         SelectEnabled = true;
-        GetQueryable = _ => OhDataResult.Success(db.LvNodes.ToList().AsQueryable());
+        GetQueryable = _ => db.LvNodes.ToList().AsQueryable();
         HasMany(x => x.Children);
         HasMany(x => x.Tags);
     }
