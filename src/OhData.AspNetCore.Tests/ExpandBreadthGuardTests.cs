@@ -227,7 +227,7 @@ public sealed class BrdNodeProfile : EntitySetProfile<int, BrdNode>
         ExpandEnabled = true; SelectEnabled = true; FilterEnabled = true;
         OrderByEnabled = true; CountEnabled = true;
         MaxExpandBreadth = 5;
-        GetQueryable = _ => OhDataResult.Success(db.BrdNodes.AsQueryable());
+        GetQueryable = _ => db.BrdNodes.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(db.BrdNodes.FirstOrDefault(n => n.Id == id));
         HasMany(x => x.A); HasMany(x => x.B); HasMany(x => x.C);
     }
@@ -255,7 +255,7 @@ public sealed class BrdInheritingProfile : EntitySetProfile<int, BrdNode>
     {
         EntitySetName = "BrdInheriting";
         ExpandEnabled = true; SelectEnabled = true; CountEnabled = true;
-        GetQueryable = _ => OhDataResult.Success(db.BrdNodes.AsQueryable());
+        GetQueryable = _ => db.BrdNodes.AsQueryable();
         HasMany(x => x.A); HasMany(x => x.B); HasMany(x => x.C);
     }
 }

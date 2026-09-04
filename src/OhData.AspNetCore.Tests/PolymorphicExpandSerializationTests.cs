@@ -73,7 +73,7 @@ public sealed class NpRawRootProfile : EntitySetProfile<int, NpRoot>
     {
         EntitySetName = "NpRawRoots";
         ExpandEnabled = true; SelectEnabled = true; OrderByEnabled = true;
-        GetQueryable = _ => OhDataResult.Success(Store.AsQueryable());
+        GetQueryable = _ => Store.AsQueryable();
         GetById = (id, _) => OhDataResult.Success(Store.FirstOrDefault(r => r.Id == id));
         HasMany(x => x.Kids!);
     }
@@ -89,7 +89,7 @@ public sealed class NpDelRootProfile : EntitySetProfile<int, NpRoot>
     {
         EntitySetName = "NpDelRoots";
         ExpandEnabled = true; SelectEnabled = true; OrderByEnabled = true;
-        GetQueryable = _ => OhDataResult.Success(Store.AsQueryable());
+        GetQueryable = _ => Store.AsQueryable();
         GetById = (id, _) => OhDataResult.Success(Store.FirstOrDefault(r => r.Id == id));
         HasMany(x => x.Kids!,
             getAll: (id, _) => Task.FromResult<IEnumerable<NpKid>>(id == 1 ? NpData.Kids() : new List<NpKid>()));
@@ -105,7 +105,7 @@ public sealed class NpKidRootProfile : EntitySetProfile<int, NpKid>
     {
         EntitySetName = "NpKidRoots";
         ExpandEnabled = true; SelectEnabled = true; OrderByEnabled = true;
-        GetQueryable = _ => OhDataResult.Success(Store.AsQueryable());
+        GetQueryable = _ => Store.AsQueryable();
         GetById = (id, _) => OhDataResult.Success(Store.FirstOrDefault(k => k.Id == id));
     }
 }

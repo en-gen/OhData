@@ -295,7 +295,7 @@ internal sealed class RcvCaseCollidingContinuationProfile : EntitySetProfile<int
     {
         EntitySetName = "RcvCaseContinuation";
         ExpandEnabled = true;
-        GetQueryable = _ => OhDataResult.Success(db.Authors.AsQueryable());
+        GetQueryable = _ => db.Authors.AsQueryable();
         HasMany(x => x.Books);
         BindEntityFunction(books);
     }

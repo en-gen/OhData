@@ -145,7 +145,7 @@ public sealed class UdAuthorProfile : EntitySetProfile<int, UdAuthor>
     {
         EntitySetName = "UdAuthors";
         ExpandEnabled = true; SelectEnabled = true; FilterEnabled = true; OrderByEnabled = true; CountEnabled = true;
-        GetQueryable = _ => OhDataResult.Success(db.UdAuthors.AsQueryable());
+        GetQueryable = _ => db.UdAuthors.AsQueryable();
         GetById = (id, _) => OhDataResult.Success(db.UdAuthors.FirstOrDefault(a => a.Id == id));
         HasMany(x => x.Books);
         // Publisher deliberately NOT declared.
@@ -158,7 +158,7 @@ public sealed class UdPublisherProfile : EntitySetProfile<int, UdPublisher>
     {
         EntitySetName = "UdPublishers";
         ExpandEnabled = true; SelectEnabled = true;
-        GetQueryable = _ => OhDataResult.Success(db.UdPublishers.AsQueryable());
+        GetQueryable = _ => db.UdPublishers.AsQueryable();
     }
 }
 
@@ -168,7 +168,7 @@ public sealed class NpAuthorProfile : EntitySetProfile<int, NpAuthor>
     {
         EntitySetName = "NpAuthors";
         ExpandEnabled = true; SelectEnabled = true; FilterEnabled = true; OrderByEnabled = true; CountEnabled = true;
-        GetQueryable = _ => OhDataResult.Success(db.NpAuthors.AsQueryable());
+        GetQueryable = _ => db.NpAuthors.AsQueryable();
         GetById = (id, _) => OhDataResult.Success(db.NpAuthors.FirstOrDefault(a => a.Id == id));
         HasMany(x => x.Books);
         // Publisher deliberately NOT declared, and NpPublisher has NO profile.
@@ -181,7 +181,7 @@ public sealed class DcAuthorProfile : EntitySetProfile<int, DcAuthor>
     {
         EntitySetName = "DcAuthors";
         ExpandEnabled = true; SelectEnabled = true; FilterEnabled = true; OrderByEnabled = true; CountEnabled = true;
-        GetQueryable = _ => OhDataResult.Success(db.DcAuthors.AsQueryable());
+        GetQueryable = _ => db.DcAuthors.AsQueryable();
         GetById = (id, _) => OhDataResult.Success(db.DcAuthors.FirstOrDefault(a => a.Id == id));
         HasMany(x => x.Books);
         HasOptional<DcPublisher>(x => x.Publisher!); // the issue-stated workaround
@@ -194,7 +194,7 @@ public sealed class DcPublisherProfile : EntitySetProfile<int, DcPublisher>
     {
         EntitySetName = "DcPublishers";
         ExpandEnabled = true; SelectEnabled = true;
-        GetQueryable = _ => OhDataResult.Success(db.DcPublishers.AsQueryable());
+        GetQueryable = _ => db.DcPublishers.AsQueryable();
     }
 }
 
@@ -580,7 +580,7 @@ public sealed class UdMemOrderProfile : EntitySetProfile<int, UdMemOrder>
         ExpandEnabled = true;
         SelectEnabled = true;
         List<UdMemOrder> data = NewData();
-        GetQueryable = _ => OhDataResult.Success(data.AsQueryable());
+        GetQueryable = _ => data.AsQueryable();
         HasOptional<UdMemCust>(x => x.DeclaredCust!);
         // Cust deliberately NOT declared.
     }

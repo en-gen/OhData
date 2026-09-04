@@ -67,45 +67,45 @@ public class ProductProfile : EntitySetProfile<int, Product>
             return pairs.ToLookup(x => x.Id, x => x.Tag);
         });
 
-        GetQueryable = (_) => Task.FromResult(db.Products.AsQueryable());
+        GetQueryable = (_) => db.Products;
 
-        GetById = (id, ct) => db.Products.SingleOrDefaultAsync(p => p.Id == id, ct);
+        GetById = async (id, ct) => OhDataResult.Success<Product?>(await db.Products.SingleOrDefaultAsync(p => p.Id == id, ct));
 
         Post = async (product, ct) =>
         {
             db.Products.Add(product);
             await db.SaveChangesAsync(ct);
-            return product;
+            return OhDataResult.Success(product);
         };
 
         Put = async (id, product, ct) =>
         {
             Product? existing = await db.Products.FindAsync([id], ct);
-            if (existing is null) return null!; // framework maps a null result to 404
+            if (existing is null) return OhDataResult.Success<Product?>(null); // -> 404
             existing.Name = product.Name;
             existing.Price = product.Price;
             existing.Stock = product.Stock;
             existing.CategoryId = product.CategoryId;
             await db.SaveChangesAsync(ct);
-            return existing;
+            return OhDataResult.Success<Product?>(existing);
         };
 
         Patch = async (id, delta, ct) =>
         {
             Product? existing = await db.Products.FindAsync([id], ct);
-            if (existing is null) return null;
+            if (existing is null) return OhDataResult.Success<Product?>(null); // -> 404
             delta.Patch(existing); // applies only the properties present in the request body
             await db.SaveChangesAsync(ct);
-            return existing;
+            return OhDataResult.Success<Product?>(existing);
         };
 
         Delete = async (id, ct) =>
         {
             Product? existing = await db.Products.FindAsync([id], ct);
-            if (existing is null) return false; // IdempotentDelete defaults to true → 204
+            if (existing is null) return OhDataResult.Success(false); // IdempotentDelete -> 204
             db.Products.Remove(existing);
             await db.SaveChangesAsync(ct);
-            return true;
+            return OhDataResult.Success(true);
         };
     }
 }
@@ -140,15 +140,15 @@ public class CategoryProfile : EntitySetProfile<int, Category>
 
         // Deliberately partial CRUD: any handler left unassigned registers NO route at all
         // (OhData's headline rule) — so Categories has no PUT/PATCH/DELETE endpoints.
-        GetQueryable = (_) => Task.FromResult(db.Categories.AsQueryable());
+        GetQueryable = (_) => db.Categories;
 
-        GetById = (id, ct) => db.Categories.SingleOrDefaultAsync(c => c.Id == id, ct);
+        GetById = async (id, ct) => OhDataResult.Success<Category?>(await db.Categories.SingleOrDefaultAsync(c => c.Id == id, ct));
 
         Post = async (category, ct) =>
         {
             db.Categories.Add(category);
             await db.SaveChangesAsync(ct);
-            return category;
+            return OhDataResult.Success(category);
         };
     }
 }
@@ -177,9 +177,9 @@ public class TagProfile : EntitySetProfile<int, Tag>
         // no reverse navigation route. The EF skip navigation is untouched.
         Ignore(x => x.Products);
 
-        GetQueryable = (_) => Task.FromResult(db.Tags.AsQueryable());
+        GetQueryable = (_) => db.Tags;
 
-        GetById = (id, ct) => db.Tags.SingleOrDefaultAsync(t => t.Id == id, ct);
+        GetById = async (id, ct) => OhDataResult.Success<Tag?>(await db.Tags.SingleOrDefaultAsync(t => t.Id == id, ct));
     }
 }
 
@@ -210,17 +210,16 @@ public class ProductSummaryProfile : EntitySetProfile<int, ProductSummary>
         // JOIN — here it would throw, since the navigation isn't in the EF model. Read-only by
         // design: no other handlers are assigned, so no POST/PUT/PATCH/DELETE routes exist for
         // this set (and no single-entity GET either — GetById is unassigned).
-        GetQueryable = (_) => Task.FromResult(
-            db.Products.Join(
-                db.Categories,
-                p => p.CategoryId,
-                c => c.Id,
-                (p, c) => new ProductSummary
-                {
-                    Id = p.Id,
-                    Name = p.Name,
-                    Price = p.Price,
-                    CategoryName = c.Name,
-                }));
+        GetQueryable = (_) => db.Products.Join(
+            db.Categories,
+            p => p.CategoryId,
+            c => c.Id,
+            (p, c) => new ProductSummary
+            {
+                Id = p.Id,
+                Name = p.Name,
+                Price = p.Price,
+                CategoryName = c.Name,
+            });
     }
 }

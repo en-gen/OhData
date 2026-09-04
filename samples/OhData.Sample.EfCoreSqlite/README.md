@@ -8,7 +8,7 @@ request prints the exact SQL it produced.
 
 What it demonstrates:
 
-- `GetQueryable` with SQL pushdown, `GetById`, `Post`, `Put`, `Patch`, `Delete` — all async EF Core
+- `GetQueryable` with SQL pushdown, `GetById`, `Post`, `Put`, `Patch`, `Delete` — EF Core
 - `FilterEnabled` / `OrderByEnabled` / `SelectEnabled` / `ExpandEnabled` / `CountEnabled` and `MaxTop`
 - Batch-loaded `$expand` in both directions (`Products?$expand=Category`,
   `Categories?$expand=Products`) — one SQL query per page, not one per row (no N+1)
@@ -130,10 +130,9 @@ DTO — not an EF entity, no `DbSet`, no migration — and `ProductSummaryProfil
 projecting a join inside the `IQueryable`:
 
 ```csharp
-GetQueryable = (_) => Task.FromResult(
-    db.Products.Join(db.Categories,
-        p => p.CategoryId, c => c.Id,
-        (p, c) => new ProductSummary { Id = p.Id, Name = p.Name, Price = p.Price, CategoryName = c.Name }));
+GetQueryable = (_) => db.Products.Join(db.Categories,
+    p => p.CategoryId, c => c.Id,
+    (p, c) => new ProductSummary { Id = p.Id, Name = p.Name, Price = p.Price, CategoryName = c.Name });
 ```
 
 Because the projection is still un-materialized, OData query options compose **through** it.

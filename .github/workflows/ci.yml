@@ -59,6 +59,14 @@ jobs:
         id: build
         run: dotnet build src/OhData.sln --no-restore -c Release
 
+      # samples/ is NOT in src/OhData.sln, so nothing here compiled it -- and it silently stopped
+      # compiling at #581, which changed every handler signature. It is shipped documentation: a
+      # sample that does not build teaches an API that does not exist. Built separately rather than
+      # added to the solution so it stays out of the packable/test surface (and off Codecov).
+      - name: Build samples (not in the solution; see #656)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: dotnet build samples/OhData.Sample.EfCoreSqlite/OhData.Sample.EfCoreSqlite.csproj -c Release
+
       # One step per suite, each `!cancelled()`, so a failure in one does not hide the other six.
       # As a single `run:` block, bash `set -e` aborted at the first failing suite and Codecov
       # received only that suite's results - losing exactly the data Test Analytics exists to
