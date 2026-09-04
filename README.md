@@ -423,30 +423,37 @@ public class MyService(OhDataClient client) { ... }
 
 OhData's minimal-API pipeline was benchmarked head-to-head against `Microsoft.AspNetCore.OData`'s
 `ODataController` + `[EnableQuery]` pipeline over the full HTTP round-trip (routing → OData
-query-option processing → handler → serialization), same dataset, same requests, correctness
-verified before every run. OhData won all 11 scenarios:
+query-option processing → handler → serialization), same dataset, byte-identical requests,
+correctness verified before every run. OhData is **faster on 10 of the 11 scenarios and allocates
+less on all 11**:
 
 | Scenario | OhData | Microsoft.AspNetCore.OData | Speedup | Alloc ratio |
 |---|---:|---:|---:|---:|
-| GetAll page (100) | 763 µs | 2,821 µs | **3.7×** | 6.3× |
-| `$filter` | 1,778 µs | 3,393 µs | **1.9×** | 6.0× |
-| `$orderby` | 968 µs | 2,949 µs | **3.0×** | 5.4× |
-| `$select` | 878 µs | 1,858 µs | **2.1×** | 1.3× |
-| `$top` + `$skip` | 1,262 µs | 2,061 µs | **1.6×** | 4.6× |
-| `$count=true` (+`$filter`) | 2,831 µs | 4,740 µs | **1.7×** | 5.4× |
-| GetById | 37 µs | 112 µs | **3.0×** | 3.0× |
-| POST | 51 µs | 286 µs | **5.6×** | 7.7× |
-| PUT | 57 µs | 281 µs | **4.9×** | 7.7× |
-| PATCH | 53 µs | 325 µs | **6.2×** | 7.1× |
-| DELETE | 16 µs | 24 µs | **1.5×** | 1.3× |
+| GetAll page (100) | 1,056 µs | 3,346 µs | **3.2×** | 4.6× |
+| `$filter` | 2,176 µs | 3,831 µs | **1.8×** | 4.7× |
+| `$orderby` | 1,599 µs | 4,016 µs | **2.6×** | 4.3× |
+| `$select` | 1,634 µs | 2,093 µs | **1.3×** | 1.2× |
+| `$top` + `$skip` | 1,019 µs | 2,666 µs | **2.6×** | 3.7× |
+| `$count=true` (+`$filter`) | 3,436 µs | 5,792 µs | **1.7×** | 4.3× |
+| GetById | 55 µs | 123 µs | **2.2×** | 2.8× |
+| POST | 60 µs | 301 µs | **5.0×** | 7.7× |
+| PUT | 63 µs | 299 µs | **4.8×** | 7.5× |
+| PATCH | 67 µs | 309 µs | **4.6×** | 6.5× |
+| DELETE | 34.7 µs | 35.2 µs | tie (1.02× ± 0.08) | 1.2× |
 
-The biggest gaps are on writes (POST/PUT/PATCH, ~5-6× — MS OData's OData-JSON formatters and
-EDM-bound serialization dominate there) and full-page reads (~3-3.7×). "Alloc ratio" is how many
-times more memory the MS OData pipeline allocates per request. BenchmarkDotNet over in-process
-TestServer hosts, identical 1,000-entity dataset and byte-identical requests on both sides, with a
-correctness gate run before measurement; see
-[src/OhData.Server.Benchmarks/docs/server-comparison-report.md](src/OhData.Server.Benchmarks/docs/server-comparison-report.md)
-for the full methodology, raw output, and known asymmetries between the two pipelines.
+<sub>Measured 2026-09-04 at commit `4e123b7` · BenchmarkDotNet v0.15.8 · .NET 10.0.11 · AMD Ryzen 9
+5950X · Windows 11 25H2. Speedup is BenchmarkDotNet's per-iteration `Ratio` against the OhData
+baseline; "alloc ratio" is how many times more memory the MS OData pipeline allocates per
+request.</sub>
+
+The widest gaps are on writes (POST/PUT/PATCH, ~4.6–5× — MS OData's OData-JSON formatters and
+EDM-bound serialization dominate there) and full-page reads (2.6–3.2×). DELETE is reported as a
+tie rather than a win because 1.02× ± 0.08 is indistinguishable from parity: neither framework does
+much on that route beyond routing.
+
+**[docs/performance.md](docs/performance.md)** has the full methodology, the raw BenchmarkDotNet
+capture, the `$expand`/`$levels` half, the known asymmetries between the two pipelines, and a
+v1.7.0 control run establishing that 2.0.0 introduced no timing or allocation regression.
 
 ## Battle-testing
 
@@ -488,11 +495,13 @@ The full documentation — getting started, the EF Core + SQLite walkthrough, an
 | Individual property access, reads/writes, and `/$value` | [docs/property-access.md](docs/property-access.md) |
 | Deep insert (nested related entities in POST), and deep update's enforced non-support | [docs/deep-insert.md](docs/deep-insert.md) |
 | Delta mapping (DTO → entity write path, dependency-free) | [docs/delta-mapping.md](docs/delta-mapping.md) |
+| Error handling (`OhDataResult<T>`, the rejection factories, the error envelope) | [docs/error-handling.md](docs/error-handling.md) |
 | Open types (dynamic property bags on complex types) | [docs/open-types.md](docs/open-types.md) |
 | Bound functions and actions | [docs/bound-operations.md](docs/bound-operations.md) |
 | ETags and optimistic concurrency | [docs/etags.md](docs/etags.md) |
 | Authorization | [docs/authorization.md](docs/authorization.md) |
 | API versioning | [docs/versioning.md](docs/versioning.md) |
+| Observability (metrics, tracing, logging) | [docs/observability.md](docs/observability.md) |
 | OpenAPI (built-in `AddOpenApi`) integration | [docs/openapi.md](docs/openapi.md) |
 | Swashbuckle integration | [docs/swashbuckle.md](docs/swashbuckle.md) |
 | NSwag integration | [docs/nswag.md](docs/nswag.md) |
@@ -500,5 +509,7 @@ The full documentation — getting started, the EF Core + SQLite walkthrough, an
 | OData 4.0 spec compliance | [docs/spec-compliance.md](docs/spec-compliance.md) |
 | Framework architecture | [docs/architecture.md](docs/architecture.md) |
 | Migrating from Microsoft.AspNetCore.OData | [docs/migrating-from-microsoft-odata.md](docs/migrating-from-microsoft-odata.md) |
+| Differences from Microsoft.AspNetCore.OData | [docs/differences-from-microsoft-odata.md](docs/differences-from-microsoft-odata.md) |
+| Performance & benchmarks | [docs/performance.md](docs/performance.md) |
 | Deployment (Dockerfile, Render) | [docs/deployment.md](docs/deployment.md) |
 | Releasing to NuGet | [docs/releasing.md](docs/releasing.md) |

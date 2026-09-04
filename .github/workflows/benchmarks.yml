@@ -1,0 +1,66 @@
+# Server benchmarks, on demand.
+#
+# DELIBERATELY manual-only (workflow_dispatch). Two things a scheduled run cannot do, and one it can:
+#
+#   - It cannot produce PUBLISHABLE magnitudes. GitHub-hosted runners are shared, variably
+#     provisioned vCPUs; the absolute microsecond figures in docs/performance.md would swing far
+#     more between runners than between OhData revisions, and a number nobody can reproduce is the
+#     failure #636 exists to close, not a fix for it.
+#   - It cannot gate a PR on a threshold without first establishing what the ratio's run-to-run
+#     spread IS on this runner class. That is a measurement nobody has taken. Adding a threshold
+#     before taking it produces either a flaky red build or a gate that catches nothing.
+#   - It CAN check that the suite still builds, that both hosts still agree, and that a run
+#     completes -- which is what --smoke does, in a minute, and ci.yml is the right place for that
+#     if we ever want it.
+#
+# So this workflow exists to make a re-measurement REPRODUCIBLE (one dispatch, a named ref, the raw
+# log kept as an artifact), not to police one. Publishing still happens by hand, against a named
+# commit, per the provenance rule at the top of docs/performance.md.
+name: benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: 'BenchmarkDotNet --filter (default: the head-to-head suite only)'
+        required: false
+        default: '*ServerComparisonBenchmarks*'
+      smoke-only:
+        description: 'Run the correctness gate only, no measurement'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.x
+
+      - name: Correctness gate (both hosts must agree on all 16 scenarios)
+        run: dotnet run -c Release --project src/OhData.Server.Benchmarks -- --smoke
+
+      - name: Run benchmarks
+        if: ${{ !inputs.smoke-only }}
+        # `shell: bash` for pipefail -- the default `bash -e` would let `tee` mask a failed run.
+        shell: bash
+        run: dotnet run -c Release --project src/OhData.Server.Benchmarks -- --filter "${{ inputs.filter }}" 2>&1 | tee benchmark-run.log
+
+      # The artifact is the point: a run whose raw output is not kept cannot be cited later.
+      - name: Upload results
+        if: ${{ !inputs.smoke-only }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-results-${{ github.sha }}
+          path: |
+            benchmark-run.log
+            **/BenchmarkDotNet.Artifacts/results/
+          if-no-files-found: warn
