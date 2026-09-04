@@ -2859,13 +2859,37 @@ internal static class OhDataEndpointFactory
     // GetAll has its own array below. The listed options are the ones the ROUTE implements; whether
     // this profile permits them is CheckDisabledQueryOption's separate question.
     //
-    // $search is the one entry the two consumers do NOT agree about, and it is listed for the
-    // Priority-2 one, where the route invokes the Search handler. Priority-1 has no $search leg at
-    // all -- #465 refuses GetODataQueryable + Search at startup and $search there is the profile's
-    // own business via options.Search -- so listing it means Priority-1 accepts and ignores one
-    // option. Splitting the array is deliberately NOT done: the Priority-1 contract hands the whole
+    // #475: this array is now the PRIORITY-2 set only. It used to serve both, and the comment here
+    // declined to split it on the grounds that the Priority-1 contract hands the whole
     // ODataQueryOptions to the profile, so "the framework does not read it" is not "the request does
-    // not honour it", and refusing it would break the options.Search remedy #465 prescribes.
+    // not honour it". True -- but the consequence was that a P1 profile with no $search handling
+    // answered 200 with the FULL collection to a client that asked for a subset, which a client
+    // cannot detect (an unfiltered result is indistinguishable from a search that matched
+    // everything), and §11.2.5 makes refusing it a MUST.
+    //
+    // The split is resolved by asking the profile instead of guessing: see
+    // BuildPriority1ImplementedOptions. Microsoft.AspNetCore.OData ignores $search without an
+    // ISearchBinder by choice ("If the developer doesn't provide the search binder, let's ignore the
+    // $search clause"), so this is a deliberate divergence from MS -- the same one #359/#380/#353
+    // already made, where §11.2.5's MUST outweighs aligning with MS.
+    // #475: the Priority-1 route's implemented-option set, from the profile's own declaration.
+    // $format is always present -- it never reaches a route handler (§11.2.10 is negotiated once on
+    // the group filter) and cannot change a row. Built once per entity set at startup.
+    private static string[] BuildPriority1ImplementedOptions(OhDataSystemQueryOption honoured)
+    {
+        var names = new List<string>(10) { FormatOption };
+        if (honoured.HasFlag(OhDataSystemQueryOption.Filter)) names.Add("$filter");
+        if (honoured.HasFlag(OhDataSystemQueryOption.OrderBy)) names.Add("$orderby");
+        if (honoured.HasFlag(OhDataSystemQueryOption.Top)) names.Add("$top");
+        if (honoured.HasFlag(OhDataSystemQueryOption.Skip)) names.Add("$skip");
+        if (honoured.HasFlag(OhDataSystemQueryOption.Select)) names.Add("$select");
+        if (honoured.HasFlag(OhDataSystemQueryOption.Expand)) names.Add("$expand");
+        if (honoured.HasFlag(OhDataSystemQueryOption.Count)) names.Add("$count");
+        if (honoured.HasFlag(OhDataSystemQueryOption.SkipToken)) names.Add("$skiptoken");
+        if (honoured.HasFlag(OhDataSystemQueryOption.Search)) names.Add("$search");
+        return names.ToArray();
+    }
+
     private static readonly string[] s_collectionImplementedOptions =
     {
         "$filter", "$orderby", "$top", "$skip", "$select", "$expand", "$count",
@@ -8130,11 +8154,17 @@ internal static class OhDataEndpointFactory
         // Priority 1: ODataEntitySetProfile with direct ODataQueryOptions handler
         if (source is IODataEntitySetEndpointSource odataSource && odataSource.HasGetODataQueryable)
         {
+            // #475: this route's implemented set is the PROFILE's declaration, not a framework
+            // constant -- it is the one shape where the handler, not the framework, decides which
+            // options are honoured. Built once here, not per request.
+            string[] p1ImplementedOptions =
+                BuildPriority1ImplementedOptions(odataSource.HonouredQueryOptions);
+
             var collReadP1Rb = entityGroup.MapGet("", async (HttpContext ctx, CancellationToken ct) =>
             {
                 try
                 {
-                    IResult? capabilityError = CheckCollectionQueryOptionCapabilities(ctx, source, s_collectionImplementedOptions);
+                    IResult? capabilityError = CheckCollectionQueryOptionCapabilities(ctx, source, p1ImplementedOptions);
                     if (capabilityError is not null) return capabilityError;
 
                     var s = ResolveHandlers(ctx);
