@@ -473,7 +473,27 @@ function contentNegotiation() {
       '/$count answers text/plain': (r) => ct(r).indexOf('text/plain') >= 0,
     });
     expectStatus(get(`${BASE_URL}/v1/Movies/$count`, { params: { headers: { Accept: 'application/json' } } }), 200, '/$count accepts application/json');
-    expectError(get(`${BASE_URL}/v1/Movies/$count`, { params: { headers: { Accept: 'application/xml' } } }), 406, 'NotAcceptable', '/$count Accept: application/xml');
+
+    // #580, REVERSING the 406 this line used to assert. §11.2.9: "Content negotiation using the
+    // Accept request header or the $format system query option is not allowed with the path
+    // segment /$count", and the body MUST be text/plain -- so the segment negotiates nothing and
+    // refusing a client that tried is itself negotiating. Microsoft.AspNetCore.OData agrees:
+    // ODataCountMediaTypeMapping matches every /$count path at quality 1 and ODataOutputFormatter
+    // overrides the content type, so MS never 406s here either.
+    const countXml = get(`${BASE_URL}/v1/Movies/$count`, { params: { headers: { Accept: 'application/xml' } } });
+    check(countXml, {
+      '/$count ignores an unacceptable Accept rather than refusing it': (r) => r.status === 200,
+      '/$count still answers text/plain for it': (r) => ct(r).indexOf('text/plain') >= 0,
+    });
+    const countFormatXml = get(`${BASE_URL}/v1/Movies/$count?$format=xml`);
+    check(countFormatXml, {
+      // §11.2.9 names $format in the same sentence as Accept, so one disallowed act gets one answer.
+      '/$count ignores $format=xml rather than refusing it': (r) => r.status === 200,
+    });
+    // The control: the exemption is scoped to that segment. An ordinary read still negotiates.
+    expectError(
+      get(`${BASE_URL}/v1/Movies`, { params: { headers: { Accept: 'application/xml' } } }),
+      406, 'NotAcceptable', 'a collection GET still refuses application/xml');
 
     // $metadata is application/xml and is exempt from the JSON-only checks entirely.
     const meta = get(`${BASE_URL}/v1/$metadata`, { params: { headers: { Accept: 'application/xml' } } });

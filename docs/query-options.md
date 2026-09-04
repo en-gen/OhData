@@ -1242,7 +1242,7 @@ meaningless on a single entity.
 |---|---|
 | `GET /{Set}` (`GetQueryable`, `GetODataQueryable`) | `$filter` `$orderby` `$top` `$skip` `$select` `$expand` `$count` `$search` `$skiptoken` `$format` |
 | `GET /{Set}` (`GetAll`) | the same, **minus `$skiptoken`** - this path continues with `$skip` and never read a `$skiptoken` |
-| `GET /{Set}/$count` | `$filter` `$top` `$skip` `$orderby` `$expand` `$select` `$format` - only `$filter` is applied; §11.2.9 requires the rest to be ignored |
+| `GET /{Set}/$count` | `$filter` `$top` `$skip` `$orderby` `$expand` `$select` `$format` - only `$filter` is applied; §11.2.9 requires the rest to be ignored, and since #580 the segment negotiates nothing at all (any `Accept`, any `$format` value, always `text/plain`) |
 | `GET /{Set}({key})` | `$select` `$expand` `$format` |
 | `GET /{Set}({key})/{Nav}` — **collection**-valued (`HasMany`) | `$select` `$orderby` `$skip` `$top` `$count` `$format` |
 | `GET /{Set}({key})/{Nav}` — **single**-valued (`HasOptional`/`HasRequired`) | `$format` only |
