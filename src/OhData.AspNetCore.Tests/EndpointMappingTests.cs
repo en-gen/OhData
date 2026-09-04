@@ -1949,13 +1949,16 @@ public class EndpointMappingTests
     }
 
     [Fact]
-    public async Task ODataQueryResult_WithoutTotalCount_CountFallsBackToItemLength()
+    public async Task ODataQueryResult_WithoutTotalCount_UnpagedCountStillUsesItemLength()
     {
-        // ODataWidgetProfile does not set TotalCount — $count should fall back to items.Length.
+        // ODataWidgetProfile does not set TotalCount. Since #379 the fallback to items.Length is
+        // NARROWED to requests where nothing paged -- which is this one (no $top, no $skip, 3 rows
+        // well under MaxTop), so items IS the filtered set and its length is the honest total. The
+        // same profile WITH paging now fails loud instead of reporting the page length; see
+        // Issue379Priority1CountTests.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<ODataWidgetProfile>());
         var json = await fx.Client.GetFromJsonAsync<JsonElement>("/odata/ODataWidgets?$count=true");
         Assert.True(json.TryGetProperty("@odata.count", out var count));
-        // ODataWidgets has 3 items; no TotalCount set so falls back to item count.
         Assert.Equal(3L, count.GetInt64());
     }
 
