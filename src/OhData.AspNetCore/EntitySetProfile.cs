@@ -2447,11 +2447,24 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     async Task<object?> IEntitySetEndpointSource.InvokeGetAllAsync(CancellationToken ct) =>
         (object?)Unwrap(await GetAll!.Invoke(ct));
 
-    // Returns a started Task rather than invoking inline: GetQueryable is SYNCHRONOUS, so a handler
-    // that throws while composing its query would throw here — while the caller was still evaluating
-    // this call's arguments, before AsHandlerFault could wrap it. That is exactly the #581 hole
-    // InvokeDeleteAsync had as a plain forwarder. Task.FromException puts a synchronous throw back on
-    // the faulted-Task path every other Invoke* member gets from `async`.
+    // Returns a started Task rather than invoking inline: GetQueryable is SYNCHRONOUS (#653), so a
+    // handler that throws while composing its query would throw HERE — while the caller was still
+    // evaluating this call's arguments, before WithExceptionMapping or AsHandlerFault existed to see
+    // it. That is exactly the #581 hole InvokeDeleteAsync had as a plain forwarder, and
+    // Issue653SyncGetQueryableTests pins what it costs: not the 500 envelope (the group filter
+    // catches the throw either way) but the ConfigureExceptions MAPPING, so a rule that should
+    // answer 403 answers 500 — on the seam whose only rejection idiom that now is.
+    //
+    // The catch is deliberately UNFILTERED, and narrowing it would be the defect rather than the
+    // fix. This method exists to reproduce, by hand, what the `async` keyword does for the other
+    // seven Invoke* members, and `async` captures EVERY exception type into the returned Task.
+    // A type list here would let unlisted types keep escaping synchronously — reinstating the hole
+    // for a subset, and making this one seam behave differently from its siblings according to what
+    // the handler happened to throw. It cannot be an `async` method instead: with no `await` that is
+    // CS1998, and this repo builds with TreatWarningsAsErrors.
+    //
+    // Nothing is swallowed, logged or reclassified: the same exception instance is handed straight
+    // back on the faulted-Task path.
     Task<IQueryable<object>> IEntitySetEndpointSource.InvokeGetQueryableAsync(CancellationToken ct)
     {
         try
