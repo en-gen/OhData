@@ -103,6 +103,58 @@ public class Genre
     public string Name { get; set; } = "";
 }
 
+// -- Awards: a POLYMORPHIC (TPH) entity set (#617) ----------------------------
+
+/// <summary>
+/// Base of the demo's one inheritance hierarchy. Every other model here is flat, so before #617
+/// nothing in the TestBench -- and therefore nothing in k6, which runs against this app -- exercised
+/// the code path a polymorphic root takes.
+/// </summary>
+/// <remarks>
+/// Since #529 a root with derived types in the EDM is refused the member-init <c>$expand</c>
+/// projection (a member-init can only construct the DECLARED type, so every row would come back as
+/// <see cref="Award"/> with <see cref="AcademyAward.Ceremony"/> and friends dropped) and is served
+/// through the EF <c>Include</c> path instead. <see cref="Nominations"/> exists to engage that path:
+/// unlike <c>Movie.Cast</c>/<c>Movie.Studio</c>/<c>Studio.Movies</c> -- which are <c>Ignore</c>d CLR
+/// properties loaded by hand-written LINQ -- this is a REAL EF relationship with no expand delegate,
+/// which is what makes the pushdown engage at all.
+/// <para>
+/// Deliberately UNIDIRECTIONAL: <see cref="AwardNomination"/> carries no back-reference. The
+/// DbContext here is a long-lived singleton, and the remark on <see cref="AppDbContext"/> explains
+/// why a two-way relationship under that lifetime produces a cyclic graph via EF's automatic fixup.
+/// One direction is all the pushdown needs.
+/// </para>
+/// </remarks>
+public class Award
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public int Year { get; set; }
+    public List<AwardNomination> Nominations { get; set; } = new();
+}
+
+/// <summary>Adds two properties that vanished under <c>$expand</c> before #529.</summary>
+public class AcademyAward : Award
+{
+    public string Ceremony { get; set; } = "";
+    public bool IsWinner { get; set; }
+}
+
+/// <summary>A second derived type, so a page mixes three shapes rather than two.</summary>
+public class FestivalAward : Award
+{
+    public string Festival { get; set; } = "";
+    public string Jury { get; set; } = "";
+}
+
+/// <summary>The expanded side. No <c>Award</c> navigation -- see <see cref="Award.Nominations"/>.</summary>
+public class AwardNomination
+{
+    public int Id { get; set; }
+    public int AwardId { get; set; }
+    public string Title { get; set; } = "";
+}
+
 // ── EF Core InMemory context ──────────────────────────────────────────────────
 
 /// <summary>
@@ -131,6 +183,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<Actor> Actors => Set<Actor>();
     public DbSet<Studio> Studios => Set<Studio>();
     public DbSet<MovieActor> MovieActors => Set<MovieActor>();
+    public DbSet<Award> Awards => Set<Award>();
+    public DbSet<AwardNomination> AwardNominations => Set<AwardNomination>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -139,5 +193,12 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         modelBuilder.Entity<Studio>().Ignore(s => s.Movies);
 
         modelBuilder.Entity<MovieActor>().HasKey(ma => new { ma.MovieId, ma.ActorId });
+
+        // #617: the one REAL relationship in this model, and the only one without an expand
+        // delegate -- both required for the $expand pushdown to engage. TPH: naming the derived
+        // types is what puts them in the EDM, which is what #529's check reads.
+        modelBuilder.Entity<Award>().HasMany(a => a.Nominations).WithOne().HasForeignKey(n => n.AwardId);
+        modelBuilder.Entity<AcademyAward>();
+        modelBuilder.Entity<FestivalAward>();
     }
 }

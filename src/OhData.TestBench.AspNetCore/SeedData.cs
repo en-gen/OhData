@@ -41,7 +41,42 @@ public static class DbSeeder
             }
         }
         db.SaveChanges();
+
+        // #617: three rows, three shapes -- one base Award and one of each derived type -- so a page
+        // MIXES them. That mix is the shape #529's defect needed: a projection over the declared type
+        // served the base row correctly and silently dropped the derived rows' own properties, so a
+        // fixture with only one shape would have proved nothing either way.
+        db.Awards.AddRange(Awards);
+        db.SaveChanges();
+
+        db.AwardNominations.AddRange(AwardNominations);
+        db.SaveChanges();
     }
+
+    // ── Awards — the polymorphic (TPH) showcase; see AwardProfile ─────────────────
+    public static readonly Award[] Awards =
+    {
+        new AcademyAward
+        {
+            Id = 1, Name = "Best Picture", Year = 1994,
+            Ceremony = "67th Academy Awards", IsWinner = true,
+        },
+        new FestivalAward
+        {
+            Id = 2, Name = "Palme d'Or", Year = 1994,
+            Festival = "Cannes", Jury = "Clint Eastwood",
+        },
+        new Award { Id = 3, Name = "Audience Choice", Year = 1994 },
+    };
+
+    public static readonly AwardNomination[] AwardNominations =
+    {
+        new() { Id = 1, AwardId = 1, Title = "Forrest Gump" },
+        new() { Id = 2, AwardId = 1, Title = "The Shawshank Redemption" },
+        new() { Id = 3, AwardId = 1, Title = "Pulp Fiction" },
+        new() { Id = 4, AwardId = 2, Title = "Pulp Fiction" },
+        new() { Id = 5, AwardId = 3, Title = "The Lion King" },
+    };
 
     // ── Genres — the GetAll (IEnumerable) showcase; see GenreProfile ─────────────
     public static readonly Genre[] Genres =

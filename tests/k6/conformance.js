@@ -22,6 +22,8 @@ import { group, check, fail } from 'k6';
 import {
   BASE_URL, SEEDED_MOVIE_ID, SEEDED_MOVIE_CAST_COUNT, YEAR_1994, YEAR_1994_COUNT,
   MISSING_ID, SEEDED_GENRE_CODE, UNLINKED_ACTOR_ID, MOVIE_MAX_TOP, newMovie,
+  AWARD_COUNT, ACADEMY_AWARD_ID, ACADEMY_AWARD_CEREMONY, ACADEMY_AWARD_NOMINATIONS,
+  FESTIVAL_AWARD_ID, FESTIVAL_AWARD_FESTIVAL, PLAIN_AWARD_ID, AWARD_NOMINATION_NEEDLE,
 } from './lib/seed.js';
 import {
   get, post, put, patch, del, req, jsonParams, header, body, expectStatus, expectError,
@@ -235,6 +237,7 @@ export default function (data) {
   preferHeader(data.writeId);
   bodySizeLimit();
   documentedResiduals();
+  polymorphicExpand();
 }
 
 // ── 1. The 501/400 taxonomy, every route family x every option ───────────────
@@ -904,6 +907,56 @@ function documentedResiduals() {
       'GetAll: an empty unimplemented option is 400, not 501 (known asymmetry)': (r) => r.status === 400,
     });
     expectUnsupportedOption(get(`${BASE_URL}/v1/Genres?$skiptoken=abc`), 'GetAll: a non-empty $skiptoken');
+  });
+}
+
+export function polymorphicExpand() {
+  // #617 / #529. Awards is the only entity set here with derived types in the EDM, so it is the
+  // only one taking the Include path: a member-init projection can construct nothing but the
+  // DECLARED type, so folding $expand into one served every row as a bare Award and dropped the
+  // derived members -- under a 200, decided by whether the request carried $expand.
+  group('polymorphic ($expand over a TPH hierarchy)', () => {
+    const expanded = get(`${BASE_URL}/v2/Awards?$expand=Nominations&$orderby=Id`);
+    expectStatus(expanded, 200, 'TPH: a polymorphic collection with $expand');
+
+    const rows = (body(expanded) || {}).value || [];
+    const byId = (id) => rows.find((r) => r.Id === id) || {};
+
+    check(expanded, {
+      'TPH: every seeded award is returned': () => rows.length === AWARD_COUNT,
+      // THE #529 REGRESSION. Both of these were absent when $expand was present and present
+      // when it was not, on the same entity.
+      'TPH: the AcademyAward keeps Ceremony under $expand': () =>
+        byId(ACADEMY_AWARD_ID).Ceremony === ACADEMY_AWARD_CEREMONY,
+      'TPH: the FestivalAward keeps Festival under $expand': () =>
+        byId(FESTIVAL_AWARD_ID).Festival === FESTIVAL_AWARD_FESTIVAL,
+      // The other direction: the base row must not acquire members it does not have.
+      'TPH: the base award carries no derived members': () =>
+        byId(PLAIN_AWARD_ID).Ceremony === undefined && byId(PLAIN_AWARD_ID).Festival === undefined,
+      'TPH: the navigation is actually expanded': () =>
+        (byId(ACADEMY_AWARD_ID).Nominations || []).length === ACADEMY_AWARD_NOMINATIONS,
+    });
+
+    // A nested $filter used to be refused 400 on this path ("a plain EF Include cannot carry a
+    // predicate"). EF's FILTERED Include carries it, so it must now be APPLIED, not merely accepted.
+    const nested = get(
+      `${BASE_URL}/v2/Awards?$expand=${q(`Nominations($filter=contains(Title,'${AWARD_NOMINATION_NEEDLE}'))`)}&$orderby=Id`);
+    expectStatus(nested, 200, 'TPH: a nested $filter on a polymorphic root');
+
+    const nestedRows = (body(nested) || {}).value || [];
+    const nestedById = (id) => (nestedRows.find((r) => r.Id === id) || {}).Nominations || [];
+    check(nested, {
+      'TPH: the nested $filter is applied, not dropped': () =>
+        nestedById(ACADEMY_AWARD_ID).length === 1 && nestedById(PLAIN_AWARD_ID).length === 0,
+      'TPH: derived members survive the nested $filter too': () =>
+        (nestedRows.find((r) => r.Id === FESTIVAL_AWARD_ID) || {}).Festival === FESTIVAL_AWARD_FESTIVAL,
+    });
+
+    // Still refused, deliberately: a nested $expand makes the shaper emit a .Select, which filtered
+    // Include does not accept. 400 beats the 200-with-missing-properties it used to give (#616).
+    expectStatus(
+      get(`${BASE_URL}/v2/Awards?$expand=${q('Nominations($expand=Nothing)')}`), 400,
+      'TPH: a nested $expand is refused rather than served wrong');
   });
 }
 
