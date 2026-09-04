@@ -41,7 +41,7 @@ internal sealed class ArithFaultEfProfile : EntitySetProfile<int, ArithFaultEfIt
         EntitySetName = "ArithFaultEfItems";
         FilterEnabled = true;
 
-        GetQueryable = (ct) =>
+        GetQueryable = () =>
         {
             var opts = new DbContextOptionsBuilder<ArithFaultEfDbContext>()
                 .UseInMemoryDatabase("ArithFaultEfItems")

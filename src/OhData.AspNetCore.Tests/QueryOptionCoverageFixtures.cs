@@ -69,7 +69,7 @@ internal class QueryOptionProfile : EntitySetProfile<int, QueryOptionItem>
         SelectEnabled = true;
         CountEnabled = true;
 
-        GetQueryable = (ct) => QueryOptionData.Items.AsQueryable();
+        GetQueryable = () => QueryOptionData.Items.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(QueryOptionData.Items.FirstOrDefault(x => x.Id == id));
     }
 }
@@ -116,7 +116,7 @@ internal class QueryOptionExpandProfile : EntitySetProfile<int, QueryOptionParen
         ExpandEnabled = true;
         CountEnabled = true;
 
-        GetQueryable = (ct) => _parents.AsQueryable();
+        GetQueryable = () => _parents.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(_parents.FirstOrDefault(p => p.Id == id));
 
         HasMany(x => x.Children!,
@@ -164,7 +164,7 @@ internal class RoundingModeProfile : EntitySetProfile<int, RoundingModeItem>
         FilterEnabled = true;
         // RoundingMode left null -> inherits EntitySetDefaults.RoundingMode (SpecCompliant).
 
-        GetQueryable = (ct) => RoundingModeData.Items.AsQueryable();
+        GetQueryable = () => RoundingModeData.Items.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(RoundingModeData.Items.FirstOrDefault(x => x.Id == id));
     }
 }
@@ -177,7 +177,7 @@ internal class RoundingModeBankersProfile : EntitySetProfile<int, RoundingModeIt
         FilterEnabled = true;
         RoundingMode = OhData.RoundingMode.BankersRounding;
 
-        GetQueryable = (ct) => RoundingModeData.Items.AsQueryable();
+        GetQueryable = () => RoundingModeData.Items.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(RoundingModeData.Items.FirstOrDefault(x => x.Id == id));
     }
 }

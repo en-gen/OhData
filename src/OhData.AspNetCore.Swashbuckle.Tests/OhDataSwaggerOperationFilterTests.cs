@@ -139,7 +139,7 @@ public sealed class OhDataSwaggerOperationFilterTests
             SelectEnabled = true;
             ExpandEnabled = true;
             CountEnabled = true;
-            GetQueryable = (ct) => Store.AsQueryable();
+            GetQueryable = () => Store.AsQueryable();
             // #467: GetById added so this fixture also covers the single-entity route, which
             // carries OhDataQueryOptionsMetadata and used to be documented with $top/$skip.
             GetById = (id, ct) => OhDataResult.Success(Store.FirstOrDefault(w => w.Id == id));
@@ -175,7 +175,7 @@ public sealed class OhDataSwaggerOperationFilterTests
         {
             EntitySetName = "MaxTopWidgets";
             MaxTop = 25;
-            GetQueryable = (ct) => Store.AsQueryable();
+            GetQueryable = () => Store.AsQueryable();
         }
     }
 }

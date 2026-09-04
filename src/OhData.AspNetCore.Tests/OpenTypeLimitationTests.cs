@@ -112,7 +112,7 @@ internal sealed class SqlRefProfile : EntitySetProfile<int, SqlRef>
         FilterEnabled = true;
         SelectEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => db.Refs.AsQueryable();
+        GetQueryable = () => db.Refs.AsQueryable();
     }
 }
 
@@ -328,7 +328,7 @@ internal sealed class PathRefQueryableProfile : EntitySetProfile<int, PathRef>
         EntitySetName = "LinqRefs";
         FilterEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => PathRefData.Rows().AsQueryable();
+        GetQueryable = () => PathRefData.Rows().AsQueryable();
     }
 }
 
@@ -440,7 +440,7 @@ internal sealed class PathRefAllowlistProfile : EntitySetProfile<int, PathRef>
         OrderByEnabled = true;
         FilterProperties(x => x.Source);
         OrderByProperties(x => x.Source);
-        GetQueryable = _ => PathRefData.Rows().AsQueryable();
+        GetQueryable = () => PathRefData.Rows().AsQueryable();
     }
 }
 
@@ -466,7 +466,7 @@ internal sealed class ClosedRefAllowlistProfile : EntitySetProfile<int, ClosedRe
         OrderByEnabled = true;
         FilterProperties(x => x.Source);
         OrderByProperties(x => x.Source);
-        GetQueryable = _ => new List<ClosedRef>
+        GetQueryable = () => new List<ClosedRef>
         {
             new() { Id = 1, Source = "a", Metadata = new ClosedMeta { Region = "eu" } },
             new() { Id = 2, Source = "b", Metadata = new ClosedMeta { Region = "us" } },
@@ -484,7 +484,7 @@ internal sealed class RootBagAllowlistProfile : EntitySetProfile<int, RootBagEnt
         OrderByEnabled = true;
         FilterProperties(x => x.Id);
         OrderByProperties(x => x.Id);
-        GetQueryable = _ => new List<RootBagEntity>
+        GetQueryable = () => new List<RootBagEntity>
         {
             new() { Id = 1, Name = "n1", Extras = new Dictionary<string, object?> { ["tier"] = 3 } },
             new() { Id = 2, Name = "n2", Extras = new Dictionary<string, object?> { ["tier"] = 9 } },

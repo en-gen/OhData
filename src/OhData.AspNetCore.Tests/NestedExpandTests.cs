@@ -56,7 +56,7 @@ internal class NestMovieProfile : EntitySetProfile<int, NestMovie>
         ExpandEnabled = true;
         SelectEnabled = true;
 
-        GetQueryable = (ct) => NestData.Movies.AsQueryable();
+        GetQueryable = () => NestData.Movies.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(NestData.Movies.FirstOrDefault(m => m.Id == id));
 
         // Single-valued nav → Studios entity set.
@@ -80,7 +80,7 @@ internal class NestStudioProfile : EntitySetProfile<int, NestStudio>
         ExpandEnabled = true;
         SelectEnabled = true;
 
-        GetQueryable = (ct) => NestData.Studios.AsQueryable();
+        GetQueryable = () => NestData.Studios.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(NestData.Studios.FirstOrDefault(s => s.Id == id));
 
         // Collection nav → Movies entity set.

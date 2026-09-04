@@ -28,7 +28,7 @@ internal sealed class BenchDepartmentProfile : EntitySetProfile<int, BenchDepart
         MaxTop = BenchOrgData.DepartmentPageSize;
         MaxExpansionDepth = BenchOrgData.MaxExpansionDepth; // set explicitly to mirror the MS host's [EnableQuery(MaxExpansionDepth = ...)] — see BenchOrgData.MaxExpansionDepth.
 
-        GetQueryable = _ => db.BenchDepartments.AsQueryable();
+        GetQueryable = () => db.BenchDepartments.AsQueryable();
         GetById = async (id, ct) => OhDataResult.Success<BenchDepartment?>(await db.BenchDepartments.FirstOrDefaultAsync(d => d.Id == id, ct));
 
         HasMany(x => x.Employees); // delegate-less -> SQL-JOIN $expand pushdown
@@ -61,7 +61,7 @@ internal sealed class BenchEmployeeProfile : EntitySetProfile<int, BenchEmployee
         MaxTop = BenchOrgData.EmployeePageSize;
         MaxExpansionDepth = BenchOrgData.MaxExpansionDepth; // set explicitly to mirror the MS host's [EnableQuery(MaxExpansionDepth = ...)] — see BenchOrgData.MaxExpansionDepth.
 
-        GetQueryable = _ => db.BenchEmployees.AsQueryable();
+        GetQueryable = () => db.BenchEmployees.AsQueryable();
         GetById = async (id, ct) => OhDataResult.Success<BenchEmployee?>(await db.BenchEmployees.FirstOrDefaultAsync(e => e.Id == id, ct));
 
         HasOptional(x => x.Department); // delegate-less -> pushdown (bidirectional back-reference)

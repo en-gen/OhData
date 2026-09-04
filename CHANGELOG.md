@@ -321,7 +321,7 @@ status codes or headers.
 
   ```diff
   -protected Func<CancellationToken, Task<OhDataResult<IQueryable<TModel>>>>? GetQueryable;
-  +protected Func<CancellationToken, IQueryable<TModel>>? GetQueryable;
+  +protected Func<IQueryable<TModel>>? GetQueryable;
   ```
 
   `OhDataResult.Success(db.Products)` read as a category error because it was one. `IQueryable` is
@@ -330,15 +330,17 @@ status codes or headers.
   the handler returns there is no result, not even a materialized one. The other seven return values
   the framework merely envelopes.
 
-  Both wrappers were ceremony, and it is measured rather than argued: **0 of 164** assignments in
-  this repo were `async` (composing an `IQueryable` performs no I/O by construction, and the `await`
-  belongs where the framework executes the query — which it already owns), and **0** returned a
-  rejection from this seam. `GetODataQueryable` (Priority-1) keeps `Task<ODataQueryResult<TModel>>`,
+  All three removals are measured rather than argued: **0 of 164** assignments in this repo were
+  `async` (composing an `IQueryable` performs no I/O by construction, and the `await` belongs where
+  the framework executes the query — which it already owns), **0** returned a rejection from this
+  seam, and **0 of 263** referenced the `CancellationToken` they were handed — 158 discarded it as
+  `_` and 105 named it `ct` and never used it. Nothing has started that a token could cancel; the
+  framework owns the execution, and cancellation with it. `GetODataQueryable` (Priority-1) keeps `Task<ODataQueryResult<TModel>>`,
   correctly: there the profile has applied the options and may have executed a count, so it holds a
   result plus paging metadata. #581 had converted the eight entity-set handlers and left Priority-1
   alone, so the wrapper was never universal.
 
-  **Upgrading:** drop the wrapper — `GetQueryable = _ => db.Products;`. To reject a collection read,
+  **Upgrading:** drop the wrapper — `GetQueryable = () => db.Products;`. To reject a collection read,
   throw and map it with `ConfigureExceptions`, which `OhDataRejectionException`'s own documentation
   already names as the supported route. `docs/error-handling.md` has the worked example.
 

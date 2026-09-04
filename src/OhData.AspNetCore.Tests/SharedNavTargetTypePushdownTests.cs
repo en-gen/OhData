@@ -64,7 +64,7 @@ public sealed class SnParentProfile : EntitySetProfile<int, SnParent>
         ExpandEnabled = true;
         FilterEnabled = true;
         MaxExpandTop = 2; // nested-expand ceiling: governs $expand=Children($top=N)
-        GetQueryable = _ => db.SnParents.AsQueryable();
+        GetQueryable = () => db.SnParents.AsQueryable();
         HasMany(x => x.Children); // delegate-less, non-cyclic → pushdown-eligible without $levels
     }
 }
@@ -78,7 +78,7 @@ public sealed class SnChildProfile : EntitySetProfile<int, SnChild>
         EntitySetName = "SnChildren";
         FilterEnabled = true;
         MaxTop = 10;
-        GetQueryable = _ => db.SnChildren.AsQueryable();
+        GetQueryable = () => db.SnChildren.AsQueryable();
     }
 }
 

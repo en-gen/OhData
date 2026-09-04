@@ -161,7 +161,7 @@ public sealed class W440BranchProfile : EntitySetProfile<int, W440Branch>
         EntitySetName = "W440Branches";
         ExpandEnabled = true;
         SelectEnabled = true;
-        GetQueryable = _ => db.Branches.AsQueryable();
+        GetQueryable = () => db.Branches.AsQueryable();
         HasMany(x => x.Children);
     }
 }
@@ -173,7 +173,7 @@ public sealed class W440NodeProfile : EntitySetProfile<int, W440Node>
     {
         EntitySetName = "W440Nodes";
         ExpandEnabled = true; SelectEnabled = true; FilterEnabled = true; OrderByEnabled = true;
-        GetQueryable = _ => db.Nodes.AsQueryable();
+        GetQueryable = () => db.Nodes.AsQueryable();
     }
 }
 
@@ -206,7 +206,7 @@ public sealed class W440OrderProfile : EntitySetProfile<int, W440Order>
     {
         EntitySetName = "W440Orders";
         ExpandEnabled = true; SelectEnabled = true; FilterEnabled = true; OrderByEnabled = true;
-        GetQueryable = _ => db.Orders.AsQueryable();
+        GetQueryable = () => db.Orders.AsQueryable();
         GetById = (id, _) => OhDataResult.Success(db.Orders.FirstOrDefault(o => o.Id == id));
         // #461: deliberately does NOT persist. The defect is what the handler RECEIVES; a handler
         // that called SaveChanges() here is the adopter this protects, not the observation point.
@@ -252,7 +252,7 @@ public sealed class W440InvoiceProfile : EntitySetProfile<int, W440Invoice>
         EntitySetName = "W440Invoices";
         ExpandEnabled = false;
         PropertyAccessEnabled = false;
-        GetQueryable = _ => db.Invoices.AsQueryable();
+        GetQueryable = () => db.Invoices.AsQueryable();
         // No GetById, no Patch, no declaration of Payer.
     }
 }
@@ -264,7 +264,7 @@ public sealed class W440PlainProfile : EntitySetProfile<int, W440Plain>
     {
         EntitySetName = "W440Plains";
         ExpandEnabled = true; SelectEnabled = true;
-        GetQueryable = _ => db.Plains.AsQueryable();
+        GetQueryable = () => db.Plains.AsQueryable();
         GetById = (id, _) => OhDataResult.Success(db.Plains.FirstOrDefault(p => p.Id == id));
     }
 }
@@ -279,7 +279,7 @@ public sealed class W440DeclaredOrderProfile : EntitySetProfile<int, W440Order>
     {
         EntitySetName = "W440DeclaredOrders";
         ExpandEnabled = true; SelectEnabled = true;
-        GetQueryable = _ => db.Orders.AsQueryable();
+        GetQueryable = () => db.Orders.AsQueryable();
         GetById = (id, _) => OhDataResult.Success(db.Orders.FirstOrDefault(o => o.Id == id));
         Post = (order, _) =>
         {

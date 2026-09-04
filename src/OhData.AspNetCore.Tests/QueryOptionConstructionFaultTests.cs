@@ -47,7 +47,7 @@ internal sealed class QocQueryableProfile : EntitySetProfile<int, QocWidget>
         ExpandEnabled = true;
         CountEnabled = true;
 
-        GetQueryable = ct => Store.AsQueryable();
+        GetQueryable = () => Store.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(Store.FirstOrDefault(w => w.Id == id));
 
         HasMany(
@@ -323,6 +323,6 @@ internal sealed class QocThrowingProfile : EntitySetProfile<int, QocWidget>
     public QocThrowingProfile() : base(x => x.Id)
     {
         EntitySetName = "QocThrowing";
-        GetQueryable = ct => throw new InvalidOperationException("simulated data-source outage");
+        GetQueryable = () => throw new InvalidOperationException("simulated data-source outage");
     }
 }

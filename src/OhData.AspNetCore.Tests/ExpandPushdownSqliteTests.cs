@@ -151,7 +151,7 @@ public sealed class PushParentProfile : EntitySetProfile<int, PushParent>
         ExpandEnabled = true;
         FilterEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => db.PushParents.AsQueryable();
+        GetQueryable = () => db.PushParents.AsQueryable();
         HasMany(x => x.Children); // delegate-less → SQL-JOIN expansion
     }
 }
@@ -165,7 +165,7 @@ public sealed class DelParentProfile : EntitySetProfile<int, DelParent>
         SelectEnabled = true;
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => db.DelParents.AsQueryable();
+        GetQueryable = () => db.DelParents.AsQueryable();
         HasMany(x => x.Children,
             getAll: (parentId, ct) =>
             {
@@ -185,7 +185,7 @@ public sealed class RefHolderProfile : EntitySetProfile<int, RefHolder>
         SelectEnabled = true;
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => db.RefHolders.AsQueryable();
+        GetQueryable = () => db.RefHolders.AsQueryable();
         HasOptional(x => x.Target); // delegate-less → SQL-JOIN expansion
     }
 }
@@ -200,7 +200,7 @@ public sealed class CycParentProfile : EntitySetProfile<int, CycParent>
         EntitySetName = "CycParents";
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => db.CycParents.AsQueryable();
+        GetQueryable = () => db.CycParents.AsQueryable();
         HasMany(x => x.Kids); // delegate-less, bidirectional — pushed down (#323)
     }
 }
@@ -213,7 +213,7 @@ public sealed class OrgNodeProfile : EntitySetProfile<int, OrgNode>
         EntitySetName = "OrgNodes";
         ExpandEnabled = true;
         OrderByEnabled = true;
-        GetQueryable = _ => db.OrgNodes.AsQueryable();
+        GetQueryable = () => db.OrgNodes.AsQueryable();
         HasMany(x => x.Children); // delegate-less, self-referential (cyclic)
     }
 }
@@ -551,7 +551,7 @@ public sealed class InMemoryPushParentProfile : EntitySetProfile<int, PushParent
     {
         EntitySetName = "InMemoryPushParents";
         ExpandEnabled = true;
-        GetQueryable = _ => _parents.AsQueryable();
+        GetQueryable = () => _parents.AsQueryable();
         HasMany(x => x.Children); // delegate-less, but non-EF source → cannot be pushed down
     }
 }

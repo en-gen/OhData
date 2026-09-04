@@ -284,7 +284,7 @@ public sealed class OhDataRequestBodyAndResponseTests
         public WriteSurfaceQueryableProfile() : base(x => x.Id)
         {
             EntitySetName = "WriteSurfaceQueryableWidgets";
-            GetQueryable = (ct) => _parents.AsQueryable();
+            GetQueryable = () => _parents.AsQueryable();
         }
     }
 }

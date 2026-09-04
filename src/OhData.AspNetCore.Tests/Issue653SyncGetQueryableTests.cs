@@ -10,12 +10,13 @@ using Xunit;
 namespace OhData.AspNetCore.Tests;
 
 /// <summary>
-/// #653 — <c>GetQueryable</c> is <c>Func&lt;CancellationToken, IQueryable&lt;TModel&gt;&gt;</c>:
-/// no <c>OhDataResult</c>, no <c>Task</c>.
+/// #653 — <c>GetQueryable</c> is <c>Func&lt;IQueryable&lt;TModel&gt;&gt;</c>: no <c>OhDataResult</c>,
+/// no <c>Task</c>, no <c>CancellationToken</c>.
 /// <para>
 /// Composing a query performs no I/O and produces no result — the framework appends the query
 /// options and executes it later — so both wrappers were ceremony. Measured before the change:
-/// <b>0 of 164</b> assignments in this repo were <c>async</c>.
+/// <b>0 of 164</b> assignments were <c>async</c>, <b>0</b> returned a rejection, and <b>0 of 263</b>
+/// referenced the token they were handed.
 /// </para>
 /// <para>
 /// The load-bearing test is <see cref="ARejectionIsStillExpressible_ViaConfigureExceptions"/>, and
@@ -52,7 +53,7 @@ public sealed class Issue653SyncGetQueryableTests
             EntitySetName = "S653Plains";
             FilterEnabled = OrderByEnabled = true;
             // The whole point of the change: the query, bare.
-            GetQueryable = _ => new[]
+            GetQueryable = () => new[]
             {
                 new S653Thing { Id = 1, Name = "alpha" },
                 new S653Thing { Id = 2, Name = "beta" },
@@ -66,7 +67,7 @@ public sealed class Issue653SyncGetQueryableTests
         {
             EntitySetName = "S653Throwers";
             // Throws on the CALLING thread, before any Task exists.
-            GetQueryable = _ => throw new InvalidOperationException("compose failed");
+            GetQueryable = () => throw new InvalidOperationException("compose failed");
         }
     }
 
@@ -77,7 +78,7 @@ public sealed class Issue653SyncGetQueryableTests
             EntitySetName = "S653Rejecters";
             // The documented replacement for returning a rejection from this seam.
             ConfigureExceptions(e => e.Map<S653DeniedException>(_ => OhDataResult.Forbidden("OutOfTenantScope", "tenant scope")));
-            GetQueryable = _ => throw new S653DeniedException();
+            GetQueryable = () => throw new S653DeniedException();
         }
     }
 

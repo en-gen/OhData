@@ -130,7 +130,7 @@ DTO — not an EF entity, no `DbSet`, no migration — and `ProductSummaryProfil
 projecting a join inside the `IQueryable`:
 
 ```csharp
-GetQueryable = (_) => db.Products.Join(db.Categories,
+GetQueryable = () => db.Products.Join(db.Categories,
     p => p.CategoryId, c => c.Id,
     (p, c) => new ProductSummary { Id = p.Id, Name = p.Name, Price = p.Price, CategoryName = c.Name });
 ```

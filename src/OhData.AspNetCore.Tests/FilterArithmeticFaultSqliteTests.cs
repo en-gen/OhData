@@ -53,7 +53,7 @@ public sealed class ArithFaultSqliteProfile : EntitySetProfile<int, ArithFaultSq
         EntitySetName = "ArithFaultItems";
         FilterEnabled = true;
         CountEnabled = true;
-        GetQueryable = _ => _db.Items.AsQueryable();
+        GetQueryable = () => _db.Items.AsQueryable();
     }
 }
 

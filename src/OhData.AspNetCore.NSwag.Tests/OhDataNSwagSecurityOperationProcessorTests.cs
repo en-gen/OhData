@@ -320,7 +320,7 @@ public sealed class OhDataNSwagSecurityOperationProcessorTests
         {
             EntitySetName = "SecuredWidgets";
             RequireAuthorization();
-            GetQueryable = (ct) => Store.AsQueryable();
+            GetQueryable = () => Store.AsQueryable();
             GetById = (id, ct) => OhDataResult.Success(Store.FirstOrDefault(w => w.Id == id));
             Post = (model, ct) => OhDataResult.Success<Widget>(model);
         }
@@ -331,7 +331,7 @@ public sealed class OhDataNSwagSecurityOperationProcessorTests
         public AnonProfile() : base(x => x.Id)
         {
             EntitySetName = "AnonWidgets";
-            GetQueryable = (ct) => Store.AsQueryable();
+            GetQueryable = () => Store.AsQueryable();
         }
     }
 
@@ -343,7 +343,7 @@ public sealed class OhDataNSwagSecurityOperationProcessorTests
             ConfigureAuthorization(a => a
                 .Read(r => r.RequireRole("reader"))
                 .Create(c => c.AllowAnonymous()));
-            GetQueryable = (ct) => Store.AsQueryable();
+            GetQueryable = () => Store.AsQueryable();
             Post = (model, ct) => OhDataResult.Success<Widget>(model);
         }
     }

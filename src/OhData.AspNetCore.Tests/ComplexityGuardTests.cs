@@ -125,7 +125,7 @@ internal class NodeProfile : EntitySetProfile<int, TreeNode>
         MaxExpansionDepth = 2;
         MaxFilterNodeCount = 5;
 
-        GetQueryable = (ct) => Store.AsQueryable();
+        GetQueryable = () => Store.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(Store.FirstOrDefault(n => n.Id == id));
         HasMany(
             navigation: x => x.Children!,

@@ -47,7 +47,7 @@ internal sealed class MsBenchWidgetProfile : EntitySetProfile<int, MsBenchWidget
 
     public MsBenchWidgetProfile() : base(x => x.Id)
     {
-        GetQueryable = (ct) => _store.AsQueryable();
+        GetQueryable = () => _store.AsQueryable();
         GetById = (id, ct) => OhDataResult.Success(_store.FirstOrDefault(w => w.Id == id));
         Post = (widget, ct) =>
         {

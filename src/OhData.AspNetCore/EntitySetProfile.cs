@@ -329,14 +329,17 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     /// unless <see cref="GetAll"/> is set. Takes priority over <see cref="GetAll"/> when both are set.
     /// </para>
     /// <para>
-    /// Alone among the handlers this returns a bare <see cref="IQueryable{T}"/> — neither wrapped in
-    /// <c>OhDataResult</c> nor in a <c>Task</c>. Composing a query performs no I/O and produces no
-    /// result: the framework appends <c>$filter</c>/<c>$orderby</c>/<c>$skip</c>/<c>$top</c> to the
-    /// expression tree and executes it later, and that execution is where the <c>await</c> belongs.
-    /// To reject a collection read, throw and map it with <c>ConfigureExceptions</c>.
+    /// Alone among the handlers this returns a bare <see cref="IQueryable{T}"/> — no
+    /// <c>OhDataResult</c>, no <c>Task</c>, and no <see cref="CancellationToken"/>. Composing a
+    /// query performs no I/O and produces no result: the framework appends
+    /// <c>$filter</c>/<c>$orderby</c>/<c>$skip</c>/<c>$top</c> to the expression tree and executes
+    /// it later, and that execution — which the framework owns — is where both the <c>await</c> and
+    /// the cancellation belong. There is nothing here to cancel; measured across this repo, 0 of 263
+    /// assignments referenced the token they were handed. To reject a collection read, throw and map
+    /// it with <c>ConfigureExceptions</c>.
     /// </para>
     /// </remarks>
-    protected Func<CancellationToken, IQueryable<TModel>>? GetQueryable = null;
+    protected Func<IQueryable<TModel>>? GetQueryable = null;
 
     /// <summary>
     /// Registers the <c>GET /{EntitySet}({key})</c> handler (OData §11.2.2 — Requesting an Entity).
@@ -2469,7 +2472,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     {
         try
         {
-            return Task.FromResult(GetQueryable!.Invoke(ct).Cast<object>());
+            return Task.FromResult(GetQueryable!.Invoke().Cast<object>());
         }
         catch (Exception ex)
         {
