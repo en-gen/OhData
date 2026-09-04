@@ -5920,10 +5920,10 @@ internal static class OhDataEndpointFactory
             // null for every type on a renamed schema, which would silently disable this check.
             if (EdmClrTypeMap.FindEntityType(model, clrType) is not { } edmType) return false;
 
-            foreach (IEdmSchemaElement element in model.SchemaElements)
+            foreach (IEdmStructuredType candidate in model.SchemaElements
+                         .OfType<IEdmStructuredType>()
+                         .Where(t => !ReferenceEquals(t, edmType)))
             {
-                if (element is not IEdmStructuredType candidate || ReferenceEquals(candidate, edmType))
-                    continue;
                 for (IEdmStructuredType? b = candidate.BaseType; b is not null; b = b.BaseType)
                 {
                     if (ReferenceEquals(b, edmType)) return true;
