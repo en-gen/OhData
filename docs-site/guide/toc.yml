@@ -49,6 +49,13 @@
       items:
         - name: Query options
           href: ../../docs/query-options.md
+    - name: Errors
+      items:
+        # #581's whole surface -- returning a rejection, ConfigureExceptions/Map<TException>, and
+        # OhDataExceptionContext. The page existed from 2.0.0 and was simply never added here, so the
+        # headline feature of the release was unreachable from the published nav.
+        - name: Error handling & exception mapping
+          href: ../../docs/error-handling.md
     - name: Writing data
       items:
         - name: Deep insert & deep update
