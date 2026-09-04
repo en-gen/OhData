@@ -2174,7 +2174,7 @@ status will catch them.
   collections" ambiguity #412 raised needs no second header — there is no per-collection echo to emit,
   and the root's existing header already reports a page size actually applied. This also means the
   echo's token spelling is untouched: it says `maxpagesize` where OData 4.0 spells it
-  `odata.maxpagesize`, which is #372's defect on milestone 1.9.0, and closing it accidentally here
+  `odata.maxpagesize`, which is #372's defect on milestone 2.1.0, and closing it accidentally here
   would make that fix invisible.
 
 - **`$metadata` now advertises `ExpandRestrictions/Expandable = false` on entity sets that reject

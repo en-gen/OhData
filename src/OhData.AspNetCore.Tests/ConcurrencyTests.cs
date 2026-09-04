@@ -782,7 +782,7 @@ public class ConcurrencyTests
     {
         // #566. §11.4.1.1 is a MUST whose subject is "a Data Modification Request OR ACTION
         // REQUEST", and §11.5.4.1 tells the client to send If-Match for exactly this case. Until
-        // 1.8.0 this route answered 204 and RAN the action — #478 excluded it, defended by the
+        // 2.0.0 this route answered 204 and RAN the action — #478 excluded it, defended by the
         // assertion that an action-invocation resource "has no representation and therefore no
         // entity tag" (§11.5.4), a phrase that appears nowhere in Part 1.
         //

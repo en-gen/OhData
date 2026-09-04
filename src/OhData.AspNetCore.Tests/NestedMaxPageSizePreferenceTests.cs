@@ -264,7 +264,7 @@ public sealed class NestedMaxPageSizePreferenceTests
     // Pins the deliberate NON-change. §8.2.8.5 makes the echo a MAY and scopes it to a single "maximum
     // page size applied" for the whole response, so no second header is emitted for the nested
     // collection. The token spelling is left exactly as it was: it is #372's defect (4.0 spells it
-    // `odata.maxpagesize`; this echoes the 4.01 `maxpagesize`), milestone 1.9.0, and closing it here
+    // `odata.maxpagesize`; this echoes the 4.01 `maxpagesize`), milestone 2.1.0, and closing it here
     // by accident would make that fix invisible. Green before and after the fix, in both directions.
     [Fact]
     public async Task PreferenceApplied_IsASingleUnchangedHeader_AndNoNestedEchoIsAdded()
