@@ -615,7 +615,22 @@ A pushed (delegate-less) `$expand` honors the nested options of the expanded col
 | `$levels` — `Children($levels=2)` / `Children($levels=max)` | ✅ | recursive self-referential expand, bounded by `MaxExpansionDepth`; may carry `$filter`/`$orderby`/`$skip`/`$top`/`$count`/`$select`, applied at **every** level (see below) |
 | `$search` / `$compute` / `$apply` | ❌ (deferred) | not implemented on the pushdown path |
 
-A deferred nested option is not an error: the request still returns `200`, but the delegate-less navigation that carried it stays EDM-only for that request — the framework doesn't load it via pushdown, though whatever the handler's own query already populated (or didn't) is what serializes (see the caveat above). Nested options on a **delegate-backed** navigation follow the delegate path and are subject to that path's own support (see [navigation-routing.md](navigation-routing.md)); they never engage pushdown. One option is not merely unsupported there but actively rejected: a nested `$top`/`$skip` against a delegate-backed navigation returns `400` (`InvalidQueryOption`) rather than being forwarded to (or silently dropped by) the delegate (#294) — the delegate's `Handler`/`BatchHandler` returns its full answer for a given parent key and nothing downstream re-windows it, so honoring the option would mean quietly serving every related row under an unsuspicious `200`. This applies to any delegate-backed navigation under `$expand`, self-referential or not (see `SelfReferentialNavMaxTopTests.cs` and `BatchExpandTests.cs`).
+A deferred nested option is not an error: the request still returns `200`, but the delegate-less navigation that carried it stays EDM-only for that request — the framework doesn't load it via pushdown, though whatever the handler's own query already populated (or didn't) is what serializes (see the caveat above). Nested options on a **delegate-backed** navigation follow the delegate path and are subject to that path's own support (see [navigation-routing.md](navigation-routing.md)); they never engage pushdown. **Nothing is silently dropped there.** Every nested option a delegate-backed navigation cannot honour is rejected with `400` (`InvalidQueryOption`), naming the option and the remedy:
+
+| Nested option (on a **delegate-backed** nav) | Answer |
+|---|---|
+| `$top` / `$skip` | `400` (#294) |
+| `$filter` / `$orderby` | `400` ([#650](https://github.com/en-gen/OhData/issues/650)) |
+| `$count` | ✅ applied — counted from the materialized children |
+| `$select` | ✅ applied — JSON projection of the materialized children |
+| nested `$expand` | resolved through the delegate path, level by level |
+| multi-level `$levels` | `400` (#466) |
+
+The four refusals share one reason: the delegate's `Handler`/`BatchHandler` returns its full answer for a given parent key and **nothing downstream re-shapes it**, so honouring the option would mean quietly serving every related row (or an unordered one) under an unsuspicious `200`. That was measurably the case for `$filter`/`$orderby` through 1.7.0 — `Children($filter=…)` returned the unfiltered collection, which a client cannot distinguish from a filter that matched everything.
+
+`$count` is the exception precisely *because* nothing re-windows the delegate's answer: the materialized array **is** the full related collection, so its length is the honest count and refusing something free would be gratuitous. (Contrast the pushdown path, where materialization is capped at `MaxExpandTop + 1` and the count has to be ceiling-checked before it can be trusted.)
+
+The status is `400` and not `501` because a profile setting *does* make these requests succeed — declaring the navigation delegate-less moves it onto the pushdown path, where all of them are supported. `Microsoft.AspNetCore.OData` answers a nested option it will not honour the same way (`SelectExpandQueryValidator` throws, `EnableQueryAttribute` converts to a bad request). This applies to any delegate-backed navigation under `$expand`, self-referential or not (see `SelfReferentialNavMaxTopTests.cs`, `BatchExpandTests.cs` and `Issue650NestedOptionsOnDelegateNavTests.cs`).
 
 <a id="multi-level-expand-and-levels-206"></a>
 #### Multi-level `$expand` and `$levels` (#206)

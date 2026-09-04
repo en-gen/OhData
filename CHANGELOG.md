@@ -349,6 +349,33 @@ status codes or headers.
   later would be breaking. `GetODataQueryable` is async now for anyone who needs it.
 
 
+- **⚠ BREAKING CHANGE — a nested `$filter`/`$orderby` on a delegate-backed navigation is refused,
+  not dropped (#650).** `?$expand=Lines($filter=Sku eq 'S1')` answered `200` with **every** row —
+  indistinguishable, from the client's side, from a filter that matched everything. `$orderby` was
+  dropped the same way, and `$count=true` emitted no `Lines@odata.count` at all. Meanwhile
+  `$top`/`$skip` on the identical path correctly answered `400` (#294): three options ignored and
+  one refused, inside a single route.
+
+  **The spec settles it, and not by requiring the feature.** Nested `$filter`/`$orderby`/`$count`/
+  `$top` on expanded collections are **Advanced** conformance (§13.1.3 item 9.2/9.4/9.5/9.6) and
+  this service claims Minimal, so it need not support them — but §11.2.5 is a MUST-fail on an
+  unsupported option and §9.3.1's `501` sits inside the Minimal MUST list (§13.1.1 item 7), so
+  *dropping* them violates the level actually claimed.
+
+  `400` rather than `501`, over-determined three ways: the framework's own test (*could any setting
+  on the profile make this request succeed on this route?* — declaring the navigation delegate-less
+  is exactly that), `Microsoft.AspNetCore.OData`'s precedent (a nested option it will not honour
+  throws from `SelectExpandQueryValidator` and `EnableQueryAttribute` turns it into a bad request,
+  never a `501`), and `$top`/`$skip` one option over on this very path. The message shares that
+  option's wording and remedy; its bytes are unchanged, and pinned.
+
+  **`$count` went the other way and is now implemented** — refusing something free would be
+  gratuitous. It is honest precisely because nothing windows a delegate's answer: the materialized
+  array *is* the full related collection. (On the pushdown path the same number needs a ceiling
+  check first, since materialization is capped at `MaxExpandTop + 1`.) `$select` was already applied
+  and is unchanged.
+
+
 ### Added
 
 - **A handler can produce a client error: `ConfigureExceptions` (#581).** Every handler delegate
@@ -849,6 +876,20 @@ status codes or headers.
   run, and two of the five straddle parity. Benchmarks also gain a dispatchable workflow, and
   deliberately not a scheduled or gating one: a hosted runner cannot produce publishable
   magnitudes, and a threshold needs that runner class's run-to-run spread measured first.
+
+
+- **`spec-compliance.md` said no Advanced feature was attempted; six are (#658).** The posture table
+  read *"❌ Not targeted … no other 4.01/Advanced feature is attempted"* while the same document
+  spent four Declared-deviations rows on the semantics of nested `$filter`/`$orderby`/`$select`/
+  `$count`/`$levels`. OhData meets **6 of 9** of Advanced item 9 — nested `$filter` (9.2),
+  `$orderby` (9.4), `$count` (9.5), `$top`/`$skip` (9.6), `$levels` (9.8) and multi-level nesting.
+
+  The row now says so, and states the **condition** in the row rather than 100 lines away: those are
+  served by the EF Core pushdown, which needs a **delegate-less** navigation and an EF-backed
+  `IQueryable`. The level is still not *claimed*, because 9.1/9.3/9.7 and the non-`$expand` Advanced
+  items are absent — but "nothing attempted" was not the way to say that, and it understated the
+  product to exactly the audience that reads a conformance sheet. The 4.01-only additions
+  (`$compute`, aliases, cross joins) keep their own honest ❌ row.
 
 
 ### Build

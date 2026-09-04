@@ -3857,6 +3857,11 @@ internal static class OhDataEndpointFactory
             // windows a nested $top there (and where it does NOT — a ServeRaw nav whose branch was
             // never pushed down at all — the option is still silently ignored; see the class note on
             // ClauseHasNestedTopOrSkip).
+            // #650 widens this from $top/$skip to $filter and $orderby, which were SILENTLY
+            // DROPPED here — `$expand=Lines($filter=Sku eq 'S1')` answered 200 with every row, which
+            // is indistinguishable from a filter that matched everything. Same substrate, same
+            // reason: the delegate's answer is not an IQueryable and nothing downstream re-shapes
+            // it. $select is NOT in this set — it is applied below, to the materialized children.
             if (expandItem.TopOption is not null || expandItem.SkipOption is not null)
             {
                 // Thrown (not returned) for the same reason EnsureWithinExpandCeiling throws below:
@@ -3864,6 +3869,15 @@ internal static class OhDataEndpointFactory
                 // call sites of ApplyCollectionPipelineAsync already catch Microsoft.OData.ODataException
                 // and surface it as 400 InvalidQueryOption.
                 throw NestedWindowRejection(propName, treatment.Treatment);
+            }
+
+            if (expandItem.FilterOption is not null || expandItem.OrderByOption is not null)
+            {
+                throw NestedClauseRejection(
+                    propName,
+                    treatment.Treatment,
+                    expandItem.FilterOption is not null ? "$filter" : "$orderby",
+                    expandItem.FilterOption is not null ? "server-side filtering" : "server-side ordering");
             }
 
             if (treatment.Treatment == NavTreatment.Blank)
@@ -3966,6 +3980,19 @@ internal static class OhDataEndpointFactory
                 jsonItems[i][expandKey] = SerializeBounded(
                     relatedByIndex[i], targetEdmType, registration.EdmModel, nestedClause, serializerOptions,
                     isCollectionValue: isCollectionNav);
+
+                // #650: a nested $count IS answerable here, unlike $filter/$orderby/$top above, so it
+                // is implemented rather than refused — refusing something free would be gratuitous.
+                // Honest because the delegate's answer is not windowed: nothing between it and here
+                // truncates (the $top/$skip rejection above is what guarantees that), so this array
+                // IS the full related collection and its length IS the count. Contrast the pushdown
+                // path, where materialization is capped at MaxExpandTop + 1 and WriteNestedCountAndWindow
+                // must call EnsureWithinExpandCeiling before it can trust the number.
+                if (isCollectionNav && expandItem.CountOption == true
+                    && jsonItems[i][expandKey] is JsonArray countArr)
+                {
+                    jsonItems[i][$"{expandKey}@odata.count"] = countArr.Count;
+                }
             }
 
             if (nestedClause is null) continue;
@@ -4050,6 +4077,22 @@ internal static class OhDataEndpointFactory
     // sites (the navigation reached directly by ExpandLevelAsync, and one reached only through a
     // ServeRaw parent's materialized graph) can never drift apart. The RunDelegate wording is
     // byte-identical to the message #294 shipped — it is quoted in docs and asserted in tests.
+    // #650: the $filter/$orderby twin. Deliberately a SEPARATE method rather than a parameter on
+    // NestedWindowRejection, whose RunDelegate wording is byte-identical to what #294 shipped and is
+    // quoted in docs and asserted in tests — folding a format argument into it would put those bytes
+    // one edit away from moving. Same shape, same two remedies, so the two read as one rule.
+    private static Microsoft.OData.ODataException NestedClauseRejection(
+        string navName, NavTreatment treatment, string option, string capability) =>
+        treatment == NavTreatment.RunDelegate
+            ? new Microsoft.OData.ODataException(
+                $"A nested {option} is not supported on the delegate-backed navigation '{navName}'; " +
+                $"declare it delegate-less (no Handler/BatchHandler) to enable {capability}, " +
+                "or remove the option.")
+            : new Microsoft.OData.ODataException(
+                $"A nested {option} is not supported on the navigation '{navName}': the entity sets " +
+                "exposing this type disagree about whether it is delegate-backed, so it is served " +
+                $"empty and no {option} can be applied. Remove the option.");
+
     private static Microsoft.OData.ODataException NestedWindowRejection(string navName, NavTreatment treatment) =>
         treatment == NavTreatment.RunDelegate
             ? new Microsoft.OData.ODataException(
