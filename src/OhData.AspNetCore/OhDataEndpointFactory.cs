@@ -921,6 +921,13 @@ internal static class OhDataEndpointFactory
     private static IEnumerable<string> ParseStrongETagList(string raw) =>
         SplitETagList(raw).Where(e => !e.IsWeak).Select(e => e.Value);
 
+    // #372: OData 4.0 spells this preference `odata.maxpagesize` (Protocol §8.2.8.5). The bare
+    // `maxpagesize` is the 4.01 rename, and this service reports `OData-Version: 4.0` -- so echoing
+    // the 4.01 token in Preference-Applied told a 4.0 client the server had applied a preference that
+    // version does not define. Only the ECHO uses this constant: ParseMaxPageSize matches the bare
+    // suffix, so a request carrying either spelling is still honoured.
+    private const string MaxPageSizePreference = "odata.maxpagesize";
+
     private static int? ParseMaxPageSize(HttpContext ctx)
     {
         // Honour Prefer: maxpagesize=N (§8.2.8.3).
@@ -8439,7 +8446,7 @@ internal static class OhDataEndpointFactory
                                 : appliedPageSize.Value + 1);
                         }
                         if (preferredPageSize.HasValue)
-                            ctx.Response.Headers["Preference-Applied"] = $"maxpagesize={appliedPageSize!.Value}";
+                            ctx.Response.Headers["Preference-Applied"] = $"{MaxPageSizePreference}={appliedPageSize!.Value}";
                     }
 
                     object[] items = EvaluateQueryWithArithmeticFaultGuard(
@@ -8695,7 +8702,7 @@ internal static class OhDataEndpointFactory
                                 : appliedPageSize.Value + 1);
                         }
                         if (preferredPageSize.HasValue)
-                            ctx.Response.Headers["Preference-Applied"] = $"maxpagesize={appliedPageSize!.Value}";
+                            ctx.Response.Headers["Preference-Applied"] = $"{MaxPageSizePreference}={appliedPageSize!.Value}";
                     }
 
                     // #206: $select projection pushdown. When eligible, compose a member-init
@@ -9317,7 +9324,7 @@ internal static class OhDataEndpointFactory
                             if (appliedPageSize.HasValue)
                                 seq = seq.Take(appliedPageSize.Value);
                             if (preferredPageSize.HasValue)
-                                ctx.Response.Headers["Preference-Applied"] = $"maxpagesize={appliedPageSize!.Value}";
+                                ctx.Response.Headers["Preference-Applied"] = $"{MaxPageSizePreference}={appliedPageSize!.Value}";
                         }
 
                         object[] paged = ReferenceEquals(seq, items) ? items : seq.ToArray();
@@ -12191,7 +12198,7 @@ internal static class OhDataEndpointFactory
                 : startupSource.MaxTop;
             if (appliedPageSize.HasValue) seq = seq.Take(appliedPageSize.Value);
             if (preferredPageSize.HasValue)
-                ctx.Response.Headers["Preference-Applied"] = $"maxpagesize={appliedPageSize!.Value}";
+                ctx.Response.Headers["Preference-Applied"] = $"{MaxPageSizePreference}={appliedPageSize!.Value}";
         }
         else if (startupSource.MaxTop is int cap && preTotal - skip > cap)
         {
