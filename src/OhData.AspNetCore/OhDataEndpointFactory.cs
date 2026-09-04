@@ -8524,12 +8524,54 @@ internal static class OhDataEndpointFactory
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
                     envelope["@odata.context"] = $"{baseUrl}/$metadata#{AppendSelectSuffix(name, selectedProps)}";
-                    // $count=true: prefer TotalCount if profile provided it (pre-paging), otherwise
-                    // fall back to items.Length (post-paging).
+                    // #379: $count=true with no TotalCount fell back to items.Length -- the PAGE
+                    // length, measured AFTER the framework's own Take cap above. On MaxTop = 50 over
+                    // 10,000 rows that reported "@odata.count": 50 under a 200, so a paging UI showed
+                    // one page instead of 200. §11.2.6.5 wants the count of items matching the
+                    // request, explicitly unaffected by $top/$skip.
+                    //
+                    // The fallback is not wrong in general -- it is wrong exactly when paging moved
+                    // the page away from the full set, which is why it went unnoticed: with no $top,
+                    // no $skip and no cap, items IS the filtered set and the number is right. So the
+                    // condition is measured rather than refused wholesale. Refusing wholesale would
+                    // fail the canonical Priority-1 shape (ApplyTo + Items, no TotalCount) on every
+                    // $count request, which is a worse trade than the defect for the many profiles
+                    // whose sets never page.
+                    //
+                    // When paging COULD have truncated, the total is unknowable here -- the profile
+                    // applied the paging and the framework never saw the pre-paging source -- so it
+                    // throws. 500, not 501: since #475 a Priority-1 profile DECLARES whether it
+                    // honours $count, and reaching this line means it declared that it does, so the
+                    // condition is decided entirely by server-side state. Blaming the client would be
+                    // the defect #496 removed one route over, and the shape matches #496's ruling on
+                    // a Post handler returning null -- after the framework's own checks this can only
+                    // be the handler breaking its contract.
+                    //
+                    // A profile that cannot count has a clean way out that #475 created: drop Count
+                    // from HonouredQueryOptions and $count is refused with 501 before reaching here.
                     if (options.Count?.Value == true)
                     {
+                        bool pagingMayHaveTruncated =
+                            frameworkNextLink is not null ||
+                            odataResult.NextLink is not null ||
+                            options.Top is not null ||
+                            options.Skip is not null;
+
+                        if (odataResult.TotalCount is null && pagingMayHaveTruncated)
+                        {
+                            throw new InvalidOperationException(
+                                $"The profile for '{name}' answered a $count=true request without setting " +
+                                "ODataQueryResult.TotalCount, and this request was paged -- so the " +
+                                $"returned page ({items.Length} item(s)) is not the total and the " +
+                                "framework cannot recover it: the profile applied the paging and the " +
+                                "pre-paging source never reached the framework. Set TotalCount to the " +
+                                "pre-paging total, or remove OhDataSystemQueryOption.Count from " +
+                                "HonouredQueryOptions so $count is refused with 501 instead.");
+                        }
+
                         envelope["@odata.count"] = odataResult.TotalCount ?? (long)items.Length;
                     }
+
                     // nextLink: prefer the profile's own link; otherwise the framework continuation.
                     string? effectiveNextLink = odataResult.NextLink ?? frameworkNextLink;
                     if (effectiveNextLink is not null)
