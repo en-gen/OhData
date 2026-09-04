@@ -45,6 +45,7 @@ public sealed class DocumentationSnippetCompilationTests
         using System;
         using System.Collections.Generic;
         using System.Linq;
+        using System.Reflection;
         using System.Threading;
         using System.Threading.Tasks;
         using Microsoft.AspNetCore.Builder;
@@ -84,7 +85,13 @@ public sealed class DocumentationSnippetCompilationTests
     }
 
     private static IEnumerable<string> DocFiles(string root) =>
-        Directory.EnumerateFiles(Path.Combine(root, "docs"), "*.md", SearchOption.AllDirectories)
+        // README.md is FIRST because it is the page an adopter reads before any other, and it was
+        // outside this scan until #653: the CancellationToken removal updated it, that commit missed
+        // the merge window, and nothing here could tell. It is the same blind spot #620 found for the
+        // docs.yml stale-API scan, which globbed docs/ and docs-site/ and so skipped the most-read
+        // file in the repo.
+        new[] { Path.Combine(root, "README.md") }
+            .Concat(Directory.EnumerateFiles(Path.Combine(root, "docs"), "*.md", SearchOption.AllDirectories))
             .Concat(Directory.EnumerateFiles(Path.Combine(root, "docs-site"), "*.md", SearchOption.TopDirectoryOnly))
             // design notes and superpowers plans are historical and may reference old APIs, exactly as
             // the docs.yml stale-API scan excludes them.
@@ -126,10 +133,20 @@ public sealed class DocumentationSnippetCompilationTests
             References,
             // ConsoleApplication, not a library: a page's Program.cs fence is top-level statements,
             // which CS8805 refuses in a library. Nothing is executed -- only GetDiagnostics() runs.
-            new CSharpCompilationOptions(OutputKind.ConsoleApplication));
+            // Nullable ENABLED, without which the CS86xx family below is never produced at all and
+            // the check is inert -- verified by A/B: reverting a README handler to the pre-#641
+            // non-nullable signature passed until this line was added.
+            new CSharpCompilationOptions(OutputKind.ConsoleApplication)
+                .WithNullableContextOptions(NullableContextOptions.Enable));
 
+        // Nullability diagnostics are warnings, not errors -- but a delegate's nullability IS its
+        // contract here (#641: GetById/Put/Patch are OhDataResult<TModel?> and Post is not), so a
+        // page that assigns a non-nullable handler compiles "clean" while documenting the wrong
+        // signature. Measured: the README quick start did exactly that after #642 and this suite
+        // passed it. Treated as failures for that reason.
         Diagnostic[] errors = compilation.GetDiagnostics()
-            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .Where(d => d.Severity == DiagnosticSeverity.Error
+                     || d.Id is "CS8619" or "CS8621" or "CS8603" or "CS8600" or "CS8604")
             .ToArray();
 
         Assert.True(errors.Length == 0,

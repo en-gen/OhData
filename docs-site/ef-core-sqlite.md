@@ -115,7 +115,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
 
         GetQueryable = () => db.Products;
         GetById      = async (id, ct) =>
-            OhDataResult.Success(await db.Products.SingleOrDefaultAsync(p => p.Id == id, ct));
+            OhDataResult.Success<Product?>(await db.Products.SingleOrDefaultAsync(p => p.Id == id, ct));
 
         Post = async (product, ct) =>
         {
@@ -130,7 +130,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
             if (existing is null) return OhDataResult.Success<Product?>(null);   // -> 404
             delta.Patch(existing);          // applies only the properties in the request body
             await db.SaveChangesAsync(ct);
-            return OhDataResult.Success(existing);
+            return OhDataResult.Success<Product?>(existing);
         };
 
         Delete = async (id, ct) =>
@@ -155,7 +155,7 @@ public class CategoryProfile : EntitySetProfile<int, Category>
         FilterEnabled = OrderByEnabled = SelectEnabled = CountEnabled = true;
 
         GetQueryable = () => db.Categories;
-        GetById = async (id, ct) => OhDataResult.Success(await db.Categories.FindAsync([id], ct));
+        GetById = async (id, ct) => OhDataResult.Success<Category?>(await db.Categories.FindAsync([id], ct));
     }
 }
 ```

@@ -104,7 +104,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
 
         // Single entity GET → GET /odata/Products({key}). Returns null (→ 404) when the row is absent.
         GetById = async (id, ct) =>
-            OhDataResult.Success(await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct));
+            OhDataResult.Success<Product?>(await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct));
 
         // Create → POST /odata/Products. Add the row and let the database assign its key.
         Post = async (product, ct) =>
