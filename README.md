@@ -189,6 +189,30 @@ Query options are bound against `ProductDto`, so `$filter=Category eq 'Tools'` f
 projected member and EF pushes it into the `JOIN`. Nothing in the framework needs to know the entity
 type exists.
 
+**`$expand` needs the navigation in the projection.** The framework folds an expanded navigation into
+a *member-init projection* over `TModel` — it does not call `Include`, which could not follow a
+`Select` anyway. So a navigation the projection never populated is not there to fold, and the request
+fails loud rather than serving an empty collection:
+
+```csharp
+// $expand=Lines -> 400, "could not be translated by the underlying data provider"
+GetQueryable = _ => OhDataResult.SuccessTask(
+    db.Orders.Select(o => new OrderDto { Id = o.Id, Code = o.Code }));
+
+// $expand=Lines -> 200, and a nested $filter/$orderby/$top still pushes down
+GetQueryable = _ => OhDataResult.SuccessTask(
+    db.Orders.Select(o => new OrderDto
+    {
+        Id    = o.Id,
+        Code  = o.Code,
+        Lines = o.Lines.Select(l => new LineDto { Id = l.Id, Sku = l.Sku }).ToList(),
+    }));
+```
+
+The second form still omits `Lines` from the response unless `$expand` asks for it — projecting it
+only makes it *available*. The cost is that the `JOIN` is in the query whether or not the client
+expands, so project a navigation you expect to be expanded, and leave out one you do not.
+
 **Writing** — projection has no inverse, which is the asymmetry
 [delta mapping](docs/delta-mapping.md) exists to close. A `DeltaProfile` declares how a DTO maps onto
 its backing entity; the framework compiles and validates every mapping **at startup**, and a handler
