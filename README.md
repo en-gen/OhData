@@ -213,46 +213,38 @@ The second form still omits `Lines` from the response unless `$expand` asks for 
 only makes it *available*. The cost is that the `JOIN` is in the query whether or not the client
 expands, so project a navigation you expect to be expanded, and leave out one you do not.
 
-**You do not have to hand-write the projection.** Anything that returns an `IQueryable<TModel>` works,
-because that is the whole contract — including a mapping library's projection generator. With
-AutoMapper's `ProjectTo`, the mapping config produces the nested projection and the handler is one
-line:
+**You do not have to repeat the projection.** The seam is only *"return an `IQueryable<TModel>`"*, so
+anything that produces one works. With no dependency at all, declare the projection once and reuse it:
 
 ```csharp
-GetQueryable = _ => OhDataResult.SuccessTask(db.Orders.ProjectTo<OrderDto>(_config));
+public sealed class OrderDto
+{
+    public static readonly Expression<Func<Order, OrderDto>> Projection = o => new OrderDto
+    {
+        Id    = o.Id,
+        Code  = o.Code,
+        Lines = o.Lines.Select(l => new LineDto { Id = l.Id, Sku = l.Sku }).ToList(),
+    };
+    // ...
+}
+
+GetQueryable = _ => OhDataResult.Success(db.Orders.Select(OrderDto.Projection));
 ```
 
-Measured against AutoMapper 14 on EF Core 10 / SQLite, all of these work with nothing hand-written:
-`$filter=Code eq 'A'`, `$expand=Lines`, `$expand=Lines($filter=Id gt 10)`, `$select=Code`, and even a
-filter *through* the navigation — `$filter=Lines/any(l: l/Sku eq 's2')`.
+A mapping library can generate that expression instead — OhData neither requires nor assumes one, and
+takes no dependency on any. If you pick one, check its licence and whether it supports `IQueryable`
+projection: **Mapperly** is Apache-2.0 and source-generated, **Mapster** is MIT, and **AutoMapper**'s
+`ProjectTo` works here too but AutoMapper 16 is licensed under RPL-1.5 or a commercial agreement —
+including transitively through the MIT-licensed `AutoMapper.Extensions.ExpressionMapping` and
+`AutoMapper.AspNetCore.OData.EFCore` packages, which depend on it.
 
-If you would rather filter against the **entity** and project last — the
-`AutoMapper.Extensions.ExpressionMapping` pattern, where a DTO-shaped predicate is translated to an
-entity-shaped one — use the Priority-1 handler
+If you would rather filter against the **entity** and project last — translating a DTO-shaped predicate
+into an entity-shaped one, which is what `AutoMapper.Extensions.ExpressionMapping` does — use the
+Priority-1 handler
 ([`GetODataQueryable`](docs/query-options.md#getodataqueryable---full-odata-pushdown-advanced)). It
 hands your profile the whole `ODataQueryOptions` so you can translate and apply the clauses yourself.
-Two things come with that seam: declare what you actually honour via `HonouredQueryOptions`, and set
-`ODataQueryResult.TotalCount` if you page and support `$count`.
-
-**Writing** — projection has no inverse, which is the asymmetry
-[delta mapping](docs/delta-mapping.md) exists to close. A `DeltaProfile` declares how a DTO maps onto
-its backing entity; the framework compiles and validates every mapping **at startup**, and a handler
-turns a `Delta<ProductDto>` into a `Delta<Product>` it can apply:
-
-```csharp
-Patch = async (id, delta, ct) =>
-{
-    var entity = await db.Products.FindAsync([id], ct);
-    if (entity is null) return OhDataResult.Success<ProductDto>(null);   // -> 404
-
-    deltas.Create<ProductDto, Product>(delta).Patch(entity);             // IDeltaFactory, injected
-    await db.SaveChangesAsync(ct);
-    return OhDataResult.Success(entity.ToDto());
-};
-```
-
-No AutoMapper, no reflection per request, and a DTO property you forget to map is a **startup**
-error rather than a silently dropped write. See [docs/delta-mapping.md](docs/delta-mapping.md).
+Two obligations come with that seam: declare what you actually honour via `HonouredQueryOptions`, and
+set `ODataQueryResult.TotalCount` if you page and support `$count`.
 
 ### Beyond the basics
 
