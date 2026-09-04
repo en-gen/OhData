@@ -2,8 +2,8 @@
 
 ## How a handler reports failure
 
-Every handler delegate returns `Task<OhDataResult<T>>`. A handler either succeeds with a value or
-returns a rejection:
+Every handler delegate returns `Task<OhDataResult<T>>` — with one exception, `GetQueryable`, covered
+below. A handler either succeeds with a value or returns a rejection:
 
 ```csharp
 Post = async (order, ct) =>
@@ -25,6 +25,35 @@ supply. For a synchronous handler, `OhDataResult.Success(value)` is the direct r
 There is deliberately **no** implicit conversion from `T`: a bare `return model;` would silently
 mean "and whatever status the framework infers", and unexpressed meaning in a handler's return is
 precisely what #496 had to unpick when `null` was the only way to say "no".
+
+### The exception: `GetQueryable`
+
+`GetQueryable` returns a bare `IQueryable<TModel>` — no `OhDataResult`, and no `Task`:
+
+```csharp
+GetQueryable = _ => db.Products;
+```
+
+It is the only handler whose return the framework **further composes before executing**:
+`$filter`/`$orderby`/`$skip`/`$top` are appended to the expression tree and the query runs after
+that. So at the moment it returns there is no result to report on, not even a materialized one, and
+no I/O has happened for a `Task` to represent. The `await` belongs where the framework executes the
+query, and the framework owns that.
+
+To reject a collection read, **throw and map it** — the same machinery as the next section:
+
+```csharp
+ConfigureExceptions(e => e.Map<OutOfTenantScopeException>(
+    _ => OhDataResult.Forbidden("OutOfTenantScope", "This collection is out of scope.")));
+
+GetQueryable = _ => _tenant.IsAuthorized ? db.Products : throw new OutOfTenantScopeException();
+```
+
+The mapping fires for a throw during composition as well as during execution.
+
+`GetODataQueryable` (the Priority-1 handler) keeps `Task<ODataQueryResult<TModel>>`, which is a
+different type again: it carries `Items` plus the `TotalCount`/`NextLink` the profile computed. There
+the profile really has done the work, so it really does hold a result.
 
 ## Mapping exceptions you do not raise yourself
 

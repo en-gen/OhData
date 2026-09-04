@@ -116,6 +116,11 @@ jobs:
       # docs/bound-operations.md -- ordinary delegates, untouched by #581 -- still pass. It cannot
       # catch an async handler returning a bare value.
       #
+      # The fifth and sixth close #653's hole the same way: GetQueryable dropped BOTH wrappers and
+      # returns a bare IQueryable, so `GetQueryable = _ => OhDataResult.Success(...)` and the old
+      # `Task<OhDataResult<IQueryable<T>>>` signature are both dead spellings. Scoped to
+      # GetQueryable, because OhDataResult.Success on the other seven is still correct.
+      #
       # #622 added the complement: DocumentationSnippetCompilationTests compiles the snippets
       # marked with an HTML compile comment, which catches any drift a denylist cannot express.
       # It runs in ci.yml (no paths filter, so docs-only PRs run it too), not here -- this
@@ -129,7 +134,7 @@ jobs:
                 -e 'OhData\.Abstractions' \
                 -e 'using OhData\.AspNetCore;' \
                 -e 'OhDataResult\.SuccessTask' \
-                -e '^ *(GetAll|GetQueryable|GetById|Post|Put|Patch|Delete|Search) *=.*Task\.FromResult' \
+                -e '^ *(GetAll|GetQueryable|GetById|Post|Put|Patch|Delete|Search) *=.*Task\.FromResult'                 -e '^ *GetQueryable *=.*OhDataResult\.'                 -e 'Task<OhDataResult<IQueryable' \
                 README.md docs docs-site); then
             echo "::error::docs reference removed/renamed API — update the docs or extend the denylist in .github/workflows/docs.yml"
             echo "$hits"

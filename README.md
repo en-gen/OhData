@@ -78,7 +78,6 @@ public class ProductProfile : EntitySetProfile<int, Product>
         Delete       = DeleteProduct;
     }
 
-    // Returning the un-materialized IQueryable is synchronous, so there is no Task ceremony:
     // GetQueryable returns the query itself - no Task, no OhDataResult. Composing an IQueryable
     // does no I/O and produces no result; the framework appends $filter/$orderby/$skip/$top and
     // awaits the execution. Every other handler DOES return Task<OhDataResult<T>>.
