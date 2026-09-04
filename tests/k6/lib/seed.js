@@ -36,6 +36,20 @@ export const UNLINKED_ACTOR_ID = 30; // Ian McKellen
 export const SEEDED_STUDIO_COUNT = 8;
 export const SEEDED_STUDIO_ID = 1; // Warner Bros. Pictures
 
+// -- Awards: the polymorphic (TPH) set (#617) ---------------------------------
+// Three rows, three shapes: an AcademyAward, a FestivalAward and a bare Award. The MIX is the
+// point -- a projection over the declared type serves the base row correctly and drops the derived
+// rows' own properties, so a single-shape fixture would prove nothing (#529).
+export const AWARD_COUNT = 3;
+export const ACADEMY_AWARD_ID = 1;      // Best Picture, Ceremony + IsWinner
+export const ACADEMY_AWARD_CEREMONY = '67th Academy Awards';
+export const ACADEMY_AWARD_NOMINATIONS = 3;
+export const FESTIVAL_AWARD_ID = 2;     // Palme d'Or, Festival + Jury
+export const FESTIVAL_AWARD_FESTIVAL = 'Cannes';
+export const PLAIN_AWARD_ID = 3;        // no derived members at all
+// Exactly one nomination on each of awards 1 and 2 contains "Pulp"; award 3 has none.
+export const AWARD_NOMINATION_NEEDLE = 'Pulp';
+
 // ── Genres ───────────────────────────────────────────────────────────────────
 // GenreProfile is the GetAll (IEnumerable) showcase: a static 11-row array, string key.
 export const SEEDED_GENRE_COUNT = 11;

@@ -54,7 +54,8 @@ builder.Services.AddOhDataVersion("v2", "/v2", o =>
     o.AddEntitySetProfile<MovieProfileV2>()
      .AddEntitySetProfile<GenreProfileV2>()
      .AddEntitySetProfile<ActorProfile>()
-     .AddEntitySetProfile<StudioProfile>());
+     .AddEntitySetProfile<StudioProfile>()
+     .AddEntitySetProfile<AwardProfile>());
 
 // ── App pipeline ──────────────────────────────────────────────────────────────
 var app = builder.Build();
