@@ -11,6 +11,40 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking
 
+- **⚠ BREAKING CHANGE — a literal zero divisor in `$filter`/`$orderby` is refused before execution
+  (#385).** #358 catches `DivideByZeroException`/`OverflowException`, which only fires where the
+  **CLR** evaluates the expression. One URL therefore split three ways:
+
+  | provider | `?$filter=Quantity div 0 eq 1` |
+  |---|---|
+  | LINQ-to-Objects / EF InMemory | `400` (#358) |
+  | EF Core **SQLite** | `200`, zero rows — `x/0` is NULL, `NULL eq 1` unknown |
+  | **SQL Server** (Msg 8134) / **PostgreSQL** (SQLSTATE 22012) | `DbException` → unhandled **`500`** |
+
+  On the two databases most deployments use, an anonymous client could drive unhandled `500`s at
+  will — #358's own reported symptom, still live.
+
+  Catching `DbException` was rejected: it is not portable, and it would also catch a connection
+  dropped mid-enumeration and report it as a client error, which is #494's defect one layer down.
+  An AST walk over the already-parsed clause is provider-independent, costs no execution, and is
+  honest — `X div 0` is unevaluable on every backend.
+
+  **SQLite's empty `200` is the behaviour change**: a wrong answer under a success status, of the
+  same family as #353/#354. `FilterArithmeticFaultSqliteTests` asserted it as correct; its
+  expectation is inverted in place, which #385 asked for explicitly so the change would be
+  deliberate rather than default.
+
+  `$orderby` is covered alongside `$filter` — identical shape, and #358's runtime guard already
+  treated them together, so gating one would leave the same split one option over.
+
+  Two things stay out of scope, deliberately. **A per-row zero divisor** (`A div B` where some row's
+  `B` is 0) is not decidable before execution and remains #358's; a test pins that it is *not*
+  claimed by the new check, asserted on the message because both answer `400`. And **`GetAll`** is
+  not wired: `$filter`/`$orderby` are a structural `501` there and `TryBuildQueryOptions` runs before
+  that gate, so a check would downgrade the `501`. `GetById` applies neither and keeps its zero-cost
+  no-option path.
+
+
 - **⚠ BREAKING CHANGE — every entity-set handler delegate returns `Task<OhDataResult<T>>` (#581).**
   The completion of the work #605 started: a handler can now **return** a rejection, not only throw
   one for `ConfigureExceptions` to map.

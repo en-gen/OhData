@@ -98,11 +98,26 @@ public class FilterArithmeticFaultSqliteTests : IAsyncLifetime
     /// rather than merely "not 500" so a future EF Core/Sqlite version that started translating
     /// this differently would be caught rather than silently accepted.
     /// </summary>
-    private static async Task AssertOkWithNoMatches(HttpResponseMessage response)
+    /// <summary>
+    /// #385 REPLACES <c>AssertOkWithNoMatches</c>. SQLite used to answer <c>200</c> with zero rows
+    /// here, and this file asserted that as correct — which locked in a three-way split for one URL:
+    /// <c>400</c> where the CLR evaluated the expression, <c>200</c>-empty on SQLite, and an
+    /// unhandled <c>500</c> on SQL Server (Msg 8134) and PostgreSQL (SQLSTATE 22012), where an
+    /// anonymous client could drive it at will.
+    /// <para>
+    /// The literal divisor is now refused before execution, so no provider ever evaluates it and all
+    /// four give the same answer. SQLite's empty <c>200</c> was a wrong answer under a success
+    /// status — the expression is unevaluable, not false — of the same family as #353/#354.
+    /// </para>
+    /// </summary>
+    private static async Task AssertRefusedBeforeExecution(HttpResponseMessage response, string option)
     {
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Empty(json.GetProperty("value").EnumerateArray());
+        JsonElement error = json.GetProperty("error");
+        Assert.Equal("InvalidQueryOption", error.GetProperty("code").GetString());
+        Assert.Contains($"The {option} expression divides by the literal 0",
+            error.GetProperty("message").GetString()!, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -110,7 +125,7 @@ public class FilterArithmeticFaultSqliteTests : IAsyncLifetime
     {
         var response = await _fx.Client.GetAsync(
             "/odata/ArithFaultItems?$filter=" + Uri.EscapeDataString("Quantity div 0 eq 1"));
-        await AssertOkWithNoMatches(response);
+        await AssertRefusedBeforeExecution(response, "$filter");
     }
 
     [Fact]
@@ -118,7 +133,7 @@ public class FilterArithmeticFaultSqliteTests : IAsyncLifetime
     {
         var response = await _fx.Client.GetAsync(
             "/odata/ArithFaultItems?$filter=" + Uri.EscapeDataString("Quantity mod 0 eq 1"));
-        await AssertOkWithNoMatches(response);
+        await AssertRefusedBeforeExecution(response, "$filter");
     }
 
     [Fact]
@@ -126,6 +141,6 @@ public class FilterArithmeticFaultSqliteTests : IAsyncLifetime
     {
         var response = await _fx.Client.GetAsync(
             "/odata/ArithFaultItems?$filter=" + Uri.EscapeDataString("Amount div 0 eq 1"));
-        await AssertOkWithNoMatches(response);
+        await AssertRefusedBeforeExecution(response, "$filter");
     }
 }
