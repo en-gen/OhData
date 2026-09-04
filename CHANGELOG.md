@@ -175,6 +175,81 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `HttpClient` throws on its own timeout. Both sides are pinned.
 
 
+- **⚠ BREAKING CHANGE — every handler delegate that can answer "not found" says so in its type
+  (#641).** `GetById`, `Put` and `Patch` return `Task<OhDataResult<TModel?>>`; `Post` keeps
+  `Task<OhDataResult<TModel>>`. That asymmetry is the point: a `null` from the first three is a
+  legitimate outcome — `404`, or an upsert on `Put` when `AllowUpsert` is set — while a `null` from
+  `Post` is a server-side contract violation answering `500` (#496 finding 1). The signature is now
+  the one place that difference is visible without reading the framework.
+
+  196 call sites, fixed compiler-first: build, read each `CS8619`, take the type the compiler itself
+  names as the target, rewrite, repeat. The library compiled clean throughout — every error was in
+  caller code, which is exactly what an adopter sees. **Upgrading:** add the nullable type argument
+  to the success return, `OhDataResult.Success<Product?>(entity)`.
+
+- **⚠ BREAKING CHANGE — `OhDataResult.SuccessTask` is removed; `Success` covers both positions
+  (#633).** The name pushed the framework's plumbing into the caller's vocabulary. It is not
+  expressible as an overload (C# cannot overload on return type, CS0111), so `OhDataResult<T>` gains
+  an implicit conversion to `Task<OhDataResult<T>>`.
+
+  A **synchronous rejection** still needs `Task.FromResult<OhDataResult<T>>(…)` or an `async` lambda
+  — two user-defined conversions, and C# applies at most one. Unchanged: `SuccessTask` had no
+  `RejectTask` twin either. **Upgrading:** rename `SuccessTask` to `Success`; the type argument is
+  unchanged.
+
+- **⚠ BREAKING CHANGE — a derived-type instance carries `@odata.type` (#628).** JSON Format §4.5.3
+  makes it a **MUST** in minimal or full metadata when an instance's type is derived from the type
+  declared for the containing collection. Measured on the live demo before the fix: `GET /v2/Awards`
+  served `{"Ceremony":"67th Academy Awards","IsWinner":true,…}` with no annotation while `$metadata`
+  correctly declared `AcademyAward BaseType="…Award"` — the server knew the type and did not say it,
+  so a conforming client deserializes into the base and silently drops the derived members.
+  `Microsoft.AspNetCore.OData` emits it (35 of its test files assert it), so this was a divergence
+  from MS as well as from the spec. An instance of the *declared* type carries none: the client
+  determines that from `@odata.context`, and §3.1.1 asks a minimal-metadata service to omit
+  computable control information.
+
+- **⚠ BREAKING CHANGE — a TPH root keeps its derived properties under `$expand` (#529).** The expand
+  pushdown folded engaged navigations into a member-init projection over `TModel`, and a member-init
+  can construct nothing but the *declared* type — so on a TPH hierarchy every row materialized as the
+  base and the derived properties vanished, silently, under a `200`, **decided by whether the request
+  carried `$expand`**. Measured: `GET /P529Things` emitted `SELECT Id, Discriminator, Name, Extra,
+  Rank` while `?$expand=Children` emitted `SELECT t0.Id, t0.Name, c.Id, c.BaseId, c.Body` — the
+  discriminator not even selected.
+
+  A polymorphic root is now refused the projection and served through the EF `Include` path, which
+  loads real entities and preserves each row's runtime type. Required with it: that path stopped
+  refusing a nested `$filter`/`$orderby`, on the stated grounds that *"a plain EF Include cannot carry
+  a predicate/ordering at all"* — EF Core's **filtered** Include does. **Also breaking:** a nested
+  `$expand`/`$levels` under a polymorphic root answered `200` with the derived properties missing and
+  now answers `400`; `$levels` still does (#616 lifted the nested-`$expand` half).
+
+- **⚠ BREAKING CHANGE — a paged Priority-1 `$count` no longer reports the page length (#379).**
+  `@odata.count` was `TotalCount ?? items.Length`, and `items` is the page — measured *after* the
+  framework's own `Take` cap. On `MaxTop = 50` over 10,000 rows that reported `"@odata.count": 50`
+  under a `200`, so a paging UI computed one page instead of 200. §11.2.6.5 wants the count of items
+  matching the request, unaffected by `$top`/`$skip`.
+
+  The condition is **measured, not refused wholesale** — with no `$top`, no `$skip` and no cap,
+  `items` *is* the filtered set and the number is right, which is why this hid so long. It throws only
+  where paging could have moved the page away from the full set. `500` rather than `501`: since #475 a
+  Priority-1 profile *declares* whether it honours `$count`, so reaching that line means it said yes,
+  and the condition is decided entirely by server-side state. **Upgrading:** set
+  `ODataQueryResult.TotalCount`, or drop `OhDataSystemQueryOption.Count` from `HonouredQueryOptions`
+  so `$count` is refused with `501`.
+
+- **⚠ BREAKING CHANGE — `Preference-Applied` echoes OData 4.0's `odata.maxpagesize` (#372).** It
+  echoed the bare `maxpagesize`, which is the **4.01** rename, while this service reports
+  `OData-Version: 4.0` — claiming a preference that version does not define (§8.2.8.5). Both spellings
+  are still accepted on the request. **Upgrading:** a client matching the exact bare token now sees the
+  prefixed one.
+
+- **⚠ BREAKING CHANGE — `GET …/{Property}/$value` on a null property returns `204`, not `404`
+  (#369).** §11.2.3.1, verbatim: *"A `$value` request for a property that is null results in a 204 No
+  Content response."* The next sentence reserves `404` for a different condition — *"if the property
+  is not available, for example due to permissions"* — and a null value is available and is null. The
+  sibling `/{Property}` route has always answered `204` for the same entity in the same state.
+
+
 ### Added
 
 - **A handler can produce a client error: `ConfigureExceptions` (#581).** Every handler delegate
@@ -245,6 +320,21 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   not fire on a correct configuration is pinned both ways, and one handler alone is silent. Across
   the repo's own seven test projects exactly **two** profiles set more than one collection handler,
   and both are this issue's own fixtures — so there are no pre-existing emissions.
+
+- **A nested `$expand` is served under the Include fallback via `ThenInclude` (#616).** A
+  projection-ineligible root — which since #529 includes every polymorphic (TPH) root — is served
+  through EF `Include`, and that path refused a nested `$expand` with `400`. Each root-to-leaf path
+  through the engaged tree now becomes its own `Include(…).ThenInclude(…)` chain.
+
+  Four things were probed on EF Core 10 / SQLite before writing it, and each shaped the result: the
+  filtered pair preserves the derived runtime type *and* the nested filter; there are **two**
+  `ThenInclude` overloads distinguished only by the previous navigation's shape, and picking wrong is
+  a runtime failure rather than a compile error; siblings cannot share a chain, so each path re-issues
+  the prefix (re-issuing a filtered Include *identically* is accepted, with a *different* predicate it
+  throws); and the #298 "double collection" `SQL APPLY` hazard is real but already unreachable, because
+  `ApplyNavShape` gates every SQL window on `isProjectionLeaf`. `$levels` stays refused — its depth is
+  decided per request by the data, so there is no statically-known nesting to build a chain from.
+
 
 ### Fixed
 
@@ -555,6 +645,31 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   POST/PUT/PATCH and over a global default, and `RequestBodySizeFeatureTests` covers the feature arm
   in both directions. The justification is cost and determinism alone.
 
+- **The documentation snippets marked for it are compiled in CI (#622).** #620 found 45 stale handler
+  examples across 15 files — every one of them — while the `docs.yml` stale-API gate stayed green,
+  because that gate is a denylist of removed API *names* and `Task.FromResult(…)` is valid C# naming
+  none. "This snippet no longer compiles" is not a token, so no denylist can express it.
+
+  Opt-in deliberately: of 155 `csharp` fences, 22 carry a `...` elision and most of the rest are
+  fragments, so compiling all of them means a per-shape harness for an 87-item tail — and a harness
+  that half-works gives false confidence. One compilation per page, **one syntax tree per fence**,
+  because a fence *is* a file (`// Models.cs`, `// Program.cs`). It found a real bug on its first run:
+  `ef-core-sqlite.md` registered a `CategoryProfile` the page described in prose but never showed.
+
+- **The navigation `/$count` option gate is pinned (#382).** The route once performed no validation at
+  all, so `?$filter=` returned the **unfiltered** count under a `200` while the sibling navigation
+  route refused the same option one segment away. #359 fixed it and nothing asserted it, which is why
+  the issue stayed open against code that had already changed. Fourteen cases, including that the
+  accepted-and-ignored options leave the **number** unchanged (§11.2.9 says they must) and that the two
+  routes agree — the defect was a split, so pinning one side would let it reappear from the other.
+
+- **The TestBench gained a polymorphic (TPH) entity set, and k6 covers it (#617).** The demo declared
+  no inheritance anywhere, so k6 — which runs against it in CI — could not cover TPH, and the code path
+  a polymorphic root takes was verified only by TestServer + SQLite tests. Three seeded rows in three
+  shapes, so a page mixes them. The k6 A/B lands exactly on the defect: against a build with #529
+  reverted, precisely the derived-property checks fail and every control holds.
+
+
 ### Documentation
 
 - **The 1.7.0 `Convert()` capture refusal is recorded, after the fact (#551).** #488/#535 made a
@@ -565,6 +680,33 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `Convert()`, and `Issue551ConvertCaptureShapeTests` pins all five rows — including the three
   ACCEPTED ones, which had no coverage at all and are what stops a later tightening of the check
   from refusing a plain non-capturing lambda.
+
+- **The differences from `Microsoft.AspNetCore.OData` are collected in one page (#623).** Six
+  divergences, each with the clause that forced it, and — given equal billing — six places OhData
+  deliberately keeps Microsoft's answer where the specification left room. Every claim about MS was
+  read from its source at `a05e1ad0` and is cited by file and line.
+
+- **The README teaches the current API, and separating DTOs from EF entities (#620, #639).** It still
+  carried the pre-#581 handler signature: `docs/` and `docs-site/` were swept, and the stale-API scan
+  globs those same two directories, so the most-read file in the repo was outside both. The scan now
+  includes it. The quick start also assigns **named methods** rather than inline lambdas, so the
+  constructor reads as the route manifest it is, and a new section states both directions of DTO
+  separation — projection on the read side, delta mapping on the write side, because a projection has
+  no inverse.
+
+- **`docs/error-handling.md` is reachable from the docsite (#640).** It documents #581's whole surface
+  across six sections and was never added to `toc.yml`, so the headline feature of this release was
+  invisible on the published site. Swept the rest: only `deployment.md` and `releasing.md` are also
+  absent, and both deliberately.
+
+- **Spec citations name their source document, and three wrong ones are corrected (#612, #637).** The
+  `/$count` negotiation ruling #580 reversed survived in `spec-compliance.md` — the fourth place
+  carrying it. The *Response annotations* table had no row for `@odata.type` and cited `@odata.id` at
+  §4.5.8 (that is `editLink`/`readLink`) and `@odata.etag` at §4.5.3 — **the section belonging to the
+  annotation the table was missing**. Every citation was then audited against the Part 1 text; no
+  further numbers were wrong, but five rows drew on JSON Format, Part 2 or RFC 9110 without saying so,
+  and a bare `§4.5.3` is genuinely ambiguous between documents.
+
 
 ### Build
 
