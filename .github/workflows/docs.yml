@@ -105,7 +105,13 @@ jobs:
       # The fourth pattern below closes that specific hole (one of the eight delegates assigned a
       # raw Task.FromResult), scoped to the delegate NAMES so the bound-operation examples in
       # docs/bound-operations.md -- ordinary delegates, untouched by #581 -- still pass. It cannot
-      # catch an async handler returning a bare value; only compiling the snippets would.
+      # catch an async handler returning a bare value.
+      #
+      # #622 added the complement: DocumentationSnippetCompilationTests compiles the snippets
+      # marked with an HTML compile comment, which catches any drift a denylist cannot express.
+      # It runs in ci.yml (no paths filter, so docs-only PRs run it too), not here -- this
+      # workflow builds DocFX and has no .NET test step. The two are complementary: the scan is
+      # cheap and covers every page, the compile test is exact and covers the marked ones.
       - name: Stale-API scan (docs must not reference removed/renamed API)
         run: |
           if hits=$(grep -rnE --include='*.md' \

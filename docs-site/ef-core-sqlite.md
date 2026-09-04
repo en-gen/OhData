@@ -30,6 +30,7 @@ dotnet add package Microsoft.EntityFrameworkCore.Design
 An ordinary EF Core model. `Product` is the flagship queryable entity set; `Category` is a
 navigation target reachable via `$expand`.
 
+<!-- compile -->
 ```csharp
 // Models.cs
 using Microsoft.EntityFrameworkCore;
@@ -85,6 +86,7 @@ OData query options compose onto it and EF Core translates the whole thing to on
 Contrast with `GetAll` (`IEnumerable`), which would fetch every row and skip query-option
 processing entirely.
 
+<!-- compile -->
 ```csharp
 // ProductProfile.cs
 using Microsoft.EntityFrameworkCore;
@@ -142,16 +144,31 @@ public class ProductProfile : EntitySetProfile<int, Product>
         };
     }
 }
+
+// CategoryProfile.cs -- the same shape, read-only. Leaving Put/Patch/Delete unassigned is a
+// feature: those routes simply do not exist.
+public class CategoryProfile : EntitySetProfile<int, Category>
+{
+    public CategoryProfile(ShopDbContext db) : base(x => x.Id)
+    {
+        EntitySetName = "Categories";
+        FilterEnabled = OrderByEnabled = SelectEnabled = CountEnabled = true;
+
+        GetQueryable = _ => OhDataResult.SuccessTask<IQueryable<Category>>(db.Categories);
+        GetById = async (id, ct) => OhDataResult.Success(await db.Categories.FindAsync([id], ct));
+    }
+}
 ```
 
-A `CategoryProfile` follows the same shape with `GetQueryable`/`GetById`. Leaving its
-`Put`/`Patch`/`Delete` unassigned is a feature: those routes simply won't exist.
+`CategoryProfile` assigns only `GetQueryable`/`GetById`, so `Categories` is read-only:
+`Put`/`Patch`/`Delete` routes simply do not exist.
 
 ## 4. Wire it up, with SQL logging on
 
 `AddOhData`/`MapOhData` live in the framework's `Microsoft.Extensions.DependencyInjection` and
 `Microsoft.AspNetCore.Builder` namespaces, so they need no dedicated `using`.
 
+<!-- compile -->
 ```csharp
 // Program.cs
 using Microsoft.EntityFrameworkCore;

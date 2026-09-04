@@ -24,6 +24,7 @@ dotnet add package Microsoft.EntityFrameworkCore.InMemory
 
 Your model is an ordinary CLR class. Nothing OData-specific here.
 
+<!-- compile -->
 ```csharp
 // Product.cs
 namespace ShopApi;
@@ -41,6 +42,7 @@ public class Product
 OhData reads and writes through your EF Core `DbContext` — the profile in the next step injects it.
 This one exposes a single `Products` set and seeds a few rows so there is something to query.
 
+<!-- compile -->
 ```csharp
 // AppDbContext.cs
 using Microsoft.EntityFrameworkCore;
@@ -71,6 +73,7 @@ The profile injects `AppDbContext` through its constructor. Profiles are registe
 each request gets its own profile instance holding that request's `DbContext` — the ordinary
 ASP.NET Core lifetime, no extra plumbing.
 
+<!-- compile -->
 ```csharp
 // ProductProfile.cs
 using System.Linq;
@@ -133,6 +136,7 @@ DI-build time) and `MapOhData` (registers the routes after `app.Build()`).
 `AddOhData` and `MapOhData` live in the framework's `Microsoft.Extensions.DependencyInjection`
 and `Microsoft.AspNetCore.Builder` namespaces, so no extra `using` is needed for them.
 
+<!-- compile -->
 ```csharp
 // Program.cs
 using Microsoft.EntityFrameworkCore;
