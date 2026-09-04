@@ -251,12 +251,12 @@ public class OperationCollectionPagingTests
         await using TestFixture fx = await BuildAsync();
 
         using var request = new HttpRequestMessage(HttpMethod.Get, "/odata/OpPagedItems/TopRated");
-        request.Headers.TryAddWithoutValidation("Prefer", "maxpagesize=4");
+        request.Headers.TryAddWithoutValidation("Prefer", "odata.maxpagesize=4");
         HttpResponseMessage response = await fx.Client.SendAsync(request);
 
         JsonElement json = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(4, json.GetProperty("value").GetArrayLength());
-        Assert.Equal("maxpagesize=4", Assert.Single(response.Headers.GetValues("Preference-Applied")));
+        Assert.Equal("odata.maxpagesize=4", Assert.Single(response.Headers.GetValues("Preference-Applied")));
         Assert.True(json.TryGetProperty("@odata.nextLink", out _));
     }
 

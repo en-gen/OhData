@@ -57,7 +57,7 @@ public sealed class NestedMaxPageSizePreferenceTests
     // FAILS WITHOUT THE FIX: four books and `?$skip=4`.
     [Theory]
     [InlineData("odata.maxpagesize=2")]  // OData 4.0 spelling
-    [InlineData("maxpagesize=2")]        // OData 4.01 spelling
+    [InlineData("maxpagesize=2")]        // OData 4.01 spelling -- still ACCEPTED on the request
     public async Task NestedPage_HonoursASmallerRequestedPageSize_UnderBothSpellings(string prefer)
     {
         using var connection = new SqliteConnection("Data Source=:memory:");
@@ -277,7 +277,7 @@ public sealed class NestedMaxPageSizePreferenceTests
             fx, "/odata/BeAuthors?$filter=Id eq 1&$expand=Books", "odata.maxpagesize=2");
 
         string applied = Assert.Single(response.Headers.GetValues("Preference-Applied"));
-        Assert.Equal("maxpagesize=2", applied);
+        Assert.Equal("odata.maxpagesize=2", applied);
     }
 
     // The continuation route emits no Preference-Applied at all, before or after: it never did, and
