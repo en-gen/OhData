@@ -80,11 +80,11 @@ DELETE sits inside run-to-run noise in both directions.
 
 **No allocation regression either, and this is the firmer half** — allocations are counted, not
 timed, so they are immune to machine state. The largest move on any route is **+348 bytes**
-(`$select`), and on the four key-addressed routes it is a uniform **+41 bytes**. Read that as an upper bound rather
-than as a measurement of #581's object: the MS OData control, whose code is **byte-identical in
-both trees**, moved by 0 to +72 bytes on the same routes with no pattern, which puts +41 bytes at
-the measurement floor. Whatever `OhDataResult<T>` costs per request, it does not resolve above
-noise at this scale.
+(`$select`), and on the four key-addressed routes it is a uniform **+41 bytes**. Read that as an
+upper bound rather than as a measurement of #581's object: the MS OData control, whose code is
+**byte-identical in both trees**, moved by 0 to +72 bytes on the same routes with no pattern, which
+puts +41 bytes at the measurement floor. Whatever `OhDataResult<T>` costs per request, it does
+not resolve above noise at this scale.
 
 **DELETE's +17.2% is the one deviation, and it has a mechanism.** Its handler went from
 `Task<bool>` — for which the runtime hands back a **cached** completed task — to
@@ -110,9 +110,9 @@ matched scope, the same routes are marginally faster. Two consequences worth kee
 The suite has a second, EF Core/SQLite-backed half covering `$expand` and `$levels`. Its numbers
 were withheld from earlier revisions of this page because the shared run config was too noisy on
 them to publish trustworthy magnitudes. They now run under their own heavier config
-(`InvocationCount=32`, 30 measured iterations, 50–100 warmup), which fixed the bimodality — but the
-standing decision was to republish only once numbers hold **across repeated runs**, and this is one
-run. So they are recorded here with their error bars visible and stay out of the README.
+(`InvocationCount=32`, 30 measured iterations, 50–100 warmup), which fixed the bimodality — but
+the standing decision was to republish only once numbers hold **across repeated runs**, and this
+is one run. So they are recorded here with their error bars visible and stay out of the README.
 
 They also come from a **six-suite run**, not the single-suite run the table above uses, and the
 control section showed that scope difference inflating short-route timings by up to 30%. The
@@ -226,7 +226,8 @@ the same dataset as iteration N — the same discipline used in
    but the two envelopes are not semantically identical, and the smoke gate does not check for it.
 7. **`@odata.context` differs**: `#BenchDepartments` on OhData vs
    `#BenchDepartments(Employees())` on MS OData — OhData omits the expand clause from the context
-   URL. Tracked as [#648](https://github.com/en-gen/OhData/issues/648) — read there before treating this as settled; nothing asserts context URLs today.
+   URL. Tracked as [#648](https://github.com/en-gen/OhData/issues/648) — read there before treating
+   this as settled; nothing asserts context URLs today.
 8. **`MaxTop` means different things on the two hosts.** OhData treats it as an implicit page
    size, applied even to a request that sends no `$top`; MS's `[EnableQuery(MaxTop=...)]` only
    caps a client-*supplied* `$top` and does nothing to an unpaged request on its own. This is
