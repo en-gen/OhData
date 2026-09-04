@@ -95,9 +95,9 @@ public class ProductProfile : EntitySetProfile<int, Product>
         // Collection GET. GetQueryable hands the framework an un-materialized IQueryable, so it can
         // compose $filter/$orderby/$skip/$top onto it; EF Core then materializes the result
         // asynchronously (over a real database provider that becomes one SQL query). Returning the
-        // IQueryable is itself synchronous — that is why this single handler stays Task.FromResult
+        // IQueryable is itself synchronous — that is why this single handler stays SuccessTask
         // while the reads and writes below are genuinely async.
-        GetQueryable = _ => Task.FromResult<IQueryable<Product>>(db.Products);
+        GetQueryable = _ => OhDataResult.SuccessTask<IQueryable<Product>>(db.Products);
 
         // Single entity GET → GET /odata/Products({key}). Returns null (→ 404) when the row is absent.
         GetById = async (id, ct) => await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);

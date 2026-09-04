@@ -111,7 +111,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
         // you a standalone GET /odata/Products(1)/Category route.)
         HasRequired(x => x.Category);
 
-        GetQueryable = _ => Task.FromResult<IQueryable<Product>>(db.Products);
+        GetQueryable = _ => OhDataResult.SuccessTask<IQueryable<Product>>(db.Products);
         GetById      = (id, ct) => db.Products.SingleOrDefaultAsync(p => p.Id == id, ct);
 
         Post = async (product, ct) =>
