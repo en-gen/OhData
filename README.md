@@ -495,11 +495,13 @@ The full documentation — getting started, the EF Core + SQLite walkthrough, an
 | Individual property access, reads/writes, and `/$value` | [docs/property-access.md](docs/property-access.md) |
 | Deep insert (nested related entities in POST), and deep update's enforced non-support | [docs/deep-insert.md](docs/deep-insert.md) |
 | Delta mapping (DTO → entity write path, dependency-free) | [docs/delta-mapping.md](docs/delta-mapping.md) |
+| Error handling (`OhDataResult<T>`, the rejection factories, the error envelope) | [docs/error-handling.md](docs/error-handling.md) |
 | Open types (dynamic property bags on complex types) | [docs/open-types.md](docs/open-types.md) |
 | Bound functions and actions | [docs/bound-operations.md](docs/bound-operations.md) |
 | ETags and optimistic concurrency | [docs/etags.md](docs/etags.md) |
 | Authorization | [docs/authorization.md](docs/authorization.md) |
 | API versioning | [docs/versioning.md](docs/versioning.md) |
+| Observability (metrics, tracing, logging) | [docs/observability.md](docs/observability.md) |
 | OpenAPI (built-in `AddOpenApi`) integration | [docs/openapi.md](docs/openapi.md) |
 | Swashbuckle integration | [docs/swashbuckle.md](docs/swashbuckle.md) |
 | NSwag integration | [docs/nswag.md](docs/nswag.md) |
@@ -507,5 +509,7 @@ The full documentation — getting started, the EF Core + SQLite walkthrough, an
 | OData 4.0 spec compliance | [docs/spec-compliance.md](docs/spec-compliance.md) |
 | Framework architecture | [docs/architecture.md](docs/architecture.md) |
 | Migrating from Microsoft.AspNetCore.OData | [docs/migrating-from-microsoft-odata.md](docs/migrating-from-microsoft-odata.md) |
+| Differences from Microsoft.AspNetCore.OData | [docs/differences-from-microsoft-odata.md](docs/differences-from-microsoft-odata.md) |
+| Performance & benchmarks | [docs/performance.md](docs/performance.md) |
 | Deployment (Dockerfile, Render) | [docs/deployment.md](docs/deployment.md) |
 | Releasing to NuGet | [docs/releasing.md](docs/releasing.md) |
