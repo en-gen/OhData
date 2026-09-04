@@ -44,6 +44,36 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   that gate, so a check would downgrade the `501`. `GetById` applies neither and keeps its zero-cost
   no-option path.
 
+- **⚠ BREAKING CHANGE — `/$count` negotiates nothing (#580).** §11.2.9 is explicit on both halves:
+  the body "MUST … [be] a simple scalar integer value with media type `text/plain`", and "Content
+  negotiation using the Accept request header or the `$format` system query option **is not allowed**
+  with the path segment `/$count`". A segment that may not be negotiated has no business refusing a
+  client that tried — the answer is `text/plain` either way.
+
+  ```
+  GET /Widgets/$count   Accept: application/xml   ->  406        (before)   ->  200 text/plain
+  GET /Widgets/$count   ?$format=xml              ->  400        (before)   ->  200 text/plain
+  GET /Widgets/$count   Accept: application/json  ->  200 text/plain        (unchanged)
+  ```
+
+  **This reverses a ruling recorded in `CLAUDE.md`** — *"`Accept: application/xml` still `406`s,
+  unchanged — §11.2.9 forbids the CLIENT to negotiate, not the server to decline a media type the
+  client refused (RFC 9110 §12.5.1)"*. That reading is defensible in isolation but was never checked
+  against `Microsoft.AspNetCore.OData`, which settles it the other way: `ODataCountMediaTypeMapping`
+  matches every `/$count` path at quality **1**, and `ODataOutputFormatter.CanWriteResult` then
+  overrides the content type — *"If a media mapping was found, use that and override the value
+  specified by the controller"*. MS never negotiates on this segment and never `406`s.
+
+  §11.2.9 is the **specific** rule over minimal-conformance item 5.1's general *"MUST conform to the
+  semantics [of] Accept … or fail the request"*, and this direction un-breaks a working client rather
+  than breaking one. `$format` moves with it, because the clause names both in one sentence:
+  refusing one while ignoring the other would give a single disallowed act two different answers.
+
+  Scoped to that segment by skipping the negotiation filter for it, not by widening any producible
+  list — an ordinary read still `406`s a client that refuses JSON, and `$format=xml` is still `400`
+  everywhere else. `EndpointMappingTests.Accept_TextXml_OnCount_Returns406` is renamed and its
+  expectation inverted in place, so the reversal is visible where the old one lived.
+
 
 - **⚠ BREAKING CHANGE — every entity-set handler delegate returns `Task<OhDataResult<T>>` (#581).**
   The completion of the work #605 started: a handler can now **return** a rejection, not only throw
