@@ -32,10 +32,14 @@ namespace OhData.AspNetCore.Tests;
 /// the SQL one.
 /// </para>
 /// <para>
-/// A <c>400</c> survives for exactly two cases: a clause the binders cannot bind at all, and a
-/// single-valued navigation (nothing to filter or order). Loud either way, never dropped.
-/// <c>$count</c> is answered from the FILTERED array per §11.2.5.5. <c>$top</c>/<c>$skip</c> remain a
-/// <c>400</c> (#294) — a separate decision about windowing a delegate's answer, untouched here.
+/// <c>$top</c>/<c>$skip</c> are applied too, reversing #294 — whose stated reason (the delegate's answer
+/// being unshaped downstream) is exactly what this change makes false. They apply AFTER the count,
+/// per §11.2.5.5. <c>MaxExpandTop</c> is still not imposed: only the window the CLIENT asked for.
+/// </para>
+/// <para>
+/// A <c>400</c> survives only where there is nothing to shape — a clause the binders cannot bind, a
+/// single-valued navigation, and a navigation expanded beneath a raw-served parent (that branch does
+/// not recurse, so its handler never runs). Loud either way, never dropped.
 /// </para>
 /// </summary>
 public sealed class Issue650NestedOptionsOnDelegateNavTests
@@ -45,12 +49,19 @@ public sealed class Issue650NestedOptionsOnDelegateNavTests
         public int Id { get; set; }
         public string Code { get; set; } = "";
         public List<N650Line> Lines { get; set; } = new();
+        public N650Owner Owner { get; set; } = null!;
     }
 
     public sealed class N650Line
     {
         public int Id { get; set; }
         public string Sku { get; set; } = "";
+    }
+
+    public sealed class N650Owner
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = "";
     }
 
     private static readonly N650Order[] Store =
@@ -78,6 +89,12 @@ public sealed class Issue650NestedOptionsOnDelegateNavTests
                 batchGetAll: (keys, ct) => Task.FromResult(
                     keys.SelectMany(k => LinesByOrder[k].Select(l => new { Key = k, Line = l }))
                         .ToLookup(x => x.Key, x => x.Line)));
+
+            // Single-valued and delegate-backed: there is nothing to filter or order on one value.
+            HasOptional<N650Owner>(
+                x => x.Owner,
+                (key, ct) => Task.FromResult<N650Owner?>(new N650Owner { Id = key, Name = "O" + key }),
+                refTargetEntitySet: null);
 
             GetQueryable = () => Store.AsQueryable();
         }
@@ -195,6 +212,47 @@ public sealed class Issue650NestedOptionsOnDelegateNavTests
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
         Assert.Contains("\"Lines@odata.count\":2", body, StringComparison.Ordinal);
         Assert.Contains("\"Lines@odata.count\":1", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AnAscendingAndMultiKeyOrderBy_AreApplied()
+    {
+        // Covers the OrderBy (ascending) and ThenBy operators, which the single descending case above
+        // does not reach — TryBuildDelegateNavShaper picks a different Enumerable method for each of
+        // the four (first/subsequent x asc/desc) combinations.
+        TestFixture fx = await HostAsync();
+
+        HttpResponseMessage asc = await fx.Client.GetAsync("/odata/N650Orders?$expand=Lines($orderby=Sku asc)");
+        string ascBody = await asc.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.OK, asc.StatusCode);
+        Assert.True(
+            ascBody.IndexOf("\"S1\"", StringComparison.Ordinal) < ascBody.IndexOf("\"S2\"", StringComparison.Ordinal),
+            $"ascending $orderby must keep S1 before S2; got: {ascBody}");
+
+        HttpResponseMessage multi = await fx.Client.GetAsync(
+            "/odata/N650Orders?$expand=Lines($orderby=Sku desc,Id asc)");
+        string multiBody = await multi.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.OK, multi.StatusCode);
+        Assert.True(
+            multiBody.IndexOf("\"S2\"", StringComparison.Ordinal) < multiBody.IndexOf("\"S1\"", StringComparison.Ordinal),
+            $"the leading key must still decide; got: {multiBody}");
+    }
+
+    [Theory]
+    [InlineData("$filter=Name eq 'O1'")]
+    [InlineData("$orderby=Name")]
+    public async Task AClauseOnASingleValuedNavigation_Is400(string nested)
+    {
+        // Nothing to filter or order on one value, so this is the "nothing to shape" 400 rather than
+        // a refusal to shape it.
+        TestFixture fx = await HostAsync();
+
+        HttpResponseMessage res = await fx.Client.GetAsync($"/odata/N650Orders?$expand=Owner({nested})");
+        string body = await res.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        Assert.Contains("InvalidQueryOption", body, StringComparison.Ordinal);
+        Assert.Contains("Owner", body, StringComparison.Ordinal);
     }
 
     [Fact]
