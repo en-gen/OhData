@@ -902,6 +902,25 @@ status codes or headers.
   (`$compute`, aliases, cross joins) keep their own honest ❌ row.
 
 
+- **The README's DTO `$expand` guidance recommended an unconditional `JOIN` (#651).** It told readers
+  to project the navigation eagerly, then conceded *"the `JOIN` is in the query whether or not the
+  client expands, so project a navigation you expect to be expanded, and leave out one you do not."*
+  Measured, that understates it: the framework composes no projection when a request carries neither
+  `$select` nor `$expand`, so a plain `GET /Orders` emits `LEFT JOIN "Lines"`, **fetches every child
+  row across the wire, and discards them at serialization** — fetch-then-discard on the commonest
+  request on the resource, scaling with the fan-out.
+
+  It now leads with `HasMany(nav, batchGetAll: …)`, which the section never mentioned: `GET /Orders`
+  touches no child table at all, and `?$expand=Lines` issues one extra batched query
+  (`WHERE OrderId IN (…)`), not one per row. Nested `$filter`/`$orderby`/`$top`/`$skip`/`$count` all
+  work on it as of #650, which is what makes this recommendable without a caveat. The eager
+  projection is kept as the documented alternative for a navigation expanded on essentially every
+  request, where the single round-trip wins — stated as a trade rather than as the way.
+
+  Riding along: the "declare the projection once and reuse it" example no longer eagerly projects a
+  navigation either, since it would have contradicted the advice three paragraphs above it.
+
+
 ### Build
 
 - **`PackageValidationBaselineVersion` moves to `1.7.0`, and the instruction moves to the other end
