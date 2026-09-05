@@ -118,8 +118,11 @@ internal static class NwData
 
 public sealed class Issue320NestedWindowThroughServeRawParentTests
 {
+    // #650: the message is now position-specific. Reached directly this navigation IS windowed;
+    // only beneath a raw-served parent -- where its delegate never runs -- is the option refused.
     private const string DelegateBackedMessage =
-        "A nested $top/$skip is not supported on the delegate-backed navigation 'Cs'";
+        "A nested $top/$skip is not supported on 'Cs' here: it is expanded beneath a parent served " +
+        "from its own materialized graph";
 
     private static Task<TestFixture> BuildAsync(NwDelegateCounter counter) =>
         TestHostBuilder.BuildAsync(
@@ -152,11 +155,18 @@ public sealed class Issue320NestedWindowThroughServeRawParentTests
     }
 
     [Fact]
-    public async Task NestedWindow_Rejection_IsByteIdenticalToTheDirectlyReachedOne()
+    public async Task TheSameNavigationReachedDirectly_IsWindowed_NotRejected()
     {
-        // The two throw sites share one message builder so they cannot drift. Reaching the SAME
-        // delegate-backed navigation directly (via its own entity set, where ExpandLevelAsync walks
-        // it as RunDelegate) must produce the identical error body.
+        // INVERTED BY #650, and the inversion is the finding. This asserted that the two throw sites
+        // produced byte-identical bodies, which was right while the option could not be applied
+        // anywhere. It can now: reached DIRECTLY (via its own entity set, walked as RunDelegate),
+        // the delegate runs and the framework windows its materialized children.
+        //
+        // Reached BENEATH the raw-served parent it is still a 400, because that branch does not
+        // recurse — the rows come out of the parent's own materialized graph and the Cs delegate
+        // never runs, so there is nothing to window. The two answers now differ BY POSITION, which is
+        // why the message did too: NestedWindowUnderRawParentRejection names the position rather than
+        // offering "declare it delegate-less", which is no longer the remedy for anything.
         var counter = new NwDelegateCounter();
         await using TestFixture fx = await BuildAsync(counter);
 
@@ -164,8 +174,14 @@ public sealed class Issue320NestedWindowThroughServeRawParentTests
         HttpResponseMessage direct = await fx.Client.GetAsync("/odata/NwBs?$expand=Cs($top=1)");
 
         Assert.Equal(HttpStatusCode.BadRequest, viaParent.StatusCode);
-        Assert.Equal(HttpStatusCode.BadRequest, direct.StatusCode);
-        Assert.Equal(await direct.Content.ReadAsStringAsync(), await viaParent.Content.ReadAsStringAsync());
+        Assert.Contains("expanded beneath a parent served from its own materialized graph",
+            await viaParent.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+
+        Assert.Equal(HttpStatusCode.OK, direct.StatusCode);
+        string directBody = await direct.Content.ReadAsStringAsync();
+        Assert.True(counter.CCalls > 0, "reached directly, the Cs delegate must run");
+        // $top=1 really applied: one child per parent, not the delegate's full answer.
+        Assert.DoesNotContain("\"C3\"", directBody, StringComparison.Ordinal);
     }
 
     [Fact]

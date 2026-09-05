@@ -3857,13 +3857,70 @@ internal static class OhDataEndpointFactory
             // windows a nested $top there (and where it does NOT — a ServeRaw nav whose branch was
             // never pushed down at all — the option is still silently ignored; see the class note on
             // ClauseHasNestedTopOrSkip).
-            if (expandItem.TopOption is not null || expandItem.SkipOption is not null)
+            // #650 widens this from $top/$skip to $filter and $orderby, which were SILENTLY
+            // DROPPED here — `$expand=Lines($filter=Sku eq 'S1')` answered 200 with every row, which
+            // is indistinguishable from a filter that matched everything. Same substrate, same
+            // reason: the delegate's answer is not an IQueryable and nothing downstream re-shapes
+            // it. $select is NOT in this set — it is applied below, to the materialized children.
+            // #650: a nested $top/$skip is APPLIED on the RunDelegate path (below, after the count) and
+            // still refused everywhere else. #294 refused it universally, reasoning that the delegate
+            // "returns its FULL answer and nothing downstream windows it" — true then, and this change
+            // is what makes it false: the framework now windows the materialized children itself.
+            //
+            // Blank keeps the refusal, and that is not an oversight. Under Blank the candidate sets
+            // disagree, so the navigation is deliberately served EMPTY — the framework does not have
+            // the real collection. Answering `$skip=5` from an empty array returns empty, which the
+            // client cannot distinguish from "there were fewer than five", i.e. exactly the silent
+            // wrong answer this whole issue is about. Same reason $filter/$orderby refuse there.
+            if (treatment.Treatment != NavTreatment.RunDelegate
+                && (expandItem.TopOption is not null || expandItem.SkipOption is not null))
             {
                 // Thrown (not returned) for the same reason EnsureWithinExpandCeiling throws below:
                 // it avoids IResult threading through this void recursive walk. All 5 collection-GET
                 // call sites of ApplyCollectionPipelineAsync already catch Microsoft.OData.ODataException
                 // and surface it as 400 InvalidQueryOption.
                 throw NestedWindowRejection(propName, treatment.Treatment);
+            }
+
+            // #650: a nested $filter/$orderby is APPLIED here, in memory, against the children the
+            // delegate returns — not refused. It used to be silently dropped, which is the defect;
+            // refusing it would have been honest but strictly worse for the client when the option is
+            // answerable, and it is: the delegate hands back the full related collection, so filtering
+            // and ordering it is exactly what the client asked for.
+            //
+            // Falls back to a 400 only when the clause cannot be BOUND (a construct Microsoft's
+            // binders reject for this element type). Loud either way; never dropped.
+            Func<object?, object?>? navShaper = null;
+            if (expandItem.FilterOption is not null || expandItem.OrderByOption is not null)
+            {
+                // treatment.Route is null under Blank (the candidate sets disagree, so the nav is
+                // served empty); there is nothing to shape, and an option we cannot honour is still
+                // refused rather than dropped — NestedClauseRejection's non-RunDelegate arm says so.
+                Type? shapeElem = isCollectionNav ? treatment.Route?.NavItemType : null;
+                if (shapeElem is null)
+                {
+                    // A single-valued navigation has nothing to filter or order.
+                    throw NestedClauseRejection(
+                        propName,
+                        treatment.Treatment,
+                        expandItem.FilterOption is not null ? "$filter" : "$orderby",
+                        expandItem.FilterOption is not null ? "server-side filtering" : "server-side ordering");
+                }
+
+                try
+                {
+                    navShaper = TryBuildDelegateNavShaper(
+                        expandItem.FilterOption, expandItem.OrderByOption, shapeElem,
+                        registration.EdmModel, s_delegateNavBinderSettings);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    throw NestedClauseRejection(
+                        propName,
+                        treatment.Treatment,
+                        expandItem.FilterOption is not null ? "$filter" : "$orderby",
+                        expandItem.FilterOption is not null ? "server-side filtering" : "server-side ordering");
+                }
             }
 
             if (treatment.Treatment == NavTreatment.Blank)
@@ -3961,11 +4018,51 @@ internal static class OhDataEndpointFactory
             // (same ordering guarantee as Stage 1: walker first, delegate-safety overwrite after).
             for (int i = 0; i < items.Count; i++)
             {
+                // #650: shape BEFORE serializing and before counting. Order matters and follows
+                // §11.2.5.5 — the count is of the FILTERED collection — which falls out of doing this
+                // first: the array the count is taken from below is already the filtered one.
+                if (navShaper is not null && relatedByIndex[i] is not null)
+                {
+                    relatedByIndex[i] = navShaper(relatedByIndex[i]);
+                }
+
                 // Fold-in #2: cardinality comes from the EDM (isCollectionNav, already resolved
                 // above), never sniffed from relatedByIndex[i]'s own CLR shape.
                 jsonItems[i][expandKey] = SerializeBounded(
                     relatedByIndex[i], targetEdmType, registration.EdmModel, nestedClause, serializerOptions,
                     isCollectionValue: isCollectionNav);
+
+                // #650: a nested $count IS answerable here, unlike $filter/$orderby/$top above, so it
+                // is implemented rather than refused — refusing something free would be gratuitous.
+                // Honest because the delegate's answer is not windowed: nothing between it and here
+                // truncates (the $top/$skip rejection above is what guarantees that), so this array
+                // IS the full related collection and its length IS the count. Contrast the pushdown
+                // path, where materialization is capped at MaxExpandTop + 1 and WriteNestedCountAndWindow
+                // must call EnsureWithinExpandCeiling before it can trust the number.
+                if (isCollectionNav && expandItem.CountOption == true
+                    && jsonItems[i][expandKey] is JsonArray countArr)
+                {
+                    jsonItems[i][$"{expandKey}@odata.count"] = countArr.Count;
+                }
+
+                // #650: window LAST, and specifically after the count — §11.2.5.5 makes
+                // Nav@odata.count the count of the collection after $filter and BEFORE $top/$skip, so
+                // counting a windowed array would report the page size as the total. That is #379's
+                // defect one level down. The pushdown path sequences these the same way
+                // (WriteNestedCountAndWindow counts, then calls ApplyNestedWindow).
+                //
+                // MaxExpandTop is deliberately NOT imposed here: bounding a delegate's answer behind
+                // its back stays out of scope (see the Declared deviations table). This applies only
+                // the window the CLIENT asked for.
+                if (isCollectionNav
+                    && (expandItem.SkipOption is not null || expandItem.TopOption is not null)
+                    && jsonItems[i][expandKey] is JsonArray windowArr)
+                {
+                    ApplyNestedWindow(
+                        windowArr,
+                        expandItem.SkipOption is long dsk ? (int)Math.Min(dsk, int.MaxValue) : null,
+                        expandItem.TopOption is long dtp ? (int)Math.Min(dtp, int.MaxValue) : null);
+                }
             }
 
             if (nestedClause is null) continue;
@@ -4050,6 +4147,91 @@ internal static class OhDataEndpointFactory
     // sites (the navigation reached directly by ExpandLevelAsync, and one reached only through a
     // ServeRaw parent's materialized graph) can never drift apart. The RunDelegate wording is
     // byte-identical to the message #294 shipped — it is quoted in docs and asserted in tests.
+
+    // #650: binder settings for the in-memory delegate path. HandleNullPropagation is TRUE here and
+    // FALSE on the pushdown path (cachedBinderSettings), and the difference is required rather than an
+    // oversight: SQL already evaluates `x.X eq 'y'` over a NULL row to "not matched", so the SQL path
+    // needs no guards, while LINQ-to-Objects would dereference and throw NullReferenceException on the
+    // same data. Microsoft's own default resolves the same way round -- False for IQueryable, True for
+    // IEnumerable. Shared as a static: ODataQuerySettings is read-only in every consumer it reaches
+    // (see the note above cachedBinderSettings), unlike ODataQueryContext which is strictly per request.
+    private static readonly ODataQuerySettings s_delegateNavBinderSettings =
+        new() { HandleNullPropagation = HandleNullPropagationOption.True };
+
+    // #650: apply a delegate-backed navigation's nested $filter/$orderby to the children the delegate
+    // already returned, in memory. Built once per (navigation, request) and reused for every parent.
+    //
+    // The BINDING is Microsoft's own FilterBinder/OrderByBinder via the same BindNavShape the pushdown
+    // path uses, so a clause means the same thing on both paths; only the EXECUTION differs —
+    // LINQ-to-Objects here, SQL there. That divergence is real (string comparison, null ordering and
+    // culture follow the CLR rather than the database's collation) and it is the same divergence
+    // Microsoft.AspNetCore.OData has when [EnableQuery] runs over an in-memory source, which is why
+    // it is documented rather than avoided.
+    //
+    // Deliberately NOT routed through ApplyNavShape: that composes $skip/$top and the MaxExpandTop
+    // count bound as well, all of which are pushdown concerns here ($top/$skip on a delegate-backed
+    // nav remain a 400, #294). Composing only what this path implements keeps the two honest.
+    //
+    // Returns null when nothing is requested. THROWS when a clause cannot be bound, which the caller
+    // turns into the same 400 the option used to get unconditionally — a clause we cannot honour is
+    // still refused loudly, never dropped.
+    private static Func<object?, object?>? TryBuildDelegateNavShaper(
+        FilterClause? filter, OrderByClause? orderBy, Type elem, IEdmModel model,
+        ODataQuerySettings binderSettings)
+    {
+        if (filter is null && orderBy is null) return null;
+
+        NavShapeBindings bound = BindNavShape(filter, orderBy, elem, model, binderSettings);
+
+        Type seqType = typeof(IEnumerable<>).MakeGenericType(elem);
+        ParameterExpression src = Expression.Parameter(typeof(object), "src");
+        Expression seq = Expression.Convert(src, seqType);
+
+        if (bound.Predicate is not null)
+            seq = Expression.Call(_enumerableWhere.MakeGenericMethod(elem), seq, bound.Predicate);
+
+        if (bound.OrderBy is { Count: > 0 })
+        {
+            bool first = true;
+            foreach ((LambdaExpression keySelector, bool descending) in bound.OrderBy)
+            {
+                MethodInfo op = (first, descending) switch
+                {
+                    (true, false) => _enumerableOrderBy,
+                    (true, true) => _enumerableOrderByDescending,
+                    (false, false) => _enumerableThenBy,
+                    (false, true) => _enumerableThenByDescending,
+                };
+                seq = Expression.Call(
+                    op.MakeGenericMethod(elem, keySelector.ReturnType), seq, keySelector);
+                first = false;
+            }
+        }
+
+        // Materialise: the caller serialises the result and may count it, and a lazy sequence would
+        // re-run the predicate on every enumeration.
+        seq = Expression.Call(_enumerableToList.MakeGenericMethod(elem), seq);
+
+        return Expression.Lambda<Func<object?, object?>>(
+            Expression.Convert(seq, typeof(object)), src).Compile();
+    }
+
+    // #650: the $filter/$orderby twin. Deliberately a SEPARATE method rather than a parameter on
+    // NestedWindowRejection, whose RunDelegate wording is byte-identical to what #294 shipped and is
+    // quoted in docs and asserted in tests — folding a format argument into it would put those bytes
+    // one edit away from moving. Same shape, same two remedies, so the two read as one rule.
+    private static Microsoft.OData.ODataException NestedClauseRejection(
+        string navName, NavTreatment treatment, string option, string capability) =>
+        treatment == NavTreatment.RunDelegate
+            ? new Microsoft.OData.ODataException(
+                $"A nested {option} is not supported on the delegate-backed navigation '{navName}'; " +
+                $"declare it delegate-less (no Handler/BatchHandler) to enable {capability}, " +
+                "or remove the option.")
+            : new Microsoft.OData.ODataException(
+                $"A nested {option} is not supported on the navigation '{navName}': the entity sets " +
+                "exposing this type disagree about whether it is delegate-backed, so it is served " +
+                $"empty and no {option} can be applied. Remove the option.");
+
     private static Microsoft.OData.ODataException NestedWindowRejection(string navName, NavTreatment treatment) =>
         treatment == NavTreatment.RunDelegate
             ? new Microsoft.OData.ODataException(
@@ -4060,6 +4242,14 @@ internal static class OhDataEndpointFactory
                 $"A nested $top/$skip is not supported on the navigation '{navName}': the entity sets " +
                 "exposing this type disagree about whether it is delegate-backed, so it is served " +
                 "empty and no window can be applied. Remove the option.");
+
+    // #650: the #320 position-specific twin of NestedWindowRejection. See its throw site for why the
+    // condition is about WHERE the navigation was reached rather than how it is declared.
+    private static Microsoft.OData.ODataException NestedWindowUnderRawParentRejection(string navName) =>
+        new(
+            $"A nested $top/$skip is not supported on '{navName}' here: it is expanded beneath a " +
+            "parent served from its own materialized graph, so its handler never runs and there is " +
+            "nothing to window. Expand it directly, or remove the option.");
 
     // #466: the message for a multi-level $levels on a delegate-backed navigation. Deliberately
     // shaped like NestedWindowRejection's RunDelegate arm — same substrate, same reason (the option
@@ -4204,7 +4394,19 @@ internal static class OhDataEndpointFactory
             if (navTreatment != NavTreatment.ServeRaw &&
                 (item.TopOption is not null || item.SkipOption is not null))
             {
-                throw NestedWindowRejection(navName, navTreatment);
+                // #650: still refused HERE, and the reason is now specific to this position rather
+                // than to the navigation. Reached directly, a delegate-backed navigation's nested
+                // $top/$skip is applied (ExpandLevelAsync windows the materialized children).
+                // Reached BENEATH a raw-served parent it is not: the rows come out of the parent's
+                // own materialized graph and this navigation's delegate never runs, so there is
+                // nothing for the window to be applied to. Refusing keeps #320's guarantee — the
+                // option is never dropped without a trace — and the message no longer offers
+                // "declare it delegate-less", which is no longer the remedy for this shape.
+                // Blank keeps its own message: the sets disagree about this navigation, which refuses
+                // it wherever it is reached, so naming the POSITION would name the lesser reason.
+                throw navTreatment == NavTreatment.RunDelegate
+                    ? NestedWindowUnderRawParentRejection(navName)
+                    : NestedWindowRejection(navName, navTreatment);
             }
 
             if (item.SelectAndExpand is { } deeper)
@@ -5634,7 +5836,7 @@ internal static class OhDataEndpointFactory
     {
         Type elem = engaged.Binding.ElementType;
         Expression access = Expression.Property(owner, engaged.Binding.Property);
-        NavShapeBindings bound = BindNavShape(engaged, elem, model, binderSettings);
+        NavShapeBindings bound = BindNavShape(engaged.Filter, engaged.OrderBy, elem, model, binderSettings);
         if (bound.Predicate is not null)
             access = Expression.Call(_enumerableWhere.MakeGenericMethod(elem), access, bound.Predicate);
         return Expression.Call(_enumerableCount.MakeGenericMethod(elem), access);
@@ -6072,7 +6274,7 @@ internal static class OhDataEndpointFactory
             // nav element type is invariant under $levels (BuildLevelsNavBinding requires
             // elementType == ownerType) and expression trees are immutable, so re-binding per level
             // would allocate identical nodes for no benefit.
-            NavShapeBindings levelsBound = BindNavShape(engaged, nav.ElementType, model, binderSettings);
+            NavShapeBindings levelsBound = BindNavShape(engaged.Filter, engaged.OrderBy, nav.ElementType, model, binderSettings);
             return BuildLevelsNavAccess(owner, engaged, engaged.Levels, model, levelsBound);
         }
 
@@ -6103,7 +6305,7 @@ internal static class OhDataEndpointFactory
         }
 
         access = ApplyNavShape(
-            access, engaged, elem, model, BindNavShape(engaged, elem, model, binderSettings), maxExpandTop,
+            access, engaged, elem, model, BindNavShape(engaged.Filter, engaged.OrderBy, elem, model, binderSettings), maxExpandTop,
             countViaCarrier: countViaCarrier);
 
         // #323 (Change A): fold EVERY element-wise projection — leaf or intermediate — into the query
@@ -6140,21 +6342,28 @@ internal static class OhDataEndpointFactory
     // binder's `$it` lambda parameter and other per-clause state, so filter and orderby each get their
     // own rather than sharing one. Throws (via the binders) on a clause that cannot be bound — the
     // caller's try/catch then abandons pushdown for the request.
+    //
+    // #650 takes the clauses directly rather than an EngagedExpand, so the DELEGATE-backed path can
+    // bind the very same way. An EngagedExpand is a pushdown concept — it carries an ExpandNavBinding
+    // resolved against a navigation that engaged the projection — and a delegate-backed navigation has
+    // none by definition. Synthesising a hollow one to satisfy the signature would have made the two
+    // paths look related where they are not; the two clauses are all this ever read.
     private static NavShapeBindings BindNavShape(
-        EngagedExpand engaged, Type elem, IEdmModel model, ODataQuerySettings binderSettings)
+        FilterClause? filter, OrderByClause? orderByClause, Type elem, IEdmModel model,
+        ODataQuerySettings binderSettings)
     {
         LambdaExpression? predicate = null;
-        if (engaged.Filter is not null)
+        if (filter is not null)
         {
             var ctx = new QueryBinderContext(model, binderSettings, elem);
-            predicate = (LambdaExpression)_filterBinder.BindFilter(engaged.Filter, ctx);
+            predicate = (LambdaExpression)_filterBinder.BindFilter(filter, ctx);
         }
 
         List<(LambdaExpression, bool)>? orderBy = null;
-        if (engaged.OrderBy is not null)
+        if (orderByClause is not null)
         {
             var ctx = new QueryBinderContext(model, binderSettings, elem);
-            OrderByBinderResult? result = _orderByBinder.BindOrderBy(engaged.OrderBy, ctx);
+            OrderByBinderResult? result = _orderByBinder.BindOrderBy(orderByClause, ctx);
             for (OrderByBinderResult? cur = result; cur is not null; cur = cur.ThenBy)
             {
                 orderBy ??= new List<(LambdaExpression, bool)>();
@@ -7114,10 +7323,15 @@ internal static class OhDataEndpointFactory
     // #298/#300: the $skip/$top window shared by the $count case above (WriteNestedCountAndWindow) and
     // the $levels no-$count case (ShapeLevelsInJson) below — split out so there is exactly one place
     // that windows a JsonArray in-place, rather than two copies of the same [skip, end) rebuild.
-    private static void ApplyNestedWindow(JsonArray arr, EngagedExpand e)
+    private static void ApplyNestedWindow(JsonArray arr, EngagedExpand e) =>
+        ApplyNestedWindow(arr, e.Skip, e.Top);
+
+    // #650: the same window, callable without an EngagedExpand so the delegate-backed path shares this
+    // implementation rather than transcribing it. One site, two consumers.
+    private static void ApplyNestedWindow(JsonArray arr, int? skipOption, int? topOption)
     {
-        int skip = e.Skip is int sk && sk > 0 ? Math.Min(sk, arr.Count) : 0;
-        int end = e.Top is int tp ? Math.Min(arr.Count, skip + Math.Max(tp, 0)) : arr.Count;
+        int skip = skipOption is int sk && sk > 0 ? Math.Min(sk, arr.Count) : 0;
+        int end = topOption is int tp ? Math.Min(arr.Count, skip + Math.Max(tp, 0)) : arr.Count;
         if (skip > 0 || end < arr.Count)
         {
             // Rebuild to the [skip, end) window in one O(n) pass (Clear detaches the captured nodes so
@@ -7514,7 +7728,7 @@ internal static class OhDataEndpointFactory
                 // the JSON pass. Measured on EF Core 10 / SQLite: a windowed parent beside a nested
                 // collection throws "Translating this query requires the SQL APPLY operation, which is
                 // not supported on SQLite"; Where/OrderBy on the parent translates.
-                NavShapeBindings bound = BindNavShape(e, e.Binding.ElementType, model, binderSettings);
+                NavShapeBindings bound = BindNavShape(e.Filter, e.OrderBy, e.Binding.ElementType, model, binderSettings);
                 access = ApplyNavShape(access, e, e.Binding.ElementType, model, bound, maxExpandTop);
             }
 
@@ -7531,7 +7745,7 @@ internal static class OhDataEndpointFactory
                 if (child.Binding.IsCollection)
                 {
                     NavShapeBindings childBound =
-                        BindNavShape(child, child.Binding.ElementType, model, binderSettings);
+                        BindNavShape(child.Filter, child.OrderBy, child.Binding.ElementType, model, binderSettings);
                     childAccess = ApplyNavShape(
                         childAccess, child, child.Binding.ElementType, model, childBound, maxExpandTop);
                 }

@@ -433,10 +433,13 @@ public sealed class NestedCountTopSqlBoundTests
         Assert.Contains("\"Push-A\"", body);
         Assert.DoesNotContain("\"Push-B\"", body);
         Assert.Contains("\"Del-A\"", body);
-        // Pre-existing and untouched by #334: a nested $count on a DELEGATE-BACKED nav emits no
-        // Nav@odata.count at all (the delegate path has no counting step). Pinned here only to
-        // document that this fix neither introduces nor repairs it.
-        Assert.DoesNotContain("\"Delegated@odata.count\"", body);
+        // #650 repaired what this line used to document as a pre-existing gap ("a nested $count on
+        // a DELEGATE-BACKED nav emits no Nav@odata.count at all"). It emits one now, and it is
+        // honest: the delegate's answer is never windowed, so the array IS the full related
+        // collection. The #334 invariant this test exists for is unchanged and asserted above —
+        // the count comes from the materialized children, NOT from a carrier subquery, which is why
+        // "MixDelChildren" is still absent from the SQL.
+        Assert.Contains("\"Delegated@odata.count\":1", body);
     }
 }
 

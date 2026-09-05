@@ -349,6 +349,43 @@ status codes or headers.
   later would be breaking. `GetODataQueryable` is async now for anyone who needs it.
 
 
+- **⚠ BREAKING CHANGE — a nested `$filter`/`$orderby` on a delegate-backed navigation is now
+  APPLIED (#650).** `?$expand=Lines($filter=Sku eq 'S1')` answered `200` with **every** row —
+  indistinguishable, from the client's side, from a filter that matched everything. `$orderby` was
+  dropped the same way and `$count=true` emitted no `Lines@odata.count`, while `$top`/`$skip` on the
+  identical path correctly answered `400` (#294): three options ignored and one refused, inside a
+  single route.
+
+  Nested `$filter`/`$orderby`/`$count`/`$top` on expanded collections are **Advanced** conformance
+  (§13.1.3 item 9.2/9.4/9.5/9.6) and this service claims Minimal, so it need not support them — but
+  §11.2.5 is a MUST-fail on an unsupported option and §9.3.1's `501` sits inside the Minimal MUST
+  list (§13.1.1 item 7), so *dropping* them violates the level actually claimed. Refusing would have
+  satisfied that; **applying satisfies it better**, and these are answerable: the delegate hands back
+  the full related collection, so filtering and ordering it is exactly what the client asked for.
+
+  They are bound with Microsoft's own `FilterBinder`/`OrderByBinder` — the same `BindNavShape` call
+  the pushdown path makes — so a clause means the same thing whichever way the navigation is
+  declared. **One difference is worth knowing:** the pushdown path executes it as SQL, this path in
+  memory, so string comparison, null ordering and culture follow the CLR rather than the database's
+  collation. That is the same divergence `[EnableQuery]` has over an in-memory source, and is why
+  this path binds with `HandleNullPropagation` **on** where the SQL path has it off — LINQ-to-Objects
+  would otherwise dereference and throw where SQL evaluates `NULL` to "no match".
+
+  **`$top`/`$skip` are applied too**, reversing #294's refusal. That refusal's stated reason — the
+  delegate "returns its FULL answer and nothing downstream windows it" — was true when written and
+  is what this change makes false. They are applied **after** the count, because §11.2.5.5 makes
+  `Nav@odata.count` the count after `$filter` and *before* the window; counting a windowed array
+  would report the page size as the total, which is #379's defect one level down. `MaxExpandTop` is
+  still **not** imposed here — bounding a delegate's answer behind its back stays out of scope, and
+  only the window the *client* asked for is applied.
+
+  Two shapes still answer `400`, both cases where there is genuinely nothing to shape: a clause the
+  binders cannot bind, and a navigation expanded **beneath a raw-served parent** — that branch does
+  not recurse, so the rows come from the parent's own materialized graph and this navigation's
+  handler never runs. Its message is now position-specific rather than offering "declare it
+  delegate-less", which is no longer the remedy for anything.
+
+
 ### Added
 
 - **A handler can produce a client error: `ConfigureExceptions` (#581).** Every handler delegate
@@ -849,6 +886,20 @@ status codes or headers.
   run, and two of the five straddle parity. Benchmarks also gain a dispatchable workflow, and
   deliberately not a scheduled or gating one: a hosted runner cannot produce publishable
   magnitudes, and a threshold needs that runner class's run-to-run spread measured first.
+
+
+- **`spec-compliance.md` said no Advanced feature was attempted; six are (#658).** The posture table
+  read *"❌ Not targeted … no other 4.01/Advanced feature is attempted"* while the same document
+  spent four Declared-deviations rows on the semantics of nested `$filter`/`$orderby`/`$select`/
+  `$count`/`$levels`. OhData meets **6 of 9** of Advanced item 9 — nested `$filter` (9.2),
+  `$orderby` (9.4), `$count` (9.5), `$top`/`$skip` (9.6), `$levels` (9.8) and multi-level nesting.
+
+  The row now says so, and states the **condition** in the row rather than 100 lines away: those are
+  served by the EF Core pushdown, which needs a **delegate-less** navigation and an EF-backed
+  `IQueryable`. The level is still not *claimed*, because 9.1/9.3/9.7 and the non-`$expand` Advanced
+  items are absent — but "nothing attempted" was not the way to say that, and it understated the
+  product to exactly the audience that reads a conformance sheet. The 4.01-only additions
+  (`$compute`, aliases, cross joins) keep their own honest ❌ row.
 
 
 ### Build

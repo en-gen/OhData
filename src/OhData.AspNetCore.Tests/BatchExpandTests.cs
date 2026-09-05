@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
@@ -276,20 +277,18 @@ public class BatchExpandTests
         Assert.True(children.GetArrayLength() > 0);
     }
 
-    // ── #294: nested $top/$skip is rejected on a BATCH-backed navigation, not silently dropped ──
+    // ── #650: nested $top/$skip is APPLIED on a BATCH-backed navigation (#294 refused it) ──
 
     [Theory]
     [InlineData("$top=1")]
     [InlineData("$skip=1")]
-    public async Task NestedTopOrSkip_OnBatchBackedNav_Rejected400_BatchHandlerNeverInvoked(string option)
+    public async Task NestedTopOrSkip_OnBatchBackedNav_IsApplied_AfterTheBatchHandlerRuns(string option)
     {
-        // BatchExpandQueryableProfile has no MaxExpandTop ceiling, so before #294 this nested
-        // $top/$skip reached ExpandLevelAsync's BatchHandler branch, which has no Skip/Take of its
-        // own — the delegate's full per-parent answer was served silently unwindowed under a 200
-        // (the #294 bug: $top=1 would have returned both of a parent's 2 children). Now it throws
-        // Microsoft.OData.ODataException before the BatchHandler runs at all — caught by the
-        // route's own handler and surfaced as 400 InvalidQueryOption — proved by ChildrenCalls
-        // staying at 0.
+        // Three-state history. Before #294: 200 with the delegate's full per-parent answer served
+        // unwindowed ($top=1 returned both of a parent's 2 children) -- silent wrong data. #294: 400
+        // before the BatchHandler ran at all. #650: the batch handler runs, and the framework windows
+        // what it returned -- so ChildrenCalls is now expected to be NON-zero, which is the whole
+        // difference between "cannot be applied" and "is applied".
         var counter = new BatchCallCounter();
         await using var fx = await TestHostBuilder.BuildAsync(
             o => o.AddEntitySetProfile<BatchExpandQueryableProfile>(),
@@ -298,10 +297,28 @@ public class BatchExpandTests
         HttpResponseMessage resp = await fx.Client.GetAsync(
             $"/odata/BatchExpandParents?$expand=Children({option})");
 
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         string body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("InvalidQueryOption", body);
-        Assert.Contains("Children", body);
-        Assert.Equal(0, counter.ChildrenCalls);
+        Assert.True(counter.ChildrenCalls > 0, "the batch handler must run so its answer can be windowed");
+        // Compared against the SAME request without the option rather than against an assumed fixture
+        // shape: $top=1 caps every parent at one child, $skip=1 drops exactly one from each.
+        HttpResponseMessage control = await fx.Client.GetAsync("/odata/BatchExpandParents?$expand=Children");
+        using JsonDocument controlDoc = JsonDocument.Parse(await control.Content.ReadAsStringAsync());
+        using JsonDocument doc = JsonDocument.Parse(body);
+
+        JsonElement.ArrayEnumerator controlParents = controlDoc.RootElement.GetProperty("value").EnumerateArray();
+        JsonElement.ArrayEnumerator parents = doc.RootElement.GetProperty("value").EnumerateArray();
+        int compared = 0;
+        while (controlParents.MoveNext() && parents.MoveNext())
+        {
+            int before = controlParents.Current.GetProperty("Children").GetArrayLength();
+            int after = parents.Current.GetProperty("Children").GetArrayLength();
+            Assert.Equal(
+                option == "$top=1" ? Math.Min(before, 1) : Math.Max(before - 1, 0),
+                after);
+            compared++;
+        }
+
+        Assert.True(compared > 0, "the control request must return at least one parent to compare");
     }
 }
