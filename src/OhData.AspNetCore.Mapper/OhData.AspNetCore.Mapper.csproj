@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+		<PackageId>EnGen.OhData.AspNetCore.Mapper</PackageId>
+		<Title>OhData API-model / persistence-model mapping</Title>
+		<Description>Serve an API model (DTO) that differs from your EF Core entity, without giving up OData semantics. Declare where each model member comes from and the mapper translates $filter/$orderby/$select and the projection into entity terms, so the query still runs in SQL. Includes the DTO-to-entity write path (delta mapping).</Description>
+		<Copyright>Copyright (c) en-gen and contributors</Copyright>
+		<PackageTags>odata;odata4;aspnetcore;efcore;dto;mapping</PackageTags>
+		<!--
+		  Own namespace, matching the #264 split: a file added here without an
+		  explicit namespace must default into this package, never back into
+		  shared core.
+		-->
+		<RootNamespace>OhData.AspNetCore.Mapper</RootNamespace>
+		<!--
+		  No PackageValidationBaselineVersion: this package is new in 2.0.0, so
+		  there is no previous release to validate against. Add one at 2.1.0.
+		-->
+		<EnablePackageValidation>true</EnablePackageValidation>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<FrameworkReference Include="Microsoft.AspNetCore.App" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\OhData.AspNetCore\OhData.AspNetCore.csproj" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<!--
+		  ModelMapBuilder.Build() is internal: adopters declare through the profile, which calls it.
+		  The tests drive the builder directly so they can assert the resolved bindings rather than
+		  only the behaviour they produce.
+		-->
+		<InternalsVisibleTo Include="OhData.AspNetCore.Mapper.Tests" />
+	</ItemGroup>
+
+</Project>

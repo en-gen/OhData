@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFramework>net10.0</TargetFramework>
+		<IsPackable>false</IsPackable>
+		<!-- Test projects do not require XML documentation comments -->
+		<NoWarn>$(NoWarn);CS1591</NoWarn>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<FrameworkReference Include="Microsoft.AspNetCore.App" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.*" />
+		<PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.*" />
+		<PackageReference Include="coverlet.collector" Version="10.0.1">
+			<IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
+			<PrivateAssets>all</PrivateAssets>
+		</PackageReference>
+		<PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
+		<!-- Codecov Test Analytics: JUnit XML report per test assembly; CI invokes the junit logger (ci.yml). -->
+		<PackageReference Include="JunitXml.TestLogger" Version="8.0.0" />
+		<PackageReference Include="xunit" Version="2.*" />
+		<PackageReference Include="xunit.runner.visualstudio" Version="4.*">
+			<IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
+			<PrivateAssets>all</PrivateAssets>
+		</PackageReference>
+	</ItemGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\OhData.AspNetCore\OhData.AspNetCore.csproj" />
+		<ProjectReference Include="..\OhData.AspNetCore.Mapper\OhData.AspNetCore.Mapper.csproj" />
+	</ItemGroup>
+
+</Project>
