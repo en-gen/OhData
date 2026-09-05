@@ -70,11 +70,11 @@ internal static class MapExpressions
             ? expression
             : Expression.Convert(expression, nullable);
 
-        // Outermost owner first, so each test sits ahead of the dereference it guards.
-        foreach (MemberExpression owner in owners)
+        // Outermost owner first, so each test sits ahead of the dereference it guards. A
+        // non-nullable value-typed owner cannot be null, so it needs no test.
+        foreach (MemberExpression owner in owners.Where(o => !o.Type.IsValueType
+                                                            || Nullable.GetUnderlyingType(o.Type) is not null))
         {
-            if (owner.Type.IsValueType && Nullable.GetUnderlyingType(owner.Type) is null) continue;
-
             guarded = Expression.Condition(
                 Expression.Equal(owner, Expression.Constant(null, owner.Type)),
                 Expression.Default(nullable),
