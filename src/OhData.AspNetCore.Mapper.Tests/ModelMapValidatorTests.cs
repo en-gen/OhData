@@ -233,7 +233,12 @@ public sealed class ModelMapValidatorTests
     {
         public int Id { get; set; }
 
-        /// <summary>A field rather than a property, which the member reader has to handle.</summary>
+        /// <summary>
+        /// A field rather than a property, which the member reader has to handle. Deliberately
+        /// mutable: this stands in for an adopter's DTO, and a DTO field is a data carrier.
+        /// <c>readonly</c> would in fact bind and compile — measured, an init-only field is
+        /// writable through <c>Expression.Bind</c> — but it would make the fixture unrepresentative.
+        /// </summary>
         public string Name = "";
     }
 
