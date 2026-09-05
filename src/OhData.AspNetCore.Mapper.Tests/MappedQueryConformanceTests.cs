@@ -150,6 +150,18 @@ public sealed class MappedQueryConformanceTests
             "?$expand=Tags($top=1)",
             "?$expand=Tags($skip=1)",
             "?$expand=Reviews($filter=Stars gt 2)",
+            "?$expand=Tags($count=true)",
+            "?$expand=Tags($filter=Label eq 'new';$count=true)",
+            "?$expand=Tags($orderby=Label;$top=1)",
+            "?$expand=Tags($filter=Id gt 7;$orderby=Label desc;$select=Label)",
+            "?$expand=Category($select=Name)",
+            "?$expand=Reviews($orderby=Stars desc;$top=1)",
+
+            // Null semantics across a mapped path and a mapped reference
+            "?$filter=Category/Name eq null",
+            "?$filter=Category/Name ne null",
+            "?$orderby=CategoryName,Id",
+            "?$orderby=CategoryName desc,Id desc",
 
             // Combinations -- the shapes a real grid sends
             "?$filter=Rank gt 0&$orderby=Rank desc&$top=2&$count=true",

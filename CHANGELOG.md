@@ -388,6 +388,71 @@ status codes or headers.
 
 ### Added
 
+- **A new package: `EnGen.OhData.AspNetCore.Mapper` — serve an API model that differs from the EF
+  entity, with the query still running in SQL (#651).** OhData shipped *half* of API-model / entity
+  separation and said so nowhere: `DeltaProfile` maps a DTO write onto an entity, and nothing at all
+  mapped the read. An adopter who wanted a wire shape different from the storage shape had two
+  options, both bad — materialise and project (which filters in memory) or hand the framework an
+  `IQueryable<TDto>` built by `Select(o => new Dto { … })`, which has no request context and so must
+  bind every navigation any request might ever want, on every request, and which fails at the row
+  rather than at startup for a member the provider cannot translate.
+
+  The package asks for neither. The adopter declares **correspondences**:
+
+  ```csharp
+  UseMap(() => db.Products.AsNoTracking(), m => m
+      .Root(r =>
+      {
+          r.Property(d => d.Title).From(o => o.Name);
+          r.Property(d => d.CategoryName).From(o => o.Category.Name);
+          r.Property(d => d.DisplayName).Format(o => $"{o.First} {o.Last}");
+          r.Collection(d => d.Tags).From(o => o.Links).Element((ProductTag l) => l.Tag);
+          r.Ignore(d => d.RenderedAt);
+      })
+      .Nested<Tag, TagDto>(t => { … }));
+  ```
+
+  and `MappedEntitySetProfile<TKey, TModel, TEntity>` composes the query a given request needs.
+  `$filter`/`$orderby` are parsed against the model, bound by **`Microsoft.AspNetCore.OData`'s own
+  `FilterBinder`/`OrderByBinder`** — the same binders the core uses for a nested expand — and only
+  then *substituted* into entity terms. That ordering is the design: every operator, canonical
+  function and lambda the framework supports is bound by the framework's binder, so this package can
+  neither miss one nor interpret one differently; what it adds is a mechanical member swap, which
+  cannot introduce a semantic difference of its own.
+
+  `GET /odata/Products?$filter=Tags/any(t: t/Label eq 'sale')` becomes a correlated `EXISTS` with the
+  many-to-many join entity absent from the model, `$metadata` and the wire entirely.
+  `$filter=DisplayName eq 'Ada Lovelace'` becomes `||`: `Format` decomposes the interpolation into
+  folded two-argument `string.Concat`, because — measured on EF Core 10 — the interpolation as
+  written and the params-array `Concat(string[])` overload both project and both **throw** in a
+  `WHERE`, so writing the same interpolation inside a `Compute` yields a member that renders and
+  cannot be filtered.
+
+  It is a Priority-1 profile, so it owns query application and pages itself (`MappedPageSize`,
+  default 1000 — `EntitySetDefaults.MaxTop`'s own default — with `$skip`-bearing continuations and
+  `Prefer: maxpagesize` support). Everything else stays the core's: `$select`, `$expand`, ETags and
+  the envelope all come from the shared collection pipeline unchanged, and `$expand` is served by one
+  batched query per navigation per page. `$skiptoken`, `$apply` and `$compute` are refused with
+  `501`, never dropped.
+
+  **Startup validation is unconditional**, because every condition it catches produces a plausible
+  `200` with the wrong body: a member with no binding and no `Ignore()`, an unconstructible model, a
+  navigation whose target has no `Nested<,>` map or whose map comes from a different entity, and a
+  `Format` that is not an interpolation. `Compute` is the one kind whose shape cannot guarantee
+  translatability, so `ModelMapValidator.ProbeTranslatability` probes it against the adopter's own
+  provider — through an `OrderBy`, deliberately, since a final `Select` is one of the few clauses EF
+  Core will still evaluate on the client and a `Select` probe would pass for a member no `$filter`
+  could ever use.
+
+  Verified by a **conformance oracle**: ~85 query constructs answered both by a mapped profile and by
+  a control profile with no mapper in it, over the same rows, must produce the same response. That is
+  what caught the first implementation reading path members as null, and it is a far stronger check
+  than a hand-written expectation — a mapper defect is rarely an error, it is a plausible `200` with
+  the wrong rows.
+
+  `docs/api-model-mapping.md` is the guide; its snippets are inside the documentation compilation
+  gate. Writes remain the adopter's, with [delta mapping](docs/delta-mapping.md) unchanged.
+
 - **A handler can produce a client error: `ConfigureExceptions` (#581).** Every handler delegate
   returns a domain type, so user code had exactly two exits — return a value, or throw — and the
   throw exit was hard-wired to `500`. A rejection depending on domain state the framework cannot see
@@ -473,6 +538,23 @@ status codes or headers.
 
 
 ### Fixed
+
+- **A nested `$filter`/`$orderby` on a delegate-backed navigation `500`d when any parent had no
+  related rows (#664).** #650's shaper opened with
+  `Expression.Convert(src, typeof(IEnumerable<elem>))`, but `ExpandLevelAsync` substitutes
+  `Array.Empty<object>()` for an entity with no children — on the batch branch (the key misses the
+  dictionary) and on the per-entity branch (a null key) alike. The compiled shaper then cast
+  `object[]` to `IEnumerable<TNav>` and threw `InvalidCastException`, which the group filter turned
+  into a generic `500`. One childless parent anywhere in the page failed the whole request.
+
+  Not an edge case — a page of orders where one has no lines is the ordinary shape. It was invisible
+  because every pre-existing nested-option fixture gives each parent at least one child.
+
+  The source is now read with `Enumerable.Cast<elem>`, which is correct for both shapes — the typed
+  collection the delegates return and the `object[]` sentinel — and cannot be defeated by a third
+  shape the substitution grows later. #650 landed on this branch and never shipped, so no released
+  version is affected. Found while building the mapper package, whose conformance fixture has a
+  parent with no related rows.
 
 - **Every route that can answer `501` now declares it, so the generated documents advertise it
   (#576).** After #359/#380/#353 — and #560, which added two more — sixteen route shapes refuse an

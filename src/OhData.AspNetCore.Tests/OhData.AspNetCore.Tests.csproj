@@ -39,6 +39,13 @@
 
 	<ItemGroup>
 		<ProjectReference Include="..\OhData.AspNetCore\OhData.AspNetCore.csproj" />
+		<!--
+		  Not for testing the mapper (it has its own suite) but so
+		  DocumentationSnippetCompilationTests can compile docs/api-model-mapping.md. A page
+		  outside the gate is a page that goes stale silently, which is what #653 and #620 both
+		  found the hard way.
+		-->
+		<ProjectReference Include="..\OhData.AspNetCore.Mapper\OhData.AspNetCore.Mapper.csproj" />
 	</ItemGroup>
 
 </Project>

@@ -46,12 +46,6 @@ public sealed class MappedQueryComposer<TEntity, TModel>
         HandleNullPropagation = HandleNullPropagationOption.False,
     };
 
-    private static readonly MethodInfo s_where = typeof(Queryable).GetMethods()
-        .Single(m => m.Name == nameof(Queryable.Where)
-                     && m.GetParameters().Length == 2
-                     && m.GetParameters()[1].ParameterType.GetGenericArguments()[0]
-                         .GetGenericArguments().Length == 2);
-
     private readonly ModelMap _map;
     private readonly ModelMapRegistry _registry;
     private readonly IEdmModel _edmModel;
@@ -147,8 +141,4 @@ public sealed class MappedQueryComposer<TEntity, TModel>
 
         return source.Provider.CreateQuery<TEntity>(expression);
     }
-
-    // Kept so the reflected Where above cannot be dropped as unused by a future edit; the typed
-    // Where(source, predicate) call in ApplyFilter is what actually runs.
-    internal static MethodInfo WhereMethod => s_where;
 }

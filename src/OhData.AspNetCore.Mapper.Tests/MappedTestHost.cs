@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
+using System.Text.Json.Nodes;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -37,6 +38,9 @@ internal sealed class MappedTestHost : IAsyncDisposable
     /// <summary>The entity set the control profile serves, over the same rows.</summary>
     public const string Control = "ControlProducts";
 
+    /// <summary>The same map with a two-row page, so paging is observable on a small fixture.</summary>
+    public const string Paged = "PagedProducts";
+
     private MappedTestHost(WebApplication app, SqliteConnection connection)
     {
         _app = app;
@@ -67,6 +71,7 @@ internal sealed class MappedTestHost : IAsyncDisposable
             o.WithPrefix("/odata");
             o.AddEntitySetProfile<MappedProductProfile>();
             o.AddEntitySetProfile<ControlProductProfile>();
+            o.AddEntitySetProfile<PagedProductProfile>();
         });
 
         WebApplication app = builder.Build();
@@ -76,11 +81,49 @@ internal sealed class MappedTestHost : IAsyncDisposable
         return new MappedTestHost(app, connection);
     }
 
+    /// <summary>GETs a URL -- absolute or relative -- and parses the envelope.</summary>
+    public async Task<JsonObject> GetJsonAsync(string url)
+    {
+        HttpResponseMessage response = await Client.GetAsync(url);
+        string body = await response.Content.ReadAsStringAsync();
+
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException($"{(int)response.StatusCode} for {url}: {body}");
+
+        return JsonNode.Parse(body)!.AsObject();
+    }
+
     public async ValueTask DisposeAsync()
     {
         Client.Dispose();
         await _app.DisposeAsync();
         _connection.Dispose();
+    }
+}
+
+/// <summary>
+/// The same correspondence with a deliberately tiny page, so continuation behaviour is observable
+/// without seeding thousands of rows.
+/// </summary>
+internal sealed class PagedProductProfile : MappedEntitySetProfile<int, ProductDto, Product>
+{
+    public PagedProductProfile(MapDb db) : base(d => d.Id)
+    {
+        EntitySetName = MappedTestHost.Paged;
+        MappedPageSize = 2;
+        MaxTop = 10;
+
+        FilterEnabled = true;
+        OrderByEnabled = true;
+        SelectEnabled = true;
+        ExpandEnabled = true;
+        CountEnabled = true;
+
+        UseMap(() => db.Products.AsNoTracking(), m => m
+            .Root(Maps.Declare)
+            .Nested<Category, CategoryDto>(Maps.DeclareCategory)
+            .Nested<Tag, TagDto>(Maps.DeclareTag)
+            .Nested<Review, ReviewDto>(Maps.DeclareReview));
     }
 }
 

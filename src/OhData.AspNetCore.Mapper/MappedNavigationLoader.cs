@@ -184,22 +184,34 @@ public static class MappedNavigationLoader
     private static IReadOnlyList<KeyValuePair<object, object>> Materialize(
         IQueryProvider provider, Expression query, Type rowType)
     {
-        PropertyInfo keyProp = KeyProperty(rowType);
-        PropertyInfo valueProp = ValueProperty(rowType);
+        // Compiled once per load, not reflected once per row: a page of parents times its related
+        // rows is the one place in this file where the per-row cost is visible.
+        Func<object, object?> readKey = CompileReader(rowType, KeyProperty(rowType));
+        Func<object, object?> readValue = CompileReader(rowType, ValueProperty(rowType));
 
         var results = new List<KeyValuePair<object, object>>();
         foreach (object? row in (IEnumerable)provider.CreateQuery(query))
         {
             if (row is null) continue;
 
-            object? key = keyProp.GetValue(row);
-            object? value = valueProp.GetValue(row);
+            object? key = readKey(row);
+            object? value = readValue(row);
             if (key is null || value is null) continue;
 
             results.Add(new KeyValuePair<object, object>(key, value));
         }
 
         return results;
+    }
+
+    private static Func<object, object?> CompileReader(Type rowType, PropertyInfo property)
+    {
+        ParameterExpression boxed = Expression.Parameter(typeof(object), "row");
+        return Expression.Lambda<Func<object, object?>>(
+            Expression.Convert(
+                Expression.Property(Expression.Convert(boxed, rowType), property),
+                typeof(object)),
+            boxed).Compile();
     }
 
     private static Expression Inline(LambdaExpression lambda, Expression instance) =>

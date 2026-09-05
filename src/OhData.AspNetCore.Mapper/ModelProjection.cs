@@ -129,13 +129,10 @@ public static class ModelProjection
     {
         if (value.Type == target) return value;
 
+        // Coalesce, not a HasValue/Value conditional: the guarded expression would otherwise be
+        // emitted twice, and the provider would translate the whole path twice with it.
         if (Nullable.GetUnderlyingType(value.Type) == target)
-        {
-            return Expression.Condition(
-                Expression.Property(value, "HasValue"),
-                Expression.Property(value, "Value"),
-                Expression.Default(target));
-        }
+            return Expression.Coalesce(value, Expression.Default(target));
 
         return Expression.Convert(value, target);
     }

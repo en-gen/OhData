@@ -205,8 +205,16 @@ public abstract class MappedEntitySetProfile<TKey, TModel, TEntity> : ODataEntit
         ParameterExpression e = Expression.Parameter(typeof(TEntity), "e");
         Expression keyValue = new ParameterReplacer(_entityKey!.Parameters[0], e).Visit(_entityKey.Body);
 
+        // The key is read off a box rather than embedded as a ConstantExpression. EF Core inlines a
+        // constant into the SQL, so every distinct key would compile and cache its own query plan --
+        // on the hottest read route there is. A member access over a closure is what the compiler
+        // emits for a captured local, and is what EF parameterises.
+        var box = new KeyBox { Value = key };
+        Expression parameter = Expression.Field(
+            Expression.Constant(box), nameof(KeyBox.Value));
+
         var predicate = Expression.Lambda<Func<TEntity, bool>>(
-            Expression.Equal(keyValue, Expression.Constant(key, _entityKey.ReturnType)), e);
+            Expression.Equal(keyValue, parameter), e);
 
         // null is the framework's own "no such entity" for this handler, answered as 404. Rejecting
         // deliberately is ConfigureExceptions' business, not this profile's.
@@ -304,6 +312,11 @@ public abstract class MappedEntitySetProfile<TKey, TModel, TEntity> : ODataEntit
 
     private MappedQueryComposer<TEntity, TModel> ResolveComposer(ODataQueryOptions options) =>
         _composer ??= new MappedQueryComposer<TEntity, TModel>(_map!, _registry!, options.Context.Model);
+
+    private sealed class KeyBox
+    {
+        public TKey Value = default!;
+    }
 
     private sealed class ParameterReplacer : ExpressionVisitor
     {

@@ -237,3 +237,42 @@ multi-targeting `net8.0;net10.0`.
    mapped profiles silently — this repo's recurring defect class (#458, #462, #507, #508, #511, #536).
 3. **Scope.** Sixth shipping package: csproj, packaging, ApiCompat baseline, docs, CI, publish
    pipeline, on top of the feature.
+
+
+---
+
+## Revision, after implementation: the seam is Priority-1 after all
+
+The section *"Architecture: the mapper owns mapping, the core owns query execution"* above rejects
+Priority-1 and proposes a new additive core delegate, `GetShapedQueryable`, returning
+`IQueryable<TModel>` with the engaged navigations bound. **That is withdrawn.** It cannot be built
+without the thing the owner ruled out twice — a DTO-typed EF queryable produced by
+`Select(o => new Dto { … })` — because handing the core an `IQueryable<TModel>` means the provider
+must translate members the entity does not have. *"I no longer want to rely on efcore
+`.Select(x => new Dto{...})` strategies because they are flawed"* and *"why do we keep caring if
+dto-typed ef queryable works? this is not a use case I'm interested in supporting"* both foreclose
+it. The section's own argument against P1 stands on its merits and was simply outweighed.
+
+What made P1 affordable is a fact the rejection did not account for: **the P1 route calls the same
+`ApplyCollectionPipelineAsync` every other collection route calls.** So the feared cost — "owning
+`$select` pushdown and the whole of `$expand`, `$levels`, `MaxExpandTop`, the #334 count carrier,
+`ShapeLevelsInJson`" — is not incurred. The profile owns `$filter`, `$orderby`, `$top`, `$skip`,
+`$count` and paging; `$select`, `$expand` (through navigation delegates, including #650's nested
+options), ETags and the envelope stay the core's, unchanged. `HonouredQueryOptions` (#475) then does
+exactly the job it was built for: it declares that set, and everything outside it is refused with
+`501` rather than dropped.
+
+Two other decisions moved with it.
+
+**The projection is composed onto the entity query, not applied after materialisation.** The
+"map after materialisation" plan was implemented first and the conformance oracle rejected it on its
+first run: EF returns an entity with its references unloaded, so `CategoryName` — `o.Category.Name` —
+rendered `null` on every row. Loading the graph first would mean `Include`ing every reference on
+every request, which is the over-fetch this design exists to avoid. Composing a **scalar-only**
+projection onto the already-filtered, already-paged entity query has neither problem, and it is not
+the strategy that was ruled out: no navigation appears in it, the core never receives a model-typed
+queryable, and `$expand` is served by separate batched queries.
+
+**Delta mapping does not move in this change.** It is a mechanical break across seven projects with
+its own compatibility surface, and bundling it would hide the new code in the diff. `DeltaExtensions`
+stays in the core either way, per the owner's ruling.
