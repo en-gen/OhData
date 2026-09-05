@@ -268,8 +268,10 @@ public class DeltaMappingValidationTests
         {
             foreach (Type t in profileTypes)
             {
-                typeof(OhDataBuilder).GetMethod(nameof(OhDataBuilder.AddDeltaProfile))!
-                    .MakeGenericMethod(t).Invoke(o, null);
+                // #665: an extension method on DeltaProfileRegistration in the mapper package, so
+                // the receiver is the first argument rather than the target instance.
+                typeof(DeltaProfileRegistration).GetMethod(nameof(DeltaProfileRegistration.AddDeltaProfile))!
+                    .MakeGenericMethod(t).Invoke(null, new object[] { o });
             }
         });
         return services.BuildServiceProvider().GetRequiredService<IDeltaFactory>();

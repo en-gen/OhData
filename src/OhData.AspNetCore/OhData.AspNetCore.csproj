@@ -48,6 +48,12 @@
 		  IgnoredPropertyNames (via IgnoredPropertyDocsMap) so generated schemas
 		  omit Ignore()d properties, matching the real wire shape.
 		-->
+		<!--
+		  #665: delta mapping moved to the mapper package, which needs the registration
+		  seams the core kept private for it: OhDataBuilder.Services, ProfileScanner's
+		  kind predicate, and the IOhDataStartupValidated marker MapOhData resolves.
+		-->
+		<InternalsVisibleTo Include="OhData.AspNetCore.Mapper" />
 		<InternalsVisibleTo Include="OhData.AspNetCore.OpenApi" />
 		<InternalsVisibleTo Include="OhData.AspNetCore.NSwag" />
 		<InternalsVisibleTo Include="OhData.AspNetCore.Swashbuckle" />

@@ -47,6 +47,8 @@
           href: ../../docs/polymorphism.md
         - name: Bound functions & actions
           href: ../../docs/bound-operations.md
+        - name: API model / entity separation
+          href: ../../docs/api-model-mapping.md
     - name: Querying
       items:
         - name: Query options

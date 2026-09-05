@@ -4183,9 +4183,17 @@ internal static class OhDataEndpointFactory
 
         NavShapeBindings bound = BindNavShape(filter, orderBy, elem, model, binderSettings);
 
-        Type seqType = typeof(IEnumerable<>).MakeGenericType(elem);
         ParameterExpression src = Expression.Parameter(typeof(object), "src");
-        Expression seq = Expression.Convert(src, seqType);
+
+        // #664: Cast, never a Convert to IEnumerable<elem>. The value handed in is not always the
+        // delegate's own typed collection -- ExpandLevelAsync substitutes Array.Empty<object>() for a
+        // parent with no related rows, on both the batch and the per-entity branch -- and a hard
+        // convert threw InvalidCastException out of the compiled shaper, so ONE childless parent
+        // anywhere in the page 500'd the whole request. Cast is right for both shapes and for any
+        // third the substitution grows later.
+        Expression seq = Expression.Call(
+            _enumerableCast.MakeGenericMethod(elem),
+            Expression.Convert(src, typeof(System.Collections.IEnumerable)));
 
         if (bound.Predicate is not null)
             seq = Expression.Call(_enumerableWhere.MakeGenericMethod(elem), seq, bound.Predicate);
@@ -5958,6 +5966,9 @@ internal static class OhDataEndpointFactory
     // (x.Nav.Where(f).OrderBy(o).Skip(s).Take(t).ToList()); EF Core translates the result to a single
     // JOIN with a ROW_NUMBER window for paging. The Where/OrderBy predicates are produced by
     // Microsoft's own OData binders (FilterBinder/OrderByBinder), never a hand-rolled translator.
+    private static readonly MethodInfo _enumerableCast = typeof(Enumerable)
+        .GetMethod(nameof(Enumerable.Cast), new[] { typeof(System.Collections.IEnumerable) })!;
+
     private static readonly MethodInfo _enumerableWhere = typeof(Enumerable).GetMethods()
         .First(m => m.Name == nameof(Enumerable.Where) && m.GetParameters().Length == 2 &&
                     m.GetParameters()[1].ParameterType.GetGenericArguments().Length == 2);

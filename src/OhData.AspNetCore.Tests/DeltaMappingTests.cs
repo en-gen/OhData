@@ -286,9 +286,14 @@ public class DeltaMappingTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
+
+        // #665, BREAKING: one call per profile kind. AddProfilesFrom scans entity-set profiles;
+        // delta profiles moved to the mapper package, which the core scanner cannot name, so they
+        // are discovered by that package's own AddDeltaProfilesFrom.
         services.AddOhData("dmscan", o => o
             .WithPrefix("/dmscan")
-            .AddProfilesFromAssemblyOf<DmScanEntityProfile>());
+            .AddProfilesFromAssemblyOf<DmScanEntityProfile>()
+            .AddDeltaProfilesFromAssemblyOf<DmScanEntityProfile>());
 
         // Entity profile registered in DI as scoped.
         Assert.Contains(services, d =>
@@ -298,6 +303,22 @@ public class DeltaMappingTests
         var registry = (DeltaProfileRegistry)services
             .First(d => d.ServiceType == typeof(DeltaProfileRegistry)).ImplementationInstance!;
         Assert.Contains(typeof(DmGoodProfile), registry.Types);
+    }
+
+    [Fact]
+    public void AnEntityScanAlone_NoLongerDiscoversDeltaProfiles()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddOhData("dmscanentityonly", o => o
+            .WithPrefix("/dmscanentityonly")
+            .AddProfilesFromAssemblyOf<DmScanEntityProfile>());
+
+        // The delta half is not merely absent from the registry -- the registry itself is never
+        // registered, because nothing asked for delta mapping. An app that does not use it pays
+        // nothing for it, which the combined scan could not offer.
+        Assert.DoesNotContain(services, d => d.ServiceType == typeof(DeltaProfileRegistry));
+        Assert.Contains(services, d => d.ServiceType == typeof(DmScanEntityProfile));
     }
 
     // ── IsChanged / TryGetChanged sugar ──────────────────────────────────────────

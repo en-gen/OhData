@@ -6,15 +6,15 @@ using System.Reflection;
 namespace OhData;
 
 /// <summary>
-/// Configures assembly scanning for <see cref="EntitySetProfile{TKey,TModel}"/> and
-/// <see cref="DeltaProfile"/> subclasses. Obtained via <see cref="OhDataBuilder.AddProfilesFrom"/>.
+/// Configures assembly scanning for profile subclasses. Obtained via
+/// <see cref="OhDataBuilder.AddProfilesFrom"/>.
 /// </summary>
 /// <remarks>
-/// A single scan discovers all concrete, non-abstract <see cref="EntitySetProfile{TKey,TModel}"/>
-/// and <see cref="DeltaProfile"/> subclasses in the specified assemblies and registers each as if
-/// it had been passed to <see cref="OhDataBuilder.AddEntitySetProfile{TProfile}"/> or
-/// <see cref="OhDataBuilder.AddDeltaProfile{TProfile}"/> individually. Types already registered in
-/// the current builder are skipped.
+/// A scan discovers all concrete, non-abstract subclasses of ONE profile kind in the specified
+/// assemblies and registers each as if it had been passed to the matching Add method individually;
+/// types already registered are skipped. The kind is the caller's: <c>AddProfilesFrom</c> scans
+/// <see cref="EntitySetProfile{TKey,TModel}"/>, and the mapper package's
+/// <c>AddDeltaProfilesFrom</c> scans delta profiles, which it has owned since #665.
 /// </remarks>
 public sealed class ProfileScanner
 {
@@ -22,8 +22,14 @@ public sealed class ProfileScanner
     private readonly IReadOnlyList<Type> _alreadyRegistered;
 
     internal ProfileScanner(IReadOnlyList<Type> alreadyRegistered)
+        : this(alreadyRegistered, IsEntitySetProfile)
+    {
+    }
+
+    internal ProfileScanner(IReadOnlyList<Type> alreadyRegistered, Func<Type, bool> isProfileKind)
     {
         _alreadyRegistered = alreadyRegistered;
+        _isProfileKind = isProfileKind;
     }
 
     /// <summary>
@@ -71,12 +77,12 @@ public sealed class ProfileScanner
                 // predicate serves both profile kinds, so the entity-set path (which the issue
                 // notes shares the gap) is covered by the same line.
                 !t.ContainsGenericParameters &&
-                IsProfile(t) &&
+                _isProfileKind(t) &&
                 !_alreadyRegistered.Contains(t));
 
-    // A single scan discovers BOTH entity set profiles and delta profiles; OhDataBuilder routes
-    // each discovered type to the appropriate registry.
-    private static bool IsProfile(Type type) => IsEntitySetProfile(type) || IsDeltaProfile(type);
+    // Which kind this scan is looking for. Entity-set profiles by default; the mapper package
+    // passes its own predicate for delta profiles, which it owns since #665.
+    private readonly Func<Type, bool> _isProfileKind;
 
     private static bool IsEntitySetProfile(Type type)
     {
@@ -89,5 +95,4 @@ public sealed class ProfileScanner
         return false;
     }
 
-    private static bool IsDeltaProfile(Type type) => typeof(DeltaProfile).IsAssignableFrom(type);
 }
