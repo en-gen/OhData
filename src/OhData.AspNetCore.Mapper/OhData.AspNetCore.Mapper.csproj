@@ -35,6 +35,12 @@
 		  only the behaviour they produce.
 		-->
 		<InternalsVisibleTo Include="OhData.AspNetCore.Mapper.Tests" />
+		<!--
+		  The delta-mapping suites stayed in the core test project when delta mapping moved here
+		  (#665): they exercise the core's write path end to end, which is where they belong, and
+		  moving ~2,000 lines of tests would have changed what is verified for no gain.
+		-->
+		<InternalsVisibleTo Include="OhData.AspNetCore.Tests" />
 	</ItemGroup>
 
 </Project>

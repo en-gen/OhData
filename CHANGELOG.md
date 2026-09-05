@@ -386,6 +386,38 @@ status codes or headers.
   delegate-less", which is no longer the remedy for anything.
 
 
+### Changed
+
+- **⚠ BREAKING: delta mapping moved to `EnGen.OhData.AspNetCore.Mapper` (#665).** `DeltaProfile`,
+  `DeltaMapping<TModel,TEntity>` and `IDeltaFactory` ship in the mapper package rather than the core.
+  They are the **write** half of the API-model / entity separation story that package now owns, and
+  keeping them in the core was the thing that made OhData look like it shipped half a feature — a
+  subsystem for mapping a DTO write onto an entity, beside nothing at all for the read.
+
+  **The namespace does not change.** Everything stays in `OhData`, including the registration
+  extension methods, so they are in scope wherever `AddOhData` is: an adopter's `using` statements
+  are untouched and only the `PackageReference` moves. `DeltaExtensions` — the `Delta<T>` sugar
+  `IsChanged`/`TryGetChanged` — **stays in the core**, because it is about `Delta<T>` rather than
+  about mapping.
+
+  **One behaviour change rides along, and it is not just relocation: `AddProfilesFrom*` no longer
+  discovers delta profiles.** It scans entity-set profiles; delta profiles are scanned by the new
+  `AddDeltaProfilesFrom`, `AddDeltaProfilesFromAssemblyOf<T>` and `AddDeltaProfilesFromAssembly`.
+  The core scanner cannot name a type it does not reference, and matching one by string would be a
+  worse answer than one call per kind. A side effect worth having: an app that does not use delta
+  mapping no longer registers `DeltaProfileRegistry` or `IDeltaFactory` at all, which the combined
+  scan could not offer.
+
+  Migration is two lines — add the package reference, and add one `AddDeltaProfilesFrom…` call
+  beside your existing `AddProfilesFrom…` if you registered by scanning. Explicit
+  `AddDeltaProfile<T>()` calls are unchanged.
+
+  The core kept three `internal` seams for it, each of which removed a coupling it should not have
+  had: `OhDataBuilder.Services`, `ProfileScanner`'s kind predicate, and `IOhDataStartupValidated` —
+  a marker `MapOhData` resolves to force startup validation, replacing a hard-coded
+  `GetService<IDeltaFactory>()`. Startup fail-fast for an unmapped or incompatible mapping is
+  unchanged.
+
 ### Added
 
 - **A new package: `EnGen.OhData.AspNetCore.Mapper` — serve an API model that differs from the EF

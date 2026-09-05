@@ -52,20 +52,13 @@ public sealed class OhDataBuilder
         // as an instance singleton so it is available before the container is built.
         if (!_services.Any(s => s.ServiceType == typeof(GlobalProfileRegistry)))
             _services.AddSingleton(new GlobalProfileRegistry());
-
-        // Delta-mapping infrastructure. The registry accumulates DeltaProfile types across every
-        // OhData registration (instance singleton, mutable before the container is built); the
-        // single IDeltaFactory reads it once, lazily, and compiles/validates every mapping (forced
-        // at MapOhData for startup fail-fast). Both registered idempotently so multiple AddOhData
-        // calls are no-ops here.
-        if (!_services.Any(s => s.ServiceType == typeof(DeltaProfileRegistry)))
-            _services.AddSingleton(new DeltaProfileRegistry());
-        if (!_services.Any(s => s.ServiceType == typeof(IDeltaFactory)))
-        {
-            _services.AddSingleton<IDeltaFactory>(sp =>
-                DeltaFactory.Build(sp, sp.GetRequiredService<DeltaProfileRegistry>()));
-        }
     }
+
+    /// <summary>
+    /// The container this registration writes into, for a companion package that registers its own
+    /// profile kind (#665 moved delta mapping into one).
+    /// </summary>
+    internal IServiceCollection Services => _services;
 
     /// <summary>
     /// Sets the route prefix for all OData endpoints. Defaults to <c>/odata</c>.
@@ -254,62 +247,19 @@ public sealed class OhDataBuilder
     // #534: _profileTypes alone cannot tell a scan-discovered type from an explicitly registered
     // one, and that is the distinction the throw above depends on. Per BUILDER, unlike the
     // cross-registration GlobalProfileRegistry, because the question is "did THIS registration see
-    // two explicit calls" -- the mirror of _explicitlyRegisteredDeltaProfiles.
+    // two explicit calls".
     private readonly HashSet<Type> _explicitlyRegisteredProfiles = new();
 
-    /// <summary>
-    /// Registers a <see cref="DeltaProfile"/>. Its mappings are compiled and validated once at
-    /// startup and exposed through the injected <see cref="IDeltaFactory"/>. The symmetric
-    /// counterpart to <see cref="AddEntitySetProfile{TProfile}"/>.
-    /// </summary>
-    public OhDataBuilder AddDeltaProfile<TProfile>() where TProfile : DeltaProfile
-    {
-        AddDeltaProfileType(typeof(TProfile), explicitCall: true);
-        return this;
-    }
-
-    // Routes a DeltaProfile type into the shared cross-registration registry and DI. Delta
-    // profiles are not tied to a single OhData registration (the IDeltaFactory is one global
-    // singleton), so uniqueness is tracked in the shared DeltaProfileRegistry rather than the
-    // per-builder _profileTypes list.
-    private void AddDeltaProfileType(Type type, bool explicitCall)
-    {
-        var registryDescriptor = _services.FirstOrDefault(s => s.ServiceType == typeof(DeltaProfileRegistry));
-        var registry = (DeltaProfileRegistry)registryDescriptor!.ImplementationInstance!;
-        if (registry.Types.Contains(type))
-        {
-            // #488 item 5(c): the message may only be used when a duplicate AddDeltaProfile call is
-            // what actually happened. A scan that already discovered the type and then ONE explicit
-            // call is not a duplicate call -- and the reverse order (explicit, then a scan that
-            // re-discovers it) was already a silent no-op, so throwing here made the outcome depend
-            // on declaration order and blamed the user's single explicit call.
-            if (explicitCall && _explicitlyRegisteredDeltaProfiles.Contains(type))
-            {
-                throw new InvalidOperationException(
-                    $"OhData: delta profile type '{type.Name}' is already registered. " +
-                    "Remove the duplicate AddDeltaProfile call.");
-            }
-            if (explicitCall) _explicitlyRegisteredDeltaProfiles.Add(type);
-            return; // scan re-discovery, or an explicit call confirming a scanned type — no-op
-        }
-
-        if (!_services.Any(s => s.ServiceType == type))
-            _services.AddScoped(type);
-        registry.Types.Add(type);
-        if (explicitCall) _explicitlyRegisteredDeltaProfiles.Add(type);
-    }
-
-    // #488 item 5(c): registry.Types alone cannot tell a scan-discovered type from an explicitly
-    // registered one -- the DeltaProfileRegistry is shared across registrations and records only
-    // membership -- so the explicit calls are tracked per builder alongside it.
-    private readonly HashSet<Type> _explicitlyRegisteredDeltaProfiles = new();
 
     /// <summary>
-    /// Scans the specified assemblies for <see cref="EntitySetProfile{TKey,TModel}"/> subclasses
-    /// and <see cref="DeltaProfile"/> subclasses, registering each discovered profile as if it had
-    /// been passed to <see cref="AddEntitySetProfile{TProfile}"/> or
-    /// <see cref="AddDeltaProfile{TProfile}"/> individually.
+    /// Scans the specified assemblies for <see cref="EntitySetProfile{TKey,TModel}"/> subclasses,
+    /// registering each discovered profile as if it had been passed to
+    /// <see cref="AddEntitySetProfile{TProfile}"/> individually.
     /// </summary>
+    /// <remarks>
+    /// Entity-set profiles only. Delta profiles moved to <c>EnGen.OhData.AspNetCore.Mapper</c> in
+    /// 2.0.0 (#665) and are scanned by that package's own <c>AddDeltaProfilesFrom</c>.
+    /// </remarks>
     /// <param name="configure">
     /// Callback that receives a <see cref="ProfileScanner"/> and specifies which assemblies
     /// to scan, e.g. <c>s =&gt; s.InAssemblyOf&lt;Program&gt;()</c>.
@@ -327,13 +277,7 @@ public sealed class OhDataBuilder
         if (configure is null) throw new ArgumentNullException(nameof(configure));
         var scanner = new ProfileScanner(_profileTypes);
         configure(scanner);
-        foreach (var type in scanner.Scan())
-        {
-            if (typeof(DeltaProfile).IsAssignableFrom(type))
-                AddDeltaProfileType(type, explicitCall: false);
-            else
-                AddProfileType(type);
-        }
+        foreach (var type in scanner.Scan()) AddProfileType(type);
         return this;
     }
 

@@ -641,6 +641,12 @@ internal static class DeltaMappingCompiler
 internal sealed class DeltaProfileRegistry
 {
     internal readonly List<Type> Types = new();
+
+    // #488 item 5(c): Types alone cannot tell a scan-discovered type from an explicitly registered
+    // one -- it records membership only -- so the explicit calls are tracked beside it. It lives
+    // here rather than on the builder because the registry is what crosses registrations, and
+    // since #665 the registration code is an extension method with no builder state of its own.
+    internal readonly HashSet<Type> ExplicitlyRegistered = new();
 }
 
 /// <summary>

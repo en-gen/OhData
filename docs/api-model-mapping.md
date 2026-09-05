@@ -300,10 +300,14 @@ HonouredQueryOptions |= OhDataSystemQueryOption.Search;
 
 ## Writes
 
-The mapper covers the read path. Writes stay yours — `Post`, `Put`, `Patch` receive the model, and
-[delta mapping](delta-mapping.md) turns a `Delta<TModel>` into a `Delta<TEntity>` you apply. Only
-Direct and Rename bindings are invertible, so a model whose writable members are all one of those
-maps cleanly; anything else needs a handler that decides what a write to it means.
+This package covers both halves of the model/entity boundary, but they are separate features that do
+not know about each other. The correspondences above are the **read** half. For the **write** half,
+`Post`, `Put` and `Patch` receive the model and [delta mapping](delta-mapping.md) — also in this
+package as of 2.0.0 — turns a `Delta<TModel>` into a `Delta<TEntity>` you apply.
+
+A `ModelMap` is not a `DeltaProfile`: declare each separately. Only Direct and Rename bindings are
+invertible, so a model whose writable members are all one of those has a mechanical write map;
+anything else needs a handler that decides what a write to it means.
 
 ## When you do not need this
 
