@@ -129,26 +129,59 @@ The requirement is full breadth and depth. In scope unless marked.
 | `$levels` on a self-referential mapped navigation | conditional composition, bounded by `MaxExpansionDepth` |
 | `$top`/`$skip`/`$count`, `/$count` segment | applied to the entity query |
 | `$search` | only with a supplied `Search` handler |
-| `$compute`, `$apply` | **out of scope** — unimplemented framework-wide |
+| `$compute`, `$apply` | **out of scope** — unimplemented framework-wide (owner ruling: the mapper is complete relative to what OhData supports, not to the spec as a whole) |
 | property and `/$value` routes | **free** — the core reads the member off the returned DTO |
 | `$ref`, navigation `POST` | delegates |
 | writes | the generated `DeltaProfile` |
 
-Anything unimplemented is declared via **`HonouredQueryOptions`** (#475), so the core answers it with
-a clean `501` rather than dropping it. Partial coverage is honest by construction, and the package can
-widen without ever lying.
+**`HonouredQueryOptions` is not needed on this architecture** — it exists for Priority-1, where the
+framework cannot know what the profile honoured. Here the core applies the options itself, so its
+existing per-route implemented-option sets and the `501`/`400` taxonomy apply unchanged. That is a
+second reason the seam beats P1: there is no partial-coverage story to manage, because coverage is
+the core's and is already complete.
 
-## Architecture
+## Architecture: the mapper owns mapping, the core owns query execution
 
-**The package supplies the delegate set; the core is unchanged.** OhData's route surface is
-delegate-driven, so the core keeps seeing only the DTO — its EDM, `$metadata`, property routes and
-allowlists all operate on it.
+**Priority-1 (`GetODataQueryable`) is the wrong seam and is rejected.** It hands the profile the
+parsed `ODataQueryOptions` and applies *nothing* — which is why `HonouredQueryOptions` (#475) exists
+and why #379 obliges a P1 profile to compute `TotalCount` itself. Implementing it means owning
+`$filter`, `$orderby`, `$skip`/`$top`, `MaxTop`, `@odata.nextLink`, `$count`, `$select` pushdown and
+**the whole of `$expand`** — engaged navigations, nested options, `$levels`, `MaxExpandTop`, expand
+paging. That is thousands of lines in the core (`BindNavShape`, `ApplyNavShape`,
+`TryBuildProjectionInit`, `ExpandLevelAsync`, the #334 count carrier, `ShapeLevelsInJson`) which the
+package would have to clone.
+
+Query execution is not mapping. The division is:
+
+| owns | what |
+|---|---|
+| **mapper** | model ↔ entity: the projection with the engaged navigations bound, predicate/sort substitution, the write map |
+| **core** | everything it already does — applies `$filter`/`$orderby`/`$select`/`$top`/`$skip`/`$count`/`$expand`/`$levels`/paging to whatever queryable it is handed |
+
+### The one new core seam
+
+`GetQueryable` takes no request context, which is the only reason the mapper cannot bind navigations
+conditionally. Add a second, **additive** delegate alongside it:
+
+```csharp
+protected Func<OhDataQueryShape, IQueryable<TModel>>? GetShapedQueryable = null;
+```
+
+`OhDataQueryShape` carries the engaged expand tree (top-level and nested). Both delegates are
+checked; startup refuses a profile that sets both, exactly as #378 warns for `GetAll` +
+`GetQueryable`. Everything downstream is unchanged — the core applies every option to the returned
+queryable as it does today, and does not need to know it was mapped.
+
+This is the same additive shape recorded for a future `GetQueryableAsync` in #653: a second optional
+delegate, both checked at registration, nothing existing breaks.
+
+### The rest of the surface
 
 | surface | driven by |
 |---|---|
-| collection `GET` and every query option | `GetODataQueryable` (Priority-1) |
+| collection `GET` and every query option | `GetShapedQueryable` + the core's existing pipeline |
 | `GET /Set({key})` | `GetById` |
-| property routes | free |
+| property and `/$value` routes | **free** — the core reads the member off the returned DTO |
 | navigation routes, `/$count`, `/$ref` | `HasMany`/`HasOptional` delegates |
 | writes | `Post`/`Put`/`Patch` + the generated `DeltaProfile` |
 
@@ -195,8 +228,10 @@ multi-targeting `net8.0;net10.0`.
 
 ## Risks
 
-1. **Priority-1 means the package owns every option it declares.** It does not inherit the core's
-   pushdown, nested-option handling or `$levels`; `HonouredQueryOptions` bounds the exposure.
+1. **The new seam must not fork the read path.** `GetShapedQueryable` has to enter the *same*
+   pipeline as `GetQueryable`, not a parallel one, or the two will drift — this repo's recurring
+   defect class. The implementation should resolve to one queryable and continue, with the shape
+   parameter the only difference.
 2. **~45 sites across 5 core files resolve a model member name.** The package avoids them by supplying
    delegates, but a future core change resolving a member outside the delegate boundary would break
    mapped profiles silently — this repo's recurring defect class (#458, #462, #507, #508, #511, #536).
