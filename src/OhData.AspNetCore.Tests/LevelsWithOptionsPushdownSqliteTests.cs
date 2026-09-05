@@ -515,6 +515,10 @@ public sealed class LevelsWithOptionsDelegateSafetyTests
     [Theory]
     [InlineData(true, "$levels=1;$select=name")]
     [InlineData(false, "$levels=1;$select=name")]
+    // #650: the $filter rows are back. They were removed for one commit while a nested $filter on a
+    // delegate-backed navigation was refused; it is APPLIED now (in memory, bound by the same
+    // FilterBinder the pushdown path uses), so the request reaches the delegate again and exercises
+    // these delegate-safety assertions exactly as it always did.
     [InlineData(true, "$levels=1;$filter=active eq true")]
     [InlineData(false, "$levels=1;$filter=active eq true")]
     [InlineData(true, "$levels=1;$count=true")]
