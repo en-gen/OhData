@@ -33,9 +33,10 @@ Established this session. Each is load-bearing; none should be re-derived.
 1. **EF composes a predicate back through a projection.** `Select(p => new Dto { CategoryName = p.Cat.Name })` filtered on `CategoryName` emits `INNER JOIN "Cats" … WHERE "c"."Name" = @p`.
 2. **An outer projection prunes an inner join.** Composing a member-init that omits a collection turns `SELECT …, l.Id FROM Orders LEFT JOIN Lines` into `SELECT Id, Code FROM Orders`. This is why an unexpanded navigation can cost nothing.
 3. **Binding substitution works through a reshaped collection.** A spike rewrote `d => d.Tags.Any(t => t.Label == "sale")` into `p => p.Links.Any(l => l.Tag.Label == "sale")`, which translated to a correlated `EXISTS` — with the M2M join entity absent from the DTO. ~120 lines. This is the feature's reason to exist.
-4. **`+` concatenation translates; interpolation and `string.Format` do not.** `p.First + " " + p.Last` → `"p"."First" || ' ' || "p"."Last"`, filterable. `$"{p.First} {p.Last}"` throws.
-5. **`ToQueryString()` forces translation without executing** — the startup-validation mechanism.
-6. **View-mapped entities already solve the whole problem with no code** for adopters with DDL rights: real navigations, conditional joins, filterable. This package is for those without.
+4. **String interpolation is *projectable* but not *queryable*; folded `Concat` is both.** `$"{p.First} {p.Last}"` in a final `Select` is evaluated client-side and works; the same text in a `Where` throws. `p.First + " " + p.Last` — i.e. folded two-argument `string.Concat` — becomes `"p"."First" || ' ' || "p"."Last"` and is filterable. The **params-array** `Concat(string[])` overload is client-evaluated and is *not*.
+5. **A `FormattableString` interpolation can be decomposed and rebuilt as folded `Concat`.** A spike took `o => $"{o.First} {o.Last}"`, read `FormattableStringFactory.Create`'s format and arguments out of the tree, and emitted `Concat(Concat(o.First, " "), o.Last)` — which translated in **both** projection and filter. This is the `Compute` surface: interpolation ergonomics, guaranteed translation, and no way for an adopter to write the untranslatable form by accident.
+6. **`ToQueryString()` forces translation without executing** — the startup-validation mechanism.
+7. **View-mapped entities already solve the whole problem with no code** for adopters with DDL rights: real navigations, conditional joins, filterable. This package is for those without.
 
 ## Declaration: path correspondences, not projections
 
@@ -56,7 +57,7 @@ public sealed class OrderProfile : MappedEntitySetProfile<int, Order, OrderDto>
             m.Property(d => d.OrderCode).From(o => o.Code);                // rename
             m.Property(d => d.CategoryName).From(o => o.Category.Name);    // path
             m.Collection(d => d.Tags).From(o => o.Links).Element(l => l.Tag);  // M2M elision
-            m.Property(d => d.DisplayName).Compute(o => o.First + " " + o.Last);
+            m.Property(d => d.DisplayName).Format(o => $"{o.First} {o.Last}");
             m.Ignore(d => d.RenderedAt);
         });
     }
@@ -74,9 +75,11 @@ repeating it inline.
 - **The declaration is data**, so it can be validated, enumerated and tested exhaustively — and an EF
   composer becomes one backend rather than the only conceivable one.
 
-`Compute` is the single escape hatch, is opt-in, and is the only place EF's translation rules reach
-the declaration — which is exactly what the startup probe (fact 5) exists to police, catching fact 4's
-traps at build time.
+`Format` takes a `FormattableString` and is decomposed by the mapper into folded `Concat` (fact 5),
+so the adopter gets interpolation ergonomics and cannot express the untranslatable form. `Compute`
+remains for anything else and is the only place EF's translation rules reach the declaration — which
+is what the startup probe (fact 6) polices, catching fact 4's traps at build time. A binding that
+projects but cannot be filtered is marked `NotFilterable`/`NotSortable` rather than refused.
 
 ## One declaration, four consumers
 
@@ -100,7 +103,7 @@ second write engine; `DeltaMappingCompiler`'s validation runs unchanged.
 | `Property.From(o => o.Y)` — rename | ✅ |
 | `Property.From(o => o.A.B)` — path | ❌ which `A`? create one? |
 | `Collection.From(…).Element(…)` | ❌ relationship management |
-| `Compute(…)` | ❌ |
+| `Format(…)` / `Compute(…)` | ❌ |
 | `Ignore(…)` | n/a |
 
 Non-invertible bindings must be explicitly mapped, converted or ignored for writes — which is
