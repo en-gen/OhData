@@ -76,6 +76,19 @@ public sealed class ProductDto
     public DateTime RenderedAt { get; set; }              // Ignored
 }
 
+/// <summary>
+/// A model deliberately declared wider than the columns behind it: <c>long</c> over an <c>int</c>,
+/// <c>int?</c> over a non-nullable column, and a non-nullable <c>int</c> reached through an OPTIONAL
+/// reference. All three are ordinary API-contract shapes and all three used to break.
+/// </summary>
+public sealed class WideDto
+{
+    public int Id { get; set; }
+    public long BigRank { get; set; }
+    public int? MaybeRank { get; set; }
+    public int CatId { get; set; }
+}
+
 public sealed class CategoryDto
 {
     public int Id { get; set; }
@@ -176,9 +189,17 @@ public static class Maps
         m.Property(d => d.DisplayName).Format(o => $"{o.First} {o.Last}");
         m.Property(d => d.Rank).From(o => o.Rank);
         m.Reference(d => d.Category, o => o.Category);
-        m.Collection(d => d.Tags).From(o => o.Tags).Element((ProductTag l) => l.Tag);
-        m.Collection(d => d.Reviews).From(o => o.Reviews).AsIs<Review>();
+        m.Collection(d => d.Tags).From(o => o.Tags).Element(l => l.Tag);
+        m.Collection(d => d.Reviews).From(o => o.Reviews).AsIs();
         m.Ignore(d => d.RenderedAt);
+    }
+
+    public static void DeclareWide(ModelMapBuilder<Product, WideDto> m)
+    {
+        m.Property(d => d.Id).From(o => o.Id);
+        m.Property(d => d.BigRank).From(o => o.Rank);
+        m.Property(d => d.MaybeRank).From(o => o.Rank);
+        m.Property(d => d.CatId).From(o => o.Category!.Id);
     }
 
     public static void DeclareCategory(ModelMapBuilder<Category, CategoryDto> m)
@@ -227,10 +248,4 @@ public static class Maps
         .Add(Tag())
         .Add(Review());
 
-    /// <summary>Resolves a nested model type to its map, for collection lambdas.</summary>
-    public static Func<Type, ModelMap?> Resolver()
-    {
-        ModelMapRegistry registry = Registry();
-        return registry.Find;
-    }
 }

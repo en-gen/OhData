@@ -10,9 +10,7 @@ namespace OhData.AspNetCore.Mapper;
 /// <remarks>
 /// The vocabulary is deliberately <b>closed</b>. Every member of a mapped model resolves to exactly
 /// one of these, which is what makes the mapping enumerable, exhaustively testable, and — for the
-/// path kinds — translatable to SQL <i>by construction</i> rather than by hope. An adopter cannot
-/// express an untranslatable read the way a hand-written <c>Select(x =&gt; new Dto { … })</c> lets
-/// them, which is the failure mode behind a runtime "could not be translated" 500.
+/// path kinds — translatable to SQL <i>by construction</i> rather than by hope.
 /// </remarks>
 public enum ModelBindingKind
 {
@@ -53,11 +51,8 @@ public enum ModelBindingKind
     /// <c>Property(d =&gt; d.DisplayName).Format($"{o.First} {o.Last}")</c> — an interpolation the
     /// mapper decomposes into folded <c>string.Concat</c>, which SQL evaluates.
     /// <para>
-    /// The interpolation is <b>not</b> handed to the provider as written: measured on EF Core 10,
-    /// <c>$"{a} {b}"</c> projects (the final <c>Select</c> is evaluated client-side) but throws when
-    /// filtered, and the params-array <c>Concat(string[])</c> overload behaves the same way. Only
-    /// folded two-argument calls become <c>||</c> in SQL and can therefore appear in a
-    /// <c>WHERE</c>.
+    /// An alignment or format specifier (<c>$"{o.Price:C}"</c>) has no SQL equivalent and is refused
+    /// at startup.
     /// </para>
     /// </summary>
     Format,
@@ -69,9 +64,8 @@ public enum ModelBindingKind
     Compute,
 
     /// <summary>
-    /// Declared to have no entity source. Excluded from the projection and from write validation,
-    /// and marked non-queryable in the EDM so <c>$filter</c> over it is a clean 400 rather than a
-    /// provider failure.
+    /// Declared to have no entity source. The profile removes it from the EDM entirely, so it is
+    /// neither served nor addressable — the same thing <c>EntitySetProfile.Ignore</c> means.
     /// </summary>
     Ignored,
 }
@@ -81,11 +75,8 @@ public enum ModelBindingKind
 /// expression that obtains it.
 /// </summary>
 /// <remarks>
-/// This is the single fact every consumer reads — the projection, the predicate/sort substituter,
-/// the write map and the EDM annotations all derive from it rather than re-deriving the
-/// correspondence themselves. That is the "one site, N consumers" rule the framework already
-/// enforces elsewhere; two independent derivations of one correspondence is the defect shape this
-/// repository has hit repeatedly.
+/// The single fact every consumer reads: the projection, the predicate/sort substituter and the
+/// batched navigation loads all derive from it rather than re-deriving the correspondence.
 /// </remarks>
 public sealed class ModelMemberBinding
 {
@@ -140,25 +131,6 @@ public sealed class ModelMemberBinding
 
     /// <summary>Whether this binding names a navigation the request may <c>$expand</c>.</summary>
     public bool IsNavigation => Kind is ModelBindingKind.Collection or ModelBindingKind.Reference;
-
-    /// <summary>
-    /// Whether a write can be routed back through this binding. Only a member that names exactly one
-    /// entity member can be: a path cannot decide whether to update or create the related row, a
-    /// reshaped collection is relationship management, and a computed value has no inverse at all.
-    /// </summary>
-    public bool IsInvertible => Kind is ModelBindingKind.Direct or ModelBindingKind.Rename;
-
-    /// <summary>
-    /// Whether <c>$filter</c>/<c>$orderby</c> over this member can be pushed to the provider. False
-    /// only for <see cref="ModelBindingKind.Compute"/> bindings the startup probe rejected and for
-    /// <see cref="ModelBindingKind.Ignored"/>; those are marked non-queryable in the EDM so the
-    /// request is refused by the existing allowlist path instead of failing in the provider.
-    /// </summary>
-    public bool IsQueryable { get; internal set; } = true;
-
-    /// <summary>The single entity member a write can target, for an invertible binding.</summary>
-    public MemberInfo? InvertibleTarget =>
-        IsInvertible && Source?.Body is MemberExpression m ? m.Member : null;
 
     /// <inheritdoc />
     public override string ToString() =>

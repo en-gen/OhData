@@ -22,9 +22,9 @@ namespace OhData.AspNetCore.Mapper;
 /// </para>
 /// <para>
 /// <c>$filter</c> and <c>$orderby</c> are parsed against the model, bound by
-/// <c>Microsoft.AspNetCore.OData</c>'s own binders, then <b>substituted</b> into entity terms and
-/// applied to the entity queryable — so the predicate reaches the database. Only the rows of one
-/// page are then materialised and mapped. Nothing is filtered, sorted or paged in memory.
+/// <c>Microsoft.AspNetCore.OData</c>'s own binders, then substituted into entity terms and applied to
+/// the entity queryable — so the predicate reaches the database and only the rows of one page are
+/// materialised. Nothing is filtered, sorted or paged in memory.
 /// </para>
 /// <para>
 /// This is a Priority-1 profile, so it owns query application. What it does <i>not</i> own is the
@@ -46,16 +46,15 @@ public abstract class MappedEntitySetProfile<TKey, TModel, TEntity> : ODataEntit
     /// <remarks>
     /// A Priority-1 profile owns paging, so it also owns the ceiling: the framework's own
     /// <c>MaxTop</c> cap is skipped once the profile emits its own <c>@odata.nextLink</c>, and it
-    /// could not be applied here anyway (the resolved value is computed on the startup instance,
-    /// while handlers run on a request-scoped one). 1000 is <c>EntitySetDefaults.MaxTop</c>'s own
-    /// default, so an adopter who changes neither sees the same ceiling either way.
+    /// could not be read here anyway (the resolved value is computed on the startup instance, while
+    /// handlers run on a request-scoped one). 1000 is <c>EntitySetDefaults.MaxTop</c>'s own default,
+    /// so an adopter who changes neither sees the same ceiling either way.
     /// </remarks>
     protected int MappedPageSize { get; init; } = 1000;
 
     private Func<IQueryable<TEntity>>? _entityQuery;
     private ModelMap? _map;
     private ModelMapRegistry? _registry;
-    private MappedQueryComposer<TEntity, TModel>? _composer;
     private LambdaExpression? _entityKey;
     private LambdaExpression? _projection;
 
@@ -76,22 +75,6 @@ public abstract class MappedEntitySetProfile<TKey, TModel, TEntity> : ODataEntit
 
     /// <summary>The model-side key selector this profile was constructed with.</summary>
     protected Expression<Func<TModel, TKey>> ModelKeySelector { get; }
-
-    /// <summary>The resolved correspondence, available once <see cref="UseMap"/> has run.</summary>
-    protected ModelMap Map => _map ?? throw new InvalidOperationException(NotConfigured);
-
-    /// <summary>
-    /// The maps this profile declared, root and nested.
-    /// </summary>
-    /// <remarks>
-    /// Deliberately not named <c>Maps</c>: a member on a base class shadows a same-named type in
-    /// scope, so a profile whose own declarations live in a helper class called <c>Maps</c> would
-    /// stop compiling for a reason that reads as nonsense.
-    /// </remarks>
-    protected ModelMapRegistry MapRegistry => _registry ?? throw new InvalidOperationException(NotConfigured);
-
-    private static string NotConfigured =>
-        "The profile has not declared its map yet. Call UseMap(...) from the constructor.";
 
     /// <summary>
     /// Declares the correspondence and wires every handler that follows from it.
@@ -124,8 +107,10 @@ public abstract class MappedEntitySetProfile<TKey, TModel, TEntity> : ODataEntit
 
         ModelMapValidator.Validate(_map, _registry);
 
-        _projection = ModelProjection.BuildLambda(_map);
-        _entityKey = new ModelToEntityRewriter(_map, _registry.Resolver).RewriteLambda(ModelKeySelector);
+        _projection = ModelProjection.BuildLambda(_map, _registry);
+        _entityKey = new ModelToEntityRewriter(_map, _registry).RewriteLambda(ModelKeySelector);
+
+        HideUnmappedMembers();
 
         GetODataQueryable = GetCollectionAsync;
         GetById = GetByIdAsync;
@@ -133,12 +118,37 @@ public abstract class MappedEntitySetProfile<TKey, TModel, TEntity> : ODataEntit
         RegisterNavigations();
     }
 
+    /// <summary>
+    /// Withdraws every member declared <c>Ignore()</c> from the EDM.
+    /// </summary>
+    /// <remarks>
+    /// Not cosmetic. A member with no entity source cannot be evaluated, so leaving it in the EDM
+    /// let the parser accept <c>$filter=RenderedAt eq …</c> and the rewriter then threw — a
+    /// <c>500</c> for a request only the map could have refused. Withdrawing it makes the
+    /// framework's own <c>400</c> the answer, and stops the member being serialised on every row as
+    /// its CLR default.
+    /// </remarks>
+    private void HideUnmappedMembers()
+    {
+        Expression<Func<TModel, object?>>[] unmapped = _map!.Bindings
+            .Where(b => b.Kind == ModelBindingKind.Ignored)
+            .Select(b =>
+            {
+                ParameterExpression d = Expression.Parameter(typeof(TModel), "d");
+                return Expression.Lambda<Func<TModel, object?>>(
+                    Expression.Convert(Expression.MakeMemberAccess(d, b.ModelMember), typeof(object)), d);
+            })
+            .ToArray();
+
+        if (unmapped.Length > 0) Ignore(unmapped);
+    }
+
     // ── Collection ────────────────────────────────────────────────────────────────────────────────
 
     private Task<ODataQueryResult<TModel>> GetCollectionAsync(
         ODataQueryOptions<TModel> options, CancellationToken ct)
     {
-        MappedQueryComposer<TEntity, TModel> composer = ResolveComposer(options);
+        var composer = new MappedQueryComposer<TEntity, TModel>(_map!, _registry!, options.Context.Model);
 
         IQueryable<TEntity> query = _entityQuery!();
         query = composer.ApplyFilter(query, options.Filter?.FilterClause);
@@ -147,11 +157,10 @@ public abstract class MappedEntitySetProfile<TKey, TModel, TEntity> : ODataEntit
         query = composer.ApplyOrderBy(query, options.OrderBy?.OrderByClause);
 
         // §11.2.6.5: the count is of the items matching the request, unaffected by $top/$skip -- so it
-        // is taken after $filter and before any window, and as its own provider round-trip rather
-        // than off the materialised page.
+        // is taken after $filter and before any window, as its own provider round-trip.
         long? total = options.Count?.Value == true ? query.LongCount() : null;
 
-        // A tie-break so paging is deterministic. Without it a client walking @odata.nextLink over an
+        // A tie-break so paging is deterministic: without it a client walking @odata.nextLink over an
         // unordered set can see one row twice and miss another.
         query = composer.Stabilize(query, _entityKey!, ordered);
 
@@ -187,8 +196,7 @@ public abstract class MappedEntitySetProfile<TKey, TModel, TEntity> : ODataEntit
     {
         int ceiling = MappedPageSize;
 
-        // RFC 7240: a preference may only narrow. Preference-Applied is emitted by the core when it
-        // does the paging; this profile pages itself, so it emits its own.
+        // RFC 7240: a preference may only narrow, and one that was not applied must not be claimed.
         if (MappedNextLink.TryReadMaxPageSize(options, out int preferred) && preferred < ceiling)
         {
             ceiling = preferred;
@@ -203,21 +211,18 @@ public abstract class MappedEntitySetProfile<TKey, TModel, TEntity> : ODataEntit
     private Task<OhDataResult<TModel?>> GetByIdAsync(TKey key, CancellationToken ct)
     {
         ParameterExpression e = Expression.Parameter(typeof(TEntity), "e");
-        Expression keyValue = new ParameterReplacer(_entityKey!.Parameters[0], e).Visit(_entityKey.Body);
 
-        // The key is read off a box rather than embedded as a ConstantExpression. EF Core inlines a
-        // constant into the SQL, so every distinct key would compile and cache its own query plan --
-        // on the hottest read route there is. A member access over a closure is what the compiler
-        // emits for a captured local, and is what EF parameterises.
+        // The key is read off a box rather than embedded as a ConstantExpression: EF Core inlines a
+        // constant into the SQL, so every distinct key would compile and cache its own query plan.
         var box = new KeyBox { Value = key };
-        Expression parameter = Expression.Field(
-            Expression.Constant(box), nameof(KeyBox.Value));
 
         var predicate = Expression.Lambda<Func<TEntity, bool>>(
-            Expression.Equal(keyValue, parameter), e);
+            Expression.Equal(
+                MapExpressions.Inline(_entityKey!, e),
+                Expression.Field(Expression.Constant(box), nameof(KeyBox.Value))),
+            e);
 
-        // null is the framework's own "no such entity" for this handler, answered as 404. Rejecting
-        // deliberately is ConfigureExceptions' business, not this profile's.
+        // null is the framework's own "no such entity" for this handler, answered as 404.
         TModel? row = _entityQuery!()
             .Where(predicate)
             .Select((Expression<Func<TEntity, TModel>>)_projection!)
@@ -233,26 +238,13 @@ public abstract class MappedEntitySetProfile<TKey, TModel, TEntity> : ODataEntit
     {
         foreach (ModelMemberBinding binding in _map!.Navigations)
         {
-            Type navModelType = binding.ElementModelType
-                ?? throw new InvalidOperationException(
-                    $"'{typeof(TModel).Name}.{binding.ModelMember.Name}' declares no model element type.");
-
-            if (_registry!.Find(navModelType) is null)
-            {
-                throw new InvalidOperationException(
-                    $"'{typeof(TModel).Name}.{binding.ModelMember.Name}' maps to model type " +
-                    $"'{navModelType.Name}', which has no map. Declare one with " +
-                    $"Nested<{binding.ElementEntityType?.Name}, {navModelType.Name}>(...) so " +
-                    $"$expand and a nested $filter can substitute through its own bindings.");
-            }
-
             MethodInfo register = typeof(MappedEntitySetProfile<TKey, TModel, TEntity>)
                 .GetMethod(
                     binding.Kind == ModelBindingKind.Collection
                         ? nameof(RegisterCollectionNavigation)
                         : nameof(RegisterReferenceNavigation),
                     BindingFlags.Instance | BindingFlags.NonPublic)!
-                .MakeGenericMethod(navModelType);
+                .MakeGenericMethod(binding.ElementModelType!);
 
             register.Invoke(this, new object[] { binding });
         }
@@ -265,7 +257,7 @@ public abstract class MappedEntitySetProfile<TKey, TModel, TEntity> : ODataEntit
         Func<IReadOnlyList<TKey>, CancellationToken, Task<ILookup<TKey, TNav>>> batch = (keys, _) =>
         {
             IReadOnlyList<KeyValuePair<object, object>> rows = MappedNavigationLoader.LoadCollection(
-                _entityQuery!(), _entityKey!, binding, elementMap, Box(keys));
+                _entityQuery!(), _entityKey!, binding, elementMap, _registry!, Box(keys));
 
             return Task.FromResult(rows.ToLookup(r => (TKey)r.Key, r => (TNav)r.Value));
         };
@@ -280,7 +272,7 @@ public abstract class MappedEntitySetProfile<TKey, TModel, TEntity> : ODataEntit
         Func<IReadOnlyList<TKey>, CancellationToken, Task<IReadOnlyDictionary<TKey, TNav?>>> batch = (keys, _) =>
         {
             IReadOnlyList<KeyValuePair<object, object>> rows = MappedNavigationLoader.LoadReference(
-                _entityQuery!(), _entityKey!, binding, targetMap, Box(keys));
+                _entityQuery!(), _entityKey!, binding, targetMap, _registry!, Box(keys));
 
             var byKey = new Dictionary<TKey, TNav?>();
             foreach (KeyValuePair<object, object> row in rows) byKey[(TKey)row.Key] = (TNav)row.Value;
@@ -290,92 +282,21 @@ public abstract class MappedEntitySetProfile<TKey, TModel, TEntity> : ODataEntit
         HasOptional(NavigationSelector<TNav>(binding.ModelMember), batch);
     }
 
-    private static IReadOnlyList<object> Box(IReadOnlyList<TKey> keys)
-    {
-        var boxed = new List<object>(keys.Count);
-        foreach (TKey key in keys) if (key is not null) boxed.Add(key);
-        return boxed;
-    }
+    private static IReadOnlyList<object> Box(IReadOnlyList<TKey> keys) => keys.Cast<object>().ToList();
 
     private static Expression<Func<TModel, TSelected>> NavigationSelector<TSelected>(MemberInfo member)
     {
         ParameterExpression d = Expression.Parameter(typeof(TModel), "d");
-        Expression access = Expression.MakeMemberAccess(d, member);
 
-        // No Convert node, although the declared member is usually List<T> where the selector's
-        // delegate says IEnumerable<T>: Expression.Lambda accepts a reference-assignable body, and
-        // ModelBuilder's PropertySelectorVisitor -- which reads this same expression to find the
-        // navigation -- throws "Unsupported Expression NodeType" on anything but a bare member
-        // access. Measured: adding the conversion fails EDM construction for the whole profile.
-        return Expression.Lambda<Func<TModel, TSelected>>(access, d);
+        // No Convert node, although the declared member is usually List<T> where the delegate says
+        // IEnumerable<T>: Expression.Lambda accepts a reference-assignable body, and ModelBuilder's
+        // PropertySelectorVisitor -- which reads this same expression to find the navigation --
+        // throws "Unsupported Expression NodeType" on anything but a bare member access.
+        return Expression.Lambda<Func<TModel, TSelected>>(Expression.MakeMemberAccess(d, member), d);
     }
-
-    private MappedQueryComposer<TEntity, TModel> ResolveComposer(ODataQueryOptions options) =>
-        _composer ??= new MappedQueryComposer<TEntity, TModel>(_map!, _registry!, options.Context.Model);
 
     private sealed class KeyBox
     {
         public TKey Value = default!;
-    }
-
-    private sealed class ParameterReplacer : ExpressionVisitor
-    {
-        private readonly ParameterExpression _from;
-        private readonly Expression _to;
-
-        public ParameterReplacer(ParameterExpression from, Expression to)
-        {
-            _from = from;
-            _to = to;
-        }
-
-        protected override Expression VisitParameter(ParameterExpression node) =>
-            node == _from ? _to : node;
-    }
-}
-
-/// <summary>Declares a profile's root map and the nested maps its navigations reach.</summary>
-/// <typeparam name="TEntity">The root entity type.</typeparam>
-/// <typeparam name="TModel">The root model type.</typeparam>
-public sealed class MappedProfileBuilder<TEntity, TModel>
-    where TEntity : class
-    where TModel : class
-{
-    private readonly ModelMapBuilder<TEntity, TModel> _root = new();
-    private readonly List<ModelMap> _nested = new();
-
-    /// <summary>Declares the root model's correspondence.</summary>
-    public MappedProfileBuilder<TEntity, TModel> Root(Action<ModelMapBuilder<TEntity, TModel>> configure)
-    {
-        if (configure is null) throw new ArgumentNullException(nameof(configure));
-        configure(_root);
-        return this;
-    }
-
-    /// <summary>
-    /// Declares the correspondence for a model a navigation reaches, so <c>$expand</c> and a nested
-    /// <c>$filter</c> substitute through its own bindings rather than repeating them at each use.
-    /// </summary>
-    /// <typeparam name="TNestedEntity">The related entity type.</typeparam>
-    /// <typeparam name="TNestedModel">The related model type.</typeparam>
-    public MappedProfileBuilder<TEntity, TModel> Nested<TNestedEntity, TNestedModel>(
-        Action<ModelMapBuilder<TNestedEntity, TNestedModel>> configure)
-        where TNestedEntity : class
-        where TNestedModel : class
-    {
-        if (configure is null) throw new ArgumentNullException(nameof(configure));
-
-        ModelMapBuilder<TNestedEntity, TNestedModel> builder = new();
-        configure(builder);
-        _nested.Add(builder.Build());
-        return this;
-    }
-
-    internal ModelMapRegistry BuildRegistry()
-    {
-        var registry = new ModelMapRegistry();
-        registry.Add(_root.Build());
-        foreach (ModelMap map in _nested) registry.Add(map);
-        return registry;
     }
 }

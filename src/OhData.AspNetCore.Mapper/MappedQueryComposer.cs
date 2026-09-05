@@ -17,11 +17,10 @@ namespace OhData.AspNetCore.Mapper;
 /// <remarks>
 /// <para>
 /// The clauses are bound by <c>Microsoft.AspNetCore.OData</c>'s own
-/// <c>FilterBinder</c>/<c>OrderByBinder</c>, exactly as the core binds a nested expand
-/// (<c>BindNavShape</c>), and only then rewritten. That ordering is the point: every operator,
-/// canonical function and lambda the framework supports is bound by the framework's binder, so this
-/// package can neither miss one nor interpret one differently. What it adds is substitution — a
-/// mechanical member swap — which cannot introduce a semantic difference of its own.
+/// <c>FilterBinder</c>/<c>OrderByBinder</c>, exactly as the core binds a nested expand, and only
+/// then rewritten. That ordering is the point: every operator, canonical function and lambda the
+/// framework supports is bound by the framework's binder, so this package can neither miss one nor
+/// interpret one differently.
 /// </para>
 /// <para>
 /// <see cref="HandleNullPropagationOption.False"/> is what a database-side query wants: SQL's own
@@ -32,7 +31,7 @@ namespace OhData.AspNetCore.Mapper;
 /// </remarks>
 /// <typeparam name="TEntity">The persistence type the query runs against.</typeparam>
 /// <typeparam name="TModel">The type on the wire and in <c>$metadata</c>.</typeparam>
-public sealed class MappedQueryComposer<TEntity, TModel>
+internal sealed class MappedQueryComposer<TEntity, TModel>
     where TEntity : class
     where TModel : class
 {
@@ -40,6 +39,15 @@ public sealed class MappedQueryComposer<TEntity, TModel>
     // instance each is shared, as the core does for the same two types.
     private static readonly FilterBinder s_filterBinder = new();
     private static readonly OrderByBinder s_orderByBinder = new();
+
+    private static readonly Dictionary<string, MethodInfo> s_ordering =
+        new[] { nameof(Queryable.OrderBy), nameof(Queryable.OrderByDescending),
+                nameof(Queryable.ThenBy), nameof(Queryable.ThenByDescending) }
+            .ToDictionary(
+                name => name,
+                name => typeof(Queryable).GetMethods()
+                    .Single(m => m.Name == name && m.GetParameters().Length == 2),
+                StringComparer.Ordinal);
 
     private static readonly ODataQuerySettings s_binderSettings = new()
     {
@@ -107,11 +115,7 @@ public sealed class MappedQueryComposer<TEntity, TModel>
     public IQueryable<TEntity> Stabilize(IQueryable<TEntity> source, LambdaExpression key, bool ordered) =>
         ApplyKeys(source, new[] { (key, false) }, alreadyOrdered: ordered);
 
-    /// <summary>Rewrites any model-side lambda into entity terms.</summary>
-    public LambdaExpression Rewrite(LambdaExpression modelLambda) =>
-        NewRewriter().RewriteLambda(modelLambda);
-
-    private ModelToEntityRewriter NewRewriter() => new(_map, _registry.Resolver);
+    private ModelToEntityRewriter NewRewriter() => new(_map, _registry);
 
     private static IQueryable<TEntity> ApplyKeys(
         IQueryable<TEntity> source,
@@ -131,9 +135,7 @@ public sealed class MappedQueryComposer<TEntity, TModel>
                 (true, true) => nameof(Queryable.ThenByDescending),
             };
 
-            MethodInfo method = typeof(Queryable).GetMethods()
-                .Single(m => m.Name == name && m.GetParameters().Length == 2)
-                .MakeGenericMethod(typeof(TEntity), key.ReturnType);
+            MethodInfo method = s_ordering[name].MakeGenericMethod(typeof(TEntity), key.ReturnType);
 
             expression = Expression.Call(method, expression, Expression.Quote(key));
             ordered = true;

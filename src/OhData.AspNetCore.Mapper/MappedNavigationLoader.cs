@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
@@ -17,7 +18,7 @@ namespace OhData.AspNetCore.Mapper;
 /// </remarks>
 /// <typeparam name="TKey">The parent's key type.</typeparam>
 /// <typeparam name="TValue">The related entity type.</typeparam>
-public sealed class KeyedRow<TKey, TValue>
+internal sealed class KeyedRow<TKey, TValue>
 {
     /// <summary>The parent entity's key.</summary>
     public TKey Key { get; set; } = default!;
@@ -37,14 +38,16 @@ public sealed class KeyedRow<TKey, TValue>
 /// <c>Element(...)</c> hop the map already declares, so a many-to-many never reaches the wire.
 /// </para>
 /// <para>
-/// The load runs against the <b>entity</b> queryable and maps only what it fetched. It never
-/// projects into the model type in the provider, which is the strategy this package exists to avoid:
-/// a model-typed projection has to name every navigation it might ever need on every request, and a
-/// member the provider cannot translate fails at the row rather than at startup.
+/// The element's own scalar projection is composed into the query, so the provider reads only the
+/// columns the element model needs. No navigation appears in it — that is what separates this from
+/// the model-typed projection the package exists to avoid.
 /// </para>
 /// </remarks>
-public static class MappedNavigationLoader
+internal static class MappedNavigationLoader
 {
+    private static readonly ConcurrentDictionary<(Type RowType, PropertyInfo Property), Func<object, object?>>
+        s_readers = new();
+
     private static readonly MethodInfo s_contains = typeof(Enumerable).GetMethods()
         .Single(m => m.Name == nameof(Enumerable.Contains) && m.GetParameters().Length == 2);
 
@@ -76,6 +79,7 @@ public static class MappedNavigationLoader
         LambdaExpression entityKey,
         ModelMemberBinding binding,
         ModelMap elementMap,
+        ModelMapRegistry registry,
         IReadOnlyList<object> parentKeys)
     {
         if (binding is null) throw new ArgumentNullException(nameof(binding));
@@ -88,7 +92,7 @@ public static class MappedNavigationLoader
 
         ParameterExpression parent = Expression.Parameter(entityType, "p");
         Expression collection = Inline(binding.Source!, parent);
-        Type sourceElement = ElementTypeOf(collection.Type);
+        Type sourceElement = MapExpressions.ElementTypeOf(collection.Type);
 
         ParameterExpression sourceItem = Expression.Parameter(sourceElement, "x");
         Expression relatedEntity = binding.ElementSource is null
@@ -99,7 +103,7 @@ public static class MappedNavigationLoader
         Expression row = Expression.MemberInit(
             Expression.New(rowType),
             Expression.Bind(KeyProperty(rowType), Inline(entityKey, parent)),
-            Expression.Bind(ValueProperty(rowType), ModelProjection.BuildBody(elementMap, relatedEntity)));
+            Expression.Bind(ValueProperty(rowType), ModelProjection.BuildBody(elementMap, registry, relatedEntity)));
 
         Expression call = Expression.Call(
             s_selectMany.MakeGenericMethod(entityType, sourceElement, rowType),
@@ -122,6 +126,7 @@ public static class MappedNavigationLoader
         LambdaExpression entityKey,
         ModelMemberBinding binding,
         ModelMap targetMap,
+        ModelMapRegistry registry,
         IReadOnlyList<object> parentKeys)
     {
         if (binding is null) throw new ArgumentNullException(nameof(binding));
@@ -145,7 +150,7 @@ public static class MappedNavigationLoader
             Expression.MemberInit(
                 Expression.New(rowType),
                 Expression.Bind(KeyProperty(rowType), Inline(entityKey, parent)),
-                Expression.Bind(ValueProperty(rowType), ModelProjection.BuildBody(targetMap, target))));
+                Expression.Bind(ValueProperty(rowType), ModelProjection.BuildBody(targetMap, registry, target))));
 
         Expression call = Expression.Call(
             s_select.MakeGenericMethod(entityType, rowType),
@@ -184,10 +189,10 @@ public static class MappedNavigationLoader
     private static IReadOnlyList<KeyValuePair<object, object>> Materialize(
         IQueryProvider provider, Expression query, Type rowType)
     {
-        // Compiled once per load, not reflected once per row: a page of parents times its related
-        // rows is the one place in this file where the per-row cost is visible.
-        Func<object, object?> readKey = CompileReader(rowType, KeyProperty(rowType));
-        Func<object, object?> readValue = CompileReader(rowType, ValueProperty(rowType));
+        // Compiled once per (row type, member) and cached for the process: a page of parents times
+        // its related rows is the one place in this file where a per-row reflection call shows.
+        Func<object, object?> readKey = Reader(rowType, KeyProperty(rowType));
+        Func<object, object?> readValue = Reader(rowType, ValueProperty(rowType));
 
         var results = new List<KeyValuePair<object, object>>();
         foreach (object? row in (IEnumerable)provider.CreateQuery(query))
@@ -204,6 +209,9 @@ public static class MappedNavigationLoader
         return results;
     }
 
+    private static Func<object, object?> Reader(Type rowType, PropertyInfo property) =>
+        s_readers.GetOrAdd((rowType, property), key => CompileReader(key.RowType, key.Property));
+
     private static Func<object, object?> CompileReader(Type rowType, PropertyInfo property)
     {
         ParameterExpression boxed = Expression.Parameter(typeof(object), "row");
@@ -215,28 +223,6 @@ public static class MappedNavigationLoader
     }
 
     private static Expression Inline(LambdaExpression lambda, Expression instance) =>
-        new Inliner(lambda.Parameters[0], instance).Visit(lambda.Body);
+        MapExpressions.Inline(lambda, instance);
 
-    private static Type ElementTypeOf(Type collectionType) =>
-        collectionType.IsArray
-            ? collectionType.GetElementType()!
-            : collectionType.GetInterfaces()
-                  .Concat(new[] { collectionType })
-                  .First(t => t.IsGenericType && t.GetGenericTypeDefinition() == typeof(IEnumerable<>))
-                  .GetGenericArguments()[0];
-
-    private sealed class Inliner : ExpressionVisitor
-    {
-        private readonly ParameterExpression _parameter;
-        private readonly Expression _replacement;
-
-        public Inliner(ParameterExpression parameter, Expression replacement)
-        {
-            _parameter = parameter;
-            _replacement = replacement;
-        }
-
-        protected override Expression VisitParameter(ParameterExpression node) =>
-            node == _parameter ? _replacement : node;
-    }
 }

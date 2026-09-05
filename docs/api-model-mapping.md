@@ -93,8 +93,8 @@ public sealed class ProductProfile : MappedEntitySetProfile<int, ProductDto, Pro
                 r.Property(d => d.CategoryName).From(o => o.Category.Name);
                 r.Property(d => d.DisplayName).Format(o => $"{o.First} {o.Last}");
                 r.Reference(d => d.Category, o => o.Category);
-                r.Collection(d => d.Tags).From(o => o.Links).Element((ProductTag l) => l.Tag);
-                r.Collection(d => d.Reviews).From(o => o.Reviews).AsIs<Review>();
+                r.Collection(d => d.Tags).From(o => o.Links).Element(l => l.Tag);
+                r.Collection(d => d.Reviews).From(o => o.Reviews).AsIs();
                 r.Ignore(d => d.RenderedAt);
             })
             .Nested<Category, CategoryDto>(c =>
@@ -141,7 +141,7 @@ translatable to SQL *by construction* rather than by hope.
 | Compute | `Property(d => d.X).Compute(o => …)` | probe it | no |
 | Reference | `Reference(d => d.Category, o => o.Category)` | yes | no |
 | Collection | `Collection(d => d.Tags).From(o => o.Links).Element(l => l.Tag)` | yes | no |
-| Ignored | `Ignore(d => d.RenderedAt)` | n/a | n/a |
+| Ignored | `Ignore(d => d.RenderedAt)` | n/a — leaves the EDM | n/a |
 
 **"Invertible"** means a write can be routed back through it: only a member that names exactly one
 entity member can be. A path cannot decide whether to update the related row or create one, a
@@ -155,6 +155,18 @@ interpolation as written and the params-array `Concat(string[])` overload both *
 `Select` is one of the few things EF still evaluates on the client — but both **throw** when they
 appear in a `WHERE`. Writing the same interpolation inside a `Compute` therefore gives you a member
 that renders correctly and cannot be filtered or sorted on.
+
+An alignment or a format specifier — `$"{o.Price:C}"`, `$"{o.Name,10}"` — has no SQL equivalent and
+is **refused at startup**, naming the member. Format the value in the database with `Compute`, or
+expose the raw member and format it on the client.
+
+### `Ignore` withdraws the member entirely
+
+`Ignore(d => d.RenderedAt)` forwards to the profile's own `EntitySetProfile.Ignore`, so the member
+leaves `$metadata` and the payload together. That is deliberate: a member with no entity source
+cannot be evaluated, so leaving it in the EDM would let a client write `$filter=RenderedAt eq …`
+and get a server fault for a query only the map could refuse. With it withdrawn, the framework's own
+`400` answers.
 
 ### `Collection` and the join entity
 
@@ -278,8 +290,9 @@ probe would pass for a member no `$filter` could ever use.
 
 ## `$search`
 
-`$search` is not honoured by default and is therefore refused with `400`. Declare it and read
-`options.Search` yourself if your store can answer it:
+`$search` is not in `HonouredQueryOptions` by default, so it is refused with `501` — the same answer
+every unimplemented system query option gets. Declare it and read `options.Search` yourself if your
+store can answer it:
 
 ```csharp
 HonouredQueryOptions |= OhDataSystemQueryOption.Search;

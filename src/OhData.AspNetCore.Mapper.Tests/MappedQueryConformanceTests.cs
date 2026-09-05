@@ -1,6 +1,8 @@
 using System;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Text.Json.Nodes;
 using System.Threading.Tasks;
 using Xunit;
 using Xunit.Abstractions;
@@ -101,12 +103,18 @@ public sealed class MappedQueryConformanceTests
             "?$filter=Tags/all(t: t/Label ne 'sale')",
             "?$filter=Tags/any()",
 
+            // $filter -- a collection's cardinality, which binds to Count/LongCount rather than Any
+            "?$filter=Tags/$count gt 1",
+            "?$filter=Tags/$count eq 0",
+            "?$orderby=Tags/$count desc,Id",
+
+            // $filter -- an inner lambda referring to the OUTER range variable
+            "?$filter=Tags/any(t: t/Label eq Title)",
+            "?$filter=Reviews/any(r: r/Id gt Id)",
+
             // $filter -- lambdas over an ordinary collection
             "?$filter=Reviews/any(r: r/Stars eq 5)",
             "?$filter=Reviews/all(r: r/Stars gt 1)",
-
-            // $filter -- through a single-valued navigation
-            "?$filter=Category/Name eq 'Tools'",
 
             // $orderby
             "?$orderby=Rank",
@@ -157,9 +165,7 @@ public sealed class MappedQueryConformanceTests
             "?$expand=Category($select=Name)",
             "?$expand=Reviews($orderby=Stars desc;$top=1)",
 
-            // Null semantics across a mapped path and a mapped reference
-            "?$filter=Category/Name eq null",
-            "?$filter=Category/Name ne null",
+            // Null semantics across a mapped path
             "?$orderby=CategoryName,Id",
             "?$orderby=CategoryName desc,Id desc",
 
@@ -188,8 +194,48 @@ public sealed class MappedQueryConformanceTests
         _out.WriteLine($"mapped : {(int)mapped.StatusCode} {mappedBody}");
         _out.WriteLine($"control: {(int)control.StatusCode} {controlBody}");
 
+        // Asserted BEFORE the comparison, and this is the load-bearing line. Equality alone passes
+        // for a 500/500 pair, and three of these queries were in exactly that state: the mapper
+        // failed to rewrite a path through a mapped reference, the control NRE'd on the same rows for
+        // an unrelated reason, and the oracle recorded a defect as conformance.
+        Assert.True(
+            mapped.IsSuccessStatusCode,
+            $"the mapped profile answered {(int)mapped.StatusCode} for '{query}': {mappedBody}");
+
         Assert.Equal(control.StatusCode, mapped.StatusCode);
         Assert.Equal(Normalize(controlBody), Normalize(mappedBody));
+    }
+
+    /// <summary>
+    /// Constructs the naive control cannot answer at all, asserted against an explicit expectation.
+    /// </summary>
+    /// <remarks>
+    /// Materialise-then-project evaluates a path in memory, so an unset reference is a
+    /// <see cref="NullReferenceException"/> and the request is a <c>500</c>. The mapper pushes the
+    /// same predicate to SQL, where a null reference is simply a null column. That is the difference
+    /// the package exists for, so it is asserted rather than skipped — but it means the oracle cannot
+    /// be the judge here.
+    /// </remarks>
+    [Theory]
+    [InlineData("?$filter=Category/Name eq 'Tools'", "Hammer")]
+    [InlineData("?$filter=Category/Name ne null", "Hammer,Ball")]
+    [InlineData("?$filter=Category/Name eq null", "Orphan")]
+    [InlineData("?$filter=Category/Id eq 1", "Hammer")]
+    [InlineData("?$orderby=Category/Name desc,Id", "Ball,Hammer,Orphan")]
+    public async Task APathThroughAMappedReference_IsAnsweredInSql(string query, string expected)
+    {
+        await using MappedTestHost host = await MappedTestHost.StartAsync();
+
+        HttpResponseMessage mapped = await host.Client.GetAsync($"/odata/{MappedTestHost.Mapped}{query}");
+        string body = await mapped.Content.ReadAsStringAsync();
+        _out.WriteLine($"{(int)mapped.StatusCode} {body}");
+
+        Assert.Equal(HttpStatusCode.OK, mapped.StatusCode);
+
+        JsonArray rows = JsonNode.Parse(body)!["value"]!.AsArray();
+        Assert.Equal(
+            expected.Split(',', StringSplitOptions.RemoveEmptyEntries),
+            rows.Select(r => r!["Title"]!.GetValue<string>()).ToArray());
     }
 
     [Theory]

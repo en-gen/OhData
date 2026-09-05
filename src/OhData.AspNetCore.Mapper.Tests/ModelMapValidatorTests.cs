@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Linq.Expressions;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
@@ -125,6 +126,67 @@ public sealed class ModelMapValidatorTests
 
         Assert.Contains("TagDto", ex.Message, StringComparison.Ordinal);
         Assert.Contains("exactly one entity type", ex.Message, StringComparison.Ordinal);
+    }
+
+    // ── Format ────────────────────────────────────────────────────────────────────────────────
+
+    private sealed class FormattedDto
+    {
+        public int Id { get; set; }
+        public string Label { get; set; } = "";
+    }
+
+    [Fact]
+    public void AFormatSpecifier_IsRefusedAtStartup() =>
+        AssertFormatRefused(m => m.Property(d => d.Label).Format(o => $"{o.Rank:N2}"));
+
+    [Fact]
+    public void AFormatAlignment_IsRefusedAtStartup() =>
+        AssertFormatRefused(m => m.Property(d => d.Label).Format(o => $"{o.Rank,10}"));
+
+    [Fact]
+    public void AFormatAlignmentAndSpecifierTogether_IsRefusedAtStartup() =>
+        AssertFormatRefused(m => m.Property(d => d.Label).Format(o => $"{o.Rank,-10:C}"));
+
+    /// <summary>
+    /// Refused rather than emitted: SQL has no equivalent, and the previous pattern matched neither
+    /// shape — so the placeholder reached the wire as literal text (<c>"{0:N2}"</c>) and the value
+    /// was dropped, on every row, under a <c>200</c>.
+    /// </summary>
+    private static void AssertFormatRefused(Action<ModelMapBuilder<Product, FormattedDto>> declare)
+    {
+        ModelMapBuilder<Product, FormattedDto> m = new();
+        m.Property(d => d.Id).From(o => o.Id);
+        declare(m);
+
+        ModelMap map = m.Build();
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(
+            () => ModelMapValidator.Validate(map, new ModelMapRegistry().Add(map)));
+
+        Assert.Contains("FormattedDto.Label", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("cannot be translated to SQL", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AnEscapedBrace_IsUnescaped_NotDoubled()
+    {
+        using SqliteConnection connection = new("DataSource=:memory:");
+        connection.Open();
+        using MapDb db = MapDb.Seeded(connection);
+
+        ModelMapBuilder<Product, FormattedDto> m = new();
+        m.Property(d => d.Id).From(o => o.Id);
+        m.Property(d => d.Label).Format(o => $"{{{o.First}}}");
+
+        ModelMap map = m.Build();
+        ModelMapRegistry registry = new ModelMapRegistry().Add(map);
+        ModelMapValidator.Validate(map, registry);
+
+        var projection = (Expression<Func<Product, FormattedDto>>)
+            ModelProjection.BuildLambda(map, registry);
+
+        FormattedDto first = db.Products.OrderBy(p => p.Id).Select(projection).First();
+        Assert.Equal("{Ada}", first.Label);
     }
 
     // ── The translatability probe ─────────────────────────────────────────────────────────────

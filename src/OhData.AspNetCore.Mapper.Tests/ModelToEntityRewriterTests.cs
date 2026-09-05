@@ -38,7 +38,10 @@ public sealed class ModelToEntityRewriterTests : IDisposable
         _connection.Dispose();
     }
 
-    private ModelToEntityRewriter Rewriter() => new(Maps.Product(), Maps.Resolver());
+    private static readonly ModelMapRegistry Registry = Maps.Registry();
+
+    private static ModelToEntityRewriter Rewriter() =>
+        new(Registry.Find(typeof(ProductDto))!, Registry);
 
     private IQueryable<Product> Where(Expression<Func<ProductDto, bool>> modelPredicate)
     {
@@ -185,10 +188,8 @@ public sealed class ModelToEntityRewriterTests : IDisposable
     [Fact]
     public void ASortKey_RewritesForOrderBy()
     {
-        ModelToEntityRewriter rewriter = Rewriter();
         Expression<Func<ProductDto, string?>> key = d => d.CategoryName;
-        Expression body = rewriter.RewriteBody(key.Body, key.Parameters[0]);
-        var entityKey = Expression.Lambda<Func<Product, string?>>(body, rewriter.EntityParameter);
+        var entityKey = (Expression<Func<Product, string?>>)Rewriter().RewriteLambda(key);
 
         IQueryable<Product> q = _db.Products.OrderByDescending(entityKey);
         string sql = Flatten(q.ToQueryString());

@@ -4,7 +4,7 @@
 		<TargetFrameworks>net8.0;net10.0</TargetFrameworks>
 		<PackageId>EnGen.OhData.AspNetCore.Mapper</PackageId>
 		<Title>OhData API-model / persistence-model mapping</Title>
-		<Description>Serve an API model (DTO) that differs from your EF Core entity, without giving up OData semantics. Declare where each model member comes from and the mapper translates $filter/$orderby/$select and the projection into entity terms, so the query still runs in SQL. Includes the DTO-to-entity write path (delta mapping).</Description>
+		<Description>Serve an API model (DTO) that differs from your EF Core entity, without giving up OData semantics. Declare where each model member comes from and the mapper translates $filter/$orderby and the projection into entity terms, so the query still runs in SQL. Reads only; writes stay yours, with OhData's own delta mapping.</Description>
 		<Copyright>Copyright (c) en-gen and contributors</Copyright>
 		<PackageTags>odata;odata4;aspnetcore;efcore;dto;mapping</PackageTags>
 		<!--

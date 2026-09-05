@@ -41,20 +41,11 @@ public sealed class ModelMap
     /// Looks up a binding by model member name.
     /// </summary>
     /// <remarks>
-    /// <b>Ordinal</b>, deliberately. The names being matched are resolved from the EDM, which is
-    /// built from the CLR type, so they are the CLR spellings on both sides — not client-supplied
-    /// text. A case-insensitive comparer here would silently accept a member the model does not
-    /// declare, which is the class of bug that has bitten this repository whenever two components
-    /// disagreed about how a name is matched.
+    /// <b>Ordinal</b>: the names come from the EDM, which is built from the CLR type, so they are
+    /// the CLR spellings on both sides — never client-supplied text.
     /// </remarks>
     public ModelMemberBinding? Find(string modelMemberName) =>
         _byModelMember.TryGetValue(modelMemberName, out ModelMemberBinding? b) ? b : null;
-
-    /// <summary>Bindings a write can be routed back through.</summary>
-    public IEnumerable<ModelMemberBinding> InvertibleBindings => Bindings.Where(b => b.IsInvertible);
-
-    /// <summary>Bindings that cannot carry <c>$filter</c>/<c>$orderby</c>.</summary>
-    public IEnumerable<ModelMemberBinding> NonQueryableBindings => Bindings.Where(b => !b.IsQueryable);
 
     /// <summary>Bindings a request may <c>$expand</c>.</summary>
     public IEnumerable<ModelMemberBinding> Navigations => Bindings.Where(b => b.IsNavigation);
@@ -68,10 +59,8 @@ public sealed class ModelMap
 /// <typeparamref name="TEntity"/>.
 /// </summary>
 /// <remarks>
-/// The adopter never writes a projection. They state correspondences; the mapper composes whatever
-/// query shape a given request needs — which is the thing a hand-written
-/// <c>Select(o =&gt; new Dto { … })</c> cannot do, because it has no request context and so must
-/// bind every navigation it might ever need on every request.
+/// The adopter states correspondences; the mapper composes whatever query shape a given request
+/// needs.
 /// </remarks>
 public sealed class ModelMapBuilder<TEntity, TModel>
     where TEntity : class
@@ -108,23 +97,20 @@ public sealed class ModelMapBuilder<TEntity, TModel>
         new(this, MemberOf(member));
 
     /// <summary>
-    /// Declares that a model member has no entity source: excluded from the projection, exempt from
-    /// write validation, and marked non-queryable so a <c>$filter</c> over it is refused cleanly.
+    /// Declares that a model member has no entity source. The profile forwards it to
+    /// <c>EntitySetProfile.Ignore</c>, so the member leaves the EDM and the wire together and a
+    /// <c>$filter</c> over it is the framework's own <c>400</c>.
     /// </summary>
     public ModelMapBuilder<TEntity, TModel> Ignore<TValue>(Expression<Func<TModel, TValue>> member)
     {
-        Add(new ModelMemberBinding(MemberOf(member), ModelBindingKind.Ignored, null, null, null)
-        {
-            IsQueryable = false,
-        });
+        Add(new ModelMemberBinding(MemberOf(member), ModelBindingKind.Ignored, null, null, null));
         return this;
     }
 
     internal void Add(ModelMemberBinding binding)
     {
-        // Declaring one member twice is refused at the call rather than resolved last-write-wins:
-        // silently keeping one of two declarations makes the wire shape depend on declaration order,
-        // which is the defect #546 fixed for authorization rules.
+        // Refused at the call rather than last-write-wins: keeping one of two declarations silently
+        // would make the wire shape depend on declaration order.
         if (_bindings.Any(b => b.ModelMember.Name == binding.ModelMember.Name))
         {
             throw new InvalidOperationException(
@@ -228,7 +214,6 @@ public sealed class ModelMapBuilder<TEntity, TModel>
     {
         private readonly ModelMapBuilder<TEntity, TModel> _owner;
         private readonly MemberInfo _modelMember;
-        private LambdaExpression? _source;
 
         internal CollectionBinding(ModelMapBuilder<TEntity, TModel> owner, MemberInfo modelMember)
         {
@@ -237,26 +222,46 @@ public sealed class ModelMapBuilder<TEntity, TModel>
         }
 
         /// <summary>The entity collection this comes from.</summary>
-        public CollectionBinding<TElement> From<TSource>(
-            Expression<Func<TEntity, IEnumerable<TSource>>> source)
+        public SourcedCollection<TElement, TSource> From<TSource>(
+            Expression<Func<TEntity, IEnumerable<TSource>>> source) =>
+            new(_owner, _modelMember, source ?? throw new ArgumentNullException(nameof(source)));
+    }
+
+    /// <summary>
+    /// A collection whose entity-side source is declared, awaiting how one source element reaches
+    /// the element entity.
+    /// </summary>
+    /// <remarks>
+    /// A separate type rather than more state on <see cref="CollectionBinding{TElement}"/> so
+    /// <c>TSource</c> survives to <c>Element</c> — which makes <c>.Element(l =&gt; l.Tag)</c> infer
+    /// instead of needing <c>.Element((ProductTag l) =&gt; l.Tag)</c> — and so "Element before From"
+    /// is a state that cannot be expressed rather than one checked at runtime.
+    /// </remarks>
+    /// <typeparam name="TElement">The model type of one element.</typeparam>
+    /// <typeparam name="TSource">The entity type of one element of the source collection.</typeparam>
+    public sealed class SourcedCollection<TElement, TSource>
+    {
+        private readonly ModelMapBuilder<TEntity, TModel> _owner;
+        private readonly MemberInfo _modelMember;
+        private readonly LambdaExpression _source;
+
+        internal SourcedCollection(
+            ModelMapBuilder<TEntity, TModel> owner, MemberInfo modelMember, LambdaExpression source)
         {
+            _owner = owner;
+            _modelMember = modelMember;
             _source = source;
-            return this;
         }
 
         /// <summary>
         /// How one element of the source collection reaches the element entity —
         /// <c>l =&gt; l.Tag</c> for a join entity, which is how a many-to-many is elided from the
-        /// wire entirely. Omit it when the source elements already are the element entity.
+        /// wire entirely.
         /// </summary>
-        public ModelMapBuilder<TEntity, TModel> Element<TSource, TElementEntity>(
+        public ModelMapBuilder<TEntity, TModel> Element<TElementEntity>(
             Expression<Func<TSource, TElementEntity>> element)
         {
-            if (_source is null)
-            {
-                throw new InvalidOperationException(
-                    $"'{typeof(TModel).Name}.{_modelMember.Name}': call From(...) before Element(...).");
-            }
+            if (element is null) throw new ArgumentNullException(nameof(element));
 
             _owner.Add(new ModelMemberBinding(
                 _modelMember, ModelBindingKind.Collection, _source, element,
@@ -265,14 +270,8 @@ public sealed class ModelMapBuilder<TEntity, TModel>
         }
 
         /// <summary>Completes a collection whose source elements already are the element entity.</summary>
-        public ModelMapBuilder<TEntity, TModel> AsIs<TSource>()
+        public ModelMapBuilder<TEntity, TModel> AsIs()
         {
-            if (_source is null)
-            {
-                throw new InvalidOperationException(
-                    $"'{typeof(TModel).Name}.{_modelMember.Name}': call From(...) before AsIs().");
-            }
-
             ParameterExpression p = Expression.Parameter(typeof(TSource), "e");
             _owner.Add(new ModelMemberBinding(
                 _modelMember,

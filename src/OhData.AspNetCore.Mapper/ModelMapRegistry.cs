@@ -7,11 +7,8 @@ namespace OhData.AspNetCore.Mapper;
 /// Resolves the <see cref="ModelMap"/> for a model type.
 /// </summary>
 /// <remarks>
-/// A nested lambda (<c>d =&gt; d.Tags.Any(t =&gt; t.Label eq 'x')</c>) and a nested <c>$expand</c>
-/// both have to substitute through the <i>target's</i> own bindings. Resolving them from one registry
-/// rather than repeating the target's correspondences at every use site is the same "one site, N
-/// consumers" rule the core enforces: two transcriptions of one correspondence is the defect shape
-/// this repository has hit repeatedly.
+/// A nested lambda and a nested <c>$expand</c> both substitute through the <i>target's</i> own
+/// bindings, so the target declares them once and every use site resolves them from here.
 /// </remarks>
 public sealed class ModelMapRegistry
 {
@@ -23,7 +20,7 @@ public sealed class ModelMapRegistry
         if (map is null) throw new ArgumentNullException(nameof(map));
 
         // Refused rather than last-write-wins: with two maps for one model type the wire shape would
-        // depend on registration order, which is the defect #546 fixed for authorization rules.
+        // depend on registration order.
         if (_byModelType.TryGetValue(map.ModelType, out ModelMap? existing))
         {
             throw new InvalidOperationException(
@@ -40,9 +37,4 @@ public sealed class ModelMapRegistry
     public ModelMap? Find(Type modelType) =>
         _byModelType.TryGetValue(modelType, out ModelMap? map) ? map : null;
 
-    /// <summary>Every registered map.</summary>
-    public IReadOnlyCollection<ModelMap> Maps => _byModelType.Values;
-
-    /// <summary>The resolver shape <see cref="ModelToEntityRewriter"/> takes.</summary>
-    public Func<Type, ModelMap?> Resolver => Find;
 }

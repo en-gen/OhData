@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Text;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.OData.Query;
@@ -26,7 +27,7 @@ namespace OhData.AspNetCore.Mapper;
 /// link — the defect #359 records for the routes that had no gate.
 /// </para>
 /// </remarks>
-public static class MappedNextLink
+internal static class MappedNextLink
 {
     private const string MaxPageSizePreference = "maxpagesize";
 
@@ -42,9 +43,9 @@ public static class MappedNextLink
         HttpRequest request = options.Request;
         var parameters = new List<KeyValuePair<string, string?>>();
 
-        foreach (KeyValuePair<string, Microsoft.Extensions.Primitives.StringValues> entry in request.Query)
+        foreach (KeyValuePair<string, Microsoft.Extensions.Primitives.StringValues> entry in
+                 request.Query.Where(e => !IsSkip(e.Key) && !IsTop(e.Key)))
         {
-            if (IsSkip(entry.Key) || IsTop(entry.Key)) continue;
             foreach (string? value in entry.Value)
                 parameters.Add(new KeyValuePair<string, string?>(entry.Key, value));
         }
@@ -76,27 +77,22 @@ public static class MappedNextLink
         maxPageSize = 0;
         if (options is null) return false;
 
-        foreach (string? header in options.Request.Headers["Prefer"])
+        foreach (string trimmed in options.Request.Headers["Prefer"]
+                     .Where(h => h is not null)
+                     .SelectMany(h => h!.Split(','))
+                     .Select(t => t.Trim())
+                     .Where(t => t.StartsWith(MaxPageSizePreference, StringComparison.OrdinalIgnoreCase)))
         {
-            if (header is null) continue;
+            int equals = trimmed.IndexOf('=');
+            if (equals < 0) continue;
 
-            foreach (string token in header.Split(','))
+            if (int.TryParse(
+                    trimmed.Substring(equals + 1).Trim().Trim('"'),
+                    NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed)
+                && parsed > 0)
             {
-                string trimmed = token.Trim();
-                if (!trimmed.StartsWith(MaxPageSizePreference, StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                int equals = trimmed.IndexOf('=');
-                if (equals < 0) continue;
-
-                if (int.TryParse(
-                        trimmed.Substring(equals + 1).Trim().Trim('"'),
-                        NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed)
-                    && parsed > 0)
-                {
-                    maxPageSize = parsed;
-                    return true;
-                }
+                maxPageSize = parsed;
+                return true;
             }
         }
 

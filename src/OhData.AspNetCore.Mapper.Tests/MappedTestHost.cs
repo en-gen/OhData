@@ -41,6 +41,9 @@ internal sealed class MappedTestHost : IAsyncDisposable
     /// <summary>The same map with a two-row page, so paging is observable on a small fixture.</summary>
     public const string Paged = "PagedProducts";
 
+    /// <summary>A model whose members are wider than their columns.</summary>
+    public const string Wide = "WideProducts";
+
     private MappedTestHost(WebApplication app, SqliteConnection connection)
     {
         _app = app;
@@ -72,6 +75,7 @@ internal sealed class MappedTestHost : IAsyncDisposable
             o.AddEntitySetProfile<MappedProductProfile>();
             o.AddEntitySetProfile<ControlProductProfile>();
             o.AddEntitySetProfile<PagedProductProfile>();
+            o.AddEntitySetProfile<WideProductProfile>();
         });
 
         WebApplication app = builder.Build();
@@ -169,6 +173,10 @@ internal sealed class ControlProductProfile : EntitySetProfile<int, ProductDto>
         ExpandEnabled = true;
         CountEnabled = true;
 
+        // The mapped profile withdraws its Ignore()d member from the EDM; the control has to say the
+        // same thing, or the oracle would be comparing two different models.
+        Ignore(d => d.RenderedAt);
+
         List<ProductDto> rows = Project(db);
 
         GetQueryable = () => rows.AsQueryable();
@@ -216,4 +224,20 @@ internal sealed class ControlProductProfile : EntitySetProfile<int, ProductDto>
             Reviews = p.Reviews.Select(v => new ReviewDto { Id = v.Id, Stars = v.Stars }).ToList(),
         })
         .ToList();
+}
+
+/// <summary>A model declared wider than its columns, and reaching through an optional reference.</summary>
+internal sealed class WideProductProfile : MappedEntitySetProfile<int, WideDto, Product>
+{
+    public WideProductProfile(MapDb db) : base(d => d.Id)
+    {
+        EntitySetName = MappedTestHost.Wide;
+
+        FilterEnabled = true;
+        OrderByEnabled = true;
+        SelectEnabled = true;
+        CountEnabled = true;
+
+        UseMap(() => db.Products.AsNoTracking(), m => m.Root(Maps.DeclareWide));
+    }
 }

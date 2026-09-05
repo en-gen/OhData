@@ -437,12 +437,19 @@ status codes or headers.
 
   **Startup validation is unconditional**, because every condition it catches produces a plausible
   `200` with the wrong body: a member with no binding and no `Ignore()`, an unconstructible model, a
-  navigation whose target has no `Nested<,>` map or whose map comes from a different entity, and a
-  `Format` that is not an interpolation. `Compute` is the one kind whose shape cannot guarantee
-  translatability, so `ModelMapValidator.ProbeTranslatability` probes it against the adopter's own
-  provider — through an `OrderBy`, deliberately, since a final `Select` is one of the few clauses EF
-  Core will still evaluate on the client and a `Select` probe would pass for a member no `$filter`
-  could ever use.
+  navigation whose target has no `Nested<,>` map or whose map comes from a different entity, a
+  `Format` that is not an interpolation, and a `Format` carrying an alignment or a format specifier
+  (`$"{o.Price:C}"` has no SQL equivalent, and before the check it reached the wire as the literal
+  text `{0:C}` with the value dropped). `Compute` is the one kind whose shape cannot guarantee
+  translatability; `ModelMapValidator.ProbeTranslatability` answers that against the adopter's own
+  provider and is **opt-in**, because it needs a live queryable the mapper cannot reach at startup.
+  It probes through an `OrderBy` deliberately: a final `Select` is one of the few clauses EF Core
+  will still evaluate on the client, so a `Select` probe would pass for a member no `$filter` could
+  ever use.
+
+  `Ignore(...)` forwards to the profile's own `EntitySetProfile.Ignore`, so a member with no entity
+  source leaves `$metadata` and the payload together and a `$filter` over it is the framework's own
+  `400` rather than a server fault.
 
   Verified by a **conformance oracle**: ~85 query constructs answered both by a mapped profile and by
   a control profile with no mapper in it, over the same rows, must produce the same response. That is

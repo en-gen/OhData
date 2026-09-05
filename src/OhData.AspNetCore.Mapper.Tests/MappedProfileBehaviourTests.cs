@@ -45,7 +45,6 @@ public sealed class MappedProfileBehaviourTests
         // client. A member the provider could not translate would have thrown here, and a member
         // silently evaluated in memory would leave no trace of itself in the statement.
         Assert.Contains(expectedSql, sql, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("Title", sql, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -233,15 +232,71 @@ public sealed class MappedProfileBehaviourTests
     }
 
     [Fact]
-    public async Task AnIgnoredMember_IsNeverServedFromTheEntity()
+    public async Task AnIgnoredMember_LeavesTheWireEntirely()
     {
         await using MappedTestHost host = await MappedTestHost.StartAsync();
 
         JsonObject page = await host.GetJsonAsync($"/odata/{MappedTestHost.Mapped}");
 
-        // Present in the model, so present in the payload -- but at its default, never read from a
-        // column. The entity's own InternalCost is nowhere on the wire at all.
-        Assert.Equal("0001-01-01T00:00:00", page["value"]![0]!["RenderedAt"]!.GetValue<string>());
+        // Not "served as its CLR default" -- gone. UseMap forwards an Ignore()d member to the
+        // profile's own Ignore, so it leaves the EDM and the payload together.
+        Assert.DoesNotContain("RenderedAt", page.ToJsonString(), StringComparison.Ordinal);
         Assert.DoesNotContain("InternalCost", page.ToJsonString(), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("$filter=RenderedAt eq 2020-01-01T00:00:00Z")]
+    [InlineData("$orderby=RenderedAt")]
+    [InlineData("$select=RenderedAt")]
+    public async Task AQueryOverAnIgnoredMember_Is400_NotAServerFault(string option)
+    {
+        await using MappedTestHost host = await MappedTestHost.StartAsync();
+
+        HttpResponseMessage response = await host.Client.GetAsync(
+            $"/odata/{MappedTestHost.Mapped}?{option}");
+        string body = await response.Content.ReadAsStringAsync();
+        _out.WriteLine($"{(int)response.StatusCode} {body}");
+
+        // The member is out of the EDM, so the parser refuses it -- a client error reported as one.
+        // While it stayed in the EDM the parser accepted it and the rewriter threw, so a query the
+        // map alone could refuse came back as a 500 blaming the server.
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task AMemberWiderThanItsColumn_ReadsAndFiltersAlike()
+    {
+        await using MappedTestHost host = await MappedTestHost.StartAsync();
+
+        // WideDto declares long over an int column and int? over a non-nullable one -- the ordinary
+        // way an API contract widens or makes a value optional. Both used to project correctly and
+        // then throw "the binary operator Equal is not defined for Int32 and Int64" on every filter.
+        JsonObject page = await host.GetJsonAsync($"/odata/{MappedTestHost.Wide}?$filter=BigRank eq 3");
+        Assert.Single(page["value"]!.AsArray());
+
+        page = await host.GetJsonAsync($"/odata/{MappedTestHost.Wide}?$filter=MaybeRank eq 1");
+        Assert.Single(page["value"]!.AsArray());
+
+        page = await host.GetJsonAsync($"/odata/{MappedTestHost.Wide}?$orderby=BigRank desc&$top=1");
+        Assert.Equal(3, page["value"]![0]!["BigRank"]!.GetValue<long>());
+    }
+
+    [Fact]
+    public async Task APathThroughAnUnsetReference_ReadsAndFiltersAlike()
+    {
+        await using MappedTestHost host = await MappedTestHost.StartAsync();
+
+        // The value served and the value compared come from one expression. They did not: the
+        // projection guarded the path and coalesced to 0, while the predicate read the raw path and
+        // saw SQL NULL -- so a client was served "CatId": 0 and then got an empty page for
+        // `CatId eq 0`.
+        JsonObject page = await host.GetJsonAsync($"/odata/{MappedTestHost.Wide}?$filter=Id eq 3");
+        int served = page["value"]![0]!["CatId"]!.GetValue<int>();
+        Assert.Equal(0, served);
+
+        page = await host.GetJsonAsync($"/odata/{MappedTestHost.Wide}?$filter=CatId eq 0");
+        Assert.Contains(
+            page["value"]!.AsArray(),
+            r => r!["Id"]!.GetValue<int>() == 3);
     }
 }

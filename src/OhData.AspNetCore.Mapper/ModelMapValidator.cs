@@ -50,7 +50,7 @@ public static class ModelMapValidator
 
         RequireParameterlessConstructor(map, errors);
         RequireEveryMemberDeclared(map, errors);
-        RequireDecomposableFormats(map, errors);
+        RequireDecomposableFormats(map, registry, errors);
 
         foreach (ModelMemberBinding binding in map.Navigations)
         {
@@ -104,14 +104,15 @@ public static class ModelMapValidator
     /// </remarks>
     private static void RequireEveryMemberDeclared(ModelMap map, List<string> errors)
     {
-        foreach (PropertyInfo property in map.ModelType.GetProperties(
-                     BindingFlags.Public | BindingFlags.Instance))
-        {
-            if (property.GetIndexParameters().Length > 0) continue;
-            if (property.GetGetMethod() is null) continue;
-            if (property.GetSetMethod() is null) continue;
-            if (map.Find(property.Name) is not null) continue;
+        IEnumerable<PropertyInfo> undeclared = map.ModelType
+            .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(p => p.GetIndexParameters().Length == 0
+                        && p.GetGetMethod() is not null
+                        && p.GetSetMethod() is not null
+                        && map.Find(p.Name) is null);
 
+        foreach (PropertyInfo property in undeclared)
+        {
             errors.Add(
                 $"'{map.ModelType.Name}.{property.Name}' has no binding. Declare where it comes " +
                 $"from — Property(d => d.{property.Name}).From(...) — or Ignore(d => d.{property.Name}) " +
@@ -120,12 +121,17 @@ public static class ModelMapValidator
     }
 
     /// <summary>
-    /// Every <c>Format(...)</c> really is an interpolation, checked by decomposing it now rather than
-    /// on the first request that filters over it.
+    /// Every <c>Format(...)</c> is an interpolation the mapper can decompose, checked by decomposing
+    /// it now rather than on the first request that reads it.
     /// </summary>
-    private static void RequireDecomposableFormats(ModelMap map, List<string> errors)
+    /// <remarks>
+    /// This is what refuses an alignment or a format specifier. <c>$"{o.Price:C}"</c> has no SQL
+    /// equivalent; before the check it emitted the literal text <c>{0:C}</c> and dropped the value,
+    /// on every row, under a <c>200</c>.
+    /// </remarks>
+    private static void RequireDecomposableFormats(ModelMap map, ModelMapRegistry registry, List<string> errors)
     {
-        var rewriter = new ModelToEntityRewriter(map);
+        var rewriter = new ModelToEntityRewriter(map, registry);
         ParameterExpression entity = Expression.Parameter(map.EntityType, "e");
 
         foreach (ModelMemberBinding binding in map.Bindings.Where(b => b.Kind == ModelBindingKind.Format))
@@ -173,16 +179,15 @@ public static class ModelMapValidator
 
         var failures = new List<(string, string)>();
 
-        foreach (ModelMemberBinding binding in map.Bindings)
+        foreach (ModelMemberBinding binding in map.Bindings
+                     .Where(b => b.Kind is not ModelBindingKind.Ignored && !b.IsNavigation))
         {
-            if (binding.Kind is ModelBindingKind.Ignored || binding.IsNavigation) continue;
-
             // Probed through OrderBy rather than Select: it keeps the member's own type (so nothing
             // is boxed into a shape the provider would reject for a reason of its own) and it puts
             // the expression somewhere EF Core must translate -- a final Select is the one clause it
             // is still allowed to evaluate on the client, so a Select probe would pass for a member
             // that no $filter or $orderby could ever use.
-            var rewriter = new ModelToEntityRewriter(map, registry.Resolver);
+            var rewriter = new ModelToEntityRewriter(map, registry);
             try
             {
                 Expression value = rewriter.BindingFor(binding, rewriter.EntityParameter)!;
@@ -197,6 +202,12 @@ public static class ModelMapValidator
 
                 describe(ordered);
             }
+            // Deliberately every exception. The question this asks is "can the adopter's provider
+            // produce a query for this member", and a provider answers "no" however it likes -- EF
+            // Core alone raises InvalidOperationException, NotSupportedException and its own
+            // translation exceptions here. Naming a type list would silently pass a member that
+            // failed in a way the list did not anticipate, which is the outcome the probe exists to
+            // prevent. Nothing is swallowed: every failure is returned to the caller.
             catch (Exception ex)
             {
                 failures.Add(($"{map.ModelType.Name}.{binding.ModelMember.Name}",
