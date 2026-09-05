@@ -49,9 +49,6 @@ public sealed class ModelMap
 
     /// <summary>Bindings a request may <c>$expand</c>.</summary>
     public IEnumerable<ModelMemberBinding> Navigations => Bindings.Where(b => b.IsNavigation);
-
-    /// <inheritdoc />
-    public override string ToString() => $"{ModelType.Name} <- {EntityType.Name} ({Bindings.Count})";
 }
 
 /// <summary>

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Net;
 using System.Net.Http;
 using System.Text.Json;
@@ -196,6 +197,47 @@ public sealed class MappedProfileBehaviourTests
 
         Assert.Equal(2, page["value"]!.AsArray().Count);
         Assert.Equal(3, page["@odata.count"]!.GetValue<long>());
+    }
+
+    // ── Invariants a profile author can trip ──────────────────────────────────────────────────
+
+    [Fact]
+    public void CallingUseMapTwice_IsRefused()
+    {
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(
+            () => new DoubleUseMapProfile());
+
+        Assert.Contains("already been called", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ANavigationLoadedAsTheWrongKind_IsRefused()
+    {
+        ModelMapRegistry registry = Maps.Registry();
+        ModelMap product = registry.Find(typeof(ProductDto))!;
+        ModelMemberBinding tags = product.Find(nameof(ProductDto.Tags))!;
+
+        using SqliteConnection connection = new("DataSource=:memory:");
+        connection.Open();
+        using MapDb db = MapDb.Seeded(connection);
+
+        Expression<Func<Product, int>> key = p => p.Id;
+
+        // A collection binding handed to the reference loader. Only the profile calls these, and it
+        // routes on Kind -- so this is an invariant assertion, and it says which kind it wanted.
+        ArgumentException ex = Assert.Throws<ArgumentException>(
+            () => MappedNavigationLoader.LoadReference(
+                db.Products, key, tags, registry.Find(typeof(TagDto))!, registry, new object[] { 1 }));
+
+        Assert.Contains("reference binding", ex.Message, StringComparison.Ordinal);
+
+        ModelMemberBinding category = product.Find(nameof(ProductDto.Category))!;
+        ArgumentException mirror = Assert.Throws<ArgumentException>(
+            () => MappedNavigationLoader.LoadCollection(
+                db.Products, key, category, registry.Find(typeof(CategoryDto))!, registry,
+                new object[] { 1 }));
+
+        Assert.Contains("collection binding", mirror.Message, StringComparison.Ordinal);
     }
 
     // ── Refusals ──────────────────────────────────────────────────────────────────────────────

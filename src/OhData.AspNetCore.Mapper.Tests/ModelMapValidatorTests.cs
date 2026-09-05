@@ -189,6 +189,54 @@ public sealed class ModelMapValidatorTests
         Assert.Equal("{Ada}", first.Label);
     }
 
+    // ── Guards that are reachable from a declaration ──────────────────────────────────────────
+
+    [Fact]
+    public void AFormatThatIsNotAnInterpolation_IsRefusedAtStartup()
+    {
+        ModelMapBuilder<Product, FormattedDto> m = new();
+        m.Property(d => d.Id).From(o => o.Id);
+
+        // Compiles -- FormattableString is the declared parameter type -- but it is a method call,
+        // not an interpolation, so there is no format string to decompose.
+        m.Property(d => d.Label).Format(o => Bracket(o.Name));
+
+        ModelMap map = m.Build();
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(
+            () => ModelMapValidator.Validate(map, new ModelMapRegistry().Add(map)));
+
+        Assert.Contains("FormattedDto.Label", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("expects a string interpolation", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void APublicFieldOnTheModel_IsMappedLikeAProperty()
+    {
+        using SqliteConnection connection = new("DataSource=:memory:");
+        connection.Open();
+        using MapDb db = MapDb.Seeded(connection);
+
+        ModelMapBuilder<Product, FieldDto> m = new();
+        m.Property(d => d.Id).From(o => o.Id);
+        m.Property(d => d.Name).From(o => o.Name);
+
+        ModelMap map = m.Build();
+        ModelMapRegistry registry = new ModelMapRegistry().Add(map);
+
+        var projection = (Expression<Func<Product, FieldDto>>)ModelProjection.BuildLambda(map, registry);
+        Assert.Equal("Hammer", db.Products.OrderBy(p => p.Id).Select(projection).First().Name);
+    }
+
+    private static FormattableString Bracket(string value) => $"<{value}>";
+
+    private sealed class FieldDto
+    {
+        public int Id { get; set; }
+
+        /// <summary>A field rather than a property, which the member reader has to handle.</summary>
+        public string Name = "";
+    }
+
     // ── The translatability probe ─────────────────────────────────────────────────────────────
 
     [Fact]

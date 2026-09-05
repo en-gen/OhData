@@ -131,9 +131,4 @@ public sealed class ModelMemberBinding
 
     /// <summary>Whether this binding names a navigation the request may <c>$expand</c>.</summary>
     public bool IsNavigation => Kind is ModelBindingKind.Collection or ModelBindingKind.Reference;
-
-    /// <inheritdoc />
-    public override string ToString() =>
-        $"{ModelMember.DeclaringType?.Name}.{ModelMember.Name} <- {Kind}" +
-        (Source is null ? "" : $" ({Source.Body})");
 }

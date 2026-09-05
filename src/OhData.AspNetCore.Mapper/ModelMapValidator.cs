@@ -56,19 +56,16 @@ public static class ModelMapValidator
         {
             string where = $"'{map.ModelType.Name}.{binding.ModelMember.Name}'";
 
-            if (binding.ElementModelType is null)
-            {
-                errors.Add($"{where} is a navigation with no model element type.");
-                continue;
-            }
-
-            ModelMap? target = registry.Find(binding.ElementModelType);
+            // ElementModelType is never null for a navigation: every declaration path that produces
+            // one -- Reference, Element and AsIs -- sets it from a type parameter.
+            Type elementModelType = binding.ElementModelType!;
+            ModelMap? target = registry.Find(elementModelType);
             if (target is null)
             {
                 errors.Add(
-                    $"{where} maps to model type '{binding.ElementModelType.Name}', which has no map. " +
+                    $"{where} maps to model type '{elementModelType.Name}', which has no map. " +
                     $"Declare one with Nested<{binding.ElementEntityType?.Name ?? "TEntity"}, " +
-                    $"{binding.ElementModelType.Name}>(...).");
+                    $"{elementModelType.Name}>(...).");
                 continue;
             }
 
@@ -76,7 +73,7 @@ public static class ModelMapValidator
             {
                 errors.Add(
                     $"{where} reaches entity '{binding.ElementEntityType?.Name}' but the map for " +
-                    $"'{binding.ElementModelType.Name}' is declared from '{target.EntityType.Name}'.");
+                    $"'{elementModelType.Name}' is declared from '{target.EntityType.Name}'.");
                 continue;
             }
 

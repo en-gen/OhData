@@ -241,3 +241,13 @@ internal sealed class WideProductProfile : MappedEntitySetProfile<int, WideDto, 
         UseMap(() => db.Products.AsNoTracking(), m => m.Root(Maps.DeclareWide));
     }
 }
+
+/// <summary>Calls <c>UseMap</c> twice, which the profile refuses.</summary>
+internal sealed class DoubleUseMapProfile : MappedEntitySetProfile<int, TagDto, Tag>
+{
+    public DoubleUseMapProfile() : base(d => d.Id)
+    {
+        UseMap(() => Array.Empty<Tag>().AsQueryable(), m => m.Root(Maps.DeclareTag));
+        UseMap(() => Array.Empty<Tag>().AsQueryable(), m => m.Root(Maps.DeclareTag));
+    }
+}
