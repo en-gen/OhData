@@ -137,15 +137,35 @@ public class PropertyWriteTests
     // ── PATCH on a complex property: documented non-support ────────────────────
 
     [Fact]
-    public async Task Patch_ComplexProperty_Returns400NotSupported()
+    public async Task Patch_ComplexProperty_Returns501NotImplemented()
     {
+        // #645: 400 NotSupported from 1.0.0 through 1.7.0. A complex-property merge is a documented
+        // non-goal with no enabling flag anywhere on EntitySetProfile or EntitySetDefaults, so no
+        // configuration makes this request succeed -- which is precisely the framework's own test for
+        // 501 over 400 ("can't", not "won't"), and §9.3.1's MUST. The sibling non-goal @odata.bind
+        // already answered 501; this was the last place a permanent non-goal answered 400.
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<PropertyWriteProfile>());
         var response = await fx.Client.PatchAsync("/odata/PropertyWriteItems(10)/Size",
             JsonContent.Create(new { value = new { width = 1m, height = 1m } }));
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(HttpStatusCode.NotImplemented, response.StatusCode);
 
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal("NotSupported", json.GetProperty("error").GetProperty("code").GetString());
+        Assert.Equal("NotImplemented", json.GetProperty("error").GetProperty("code").GetString());
+        // The message already named the remedy and is unchanged.
+        Assert.Contains("Use PUT to replace the entire complex value",
+            json.GetProperty("error").GetProperty("message").GetString()!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Get_ComplexPropertyValue_Stays400_AndThatIsNotTheSameCondition()
+    {
+        // Pinned BESIDE the 501 above so the distinction is visible rather than looking like an
+        // oversight. §11.2.3.1 defines /$value for PRIMITIVE properties only, so a complex property
+        // has no raw value by definition: the request is MEANINGLESS, not unimplemented, and no
+        // amount of implementing would give it an answer. 400 is right and must not follow #645.
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<PropertyWriteProfile>());
+        var response = await fx.Client.GetAsync("/odata/PropertyWriteItems(10)/Size/$value");
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
     // ── DELETE: happy paths (nullable → set to null) ────────────────────────────

@@ -35,6 +35,12 @@ All of this is mechanical, and the compiler finds every site for you.
       implicitly to `Task<OhDataResult<T>>`, so a synchronous handler needs no `Task` ceremony. A
       synchronous *rejection* still needs `Task.FromResult<OhDataResult<T>>(...)` or an `async`
       lambda — that is unchanged, `SuccessTask` had no rejection twin either.
+- [ ] **Using delta mapping? Add the `EnGen.OhData.AspNetCore.Mapper` package** (#665).
+      `DeltaProfile`, `DeltaMapping<TModel,TEntity>` and `IDeltaFactory` moved there. The namespace
+      is unchanged (`OhData`), so no `using` moves — but if you registered by **scanning**, add one
+      `AddDeltaProfilesFromAssemblyOf<T>()` beside your existing `AddProfilesFromAssemblyOf<T>()`:
+      the entity-set scan no longer discovers delta profiles. Explicit `AddDeltaProfile<T>()` calls
+      need nothing. `DeltaExtensions` (`IsChanged`/`TryGetChanged`) stays in the core.
 
 `docs/error-handling.md` is the whole surface, and it is now reachable from the docsite nav.
 
@@ -386,8 +392,6 @@ status codes or headers.
   delegate-less", which is no longer the remedy for anything.
 
 
-### Changed
-
 - **⚠ BREAKING: delta mapping moved to `EnGen.OhData.AspNetCore.Mapper` (#665).** `DeltaProfile`,
   `DeltaMapping<TModel,TEntity>` and `IDeltaFactory` ship in the mapper package rather than the core.
   They are the **write** half of the API-model / entity separation story that package now owns, and
@@ -417,6 +421,24 @@ status codes or headers.
   a marker `MapOhData` resolves to force startup validation, replacing a hard-coded
   `GetService<IDeltaFactory>()`. Startup fail-fast for an unmapped or incompatible mapping is
   unchanged.
+
+- **⚠ BREAKING CHANGE — `PATCH` on a complex property answers `501`, not `400` (#645).** Found by the
+  2.0.0 design-cohesion review applying the framework's own published rule: *"could any setting on
+  the profile make this same request succeed on this same route? Yes → `400`. No → `501`."* Nothing
+  on `EntitySetProfile` or `EntitySetDefaults` enables a complex-property merge — it is a documented
+  non-goal — so no configuration makes it succeed, and §9.3.1's MUST applies (with Minimal item 7
+  putting that `501` in the conformance MUST list this project claims).
+
+  It was the last place a permanent non-goal answered `400`; the sibling non-goal `@odata.bind` has
+  always answered `501`. The error code moves with it, `NotSupported` → `NotImplemented`, which
+  removes `NotSupported` from the framework entirely — one code per condition. The message is
+  unchanged and already names the remedy.
+
+  `GET …/{ComplexProperty}/$value` **keeps its `400`** and is now pinned beside the `501` so the
+  distinction is visible rather than looking like an oversight: §11.2.3.1 defines `/$value` for
+  *primitive* properties only, so a complex property has no raw value by definition. That request is
+  meaningless, not unimplemented — no amount of implementing would give it an answer.
+
 
 ### Added
 
@@ -1021,6 +1043,25 @@ status codes or headers.
   items are absent — but "nothing attempted" was not the way to say that, and it understated the
   product to exactly the audience that reads a conformance sheet. The 4.01-only additions
   (`$compute`, aliases, cross joins) keep their own honest ❌ row.
+
+
+- **The README's DTO `$expand` guidance recommended an unconditional `JOIN` (#651).** It told readers
+  to project the navigation eagerly, then conceded *"the `JOIN` is in the query whether or not the
+  client expands, so project a navigation you expect to be expanded, and leave out one you do not."*
+  Measured, that understates it: the framework composes no projection when a request carries neither
+  `$select` nor `$expand`, so a plain `GET /Orders` emits `LEFT JOIN "Lines"`, **fetches every child
+  row across the wire, and discards them at serialization** — fetch-then-discard on the commonest
+  request on the resource, scaling with the fan-out.
+
+  It now leads with `HasMany(nav, batchGetAll: …)`, which the section never mentioned: `GET /Orders`
+  touches no child table at all, and `?$expand=Lines` issues one extra batched query
+  (`WHERE OrderId IN (…)`), not one per row. Nested `$filter`/`$orderby`/`$top`/`$skip`/`$count` all
+  work on it as of #650, which is what makes this recommendable without a caveat. The eager
+  projection is kept as the documented alternative for a navigation expanded on essentially every
+  request, where the single round-trip wins — stated as a trade rather than as the way.
+
+  Riding along: the "declare the projection once and reuse it" example no longer eagerly projects a
+  navigation either, since it would have contradicted the advice three paragraphs above it.
 
 
 ### Build
