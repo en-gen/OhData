@@ -229,16 +229,41 @@ Query options are bound against `ProductDto`, so `$filter=Category eq 'Tools'` f
 projected member and EF pushes it into the `JOIN`. Nothing in the framework needs to know the entity
 type exists.
 
-**`$expand` needs the navigation in the projection.** The framework folds an expanded navigation into
-a *member-init projection* over `TModel` — it does not call `Include`, which could not follow a
-`Select` anyway. So a navigation the projection never populated is not there to fold, and the request
-fails loud rather than serving an empty collection:
+**`$expand` on a DTO: declare the navigation with a batch delegate.** Leave it out of the projection
+and give `HasMany` a `batchGetAll`, which loads the whole page's children in one query:
 
 ```csharp
-// $expand=Lines -> 400, "could not be translated by the underlying data provider"
-GetQueryable = () => db.Orders.Select(o => new OrderDto { Id = o.Id, Code = o.Code });
+public class OrderProfile : EntitySetProfile<int, OrderDto>
+{
+    public OrderProfile(AppDbContext db) : base(x => x.Id)
+    {
+        ExpandEnabled = true;
 
-// $expand=Lines -> 200, and a nested $filter/$orderby/$top still pushes down
+        HasMany<LineDto>(x => x.Lines, batchGetAll: (orderIds, ct) => Task.FromResult(
+            db.Lines.Where(l => orderIds.Contains(l.OrderId))
+                .Select(l => new { l.OrderId, Dto = new LineDto { Id = l.Id, Sku = l.Sku } })
+                .ToLookup(x => x.OrderId, x => x.Dto)));
+
+        // Lines is NOT in the projection.
+        GetQueryable = () => db.Orders.Select(o => new OrderDto { Id = o.Id, Code = o.Code });
+    }
+}
+```
+
+`GET /Orders` issues one query and touches no child table. `GET /Orders?$expand=Lines` issues a
+second, batched by key — one query for the page, not one per row:
+
+```sql
+SELECT "o"."Id", "o"."Code" FROM "Orders" AS "o" ORDER BY "o"."Id" LIMIT @p
+SELECT "l"."OrderId", "l"."Id", "l"."Sku" FROM "Lines" AS "l" WHERE "l"."OrderId" IN (@k1, @k2)
+```
+
+Nested options work on it — `Lines($filter=…;$orderby=…;$top=…;$count=true)` are all applied,
+bound by the same binders as the SQL path and evaluated over the loaded children.
+
+**The alternative is to project the navigation eagerly, and it costs more than it looks:**
+
+```csharp
 GetQueryable = () => db.Orders.Select(o => new OrderDto
     {
         Id    = o.Id,
@@ -247,9 +272,15 @@ GetQueryable = () => db.Orders.Select(o => new OrderDto
     });
 ```
 
-The second form still omits `Lines` from the response unless `$expand` asks for it — projecting it
-only makes it *available*. The cost is that the `JOIN` is in the query whether or not the client
-expands, so project a navigation you expect to be expanded, and leave out one you do not.
+That folds into a member-init projection, so `$expand=Lines` is one query rather than two and nested
+options push all the way to SQL. But the `LEFT JOIN` is in **every** query — the framework composes
+no projection when the request carries neither `$select` nor `$expand`, so a plain `GET /Orders`
+fetches every child row across the wire and discards them at serialization. Measured, that is not
+"a JOIN is in the plan"; it is fetch-then-discard scaling with your fan-out.
+
+So: **`batchGetAll` unless the navigation is expanded on essentially every request**, where the
+single round-trip wins. A navigation in neither the projection nor a `HasMany` declaration is not
+there to fold, and `$expand` of it fails loud rather than serving an empty collection.
 
 **You do not have to repeat the projection.** The seam is only *"return an `IQueryable<TModel>`"*, so
 anything that produces one works. With no dependency at all, declare the projection once and reuse it:
@@ -259,9 +290,9 @@ public sealed class OrderDto
 {
     public static readonly Expression<Func<Order, OrderDto>> Projection = o => new OrderDto
     {
-        Id    = o.Id,
-        Code  = o.Code,
-        Lines = o.Lines.Select(l => new LineDto { Id = l.Id, Sku = l.Sku }).ToList(),
+        Id       = o.Id,
+        Code     = o.Code,
+        Category = o.Category.Name,   // flattened; still one SQL query
     };
     // ...
 }
