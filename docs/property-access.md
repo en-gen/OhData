@@ -186,7 +186,7 @@ documented non-support for 1.0.0 — see below.
 | Request body is not a JSON object, or missing the `value` member | `400 Bad Request` |
 | `value` cannot be converted to the property's CLR type | `400 Bad Request` |
 | `value` is `null` and the property is not nullable | `400 Bad Request` |
-| `PATCH` targeting a complex property | `400 Bad Request` (`code: "NotSupported"` — see below) |
+| `PATCH` targeting a complex property | `501 Not Implemented` (`code: "NotImplemented"` — see below) |
 | `Content-Type` is not `application/json` | `415 Unsupported Media Type` |
 | `If-Match` set and doesn't match the current ETag | `412 Precondition Failed` |
 
@@ -239,8 +239,19 @@ body.
 `PUT /{EntitySet}({key})/{ComplexProperty}` replaces the entire nested object — send the full
 complex value under `"value"`. `PATCH` on a complex property is **not supported**: partial merge
 into an existing complex value was judged low-value relative to its complexity for 1.0.0, so it
-returns `400 Bad Request` with `code: "NotSupported"` rather than silently guessing at a merge
+returns `501 Not Implemented` with `code: "NotImplemented"` rather than silently guessing at a merge
 strategy or a bare, envelope-less `405`. Use `PUT` to replace the whole value instead.
+
+`501` and not `400` ([#645](https://github.com/en-gen/OhData/issues/645)): no setting on
+`EntitySetProfile` or `EntitySetDefaults` enables a complex merge, so no configuration makes this
+request succeed — which is exactly the framework's `501`-vs-`400` test ("can't", not "won't") and
+§9.3.1's MUST. It answered `400 NotSupported` from 1.0.0 through 1.7.0, alone among the permanent
+non-goals; `@odata.bind` has always answered `501`.
+
+`GET /{EntitySet}({key})/{ComplexProperty}/$value` keeps its **`400`**, and that is a different
+condition rather than an inconsistency: §11.2.3.1 defines `/$value` for *primitive* properties only,
+so a complex property has no raw value by definition. The request is meaningless, not unimplemented —
+no amount of implementing would give it an answer.
 `DELETE` on a nullable complex property sets it to `null`, same as any other nullable property.
 
 ### ETags

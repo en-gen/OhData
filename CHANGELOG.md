@@ -386,6 +386,24 @@ status codes or headers.
   delegate-less", which is no longer the remedy for anything.
 
 
+- **⚠ BREAKING CHANGE — `PATCH` on a complex property answers `501`, not `400` (#645).** Found by the
+  2.0.0 design-cohesion review applying the framework's own published rule: *"could any setting on
+  the profile make this same request succeed on this same route? Yes → `400`. No → `501`."* Nothing
+  on `EntitySetProfile` or `EntitySetDefaults` enables a complex-property merge — it is a documented
+  non-goal — so no configuration makes it succeed, and §9.3.1's MUST applies (with Minimal item 7
+  putting that `501` in the conformance MUST list this project claims).
+
+  It was the last place a permanent non-goal answered `400`; the sibling non-goal `@odata.bind` has
+  always answered `501`. The error code moves with it, `NotSupported` → `NotImplemented`, which
+  removes `NotSupported` from the framework entirely — one code per condition. The message is
+  unchanged and already names the remedy.
+
+  `GET …/{ComplexProperty}/$value` **keeps its `400`** and is now pinned beside the `501` so the
+  distinction is visible rather than looking like an oversight: §11.2.3.1 defines `/$value` for
+  *primitive* properties only, so a complex property has no raw value by definition. That request is
+  meaningless, not unimplemented — no amount of implementing would give it an answer.
+
+
 ### Added
 
 - **A handler can produce a client error: `ConfigureExceptions` (#581).** Every handler delegate
