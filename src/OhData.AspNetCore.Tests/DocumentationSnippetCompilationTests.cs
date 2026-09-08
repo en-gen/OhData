@@ -55,6 +55,7 @@ public sealed class DocumentationSnippetCompilationTests
         using Microsoft.Extensions.Configuration;
         using Microsoft.Extensions.DependencyInjection;
         using OhData;
+        using OhData.AspNetCore.Mapper;
 
         """;
 

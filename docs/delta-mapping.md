@@ -40,6 +40,12 @@ A profile may declare many pairs, and `DeltaProfile` is not generic.
 
 ## Register
 
+Delta mapping ships in **`EnGen.OhData.AspNetCore.Mapper`** as of 2.0.0:
+
+```
+dotnet add package EnGen.OhData.AspNetCore.Mapper
+```
+
 Individual registration uses the symmetric pair `AddEntitySetProfile<T>()` / `AddDeltaProfile<T>()`:
 
 ```csharp
@@ -55,7 +61,8 @@ delta scanner:
 
 ```csharp
 builder.Services.AddOhData(o => o
-    .AddProfilesFromAssemblyOf<Program>());   // finds EntitySetProfile *and* DeltaProfile subclasses
+    .AddProfilesFromAssemblyOf<Program>()         // EntitySetProfile subclasses
+    .AddDeltaProfilesFromAssemblyOf<Program>());  // DeltaProfile subclasses
 ```
 
 The scan discovers concrete, non-abstract, **closed** profile types. An open generic
@@ -245,4 +252,8 @@ A **single, non-collection reference** is *not* refused. Reflection cannot tell 
 related-entity reference onto the graph. If your DTO reuses an entity type for a single reference,
 `Ignore()` it — the framework will not stop you.
 
-Delta mapping is dependency-free and ships in the core `OhData.AspNetCore` package.
+Delta mapping has no dependency on the rest of the mapper — no EDM, no profile, no query
+pipeline — and ships in `EnGen.OhData.AspNetCore.Mapper` because it is the **write** half of
+the API-model / entity separation story that package now owns. The `Delta<T>` sugar
+(`IsChanged`, `TryGetChanged`) stays in the core `EnGen.OhData.AspNetCore` package, since it
+is about `Delta<T>` rather than about mapping.

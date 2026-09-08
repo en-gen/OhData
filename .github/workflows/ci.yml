@@ -127,6 +127,15 @@ jobs:
             --logger "junit;LogFilePath=$GITHUB_WORKSPACE/TestResults/{assembly}.junit.xml" \
             --results-directory ./coverage
 
+      - name: "Test: OhData.AspNetCore.Mapper.Tests"
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          dotnet test src/OhData.AspNetCore.Mapper.Tests/OhData.AspNetCore.Mapper.Tests.csproj \
+            --no-build -c Release \
+            --collect:"XPlat Code Coverage" \
+            --logger "junit;LogFilePath=$GITHUB_WORKSPACE/TestResults/{assembly}.junit.xml" \
+            --results-directory ./coverage
+
       - name: "Test: OhData.TestBench.AspNetCore.Tests"
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
@@ -138,7 +147,7 @@ jobs:
 
       # Codecov Test Analytics: per-test pass/fail history, flaky-test detection, and a PR
       # comment naming the tests a PR broke. Uploads the JUnit XML the seven suites above
-      # wrote (JunitXml.TestLogger, referenced by all seven test projects).
+      # wrote (JunitXml.TestLogger, referenced by all eight test projects).
       #
       # Carries the same condition as the suites above, for the same reason: a run whose tests
       # FAILED is exactly the run whose results are worth having, so a failing suite must not
@@ -171,6 +180,10 @@ jobs:
             -p:Version="0.0.0-ci" \
             -o ./nupkg-ci
           dotnet pack src/OhData.AspNetCore.NSwag/OhData.AspNetCore.NSwag.csproj \
+            --no-build -c Release \
+            -p:Version="0.0.0-ci" \
+            -o ./nupkg-ci
+          dotnet pack src/OhData.AspNetCore.Mapper/OhData.AspNetCore.Mapper.csproj \
             --no-build -c Release \
             -p:Version="0.0.0-ci" \
             -o ./nupkg-ci
