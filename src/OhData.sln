@@ -39,6 +39,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OhData.AspNetCore.Swashbuck
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OhData.TestBench.AspNetCore.Tests", "OhData.TestBench.AspNetCore.Tests\OhData.TestBench.AspNetCore.Tests.csproj", "{D598016C-20B1-4153-B000-3AC8788FBC45}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OhData.AspNetCore.Mapper", "OhData.AspNetCore.Mapper\OhData.AspNetCore.Mapper.csproj", "{96D529A3-0023-47C5-9DB1-839A891AAE54}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OhData.AspNetCore.Mapper.Tests", "OhData.AspNetCore.Mapper.Tests\OhData.AspNetCore.Mapper.Tests.csproj", "{A51DC399-A84E-4BAE-BB11-572CE7F01D1A}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -241,6 +245,30 @@ Global
 		{D598016C-20B1-4153-B000-3AC8788FBC45}.Release|x64.Build.0 = Release|Any CPU
 		{D598016C-20B1-4153-B000-3AC8788FBC45}.Release|x86.ActiveCfg = Release|Any CPU
 		{D598016C-20B1-4153-B000-3AC8788FBC45}.Release|x86.Build.0 = Release|Any CPU
+		{96D529A3-0023-47C5-9DB1-839A891AAE54}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{96D529A3-0023-47C5-9DB1-839A891AAE54}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{96D529A3-0023-47C5-9DB1-839A891AAE54}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{96D529A3-0023-47C5-9DB1-839A891AAE54}.Debug|x64.Build.0 = Debug|Any CPU
+		{96D529A3-0023-47C5-9DB1-839A891AAE54}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{96D529A3-0023-47C5-9DB1-839A891AAE54}.Debug|x86.Build.0 = Debug|Any CPU
+		{96D529A3-0023-47C5-9DB1-839A891AAE54}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{96D529A3-0023-47C5-9DB1-839A891AAE54}.Release|Any CPU.Build.0 = Release|Any CPU
+		{96D529A3-0023-47C5-9DB1-839A891AAE54}.Release|x64.ActiveCfg = Release|Any CPU
+		{96D529A3-0023-47C5-9DB1-839A891AAE54}.Release|x64.Build.0 = Release|Any CPU
+		{96D529A3-0023-47C5-9DB1-839A891AAE54}.Release|x86.ActiveCfg = Release|Any CPU
+		{96D529A3-0023-47C5-9DB1-839A891AAE54}.Release|x86.Build.0 = Release|Any CPU
+		{A51DC399-A84E-4BAE-BB11-572CE7F01D1A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A51DC399-A84E-4BAE-BB11-572CE7F01D1A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A51DC399-A84E-4BAE-BB11-572CE7F01D1A}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{A51DC399-A84E-4BAE-BB11-572CE7F01D1A}.Debug|x64.Build.0 = Debug|Any CPU
+		{A51DC399-A84E-4BAE-BB11-572CE7F01D1A}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{A51DC399-A84E-4BAE-BB11-572CE7F01D1A}.Debug|x86.Build.0 = Debug|Any CPU
+		{A51DC399-A84E-4BAE-BB11-572CE7F01D1A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A51DC399-A84E-4BAE-BB11-572CE7F01D1A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A51DC399-A84E-4BAE-BB11-572CE7F01D1A}.Release|x64.ActiveCfg = Release|Any CPU
+		{A51DC399-A84E-4BAE-BB11-572CE7F01D1A}.Release|x64.Build.0 = Release|Any CPU
+		{A51DC399-A84E-4BAE-BB11-572CE7F01D1A}.Release|x86.ActiveCfg = Release|Any CPU
+		{A51DC399-A84E-4BAE-BB11-572CE7F01D1A}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

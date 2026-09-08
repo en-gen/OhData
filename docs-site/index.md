@@ -51,7 +51,7 @@ annotate a controller. Responses are PascalCase, matching `$metadata` per the sp
   `ODataController` + `[EnableQuery]` pipeline on 10 of 11 benchmarked scenarios and allocated
   less on all 11 (writes ~4.6–5×, full-page reads 2.6–3.2×; DELETE a tie). See
   [performance](../docs/performance.md).
-- **Clean DTO write path.** Dependency-free delta mapping (`DeltaProfile` + `IDeltaFactory`) maps
+- **Clean DTO write path.** Delta mapping (`DeltaProfile` + `IDeltaFactory`) maps
   a wire DTO onto your persistence entity for PATCH/PUT while preserving the property allowlist —
   no AutoMapper, no reflection at request time.
 - **A typed client to match.** [`OhData.Client`](../docs/client/index.md) translates LINQ filter/select/expand

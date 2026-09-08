@@ -191,8 +191,10 @@ public class Issue488DeltaMappingGapTests
         {
             foreach (Type t in profileTypes)
             {
-                typeof(OhDataBuilder).GetMethod(nameof(OhDataBuilder.AddDeltaProfile))!
-                    .MakeGenericMethod(t).Invoke(o, null);
+                // #665: an extension method on DeltaProfileRegistration in the mapper package, so
+                // the receiver is the first argument rather than the target instance.
+                typeof(DeltaProfileRegistration).GetMethod(nameof(DeltaProfileRegistration.AddDeltaProfile))!
+                    .MakeGenericMethod(t).Invoke(null, new object[] { o });
             }
         });
         return services.BuildServiceProvider().GetRequiredService<IDeltaFactory>();
@@ -319,15 +321,26 @@ public class Issue488DeltaMappingGapTests
     [Fact]
     public void ProfileScan_SkipsOpenGenericProfiles()
     {
-        var scanner = new ProfileScanner(Array.Empty<Type>());
-        scanner.In(typeof(DmOpenGenericDeltaProfile<>).Assembly);
-        Type[] found = scanner.Scan().ToArray();
+        // #665 split one scan into one per kind, so the open-generic skip is asserted on both --
+        // it is a property of the scanner, and a per-kind predicate must not be a place for it to
+        // regress on only one side.
+        var entityScan = new ProfileScanner(Array.Empty<Type>());
+        entityScan.In(typeof(DmOpenGenericDeltaProfile<>).Assembly);
+        Type[] entities = entityScan.Scan().ToArray();
 
-        Assert.DoesNotContain(typeof(DmOpenGenericDeltaProfile<>), found);
-        Assert.DoesNotContain(typeof(DmOpenGenericEntityProfile<>), found);
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddOhData("dm488scan", o => o
+            .WithPrefix("/dm488scan")
+            .AddDeltaProfilesFromAssemblyOf<DmGoodProfile>());
+        var registry = (DeltaProfileRegistry)services
+            .First(d => d.ServiceType == typeof(DeltaProfileRegistry)).ImplementationInstance!;
+
+        Assert.DoesNotContain(typeof(DmOpenGenericEntityProfile<>), entities);
+        Assert.DoesNotContain(typeof(DmOpenGenericDeltaProfile<>), registry.Types);
         // ... while still finding the ordinary concrete profiles beside them.
-        Assert.Contains(typeof(DmGoodProfile), found);
-        Assert.Contains(typeof(DmScanEntityProfile), found);
+        Assert.Contains(typeof(DmScanEntityProfile), entities);
+        Assert.Contains(typeof(DmGoodProfile), registry.Types);
     }
 
     // ═══ Item 5(b) — a duplicate Rename()/Convert() is not last-writer-wins ══════

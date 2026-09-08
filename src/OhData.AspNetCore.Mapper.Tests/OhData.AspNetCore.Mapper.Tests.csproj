@@ -2,9 +2,6 @@
 
 	<PropertyGroup>
 		<TargetFramework>net10.0</TargetFramework>
-		<ImplicitUsings>enable</ImplicitUsings>
-		<Nullable>enable</Nullable>
-		<LangVersion>latest</LangVersion>
 		<IsPackable>false</IsPackable>
 		<!-- Test projects do not require XML documentation comments -->
 		<NoWarn>$(NoWarn);CS1591</NoWarn>
@@ -15,10 +12,8 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.*" />
+		<PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.*" />
 		<PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.*" />
-		<!-- Transitive pin: clears GHSA-2m69-gcr7-jv3q (SQLitePCLRaw < 2.1.12) under TreatWarningsAsErrors. -->
-		<PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
 		<PackageReference Include="coverlet.collector" Version="10.0.1">
 			<IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
 			<PrivateAssets>all</PrivateAssets>
@@ -31,20 +26,10 @@
 			<IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
 			<PrivateAssets>all</PrivateAssets>
 		</PackageReference>
-		<PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.*" />
-		<!-- #622: DocumentationSnippetCompilationTests compiles the marked documentation snippets,
-		     so an API change that invalidates a doc example fails CI instead of shipping. -->
-		<PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.*" />
 	</ItemGroup>
 
 	<ItemGroup>
 		<ProjectReference Include="..\OhData.AspNetCore\OhData.AspNetCore.csproj" />
-		<!--
-		  Not for testing the mapper (it has its own suite) but so
-		  DocumentationSnippetCompilationTests can compile docs/api-model-mapping.md. A page
-		  outside the gate is a page that goes stale silently, which is what #653 and #620 both
-		  found the hard way.
-		-->
 		<ProjectReference Include="..\OhData.AspNetCore.Mapper\OhData.AspNetCore.Mapper.csproj" />
 	</ItemGroup>
 
