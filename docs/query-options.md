@@ -207,6 +207,14 @@ a path through a navigation property. `$filter=Lines/any(l: l/Quantity gt 1)` is
 (`OrderLine` here) have no allowlist surface of their own - only `FilterProperties` on the
 navigated-to entity set's own profile (if it has one) governs its properties.
 
+> **⚠ A path through a navigation requires that navigation to be in the queryable.** The predicate
+> is composed onto whatever `GetQueryable` returns, so if that source projects a DTO whose
+> navigation is served by a `batchGetAll` delegate rather than by the projection, there is nothing
+> for the provider to translate `Lines/any(...)` against. That answers
+> `400 Bad Request` (`InvalidQueryOption`, *"could not be translated by the underlying data
+> provider"*) - a refusal, since no configuration of this route can serve it, and the client's
+> remedy is to filter on a member the source exposes. It answered `500` before #662.
+
 > **⚠ It does not restrict dynamic (open-type) properties either.** The allowlist is enforced
 > through the EDM's model-bound `NotFilterable` annotation, and a dynamic property is not in the
 > EDM - so there is nothing to annotate and nothing to enforce. On a model with an

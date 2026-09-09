@@ -392,6 +392,38 @@ status codes or headers.
   delegate-less", which is no longer the remedy for anything.
 
 
+- **⚠ BREAKING: an untranslatable root `$filter`/`$orderby` answers `400`, not `500` (#662).**
+  #494 settled that a provider fault is classified by **when** it was raised, not by what it was: a
+  translation failure happens before any command executes, so the client's query shape is at fault.
+  That split reached the three `$expand` execution sites and never the root read, so one condition
+  produced two answers - `400` through `$expand`, `500` without it.
+
+  Measured: a profile whose `GetQueryable` projects a DTO and serves its navigation with
+  `batchGetAll` (so the navigation is not in the projected query) answered `500` to
+  `?$filter=Tags/any(...)`, while the sibling that projects the navigation eagerly answered `200`.
+  A `500` tells client retry logic the server is broken and the request is worth repeating, when it
+  will fail identically forever.
+
+  Four sites now split the phases: the root collection read, the Priority-1 collection read, the
+  inline `$count=true` count, and both arms of the `/$count` route. The wording is the `$expand`
+  path's own, so one condition has one envelope whichever route reached it.
+
+  **Blame is gated**, which is what keeps this from being #494's inversion running the other way:
+  the reclassification requires the request to have *carried* the option being blamed - the same
+  gate `EvaluateQueryWithArithmeticFaultGuard` applies to a divide-by-zero - so a profile whose own
+  source cannot translate stays a server fault at `500`. `$orderby` is excluded from the `/$count`
+  gate, because §11.2.9 says it MUST NOT affect a count and that route never composes it.
+
+  A scalar aggregate has no `GetEnumerator` seam to split, so the count sites establish the phase
+  afterwards and only on the failure path, by asking whether the same queryable compiles at all.
+  `GetEnumerator` compiles without opening a connection, so the probe costs no round trip and never
+  runs on a request that succeeded. Leaving the counts out would have put `GET /Set?$filter=X` at
+  `400` beside `GET /Set/$count?$filter=X` at `500` for one expression.
+
+  Also documented: a `$filter` through a navigation requires that navigation to be **in** the
+  queryable, so the README's `batchGetAll` recommendation now discloses that it gives up filtering
+  through the navigation.
+
 - **⚠ BREAKING: delta mapping moved to `EnGen.OhData.AspNetCore.Mapper` (#665).** `DeltaProfile`,
   `DeltaMapping<TModel,TEntity>` and `IDeltaFactory` ship in the mapper package rather than the core.
   They are the **write** half of the API-model / entity separation story that package now owns, and
