@@ -283,6 +283,12 @@ So: **`batchGetAll` unless the navigation is expanded on essentially every reque
 single round-trip wins. A navigation in neither the projection nor a `HasMany` declaration is not
 there to fold, and `$expand` of it fails loud rather than serving an empty collection.
 
+**The trade is two-sided, and this is the other side.** A navigation served by `batchGetAll` is not
+in the queryable, so a `$filter` *through* it - `?$filter=Lines/any(l: l/Sku eq 'X')` - has nothing
+to translate against and answers `400`. The eager projection supports that filter; `batchGetAll`
+does not. Choose on which matters more for the entity set in question: paying a `LEFT JOIN` on every
+read, or giving up filtering through the navigation.
+
 **You do not have to repeat the projection.** The seam is only *"return an `IQueryable<TModel>`"*, so
 anything that produces one works. With no dependency at all, declare the projection once and reuse it:
 
