@@ -211,12 +211,41 @@ public sealed class Issue662RootFilterTranslationTests : IAsyncLifetime
     public async Task ANonEfProviderKeepsItsServerFault(string url)
     {
         await using TestFixture fixture = await HostAsync();
+        EagerFaultingProvider.Reset();
 
         HttpResponseMessage response = await fixture.Client.GetAsync(url);
         _out.WriteLine($"{(int)response.StatusCode} {await response.Content.ReadAsStringAsync()}");
 
         Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+
+        // Exactly one. The probe must not re-run a query against an already-degraded backend, which
+        // is the second harm the EF gate removes.
         Assert.Equal(1, EagerFaultingProvider.Executions);
+    }
+
+    /// <summary>
+    /// A count whose query compiles but whose EXECUTION fails keeps its <c>500</c>.
+    /// </summary>
+    /// <remarks>
+    /// This is the whole reason <c>CountRootQuery</c> probes rather than stopping at the source
+    /// check: the fault is raised by a perfectly translatable query, from the phase that belongs to
+    /// the server. Injected at <c>ReaderExecuting</c>, which is the materialization window, using
+    /// the same interceptor shape <c>ExpandPushdownExceptionClassificationTests</c> uses.
+    /// </remarks>
+    [Fact]
+    public async Task ACountThatCompilesButFailsToExecute_StaysAServerFault()
+    {
+        await using TestFixture fixture = await TestHostBuilder.BuildAsync(
+            o => o.AddEntitySetProfile<N662ComputedProfile>(),
+            configureServices: s => s.AddDbContext<N662Db>(
+                b => b.UseSqlite(_connection).AddInterceptors(new N662FaultingReaderInterceptor()),
+                ServiceLifetime.Scoped));
+
+        HttpResponseMessage response = await fixture.Client.GetAsync(
+            "/odata/N662Computed/$count?$filter=Name eq 'Hammer'");
+        _out.WriteLine($"{(int)response.StatusCode} {await response.Content.ReadAsStringAsync()}");
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
     }
 
     // ── Control: nothing about the working path moved ─────────────────────────────────────────
@@ -390,6 +419,8 @@ public sealed class EagerFaultingProvider : IQueryProvider
 {
     public static int Executions;
 
+    /// <summary>Reset by the test, never by queryable resolution — the count is of provider calls
+    /// per request, and resolving the source is not one of them.</summary>
     public static void Reset() => Executions = 0;
 
     public IQueryable CreateQuery(System.Linq.Expressions.Expression expression) =>
@@ -434,10 +465,23 @@ public sealed class N662EagerProviderProfile : EntitySetProfile<int, N662Dto>
         EntitySetName = "N662Eager";
         FilterEnabled = OrderByEnabled = SelectEnabled = CountEnabled = true;
 
-        GetQueryable = () =>
-        {
-            EagerFaultingProvider.Reset();
-            return new EagerFaultingQueryable<N662Dto>();
-        };
+        GetQueryable = () => new EagerFaultingQueryable<N662Dto>();
     }
+}
+
+/// <summary>
+/// Faults where the command EXECUTES — the materialization window — leaving the query itself
+/// perfectly translatable. The shape #494 names: SqlClient reports pool exhaustion as a plain
+/// <see cref="InvalidOperationException"/> from here, and it must never be read as the client's
+/// bad query.
+/// </summary>
+public sealed class N662FaultingReaderInterceptor : Microsoft.EntityFrameworkCore.Diagnostics.DbCommandInterceptor
+{
+    public override Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<System.Data.Common.DbDataReader> ReaderExecuting(
+        System.Data.Common.DbCommand command,
+        Microsoft.EntityFrameworkCore.Diagnostics.CommandEventData eventData,
+        Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<System.Data.Common.DbDataReader> result) =>
+        throw new InvalidOperationException(
+            "simulated: Timeout expired. The timeout period elapsed prior to obtaining a connection "
+            + "from the pool.");
 }
