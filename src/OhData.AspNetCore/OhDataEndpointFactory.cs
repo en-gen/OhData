@@ -1071,6 +1071,151 @@ internal static class OhDataEndpointFactory
     private sealed class QueryTranslationFailedException(Exception inner)
         : Exception(inner.Message, inner);
 
+    // #494: the shapes a provider raises for a query it cannot translate. One predicate, three
+    // consumers -- TranslateThenMaterialize, CountRootQuery and CanCompile -- because all three ask
+    // the same question and must move together. ObjectDisposedException derives from
+    // InvalidOperationException and is never a statement about the client's query.
+    private static bool IsTranslationCandidate(Exception ex) =>
+        ex is not ObjectDisposedException
+        && ex is InvalidOperationException or NotSupportedException or Microsoft.OData.ODataException;
+
+    /// <summary>
+    /// Materializes a ROOT collection read, answering <c>400</c> when the provider could not
+    /// translate a query shape the framework composed from the client's own options (#662).
+    /// </summary>
+    /// <remarks>
+    /// Detection is <see cref="TranslateThenMaterialize"/>'s; attribution is
+    /// <see cref="SourceCompilesOnEfCore"/>'s. The CHANGELOG and <c>CLAUDE.md</c> carry the measured
+    /// shapes and the alternatives that were rejected.
+    /// </remarks>
+    private static TModel[] MaterializeRootQuery<TModel>(
+        IQueryable<TModel> source, Func<IQueryable<TModel>> build,
+        ODataQueryOptions<TModel> options, ILogger? logger, string entitySetName)
+    {
+        try
+        {
+            return EvaluateQueryWithArithmeticFaultGuard(
+                () => TranslateThenMaterialize(build), options, logger, entitySetName);
+        }
+        catch (QueryTranslationFailedException ex)
+        {
+            if (ComposedOptionPhrase(options) is not { } blamed || !SourceCompilesOnEfCore(source)) throw;
+
+            throw RootTranslationFailure(ex.InnerException ?? ex, blamed, logger, entitySetName);
+        }
+    }
+
+    /// <summary>
+    /// Counts a ROOT query, answering <c>400</c> for the same condition (#662).
+    /// </summary>
+    /// <remarks>
+    /// A scalar aggregate has no <c>GetEnumerator</c> seam, so the phase is established afterwards
+    /// and only on the failure path, by asking whether the composed query compiles at all.
+    /// </remarks>
+    private static long CountRootQuery<TModel>(
+        IQueryable<TModel> source, IQueryable<TModel> counted,
+        ODataQueryOptions<TModel> options, ILogger? logger, string entitySetName)
+    {
+        try
+        {
+            return EvaluateQueryWithArithmeticFaultGuard(
+                () => counted.LongCount(), options, logger, entitySetName);
+        }
+        catch (Exception ex) when (IsTranslationCandidate(ex))
+        {
+            // Outside the exception FILTER deliberately: a filter runs before the failed frames
+            // unwind, and the CLR swallows anything it throws itself, so a probe there would lose
+            // its own faults without a trace.
+            //
+            // §11.2.9 forbids $orderby from affecting a count, so a framework-composed count query
+            // never carries one and $filter is the only thing here that can be blamed. CanCompile
+            // enumerates rather than counts, which is the right question: what must translate is the
+            // composed shape, not the aggregate over it. If it DOES compile the fault was at
+            // execution, so it is the server's and keeps its 500.
+            if (options.Filter is null || !SourceCompilesOnEfCore(source) || CanCompile(counted)) throw;
+
+            throw RootTranslationFailure(ex, "'$filter'", logger, entitySetName);
+        }
+    }
+
+    /// <summary>
+    /// Whether the source the profile handed over is an EF Core query that compiles on its own —
+    /// i.e. whether a translation failure can honestly be attributed to what the framework added.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two conditions, both confirmed defects when absent (#662); read that issue before removing
+    /// one. The provider must be <b>EF Core</b>, because the phase split rests on
+    /// <c>GetEnumerator()</c> doing no I/O, which is an EF property and not an
+    /// <see cref="IQueryable"/> contract. And the <b>unmodified source</b> must compile, because
+    /// presence of an option is not attribution.
+    /// </para>
+    /// <para>
+    /// Not free: the second half compiles a query. It is only ever reached after one has already
+    /// failed.
+    /// </para>
+    /// </remarks>
+    private static bool SourceCompilesOnEfCore<TModel>(IQueryable<TModel> source) =>
+        ResolveEfCoreAssembly(source) is not null && CanCompile(source);
+
+    /// <summary>
+    /// Whether the provider can compile <paramref name="query"/>, established without executing it.
+    /// </summary>
+    /// <remarks>
+    /// The enumerator is created — which is what compiles the query, with no connection opened —
+    /// and disposed. Callers gate on an EF Core provider first, because that is the only one this
+    /// holds for.
+    /// </remarks>
+    private static bool CanCompile<TModel>(IQueryable<TModel> query)
+    {
+        try
+        {
+            using IEnumerator<TModel> probe = query.GetEnumerator();
+            return true;
+        }
+        catch (Exception ex) when (IsTranslationCandidate(ex))
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Names the framework-composed options a root read can blame, quoted for the message, or
+    /// <c>null</c> when it composed nothing and so can attribute nothing.
+    /// </summary>
+    /// <remarks>
+    /// The quoting deliberately differs from <see cref="EvaluateQueryWithArithmeticFaultGuard"/>'s
+    /// (<c>"$filter expression"</c>): those are two shipped messages, not one style.
+    /// </remarks>
+    private static string? ComposedOptionPhrase<TModel>(ODataQueryOptions<TModel> options) =>
+        (options.Filter is not null, options.OrderBy is not null) switch
+        {
+            (true, true) => "'$filter' and '$orderby'",
+            (true, false) => "'$filter'",
+            (false, true) => "'$orderby'",
+            _ => null,
+        };
+
+    /// <summary>
+    /// The <c>400</c> a root translation failure becomes. It shares the clause
+    /// <c>could not be translated by the underlying data provider</c> with the <c>$expand</c>
+    /// pushdown's message — the diagnosis and the remedy differ, because the causes do.
+    /// </summary>
+    private static Microsoft.OData.ODataException RootTranslationFailure(
+        Exception real, string blamedOption, ILogger? logger, string entitySetName)
+    {
+        // Warning, not Debug: #494 records that Debug is invisible at production log levels, so the
+        // operator saw a spike of client errors and no server-side signal at all.
+        logger?.LogWarning(real,
+            "OhData: the root query failed to translate for {EntitySet}.", entitySetName);
+
+        return new Microsoft.OData.ODataException(
+            $"The {blamedOption} on '{entitySetName}' could not be processed: the query shape it " +
+            "produced could not be translated by the underlying data provider. Simplify the " +
+            "expression, or expose the members it addresses in the queryable this entity set reads " +
+            "from.");
+    }
+
     /// <summary>
     /// Enumerates <paramref name="build"/>'s query, separating the provider's TRANSLATION phase
     /// from its MATERIALIZATION phase so the two can be classified differently.
@@ -1127,9 +1272,7 @@ internal static class OhDataEndpointFactory
         {
             enumerator = build().GetEnumerator();
         }
-        catch (Exception ex) when (ex is not ObjectDisposedException
-                                   && ex is InvalidOperationException or NotSupportedException
-                                       or Microsoft.OData.ODataException)
+        catch (Exception ex) when (IsTranslationCandidate(ex))
         {
             throw new QueryTranslationFailedException(ex);
         }
@@ -8729,6 +8872,8 @@ internal static class OhDataEndpointFactory
                             ctx.Response.Headers["Preference-Applied"] = $"{MaxPageSizePreference}={appliedPageSize!.Value}";
                     }
 
+                    // #662 does not reclassify here: the profile applied the options itself, so
+                    // the framework composed nothing it could attribute a failure to.
                     object[] items = EvaluateQueryWithArithmeticFaultGuard(
                         () => queryable.ToArray(), options, logger, source.EntitySetName);
 
@@ -8917,8 +9062,8 @@ internal static class OhDataEndpointFactory
                             ? (IQueryable<TModel>)options.Filter.ApplyTo(queryable, cachedCountSettings)
                             : queryable;
                         countQ = ApplyRoundingMode(countQ, source.RoundingMode);
-                        odataCount = EvaluateQueryWithArithmeticFaultGuard(
-                            () => countQ.LongCount(), options, logger, source.EntitySetName);
+                        odataCount = CountRootQuery(
+                            queryable, countQ, options, logger, source.EntitySetName);
                     }
 
                     // Apply filter/orderby/skip/top without $select so TModel shape is preserved.
@@ -9366,9 +9511,12 @@ internal static class OhDataEndpointFactory
                     }
                     else
                     {
-                        // No expand pushdown — $select-only path, byte-for-byte unchanged.
-                        items = EvaluateQueryWithArithmeticFaultGuard(
-                            () => ApplySelectPushdown(filtered).ToArray(), options, logger, source.EntitySetName);
+                        // No expand pushdown — $select-only path. #662: the translation window is
+                        // split out so an untranslatable client $filter/$orderby is the 400 the
+                        // $expand path has answered since #494, not a 500.
+                        items = MaterializeRootQuery(
+                            queryable, () => ApplySelectPushdown(filtered),
+                            options, logger, source.EntitySetName);
                     }
 
                     // Gap 3: compute nextLink when MaxTop (or preferred page size) is set and page is full.
@@ -9799,6 +9947,8 @@ internal static class OhDataEndpointFactory
                         var queryable = countResult.Items is IQueryable<TModel> tq
                             ? tq
                             : countResult.Items.Cast<TModel>().AsQueryable();
+                        // #662 does not reclassify here, as on the P1 collection read: the
+                        // profile composed this queryable, so the framework has nothing to blame.
                         long odataQueryableCount = EvaluateQueryWithArithmeticFaultGuard(
                             () => queryable.LongCount(), options, logger, source.EntitySetName);
                         return Results.Content(odataQueryableCount.ToString(), "text/plain");
@@ -9810,8 +9960,8 @@ internal static class OhDataEndpointFactory
                             ? (IQueryable<TModel>)options.Filter.ApplyTo(q, cachedCountSettings)
                             : q;
                         filtered = ApplyRoundingMode(filtered, source.RoundingMode);
-                        long queryableCount = EvaluateQueryWithArithmeticFaultGuard(
-                            () => filtered.LongCount(), options, logger, source.EntitySetName);
+                        long queryableCount = CountRootQuery(
+                            q, filtered, options, logger, source.EntitySetName);
                         return Results.Content(queryableCount.ToString(), "text/plain");
                     }
                     if (options.Filter is not null)
