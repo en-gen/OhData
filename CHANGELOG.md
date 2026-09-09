@@ -404,21 +404,34 @@ status codes or headers.
   A `500` tells client retry logic the server is broken and the request is worth repeating, when it
   will fail identically forever.
 
-  Four sites now split the phases: the root collection read, the Priority-1 collection read, the
-  inline `$count=true` count, and both arms of the `/$count` route. The wording is the `$expand`
-  path's own, so one condition has one envelope whichever route reached it.
+  **Three sites** split the phases - the `GetQueryable` collection read, the inline `$count=true`
+  count, and the `GetQueryable` arm of `/$count`. The wording is the `$expand` path's own, so one
+  condition has one envelope whichever route reached it.
 
-  **Blame is gated**, which is what keeps this from being #494's inversion running the other way:
-  the reclassification requires the request to have *carried* the option being blamed - the same
-  gate `EvaluateQueryWithArithmeticFaultGuard` applies to a divide-by-zero - so a profile whose own
-  source cannot translate stays a server fault at `500`. `$orderby` is excluded from the `/$count`
-  gate, because §11.2.9 says it MUST NOT affect a count and that route never composes it.
+  **Detecting a translation failure is not the same as attributing one**, and three conditions gate
+  the reclassification. Each was a confirmed defect while it was missing.
+
+  *The provider must be EF Core.* The split rests on `GetEnumerator()` compiling without doing I/O,
+  which is an EF Core property rather than a contract of `IQueryable`; #494 established it for the
+  three `$expand` sites, which are gated on an EF provider, while `GetQueryable` accepts anything.
+  Measured on a provider that executes eagerly: a transient, retryable remote fault came back as
+  `400` *"simplify the expression"* - #494's inversion, reintroduced - and the count probe re-ran
+  the query against the already-failing backend. Anything not EF keeps its `500`.
+
+  *The framework must have composed the option.* "The request carried one" is not attribution. That
+  removes the two **Priority-1** sites from this change entirely: the profile composes the whole
+  query there, so the framework has nothing to attribute a failure to, and those routes keep their
+  `500`.
+
+  *The unmodified source must compile.* Otherwise a profile whose own `GetQueryable` cannot
+  translate is blamed on the client the instant any option appears, with a remedy aimed at a
+  predicate that is not the problem - measured: `?$filter=Name eq 'Hammer'` over a real column
+  answered `400` while the untranslatable clause was the profile's own `Where`.
 
   A scalar aggregate has no `GetEnumerator` seam to split, so the count sites establish the phase
-  afterwards and only on the failure path, by asking whether the same queryable compiles at all.
-  `GetEnumerator` compiles without opening a connection, so the probe costs no round trip and never
-  runs on a request that succeeded. Leaving the counts out would have put `GET /Set?$filter=X` at
-  `400` beside `GET /Set/$count?$filter=X` at `500` for one expression.
+  afterwards and only on the failure path, by asking whether the composed query compiles at all.
+  Leaving them out would have put `GET /Set?$filter=X` at `400` beside `GET /Set/$count?$filter=X`
+  at `500` for one expression.
 
   Also documented: a `$filter` through a navigation requires that navigation to be **in** the
   queryable, so the README's `batchGetAll` recommendation now discloses that it gives up filtering
