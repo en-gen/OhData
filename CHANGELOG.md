@@ -392,6 +392,51 @@ status codes or headers.
   delegate-less", which is no longer the remedy for anything.
 
 
+- **⚠ BREAKING: an untranslatable root `$filter`/`$orderby` answers `400`, not `500` (#662).**
+  #494 settled that a provider fault is classified by **when** it was raised, not by what it was: a
+  translation failure happens before any command executes, so the client's query shape is at fault.
+  That split reached the three `$expand` execution sites and never the root read, so one condition
+  produced two answers - `400` through `$expand`, `500` without it.
+
+  Measured: a profile whose `GetQueryable` projects a DTO and serves its navigation with
+  `batchGetAll` (so the navigation is not in the projected query) answered `500` to
+  `?$filter=Tags/any(...)`, while the sibling that projects the navigation eagerly answered `200`.
+  A `500` tells client retry logic the server is broken and the request is worth repeating, when it
+  will fail identically forever.
+
+  **Three sites** split the phases - the `GetQueryable` collection read, the inline `$count=true`
+  count, and the `GetQueryable` arm of `/$count`. The wording is the `$expand` path's own, so one
+  condition has one envelope whichever route reached it.
+
+  **Detecting a translation failure is not the same as attributing one**, and three conditions gate
+  the reclassification. Each was a confirmed defect while it was missing.
+
+  *The provider must be EF Core.* The split rests on `GetEnumerator()` compiling without doing I/O,
+  which is an EF Core property rather than a contract of `IQueryable`; #494 established it for the
+  three `$expand` sites, which are gated on an EF provider, while `GetQueryable` accepts anything.
+  Measured on a provider that executes eagerly: a transient, retryable remote fault came back as
+  `400` *"simplify the expression"* - #494's inversion, reintroduced - and the count probe re-ran
+  the query against the already-failing backend. Anything not EF keeps its `500`.
+
+  *The framework must have composed the option.* "The request carried one" is not attribution. That
+  removes the two **Priority-1** sites from this change entirely: the profile composes the whole
+  query there, so the framework has nothing to attribute a failure to, and those routes keep their
+  `500`.
+
+  *The unmodified source must compile.* Otherwise a profile whose own `GetQueryable` cannot
+  translate is blamed on the client the instant any option appears, with a remedy aimed at a
+  predicate that is not the problem - measured: `?$filter=Name eq 'Hammer'` over a real column
+  answered `400` while the untranslatable clause was the profile's own `Where`.
+
+  A scalar aggregate has no `GetEnumerator` seam to split, so the count sites establish the phase
+  afterwards and only on the failure path, by asking whether the composed query compiles at all.
+  Leaving them out would have put `GET /Set?$filter=X` at `400` beside `GET /Set/$count?$filter=X`
+  at `500` for one expression.
+
+  Also documented: a `$filter` through a navigation requires that navigation to be **in** the
+  queryable, so the README's `batchGetAll` recommendation now discloses that it gives up filtering
+  through the navigation.
+
 - **⚠ BREAKING: delta mapping moved to `EnGen.OhData.AspNetCore.Mapper` (#665).** `DeltaProfile`,
   `DeltaMapping<TModel,TEntity>` and `IDeltaFactory` ship in the mapper package rather than the core.
   They are the **write** half of the API-model / entity separation story that package now owns, and
