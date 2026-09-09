@@ -72,8 +72,11 @@ public sealed class Issue662RootFilterTranslationTests : IAsyncLifetime
             o.AddEntitySetProfile<N662PriorityOneProfile>();
             o.AddEntitySetProfile<N662EagerProviderProfile>();
         },
-        configureServices: s => s.AddDbContext<N662Db>(
-            b => b.UseSqlite(_connection), ServiceLifetime.Scoped));
+        configureServices: s =>
+        {
+            s.AddSingleton<N662ExecutionCounter>();
+            s.AddDbContext<N662Db>(b => b.UseSqlite(_connection), ServiceLifetime.Scoped);
+        });
 
     // ── The defect ────────────────────────────────────────────────────────────────────────────
 
@@ -211,7 +214,6 @@ public sealed class Issue662RootFilterTranslationTests : IAsyncLifetime
     public async Task ANonEfProviderKeepsItsServerFault(string url)
     {
         await using TestFixture fixture = await HostAsync();
-        EagerFaultingProvider.Reset();
 
         HttpResponseMessage response = await fixture.Client.GetAsync(url);
         _out.WriteLine($"{(int)response.StatusCode} {await response.Content.ReadAsStringAsync()}");
@@ -220,7 +222,8 @@ public sealed class Issue662RootFilterTranslationTests : IAsyncLifetime
 
         // Exactly one. The probe must not re-run a query against an already-degraded backend, which
         // is the second harm the EF gate removes.
-        Assert.Equal(1, EagerFaultingProvider.Executions);
+        var counter = fixture.App.Services.GetRequiredService<N662ExecutionCounter>();
+        Assert.Equal(1, counter.Count);
     }
 
     /// <summary>
@@ -411,39 +414,44 @@ public sealed class N662PriorityOneProfile : ODataEntitySetProfile<int, N662Dto>
     }
 }
 
+/// <summary>Counts provider executions for one host, so the test can assert the probe did not re-run.</summary>
+public sealed class N662ExecutionCounter
+{
+    public int Count;
+}
+
 /// <summary>
 /// A provider that does its work on <c>GetEnumerator()</c> — the shape every non-EF LINQ provider
 /// is free to take — and fails persistently, standing in for a transient remote fault.
 /// </summary>
 public sealed class EagerFaultingProvider : IQueryProvider
 {
-    public static int Executions;
+    private readonly N662ExecutionCounter _counter;
 
-    /// <summary>Reset by the test, never by queryable resolution — the count is of provider calls
-    /// per request, and resolving the source is not one of them.</summary>
-    public static void Reset() => Executions = 0;
+    public EagerFaultingProvider(N662ExecutionCounter counter) => _counter = counter;
 
     public IQueryable CreateQuery(System.Linq.Expressions.Expression expression) =>
-        new EagerFaultingQueryable<N662Dto>(expression);
+        new EagerFaultingQueryable<N662Dto>(_counter, expression);
 
     public IQueryable<TElement> CreateQuery<TElement>(System.Linq.Expressions.Expression expression) =>
-        new EagerFaultingQueryable<TElement>(expression);
+        new EagerFaultingQueryable<TElement>(_counter, expression);
 
     public object Execute(System.Linq.Expressions.Expression expression) => Execute<object>(expression);
 
     public TResult Execute<TResult>(System.Linq.Expressions.Expression expression)
     {
-        Executions++;
+        _counter.Count++;
         throw new InvalidOperationException("simulated: transient remote provider fault (retryable)");
     }
 }
 
 public sealed class EagerFaultingQueryable<T> : IOrderedQueryable<T>
 {
-    public EagerFaultingQueryable(System.Linq.Expressions.Expression? expression = null)
+    public EagerFaultingQueryable(
+        N662ExecutionCounter counter, System.Linq.Expressions.Expression? expression = null)
     {
         Expression = expression ?? System.Linq.Expressions.Expression.Constant(this);
-        Provider = new EagerFaultingProvider();
+        Provider = new EagerFaultingProvider(counter);
     }
 
     public Type ElementType => typeof(T);
@@ -460,12 +468,12 @@ public sealed class EagerFaultingQueryable<T> : IOrderedQueryable<T>
 /// <summary>A profile over the eager, faulting provider.</summary>
 public sealed class N662EagerProviderProfile : EntitySetProfile<int, N662Dto>
 {
-    public N662EagerProviderProfile() : base(x => x.Id)
+    public N662EagerProviderProfile(N662ExecutionCounter counter) : base(x => x.Id)
     {
         EntitySetName = "N662Eager";
         FilterEnabled = OrderByEnabled = SelectEnabled = CountEnabled = true;
 
-        GetQueryable = () => new EagerFaultingQueryable<N662Dto>();
+        GetQueryable = () => new EagerFaultingQueryable<N662Dto>(counter);
     }
 }
 
