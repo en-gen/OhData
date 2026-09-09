@@ -69,6 +69,8 @@ public sealed class Issue662RootFilterTranslationTests : IAsyncLifetime
             o.AddEntitySetProfile<N662ComputedProfile>();
             o.AddEntitySetProfile<N662UnprojectedNavProfile>();
             o.AddEntitySetProfile<N662BrokenSourceProfile>();
+            o.AddEntitySetProfile<N662PriorityOneProfile>();
+            o.AddEntitySetProfile<N662EagerProviderProfile>();
         },
         configureServices: s => s.AddDbContext<N662Db>(
             b => b.UseSqlite(_connection), ServiceLifetime.Scoped));
@@ -142,6 +144,79 @@ public sealed class Issue662RootFilterTranslationTests : IAsyncLifetime
 
         Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
         Assert.Contains("InternalServerError", body, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A profile whose OWN source cannot translate stays a server fault even when the request
+    /// carried an option — presence is not attribution.
+    /// </summary>
+    /// <remarks>
+    /// The first cut of this fix gated on the request having merely CARRIED <c>$filter</c>, which
+    /// blamed the client for a permanent server misconfiguration and told them to simplify a
+    /// predicate that is not the problem: <c>Name eq 'Hammer'</c> is a translatable comparison over
+    /// a real column, while the untranslatable clause is the profile's own <c>Where</c>. The gate
+    /// now also requires the unmodified source to compile.
+    /// </remarks>
+    [Theory]
+    [InlineData("/odata/N662Broken?$filter=Name eq 'Hammer'")]
+    [InlineData("/odata/N662Broken?$orderby=Name")]
+    [InlineData("/odata/N662Broken/$count?$filter=Name eq 'Hammer'")]
+    public async Task ABrokenSourceIsNotBlamedOnTheClient_EvenWithAnOptionPresent(string url)
+    {
+        await using TestFixture fixture = await HostAsync();
+
+        HttpResponseMessage response = await fixture.Client.GetAsync(url);
+        _out.WriteLine($"{(int)response.StatusCode} {await response.Content.ReadAsStringAsync()}");
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+    }
+
+    /// <summary>
+    /// A Priority-1 profile composed the query itself, so the framework has nothing to attribute a
+    /// translation failure to and does not reclassify.
+    /// </summary>
+    /// <remarks>
+    /// Documented rather than fixed: attribution needs to know what the framework added, and on this
+    /// route it added nothing. Blaming the client on option PRESENCE alone is the defect the test
+    /// above pins.
+    /// </remarks>
+    [Theory]
+    [InlineData("/odata/N662P1?$filter=Label eq 'x'")]
+    [InlineData("/odata/N662P1?$orderby=Label")]
+    [InlineData("/odata/N662P1/$count?$filter=Label eq 'x'")]
+    public async Task APriorityOneProfile_IsNotReclassified(string url)
+    {
+        await using TestFixture fixture = await HostAsync();
+
+        HttpResponseMessage response = await fixture.Client.GetAsync(url);
+        _out.WriteLine($"{(int)response.StatusCode} {await response.Content.ReadAsStringAsync()}");
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+    }
+
+    /// <summary>
+    /// A provider that executes on <c>GetEnumerator()</c> keeps its <c>500</c>, because the phase
+    /// split's premise does not hold for it.
+    /// </summary>
+    /// <remarks>
+    /// The whole split rests on <c>GetEnumerator()</c> compiling without doing I/O, which is an EF
+    /// Core property rather than a contract of <see cref="IQueryable"/>. <c>GetQueryable</c> accepts
+    /// any queryable, and the first cut of this fix reported a transient, retryable remote fault as
+    /// <c>400</c> "simplify the expression" — #494's own inversion, reintroduced — and re-ran the
+    /// failing query against the degraded backend to do it.
+    /// </remarks>
+    [Theory]
+    [InlineData("/odata/N662Eager?$filter=Name eq 'Hammer'")]
+    [InlineData("/odata/N662Eager/$count?$filter=Name eq 'Hammer'")]
+    public async Task ANonEfProviderKeepsItsServerFault(string url)
+    {
+        await using TestFixture fixture = await HostAsync();
+
+        HttpResponseMessage response = await fixture.Client.GetAsync(url);
+        _out.WriteLine($"{(int)response.StatusCode} {await response.Content.ReadAsStringAsync()}");
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        Assert.Equal(1, EagerFaultingProvider.Executions);
     }
 
     // ── Control: nothing about the working path moved ─────────────────────────────────────────
@@ -274,5 +349,95 @@ public sealed class N662BrokenSourceProfile : EntitySetProfile<int, N662Dto>
         GetQueryable = () => db.Products
             .Where(p => ClientOnly(p.Name) == Marker)
             .Select(p => new N662Dto { Id = p.Id, Name = p.Name, Label = p.Name });
+    }
+}
+
+/// <summary>
+/// The same untranslatable member, reached through a Priority-1 profile that applies the options
+/// itself.
+/// </summary>
+public sealed class N662PriorityOneProfile : ODataEntitySetProfile<int, N662Dto>
+{
+    private static string Decorate(string s) => "<" + s + ">";
+
+    public N662PriorityOneProfile(N662Db db) : base(x => x.Id)
+    {
+        EntitySetName = "N662P1";
+        FilterEnabled = OrderByEnabled = SelectEnabled = CountEnabled = true;
+
+        GetODataQueryable = (options, ct) =>
+        {
+            IQueryable<N662Dto> q = db.Products.Select(p => new N662Dto
+            {
+                Id = p.Id,
+                Name = p.Name,
+                Label = Decorate(p.Name),
+            });
+
+            return Task.FromResult(new ODataQueryResult<N662Dto>
+            {
+                Items = (IQueryable<N662Dto>)options.ApplyTo(q),
+            });
+        };
+    }
+}
+
+/// <summary>
+/// A provider that does its work on <c>GetEnumerator()</c> — the shape every non-EF LINQ provider
+/// is free to take — and fails persistently, standing in for a transient remote fault.
+/// </summary>
+public sealed class EagerFaultingProvider : IQueryProvider
+{
+    public static int Executions;
+
+    public static void Reset() => Executions = 0;
+
+    public IQueryable CreateQuery(System.Linq.Expressions.Expression expression) =>
+        new EagerFaultingQueryable<N662Dto>(expression);
+
+    public IQueryable<TElement> CreateQuery<TElement>(System.Linq.Expressions.Expression expression) =>
+        new EagerFaultingQueryable<TElement>(expression);
+
+    public object Execute(System.Linq.Expressions.Expression expression) => Execute<object>(expression);
+
+    public TResult Execute<TResult>(System.Linq.Expressions.Expression expression)
+    {
+        Executions++;
+        throw new InvalidOperationException("simulated: transient remote provider fault (retryable)");
+    }
+}
+
+public sealed class EagerFaultingQueryable<T> : IOrderedQueryable<T>
+{
+    public EagerFaultingQueryable(System.Linq.Expressions.Expression? expression = null)
+    {
+        Expression = expression ?? System.Linq.Expressions.Expression.Constant(this);
+        Provider = new EagerFaultingProvider();
+    }
+
+    public Type ElementType => typeof(T);
+
+    public System.Linq.Expressions.Expression Expression { get; }
+
+    public IQueryProvider Provider { get; }
+
+    public IEnumerator<T> GetEnumerator() => Provider.Execute<IEnumerator<T>>(Expression);
+
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+}
+
+/// <summary>A profile over the eager, faulting provider.</summary>
+public sealed class N662EagerProviderProfile : EntitySetProfile<int, N662Dto>
+{
+    public N662EagerProviderProfile() : base(x => x.Id)
+    {
+        EntitySetName = "N662Eager";
+        FilterEnabled = OrderByEnabled = SelectEnabled = CountEnabled = true;
+
+        GetQueryable = () =>
+        {
+            EagerFaultingProvider.Reset();
+            return new EagerFaultingQueryable<N662Dto>();
+        };
     }
 }
